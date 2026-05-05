@@ -4,6 +4,7 @@
 //! infrastructure. It intentionally does not implement A* yet.
 
 pub mod astar;
+pub mod geometry_realization;
 pub mod obstacle_map;
 pub mod primitives;
 pub mod py_router;
@@ -12,6 +13,11 @@ pub mod static_obstacle_builder;
 pub use astar::{
     export_route_svg, route_single_net, route_single_net_with_config, AStarConfig, RouteResult,
     State,
+};
+pub use geometry_realization::{
+    compress_grid_waypoints, compress_route_waypoints, generate_waveguide_polygon,
+    grid_path_to_centerline, realize_route_polygon, route_to_grid_path, snap_centerline_endpoints,
+    GeometryError, GeometryGridSpec,
 };
 pub use obstacle_map::{
     pack_xy, unpack_xy, CellKey, ClearanceMetric, NetId, ObstacleMap, WaveguideFootprint,

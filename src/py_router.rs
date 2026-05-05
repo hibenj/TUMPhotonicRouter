@@ -5,6 +5,9 @@ use rustc_hash::FxHashSet;
 use crate::astar::{
     export_route_svg, route_single_net_with_config, AStarConfig, RouteResult, State,
 };
+use crate::geometry_realization::{
+    realize_route_polygon as realize_route_polygon_rs, GeometryGridSpec,
+};
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::{
     create_photonic_primitive_library, Primitive, PrimitiveLibrary, PrimitiveLibraryConfig,
@@ -138,6 +141,8 @@ pub struct PyRouteResult {
     #[pyo3(get)]
     pub cells: Vec<(i32, i32)>,
     #[pyo3(get)]
+    pub compressed_waypoints: Vec<(i32, i32)>,
+    #[pyo3(get)]
     pub total_length_um: f64,
     #[pyo3(get)]
     pub total_cost: f64,
@@ -245,18 +250,33 @@ impl PyPhotonicRouter {
     }
 
     fn export_debug_svg(&self, route: &PyRouteResult) -> String {
-        let r = RouteResult {
-            states: route
-                .states
-                .iter()
-                .map(|s| State::new(s.x, s.y, s.angle))
-                .collect(),
-            primitives: route.primitive_ids.clone(),
-            cells: route.cells.clone(),
-            total_length_um: route.total_length_um,
-            total_cost: route.total_cost,
-        };
+        let r = to_route_result(route);
         export_route_svg(&self.obstacle_map, &r)
+    }
+    #[pyo3(signature=(route,width_um,source_port_um=None,target_port_um=None))]
+    fn realize_route_polygon(
+        &self,
+        route: &PyRouteResult,
+        width_um: f64,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        realize_route_polygon_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            width_um,
+            source_port_um,
+            target_port_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
     }
     fn describe_primitives(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
         describe_primitives(py, &self.primitives)
@@ -329,10 +349,26 @@ fn convert_result(
             .collect(),
         primitive_ids: r.primitives.clone(),
         cells: r.cells.clone(),
+        compressed_waypoints: r.compressed_waypoints.clone(),
         total_length_um: r.total_length_um,
         total_cost: r.total_cost,
         segments,
     })
+}
+
+fn to_route_result(route: &PyRouteResult) -> RouteResult {
+    RouteResult {
+        states: route
+            .states
+            .iter()
+            .map(|s| State::new(s.x, s.y, s.angle))
+            .collect(),
+        primitives: route.primitive_ids.clone(),
+        cells: route.cells.clone(),
+        compressed_waypoints: route.compressed_waypoints.clone(),
+        total_length_um: route.total_length_um,
+        total_cost: route.total_cost,
+    }
 }
 
 #[pymodule]

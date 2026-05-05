@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,12 +22,8 @@ from translation.route_gds import get_port_from_instance
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 GridSpec = _sob.GridSpec
 build_static_obstacle_map = _sob.build_static_obstacle_map
-grid_cell_center = _sob.grid_cell_center
 physical_to_grid = _sob.physical_to_grid
 _load_rust_backend = _sob._load_rust_backend
-
-_primitive_lib_mod = importlib.import_module("photonic_router.primitive_library")
-get_primitive_library = _primitive_lib_mod.get_primitive_library
 
 
 @dataclass(frozen=True)
@@ -47,62 +44,35 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _place_primitives_from_result(
-    layout: Component,
-    grid: GridSpec,
-    result: dict,
-    abs_port1: Port,
-    abs_port2: Port,
-) -> None:
-    """Place routed primitives into the layout using 1:1 mapping.
+def _grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
+    if hasattr(grid, "origin"):
+        origin = getattr(grid, "origin")
+        return float(origin[0]), float(origin[1])
+    return (
+        float(getattr(grid, "origin_x_um", 0.0)),
+        float(getattr(grid, "origin_y_um", 0.0)),
+    )
 
-    Each primitive returned by Rust is placed directly as a gdsfactory component
-    at the correct position and orientation, reconstructing the full waveguide path.
 
-    Parameters:
-        layout: Component to add routed waveguides to
-        grid: GridSpec for coordinate conversion
-        result: Rust routing result with "primitives" and "states"
-        abs_port1: Source port
-        abs_port2: Target port
-    """
-    primitives_used = result.get("primitives", [])
-    states = result.get("states", [])
+def _inflate_route_cells(
+    cells: set[tuple[int, int]],
+    *,
+    radius_cells: int,
+    width: int,
+    height: int,
+) -> set[tuple[int, int]]:
+    if radius_cells <= 0:
+        return {(x, y) for (x, y) in cells if 0 <= x < width and 0 <= y < height}
 
-    if not primitives_used or not states:
-        return
-
-    prim_lib = get_primitive_library()
-
-    # Place each primitive at corresponding position/orientation
-    for i, prim_id in enumerate(primitives_used):
-        if i >= len(states):
-            break
-
-        state = states[i]
-        x_grid, y_grid, angle = int(state[0]), int(state[1]), int(state[2])
-
-        # Convert grid coordinate to physical coordinate (cell center)
-        x_um, y_um = grid_cell_center(x_grid, y_grid, grid)
-
-        # Get primitive component and metadata
-        prim_component = prim_lib.get_component(prim_id)
-        if prim_component is None:
-            continue
-
-        # Create a rotated reference at the state position
-        # Angle from Rust is 0-7 (45° increments), convert to degrees
-        rotation_deg = angle * 45.0
-
-        # Add reference with rotation and translation.
-        # All-angle bend components may require off-grid placement in gdsfactory.
-        add_ref = getattr(layout, "add_ref_off_grid", None)
-        if add_ref is None:
-            ref = layout.add_ref(prim_component)
-        else:
-            ref = add_ref(prim_component)
-        ref.rotate(rotation_deg, center=(0, 0))
-        ref.move((x_um, y_um))
+    inflated: set[tuple[int, int]] = set()
+    for x, y in cells:
+        for dx in range(-radius_cells, radius_cells + 1):
+            for dy in range(-radius_cells, radius_cells + 1):
+                nx = x + dx
+                ny = y + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    inflated.add((nx, ny))
+    return inflated
 
 
 def route_nets_rust(
@@ -112,13 +82,16 @@ def route_nets_rust(
     obstacle_config: object | None = None,
     debug_dir: str | Path | None = None,
     debug_prefix: str = "route",
+    route_width_um: float = 0.5,
+    route_layer: tuple[int, int] = (1, 0),
 ) -> tuple[Component, RustRouteDebugArtifacts]:
-    """Route schematic nets using the Rust A* router with primitive library.
+    """Route schematic nets using Rust A* and add one polygon per routed net.
 
     This function routes each net by:
-    1. Building a static obstacle map from the unrouted layout
-    2. For each net, calling the Rust A* router
-    3. Placing routed primitives (1:1 mapping) into the final layout
+    1. Building a static obstacle map from the unrouted layout.
+    2. Calling the Rust A* router for each net.
+    3. Realizing one closed polygon in Rust and inserting it with add_polygon.
+    4. Updating blocked cells for subsequent nets using width-aware inflation.
 
     Parameters:
         unrouted_layout: Component with placed instances but no routes.
@@ -126,10 +99,15 @@ def route_nets_rust(
         obstacle_config: Optional obstacle-map configuration.
         debug_dir: Directory where debug SVGs are written when provided.
         debug_prefix: Prefix used for debug SVG filenames.
+        route_width_um: Realized waveguide width in micrometers.
+        route_layer: Target GDS layer/datatype tuple for route polygons.
 
     Returns:
         A tuple of (routed_layout, debug_artifacts).
     """
+    if route_width_um <= 0:
+        raise ValueError("route_width_um must be > 0")
+
     rust_backend = _load_rust_backend()
     if rust_backend is None:
         raise RuntimeError(
@@ -158,6 +136,28 @@ def route_nets_rust(
     nets = schematic.netlist.routes
     print(f"\nRouting {len(nets)} nets using Rust router...")
 
+    if not hasattr(rust_backend, "PyPhotonicRouter"):
+        raise RuntimeError(
+            "Rust backend does not expose PyPhotonicRouter. "
+            "Rebuild/install the Rust extension with the class-based API."
+        )
+
+    origin_x_um, origin_y_um = _grid_origin_xy(grid)
+    grid_spec = rust_backend.GridSpec(
+        int(grid.width),
+        int(grid.height),
+        float(grid.grid_size_um),
+        origin_x_um,
+        origin_y_um,
+    )
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(grid_size_um=float(grid.grid_size_um))
+    astar_cfg = rust_backend.AStarConfig()
+    router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+
+    block_radius_cells = max(
+        0, math.ceil((float(route_width_um) / 2.0) / float(grid.grid_size_um))
+    )
+
     for net_name, bundle in nets.items():
         links = bundle.links
         for port1_spec, port2_spec in links.items():
@@ -172,57 +172,42 @@ def route_nets_rust(
 
             print(f"  Routing {net_name}: {port1_spec} -> {port2_spec}...", end=" ")
 
-            if not hasattr(rust_backend, "PyPhotonicRouter"):
-                raise RuntimeError(
-                    "Rust backend does not expose PyPhotonicRouter. "
-                    "Rebuild/install the Rust extension with the class-based API."
-                )
-
-            grid_spec = rust_backend.GridSpec(
-                int(grid.width),
-                int(grid.height),
-                float(grid.grid_size_um),
-                float(getattr(grid, "origin_x_um", 0.0)),
-                float(getattr(grid, "origin_y_um", 0.0)),
-            )
-            primitive_cfg = rust_backend.PrimitiveLibraryConfig(
-                grid_size_um=float(grid.grid_size_um)
-            )
-            astar_cfg = rust_backend.AStarConfig()
-            router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
             router.set_static_cells(sorted(blocked_cells))
+            router.clear_port_open_cells()
             router.add_port_open_cells(sorted(port_open_cells))
             route_obj = router.route_single_net(
                 rust_backend.State(*source),
                 rust_backend.State(*target),
             )
-            result = {
-                "states": [(s.x, s.y, s.angle) for s in route_obj.states],
-                "primitives": list(route_obj.primitive_ids),
-                "cells": list(route_obj.cells),
-                "total_length_um": route_obj.total_length_um,
-                "total_cost": route_obj.total_cost,
-            }
-            if debug_path is not None:
-                result["svg"] = router.export_debug_svg(route_obj)
 
-            # Place primitives directly into layout using 1:1 mapping
-            _place_primitives_from_result(
-                routed_layout,
-                grid,
-                result,
-                abs_port1,
-                abs_port2,
+            source_port_um = (float(abs_port1.center[0]), float(abs_port1.center[1]))
+            target_port_um = (float(abs_port2.center[0]), float(abs_port2.center[1]))
+            polygon = router.realize_route_polygon(
+                route_obj,
+                float(route_width_um),
+                source_port_um,
+                target_port_um,
             )
+            routed_layout.add_polygon(polygon, layer=route_layer)
 
-            blocked_cells.update(result["cells"])
-
-            if debug_path is not None and "svg" in result:
+            if debug_path is not None:
                 route_dir = debug_path / "routes"
                 _ensure_dir(route_dir)
                 route_svg = route_dir / f"{debug_prefix}_{net_name}.svg"
-                route_svg.write_text(result["svg"], encoding="utf-8")
+                route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
                 route_svgs.append(route_svg)
+
+            route_cells: set[tuple[int, int]] = {
+                (int(x), int(y)) for (x, y) in route_obj.cells
+            }
+            blocked_cells.update(
+                _inflate_route_cells(
+                    route_cells,
+                    radius_cells=block_radius_cells,
+                    width=int(grid.width),
+                    height=int(grid.height),
+                )
+            )
 
             print("ok")
 
@@ -236,6 +221,4 @@ def _port_to_state(port: Port, grid: GridSpec, *, is_target: bool) -> tuple[int,
     gx, gy = physical_to_grid(port.center[0], port.center[1], grid)
     angle = _orientation_to_angle(port.orientation, flip=is_target)
     return gx, gy, angle
-
-
 

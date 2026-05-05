@@ -53,6 +53,7 @@ pub struct RouteResult {
     pub states: Vec<State>,
     pub primitives: Vec<u16>,
     pub cells: Vec<(i32, i32)>,
+    pub compressed_waypoints: Vec<(i32, i32)>,
     pub total_length_um: f64,
     pub total_cost: f64,
 }
@@ -305,6 +306,8 @@ fn reconstruct_route(
     let mut primitive_ids = Vec::with_capacity(primitive_steps_reversed.len());
     let mut cells = Vec::new();
     let mut seen_cells = FxHashSet::default();
+    let mut ordered_path = Vec::new();
+    push_if_different(&mut ordered_path, (source.x, source.y));
     let mut total_length_um = 0.0;
 
     for (origin, primitive) in primitive_steps_reversed {
@@ -313,19 +316,57 @@ fn reconstruct_route(
 
         for (dx, dy) in primitive.footprint {
             let cell = (origin.x + dx, origin.y + dy);
+            push_if_different(&mut ordered_path, cell);
             if seen_cells.insert(pack_xy(cell.0, cell.1)) {
                 cells.push(cell);
             }
         }
     }
+    push_if_different(&mut ordered_path, (target.x, target.y));
+    let compressed_waypoints = compress_grid_waypoints(&ordered_path);
 
     RouteResult {
         states: states_reversed,
         primitives: primitive_ids,
         cells,
+        compressed_waypoints,
         total_length_um,
         total_cost,
     }
+}
+
+fn compress_grid_waypoints(path: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    if path.is_empty() {
+        return Vec::new();
+    }
+    if path.len() == 1 {
+        return vec![path[0]];
+    }
+
+    let mut waypoints = Vec::with_capacity(path.len());
+    push_if_different(&mut waypoints, path[0]);
+
+    let mut prev_dir = direction(path[0], path[1]);
+    for i in 2..path.len() {
+        let curr_dir = direction(path[i - 1], path[i]);
+        if curr_dir != prev_dir {
+            push_if_different(&mut waypoints, path[i - 1]);
+        }
+        prev_dir = curr_dir;
+    }
+
+    push_if_different(&mut waypoints, path[path.len() - 1]);
+    waypoints
+}
+
+fn push_if_different(points: &mut Vec<(i32, i32)>, point: (i32, i32)) {
+    if points.last().copied() != Some(point) {
+        points.push(point);
+    }
+}
+
+fn direction(a: (i32, i32), b: (i32, i32)) -> (i32, i32) {
+    ((b.0 - a.0).signum(), (b.1 - a.1).signum())
 }
 
 #[cfg(test)]
@@ -357,6 +398,7 @@ mod tests {
 
         assert_eq!(result.states.first().copied(), Some(State::new(1, 2, 0)));
         assert_eq!(result.states.last().copied(), Some(State::new(5, 2, 0)));
+        assert_eq!(result.compressed_waypoints, vec![(1, 2), (5, 2)]);
         assert!(result.cells.contains(&(5, 2)));
         assert_eq!(result.total_length_um, 4.0);
     }
@@ -398,6 +440,7 @@ mod tests {
 
         assert_eq!(result.states.last().copied(), Some(State::new(3, 3, 2)));
         assert!(result.states.iter().any(|state| state.angle == 2));
+        assert!(result.compressed_waypoints.len() >= 2);
     }
 
     #[test]
