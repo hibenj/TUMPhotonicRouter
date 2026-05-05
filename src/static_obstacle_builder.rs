@@ -12,6 +12,7 @@ use pyo3::types::PyDict;
 use rustc_hash::FxHashSet;
 
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, ClearanceMetric, ObstacleMap};
+use crate::py_router::register_py_router;
 
 /// Physical point in micrometers.
 pub type Point = (f64, f64);
@@ -425,6 +426,7 @@ fn build_static_obstacle_map_rs(
 /// Python extension module used by `python/photonic_router/static_obstacle_builder.py`.
 #[pymodule]
 pub fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    register_py_router(m)?;
     m.add_function(wrap_pyfunction!(build_static_obstacle_map_rs, m)?)?;
     Ok(())
 }

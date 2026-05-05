@@ -263,6 +263,16 @@ impl PyPhotonicRouter {
     }
 }
 
+pub fn register_py_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyGridSpec>()?;
+    m.add_class::<PyPrimitiveLibraryConfig>()?;
+    m.add_class::<PyAStarConfig>()?;
+    m.add_class::<PyState>()?;
+    m.add_class::<PyRouteResult>()?;
+    m.add_class::<PyPhotonicRouter>()?;
+    Ok(())
+}
+
 fn describe_primitives(py: Python<'_>, lib: &PrimitiveLibrary) -> PyResult<Vec<PyObject>> {
     let mut out = Vec::new();
     for a in 0..8u8 {
@@ -327,13 +337,7 @@ fn convert_result(
 
 #[pymodule]
 pub fn photonic_router_rust(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyGridSpec>()?;
-    m.add_class::<PyPrimitiveLibraryConfig>()?;
-    m.add_class::<PyAStarConfig>()?;
-    m.add_class::<PyState>()?;
-    m.add_class::<PyRouteResult>()?;
-    m.add_class::<PyPhotonicRouter>()?;
-    Ok(())
+    register_py_router(m)
 }
 
 #[cfg(test)]
