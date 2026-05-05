@@ -1,0 +1,14 @@
+[package]
+name = "photonic-router"
+version = "0.1.0"
+edition = "2021"
+description = "Rust foundations for a photonic grid router"
+
+[lib]
+name = "photonic_router"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["abi3-py38"] }
+rustc-hash = "2"

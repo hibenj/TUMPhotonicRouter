@@ -1,0 +1,293 @@
+//! Photonic waveguide movement primitives.
+//!
+//! The first router uses discrete approximations of photonic moves. Each
+//! primitive carries both a state transition and the grid footprint that must be
+//! collision-free before the move is accepted.
+
+/// Eight grid headings in 45-degree increments.
+///
+/// Angle `0` is east, then angles increase counter-clockwise:
+/// `1 = northeast`, `2 = north`, ... `7 = southeast`.
+pub const DIRECTIONS: [(i32, i32); 8] = [
+    (1, 0),
+    (1, 1),
+    (0, 1),
+    (-1, 1),
+    (-1, 0),
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+];
+
+/// A precomputed photonic movement primitive.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Primitive {
+    pub id: u16,
+    pub start_angle: u8,
+    pub end_angle: u8,
+    pub dx: i32,
+    pub dy: i32,
+    pub footprint: Vec<(i32, i32)>,
+    pub length_um: f64,
+    pub bend_cost: f64,
+}
+
+/// Configuration used to create the first photonic primitive library.
+#[derive(Clone, Debug)]
+pub struct PrimitiveLibraryConfig {
+    pub grid_size_um: f64,
+    pub straight_short_cells: i32,
+    pub straight_long_cells: i32,
+    pub bend_radius_cells: i32,
+}
+
+impl Default for PrimitiveLibraryConfig {
+    fn default() -> Self {
+        Self {
+            grid_size_um: 0.5,
+            straight_short_cells: 1,
+            straight_long_cells: 4,
+            bend_radius_cells: 2,
+        }
+    }
+}
+
+/// Primitive lookup table indexed by start angle.
+#[derive(Clone, Debug)]
+pub struct PrimitiveLibrary {
+    primitives_per_angle: Vec<Vec<Primitive>>,
+    grid_size_um: f64,
+}
+
+impl PrimitiveLibrary {
+    pub fn new(primitives_per_angle: Vec<Vec<Primitive>>, grid_size_um: f64) -> Self {
+        assert_eq!(
+            primitives_per_angle.len(),
+            8,
+            "primitive library must contain exactly 8 angle buckets"
+        );
+        Self {
+            primitives_per_angle,
+            grid_size_um,
+        }
+    }
+
+    /// Return all primitives valid for a start angle.
+    pub fn get_primitives_for_angle(&self, angle: u8) -> &[Primitive] {
+        &self.primitives_per_angle[(angle % 8) as usize]
+    }
+
+    /// Grid resolution used when converting geometric distance to micrometers.
+    pub fn grid_size_um(&self) -> f64 {
+        self.grid_size_um
+    }
+}
+
+/// Create the initial photonic primitive library.
+///
+/// The starting set contains:
+/// - short straight
+/// - long straight
+/// - 45-degree left/right bend
+/// - 90-degree left/right bend
+pub fn create_photonic_primitive_library(config: PrimitiveLibraryConfig) -> PrimitiveLibrary {
+    assert!(config.grid_size_um > 0.0, "grid_size_um must be positive");
+    assert!(
+        config.straight_short_cells > 0,
+        "straight_short_cells must be positive"
+    );
+    assert!(
+        config.straight_long_cells > 0,
+        "straight_long_cells must be positive"
+    );
+    assert!(
+        config.bend_radius_cells > 0,
+        "bend_radius_cells must be positive"
+    );
+
+    let mut next_id = 0u16;
+    let mut primitives_per_angle = Vec::with_capacity(8);
+
+    for angle in 0..8u8 {
+        let mut primitives = Vec::with_capacity(6);
+
+        primitives.push(make_straight(
+            next_primitive_id(&mut next_id),
+            angle,
+            config.straight_short_cells,
+            config.grid_size_um,
+        ));
+        primitives.push(make_straight(
+            next_primitive_id(&mut next_id),
+            angle,
+            config.straight_long_cells,
+            config.grid_size_um,
+        ));
+        primitives.push(make_turn(
+            next_primitive_id(&mut next_id),
+            angle,
+            1,
+            config.bend_radius_cells,
+            config.grid_size_um,
+        ));
+        primitives.push(make_turn(
+            next_primitive_id(&mut next_id),
+            angle,
+            -1,
+            config.bend_radius_cells,
+            config.grid_size_um,
+        ));
+        primitives.push(make_turn(
+            next_primitive_id(&mut next_id),
+            angle,
+            2,
+            config.bend_radius_cells,
+            config.grid_size_um,
+        ));
+        primitives.push(make_turn(
+            next_primitive_id(&mut next_id),
+            angle,
+            -2,
+            config.bend_radius_cells,
+            config.grid_size_um,
+        ));
+
+        primitives_per_angle.push(primitives);
+    }
+
+    PrimitiveLibrary::new(primitives_per_angle, config.grid_size_um)
+}
+
+fn make_straight(id: u16, angle: u8, cells: i32, grid_size_um: f64) -> Primitive {
+    let dir = direction(angle);
+    let footprint = line_footprint((0, 0), dir, cells);
+    let dx = dir.0 * cells;
+    let dy = dir.1 * cells;
+
+    Primitive {
+        id,
+        start_angle: angle,
+        end_angle: angle,
+        dx,
+        dy,
+        footprint,
+        length_um: vector_length_um(dx, dy, grid_size_um),
+        bend_cost: 0.0,
+    }
+}
+
+fn make_turn(
+    id: u16,
+    start_angle: u8,
+    angle_delta: i8,
+    radius_cells: i32,
+    grid_size_um: f64,
+) -> Primitive {
+    let end_angle = wrap_angle(start_angle as i8 + angle_delta);
+    let start_dir = direction(start_angle);
+    let end_dir = direction(end_angle);
+
+    let mut footprint = line_footprint((0, 0), start_dir, radius_cells);
+    let corner = (start_dir.0 * radius_cells, start_dir.1 * radius_cells);
+    let second_leg = line_footprint(corner, end_dir, radius_cells);
+    extend_unique(&mut footprint, second_leg);
+
+    let end = footprint
+        .last()
+        .copied()
+        .expect("turn primitive footprint cannot be empty");
+
+    Primitive {
+        id,
+        start_angle,
+        end_angle,
+        dx: end.0,
+        dy: end.1,
+        footprint,
+        length_um: vector_length_um(
+            start_dir.0 * radius_cells,
+            start_dir.1 * radius_cells,
+            grid_size_um,
+        ) + vector_length_um(
+            end_dir.0 * radius_cells,
+            end_dir.1 * radius_cells,
+            grid_size_um,
+        ),
+        bend_cost: angle_delta.unsigned_abs() as f64,
+    }
+}
+
+fn line_footprint(start: (i32, i32), dir: (i32, i32), cells: i32) -> Vec<(i32, i32)> {
+    let mut points = Vec::with_capacity((cells + 1) as usize);
+    for step in 0..=cells {
+        points.push((start.0 + dir.0 * step, start.1 + dir.1 * step));
+    }
+    points
+}
+
+fn extend_unique(base: &mut Vec<(i32, i32)>, extra: Vec<(i32, i32)>) {
+    for point in extra {
+        if base.last().copied() != Some(point) {
+            base.push(point);
+        }
+    }
+}
+
+fn vector_length_um(dx: i32, dy: i32, grid_size_um: f64) -> f64 {
+    ((dx * dx + dy * dy) as f64).sqrt() * grid_size_um
+}
+
+fn direction(angle: u8) -> (i32, i32) {
+    DIRECTIONS[(angle % 8) as usize]
+}
+
+fn wrap_angle(angle: i8) -> u8 {
+    angle.rem_euclid(8) as u8
+}
+
+fn next_primitive_id(next_id: &mut u16) -> u16 {
+    let id = *next_id;
+    *next_id = next_id.checked_add(1).expect("primitive id overflowed u16");
+    id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_primitives_for_each_angle() {
+        let library = create_photonic_primitive_library(PrimitiveLibraryConfig::default());
+
+        for angle in 0..8 {
+            let primitives = library.get_primitives_for_angle(angle);
+            assert_eq!(primitives.len(), 6);
+            assert!(primitives
+                .iter()
+                .all(|primitive| primitive.start_angle == angle));
+        }
+    }
+
+    #[test]
+    fn east_straight_short_moves_one_cell() {
+        let library = create_photonic_primitive_library(PrimitiveLibraryConfig::default());
+        let primitive = &library.get_primitives_for_angle(0)[0];
+
+        assert_eq!(primitive.dx, 1);
+        assert_eq!(primitive.dy, 0);
+        assert_eq!(primitive.end_angle, 0);
+        assert_eq!(primitive.footprint, vec![(0, 0), (1, 0)]);
+    }
+
+    #[test]
+    fn east_ninety_left_turn_ends_north() {
+        let library = create_photonic_primitive_library(PrimitiveLibraryConfig::default());
+        let primitive = &library.get_primitives_for_angle(0)[4];
+
+        assert_eq!(primitive.end_angle, 2);
+        assert_eq!(primitive.dx, 2);
+        assert_eq!(primitive.dy, 2);
+        assert!(primitive.bend_cost > 0.0);
+        assert!(primitive.footprint.contains(&(2, 2)));
+    }
+}
