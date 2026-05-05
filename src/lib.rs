@@ -5,8 +5,8 @@
 
 pub mod astar;
 pub mod obstacle_map;
-pub mod py_router;
 pub mod primitives;
+pub mod py_router;
 pub mod static_obstacle_builder;
 
 pub use astar::{

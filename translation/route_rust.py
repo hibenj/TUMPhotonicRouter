@@ -172,16 +172,39 @@ def route_nets_rust(
 
             print(f"  Routing {net_name}: {port1_spec} -> {port2_spec}...", end=" ")
 
-            result = rust_backend.route_single_net_rs(
-                grid.width,
-                grid.height,
-                sorted(blocked_cells),
-                sorted(port_open_cells),
-                grid.grid_size_um,
-                source,
-                target,
-                export_svg=debug_path is not None,
+            if not hasattr(rust_backend, "PyPhotonicRouter"):
+                raise RuntimeError(
+                    "Rust backend does not expose PyPhotonicRouter. "
+                    "Rebuild/install the Rust extension with the class-based API."
+                )
+
+            grid_spec = rust_backend.GridSpec(
+                int(grid.width),
+                int(grid.height),
+                float(grid.grid_size_um),
+                float(getattr(grid, "origin_x_um", 0.0)),
+                float(getattr(grid, "origin_y_um", 0.0)),
             )
+            primitive_cfg = rust_backend.PrimitiveLibraryConfig(
+                grid_size_um=float(grid.grid_size_um)
+            )
+            astar_cfg = rust_backend.AStarConfig()
+            router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+            router.set_static_cells(sorted(blocked_cells))
+            router.add_port_open_cells(sorted(port_open_cells))
+            route_obj = router.route_single_net(
+                rust_backend.State(*source),
+                rust_backend.State(*target),
+            )
+            result = {
+                "states": [(s.x, s.y, s.angle) for s in route_obj.states],
+                "primitives": list(route_obj.primitive_ids),
+                "cells": list(route_obj.cells),
+                "total_length_um": route_obj.total_length_um,
+                "total_cost": route_obj.total_cost,
+            }
+            if debug_path is not None:
+                result["svg"] = router.export_debug_svg(route_obj)
 
             # Place primitives directly into layout using 1:1 mapping
             _place_primitives_from_result(
