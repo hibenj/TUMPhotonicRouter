@@ -12,7 +12,6 @@ use pyo3::types::PyDict;
 use rustc_hash::FxHashSet;
 
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, ClearanceMetric, ObstacleMap};
-use crate::py_router::route_single_net_rs;
 
 /// Physical point in micrometers.
 pub type Point = (f64, f64);
@@ -427,7 +426,6 @@ fn build_static_obstacle_map_rs(
 #[pymodule]
 pub fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_static_obstacle_map_rs, m)?)?;
-    m.add_function(wrap_pyfunction!(route_single_net_rs, m)?)?;
     Ok(())
 }
 
