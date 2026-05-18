@@ -164,6 +164,41 @@ pub struct PyPhotonicRouter {
 fn pack_cells(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
     cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect()
 }
+
+fn inflate_route_cells(
+    cells: &[(i32, i32)],
+    radius_cells: i32,
+    width: i32,
+    height: i32,
+) -> Vec<(i32, i32)> {
+    let mut inflated = Vec::new();
+    if radius_cells <= 0 {
+        inflated.extend(
+            cells.iter()
+                .copied()
+                .filter(|(x, y)| *x >= 0 && *x < width && *y >= 0 && *y < height),
+        );
+        return inflated;
+    }
+
+    let mut seen: FxHashSet<CellKey> = FxHashSet::default();
+    for &(x, y) in cells {
+        for dx in -radius_cells..=radius_cells {
+            for dy in -radius_cells..=radius_cells {
+                let nx = x + dx;
+                let ny = y + dy;
+                if nx >= 0 && nx < width && ny >= 0 && ny < height {
+                    let key = pack_xy(nx, ny);
+                    if seen.insert(key) {
+                        inflated.push((nx, ny));
+                    }
+                }
+            }
+        }
+    }
+    inflated
+}
+
 fn primitive_kind(p: &Primitive) -> String {
     let d = ((p.end_angle as i16 - p.start_angle as i16).rem_euclid(8)) as i16;
     if d == 0 {
@@ -246,6 +281,50 @@ impl PyPhotonicRouter {
             &cfg,
         )
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
+        Py::new(py, convert_result(py, &self.primitives, &result)?)
+    }
+
+    #[pyo3(signature=(net_id,source,target,block_radius_cells=0,opened_cells=None))]
+    fn route_single_net_and_commit(
+        &mut self,
+        py: Python<'_>,
+        net_id: u64,
+        source: PyState,
+        target: PyState,
+        block_radius_cells: i32,
+        opened_cells: Option<Vec<(i32, i32)>>,
+    ) -> PyResult<Py<PyRouteResult>> {
+        let opened = opened_cells
+            .as_ref()
+            .map(|c| pack_cells(c))
+            .unwrap_or_else(|| self.port_open_cells.clone());
+        let cfg = AStarConfig {
+            max_iterations: self.astar_cfg.max_iterations,
+            bend_weight: self.astar_cfg.bend_weight * self.primitive_cfg.bend_weight,
+            target_tolerance_cells: self.astar_cfg.target_tolerance_cells,
+        };
+        let result = route_single_net_with_config(
+            &self.obstacle_map,
+            &self.primitives,
+            State::new(source.x, source.y, source.angle),
+            State::new(target.x, target.y, target.angle),
+            Some(&opened),
+            &cfg,
+        )
+        .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
+
+        let route_cells = inflate_route_cells(
+            &result.cells,
+            block_radius_cells,
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        if !self.obstacle_map.commit_route(net_id, &route_cells) {
+            return Err(PyRuntimeError::new_err(
+                "Failed to commit routed cells to obstacle map",
+            ));
+        }
+
         Py::new(py, convert_result(py, &self.primitives, &result)?)
     }
 

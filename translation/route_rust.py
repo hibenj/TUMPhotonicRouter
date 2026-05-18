@@ -55,27 +55,6 @@ def _grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
     )
 
 
-def _inflate_route_cells(
-    cells: set[tuple[int, int]],
-    *,
-    radius_cells: int,
-    width: int,
-    height: int,
-) -> set[tuple[int, int]]:
-    if radius_cells <= 0:
-        return {(x, y) for (x, y) in cells if 0 <= x < width and 0 <= y < height}
-
-    inflated: set[tuple[int, int]] = set()
-    for x, y in cells:
-        for dx in range(-radius_cells, radius_cells + 1):
-            for dy in range(-radius_cells, radius_cells + 1):
-                nx = x + dx
-                ny = y + dy
-                if 0 <= nx < width and 0 <= ny < height:
-                    inflated.add((nx, ny))
-    return inflated
-
-
 def route_nets_rust(
     unrouted_layout: Component,
     schematic: Schematic,
@@ -129,7 +108,6 @@ def route_nets_rust(
         t_obstacle_end = time.perf_counter()
         print(f"      - Obstacle Map time: {t_obstacle_end - t_obstacle_start:.4f} s")
     grid = obstacle_map.grid
-    blocked_cells = set(obstacle_map.blocked_cells)
     port_open_cells = set(obstacle_map.port_open_cells)
 
     debug_path = Path(debug_dir) if debug_dir is not None else None
@@ -166,6 +144,10 @@ def route_nets_rust(
     block_radius_cells = max(
         0, math.ceil((float(route_width_um) / 2.0) / float(grid.grid_size_um))
     )
+    router.set_static_cells(sorted(obstacle_map.blocked_cells))
+    router.clear_port_open_cells()
+    router.add_port_open_cells(sorted(port_open_cells))
+    net_id = 0
 
     t_astar_start = 0.0
     if debug_timing:
@@ -185,12 +167,12 @@ def route_nets_rust(
 
             print(f"  Routing {net_name}: {port1_spec} -> {port2_spec}...", end=" ")
 
-            router.set_static_cells(sorted(blocked_cells))
-            router.clear_port_open_cells()
-            router.add_port_open_cells(sorted(port_open_cells))
-            route_obj = router.route_single_net(
+            net_id += 1
+            route_obj = router.route_single_net_and_commit(
+                net_id,
                 rust_backend.State(*source),
                 rust_backend.State(*target),
+                block_radius_cells,
             )
 
             source_port_um = (float(abs_port1.center[0]), float(abs_port1.center[1]))
@@ -210,18 +192,6 @@ def route_nets_rust(
                 route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
                 route_svgs.append(route_svg)
 
-            route_cells: set[tuple[int, int]] = {
-                (int(x), int(y)) for (x, y) in route_obj.cells
-            }
-            blocked_cells.update(
-                _inflate_route_cells(
-                    route_cells,
-                    radius_cells=block_radius_cells,
-                    width=int(grid.width),
-                    height=int(grid.height),
-                )
-            )
-
             print("ok")
 
     if debug_timing:
@@ -238,4 +208,3 @@ def _port_to_state(port: Port, grid: GridSpec, *, is_target: bool) -> tuple[int,
     gx, gy = physical_to_grid(port.center[0], port.center[1], grid)
     angle = _orientation_to_angle(port.orientation, flip=is_target)
     return gx, gy, angle
-
