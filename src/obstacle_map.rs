@@ -59,6 +59,7 @@ pub fn unpack_xy(key: CellKey) -> (i32, i32) {
 pub struct ObstacleMap {
     width: i32,
     height: i32,
+    occupancy: Vec<u8>,
     static_obstacles: FxHashMap<CellKey, u16>,
     dynamic_obstacles: FxHashMap<CellKey, u16>,
     net_routes: FxHashMap<NetId, Vec<CellKey>>,
@@ -72,10 +73,18 @@ impl ObstacleMap {
     pub fn new(width: i32, height: i32) -> Self {
         assert!(width >= 0, "width must be non-negative");
         assert!(height >= 0, "height must be non-negative");
+        let width_usize =
+            usize::try_from(width).expect("width must fit usize after non-negative check");
+        let height_usize =
+            usize::try_from(height).expect("height must fit usize after non-negative check");
+        let cell_count = width_usize
+            .checked_mul(height_usize)
+            .expect("obstacle map occupancy size overflow");
 
         Self {
             width,
             height,
+            occupancy: vec![0; cell_count],
             static_obstacles: FxHashMap::default(),
             dynamic_obstacles: FxHashMap::default(),
             net_routes: FxHashMap::default(),
@@ -118,7 +127,10 @@ impl ObstacleMap {
         if !self.in_bounds(x, y) {
             return false;
         }
-        Self::increment_ref(&mut self.static_obstacles, pack_xy(x, y));
+        let key = pack_xy(x, y);
+        if Self::increment_ref(&mut self.static_obstacles, key) {
+            self.set_occupancy_bit(x, y, STATIC_BIT);
+        }
         true
     }
 
@@ -138,7 +150,12 @@ impl ObstacleMap {
         if !self.in_bounds(x, y) {
             return false;
         }
-        Self::decrement_ref(&mut self.static_obstacles, pack_xy(x, y))
+        let key = pack_xy(x, y);
+        let removed = Self::decrement_ref(&mut self.static_obstacles, key);
+        if removed && !self.static_obstacles.contains_key(&key) {
+            self.clear_occupancy_bit(x, y, STATIC_BIT);
+        }
+        removed
     }
 
     /// Return true if a static obstacle blocks this in-bounds cell.
@@ -146,12 +163,12 @@ impl ObstacleMap {
     /// Out-of-bounds cells are not static obstacles, but they are considered
     /// unavailable by [`Self::is_blocked`] and free-space checks.
     pub fn is_static_blocked(&self, x: i32, y: i32) -> bool {
-        self.in_bounds(x, y) && self.static_obstacles.contains_key(&pack_xy(x, y))
+        self.read_occupancy_bit(x, y, STATIC_BIT)
     }
 
     /// Return true if a committed route blocks this in-bounds cell.
     pub fn is_dynamic_blocked(&self, x: i32, y: i32) -> bool {
-        self.in_bounds(x, y) && self.dynamic_obstacles.contains_key(&pack_xy(x, y))
+        self.read_occupancy_bit(x, y, DYNAMIC_BIT)
     }
 
     /// Return true if the cell is unavailable for routing.
@@ -161,8 +178,11 @@ impl ObstacleMap {
         if !self.in_bounds(x, y) {
             return true;
         }
-        let key = pack_xy(x, y);
-        self.static_obstacles.contains_key(&key) || self.dynamic_obstacles.contains_key(&key)
+        self.occupancy
+            .get(self.dense_idx(x, y).expect("in-bounds index must exist"))
+            .copied()
+            .unwrap_or(0)
+            != 0
     }
 
     /// Total static plus dynamic reference count for an in-bounds cell.
@@ -200,7 +220,10 @@ impl ObstacleMap {
         self.ripup_route(net_id);
 
         for &key in &keys {
-            Self::increment_ref(&mut self.dynamic_obstacles, key);
+            let (x, y) = unpack_xy(key);
+            if Self::increment_ref(&mut self.dynamic_obstacles, key) {
+                self.set_occupancy_bit(x, y, DYNAMIC_BIT);
+            }
         }
         self.net_routes.insert(net_id, keys);
         true
@@ -213,7 +236,11 @@ impl ObstacleMap {
         };
 
         for key in keys {
-            Self::decrement_ref(&mut self.dynamic_obstacles, key);
+            let (x, y) = unpack_xy(key);
+            let removed = Self::decrement_ref(&mut self.dynamic_obstacles, key);
+            if removed && !self.dynamic_obstacles.contains_key(&key) {
+                self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
+            }
         }
         true
     }
@@ -222,6 +249,9 @@ impl ObstacleMap {
     pub fn clear_dynamic(&mut self) {
         self.dynamic_obstacles.clear();
         self.net_routes.clear();
+        for cell in &mut self.occupancy {
+            *cell &= !DYNAMIC_BIT;
+        }
     }
 
     /// Return the packed cells owned by `net_id`, if that net has a committed route.
@@ -387,14 +417,49 @@ impl ObstacleMap {
             }
         }
 
-        !self.static_obstacles.contains_key(&key) && !self.dynamic_obstacles.contains_key(&key)
+        !self.is_blocked(x, y)
     }
 
-    fn increment_ref(map: &mut FxHashMap<CellKey, u16>, key: CellKey) {
+    #[inline]
+    fn dense_idx(&self, x: i32, y: i32) -> Option<usize> {
+        if !self.in_bounds(x, y) {
+            return None;
+        }
+        let x = usize::try_from(x).ok()?;
+        let y = usize::try_from(y).ok()?;
+        let width = usize::try_from(self.width).ok()?;
+        y.checked_mul(width)?.checked_add(x)
+    }
+
+    #[inline]
+    fn set_occupancy_bit(&mut self, x: i32, y: i32, bit: u8) {
+        if let Some(idx) = self.dense_idx(x, y) {
+            self.occupancy[idx] |= bit;
+        }
+    }
+
+    #[inline]
+    fn clear_occupancy_bit(&mut self, x: i32, y: i32, bit: u8) {
+        if let Some(idx) = self.dense_idx(x, y) {
+            self.occupancy[idx] &= !bit;
+        }
+    }
+
+    #[inline]
+    fn read_occupancy_bit(&self, x: i32, y: i32, bit: u8) -> bool {
+        self.dense_idx(x, y)
+            .and_then(|idx| self.occupancy.get(idx).copied())
+            .map(|value| (value & bit) != 0)
+            .unwrap_or(false)
+    }
+
+    fn increment_ref(map: &mut FxHashMap<CellKey, u16>, key: CellKey) -> bool {
         let count = map.entry(key).or_insert(0);
+        let was_zero = *count == 0;
         *count = count
             .checked_add(1)
             .expect("cell reference count overflowed u16");
+        was_zero
     }
 
     fn decrement_ref(map: &mut FxHashMap<CellKey, u16>, key: CellKey) -> bool {
@@ -409,5 +474,84 @@ impl ObstacleMap {
         }
 
         true
+    }
+}
+
+const STATIC_BIT: u8 = 1 << 0;
+const DYNAMIC_BIT: u8 = 1 << 1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_add_remove_updates_occupancy() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(!map.is_static_blocked(2, 3));
+        assert!(map.add_static_cell(2, 3));
+        assert!(map.is_static_blocked(2, 3));
+        assert!(map.is_blocked(2, 3));
+        assert!(map.remove_static_cell(2, 3));
+        assert!(!map.is_static_blocked(2, 3));
+        assert!(!map.is_blocked(2, 3));
+    }
+
+    #[test]
+    fn static_refs_require_matching_removals() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.add_static_cell(1, 1));
+        assert!(map.add_static_cell(1, 1));
+        assert!(map.is_static_blocked(1, 1));
+        assert!(map.remove_static_cell(1, 1));
+        assert!(map.is_static_blocked(1, 1));
+        assert!(map.remove_static_cell(1, 1));
+        assert!(!map.is_static_blocked(1, 1));
+    }
+
+    #[test]
+    fn dynamic_commit_and_ripup_update_occupancy() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route(7, &[(2, 2), (3, 2), (3, 2)]));
+        assert!(map.is_dynamic_blocked(2, 2));
+        assert!(map.is_dynamic_blocked(3, 2));
+        assert!(map.ripup_route(7));
+        assert!(!map.is_dynamic_blocked(2, 2));
+        assert!(!map.is_dynamic_blocked(3, 2));
+    }
+
+    #[test]
+    fn static_dynamic_overlap_requires_clearing_both() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.add_static_cell(4, 4));
+        assert!(map.commit_route(9, &[(4, 4)]));
+        assert!(map.is_blocked(4, 4));
+        assert!(map.ripup_route(9));
+        assert!(map.is_blocked(4, 4));
+        assert!(map.remove_static_cell(4, 4));
+        assert!(!map.is_blocked(4, 4));
+    }
+
+    #[test]
+    fn clear_dynamic_preserves_static() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.add_static_cell(5, 5));
+        assert!(map.commit_route(1, &[(5, 5), (6, 5)]));
+        map.clear_dynamic();
+        assert!(map.is_static_blocked(5, 5));
+        assert!(map.is_blocked(5, 5));
+        assert!(!map.is_dynamic_blocked(5, 5));
+        assert!(!map.is_dynamic_blocked(6, 5));
+        assert!(!map.is_blocked(6, 5));
+    }
+
+    #[test]
+    fn out_of_bounds_behavior_unchanged() {
+        let mut map = ObstacleMap::new(3, 3);
+        assert!(map.is_blocked(-1, 0));
+        assert!(map.is_blocked(3, 0));
+        assert!(!map.is_static_blocked(-1, 0));
+        assert!(!map.is_dynamic_blocked(3, 0));
+        assert!(!map.add_static_cell(3, 0));
+        assert!(!map.remove_static_cell(-1, 0));
     }
 }

@@ -107,17 +107,14 @@ pub struct RouteSearchStats {
     pub max_window_area_cells: i64,
 }
 
-#[derive(Clone, Debug)]
-struct ParentDense {
-    previous_idx: usize,
-    primitive_id: u16,
-}
+const NO_PARENT: u32 = u32::MAX;
 
 struct DenseSearchStorage {
     bounds: RoutingBounds,
     width: i32,
     g_costs: Vec<f64>,
-    parents: Vec<Option<ParentDense>>,
+    parent_idx: Vec<u32>,
+    parent_primitive: Vec<u16>,
     closed: Vec<bool>,
 }
 
@@ -131,6 +128,9 @@ impl DenseSearchStorage {
         let width_usize = usize::try_from(width).ok()?;
         let height_usize = usize::try_from(height).ok()?;
         let state_count = width_usize.checked_mul(height_usize)?.checked_mul(8)?;
+        if state_count > u32::MAX as usize {
+            return None;
+        }
         if state_count > max_dense_states {
             return None;
         }
@@ -139,7 +139,8 @@ impl DenseSearchStorage {
             bounds,
             width,
             g_costs: vec![f64::INFINITY; state_count],
-            parents: vec![None; state_count],
+            parent_idx: vec![NO_PARENT; state_count],
+            parent_primitive: vec![0; state_count],
             closed: vec![false; state_count],
         })
     }
@@ -239,7 +240,12 @@ impl DenseRoutingGrid {
     }
 
     #[inline]
-    fn primitive_footprint_free(&self, origin_x: i32, origin_y: i32, footprint: &[(i32, i32)]) -> bool {
+    fn primitive_footprint_free(
+        &self,
+        origin_x: i32,
+        origin_y: i32,
+        footprint: &[(i32, i32)],
+    ) -> bool {
         for (dx, dy) in footprint.iter().copied() {
             let x = match origin_x.checked_add(dx) {
                 Some(x) => x,
@@ -509,10 +515,8 @@ fn route_single_net_with_bounds(
                 continue;
             }
 
-            storage.parents[next_idx] = Some(ParentDense {
-                previous_idx: idx,
-                primitive_id: primitive.id,
-            });
+            storage.parent_idx[next_idx] = idx as u32;
+            storage.parent_primitive[next_idx] = primitive.id;
             storage.g_costs[next_idx] = tentative_g;
             open_set.push(OpenEntry {
                 f_score: tentative_g + heuristic(next_state, target, primitives.grid_size_um()),
@@ -667,10 +671,15 @@ fn reconstruct_route_dense(
     let mut current_idx = reached_idx;
 
     while current_idx != source_idx {
-        let parent = storage.parents.get(current_idx)?.as_ref()?;
-        let previous = storage.idx_to_state(parent.previous_idx);
-        primitive_steps_reversed.push((previous, parent.primitive_id));
-        current_idx = parent.previous_idx;
+        let parent_idx_u32 = *storage.parent_idx.get(current_idx)?;
+        if parent_idx_u32 == NO_PARENT {
+            return None;
+        }
+        let parent_idx = usize::try_from(parent_idx_u32).ok()?;
+        let previous = storage.idx_to_state(parent_idx);
+        let primitive_id = *storage.parent_primitive.get(current_idx)?;
+        primitive_steps_reversed.push((previous, primitive_id));
+        current_idx = parent_idx;
         states_reversed.push(previous);
     }
 
@@ -1081,7 +1090,9 @@ mod tests {
         )
         .expect("storage should allocate");
         let state = State::new(12, 21, 5);
-        let idx = storage.state_to_idx(state).expect("state should map to index");
+        let idx = storage
+            .state_to_idx(state)
+            .expect("state should map to index");
         assert_eq!(storage.idx_to_state(idx), state);
     }
 
@@ -1187,8 +1198,8 @@ mod tests {
             DenseRoutingGrid::from_obstacle_map(&map, bounds, None, 1_000).expect("grid");
         assert!(closed_grid.is_blocked(3, 2));
 
-        let opened_grid = DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000)
-            .expect("grid");
+        let opened_grid =
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000).expect("grid");
         assert!(!opened_grid.is_blocked(3, 2));
     }
 
@@ -1248,6 +1259,35 @@ mod tests {
                 max_dense_obstacle_cells: 10,
                 ..AStarConfig::default()
             },
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn reconstruct_fails_cleanly_when_parent_missing() {
+        let bounds = RoutingBounds {
+            min_x: 0,
+            max_x: 7,
+            min_y: 0,
+            max_y: 7,
+        };
+        let storage = DenseSearchStorage::new(bounds, 10_000).expect("storage");
+        let lib = primitive_library();
+        let source_idx = storage
+            .state_to_idx(State::new(1, 1, 0))
+            .expect("source index");
+        let reached_idx = storage
+            .state_to_idx(State::new(2, 1, 0))
+            .expect("reached index");
+
+        let result = reconstruct_route_dense(
+            source_idx,
+            reached_idx,
+            State::new(2, 1, 0),
+            &lib,
+            1.0,
+            RouteSearchStats::default(),
+            &storage,
         );
         assert!(result.is_none());
     }

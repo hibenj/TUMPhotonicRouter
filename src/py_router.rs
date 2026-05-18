@@ -233,7 +233,8 @@ fn inflate_route_cells(
     let mut inflated = Vec::new();
     if radius_cells <= 0 {
         inflated.extend(
-            cells.iter()
+            cells
+                .iter()
                 .copied()
                 .filter(|(x, y)| *x >= 0 && *x < width && *y >= 0 && *y < height),
         );
@@ -344,15 +345,17 @@ impl PyPhotonicRouter {
         opened_cells: Option<Vec<(i32, i32)>>,
     ) -> PyResult<Py<PyRouteResult>> {
         if self.astar_cfg.target_tolerance_cells < 0 {
-            return Err(PyValueError::new_err(
-                "target_tolerance_cells must be >= 0",
-            ));
+            return Err(PyValueError::new_err("target_tolerance_cells must be >= 0"));
         }
-        let opened = opened_cells
-            .as_ref()
-            .map(|c| pack_cells(c))
-            .unwrap_or_else(|| self.port_open_cells.clone());
-        let allowed_target_angles_mask = allowed_angles_to_mask(self.astar_cfg.allowed_target_angles.as_ref())?;
+        let opened_owned;
+        let opened_ref: &FxHashSet<CellKey> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            &opened_owned
+        } else {
+            &self.port_open_cells
+        };
+        let allowed_target_angles_mask =
+            allowed_angles_to_mask(self.astar_cfg.allowed_target_angles.as_ref())?;
         let cfg = AStarConfig {
             max_iterations: self.astar_cfg.max_iterations,
             bend_weight: self.astar_cfg.bend_weight * self.primitive_cfg.bend_weight,
@@ -373,7 +376,7 @@ impl PyPhotonicRouter {
             &self.primitives,
             State::new(source.x, source.y, source.angle),
             State::new(target.x, target.y, target.angle),
-            Some(&opened),
+            Some(opened_ref),
             &cfg,
         )
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
@@ -391,15 +394,17 @@ impl PyPhotonicRouter {
         opened_cells: Option<Vec<(i32, i32)>>,
     ) -> PyResult<Py<PyRouteResult>> {
         if self.astar_cfg.target_tolerance_cells < 0 {
-            return Err(PyValueError::new_err(
-                "target_tolerance_cells must be >= 0",
-            ));
+            return Err(PyValueError::new_err("target_tolerance_cells must be >= 0"));
         }
-        let opened = opened_cells
-            .as_ref()
-            .map(|c| pack_cells(c))
-            .unwrap_or_else(|| self.port_open_cells.clone());
-        let allowed_target_angles_mask = allowed_angles_to_mask(self.astar_cfg.allowed_target_angles.as_ref())?;
+        let opened_owned;
+        let opened_ref: &FxHashSet<CellKey> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            &opened_owned
+        } else {
+            &self.port_open_cells
+        };
+        let allowed_target_angles_mask =
+            allowed_angles_to_mask(self.astar_cfg.allowed_target_angles.as_ref())?;
         let cfg = AStarConfig {
             max_iterations: self.astar_cfg.max_iterations,
             bend_weight: self.astar_cfg.bend_weight * self.primitive_cfg.bend_weight,
@@ -420,7 +425,7 @@ impl PyPhotonicRouter {
             &self.primitives,
             State::new(source.x, source.y, source.angle),
             State::new(target.x, target.y, target.angle),
-            Some(&opened),
+            Some(opened_ref),
             &cfg,
         )
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
@@ -614,18 +619,7 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0),
             PyAStarConfig::new(
-                10000,
-                1.0,
-                0,
-                true,
-                None,
-                true,
-                12,
-                0.35,
-                3,
-                true,
-                0.5,
-                10_000_000,
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
