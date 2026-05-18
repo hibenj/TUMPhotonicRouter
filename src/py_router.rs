@@ -113,11 +113,13 @@ pub struct PyAStarConfig {
     pub routing_window_fallback_full_grid: bool,
     #[pyo3(get, set)]
     pub routing_window_growth: f64,
+    #[pyo3(get, set)]
+    pub max_dense_obstacle_cells: usize,
 }
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5))]
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000))]
     fn new(
         max_iterations: usize,
         bend_weight: f64,
@@ -130,6 +132,7 @@ impl PyAStarConfig {
         routing_window_max_expansions: u32,
         routing_window_fallback_full_grid: bool,
         routing_window_growth: f64,
+        max_dense_obstacle_cells: usize,
     ) -> Self {
         Self {
             max_iterations,
@@ -143,6 +146,7 @@ impl PyAStarConfig {
             routing_window_max_expansions,
             routing_window_fallback_full_grid,
             routing_window_growth,
+            max_dense_obstacle_cells,
         }
     }
 }
@@ -199,6 +203,8 @@ pub struct PyRouteResult {
     pub window_rejects: usize,
     #[pyo3(get)]
     pub footprint_rejects: usize,
+    #[pyo3(get)]
+    pub dense_grid_build_failures: usize,
     #[pyo3(get)]
     pub max_window_area_cells: i64,
 }
@@ -360,6 +366,7 @@ impl PyPhotonicRouter {
             routing_window_fallback_full_grid: self.astar_cfg.routing_window_fallback_full_grid,
             routing_window_growth: self.astar_cfg.routing_window_growth,
             max_dense_states: AStarConfig::default().max_dense_states,
+            max_dense_obstacle_cells: self.astar_cfg.max_dense_obstacle_cells,
         };
         let result = route_single_net_with_config(
             &self.obstacle_map,
@@ -406,6 +413,7 @@ impl PyPhotonicRouter {
             routing_window_fallback_full_grid: self.astar_cfg.routing_window_fallback_full_grid,
             routing_window_growth: self.astar_cfg.routing_window_growth,
             max_dense_states: AStarConfig::default().max_dense_states,
+            max_dense_obstacle_cells: self.astar_cfg.max_dense_obstacle_cells,
         };
         let result = route_single_net_with_config(
             &self.obstacle_map,
@@ -551,6 +559,7 @@ fn convert_result(
         expanded_states: r.stats.expanded_states,
         window_rejects: r.stats.window_rejects,
         footprint_rejects: r.stats.footprint_rejects,
+        dense_grid_build_failures: r.stats.dense_grid_build_failures,
         max_window_area_cells: r.stats.max_window_area_cells,
     })
 }
@@ -583,6 +592,7 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             expanded_states: route.expanded_states,
             window_rejects: route.window_rejects,
             footprint_rejects: route.footprint_rejects,
+            dense_grid_build_failures: route.dense_grid_build_failures,
             max_window_area_cells: route.max_window_area_cells,
         },
     }
@@ -615,6 +625,7 @@ mod tests {
                 3,
                 true,
                 0.5,
+                10_000_000,
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());

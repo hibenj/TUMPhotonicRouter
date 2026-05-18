@@ -44,6 +44,7 @@ pub struct AStarConfig {
     pub routing_window_fallback_full_grid: bool,
     pub routing_window_growth: f64,
     pub max_dense_states: usize,
+    pub max_dense_obstacle_cells: usize,
 }
 
 impl Default for AStarConfig {
@@ -61,6 +62,7 @@ impl Default for AStarConfig {
             routing_window_fallback_full_grid: false,
             routing_window_growth: 0.5,
             max_dense_states: 20_000_000,
+            max_dense_obstacle_cells: 10_000_000,
         }
     }
 }
@@ -101,6 +103,7 @@ pub struct RouteSearchStats {
     pub expanded_states: usize,
     pub window_rejects: usize,
     pub footprint_rejects: usize,
+    pub dense_grid_build_failures: usize,
     pub max_window_area_cells: i64,
 }
 
@@ -166,6 +169,102 @@ impl DenseSearchStorage {
             self.bounds.min_y + local_y,
             angle,
         )
+    }
+}
+
+struct DenseRoutingGrid {
+    bounds: RoutingBounds,
+    width: i32,
+    blocked: Vec<u8>,
+}
+
+impl DenseRoutingGrid {
+    fn from_obstacle_map(
+        obstacle_map: &ObstacleMap,
+        bounds: RoutingBounds,
+        opened_cells: Option<&FxHashSet<CellKey>>,
+        max_dense_obstacle_cells: usize,
+    ) -> Option<Self> {
+        let width = bounds.max_x.checked_sub(bounds.min_x)?.checked_add(1)?;
+        let height = bounds.max_y.checked_sub(bounds.min_y)?.checked_add(1)?;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+
+        let width_usize = usize::try_from(width).ok()?;
+        let height_usize = usize::try_from(height).ok()?;
+        let cell_count = width_usize.checked_mul(height_usize)?;
+        if cell_count > max_dense_obstacle_cells {
+            return None;
+        }
+
+        let mut blocked = vec![0u8; cell_count];
+        for local_y in 0..height {
+            for local_x in 0..width {
+                let x = bounds.min_x + local_x;
+                let y = bounds.min_y + local_y;
+                let idx = usize::try_from(local_y)
+                    .ok()?
+                    .checked_mul(width_usize)?
+                    .checked_add(usize::try_from(local_x).ok()?)?;
+                let opened = opened_cells
+                    .map(|cells| cells.contains(&pack_xy(x, y)))
+                    .unwrap_or(false);
+                blocked[idx] = if opened || !obstacle_map.is_blocked(x, y) {
+                    0
+                } else {
+                    1
+                };
+            }
+        }
+
+        Some(Self {
+            bounds,
+            width,
+            blocked,
+        })
+    }
+
+    #[inline]
+    fn contains(&self, x: i32, y: i32) -> bool {
+        self.bounds.contains(x, y)
+    }
+
+    #[inline]
+    fn is_blocked(&self, x: i32, y: i32) -> bool {
+        match self.idx_of(x, y) {
+            Some(idx) => self.blocked[idx] != 0,
+            None => true,
+        }
+    }
+
+    #[inline]
+    fn primitive_footprint_free(&self, origin_x: i32, origin_y: i32, footprint: &[(i32, i32)]) -> bool {
+        for (dx, dy) in footprint.iter().copied() {
+            let x = match origin_x.checked_add(dx) {
+                Some(x) => x,
+                None => return false,
+            };
+            let y = match origin_y.checked_add(dy) {
+                Some(y) => y,
+                None => return false,
+            };
+            if self.is_blocked(x, y) {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[inline]
+    fn idx_of(&self, x: i32, y: i32) -> Option<usize> {
+        if !self.contains(x, y) {
+            return None;
+        }
+        let local_x = usize::try_from(x.checked_sub(self.bounds.min_x)?).ok()?;
+        let local_y = usize::try_from(y.checked_sub(self.bounds.min_y)?).ok()?;
+        let width = usize::try_from(self.width).ok()?;
+        local_y.checked_mul(width)?.checked_add(local_x)
     }
 }
 
@@ -326,6 +425,18 @@ fn route_single_net_with_bounds(
 
     let mut open_set = BinaryHeap::new();
     let mut storage = DenseSearchStorage::new(bounds, config.max_dense_states)?;
+    let dense_grid = match DenseRoutingGrid::from_obstacle_map(
+        obstacle_map,
+        bounds,
+        port_open_cells,
+        config.max_dense_obstacle_cells,
+    ) {
+        Some(grid) => grid,
+        None => {
+            stats.dense_grid_build_failures += 1;
+            return None;
+        }
+    };
     let mut counter = 0u64;
     let source_idx = storage.state_to_idx(source)?;
 
@@ -380,12 +491,8 @@ fn route_single_net_with_bounds(
                 stats.window_rejects += 1;
                 continue;
             }
-            if !obstacle_map.check_primitive_footprint_free(
-                state.x,
-                state.y,
-                &primitive.footprint,
-                port_open_cells,
-            ) {
+            // TODO: bounds may need primitive-footprint margin to avoid rejecting valid routes near window edges.
+            if !dense_grid.primitive_footprint_free(state.x, state.y, &primitive.footprint) {
                 stats.footprint_rejects += 1;
                 continue;
             }
@@ -1057,6 +1164,88 @@ mod tests {
             &AStarConfig {
                 use_routing_window: false,
                 max_dense_states: 8,
+                ..AStarConfig::default()
+            },
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn dense_grid_mirrors_obstacles_and_opened_cells() {
+        let mut map = ObstacleMap::new(8, 6);
+        map.add_static_cell(3, 2);
+        let mut opened = FxHashSet::default();
+        opened.insert(pack_xy(3, 2));
+        let bounds = RoutingBounds {
+            min_x: 2,
+            max_x: 5,
+            min_y: 1,
+            max_y: 4,
+        };
+
+        let closed_grid =
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, None, 1_000).expect("grid");
+        assert!(closed_grid.is_blocked(3, 2));
+
+        let opened_grid = DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000)
+            .expect("grid");
+        assert!(!opened_grid.is_blocked(3, 2));
+    }
+
+    #[test]
+    fn dense_grid_out_of_bounds_is_blocked() {
+        let map = ObstacleMap::new(8, 6);
+        let grid = DenseRoutingGrid::from_obstacle_map(
+            &map,
+            RoutingBounds {
+                min_x: 2,
+                max_x: 5,
+                min_y: 1,
+                max_y: 4,
+            },
+            None,
+            1_000,
+        )
+        .expect("grid");
+        assert!(grid.is_blocked(1, 1));
+        assert!(grid.is_blocked(2, 5));
+    }
+
+    #[test]
+    fn dense_grid_primitive_footprint_checks() {
+        let mut map = ObstacleMap::new(8, 6);
+        map.add_static_cell(4, 2);
+        let grid = DenseRoutingGrid::from_obstacle_map(
+            &map,
+            RoutingBounds {
+                min_x: 2,
+                max_x: 5,
+                min_y: 1,
+                max_y: 4,
+            },
+            None,
+            1_000,
+        )
+        .expect("grid");
+
+        assert!(grid.primitive_footprint_free(2, 2, &[(0, 0), (1, 0)]));
+        assert!(!grid.primitive_footprint_free(3, 2, &[(0, 0), (1, 0)]));
+        assert!(!grid.primitive_footprint_free(5, 2, &[(0, 0), (1, 0)]));
+    }
+
+    #[test]
+    fn dense_obstacle_limit_can_fail_attempt() {
+        let map = ObstacleMap::new(10, 5);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                max_dense_obstacle_cells: 10,
                 ..AStarConfig::default()
             },
         );
