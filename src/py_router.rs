@@ -3,7 +3,8 @@ use pyo3::prelude::*;
 use rustc_hash::FxHashSet;
 
 use crate::astar::{
-    export_route_svg, route_single_net_with_config, AStarConfig, RouteResult, State,
+    export_route_svg, route_single_net_with_config, AStarConfig, RouteResult, RouteSearchStats,
+    State,
 };
 use crate::geometry_realization::{
     realize_route_polygon as realize_route_polygon_rs, GeometryGridSpec,
@@ -96,16 +97,52 @@ pub struct PyAStarConfig {
     pub bend_weight: f64,
     #[pyo3(get, set)]
     pub target_tolerance_cells: i32,
+    #[pyo3(get, set)]
+    pub require_target_angle: bool,
+    #[pyo3(get, set)]
+    pub allowed_target_angles: Option<Vec<u8>>,
+    #[pyo3(get, set)]
+    pub use_routing_window: bool,
+    #[pyo3(get, set)]
+    pub routing_window_min_margin_cells: i32,
+    #[pyo3(get, set)]
+    pub routing_window_scale: f64,
+    #[pyo3(get, set)]
+    pub routing_window_max_expansions: u32,
+    #[pyo3(get, set)]
+    pub routing_window_fallback_full_grid: bool,
+    #[pyo3(get, set)]
+    pub routing_window_growth: f64,
 }
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0))]
-    fn new(max_iterations: usize, bend_weight: f64, target_tolerance_cells: i32) -> Self {
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5))]
+    fn new(
+        max_iterations: usize,
+        bend_weight: f64,
+        target_tolerance_cells: i32,
+        require_target_angle: bool,
+        allowed_target_angles: Option<Vec<u8>>,
+        use_routing_window: bool,
+        routing_window_min_margin_cells: i32,
+        routing_window_scale: f64,
+        routing_window_max_expansions: u32,
+        routing_window_fallback_full_grid: bool,
+        routing_window_growth: f64,
+    ) -> Self {
         Self {
             max_iterations,
             bend_weight,
             target_tolerance_cells,
+            require_target_angle,
+            allowed_target_angles,
+            use_routing_window,
+            routing_window_min_margin_cells,
+            routing_window_scale,
+            routing_window_max_expansions,
+            routing_window_fallback_full_grid,
+            routing_window_growth,
         }
     }
 }
@@ -147,7 +184,23 @@ pub struct PyRouteResult {
     #[pyo3(get)]
     pub total_cost: f64,
     #[pyo3(get)]
+    pub requested_target: PyState,
+    #[pyo3(get)]
+    pub reached_target: PyState,
+    #[pyo3(get)]
     pub segments: Vec<PyObject>,
+    #[pyo3(get)]
+    pub window_attempts: u32,
+    #[pyo3(get)]
+    pub used_full_grid_fallback: bool,
+    #[pyo3(get)]
+    pub expanded_states: usize,
+    #[pyo3(get)]
+    pub window_rejects: usize,
+    #[pyo3(get)]
+    pub footprint_rejects: usize,
+    #[pyo3(get)]
+    pub max_window_area_cells: i64,
 }
 
 #[pyclass(name = "PyPhotonicRouter")]
@@ -210,6 +263,27 @@ fn primitive_kind(p: &Primitive) -> String {
     }
 }
 
+fn allowed_angles_to_mask(angles: Option<&Vec<u8>>) -> PyResult<Option<u8>> {
+    let Some(angles) = angles else {
+        return Ok(None);
+    };
+    if angles.is_empty() {
+        return Err(PyValueError::new_err(
+            "allowed_target_angles must not be empty when provided",
+        ));
+    }
+    let mut mask = 0u8;
+    for &angle in angles {
+        if angle > 7 {
+            return Err(PyValueError::new_err(
+                "allowed_target_angles entries must be in [0, 7]",
+            ));
+        }
+        mask |= 1u8 << angle;
+    }
+    Ok(Some(mask))
+}
+
 #[pymethods]
 impl PyPhotonicRouter {
     #[new]
@@ -263,14 +337,28 @@ impl PyPhotonicRouter {
         target: PyState,
         opened_cells: Option<Vec<(i32, i32)>>,
     ) -> PyResult<Py<PyRouteResult>> {
+        if self.astar_cfg.target_tolerance_cells < 0 {
+            return Err(PyValueError::new_err(
+                "target_tolerance_cells must be >= 0",
+            ));
+        }
         let opened = opened_cells
             .as_ref()
             .map(|c| pack_cells(c))
             .unwrap_or_else(|| self.port_open_cells.clone());
+        let allowed_target_angles_mask = allowed_angles_to_mask(self.astar_cfg.allowed_target_angles.as_ref())?;
         let cfg = AStarConfig {
             max_iterations: self.astar_cfg.max_iterations,
             bend_weight: self.astar_cfg.bend_weight * self.primitive_cfg.bend_weight,
             target_tolerance_cells: self.astar_cfg.target_tolerance_cells,
+            require_target_angle: self.astar_cfg.require_target_angle,
+            allowed_target_angles_mask,
+            use_routing_window: self.astar_cfg.use_routing_window,
+            routing_window_min_margin_cells: self.astar_cfg.routing_window_min_margin_cells,
+            routing_window_scale: self.astar_cfg.routing_window_scale,
+            routing_window_max_expansions: self.astar_cfg.routing_window_max_expansions,
+            routing_window_fallback_full_grid: self.astar_cfg.routing_window_fallback_full_grid,
+            routing_window_growth: self.astar_cfg.routing_window_growth,
         };
         let result = route_single_net_with_config(
             &self.obstacle_map,
@@ -294,14 +382,28 @@ impl PyPhotonicRouter {
         block_radius_cells: i32,
         opened_cells: Option<Vec<(i32, i32)>>,
     ) -> PyResult<Py<PyRouteResult>> {
+        if self.astar_cfg.target_tolerance_cells < 0 {
+            return Err(PyValueError::new_err(
+                "target_tolerance_cells must be >= 0",
+            ));
+        }
         let opened = opened_cells
             .as_ref()
             .map(|c| pack_cells(c))
             .unwrap_or_else(|| self.port_open_cells.clone());
+        let allowed_target_angles_mask = allowed_angles_to_mask(self.astar_cfg.allowed_target_angles.as_ref())?;
         let cfg = AStarConfig {
             max_iterations: self.astar_cfg.max_iterations,
             bend_weight: self.astar_cfg.bend_weight * self.primitive_cfg.bend_weight,
             target_tolerance_cells: self.astar_cfg.target_tolerance_cells,
+            require_target_angle: self.astar_cfg.require_target_angle,
+            allowed_target_angles_mask,
+            use_routing_window: self.astar_cfg.use_routing_window,
+            routing_window_min_margin_cells: self.astar_cfg.routing_window_min_margin_cells,
+            routing_window_scale: self.astar_cfg.routing_window_scale,
+            routing_window_max_expansions: self.astar_cfg.routing_window_max_expansions,
+            routing_window_fallback_full_grid: self.astar_cfg.routing_window_fallback_full_grid,
+            routing_window_growth: self.astar_cfg.routing_window_growth,
         };
         let result = route_single_net_with_config(
             &self.obstacle_map,
@@ -431,7 +533,23 @@ fn convert_result(
         compressed_waypoints: r.compressed_waypoints.clone(),
         total_length_um: r.total_length_um,
         total_cost: r.total_cost,
+        requested_target: PyState {
+            x: r.requested_target.x,
+            y: r.requested_target.y,
+            angle: r.requested_target.angle,
+        },
+        reached_target: PyState {
+            x: r.reached_target.x,
+            y: r.reached_target.y,
+            angle: r.reached_target.angle,
+        },
         segments,
+        window_attempts: r.stats.window_attempts,
+        used_full_grid_fallback: r.stats.used_full_grid_fallback,
+        expanded_states: r.stats.expanded_states,
+        window_rejects: r.stats.window_rejects,
+        footprint_rejects: r.stats.footprint_rejects,
+        max_window_area_cells: r.stats.max_window_area_cells,
     })
 }
 
@@ -447,6 +565,24 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
         compressed_waypoints: route.compressed_waypoints.clone(),
         total_length_um: route.total_length_um,
         total_cost: route.total_cost,
+        requested_target: State::new(
+            route.requested_target.x,
+            route.requested_target.y,
+            route.requested_target.angle,
+        ),
+        reached_target: State::new(
+            route.reached_target.x,
+            route.reached_target.y,
+            route.reached_target.angle,
+        ),
+        stats: RouteSearchStats {
+            window_attempts: route.window_attempts,
+            used_full_grid_fallback: route.used_full_grid_fallback,
+            expanded_states: route.expanded_states,
+            window_rejects: route.window_rejects,
+            footprint_rejects: route.footprint_rejects,
+            max_window_area_cells: route.max_window_area_cells,
+        },
     }
 }
 
@@ -465,7 +601,19 @@ mod tests {
         let router = PyPhotonicRouter::new(
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0),
-            PyAStarConfig::new(10000, 1.0, 0),
+            PyAStarConfig::new(
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+            ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
     }

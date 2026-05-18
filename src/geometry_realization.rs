@@ -455,6 +455,9 @@ mod tests {
             compressed_waypoints: vec![],
             total_length_um: 0.0,
             total_cost: 0.0,
+            requested_target: State::new(2, 2, 2),
+            reached_target: State::new(2, 2, 2),
+            stats: Default::default(),
         };
 
         let path = route_to_grid_path(&route, &lib).unwrap();
@@ -509,6 +512,9 @@ mod tests {
             compressed_waypoints: vec![],
             total_length_um: 4.0,
             total_cost: 4.0,
+            requested_target: State::new(5, 2, 0),
+            reached_target: State::new(5, 2, 0),
+            stats: Default::default(),
         };
         let polygon = realize_route_polygon(
             &route,

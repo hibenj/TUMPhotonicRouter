@@ -9,7 +9,7 @@ use std::collections::BinaryHeap;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
-use crate::primitives::{Primitive, PrimitiveLibrary};
+use crate::primitives::PrimitiveLibrary;
 
 /// Router search state: grid position plus 45-degree heading index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -35,6 +35,14 @@ pub struct AStarConfig {
     pub max_iterations: usize,
     pub bend_weight: f64,
     pub target_tolerance_cells: i32,
+    pub require_target_angle: bool,
+    pub allowed_target_angles_mask: Option<u8>,
+    pub use_routing_window: bool,
+    pub routing_window_min_margin_cells: i32,
+    pub routing_window_scale: f64,
+    pub routing_window_max_expansions: u32,
+    pub routing_window_fallback_full_grid: bool,
+    pub routing_window_growth: f64,
 }
 
 impl Default for AStarConfig {
@@ -43,7 +51,30 @@ impl Default for AStarConfig {
             max_iterations: 100_000,
             bend_weight: 1.0,
             target_tolerance_cells: 0,
+            require_target_angle: true,
+            allowed_target_angles_mask: None,
+            use_routing_window: true,
+            routing_window_min_margin_cells: 12,
+            routing_window_scale: 0.35,
+            routing_window_max_expansions: 3,
+            routing_window_fallback_full_grid: true,
+            routing_window_growth: 0.5,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RoutingBounds {
+    min_x: i32,
+    max_x: i32,
+    min_y: i32,
+    max_y: i32,
+}
+
+impl RoutingBounds {
+    #[inline]
+    fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.min_x && x <= self.max_x && y >= self.min_y && y <= self.max_y
     }
 }
 
@@ -56,12 +87,25 @@ pub struct RouteResult {
     pub compressed_waypoints: Vec<(i32, i32)>,
     pub total_length_um: f64,
     pub total_cost: f64,
+    pub requested_target: State,
+    pub reached_target: State,
+    pub stats: RouteSearchStats,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RouteSearchStats {
+    pub window_attempts: u32,
+    pub used_full_grid_fallback: bool,
+    pub expanded_states: usize,
+    pub window_rejects: usize,
+    pub footprint_rejects: usize,
+    pub max_window_area_cells: i64,
 }
 
 #[derive(Clone, Debug)]
 struct Parent {
     previous: State,
-    primitive: Primitive,
+    primitive_index: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -129,11 +173,86 @@ pub fn route_single_net_with_config(
     port_open_cells: Option<&FxHashSet<CellKey>>,
     config: &AStarConfig,
 ) -> Option<RouteResult> {
-    if config.target_tolerance_cells != 0 {
+    if config.target_tolerance_cells < 0 {
+        return None;
+    }
+    if let Some(mask) = config.allowed_target_angles_mask {
+        if mask == 0 {
+            return None;
+        }
+    }
+    if target.angle > 7 {
         return None;
     }
     if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
         return None;
+    }
+
+    let mut stats = RouteSearchStats::default();
+    if !config.use_routing_window {
+        return route_single_net_with_bounds(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            port_open_cells,
+            config,
+            None,
+            &mut stats,
+        );
+    }
+
+    for expansion_idx in 0..=config.routing_window_max_expansions {
+        let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
+        stats.window_attempts += 1;
+        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(bounds));
+
+        if let Some(route) = route_single_net_with_bounds(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            port_open_cells,
+            config,
+            Some(bounds),
+            &mut stats,
+        ) {
+            return Some(route);
+        }
+    }
+
+    if config.routing_window_fallback_full_grid {
+        stats.window_attempts += 1;
+        stats.used_full_grid_fallback = true;
+        return route_single_net_with_bounds(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            port_open_cells,
+            config,
+            None,
+            &mut stats,
+        );
+    }
+
+    None
+}
+
+fn route_single_net_with_bounds(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    routing_bounds: Option<RoutingBounds>,
+    stats: &mut RouteSearchStats,
+) -> Option<RouteResult> {
+    if let Some(bounds) = routing_bounds {
+        if !bounds.contains(source.x, source.y) || !bounds.contains(target.x, target.y) {
+            return None;
+        }
     }
 
     let mut open_set = BinaryHeap::new();
@@ -162,13 +281,23 @@ pub fn route_single_net_with_config(
         if closed.contains(&state) {
             continue;
         }
-        if target_reached(state, target, config.target_tolerance_cells) {
-            return Some(reconstruct_route(source, target, &parents, entry.g_score));
+        if target_reached(state, target, config) {
+            return Some(reconstruct_route(
+                source,
+                target,
+                state,
+                &parents,
+                primitives,
+                entry.g_score,
+                stats.clone(),
+            ));
         }
         closed.insert(state);
+        stats.expanded_states += 1;
 
         let current_g = *g_costs.get(&state).unwrap_or(&f64::INFINITY);
-        for primitive in primitives.get_primitives_for_angle(state.angle) {
+        let primitive_bucket = primitives.get_primitives_for_angle(state.angle);
+        for (primitive_index, primitive) in primitive_bucket.iter().enumerate() {
             let next_state = State::new(
                 state.x.checked_add(primitive.dx)?,
                 state.y.checked_add(primitive.dy)?,
@@ -181,12 +310,19 @@ pub fn route_single_net_with_config(
             if !obstacle_map.in_bounds(next_state.x, next_state.y) {
                 continue;
             }
+            if let Some(bounds) = routing_bounds {
+                if !bounds.contains(next_state.x, next_state.y) {
+                    stats.window_rejects += 1;
+                    continue;
+                }
+            }
             if !obstacle_map.check_primitive_footprint_free(
                 state.x,
                 state.y,
                 &primitive.footprint,
                 port_open_cells,
             ) {
+                stats.footprint_rejects += 1;
                 continue;
             }
 
@@ -200,7 +336,7 @@ pub fn route_single_net_with_config(
                 next_state,
                 Parent {
                     previous: state,
-                    primitive: primitive.clone(),
+                    primitive_index,
                 },
             );
             g_costs.insert(next_state, tentative_g);
@@ -215,6 +351,57 @@ pub fn route_single_net_with_config(
     }
 
     None
+}
+
+fn compute_routing_bounds(
+    obstacle_map: &ObstacleMap,
+    source: State,
+    target: State,
+    config: &AStarConfig,
+    expansion_idx: u32,
+) -> Option<RoutingBounds> {
+    let span_x = (target.x - source.x).abs();
+    let span_y = (target.y - source.y).abs();
+
+    let growth = 1.0 + (expansion_idx as f64) * config.routing_window_growth.max(0.0);
+    let tolerance_padding = config.target_tolerance_cells.max(0);
+    let margin_x = ((config.routing_window_scale.max(0.0) * (span_x as f64) * growth).ceil()
+        as i32)
+        .max(config.routing_window_min_margin_cells.max(0))
+        .saturating_add(tolerance_padding);
+    let margin_y = ((config.routing_window_scale.max(0.0) * (span_y as f64) * growth).ceil()
+        as i32)
+        .max(config.routing_window_min_margin_cells.max(0))
+        .saturating_add(tolerance_padding);
+
+    let min_x = source.x.min(target.x).saturating_sub(margin_x).max(0);
+    let max_x = source
+        .x
+        .max(target.x)
+        .saturating_add(margin_x)
+        .min(obstacle_map.width() - 1);
+    let min_y = source.y.min(target.y).saturating_sub(margin_y).max(0);
+    let max_y = source
+        .y
+        .max(target.y)
+        .saturating_add(margin_y)
+        .min(obstacle_map.height() - 1);
+
+    if min_x > max_x || min_y > max_y {
+        return None;
+    }
+    Some(RoutingBounds {
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+    })
+}
+
+fn window_area(bounds: RoutingBounds) -> i64 {
+    let width = (bounds.max_x - bounds.min_x + 1).max(0) as i64;
+    let height = (bounds.max_y - bounds.min_y + 1).max(0) as i64;
+    width * height
 }
 
 /// Export an SVG string showing obstacles and a routed path.
@@ -269,10 +456,19 @@ pub fn export_route_svg(obstacle_map: &ObstacleMap, route_result: &RouteResult) 
     svg
 }
 
-fn target_reached(state: State, target: State, target_tolerance_cells: i32) -> bool {
-    state.angle == target.angle
-        && (state.x - target.x).abs() <= target_tolerance_cells
-        && (state.y - target.y).abs() <= target_tolerance_cells
+fn target_reached(state: State, target: State, config: &AStarConfig) -> bool {
+    let tolerance = config.target_tolerance_cells.max(0);
+    let pos_ok = (state.x - target.x).abs() <= tolerance && (state.y - target.y).abs() <= tolerance;
+    if !pos_ok {
+        return false;
+    }
+    if let Some(mask) = config.allowed_target_angles_mask {
+        return (mask & (1u8 << (state.angle % 8))) != 0;
+    }
+    if config.require_target_angle {
+        return state.angle == target.angle;
+    }
+    true
 }
 
 fn heuristic(state: State, target: State, grid_size_um: f64) -> f64 {
@@ -283,19 +479,25 @@ fn heuristic(state: State, target: State, grid_size_um: f64) -> f64 {
 
 fn reconstruct_route(
     source: State,
-    target: State,
+    requested_target: State,
+    reached_target: State,
     parents: &FxHashMap<State, Parent>,
+    primitives: &PrimitiveLibrary,
     total_cost: f64,
+    stats: RouteSearchStats,
 ) -> RouteResult {
-    let mut states_reversed = vec![target];
+    let mut states_reversed = vec![reached_target];
     let mut primitive_steps_reversed = Vec::new();
-    let mut current = target;
+    let mut current = reached_target;
 
     while current != source {
         let parent = parents
             .get(&current)
             .expect("missing parent during route reconstruction");
-        primitive_steps_reversed.push((parent.previous, parent.primitive.clone()));
+        let primitive = primitives.get_primitives_for_angle(parent.previous.angle)
+            [parent.primitive_index]
+            .clone();
+        primitive_steps_reversed.push((parent.previous, primitive));
         current = parent.previous;
         states_reversed.push(current);
     }
@@ -322,7 +524,7 @@ fn reconstruct_route(
             }
         }
     }
-    push_if_different(&mut ordered_path, (target.x, target.y));
+    push_if_different(&mut ordered_path, (reached_target.x, reached_target.y));
     let compressed_waypoints = compress_grid_waypoints(&ordered_path);
 
     RouteResult {
@@ -332,6 +534,9 @@ fn reconstruct_route(
         compressed_waypoints,
         total_length_um,
         total_cost,
+        requested_target,
+        reached_target,
+        stats,
     }
 }
 
@@ -485,6 +690,7 @@ mod tests {
                 max_iterations: 200,
                 bend_weight: 1.0,
                 target_tolerance_cells: 0,
+                ..AStarConfig::default()
             },
         );
 
@@ -528,5 +734,115 @@ mod tests {
         let svg = export_route_svg(&map, &result);
         assert!(svg.contains("<svg"));
         assert!(svg.contains("#1a73e8"));
+    }
+
+    #[test]
+    fn supports_coordinate_tolerance() {
+        let map = ObstacleMap::new(12, 6);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 2, 0),
+            State::new(5, 3, 0),
+            None,
+            &AStarConfig {
+                target_tolerance_cells: 1,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("route should terminate within tolerance");
+
+        let reached = result.states.last().copied().unwrap();
+        assert!((reached.x - 5).abs() <= 1);
+        assert!((reached.y - 3).abs() <= 1);
+        assert_eq!(result.reached_target, reached);
+    }
+
+    #[test]
+    fn supports_relaxed_target_angle() {
+        let map = ObstacleMap::new(10, 5);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(5, 1, 2),
+            None,
+            &AStarConfig {
+                require_target_angle: false,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("route should allow non-matching terminal angle");
+
+        let reached = result.states.last().copied().unwrap();
+        assert_eq!(reached.x, 5);
+        assert_eq!(reached.y, 1);
+        assert_ne!(reached.angle, 2);
+    }
+
+    #[test]
+    fn supports_allowed_target_angle_mask() {
+        let map = ObstacleMap::new(10, 5);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(5, 1, 2),
+            None,
+            &AStarConfig {
+                require_target_angle: true,
+                allowed_target_angles_mask: Some((1u8 << 0) | (1u8 << 1)),
+                ..AStarConfig::default()
+            },
+        )
+        .expect("route should use allowed-angle mask override");
+
+        let reached = result.states.last().copied().unwrap();
+        assert!(((1u8 << reached.angle) & ((1u8 << 0) | (1u8 << 1))) != 0);
+    }
+
+    #[test]
+    fn rejects_negative_tolerance() {
+        let map = ObstacleMap::new(10, 5);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            None,
+            &AStarConfig {
+                target_tolerance_cells: -1,
+                ..AStarConfig::default()
+            },
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn routing_window_padding_includes_target_tolerance() {
+        let map = ObstacleMap::new(20, 20);
+        let source = State::new(10, 10, 0);
+        let target = State::new(10, 10, 0);
+        let bounds = compute_routing_bounds(
+            &map,
+            source,
+            target,
+            &AStarConfig {
+                routing_window_min_margin_cells: 0,
+                routing_window_scale: 0.0,
+                target_tolerance_cells: 2,
+                ..AStarConfig::default()
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(bounds.min_x, 8);
+        assert_eq!(bounds.max_x, 12);
+        assert_eq!(bounds.min_y, 8);
+        assert_eq!(bounds.max_y, 12);
     }
 }
