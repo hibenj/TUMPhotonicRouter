@@ -359,6 +359,7 @@ impl PyPhotonicRouter {
             routing_window_max_expansions: self.astar_cfg.routing_window_max_expansions,
             routing_window_fallback_full_grid: self.astar_cfg.routing_window_fallback_full_grid,
             routing_window_growth: self.astar_cfg.routing_window_growth,
+            max_dense_states: AStarConfig::default().max_dense_states,
         };
         let result = route_single_net_with_config(
             &self.obstacle_map,
@@ -404,6 +405,7 @@ impl PyPhotonicRouter {
             routing_window_max_expansions: self.astar_cfg.routing_window_max_expansions,
             routing_window_fallback_full_grid: self.astar_cfg.routing_window_fallback_full_grid,
             routing_window_growth: self.astar_cfg.routing_window_growth,
+            max_dense_states: AStarConfig::default().max_dense_states,
         };
         let result = route_single_net_with_config(
             &self.obstacle_map,

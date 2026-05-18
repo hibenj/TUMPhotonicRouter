@@ -6,7 +6,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::PrimitiveLibrary;
@@ -43,6 +43,7 @@ pub struct AStarConfig {
     pub routing_window_max_expansions: u32,
     pub routing_window_fallback_full_grid: bool,
     pub routing_window_growth: f64,
+    pub max_dense_states: usize,
 }
 
 impl Default for AStarConfig {
@@ -57,8 +58,9 @@ impl Default for AStarConfig {
             routing_window_min_margin_cells: 12,
             routing_window_scale: 0.35,
             routing_window_max_expansions: 3,
-            routing_window_fallback_full_grid: true,
+            routing_window_fallback_full_grid: false,
             routing_window_growth: 0.5,
+            max_dense_states: 20_000_000,
         }
     }
 }
@@ -103,9 +105,68 @@ pub struct RouteSearchStats {
 }
 
 #[derive(Clone, Debug)]
-struct Parent {
-    previous: State,
+struct ParentDense {
+    previous_idx: usize,
     primitive_id: u16,
+}
+
+struct DenseSearchStorage {
+    bounds: RoutingBounds,
+    width: i32,
+    g_costs: Vec<f64>,
+    parents: Vec<Option<ParentDense>>,
+    closed: Vec<bool>,
+}
+
+impl DenseSearchStorage {
+    fn new(bounds: RoutingBounds, max_dense_states: usize) -> Option<Self> {
+        let width = bounds.max_x.checked_sub(bounds.min_x)?.checked_add(1)?;
+        let height = bounds.max_y.checked_sub(bounds.min_y)?.checked_add(1)?;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let width_usize = usize::try_from(width).ok()?;
+        let height_usize = usize::try_from(height).ok()?;
+        let state_count = width_usize.checked_mul(height_usize)?.checked_mul(8)?;
+        if state_count > max_dense_states {
+            return None;
+        }
+
+        Some(Self {
+            bounds,
+            width,
+            g_costs: vec![f64::INFINITY; state_count],
+            parents: vec![None; state_count],
+            closed: vec![false; state_count],
+        })
+    }
+
+    fn state_to_idx(&self, state: State) -> Option<usize> {
+        if state.angle >= 8 || !self.bounds.contains(state.x, state.y) {
+            return None;
+        }
+        let local_x = usize::try_from(state.x.checked_sub(self.bounds.min_x)?).ok()?;
+        let local_y = usize::try_from(state.y.checked_sub(self.bounds.min_y)?).ok()?;
+        let width = usize::try_from(self.width).ok()?;
+        local_y
+            .checked_mul(width)?
+            .checked_add(local_x)?
+            .checked_mul(8)?
+            .checked_add(usize::from(state.angle))
+    }
+
+    fn idx_to_state(&self, idx: usize) -> State {
+        let width = usize::try_from(self.width).expect("width must be > 0");
+        let angle = (idx % 8) as u8;
+        let cell_idx = idx / 8;
+        let local_x = (cell_idx % width) as i32;
+        let local_y = (cell_idx / width) as i32;
+        State::new(
+            self.bounds.min_x + local_x,
+            self.bounds.min_y + local_y,
+            angle,
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -113,7 +174,7 @@ struct OpenEntry {
     f_score: f64,
     g_score: f64,
     counter: u64,
-    state: State,
+    idx: usize,
 }
 
 impl Eq for OpenEntry {}
@@ -249,24 +310,31 @@ fn route_single_net_with_bounds(
     routing_bounds: Option<RoutingBounds>,
     stats: &mut RouteSearchStats,
 ) -> Option<RouteResult> {
-    if let Some(bounds) = routing_bounds {
+    let bounds = if let Some(bounds) = routing_bounds {
         if !bounds.contains(source.x, source.y) || !bounds.contains(target.x, target.y) {
             return None;
         }
-    }
+        bounds
+    } else {
+        RoutingBounds {
+            min_x: 0,
+            max_x: obstacle_map.width() - 1,
+            min_y: 0,
+            max_y: obstacle_map.height() - 1,
+        }
+    };
 
     let mut open_set = BinaryHeap::new();
-    let mut g_costs: FxHashMap<State, f64> = FxHashMap::default();
-    let mut parents: FxHashMap<State, Parent> = FxHashMap::default();
-    let mut closed: FxHashSet<State> = FxHashSet::default();
+    let mut storage = DenseSearchStorage::new(bounds, config.max_dense_states)?;
     let mut counter = 0u64;
+    let source_idx = storage.state_to_idx(source)?;
 
-    g_costs.insert(source, 0.0);
+    storage.g_costs[source_idx] = 0.0;
     open_set.push(OpenEntry {
         f_score: heuristic(source, target, primitives.grid_size_um()),
         g_score: 0.0,
         counter,
-        state: source,
+        idx: source_idx,
     });
     counter += 1;
 
@@ -277,25 +345,26 @@ fn route_single_net_with_bounds(
             return None;
         }
 
-        let state = entry.state;
-        if closed.contains(&state) {
+        let idx = entry.idx;
+        if storage.closed[idx] {
             continue;
         }
+        let state = storage.idx_to_state(idx);
         if target_reached(state, target, config) {
-            return Some(reconstruct_route(
-                source,
+            return reconstruct_route_dense(
+                source_idx,
+                idx,
                 target,
-                state,
-                &parents,
                 primitives,
                 entry.g_score,
                 stats.clone(),
-            ));
+                &storage,
+            );
         }
-        closed.insert(state);
+        storage.closed[idx] = true;
         stats.expanded_states += 1;
 
-        let current_g = *g_costs.get(&state).unwrap_or(&f64::INFINITY);
+        let current_g = storage.g_costs[idx];
         let primitive_bucket = primitives.get_primitives_for_angle(state.angle);
         for primitive in primitive_bucket.iter() {
             let next_state = State::new(
@@ -304,17 +373,12 @@ fn route_single_net_with_bounds(
                 primitive.end_angle,
             );
 
-            if closed.contains(&next_state) {
-                continue;
-            }
             if !obstacle_map.in_bounds(next_state.x, next_state.y) {
                 continue;
             }
-            if let Some(bounds) = routing_bounds {
-                if !bounds.contains(next_state.x, next_state.y) {
-                    stats.window_rejects += 1;
-                    continue;
-                }
+            if !bounds.contains(next_state.x, next_state.y) {
+                stats.window_rejects += 1;
+                continue;
             }
             if !obstacle_map.check_primitive_footprint_free(
                 state.x,
@@ -325,26 +389,29 @@ fn route_single_net_with_bounds(
                 stats.footprint_rejects += 1;
                 continue;
             }
-
-            let step_cost = primitive.length_um + config.bend_weight * primitive.bend_cost;
-            let tentative_g = current_g + step_cost;
-            if tentative_g >= *g_costs.get(&next_state).unwrap_or(&f64::INFINITY) {
+            let Some(next_idx) = storage.state_to_idx(next_state) else {
+                continue;
+            };
+            if storage.closed[next_idx] {
                 continue;
             }
 
-            parents.insert(
-                next_state,
-                Parent {
-                    previous: state,
-                    primitive_id: primitive.id,
-                },
-            );
-            g_costs.insert(next_state, tentative_g);
+            let step_cost = primitive.length_um + config.bend_weight * primitive.bend_cost;
+            let tentative_g = current_g + step_cost;
+            if tentative_g >= storage.g_costs[next_idx] {
+                continue;
+            }
+
+            storage.parents[next_idx] = Some(ParentDense {
+                previous_idx: idx,
+                primitive_id: primitive.id,
+            });
+            storage.g_costs[next_idx] = tentative_g;
             open_set.push(OpenEntry {
                 f_score: tentative_g + heuristic(next_state, target, primitives.grid_size_um()),
                 g_score: tentative_g,
                 counter,
-                state: next_state,
+                idx: next_idx,
             });
             counter += 1;
         }
@@ -477,26 +544,27 @@ fn heuristic(state: State, target: State, grid_size_um: f64) -> f64 {
     (dx * dx + dy * dy).sqrt() * grid_size_um
 }
 
-fn reconstruct_route(
-    source: State,
+fn reconstruct_route_dense(
+    source_idx: usize,
+    reached_idx: usize,
     requested_target: State,
-    reached_target: State,
-    parents: &FxHashMap<State, Parent>,
     primitives: &PrimitiveLibrary,
     total_cost: f64,
     stats: RouteSearchStats,
-) -> RouteResult {
+    storage: &DenseSearchStorage,
+) -> Option<RouteResult> {
+    let source = storage.idx_to_state(source_idx);
+    let reached_target = storage.idx_to_state(reached_idx);
     let mut states_reversed = vec![reached_target];
     let mut primitive_steps_reversed = Vec::new();
-    let mut current = reached_target;
+    let mut current_idx = reached_idx;
 
-    while current != source {
-        let parent = parents
-            .get(&current)
-            .expect("missing parent during route reconstruction");
-        primitive_steps_reversed.push((parent.previous, parent.primitive_id));
-        current = parent.previous;
-        states_reversed.push(current);
+    while current_idx != source_idx {
+        let parent = storage.parents.get(current_idx)?.as_ref()?;
+        let previous = storage.idx_to_state(parent.previous_idx);
+        primitive_steps_reversed.push((previous, parent.primitive_id));
+        current_idx = parent.previous_idx;
+        states_reversed.push(previous);
     }
 
     states_reversed.reverse();
@@ -510,9 +578,7 @@ fn reconstruct_route(
     let mut total_length_um = 0.0;
 
     for (origin, primitive_id) in primitive_steps_reversed {
-        let primitive = find_primitive(primitives, origin.angle, primitive_id).expect(
-            "missing primitive during route reconstruction; parent map references invalid primitive id",
-        );
+        let primitive = find_primitive(primitives, origin.angle, primitive_id)?;
         primitive_ids.push(primitive_id);
         total_length_um += primitive.length_um;
 
@@ -527,7 +593,7 @@ fn reconstruct_route(
     push_if_different(&mut ordered_path, (reached_target.x, reached_target.y));
     let compressed_waypoints = compress_grid_waypoints(&ordered_path);
 
-    RouteResult {
+    Some(RouteResult {
         states: states_reversed,
         primitives: primitive_ids,
         cells,
@@ -537,7 +603,7 @@ fn reconstruct_route(
         requested_target,
         reached_target,
         stats,
-    }
+    })
 }
 
 fn find_primitive(
@@ -893,5 +959,107 @@ mod tests {
         assert_eq!(bounds.max_x, 12);
         assert_eq!(bounds.min_y, 8);
         assert_eq!(bounds.max_y, 12);
+    }
+
+    #[test]
+    fn dense_state_index_roundtrip() {
+        let storage = DenseSearchStorage::new(
+            RoutingBounds {
+                min_x: 10,
+                max_x: 14,
+                min_y: 20,
+                max_y: 22,
+            },
+            10_000,
+        )
+        .expect("storage should allocate");
+        let state = State::new(12, 21, 5);
+        let idx = storage.state_to_idx(state).expect("state should map to index");
+        assert_eq!(storage.idx_to_state(idx), state);
+    }
+
+    #[test]
+    fn dense_state_outside_bounds_returns_none() {
+        let storage = DenseSearchStorage::new(
+            RoutingBounds {
+                min_x: 2,
+                max_x: 4,
+                min_y: 2,
+                max_y: 4,
+            },
+            10_000,
+        )
+        .expect("storage should allocate");
+        assert!(storage.state_to_idx(State::new(1, 2, 0)).is_none());
+        assert!(storage.state_to_idx(State::new(2, 5, 0)).is_none());
+    }
+
+    #[test]
+    fn nonzero_offset_window_routes() {
+        let map = ObstacleMap::new(30, 30);
+        let library = primitive_library();
+        let result = route_single_net_with_bounds(
+            &map,
+            &library,
+            State::new(11, 11, 0),
+            State::new(15, 11, 0),
+            None,
+            &AStarConfig::default(),
+            Some(RoutingBounds {
+                min_x: 10,
+                max_x: 20,
+                min_y: 10,
+                max_y: 20,
+            }),
+            &mut RouteSearchStats::default(),
+        )
+        .expect("route in offset bounds should exist");
+        assert_eq!(result.states.first().copied(), Some(State::new(11, 11, 0)));
+        assert_eq!(result.states.last().copied(), Some(State::new(15, 11, 0)));
+    }
+
+    #[test]
+    fn full_grid_fallback_uses_dense_storage() {
+        let mut map = ObstacleMap::new(12, 8);
+        map.add_static_cell(3, 1);
+        map.add_static_cell(4, 1);
+        map.add_static_cell(5, 1);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(7, 1, 0),
+            None,
+            &AStarConfig {
+                routing_window_min_margin_cells: 0,
+                routing_window_scale: 0.0,
+                routing_window_max_expansions: 0,
+                routing_window_fallback_full_grid: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("full-grid fallback should find a detour");
+        assert_eq!(result.states.last().copied(), Some(State::new(7, 1, 0)));
+        assert!(result.stats.used_full_grid_fallback);
+    }
+
+    #[test]
+    fn dense_state_limit_can_fail_attempt() {
+        let map = ObstacleMap::new(10, 5);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                max_dense_states: 8,
+                ..AStarConfig::default()
+            },
+        );
+        assert!(result.is_none());
     }
 }
