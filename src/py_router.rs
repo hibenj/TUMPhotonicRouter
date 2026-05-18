@@ -7,7 +7,8 @@ use crate::astar::{
     State,
 };
 use crate::geometry_realization::{
-    build_port_access as build_port_access_rs, realize_route_polygon as realize_route_polygon_rs,
+    build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
+    realize_route_polygon as realize_route_polygon_rs,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     GeometryGridSpec, PortAccess, PortAccessConfig,
 };
@@ -243,6 +244,14 @@ impl PyPortAccess {
     #[getter]
     fn entry_angle(&self) -> u8 {
         self.inner.entry_angle
+    }
+    #[getter]
+    fn port_angle(&self) -> u8 {
+        self.inner.port_angle
+    }
+    #[getter]
+    fn anchor_angle(&self) -> u8 {
+        self.inner.anchor_angle
     }
 
     #[getter]
@@ -518,6 +527,38 @@ impl PyPhotonicRouter {
         let access = build_port_access_rs(&port, &grid, &config)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(PyPortAccess { inner: access })
+    }
+
+    #[pyo3(signature=(ports,min_straight_um=0.0,max_anchor_search_cells=8,min_bend_radius_um=0.0))]
+    fn build_port_accesses(
+        &self,
+        ports: Vec<(String, f64, f64, Option<f64>)>,
+        min_straight_um: f64,
+        max_anchor_search_cells: i32,
+        min_bend_radius_um: f64,
+    ) -> PyResult<Vec<PyPortAccess>> {
+        let grid = StaticGridSpec {
+            width: self.grid.width as i32,
+            height: self.grid.height as i32,
+            grid_size_um: self.grid.grid_size_um,
+            origin: (self.grid.origin_x_um, self.grid.origin_y_um),
+            die_bbox: (0.0, 0.0, 0.0, 0.0),
+        };
+        let cfg = PortAccessConfig {
+            min_straight_um,
+            max_anchor_search_cells,
+            min_bend_radius_um,
+        };
+        let port_inputs: Vec<PortInput> = ports
+            .into_iter()
+            .map(|(name, x, y, orientation)| PortInput::new(name, x, y, orientation))
+            .collect();
+        let accesses = build_port_accesses_rs(&port_inputs, &grid, &cfg)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        Ok(accesses
+            .into_iter()
+            .map(|inner| PyPortAccess { inner })
+            .collect())
     }
 
     #[pyo3(signature=(route,width_um,source_access=None,target_access=None))]

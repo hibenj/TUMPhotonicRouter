@@ -167,6 +167,9 @@ pub struct PortAccess {
     pub port_point_um: (f64, f64),
     pub anchor_cell: (i32, i32),
     pub anchor_point_um: (f64, f64),
+    pub port_angle: u8,
+    pub anchor_angle: u8,
+    /// Compatibility alias; equals `anchor_angle`.
     pub entry_angle: u8,
     pub access_centerline_um: Vec<(f64, f64)>,
 }
@@ -471,22 +474,10 @@ pub fn build_port_access(
         });
     }
 
-    let anchor_cell = select_anchor_cell(port, grid, config)?;
-    if !in_bounds(anchor_cell, grid) {
-        return Err(PortAccessError::AnchorOutOfBounds {
-            port_name: port.name.clone(),
-            anchor_cell,
-        });
-    }
-    let mut anchor_point_um = grid_cell_center(anchor_cell.0, anchor_cell.1, grid);
-    let mut anchor_cell = anchor_cell;
-    if distance((port.x, port.y), anchor_point_um) <= EPS {
-        anchor_cell = select_nonzero_anchor_cell(port, grid, config, anchor_cell)?;
-        anchor_point_um = grid_cell_center(anchor_cell.0, anchor_cell.1, grid);
-    }
-    let entry_angle = orientation_to_angle(port.orientation);
-    let mut access_centerline_um =
-        build_access_centerline((port.x, port.y), anchor_point_um, entry_angle, config)?;
+    let port_angle = orientation_to_angle(port.orientation);
+    let (anchor_cell, anchor_angle, mut access_centerline_um) =
+        select_anchor_and_build_access(port, grid, config)?;
+    let anchor_point_um = grid_cell_center(anchor_cell.0, anchor_cell.1, grid);
 
     if access_centerline_um.iter().any(|&p| !is_finite_point(p)) {
         return Err(PortAccessError::NonFiniteAccessCoordinate {
@@ -516,9 +507,23 @@ pub fn build_port_access(
         port_point_um: (port.x, port.y),
         anchor_cell,
         anchor_point_um,
-        entry_angle,
+        port_angle,
+        anchor_angle,
+        entry_angle: anchor_angle,
         access_centerline_um,
     })
+}
+
+/// Build deterministic local port accesses for all physical ports.
+pub fn build_port_accesses(
+    ports: &[PortInput],
+    grid: &StaticGridSpec,
+    config: &PortAccessConfig,
+) -> Result<Vec<PortAccess>, PortAccessError> {
+    ports
+        .iter()
+        .map(|port| build_port_access(port, grid, config))
+        .collect()
 }
 
 /// Generate one closed mitered/beveled waveguide polygon from a centerline.
@@ -695,46 +700,57 @@ fn validate_port_access_config(config: &PortAccessConfig) -> Result<(), PortAcce
     Ok(())
 }
 
-#[allow(dead_code)]
-fn select_anchor_cell(
+fn select_anchor_and_build_access(
     port: &PortInput,
     grid: &StaticGridSpec,
     config: &PortAccessConfig,
-) -> Result<(i32, i32), PortAccessError> {
-    if let Some(orientation) = port.orientation {
-        let angle = orientation_to_angle(Some(orientation));
-        let (dx, dy) = octant_direction(angle);
-        let (base_x, base_y) = physical_to_grid(port.x, port.y, grid);
-        for step in 0..=config.max_anchor_search_cells {
-            let candidate = (base_x + dx * step, base_y + dy * step);
-            if in_bounds(candidate, grid) {
-                return Ok(candidate);
-            }
-        }
-        return Err(PortAccessError::AnchorSearchFailed {
-            port_name: port.name.clone(),
-        });
-    }
-
-    let approx_x = ((port.x - grid.origin.0) / grid.grid_size_um - 0.5).round() as i32;
-    let approx_y = ((port.y - grid.origin.1) / grid.grid_size_um - 0.5).round() as i32;
-    for radius in 0..=config.max_anchor_search_cells {
-        let mut best: Option<((i32, i32), f64)> = None;
-        for x in (approx_x - radius)..=(approx_x + radius) {
-            for y in (approx_y - radius)..=(approx_y + radius) {
-                let candidate = (x, y);
+) -> Result<((i32, i32), u8, Vec<(f64, f64)>), PortAccessError> {
+    let base_cell = physical_to_grid(port.x, port.y, grid);
+    let port_angle = orientation_to_angle(port.orientation);
+    let dir = angle_to_unit_vector(port_angle);
+    let lateral_dir = rotate_left(dir);
+    let mut candidates: Vec<(i32, i32, i32, i32, f64, f64)> = Vec::new();
+    for radius in 1..=config.max_anchor_search_cells.max(1) {
+        for dx in -radius..=radius {
+            for dy in -radius..=radius {
+                if dx.abs().max(dy.abs()) != radius {
+                    continue;
+                }
+                let candidate = (base_cell.0 + dx, base_cell.1 + dy);
                 if !in_bounds(candidate, grid) {
                     continue;
                 }
-                let center = grid_cell_center(x, y, grid);
-                let d = distance((port.x, port.y), center);
-                if best.map(|(_, bd)| d < bd).unwrap_or(true) {
-                    best = Some((candidate, d));
+                let anchor_point = grid_cell_center(candidate.0, candidate.1, grid);
+                let delta = sub(anchor_point, (port.x, port.y));
+                let forward = dot(delta, dir);
+                if forward <= EPS {
+                    continue;
                 }
+                let lateral = dot(delta, lateral_dir).abs();
+                candidates.push((radius, dx, dy, candidate.0, lateral, forward));
             }
         }
-        if let Some((candidate, _)) = best {
-            return Ok(candidate);
+    }
+    candidates.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.4.total_cmp(&b.4))
+            .then_with(|| b.5.total_cmp(&a.5))
+            .then_with(|| a.3.cmp(&b.3))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    for (_, dx, dy, _, _, _) in candidates {
+        let candidate = (base_cell.0 + dx, base_cell.1 + dy);
+        let anchor_point = grid_cell_center(candidate.0, candidate.1, grid);
+        let anchor_angle = port_angle;
+        if let Ok(centerline) = build_access_centerline(
+            (port.x, port.y),
+            anchor_point,
+            port_angle,
+            anchor_angle,
+            &port.name,
+            config,
+        ) {
+            return Ok((candidate, anchor_angle, centerline));
         }
     }
 
@@ -746,49 +762,145 @@ fn select_anchor_cell(
 fn build_access_centerline(
     port_point: (f64, f64),
     anchor_point: (f64, f64),
-    _entry_angle: u8,
-    _config: &PortAccessConfig,
+    port_angle: u8,
+    anchor_angle: u8,
+    port_name: &str,
+    config: &PortAccessConfig,
 ) -> Result<Vec<(f64, f64)>, PortAccessError> {
     if !is_finite_point(port_point) || !is_finite_point(anchor_point) {
         return Err(PortAccessError::NonFiniteAccessCoordinate {
-            port_name: "unknown".to_string(),
+            port_name: port_name.to_string(),
         });
     }
-    Ok(vec![port_point, anchor_point])
+
+    if anchor_angle != port_angle {
+        return Err(PortAccessError::AnchorSearchFailed {
+            port_name: port_name.to_string(),
+        });
+    }
+
+    let u = angle_to_unit_vector(port_angle);
+    let v = rotate_left(u);
+    let delta = sub(anchor_point, port_point);
+    let local_dx = dot(delta, u);
+    let local_dy = dot(delta, v);
+    if local_dx <= EPS {
+        return Err(PortAccessError::AnchorSearchFailed {
+            port_name: port_name.to_string(),
+        });
+    }
+
+    let launch_straight = config.min_straight_um.max(EPS * 10.0);
+    let landing_straight = config.min_straight_um.max(EPS * 10.0);
+    let mut out = Vec::new();
+
+    // Build in local frame (port at origin, +x along port tangent, +y left-normal), then map back.
+    let to_world = |p: (f64, f64)| -> (f64, f64) { add(port_point, add(scale(u, p.0), scale(v, p.1))) };
+    push_physical_if_different(&mut out, to_world((0.0, 0.0)));
+
+    if local_dy.abs() <= EPS {
+        let x1 = launch_straight.min(local_dx);
+        push_physical_if_different(&mut out, to_world((x1, 0.0)));
+        push_physical_if_different(&mut out, to_world((local_dx, 0.0)));
+        if out.len() < 2 {
+            return Err(PortAccessError::ZeroLengthAccess {
+                port_name: port_name.to_string(),
+            });
+        }
+        return Ok(out);
+    }
+
+    let radius = if config.min_bend_radius_um <= EPS {
+        (local_dy.abs() / 2.0).max(EPS * 10.0)
+    } else {
+        config.min_bend_radius_um
+    };
+    if local_dy.abs() + EPS < 2.0 * radius {
+        return Err(PortAccessError::AnchorSearchFailed {
+            port_name: port_name.to_string(),
+        });
+    }
+    let required_dx = launch_straight + landing_straight + 2.0 * radius;
+    if local_dx + EPS < required_dx {
+        return Err(PortAccessError::AnchorSearchFailed {
+            port_name: port_name.to_string(),
+        });
+    }
+    let final_straight = local_dx - required_dx;
+    if final_straight < -EPS {
+        return Err(PortAccessError::AnchorSearchFailed {
+            port_name: port_name.to_string(),
+        });
+    }
+
+    let sign = if local_dy >= 0.0 { 1.0 } else { -1.0 };
+    let abs_dy = local_dy.abs();
+    let p1 = (launch_straight, 0.0);
+    let p2 = (launch_straight + radius, sign * radius);
+    let p3 = (launch_straight + radius, sign * (abs_dy - radius));
+    let p4 = (launch_straight + 2.0 * radius, sign * abs_dy);
+    let p5 = (launch_straight + 2.0 * radius + final_straight, sign * abs_dy);
+    let p6 = (local_dx - landing_straight, sign * abs_dy);
+    let p7 = (local_dx, sign * abs_dy);
+
+    push_physical_if_different(&mut out, to_world(p1));
+    append_arc_samples(
+        &mut out,
+        to_world(p1),
+        to_world(p2),
+        to_world((launch_straight, sign * radius)),
+        sign > 0.0,
+    );
+    push_physical_if_different(&mut out, to_world(p3));
+    append_arc_samples(
+        &mut out,
+        to_world(p3),
+        to_world(p4),
+        to_world((launch_straight + 2.0 * radius, sign * (abs_dy - radius))),
+        sign < 0.0,
+    );
+    push_physical_if_different(&mut out, to_world(p5));
+    push_physical_if_different(&mut out, to_world(p6));
+    push_physical_if_different(&mut out, to_world(p7));
+
+    if out.iter().any(|p| !is_finite_point(*p)) || out.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
+        return Err(PortAccessError::NonFiniteAccessCoordinate {
+            port_name: port_name.to_string(),
+        });
+    }
+    Ok(out)
 }
 
-#[allow(dead_code)]
-fn select_nonzero_anchor_cell(
-    port: &PortInput,
-    grid: &StaticGridSpec,
-    config: &PortAccessConfig,
-    current_anchor: (i32, i32),
-) -> Result<(i32, i32), PortAccessError> {
-    if let Some(orientation) = port.orientation {
-        let angle = orientation_to_angle(Some(orientation));
-        let (dx, dy) = octant_direction(angle);
-        for step in 1..=config.max_anchor_search_cells.max(1) {
-            let candidate = (current_anchor.0 + dx * step, current_anchor.1 + dy * step);
-            if in_bounds(candidate, grid) {
-                return Ok(candidate);
-            }
+fn append_arc_samples(
+    out: &mut Vec<(f64, f64)>,
+    start: (f64, f64),
+    end: (f64, f64),
+    center: (f64, f64),
+    ccw: bool,
+) {
+    let radius = distance(start, center);
+    if radius <= EPS {
+        push_physical_if_different(out, end);
+        return;
+    }
+    let a0 = (start.1 - center.1).atan2(start.0 - center.0);
+    let mut a1 = (end.1 - center.1).atan2(end.0 - center.0);
+    if ccw {
+        while a1 <= a0 {
+            a1 += std::f64::consts::TAU;
+        }
+    } else {
+        while a1 >= a0 {
+            a1 -= std::f64::consts::TAU;
         }
     }
-
-    for radius in 1..=config.max_anchor_search_cells.max(1) {
-        for x in (current_anchor.0 - radius)..=(current_anchor.0 + radius) {
-            for y in (current_anchor.1 - radius)..=(current_anchor.1 + radius) {
-                let candidate = (x, y);
-                if candidate != current_anchor && in_bounds(candidate, grid) {
-                    return Ok(candidate);
-                }
-            }
-        }
+    let steps = 4usize;
+    for i in 1..steps {
+        let t = i as f64 / steps as f64;
+        let a = a0 + (a1 - a0) * t;
+        push_physical_if_different(out, (center.0 + radius * a.cos(), center.1 + radius * a.sin()));
     }
-
-    Err(PortAccessError::ZeroLengthAccess {
-        port_name: port.name.clone(),
-    })
+    push_physical_if_different(out, end);
 }
 
 fn in_bounds(cell: (i32, i32), grid: &StaticGridSpec) -> bool {
@@ -798,20 +910,6 @@ fn in_bounds(cell: (i32, i32), grid: &StaticGridSpec) -> bool {
 fn orientation_to_angle(orientation: Option<f64>) -> u8 {
     let value = orientation.unwrap_or(0.0).rem_euclid(360.0);
     (value / 45.0).round().rem_euclid(8.0) as u8
-}
-
-fn octant_direction(angle: u8) -> (i32, i32) {
-    const DIRS: [(i32, i32); 8] = [
-        (1, 0),
-        (1, 1),
-        (0, 1),
-        (-1, 1),
-        (-1, 0),
-        (-1, -1),
-        (0, -1),
-        (1, -1),
-    ];
-    DIRS[(angle % 8) as usize]
 }
 
 fn append_join(
@@ -1232,7 +1330,7 @@ mod tests {
             access.access_centerline_um.last().copied(),
             Some(access.anchor_point_um)
         );
-        assert!(access.access_centerline_um.len() >= 2);
+        assert!(access.access_centerline_um.len() > 2);
     }
 
     #[test]
@@ -1242,7 +1340,24 @@ mod tests {
             build_port_access(&port, &static_grid(), &PortAccessConfig::default()).unwrap();
         let p0 = access.access_centerline_um[0];
         let p1 = access.access_centerline_um[1];
-        assert_ne!(p0, p1);
+        assert!(p1.0 > p0.0);
+        assert!((p1.1 - p0.1).abs() <= 1e-9);
+    }
+
+    #[test]
+    fn access_last_segment_follows_anchor_angle() {
+        let port = PortInput::new("p2b".to_string(), 1.0, 1.0, Some(0.0));
+        let access =
+            build_port_access(&port, &static_grid(), &PortAccessConfig::default()).unwrap();
+        let n = access.access_centerline_um.len();
+        let p0 = access.access_centerline_um[n - 2];
+        let p1 = access.access_centerline_um[n - 1];
+        let seg = sub(p1, p0);
+        let dir = angle_to_unit_vector(access.anchor_angle);
+        let perp = rotate_left(dir);
+        assert!(dot(seg, dir) > EPS);
+        assert!(dot(seg, perp).abs() <= 1e-6);
+        assert_eq!(access.anchor_angle, access.entry_angle);
     }
 
     #[test]
@@ -1269,12 +1384,19 @@ mod tests {
             max_anchor_search_cells: 1,
             min_bend_radius_um: 5.0,
         };
-        let access = build_port_access(&port, &sg, &cfg).unwrap();
-        assert_eq!(access.access_centerline_um.first().copied(), Some((0.1, 0.1)));
-        assert_eq!(
-            access.access_centerline_um.last().copied(),
-            Some(access.anchor_point_um)
-        );
+        let err = build_port_access(&port, &sg, &cfg).unwrap_err();
+        assert!(matches!(err, PortAccessError::AnchorSearchFailed { .. }));
+    }
+
+    #[test]
+    fn batch_build_port_accesses_returns_one_per_port() {
+        let ports = vec![
+            PortInput::new("b0".to_string(), 0.2, 0.7, Some(0.0)),
+            PortInput::new("b1".to_string(), 0.3, 0.8, Some(45.0)),
+        ];
+        let accesses = build_port_accesses(&ports, &static_grid(), &PortAccessConfig::default())
+            .unwrap();
+        assert_eq!(accesses.len(), ports.len());
     }
 
     #[test]
@@ -1472,6 +1594,8 @@ mod tests {
             port_point_um: (0.0, 0.0),
             anchor_cell: (0, 0),
             anchor_point_um: (0.5, 0.5),
+            port_angle: 0,
+            anchor_angle: 0,
             entry_angle: 0,
             access_centerline_um: vec![(0.0, 0.0), (0.5, 0.5)],
         };

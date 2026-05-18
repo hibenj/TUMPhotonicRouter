@@ -15,7 +15,7 @@ pub use astar::{
     State,
 };
 pub use geometry_realization::{
-    build_port_access, compress_grid_waypoints, compress_route_waypoints,
+    build_port_access, build_port_accesses, compress_grid_waypoints, compress_route_waypoints,
     generate_waveguide_polygon, grid_path_to_centerline, realize_route_polygon,
     realize_route_polygon_from_primitives, realize_route_polygon_with_port_access,
     route_to_grid_path, route_to_primitive_centerline, snap_centerline_endpoints, GeometryError,
