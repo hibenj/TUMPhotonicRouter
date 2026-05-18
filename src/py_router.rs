@@ -7,12 +7,15 @@ use crate::astar::{
     State,
 };
 use crate::geometry_realization::{
-    realize_route_polygon as realize_route_polygon_rs, GeometryGridSpec,
+    build_port_access as build_port_access_rs, realize_route_polygon as realize_route_polygon_rs,
+    realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
+    GeometryGridSpec, PortAccess, PortAccessConfig,
 };
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::{
     create_photonic_primitive_library, Primitive, PrimitiveLibrary, PrimitiveLibraryConfig,
 };
+use crate::static_obstacle_builder::{PortInput, StaticGridSpec};
 
 #[pyclass(name = "GridSpec")]
 #[derive(Clone)]
@@ -207,6 +210,45 @@ pub struct PyRouteResult {
     pub dense_grid_build_failures: usize,
     #[pyo3(get)]
     pub max_window_area_cells: i64,
+}
+
+#[pyclass(name = "PortAccess")]
+#[derive(Clone)]
+pub struct PyPortAccess {
+    inner: PortAccess,
+}
+
+#[pymethods]
+impl PyPortAccess {
+    #[getter]
+    fn port_name(&self) -> String {
+        self.inner.port_name.clone()
+    }
+
+    #[getter]
+    fn port_point_um(&self) -> (f64, f64) {
+        self.inner.port_point_um
+    }
+
+    #[getter]
+    fn anchor_cell(&self) -> (i32, i32) {
+        self.inner.anchor_cell
+    }
+
+    #[getter]
+    fn anchor_point_um(&self) -> (f64, f64) {
+        self.inner.anchor_point_um
+    }
+
+    #[getter]
+    fn entry_angle(&self) -> u8 {
+        self.inner.entry_angle
+    }
+
+    #[getter]
+    fn access_centerline_um(&self) -> Vec<(f64, f64)> {
+        self.inner.access_centerline_um.clone()
+    }
 }
 
 #[pyclass(name = "PyPhotonicRouter")]
@@ -449,6 +491,61 @@ impl PyPhotonicRouter {
         let r = to_route_result(route);
         export_route_svg(&self.obstacle_map, &r)
     }
+    #[pyo3(signature=(port_name,x_um,y_um,orientation=None,min_straight_um=0.0,max_anchor_search_cells=8,min_bend_radius_um=0.0))]
+    fn build_port_access(
+        &self,
+        port_name: String,
+        x_um: f64,
+        y_um: f64,
+        orientation: Option<f64>,
+        min_straight_um: f64,
+        max_anchor_search_cells: i32,
+        min_bend_radius_um: f64,
+    ) -> PyResult<PyPortAccess> {
+        let grid = StaticGridSpec {
+            width: self.grid.width as i32,
+            height: self.grid.height as i32,
+            grid_size_um: self.grid.grid_size_um,
+            origin: (self.grid.origin_x_um, self.grid.origin_y_um),
+            die_bbox: (0.0, 0.0, 0.0, 0.0),
+        };
+        let port = PortInput::new(port_name, x_um, y_um, orientation);
+        let config = PortAccessConfig {
+            min_straight_um,
+            max_anchor_search_cells,
+            min_bend_radius_um,
+        };
+        let access = build_port_access_rs(&port, &grid, &config)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        Ok(PyPortAccess { inner: access })
+    }
+
+    #[pyo3(signature=(route,width_um,source_access=None,target_access=None))]
+    fn realize_route_polygon_with_port_access(
+        &self,
+        route: &PyRouteResult,
+        width_um: f64,
+        source_access: Option<PyPortAccess>,
+        target_access: Option<PyPortAccess>,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        realize_route_polygon_with_port_access_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            width_um,
+            source_access.as_ref().map(|s| &s.inner),
+            target_access.as_ref().map(|s| &s.inner),
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
     #[pyo3(signature=(route,width_um,source_port_um=None,target_port_um=None))]
     fn realize_route_polygon(
         &self,
@@ -485,6 +582,7 @@ pub fn register_py_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAStarConfig>()?;
     m.add_class::<PyState>()?;
     m.add_class::<PyRouteResult>()?;
+    m.add_class::<PyPortAccess>()?;
     m.add_class::<PyPhotonicRouter>()?;
     Ok(())
 }

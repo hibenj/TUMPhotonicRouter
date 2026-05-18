@@ -15,16 +15,18 @@ pub use astar::{
     State,
 };
 pub use geometry_realization::{
-    compress_grid_waypoints, compress_route_waypoints, generate_waveguide_polygon,
-    grid_path_to_centerline, realize_route_polygon, route_to_grid_path, snap_centerline_endpoints,
-    GeometryError, GeometryGridSpec,
+    build_port_access, compress_grid_waypoints, compress_route_waypoints,
+    generate_waveguide_polygon, grid_path_to_centerline, realize_route_polygon,
+    realize_route_polygon_from_primitives, realize_route_polygon_with_port_access,
+    route_to_grid_path, route_to_primitive_centerline, snap_centerline_endpoints, GeometryError,
+    GeometryGridSpec, PortAccess, PortAccessConfig, PortAccessError,
 };
 pub use obstacle_map::{
     pack_xy, unpack_xy, CellKey, ClearanceMetric, NetId, ObstacleMap, WaveguideFootprint,
 };
 pub use primitives::{
-    create_photonic_primitive_library, Primitive, PrimitiveLibrary, PrimitiveLibraryConfig,
-    DIRECTIONS,
+    create_photonic_primitive_library, Primitive, PrimitiveGeometry, PrimitiveLibrary,
+    PrimitiveLibraryConfig, DIRECTIONS,
 };
 pub use static_obstacle_builder::{
     build_static_obstacle_map_from_geometry, compute_bbox, expand_bbox, grid_cell_center,

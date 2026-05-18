@@ -41,6 +41,12 @@ def _orientation_to_angle(orientation: float | None, *, flip: bool = False) -> i
     return int(round(normalized / 45.0)) % 8
 
 
+def _flip_orientation(orientation: float | None) -> float | None:
+    if orientation is None:
+        return None
+    return (float(orientation) + 180.0) % 360.0
+
+
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -137,7 +143,7 @@ def route_nets_rust(
         origin_x_um,
         origin_y_um,
     )
-    primitive_cfg = rust_backend.PrimitiveLibraryConfig(grid_size_um=float(grid.grid_size_um))
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(grid_size_um=float(grid.grid_size_um), bend_radius_cells=3)
     astar_cfg = rust_backend.AStarConfig()
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
@@ -162,8 +168,29 @@ def route_nets_rust(
             abs_port1 = get_port_from_instance(routed_layout, inst1, port1)
             abs_port2 = get_port_from_instance(routed_layout, inst2, port2)
 
-            source = _port_to_state(abs_port1, grid, is_target=False)
-            target = _port_to_state(abs_port2, grid, is_target=True)
+            source_access = router.build_port_access(
+                f"{inst1},{port1}",
+                float(abs_port1.center[0]),
+                float(abs_port1.center[1]),
+                None if abs_port1.orientation is None else float(abs_port1.orientation),
+            )
+            target_access = router.build_port_access(
+                f"{inst2},{port2}",
+                float(abs_port2.center[0]),
+                float(abs_port2.center[1]),
+                _flip_orientation(abs_port2.orientation),
+            )
+
+            source = (
+                int(source_access.anchor_cell[0]),
+                int(source_access.anchor_cell[1]),
+                int(source_access.entry_angle),
+            )
+            target = (
+                int(target_access.anchor_cell[0]),
+                int(target_access.anchor_cell[1]),
+                int(target_access.entry_angle),
+            )
 
             print(f"  Routing {net_name}: {port1_spec} -> {port2_spec}...", end=" ")
 
@@ -175,13 +202,11 @@ def route_nets_rust(
                 block_radius_cells,
             )
 
-            source_port_um = (float(abs_port1.center[0]), float(abs_port1.center[1]))
-            target_port_um = (float(abs_port2.center[0]), float(abs_port2.center[1]))
-            polygon = router.realize_route_polygon(
+            polygon = router.realize_route_polygon_with_port_access(
                 route_obj,
                 float(route_width_um),
-                source_port_um,
-                target_port_um,
+                source_access,
+                target_access,
             )
             routed_layout.add_polygon(polygon, layer=route_layer)
 

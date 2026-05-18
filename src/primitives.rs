@@ -4,6 +4,16 @@
 //! primitive carries both a state transition and the grid footprint that must be
 //! collision-free before the move is accepted.
 
+/// Physical geometry intent used for post-routing realization.
+///
+/// This is separate from [`Primitive::footprint`], which is the conservative
+/// discrete representation used for A* collision checks.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrimitiveGeometry {
+    Straight { length_um: f64 },
+    Bend { radius_um: f64, angle_delta: i8 },
+}
+
 /// Eight grid headings in 45-degree increments.
 ///
 /// Angle `0` is east, then angles increase counter-clockwise:
@@ -27,9 +37,12 @@ pub struct Primitive {
     pub end_angle: u8,
     pub dx: i32,
     pub dy: i32,
+    /// Conservative discrete occupancy used for search and collision checks.
     pub footprint: Vec<(i32, i32)>,
     pub length_um: f64,
     pub bend_cost: f64,
+    /// Physical realization descriptor used after route selection.
+    pub geometry: PrimitiveGeometry,
 }
 
 /// Configuration used to create the first photonic primitive library.
@@ -164,6 +177,7 @@ fn make_straight(id: u16, angle: u8, cells: i32, grid_size_um: f64) -> Primitive
     let dx = dir.0 * cells;
     let dy = dir.1 * cells;
 
+    let length_um = vector_length_um(dx, dy, grid_size_um);
     Primitive {
         id,
         start_angle: angle,
@@ -171,8 +185,9 @@ fn make_straight(id: u16, angle: u8, cells: i32, grid_size_um: f64) -> Primitive
         dx,
         dy,
         footprint,
-        length_um: vector_length_um(dx, dy, grid_size_um),
+        length_um,
         bend_cost: 0.0,
+        geometry: PrimitiveGeometry::Straight { length_um },
     }
 }
 
@@ -214,6 +229,10 @@ fn make_turn(
             grid_size_um,
         ),
         bend_cost: angle_delta.unsigned_abs() as f64,
+        geometry: PrimitiveGeometry::Bend {
+            radius_um: radius_cells as f64 * grid_size_um,
+            angle_delta,
+        },
     }
 }
 
@@ -277,6 +296,12 @@ mod tests {
         assert_eq!(primitive.dy, 0);
         assert_eq!(primitive.end_angle, 0);
         assert_eq!(primitive.footprint, vec![(0, 0), (1, 0)]);
+        assert_eq!(
+            primitive.geometry,
+            PrimitiveGeometry::Straight {
+                length_um: primitive.length_um
+            }
+        );
     }
 
     #[test]
@@ -289,5 +314,31 @@ mod tests {
         assert_eq!(primitive.dy, 2);
         assert!(primitive.bend_cost > 0.0);
         assert!(primitive.footprint.contains(&(2, 2)));
+        assert!(matches!(
+            primitive.geometry,
+            PrimitiveGeometry::Bend {
+                radius_um: _,
+                angle_delta: 2
+            }
+        ));
+    }
+
+    #[test]
+    fn every_primitive_has_geometry() {
+        let library = create_photonic_primitive_library(PrimitiveLibraryConfig::default());
+        for angle in 0..8 {
+            for primitive in library.get_primitives_for_angle(angle) {
+                match primitive.geometry {
+                    PrimitiveGeometry::Straight { length_um } => assert!(length_um > 0.0),
+                    PrimitiveGeometry::Bend {
+                        radius_um,
+                        angle_delta,
+                    } => {
+                        assert!(radius_um > 0.0);
+                        assert!(angle_delta != 0);
+                    }
+                }
+            }
+        }
     }
 }
