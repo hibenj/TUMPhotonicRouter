@@ -105,7 +105,7 @@ pub struct RouteSearchStats {
 #[derive(Clone, Debug)]
 struct Parent {
     previous: State,
-    primitive_index: usize,
+    primitive_id: u16,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -297,7 +297,7 @@ fn route_single_net_with_bounds(
 
         let current_g = *g_costs.get(&state).unwrap_or(&f64::INFINITY);
         let primitive_bucket = primitives.get_primitives_for_angle(state.angle);
-        for (primitive_index, primitive) in primitive_bucket.iter().enumerate() {
+        for primitive in primitive_bucket.iter() {
             let next_state = State::new(
                 state.x.checked_add(primitive.dx)?,
                 state.y.checked_add(primitive.dy)?,
@@ -336,7 +336,7 @@ fn route_single_net_with_bounds(
                 next_state,
                 Parent {
                     previous: state,
-                    primitive_index,
+                    primitive_id: primitive.id,
                 },
             );
             g_costs.insert(next_state, tentative_g);
@@ -494,10 +494,7 @@ fn reconstruct_route(
         let parent = parents
             .get(&current)
             .expect("missing parent during route reconstruction");
-        let primitive = primitives.get_primitives_for_angle(parent.previous.angle)
-            [parent.primitive_index]
-            .clone();
-        primitive_steps_reversed.push((parent.previous, primitive));
+        primitive_steps_reversed.push((parent.previous, parent.primitive_id));
         current = parent.previous;
         states_reversed.push(current);
     }
@@ -512,11 +509,14 @@ fn reconstruct_route(
     push_if_different(&mut ordered_path, (source.x, source.y));
     let mut total_length_um = 0.0;
 
-    for (origin, primitive) in primitive_steps_reversed {
-        primitive_ids.push(primitive.id);
+    for (origin, primitive_id) in primitive_steps_reversed {
+        let primitive = find_primitive(primitives, origin.angle, primitive_id).expect(
+            "missing primitive during route reconstruction; parent map references invalid primitive id",
+        );
+        primitive_ids.push(primitive_id);
         total_length_um += primitive.length_um;
 
-        for (dx, dy) in primitive.footprint {
+        for (dx, dy) in primitive.footprint.iter().copied() {
             let cell = (origin.x + dx, origin.y + dy);
             push_if_different(&mut ordered_path, cell);
             if seen_cells.insert(pack_xy(cell.0, cell.1)) {
@@ -538,6 +538,17 @@ fn reconstruct_route(
         reached_target,
         stats,
     }
+}
+
+fn find_primitive(
+    primitives: &PrimitiveLibrary,
+    start_angle: u8,
+    primitive_id: u16,
+) -> Option<&crate::primitives::Primitive> {
+    primitives
+        .get_primitives_for_angle(start_angle)
+        .iter()
+        .find(|p| p.id == primitive_id)
 }
 
 fn compress_grid_waypoints(path: &[(i32, i32)]) -> Vec<(i32, i32)> {
@@ -757,6 +768,44 @@ mod tests {
         assert!((reached.x - 5).abs() <= 1);
         assert!((reached.y - 3).abs() <= 1);
         assert_eq!(result.reached_target, reached);
+    }
+
+    #[test]
+    fn reconstruction_uses_primitive_ids_and_preserves_cells() {
+        let map = ObstacleMap::new(10, 5);
+        let library = primitive_library();
+        let result = route_single_net(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            None,
+        )
+        .expect("route should exist");
+
+        assert!(!result.primitives.is_empty());
+        for primitive_id in &result.primitives {
+            assert!(*primitive_id > 0);
+        }
+
+        let mut expected_cells = Vec::new();
+        let mut seen_cells = FxHashSet::default();
+        for (idx, primitive_id) in result.primitives.iter().enumerate() {
+            let origin = result.states[idx];
+            let primitive = library
+                .get_primitives_for_angle(origin.angle)
+                .iter()
+                .find(|p| p.id == *primitive_id)
+                .expect("primitive id should resolve in library");
+            for (dx, dy) in primitive.footprint.iter().copied() {
+                let cell = (origin.x + dx, origin.y + dy);
+                if seen_cells.insert(pack_xy(cell.0, cell.1)) {
+                    expected_cells.push(cell);
+                }
+            }
+        }
+
+        assert_eq!(result.cells, expected_cells);
     }
 
     #[test]
