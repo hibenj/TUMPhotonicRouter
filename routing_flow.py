@@ -107,6 +107,7 @@ def run_routing_flow(
         schematic,
         debug_dir=debug_dir,
         debug_prefix=benchmark_name.lower(),
+        debug_timing=debug_timing,
     )
     if debug_timing:
         t_route_end = time.perf_counter()

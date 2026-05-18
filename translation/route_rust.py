@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import math
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,6 +85,7 @@ def route_nets_rust(
     debug_prefix: str = "route",
     route_width_um: float = 0.5,
     route_layer: tuple[int, int] = (1, 0),
+    debug_timing: bool = False,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
     """Route schematic nets using Rust A* and add one polygon per routed net.
 
@@ -104,6 +106,7 @@ def route_nets_rust(
 
     Returns:
         A tuple of (routed_layout, debug_artifacts).
+        :param debug_timing:
     """
     if route_width_um <= 0:
         raise ValueError("route_width_um must be > 0")
@@ -118,7 +121,13 @@ def route_nets_rust(
     routed_layout = unrouted_layout.copy()
     routed_layout.name = "routed_layout_rust"
 
+    t_obstacle_start = 0.0
+    if debug_timing:
+        t_obstacle_start = time.perf_counter()
     obstacle_map = build_static_obstacle_map(unrouted_layout, config=obstacle_config)
+    if debug_timing:
+        t_obstacle_end = time.perf_counter()
+        print(f"      - Obstacle Map time: {t_obstacle_end - t_obstacle_start:.4f} s")
     grid = obstacle_map.grid
     blocked_cells = set(obstacle_map.blocked_cells)
     port_open_cells = set(obstacle_map.port_open_cells)
@@ -157,6 +166,10 @@ def route_nets_rust(
     block_radius_cells = max(
         0, math.ceil((float(route_width_um) / 2.0) / float(grid.grid_size_um))
     )
+
+    t_astar_start = 0.0
+    if debug_timing:
+        t_astar_start = time.perf_counter()
 
     for net_name, bundle in nets.items():
         links = bundle.links
@@ -210,6 +223,10 @@ def route_nets_rust(
             )
 
             print("ok")
+
+    if debug_timing:
+        t_astar_end = time.perf_counter()
+        print(f"      - Astar time: {t_astar_end - t_astar_start:.4f} s")
 
     return routed_layout, RustRouteDebugArtifacts(
         obstacle_svg=obstacle_svg,
