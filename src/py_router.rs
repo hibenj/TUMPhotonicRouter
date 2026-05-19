@@ -8,7 +8,7 @@ use crate::astar::{
 };
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
-    realize_route_polygon as realize_route_polygon_rs,
+    realize_route_polygon_from_primitives as realize_route_polygon_from_primitives_rs,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     GeometryGridSpec, PortAccess, PortAccessConfig,
 };
@@ -587,13 +587,11 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,width_um,source_port_um=None,target_port_um=None))]
+    #[pyo3(signature=(route,width_um))]
     fn realize_route_polygon(
         &self,
         route: &PyRouteResult,
         width_um: f64,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
     ) -> PyResult<Vec<(f64, f64)>> {
         let grid = GeometryGridSpec::new(
             self.grid.grid_size_um,
@@ -602,15 +600,8 @@ impl PyPhotonicRouter {
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let r = to_route_result(route);
-        realize_route_polygon_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            width_um,
-            source_port_um,
-            target_port_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))
+        realize_route_polygon_from_primitives_rs(&r, &self.primitives, &grid, width_um)
+            .map_err(|err| PyValueError::new_err(err.to_string()))
     }
     fn describe_primitives(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
         describe_primitives(py, &self.primitives)

@@ -135,7 +135,7 @@ def route_nets_rust(
         origin_x_um,
         origin_y_um,
     )
-    primitive_cfg = rust_backend.PrimitiveLibraryConfig(grid_size_um=float(grid.grid_size_um), bend_radius_cells=3)
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(grid_size_um=float(grid.grid_size_um), bend_radius_cells=8)
     astar_cfg = rust_backend.AStarConfig()
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
@@ -145,17 +145,59 @@ def route_nets_rust(
     router.set_static_cells(sorted(obstacle_map.blocked_cells))
     net_id = 0
 
+    def _orientation_to_angle(orientation: float | None, *, flip: bool = False) -> int:
+        if orientation is None:
+            angle = 0
+        else:
+            angle = int(round((float(orientation) % 360.0) / 45.0)) % 8
+
+        if flip:
+            angle = (angle + 4) % 8
+
+        return angle
+
+
+    def _angle_to_step(angle: int) -> tuple[int, int]:
+        steps = [
+            (1, 0),    # 0 east
+            (1, 1),    # 1 northeast
+            (0, 1),    # 2 north
+            (-1, 1),   # 3 northwest
+            (-1, 0),   # 4 west
+            (-1, -1),  # 5 southwest
+            (0, -1),   # 6 south
+            (1, -1),   # 7 southeast
+        ]
+        return steps[angle % 8]
+
+
     def port_to_grid_state(
-        port: Port,
-        grid_origin_x_um: float,
-        grid_origin_y_um: float,
-        grid_size_um: float,
-        *,
-        as_target: bool = False,
+            port: Port,
+            grid_origin_x_um: float,
+            grid_origin_y_um: float,
+            grid_size_um: float,
+            *,
+            as_target: bool = False,
+            outward_cells: int = 1,
     ):
-        gx = int((float(port.center[0]) - grid_origin_x_um) // grid_size_um)
-        gy = int((float(port.center[1]) - grid_origin_y_um) // grid_size_um)
-        return rust_backend.State(gx, gy, _orientation_to_angle(port.orientation, flip=as_target))
+        port_angle = _orientation_to_angle(port.orientation, flip=False)
+
+        # For choosing the grid cell, always move outward from the physical port.
+        # This avoids starting inside the real component/port geometry.
+        sx, sy = _angle_to_step(port_angle)
+
+        x = float(port.center[0]) + sx * outward_cells * grid_size_um
+        y = float(port.center[1]) + sy * outward_cells * grid_size_um
+
+        gx = int((x - grid_origin_x_um) // grid_size_um)
+        gy = int((y - grid_origin_y_um) // grid_size_um)
+
+        # For the route state angle:
+        # - source: route leaves the port outward
+        # - target: route approaches the port, so flip direction
+        route_angle = _orientation_to_angle(port.orientation, flip=as_target)
+
+        return rust_backend.State(gx, gy, route_angle)
 
     t_astar_start = 0.0
     if debug_timing:

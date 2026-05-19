@@ -597,9 +597,12 @@ pub fn generate_waveguide_polygon(
     Ok(polygon)
 }
 
-/// Legacy full route realization pipeline.
+/// Exact grid-footprint route realization.
 ///
-/// This path is grid-path-based and preserved for compatibility/debugging.
+/// This preserves the exact A* state/primitive footprint as a polyline through
+/// occupied grid-cell centers, then expands that centerline into a waveguide
+/// polygon. The Python flow uses primitive replay instead so bend geometry is
+/// realized as sampled curves.
 pub fn realize_route_polygon(
     route: &RouteResult,
     primitives: &PrimitiveLibrary,
@@ -608,7 +611,9 @@ pub fn realize_route_polygon(
     _source_port_um: Option<(f64, f64)>,
     _target_port_um: Option<(f64, f64)>,
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
-    realize_route_polygon_with_port_access(route, primitives, grid, width_um, None, None)
+    let path = route_to_grid_path(route, primitives)?;
+    let centerline = grid_path_to_centerline(&path, grid)?;
+    generate_waveguide_polygon(&centerline, width_um)
 }
 
 /// Realize route polygon from primitive-replay centerline generation.
@@ -795,7 +800,8 @@ fn build_access_centerline(
     let mut out = Vec::new();
 
     // Build in local frame (port at origin, +x along port tangent, +y left-normal), then map back.
-    let to_world = |p: (f64, f64)| -> (f64, f64) { add(port_point, add(scale(u, p.0), scale(v, p.1))) };
+    let to_world =
+        |p: (f64, f64)| -> (f64, f64) { add(port_point, add(scale(u, p.0), scale(v, p.1))) };
     push_physical_if_different(&mut out, to_world((0.0, 0.0)));
 
     if local_dy.abs() <= EPS {
@@ -839,7 +845,10 @@ fn build_access_centerline(
     let p2 = (launch_straight + radius, sign * radius);
     let p3 = (launch_straight + radius, sign * (abs_dy - radius));
     let p4 = (launch_straight + 2.0 * radius, sign * abs_dy);
-    let p5 = (launch_straight + 2.0 * radius + final_straight, sign * abs_dy);
+    let p5 = (
+        launch_straight + 2.0 * radius + final_straight,
+        sign * abs_dy,
+    );
     let p6 = (local_dx - landing_straight, sign * abs_dy);
     let p7 = (local_dx, sign * abs_dy);
 
@@ -863,7 +872,9 @@ fn build_access_centerline(
     push_physical_if_different(&mut out, to_world(p6));
     push_physical_if_different(&mut out, to_world(p7));
 
-    if out.iter().any(|p| !is_finite_point(*p)) || out.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
+    if out.iter().any(|p| !is_finite_point(*p))
+        || out.windows(2).any(|w| distance(w[0], w[1]) <= EPS)
+    {
         return Err(PortAccessError::NonFiniteAccessCoordinate {
             port_name: port_name.to_string(),
         });
@@ -898,7 +909,10 @@ fn append_arc_samples(
     for i in 1..steps {
         let t = i as f64 / steps as f64;
         let a = a0 + (a1 - a0) * t;
-        push_physical_if_different(out, (center.0 + radius * a.cos(), center.1 + radius * a.sin()));
+        push_physical_if_different(
+            out,
+            (center.0 + radius * a.cos(), center.1 + radius * a.sin()),
+        );
     }
     push_physical_if_different(out, end);
 }
@@ -996,6 +1010,10 @@ fn dot(a: (f64, f64), b: (f64, f64)) -> f64 {
     a.0 * b.0 + a.1 * b.1
 }
 
+fn cross(a: (f64, f64), b: (f64, f64)) -> f64 {
+    a.0 * b.1 - a.1 * b.0
+}
+
 fn length(a: (f64, f64)) -> f64 {
     dot(a, a).sqrt()
 }
@@ -1026,12 +1044,22 @@ fn append_circular_bend_centerline(
 
     let start_dir = angle_to_unit_vector(start_angle);
     let end_dir = angle_to_unit_vector(end_angle);
-    let corner = add(start_point, scale(start_dir, radius_um));
+    let chord = sub(end_point, start_point);
+    let denom = cross(start_dir, end_dir);
+    if denom.abs() <= EPS {
+        push_physical_if_different(out, end_point);
+        return Ok(());
+    }
+    let in_len = cross(chord, end_dir) / denom;
+    let out_len = cross(start_dir, chord) / denom;
+    if !in_len.is_finite() || !out_len.is_finite() || in_len <= EPS || out_len <= EPS {
+        push_physical_if_different(out, end_point);
+        return Ok(());
+    }
+    let corner = add(start_point, scale(start_dir, in_len));
     let turn_abs = (angle_delta as f64).abs() * (std::f64::consts::PI / 4.0);
     let trim = radius_um * (turn_abs / 2.0).tan();
 
-    let in_len = distance(start_point, corner);
-    let out_len = distance(corner, end_point);
     let trim_eff = trim.min(in_len - EPS).min(out_len - EPS);
     if !trim_eff.is_finite() || trim_eff <= EPS {
         push_physical_if_different(out, end_point);
@@ -1040,6 +1068,7 @@ fn append_circular_bend_centerline(
 
     let t_in = sub(corner, scale(start_dir, trim_eff));
     let t_out = add(corner, scale(end_dir, trim_eff));
+
     push_physical_if_different(out, t_in);
 
     let left_turn = angle_delta > 0;
@@ -1249,6 +1278,30 @@ mod tests {
     }
 
     #[test]
+    fn primitive_replay_diagonal_start_bend_tail_follows_end_angle() {
+        let lib = test_lib();
+        let left_45_pid = lib.get_primitives_for_angle(1)[2].id;
+        let route = RouteResult {
+            states: vec![State::new(1, 1, 1), State::new(2, 3, 2)],
+            primitives: vec![left_45_pid],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target: State::new(2, 3, 2),
+            reached_target: State::new(2, 3, 2),
+            stats: Default::default(),
+        };
+
+        let centerline = route_to_primitive_centerline(&route, &lib, &grid()).unwrap();
+        let tail_start = centerline[centerline.len() - 2];
+        let tail_end = centerline[centerline.len() - 1];
+
+        assert!((tail_end.0 - tail_start.0).abs() <= EPS);
+        assert!(tail_end.1 > tail_start.1);
+    }
+
+    #[test]
     fn primitive_replay_rejects_invalid_topology() {
         let lib = test_lib();
         let route = RouteResult {
@@ -1394,8 +1447,8 @@ mod tests {
             PortInput::new("b0".to_string(), 0.2, 0.7, Some(0.0)),
             PortInput::new("b1".to_string(), 0.3, 0.8, Some(45.0)),
         ];
-        let accesses = build_port_accesses(&ports, &static_grid(), &PortAccessConfig::default())
-            .unwrap();
+        let accesses =
+            build_port_accesses(&ports, &static_grid(), &PortAccessConfig::default()).unwrap();
         assert_eq!(accesses.len(), ports.len());
     }
 
