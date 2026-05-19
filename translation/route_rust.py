@@ -23,7 +23,6 @@ from translation.route_gds import get_port_from_instance
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 GridSpec = _sob.GridSpec
 build_static_obstacle_map = _sob.build_static_obstacle_map
-physical_to_grid = _sob.physical_to_grid
 _load_rust_backend = _sob._load_rust_backend
 
 
@@ -39,12 +38,6 @@ def _orientation_to_angle(orientation: float | None, *, flip: bool = False) -> i
     normalized = orientation + (180.0 if flip else 0.0)
     normalized %= 360.0
     return int(round(normalized / 45.0)) % 8
-
-
-def _flip_orientation(orientation: float | None) -> float | None:
-    if orientation is None:
-        return None
-    return (float(orientation) + 180.0) % 360.0
 
 
 def _ensure_dir(path: Path) -> None:
@@ -114,7 +107,6 @@ def route_nets_rust(
         t_obstacle_end = time.perf_counter()
         print(f"      - Obstacle Map time: {t_obstacle_end - t_obstacle_start:.4f} s")
     grid = obstacle_map.grid
-    port_open_cells = set(obstacle_map.port_open_cells)
 
     debug_path = Path(debug_dir) if debug_dir is not None else None
     obstacle_svg = None
@@ -151,9 +143,19 @@ def route_nets_rust(
         0, math.ceil((float(route_width_um) / 2.0) / float(grid.grid_size_um))
     )
     router.set_static_cells(sorted(obstacle_map.blocked_cells))
-    router.clear_port_open_cells()
-    router.add_port_open_cells(sorted(port_open_cells))
     net_id = 0
+
+    def port_to_grid_state(
+        port: Port,
+        grid_origin_x_um: float,
+        grid_origin_y_um: float,
+        grid_size_um: float,
+        *,
+        as_target: bool = False,
+    ):
+        gx = int((float(port.center[0]) - grid_origin_x_um) // grid_size_um)
+        gy = int((float(port.center[1]) - grid_origin_y_um) // grid_size_um)
+        return rust_backend.State(gx, gy, _orientation_to_angle(port.orientation, flip=as_target))
 
     t_astar_start = 0.0
     if debug_timing:
@@ -165,49 +167,42 @@ def route_nets_rust(
             inst1, port1 = port1_spec.split(",")
             inst2, port2 = port2_spec.split(",")
 
-            abs_port1 = get_port_from_instance(routed_layout, inst1, port1)
-            abs_port2 = get_port_from_instance(routed_layout, inst2, port2)
+            source_port = get_port_from_instance(routed_layout, inst1, port1)
+            target_port = get_port_from_instance(routed_layout, inst2, port2)
 
-            source_access = router.build_port_access(
-                f"{inst1},{port1}",
-                float(abs_port1.center[0]),
-                float(abs_port1.center[1]),
-                None if abs_port1.orientation is None else float(abs_port1.orientation),
+            source_state = port_to_grid_state(
+                source_port,
+                origin_x_um,
+                origin_y_um,
+                float(grid.grid_size_um),
+                as_target=False,
             )
-            target_access = router.build_port_access(
-                f"{inst2},{port2}",
-                float(abs_port2.center[0]),
-                float(abs_port2.center[1]),
-                _flip_orientation(abs_port2.orientation),
-            )
-
-            source = (
-                int(source_access.anchor_cell[0]),
-                int(source_access.anchor_cell[1]),
-                int(source_access.entry_angle),
-            )
-            target = (
-                int(target_access.anchor_cell[0]),
-                int(target_access.anchor_cell[1]),
-                int(target_access.entry_angle),
+            target_state = port_to_grid_state(
+                target_port,
+                origin_x_um,
+                origin_y_um,
+                float(grid.grid_size_um),
+                as_target=True,
             )
 
             print(f"  Routing {net_name}: {port1_spec} -> {port2_spec}...", end=" ")
 
             net_id += 1
+            opened_cells = sorted(
+                {
+                    (int(source_state.x), int(source_state.y)),
+                    (int(target_state.x), int(target_state.y)),
+                }
+            )
             route_obj = router.route_single_net_and_commit(
                 net_id,
-                rust_backend.State(*source),
-                rust_backend.State(*target),
+                source_state,
+                target_state,
                 block_radius_cells,
+                opened_cells,
             )
 
-            polygon = router.realize_route_polygon_with_port_access(
-                route_obj,
-                float(route_width_um),
-                source_access,
-                target_access,
-            )
+            polygon = router.realize_route_polygon(route_obj, float(route_width_um))
             routed_layout.add_polygon(polygon, layer=route_layer)
 
             if debug_path is not None:
@@ -228,8 +223,3 @@ def route_nets_rust(
         route_svgs=route_svgs,
     )
 
-
-def _port_to_state(port: Port, grid: GridSpec, *, is_target: bool) -> tuple[int, int, int]:
-    gx, gy = physical_to_grid(port.center[0], port.center[1], grid)
-    angle = _orientation_to_angle(port.orientation, flip=is_target)
-    return gx, gy, angle
