@@ -63,6 +63,8 @@ def route_nets_rust(
     debug_prefix: str = "route",
     route_width_um: float = 0.5,
     route_layer: tuple[int, int] = (1, 0),
+    allow_45_degree_turns: bool = True,
+    max_iterations: int = 500_000,
     debug_timing: bool = False,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
     """Route schematic nets using Rust A* and add one polygon per routed net.
@@ -81,6 +83,8 @@ def route_nets_rust(
         debug_prefix: Prefix used for debug SVG filenames.
         route_width_um: Realized waveguide width in micrometers.
         route_layer: Target GDS layer/datatype tuple for route polygons.
+        allow_45_degree_turns: If False, omit ±45-degree turn primitives.
+        max_iterations: Maximum A* state expansions per route attempt.
 
     Returns:
         A tuple of (routed_layout, debug_artifacts).
@@ -88,6 +92,8 @@ def route_nets_rust(
     """
     if route_width_um <= 0:
         raise ValueError("route_width_um must be > 0")
+    if max_iterations <= 0:
+        raise ValueError("max_iterations must be > 0")
 
     rust_backend = _load_rust_backend()
     if rust_backend is None:
@@ -135,8 +141,12 @@ def route_nets_rust(
         origin_x_um,
         origin_y_um,
     )
-    primitive_cfg = rust_backend.PrimitiveLibraryConfig(grid_size_um=float(grid.grid_size_um), bend_radius_cells=8)
-    astar_cfg = rust_backend.AStarConfig()
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=float(grid.grid_size_um),
+        bend_radius_cells=4,
+        allow_45_degree_turns=allow_45_degree_turns,
+    )
+    astar_cfg = rust_backend.AStarConfig(max_iterations=int(max_iterations))
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
     block_radius_cells = max(
@@ -236,13 +246,21 @@ def route_nets_rust(
                     (int(target_state.x), int(target_state.y)),
                 }
             )
-            route_obj = router.route_single_net_and_commit(
-                net_id,
-                source_state,
-                target_state,
-                block_radius_cells,
-                opened_cells,
-            )
+            try:
+                route_obj = router.route_single_net_and_commit(
+                    net_id,
+                    source_state,
+                    target_state,
+                    block_radius_cells,
+                    opened_cells,
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"No route found for {net_name}: {port1_spec} -> {port2_spec}. "
+                    f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
+                    f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
+                    f"allow_45_degree_turns={allow_45_degree_turns}"
+                ) from exc
 
             polygon = router.realize_route_polygon(route_obj, float(route_width_um))
             routed_layout.add_polygon(polygon, layer=route_layer)
@@ -264,4 +282,3 @@ def route_nets_rust(
         obstacle_svg=obstacle_svg,
         route_svgs=route_svgs,
     )
-

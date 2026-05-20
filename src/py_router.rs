@@ -68,25 +68,29 @@ pub struct PyPrimitiveLibraryConfig {
     #[pyo3(get, set)]
     pub bend_radius_cells: i32,
     #[pyo3(get, set)]
+    pub allow_45_degree_turns: bool,
+    #[pyo3(get, set)]
     pub bend_weight: f64,
 }
 
 #[pymethods]
 impl PyPrimitiveLibraryConfig {
     #[new]
-    #[pyo3(signature=(grid_size_um=0.5,straight_short_cells=1,straight_long_cells=4,bend_radius_cells=2,bend_weight=1.0))]
+    #[pyo3(signature=(grid_size_um=0.5,straight_short_cells=1,straight_long_cells=4,bend_radius_cells=2,bend_weight=1.0,allow_45_degree_turns=true))]
     fn new(
         grid_size_um: f64,
         straight_short_cells: i32,
         straight_long_cells: i32,
         bend_radius_cells: i32,
         bend_weight: f64,
+        allow_45_degree_turns: bool,
     ) -> Self {
         Self {
             grid_size_um,
             straight_short_cells,
             straight_long_cells,
             bend_radius_cells,
+            allow_45_degree_turns,
             bend_weight,
         }
     }
@@ -355,6 +359,7 @@ impl PyPhotonicRouter {
             straight_short_cells: primitive_config.straight_short_cells,
             straight_long_cells: primitive_config.straight_long_cells,
             bend_radius_cells: primitive_config.bend_radius_cells,
+            allow_45_degree_turns: primitive_config.allow_45_degree_turns,
         });
         Self {
             obstacle_map: ObstacleMap::new(grid_spec.width as i32, grid_spec.height as i32),
@@ -747,7 +752,7 @@ mod tests {
         let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
         let router = PyPhotonicRouter::new(
             grid,
-            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0),
+            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
             ),

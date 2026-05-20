@@ -60,6 +60,8 @@ def run_routing_flow(
     debug_svgs: bool = False,
     debug_timing: bool = False,
     show_klayout: bool = False,
+    allow_45_degree_turns: bool = True,
+    max_iterations: int = 500_000,
 ) -> Component:
     """Execute the routing flow for a given benchmark.
 
@@ -69,6 +71,8 @@ def run_routing_flow(
         debug_timing: If True, print timing information for each stage.
         show_klayout: If True, open the final routed layout in KLayout via
                       `Component.show()`.
+        allow_45_degree_turns: If False, omit ±45-degree turn primitives.
+        max_iterations: Maximum A* state expansions per route attempt.
 
     Returns:
         The routed layout component.
@@ -108,6 +112,8 @@ def run_routing_flow(
         debug_dir=debug_dir,
         debug_prefix=benchmark_name.lower(),
         debug_timing=debug_timing,
+        allow_45_degree_turns=allow_45_degree_turns,
+        max_iterations=max_iterations,
     )
     if debug_timing:
         t_route_end = time.perf_counter()
@@ -152,4 +158,4 @@ def run_routing_flow(
 
 
 if __name__ == "__main__":
-    run_routing_flow("TOY", debug_svgs=False, debug_timing=True, show_klayout=True)
+    run_routing_flow("TOY", debug_svgs=False, debug_timing=True, show_klayout=True, allow_45_degree_turns=False)

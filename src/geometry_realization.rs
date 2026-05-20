@@ -1150,6 +1150,7 @@ mod tests {
             straight_short_cells: 1,
             straight_long_cells: 4,
             bend_radius_cells: 1,
+            allow_45_degree_turns: true,
         })
     }
 

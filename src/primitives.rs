@@ -52,6 +52,7 @@ pub struct PrimitiveLibraryConfig {
     pub straight_short_cells: i32,
     pub straight_long_cells: i32,
     pub bend_radius_cells: i32,
+    pub allow_45_degree_turns: bool,
 }
 
 impl Default for PrimitiveLibraryConfig {
@@ -61,6 +62,7 @@ impl Default for PrimitiveLibraryConfig {
             straight_short_cells: 1,
             straight_long_cells: 4,
             bend_radius_cells: 2,
+            allow_45_degree_turns: true,
         }
     }
 }
@@ -101,7 +103,7 @@ impl PrimitiveLibrary {
 /// The starting set contains:
 /// - short straight
 /// - long straight
-/// - 45-degree left/right bend
+/// - 45-degree left/right bend when enabled
 /// - 90-degree left/right bend
 pub fn create_photonic_primitive_library(config: PrimitiveLibraryConfig) -> PrimitiveLibrary {
     assert!(config.grid_size_um > 0.0, "grid_size_um must be positive");
@@ -122,7 +124,7 @@ pub fn create_photonic_primitive_library(config: PrimitiveLibraryConfig) -> Prim
     let mut primitives_per_angle = Vec::with_capacity(8);
 
     for angle in 0..8u8 {
-        let mut primitives = Vec::with_capacity(6);
+        let mut primitives = Vec::with_capacity(if config.allow_45_degree_turns { 6 } else { 4 });
 
         primitives.push(make_straight(
             next_primitive_id(&mut next_id),
@@ -136,20 +138,22 @@ pub fn create_photonic_primitive_library(config: PrimitiveLibraryConfig) -> Prim
             config.straight_long_cells,
             config.grid_size_um,
         ));
-        primitives.push(make_turn(
-            next_primitive_id(&mut next_id),
-            angle,
-            1,
-            config.bend_radius_cells,
-            config.grid_size_um,
-        ));
-        primitives.push(make_turn(
-            next_primitive_id(&mut next_id),
-            angle,
-            -1,
-            config.bend_radius_cells,
-            config.grid_size_um,
-        ));
+        if config.allow_45_degree_turns {
+            primitives.push(make_turn(
+                next_primitive_id(&mut next_id),
+                angle,
+                1,
+                config.bend_radius_cells,
+                config.grid_size_um,
+            ));
+            primitives.push(make_turn(
+                next_primitive_id(&mut next_id),
+                angle,
+                -1,
+                config.bend_radius_cells,
+                config.grid_size_um,
+            ));
+        }
         primitives.push(make_turn(
             next_primitive_id(&mut next_id),
             angle,
@@ -288,6 +292,24 @@ mod tests {
     }
 
     #[test]
+    fn can_disable_forty_five_degree_turns() {
+        let library = create_photonic_primitive_library(PrimitiveLibraryConfig {
+            allow_45_degree_turns: false,
+            ..PrimitiveLibraryConfig::default()
+        });
+
+        for angle in 0..8 {
+            let primitives = library.get_primitives_for_angle(angle);
+            assert_eq!(primitives.len(), 4);
+            assert!(primitives.iter().all(|primitive| {
+                let delta =
+                    (primitive.end_angle as i16 - primitive.start_angle as i16).rem_euclid(8);
+                delta == 0 || delta == 2 || delta == 6
+            }));
+        }
+    }
+
+    #[test]
     fn east_straight_short_moves_one_cell() {
         let library = create_photonic_primitive_library(PrimitiveLibraryConfig::default());
         let primitive = &library.get_primitives_for_angle(0)[0];
@@ -307,7 +329,11 @@ mod tests {
     #[test]
     fn east_ninety_left_turn_ends_north() {
         let library = create_photonic_primitive_library(PrimitiveLibraryConfig::default());
-        let primitive = &library.get_primitives_for_angle(0)[4];
+        let primitive = library
+            .get_primitives_for_angle(0)
+            .iter()
+            .find(|primitive| primitive.end_angle == 2)
+            .expect("east-to-north 90-degree turn should exist");
 
         assert_eq!(primitive.end_angle, 2);
         assert_eq!(primitive.dx, 2);
