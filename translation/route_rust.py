@@ -6,7 +6,7 @@ import importlib
 import math
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +19,15 @@ from gdsfactory.schematic import Schematic
 from gdsfactory.typings import Port
 
 from translation.route_gds import get_port_from_instance
+from photonic_router.path_length_graph import (
+    MissingLengthRequirement,
+    PathLengthAnalysisResult,
+    PortRef,
+    RoutedEdgeKey,
+    annotate_edge_lengths,
+    build_graph_from_schematic,
+    list_edges_requiring_meander,
+)
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 GridSpec = _sob.GridSpec
@@ -30,14 +39,198 @@ _load_rust_backend = _sob._load_rust_backend
 class RustRouteDebugArtifacts:
     obstacle_svg: Path | None
     route_svgs: list[Path]
+    routed_edge_lengths_um: dict[RoutedEdgeKey, float]
+    routed_net_records: list["RoutedNetRecord"] = field(default_factory=list)
+    realization_grid_spec: tuple[int, int, float, float, float] | None = None
+    realization_allow_45_degree_turns: bool = True
+    realization_bend_radius_cells: int = 4
 
 
-def _orientation_to_angle(orientation: float | None, *, flip: bool = False) -> int:
-    if orientation is None:
-        return 0
-    normalized = orientation + (180.0 if flip else 0.0)
-    normalized %= 360.0
-    return int(round(normalized / 45.0)) % 8
+@dataclass(frozen=True)
+class RoutedNetRecord:
+    net_name: str
+    source: PortRef
+    target: PortRef
+    route_obj: object
+    total_length_um: float
+
+
+@dataclass(frozen=True)
+class RouteRustPipelineResult:
+    routed_layout: Component
+    debug_artifacts: RustRouteDebugArtifacts
+    path_length_analysis_info: dict[str, object] | None = None
+    meander_requirements_info: list[dict[str, object]] | None = None
+
+
+def routed_net_records_to_edge_lengths(
+    records: list[RoutedNetRecord],
+) -> dict[RoutedEdgeKey, float]:
+    """Convert routed net records into edge-length annotations."""
+    return {
+        RoutedEdgeKey(
+            net_name=record.net_name,
+            source=record.source,
+            target=record.target,
+        ): float(record.total_length_um)
+        for record in records
+    }
+
+
+def analyze_path_length_matching(
+    schematic: Schematic,
+    *,
+    routed_net_records: list[RoutedNetRecord],
+    node_types: dict[str, str] | None = None,
+    internal_delays_um: dict[str, float] | None = None,
+) -> tuple[PathLengthAnalysisResult, list]:
+    """Phase M1: compute per-edge missing lengths before polygon realization."""
+    graph = build_graph_from_schematic(
+        schematic,
+        node_types=node_types,
+        internal_delays_um=internal_delays_um,
+    )
+    annotate_edge_lengths(graph, routed_net_records_to_edge_lengths(routed_net_records))
+    analysis = graph.analyze_missing_lengths()
+    return analysis, list(list_edges_requiring_meander(analysis))
+
+
+def edge_key_to_dict(edge_key: RoutedEdgeKey) -> dict[str, object]:
+    return {
+        "net_name": edge_key.net_name,
+        "source": {"instance": edge_key.source.instance, "port": edge_key.source.port},
+        "target": {"instance": edge_key.target.instance, "port": edge_key.target.port},
+    }
+
+
+def requirement_to_dict(req: MissingLengthRequirement) -> dict[str, object]:
+    return {
+        "edge": edge_key_to_dict(req.edge_key),
+        "missing_length_um": float(req.missing_length_um),
+    }
+
+
+def analysis_to_info_dict(analysis: PathLengthAnalysisResult) -> dict[str, object]:
+    return {
+        "topological_order": list(analysis.topological_order),
+        "node_arrival_um": {
+            str(node): float(arrival)
+            for node, arrival in analysis.node_arrival_um.items()
+        },
+        "edge_missing_lengths_um": [
+            {
+                "edge": edge_key_to_dict(edge_key),
+                "missing_length_um": float(missing),
+            }
+            for edge_key, missing in analysis.edge_missing_lengths_um.items()
+        ],
+        "requirements": [requirement_to_dict(req) for req in analysis.requirements],
+    }
+
+
+def route_match_and_realize(
+    unrouted_layout: Component,
+    schematic: Schematic,
+    *,
+    enable_path_length_matching: bool = False,
+    node_types: dict[str, str] | None = None,
+    internal_delays_um: dict[str, float] | None = None,
+    obstacle_config: object | None = None,
+    debug_dir: str | Path | None = None,
+    debug_prefix: str = "route",
+    route_width_um: float = 0.5,
+    route_layer: tuple[int, int] = (1, 0),
+    allow_45_degree_turns: bool = True,
+    max_iterations: int = 500_000,
+    debug_timing: bool = False,
+) -> RouteRustPipelineResult:
+    """Run Phase A->(optional M1)->B entirely in route_rust."""
+    routed_layout, debug_artifacts = route_nets_rust(
+        unrouted_layout,
+        schematic,
+        obstacle_config=obstacle_config,
+        debug_dir=debug_dir,
+        debug_prefix=debug_prefix,
+        route_width_um=route_width_um,
+        route_layer=route_layer,
+        allow_45_degree_turns=allow_45_degree_turns,
+        max_iterations=max_iterations,
+        debug_timing=debug_timing,
+        defer_realization=True,
+    )
+
+    analysis_info = None
+    requirements_info = None
+    if enable_path_length_matching:
+        analysis, requirements = analyze_path_length_matching(
+            schematic,
+            routed_net_records=debug_artifacts.routed_net_records,
+            node_types=node_types,
+            internal_delays_um=internal_delays_um,
+        )
+        analysis_info = analysis_to_info_dict(analysis)
+        requirements_info = [requirement_to_dict(req) for req in requirements]
+
+    if debug_artifacts.realization_grid_spec is None:
+        raise RuntimeError("Missing realization grid spec from routing phase.")
+    realize_routed_net_records(
+        routed_layout,
+        debug_artifacts.routed_net_records,
+        route_width_um=route_width_um,
+        route_layer=route_layer,
+        realization_grid_spec=debug_artifacts.realization_grid_spec,
+        allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
+        bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+    )
+
+    return RouteRustPipelineResult(
+        routed_layout=routed_layout,
+        debug_artifacts=debug_artifacts,
+        path_length_analysis_info=analysis_info,
+        meander_requirements_info=requirements_info,
+    )
+
+
+def realize_routed_net_records(
+    routed_layout: Component,
+    routed_net_records: list[RoutedNetRecord],
+    *,
+    route_width_um: float = 0.5,
+    route_layer: tuple[int, int] = (1, 0),
+    realization_grid_spec: tuple[int, int, float, float, float],
+    allow_45_degree_turns: bool = True,
+    bend_radius_cells: int = 4,
+) -> None:
+    """Phase B: realize routed records into polygons on the target layout."""
+    if route_width_um <= 0:
+        raise ValueError("route_width_um must be > 0")
+
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        raise RuntimeError(
+            "Rust router backend is not available. Build it with `cargo build` "
+            "or `maturin develop` so photonic_router._rust can be imported."
+        )
+
+    width, height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
+    grid_spec = rust_backend.GridSpec(
+        int(width),
+        int(height),
+        float(grid_size_um),
+        float(origin_x_um),
+        float(origin_y_um),
+    )
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=float(grid_size_um),
+        bend_radius_cells=int(bend_radius_cells),
+        allow_45_degree_turns=allow_45_degree_turns,
+    )
+    astar_cfg = rust_backend.AStarConfig(max_iterations=1)
+    router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+
+    for record in routed_net_records:
+        polygon = router.realize_route_polygon(record.route_obj, float(route_width_um))
+        routed_layout.add_polygon(polygon, layer=route_layer)
 
 
 def _ensure_dir(path: Path) -> None:
@@ -66,6 +259,7 @@ def route_nets_rust(
     allow_45_degree_turns: bool = True,
     max_iterations: int = 500_000,
     debug_timing: bool = False,
+    defer_realization: bool = False,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
     """Route schematic nets using Rust A* and add one polygon per routed net.
 
@@ -85,6 +279,9 @@ def route_nets_rust(
         route_layer: Target GDS layer/datatype tuple for route polygons.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
         max_iterations: Maximum A* state expansions per route attempt.
+        defer_realization: If True, keep routed RouteResult objects but skip
+            polygon realization. This is used for pre-realization transforms
+            such as path-length matching/meander insertion.
 
     Returns:
         A tuple of (routed_layout, debug_artifacts).
@@ -117,6 +314,8 @@ def route_nets_rust(
     debug_path = Path(debug_dir) if debug_dir is not None else None
     obstacle_svg = None
     route_svgs: list[Path] = []
+    routed_edge_lengths_um: dict[RoutedEdgeKey, float] = {}
+    routed_net_records: list[RoutedNetRecord] = []
 
     if debug_path is not None:
         obstacle_dir = debug_path / "static_obstacles"
@@ -262,8 +461,21 @@ def route_nets_rust(
                     f"allow_45_degree_turns={allow_45_degree_turns}"
                 ) from exc
 
-            polygon = router.realize_route_polygon(route_obj, float(route_width_um))
-            routed_layout.add_polygon(polygon, layer=route_layer)
+            edge_key = RoutedEdgeKey(
+                net_name=net_name,
+                source=PortRef(instance=inst1, port=port1),
+                target=PortRef(instance=inst2, port=port2),
+            )
+            routed_net_records.append(
+                RoutedNetRecord(
+                    net_name=net_name,
+                    source=edge_key.source,
+                    target=edge_key.target,
+                    route_obj=route_obj,
+                    total_length_um=float(route_obj.total_length_um),
+                )
+            )
+            routed_edge_lengths_um[edge_key] = float(route_obj.total_length_um)
 
             if debug_path is not None:
                 route_dir = debug_path / "routes"
@@ -278,7 +490,30 @@ def route_nets_rust(
         t_astar_end = time.perf_counter()
         print(f"      - Astar time: {t_astar_end - t_astar_start:.4f} s")
 
+    realization_grid_spec = (
+        int(grid.width),
+        int(grid.height),
+        float(grid.grid_size_um),
+        float(origin_x_um),
+        float(origin_y_um),
+    )
+    if not defer_realization:
+        realize_routed_net_records(
+            routed_layout,
+            routed_net_records,
+            route_width_um=route_width_um,
+            route_layer=route_layer,
+            realization_grid_spec=realization_grid_spec,
+            allow_45_degree_turns=allow_45_degree_turns,
+            bend_radius_cells=4,
+        )
+
     return routed_layout, RustRouteDebugArtifacts(
         obstacle_svg=obstacle_svg,
         route_svgs=route_svgs,
+        routed_edge_lengths_um=routed_edge_lengths_um,
+        routed_net_records=routed_net_records,
+        realization_grid_spec=realization_grid_spec,
+        realization_allow_45_degree_turns=allow_45_degree_turns,
+        realization_bend_radius_cells=4,
     )

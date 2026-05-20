@@ -1,8 +1,23 @@
 """TOY benchmark: Simple 2-component schematic for testing routing flow."""
 
-import gdsfactory as gf
 from gdsfactory.generic_tech import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
+
+NODE_TYPES = {
+    "gc_0": "input",
+    "gc_1": "input",
+    "mmi_0": "gate",
+    "gc_2": "output",
+    "gc_3": "output",
+}
+
+INTERNAL_DELAYS_UM = {
+    "gc_0": 0.0,
+    "gc_1": 0.0,
+    "mmi_0": 0.0,
+    "gc_2": 0.0,
+    "gc_3": 0.0,
+}
 
 
 def build_schematic() -> Schematic:
@@ -33,7 +48,7 @@ def build_schematic() -> Schematic:
     gc_placement1 = Placement(x=0, y=0, mirror=True)
     gc_placement2 = Placement(x=200, y=100, rotation=0)
     gc_placement3 = Placement(x=200, y=0, rotation=0)
-    mmi_placement = Placement(x=100, y=50, rotation=0)
+    mmi_placement = Placement(x=100, y=20, rotation=0)
 
     # Add instances and placements to schematic
     schematic.add_instance("gc_0", gc_instance, gc_placement0)
@@ -69,4 +84,3 @@ if __name__ == "__main__":
     for net in schematic.netlist.routes.keys():
         print(f"  - {net}")
     print(f"\nTotal nets: {len(schematic.netlist.routes)}")
-

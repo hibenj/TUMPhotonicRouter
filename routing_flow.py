@@ -11,12 +11,15 @@ import importlib
 import time
 from pathlib import Path
 import webbrowser
+from typing import Any
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 from translation.layout_from_schematic import layout_from_schematic
-from translation.route_rust import route_nets_rust
+from translation.route_rust import (
+    route_match_and_realize,
+)
 
 
 def load_benchmark(benchmark_name: str) -> Schematic:
@@ -54,12 +57,22 @@ def load_benchmark(benchmark_name: str) -> Schematic:
         ) from e
 
 
+def load_benchmark_metadata(benchmark_name: str) -> dict[str, Any]:
+    """Load optional benchmark metadata used by path-length analysis."""
+    benchmark_module = importlib.import_module(f"benchmarks.{benchmark_name}")
+    return {
+        "node_types": getattr(benchmark_module, "NODE_TYPES", {}),
+        "internal_delays_um": getattr(benchmark_module, "INTERNAL_DELAYS_UM", {}),
+    }
+
+
 def run_routing_flow(
     benchmark_name: str,
     *,
     debug_svgs: bool = False,
     debug_timing: bool = False,
     show_klayout: bool = False,
+    enable_path_length_matching: bool = False,
     allow_45_degree_turns: bool = True,
     max_iterations: int = 500_000,
 ) -> Component:
@@ -71,6 +84,8 @@ def run_routing_flow(
         debug_timing: If True, print timing information for each stage.
         show_klayout: If True, open the final routed layout in KLayout via
                       `Component.show()`.
+        enable_path_length_matching: If True, run post-route path-length
+                      analysis and compute per-edge missing lengths.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
         max_iterations: Maximum A* state expansions per route attempt.
 
@@ -103,22 +118,38 @@ def run_routing_flow(
     # Step 3: Route nets with Rust backend
     print("\n[3/3] Routing nets with Rust backend...")
     debug_dir = Path("build") if debug_svgs else None
+    metadata = load_benchmark_metadata(benchmark_name)
     t_route_start = 0.0
     if debug_timing:
         t_route_start = time.perf_counter()
-    routed_layout, debug_artifacts = route_nets_rust(
+    route_result = route_match_and_realize(
         unrouted_layout,
         schematic,
+        enable_path_length_matching=enable_path_length_matching,
+        node_types=metadata.get("node_types"),
+        internal_delays_um=metadata.get("internal_delays_um"),
         debug_dir=debug_dir,
         debug_prefix=benchmark_name.lower(),
         debug_timing=debug_timing,
         allow_45_degree_turns=allow_45_degree_turns,
         max_iterations=max_iterations,
     )
+    routed_layout = route_result.routed_layout
+    debug_artifacts = route_result.debug_artifacts
     if debug_timing:
         t_route_end = time.perf_counter()
         print(f"      - Routing time: {t_route_end - t_route_start:.4f} s")
     print(f"      ✓ Routed layout generated: {routed_layout.name}")
+
+    if route_result.path_length_analysis_info is not None:
+        routed_layout.info["path_length_analysis"] = route_result.path_length_analysis_info
+        routed_layout.info["meander_requirements"] = (
+            route_result.meander_requirements_info or []
+        )
+        print(
+            "      - Path-length matching: "
+            f"{len(routed_layout.info['meander_requirements'])} edge(s) require extra length"
+        )
 
     if debug_svgs:
         if debug_artifacts.obstacle_svg is not None:
@@ -158,4 +189,9 @@ def run_routing_flow(
 
 
 if __name__ == "__main__":
-    run_routing_flow("TOY", debug_svgs=False, debug_timing=True, show_klayout=True, allow_45_degree_turns=False)
+    run_routing_flow("TOY",
+                     debug_svgs=False,
+                     debug_timing=True,
+                     show_klayout=True,
+                     allow_45_degree_turns=False,
+                     enable_path_length_matching=True)
