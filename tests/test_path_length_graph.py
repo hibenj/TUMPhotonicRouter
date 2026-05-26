@@ -1,14 +1,40 @@
 from routing_flow import load_benchmark_metadata
 from benchmarks.TOY import build_schematic
+import pytest
 from gdsfactory.component import Component
-from photonic_router.path_length_graph import PortRef, RoutedEdgeKey, build_graph_from_schematic
+from photonic_router.static_obstacle_builder import _load_rust_backend
+from photonic_router.path_length_graph import (
+    MissingLengthRequirement,
+    PortRef,
+    RoutedEdgeKey,
+    build_graph_from_schematic,
+)
 from translation.route_rust import (
     RouteRustPipelineResult,
     RustRouteDebugArtifacts,
     RoutedNetRecord,
+    MeanderInsertionConfig,
     analyze_path_length_matching,
+    insert_meanders_for_requirements,
 )
 import routing_flow
+
+
+def _build_real_route_obj_for_test(x0: int, y0: int, x1: int, y1: int):
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for M2 candidate-analysis test.")
+    grid = rust_backend.GridSpec(256, 256, 1.0, 0.0, 0.0)
+    primitive = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=4,
+        allow_45_degree_turns=True,
+    )
+    astar = rust_backend.AStarConfig(max_iterations=200_000)
+    router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
+    source = rust_backend.State(x0, y0, 0)
+    target = rust_backend.State(x1, y1, 0)
+    return router.route_single_net(source, target)
 
 
 def test_build_graph_from_schematic_tracks_port_directions_and_fanout_shape():
@@ -233,3 +259,63 @@ def test_main_flow_matching_uses_record_lengths(monkeypatch):
     layout = routing_flow.run_routing_flow("DUMMY", enable_path_length_matching=True)
     assert len(layout.info["meander_requirements"]) == 1
     assert layout.info["meander_requirements"][0]["edge"]["net_name"] == "n0"
+
+
+def test_m2_skeleton_reports_unsupported_for_legal_candidate():
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="gate0", port="i0"),
+    )
+    route_obj = _build_real_route_obj_for_test(10, 10, 60, 10)
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=route_obj,
+        total_length_um=30.0,
+    )
+    req = MissingLengthRequirement(edge_key=edge, missing_length_um=12.0)
+
+    updated, report = insert_meanders_for_requirements(
+        [record],
+        [req],
+        config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=5.0),
+        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=True,
+        bend_radius_cells=4,
+    )
+
+    assert updated[0].total_length_um == 30.0
+    assert len(report.results) == 1
+    assert report.results[0].status == "unsupported_representation"
+    assert report.unmatched_length_um == 12.0
+
+
+def test_m2_skeleton_reports_no_candidate_when_too_short():
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="gate0", port="i0"),
+    )
+    route_obj = _build_real_route_obj_for_test(10, 10, 12, 10)
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=route_obj,
+        total_length_um=2.0,
+    )
+    req = MissingLengthRequirement(edge_key=edge, missing_length_um=10.0)
+
+    _, report = insert_meanders_for_requirements(
+        [record],
+        [req],
+        config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=10.0),
+        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=True,
+        bend_radius_cells=4,
+    )
+
+    assert len(report.results) == 1
+    assert report.results[0].status in {"no_candidate", "insufficient_space"}

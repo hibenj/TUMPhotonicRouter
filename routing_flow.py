@@ -142,14 +142,59 @@ def run_routing_flow(
     print(f"      ✓ Routed layout generated: {routed_layout.name}")
 
     if route_result.path_length_analysis_info is not None:
+        meander_report_info = getattr(route_result, "meander_insertion_report_info", None)
         routed_layout.info["path_length_analysis"] = route_result.path_length_analysis_info
         routed_layout.info["meander_requirements"] = (
             route_result.meander_requirements_info or []
         )
+        if meander_report_info is not None:
+            routed_layout.info["meander_insertion_report"] = (
+                meander_report_info
+            )
         print(
             "      - Path-length matching: "
             f"{len(routed_layout.info['meander_requirements'])} edge(s) require extra length"
         )
+        if meander_report_info is not None:
+            report = meander_report_info
+            total_requested = float(report.get("total_requested_extra_length_um", 0.0))
+            total_inserted = float(report.get("total_inserted_extra_length_um", 0.0))
+            unmatched = float(report.get("unmatched_length_um", 0.0))
+            print(
+                "      - Meander insertion: "
+                f"requested={total_requested:.3f}um, "
+                f"inserted={total_inserted:.3f}um, "
+                f"unmatched={unmatched:.3f}um"
+            )
+            for entry in report.get("results", []):
+                edge = entry.get("edge", {})
+                net_name = edge.get("net_name", "<unknown>")
+                status = entry.get("status", "<unknown>")
+                reason = entry.get("reason", "")
+                req = float(entry.get("requested_extra_length_um", 0.0))
+                ins = float(entry.get("inserted_extra_length_um", 0.0))
+                bumps = entry.get("number_of_bumps", None)
+                height = entry.get("meander_height_um", None)
+                width = entry.get("meander_width_um", None)
+                side = entry.get("side", None)
+                candidate_count = entry.get("candidate_count", None)
+                candidate_lengths = entry.get("candidate_lengths_um", None)
+                analysis_found = entry.get("analysis_found_solution", None)
+                analysis_reason = entry.get("analysis_reason", None)
+                planned_extra = entry.get("planned_extra_length_um", None)
+                residual = entry.get("residual_um", None)
+                gap_anchor = entry.get("gap_anchor", None)
+                gap_start = entry.get("gap_start_um", None)
+                gap_end = entry.get("gap_end_um", None)
+                print(
+                    f"        • {net_name}: status={status}, requested={req:.3f}um, "
+                    f"inserted={ins:.3f}um, side={side}, bumps={bumps}, "
+                    f"height_um={height}, width_um={width}, candidates={candidate_count}, "
+                    f"candidate_lengths_um={candidate_lengths}, reason={reason}, "
+                    f"analysis_found={analysis_found}, analysis_reason={analysis_reason}, "
+                    f"planned_extra_um={planned_extra}, residual_um={residual}, "
+                    f"gap_anchor={gap_anchor}, gap_start_um={gap_start}, gap_end_um={gap_end}"
+                )
 
     if debug_svgs:
         if debug_artifacts.obstacle_svg is not None:
