@@ -225,6 +225,11 @@ pub(crate) fn extract_straight_candidates(
     candidates
 }
 
+/// Legacy prototype: primitive-based meander insertion that mutates discrete
+/// route primitive/state sequences. Kept for compatibility only.
+#[deprecated(
+    note = "legacy primitive-based prototype; use analytic centerline meander realization instead"
+)]
 pub(crate) fn insert_simple_meander_loop(
     primitives: &PrimitiveLibrary,
     base: &RouteResult,
@@ -349,6 +354,11 @@ pub(crate) fn insert_simple_meander_loop(
     })
 }
 
+/// Legacy prototype analysis for primitive-based insertion regions.
+/// Kept for compatibility only.
+#[deprecated(
+    note = "legacy primitive-based prototype; use analytic centerline meander planning instead"
+)]
 pub(crate) fn analyze_meander_insertion_candidate(
     route: &RouteResult,
     primitives: &PrimitiveLibrary,

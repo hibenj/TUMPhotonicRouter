@@ -9,11 +9,13 @@ use crate::astar::{
 };
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
+    plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
     realize_route_polygon_from_primitives as realize_route_polygon_from_primitives_rs,
     realize_route_polygon_with_analytic_meander as realize_route_polygon_with_analytic_meander_rs,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     GeometryGridSpec, PortAccess, PortAccessConfig,
 };
+#[allow(deprecated)]
 use crate::meander::{
     analyze_meander_insertion_candidate as analyze_meander_insertion_candidate_rs,
     insert_simple_meander_loop as insert_simple_meander_loop_rs,
@@ -696,6 +698,8 @@ impl PyPhotonicRouter {
         describe_primitives(py, &self.primitives)
     }
 
+    // Legacy prototype API: primitive-based meander insertion on discrete route objects.
+    // Kept for compatibility only; use realize_route_polygon_with_analytic_meander instead.
     #[pyo3(signature=(route,requested_extra_length_um,insert_after_state_index=0,insert_end_state_index=None))]
     fn insert_simple_meander_loop(
         &self,
@@ -706,6 +710,7 @@ impl PyPhotonicRouter {
         insert_end_state_index: Option<usize>,
     ) -> PyResult<PyObject> {
         let base = to_route_result(route);
+        #[allow(deprecated)]
         let report = insert_simple_meander_loop_rs(
             &self.primitives,
             &base,
@@ -719,10 +724,16 @@ impl PyPhotonicRouter {
         d.set_item("applied", report.applied)?;
         d.set_item("reason", report.reason)?;
         d.set_item("inserted_extra_length_um", report.inserted_extra_length_um)?;
+        d.set_item(
+            "warning",
+            "legacy primitive-based meander prototype; use realize_route_polygon_with_analytic_meander instead",
+        )?;
         d.set_item("route", py_route)?;
         Ok(d.into())
     }
 
+    // Legacy prototype API: candidate analysis for primitive-based insertion.
+    // Kept for compatibility only; use plan_analytic_meander_for_route instead.
     #[pyo3(signature=(route,requested_extra_length_um,min_endpoint_margin_cells=4,min_candidate_straight_length_um=10.0,max_extra_length_per_region_um=200.0,conservative_legal_check=true))]
     fn analyze_meander_insertion_candidate(
         &self,
@@ -735,6 +746,7 @@ impl PyPhotonicRouter {
         conservative_legal_check: bool,
     ) -> PyResult<PyObject> {
         let route_rs = to_route_result(route);
+        #[allow(deprecated)]
         let report_rs = analyze_meander_insertion_candidate_rs(
             &route_rs,
             &self.primitives,
@@ -770,7 +782,99 @@ impl PyPhotonicRouter {
         report.set_item("candidates", candidate_dicts)?;
         report.set_item("status", report_rs.status)?;
         report.set_item("reason", report_rs.reason)?;
+        report.set_item(
+            "warning",
+            "legacy primitive-based meander prototype; use realize_route_polygon_with_analytic_meander instead",
+        )?;
         Ok(report.into())
+    }
+
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None))]
+    fn plan_analytic_meander_for_route(
+        &self,
+        py: Python<'_>,
+        route: &PyRouteResult,
+        requested_extra_length_um: f64,
+        min_bend_radius_um: f64,
+        min_straight_um: f64,
+        max_bumps: usize,
+        side: &str,
+        available_box: Option<(f64, f64, f64, f64)>,
+    ) -> PyResult<PyObject> {
+        if requested_extra_length_um <= 0.0 {
+            return Err(PyValueError::new_err(
+                "requested_extra_length_um must be > 0",
+            ));
+        }
+        if min_bend_radius_um <= 0.0 {
+            return Err(PyValueError::new_err("min_bend_radius_um must be > 0"));
+        }
+        if max_bumps == 0 {
+            return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        let meander_side = parse_meander_side(side)?;
+        let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
+            PyValueError::new_err(
+                "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
+            )
+        })?;
+        if min_x_um > max_x_um || min_y_um > max_y_um {
+            return Err(PyValueError::new_err(
+                "available_box is malformed: expected min_x<=max_x and min_y<=max_y",
+            ));
+        }
+        let meander_box = MeanderBox {
+            min_x_um,
+            max_x_um,
+            min_y_um,
+            max_y_um,
+        };
+
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        let plan = plan_analytic_meander_for_route_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            requested_extra_length_um,
+            min_bend_radius_um,
+            min_straight_um,
+            max_bumps,
+            meander_side,
+            meander_box,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        let d = PyDict::new_bound(py);
+        d.set_item("selected_segment_index", plan.selected_segment_index)?;
+        d.set_item(
+            "selected_segment",
+            (
+                (
+                    plan.selected_segment.start.x_um,
+                    plan.selected_segment.start.y_um,
+                ),
+                (plan.selected_segment.end.x_um, plan.selected_segment.end.y_um),
+            ),
+        )?;
+        let py_side = match plan.plan.side {
+            MeanderSide::Left => "left",
+            MeanderSide::Right => "right",
+        };
+        let cl = PyList::empty_bound(py);
+        for p in &plan.plan.centerline {
+            cl.append((p.x_um, p.y_um))?;
+        }
+        d.set_item("centerline", cl)?;
+        d.set_item("inserted_extra_length_um", plan.plan.inserted_extra_length_um)?;
+        d.set_item("bumps", plan.plan.bumps)?;
+        d.set_item("side", py_side)?;
+        Ok(d.into())
     }
 }
 
@@ -1036,5 +1140,95 @@ mod tests {
             )
             .unwrap_err();
         assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn analytic_meander_debug_method_returns_expected_fields() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(20, 20, 1.0, 0.0, 0.0).unwrap();
+        let router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        let route = PyRouteResult {
+            states: vec![PyState::new(1, 2, 0), PyState::new(5, 2, 0)],
+            primitive_ids: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: PyState::new(5, 2, 0),
+            reached_target: PyState::new(5, 2, 0),
+            segments: vec![],
+            window_attempts: 0,
+            used_full_grid_fallback: false,
+            expanded_states: 0,
+            window_rejects: 0,
+            footprint_rejects: 0,
+            dense_grid_build_failures: 0,
+            max_window_area_cells: 0,
+        };
+        Python::with_gil(|py| {
+            let obj = router
+                .plan_analytic_meander_for_route(
+                    py,
+                    &route,
+                    3.0,
+                    0.2,
+                    0.1,
+                    2,
+                    "left",
+                    Some((1.4, 5.6, 2.4, 4.0)),
+                )
+                .unwrap();
+            let d = obj.bind(py).downcast::<PyDict>().unwrap();
+            assert!(d.contains("selected_segment_index").unwrap());
+            assert!(d.contains("selected_segment").unwrap());
+            assert!(d.contains("centerline").unwrap());
+            assert!(d.contains("inserted_extra_length_um").unwrap());
+            assert!(d.contains("bumps").unwrap());
+            assert!(d.contains("side").unwrap());
+        });
+    }
+
+    #[test]
+    fn legacy_insert_simple_meander_loop_contains_warning_field() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(20, 20, 1.0, 0.0, 0.0).unwrap();
+        let router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        let route = PyRouteResult {
+            states: vec![PyState::new(1, 2, 0), PyState::new(5, 2, 0)],
+            primitive_ids: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: PyState::new(5, 2, 0),
+            reached_target: PyState::new(5, 2, 0),
+            segments: vec![],
+            window_attempts: 0,
+            used_full_grid_fallback: false,
+            expanded_states: 0,
+            window_rejects: 0,
+            footprint_rejects: 0,
+            dense_grid_build_failures: 0,
+            max_window_area_cells: 0,
+        };
+        Python::with_gil(|py| {
+            let obj = router
+                .insert_simple_meander_loop(py, &route, 1.0, 0, None)
+                .unwrap();
+            let d = obj.bind(py).downcast::<PyDict>().unwrap();
+            assert!(d.contains("warning").unwrap());
+        });
     }
 }
