@@ -2777,6 +2777,53 @@ mod tests {
     }
 
     #[test]
+    fn fill_box_plan_stays_inside_box_and_uses_primitive_radius() {
+        let grid = GeometryGridSpec::new(0.5, 0.0, 0.0).unwrap();
+        let primitive_bend_radius_cells = 2;
+        let primitive_bend_radius_um = primitive_bend_radius_cells as f64 * grid.grid_size_um;
+        let lib = create_photonic_primitive_library(PrimitiveLibraryConfig {
+            grid_size_um: grid.grid_size_um,
+            straight_short_cells: 1,
+            straight_long_cells: 60,
+            bend_radius_cells: primitive_bend_radius_cells,
+            allow_45_degree_turns: true,
+        });
+        let map = ObstacleMap::new(120, 120);
+        let route = RouteResult {
+            states: vec![State::new(2, 20, 0), State::new(62, 20, 0)],
+            primitives: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 30.0,
+            total_cost: 30.0,
+            requested_target: State::new(62, 20, 0),
+            reached_target: State::new(62, 20, 0),
+            stats: Default::default(),
+        };
+        let cfg = AutoMeanderConfig {
+            requested_extra_length_um: 2.0,
+            min_bend_radius_um: primitive_bend_radius_um,
+            min_straight_um: 0.0,
+            max_bumps: 20,
+            box_depth_um: 8.0,
+            min_segment_length_um: 1.0,
+            clearance_radius_cells: 0,
+            side_policy: AutoMeanderSidePolicy::Both,
+            mode: MeanderPlanningMode::FillBoxMultiBump,
+        };
+        let plan =
+            plan_auto_analytic_meander_for_route(&route, &lib, &grid, &map, None, &cfg).unwrap();
+        assert!(plan.plan.bumps > 2);
+        assert!((cfg.min_bend_radius_um - primitive_bend_radius_um).abs() < EPS);
+        for p in &plan.plan.centerline {
+            assert!(p.x_um >= plan.selected_box.min_x_um - EPS);
+            assert!(p.x_um <= plan.selected_box.max_x_um + EPS);
+            assert!(p.y_um >= plan.selected_box.min_y_um - EPS);
+            assert!(p.y_um <= plan.selected_box.max_y_um + EPS);
+        }
+    }
+
+    #[test]
     fn rejects_out_of_bounds_anchor_search() {
         let sg = static_grid();
         let config = PortAccessConfig {

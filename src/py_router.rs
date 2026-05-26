@@ -418,6 +418,33 @@ fn planning_mode_to_str(mode: MeanderPlanningMode) -> &'static str {
     }
 }
 
+fn add_bend_radius_debug_metadata(
+    dict: &Bound<'_, PyDict>,
+    requested_min_bend_radius_um: Option<f64>,
+    effective_bend_radius_um: f64,
+    primitive_bend_radius_cells: i32,
+    primitive_bend_radius_um: f64,
+    planning_mode: MeanderPlanningMode,
+    box_depth_um: Option<f64>,
+) -> PyResult<()> {
+    dict.set_item(
+        "requested_min_bend_radius_um",
+        requested_min_bend_radius_um,
+    )?;
+    dict.set_item("effective_bend_radius_um", effective_bend_radius_um)?;
+    dict.set_item("primitive_bend_radius_cells", primitive_bend_radius_cells)?;
+    dict.set_item("primitive_bend_radius_um", primitive_bend_radius_um)?;
+    dict.set_item("planning_mode", planning_mode_to_str(planning_mode))?;
+    if let Some(depth_um) = box_depth_um {
+        dict.set_item("box_depth_um", depth_um)?;
+    }
+    dict.set_item(
+        "radius_matches_primitive",
+        (effective_bend_radius_um - primitive_bend_radius_um).abs() <= 1.0e-12,
+    )?;
+    Ok(())
+}
+
 #[pymethods]
 impl PyPhotonicRouter {
     #[pyo3(signature=(min_bend_radius_um=None))]
@@ -442,6 +469,30 @@ impl PyPhotonicRouter {
                 actual_bend_radius_um_from_cells_rs(cells, grid_size_um).map_err(PyValueError::new_err)
             }
         }
+    }
+
+    #[pyo3(signature=(min_bend_radius_um=None))]
+    fn describe_bend_radius(&self, py: Python<'_>, min_bend_radius_um: Option<f64>) -> PyResult<PyObject> {
+        let primitive_bend_radius_cells = self.primitive_cfg.bend_radius_cells;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            primitive_bend_radius_cells,
+            self.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let effective_bend_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
+        let effective_bend_radius_cells = bend_radius_cells_from_min_radius_rs(
+            effective_bend_radius_um,
+            self.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let d = PyDict::new_bound(py);
+        d.set_item("grid_size_um", self.grid.grid_size_um)?;
+        d.set_item("primitive_bend_radius_cells", primitive_bend_radius_cells)?;
+        d.set_item("primitive_bend_radius_um", primitive_bend_radius_um)?;
+        d.set_item("requested_min_bend_radius_um", min_bend_radius_um)?;
+        d.set_item("effective_bend_radius_um", effective_bend_radius_um)?;
+        d.set_item("effective_bend_radius_cells", effective_bend_radius_cells)?;
+        Ok(d.into())
     }
 
     #[new]
@@ -705,13 +756,13 @@ impl PyPhotonicRouter {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="exact_extra_length"))]
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="exact_extra_length"))]
     fn realize_route_polygon_with_analytic_meander(
         &self,
         route: &PyRouteResult,
         width_um: f64,
         requested_extra_length_um: f64,
-        min_bend_radius_um: f64,
+        min_bend_radius_um: Option<f64>,
         min_straight_um: f64,
         max_bumps: usize,
         side: &str,
@@ -726,12 +777,10 @@ impl PyPhotonicRouter {
                 "requested_extra_length_um must be > 0",
             ));
         }
-        if min_bend_radius_um <= 0.0 {
-            return Err(PyValueError::new_err("min_bend_radius_um must be > 0"));
-        }
         if max_bumps == 0 {
             return Err(PyValueError::new_err("max_bumps must be > 0"));
         }
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
         let meander_side = parse_meander_side(side)?;
         let mode = parse_meander_planning_mode(planning_mode)?;
         let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
@@ -764,7 +813,7 @@ impl PyPhotonicRouter {
             &grid,
             width_um,
             requested_extra_length_um,
-            min_bend_radius_um,
+            effective_radius_um,
             min_straight_um,
             max_bumps,
             meander_side,
@@ -774,13 +823,13 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,clearance_radius_cells=0,opened_cells=None,planning_mode="exact_extra_length"))]
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,clearance_radius_cells=0,opened_cells=None,planning_mode="exact_extra_length"))]
     fn realize_route_polygon_with_checked_analytic_meander_box(
         &self,
         route: &PyRouteResult,
         width_um: f64,
         requested_extra_length_um: f64,
-        min_bend_radius_um: f64,
+        min_bend_radius_um: Option<f64>,
         min_straight_um: f64,
         max_bumps: usize,
         side: &str,
@@ -797,15 +846,13 @@ impl PyPhotonicRouter {
                 "requested_extra_length_um must be > 0",
             ));
         }
-        if min_bend_radius_um <= 0.0 {
-            return Err(PyValueError::new_err("min_bend_radius_um must be > 0"));
-        }
         if max_bumps == 0 {
             return Err(PyValueError::new_err("max_bumps must be > 0"));
         }
         if clearance_radius_cells < 0 {
             return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
         }
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
         let meander_side = parse_meander_side(side)?;
         let mode = parse_meander_planning_mode(planning_mode)?;
         let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
@@ -845,7 +892,7 @@ impl PyPhotonicRouter {
             &grid,
             width_um,
             requested_extra_length_um,
-            min_bend_radius_um,
+            effective_radius_um,
             min_straight_um,
             max_bumps,
             meander_side,
@@ -1064,12 +1111,15 @@ impl PyPhotonicRouter {
                 "right"
             },
         )?;
-        d.set_item("requested_min_bend_radius_um", min_bend_radius_um)?;
-        d.set_item("effective_bend_radius_um", effective_radius_um)?;
-        d.set_item("primitive_bend_radius_cells", self.primitive_cfg.bend_radius_cells)?;
-        d.set_item("primitive_bend_radius_um", primitive_bend_radius_um)?;
-        d.set_item("planning_mode", planning_mode_to_str(mode))?;
-        d.set_item("box_depth_um", box_depth_um)?;
+        add_bend_radius_debug_metadata(
+            &d,
+            min_bend_radius_um,
+            effective_radius_um,
+            self.primitive_cfg.bend_radius_cells,
+            primitive_bend_radius_um,
+            mode,
+            Some(box_depth_um),
+        )?;
         let mut max_possible_bumps = (box_depth_um / (2.0 * effective_radius_um)).floor() as i32;
         if max_possible_bumps % 2 != 0 {
             max_possible_bumps -= 1;
@@ -1375,12 +1425,15 @@ impl PyPhotonicRouter {
                 "right"
             },
         )?;
-        d.set_item("requested_min_bend_radius_um", min_bend_radius_um)?;
-        d.set_item("effective_bend_radius_um", effective_radius_um)?;
-        d.set_item("primitive_bend_radius_cells", self.primitive_cfg.bend_radius_cells)?;
-        d.set_item("primitive_bend_radius_um", primitive_bend_radius_um)?;
-        d.set_item("planning_mode", planning_mode_to_str(mode))?;
-        d.set_item("box_depth_um", box_depth_um)?;
+        add_bend_radius_debug_metadata(
+            &d,
+            min_bend_radius_um,
+            effective_radius_um,
+            self.primitive_cfg.bend_radius_cells,
+            primitive_bend_radius_um,
+            mode,
+            Some(box_depth_um),
+        )?;
         Ok(d.into())
     }
     fn describe_primitives(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
@@ -1478,13 +1531,13 @@ impl PyPhotonicRouter {
         Ok(report.into())
     }
 
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="exact_extra_length"))]
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="exact_extra_length"))]
     fn plan_analytic_meander_for_route(
         &self,
         py: Python<'_>,
         route: &PyRouteResult,
         requested_extra_length_um: f64,
-        min_bend_radius_um: f64,
+        min_bend_radius_um: Option<f64>,
         min_straight_um: f64,
         max_bumps: usize,
         side: &str,
@@ -1496,9 +1549,6 @@ impl PyPhotonicRouter {
                 "requested_extra_length_um must be > 0",
             ));
         }
-        if min_bend_radius_um <= 0.0 {
-            return Err(PyValueError::new_err("min_bend_radius_um must be > 0"));
-        }
         if max_bumps == 0 {
             return Err(PyValueError::new_err("max_bumps must be > 0"));
         }
@@ -1509,7 +1559,7 @@ impl PyPhotonicRouter {
             self.grid.grid_size_um,
         )
         .map_err(PyValueError::new_err)?;
-        let effective_radius_um = self.effective_bend_radius_um(Some(min_bend_radius_um))?;
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
         let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
             PyValueError::new_err(
                 "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
@@ -1572,11 +1622,15 @@ impl PyPhotonicRouter {
         d.set_item("inserted_extra_length_um", plan.plan.inserted_extra_length_um)?;
         d.set_item("bumps", plan.plan.bumps)?;
         d.set_item("side", py_side)?;
-        d.set_item("requested_min_bend_radius_um", min_bend_radius_um)?;
-        d.set_item("effective_bend_radius_um", effective_radius_um)?;
-        d.set_item("primitive_bend_radius_cells", self.primitive_cfg.bend_radius_cells)?;
-        d.set_item("primitive_bend_radius_um", primitive_bend_radius_um)?;
-        d.set_item("planning_mode", planning_mode_to_str(mode))?;
+        add_bend_radius_debug_metadata(
+            &d,
+            min_bend_radius_um,
+            effective_radius_um,
+            self.primitive_cfg.bend_radius_cells,
+            primitive_bend_radius_um,
+            mode,
+            None,
+        )?;
         Ok(d.into())
     }
 }
@@ -1749,15 +1803,15 @@ mod tests {
         let route = PyRouteResult {
             states: vec![
                 PyState::new(1, 2, 0),
-                PyState::new(5, 2, 0),
+                PyState::new(13, 2, 0),
             ],
             primitive_ids: vec![1],
             cells: vec![],
             compressed_waypoints: vec![],
-            total_length_um: 4.0,
-            total_cost: 4.0,
-            requested_target: PyState::new(5, 2, 0),
-            reached_target: PyState::new(5, 2, 0),
+            total_length_um: 12.0,
+            total_cost: 12.0,
+            requested_target: PyState::new(13, 2, 0),
+            reached_target: PyState::new(13, 2, 0),
             segments: vec![],
             window_attempts: 0,
             used_full_grid_fallback: false,
@@ -1772,7 +1826,7 @@ mod tests {
                 &route,
                 1.0,
                 3.0,
-                0.2,
+                Some(0.2),
                 0.1,
                 2,
                 "left",
@@ -1797,15 +1851,15 @@ mod tests {
         let route = PyRouteResult {
             states: vec![
                 PyState::new(1, 2, 0),
-                PyState::new(5, 2, 0),
+                PyState::new(13, 2, 0),
             ],
             primitive_ids: vec![1],
             cells: vec![],
             compressed_waypoints: vec![],
-            total_length_um: 4.0,
-            total_cost: 4.0,
-            requested_target: PyState::new(5, 2, 0),
-            reached_target: PyState::new(5, 2, 0),
+            total_length_um: 12.0,
+            total_cost: 12.0,
+            requested_target: PyState::new(13, 2, 0),
+            reached_target: PyState::new(13, 2, 0),
             segments: vec![],
             window_attempts: 0,
             used_full_grid_fallback: false,
@@ -1821,11 +1875,11 @@ mod tests {
                 &route,
                 1.0,
                 3.0,
-                0.2,
-                0.1,
+                Some(0.2),
+                0.0,
                 2,
                 "left",
-                Some((1.4, 5.6, 2.4, 4.0)),
+                Some((1.4, 13.6, 2.4, 8.0)),
                 "exact_extra_length",
             )
             .unwrap();
@@ -1837,11 +1891,11 @@ mod tests {
                 &route,
                 1.0,
                 50.0,
-                0.5,
+                Some(0.5),
                 0.5,
                 1,
                 "left",
-                Some((1.4, 5.6, 2.4, 2.9)),
+                Some((1.4, 13.6, 2.4, 2.9)),
                 "exact_extra_length",
             )
             .unwrap_err();
@@ -1883,9 +1937,9 @@ mod tests {
                     py,
                     &route,
                     3.0,
-                    0.2,
+                    Some(0.2),
                     0.0,
-                    2,
+                    4,
                     "left",
                     Some((1.4, 13.6, 2.4, 8.0)),
                     "exact_extra_length",
@@ -1974,7 +2028,7 @@ mod tests {
                 &route,
                 1.0,
                 3.0,
-                0.2,
+                Some(0.2),
                 0.1,
                 2,
                 "left",
@@ -2196,6 +2250,206 @@ mod tests {
         );
         let eff = router.effective_bend_radius_um(Some(1.1)).unwrap();
         assert!((eff - 1.5).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn describe_bend_radius_reports_effective_values() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
+        let router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        Python::with_gil(|py| {
+            let obj = router.describe_bend_radius(py, Some(1.1)).unwrap();
+            let d = obj.bind(py).downcast::<PyDict>().unwrap();
+            let eff: f64 = d
+                .get_item("effective_bend_radius_um")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            let eff_cells: i32 = d
+                .get_item("effective_bend_radius_cells")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert!((eff - 1.5).abs() < 1.0e-9);
+            assert_eq!(eff_cells, 3);
+        });
+    }
+
+    #[test]
+    fn explicit_plan_none_radius_matches_primitive_and_explicit_request_rounds_up() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(80, 80, 0.5, 0.0, 0.0).unwrap();
+        let router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        let route = PyRouteResult {
+            states: vec![PyState::new(2, 20, 0), PyState::new(62, 20, 0)],
+            primitive_ids: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 30.0,
+            total_cost: 30.0,
+            requested_target: PyState::new(62, 20, 0),
+            reached_target: PyState::new(62, 20, 0),
+            segments: vec![],
+            window_attempts: 0,
+            used_full_grid_fallback: false,
+            expanded_states: 0,
+            window_rejects: 0,
+            footprint_rejects: 0,
+            dense_grid_build_failures: 0,
+            max_window_area_cells: 0,
+        };
+        Python::with_gil(|py| {
+            let none_obj = router
+                .plan_analytic_meander_for_route(
+                    py,
+                    &route,
+                    2.0,
+                    None,
+                    0.0,
+                    4,
+                    "left",
+                    Some((1.0, 32.0, 0.0, 30.0)),
+                    "fill_box_multi_bump",
+                )
+                .unwrap();
+            let none_d = none_obj.bind(py).downcast::<PyDict>().unwrap();
+            let primitive_radius: f64 = none_d
+                .get_item("primitive_bend_radius_um")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            let effective_radius_none: f64 = none_d
+                .get_item("effective_bend_radius_um")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            let matches_primitive: bool = none_d
+                .get_item("radius_matches_primitive")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            let none_bumps: usize = none_d.get_item("bumps").unwrap().unwrap().extract().unwrap();
+            assert!((primitive_radius - 1.0).abs() < 1.0e-9);
+            assert!((effective_radius_none - 1.0).abs() < 1.0e-9);
+            assert!(matches_primitive);
+            assert!(none_bumps > 2);
+
+            let req_obj = router
+                .plan_analytic_meander_for_route(
+                    py,
+                    &route,
+                    1.0,
+                    Some(1.1),
+                    0.0,
+                    2,
+                    "left",
+                    Some((1.0, 32.0, 0.0, 30.0)),
+                    "fill_box_multi_bump",
+                )
+                .unwrap();
+            let req_d = req_obj.bind(py).downcast::<PyDict>().unwrap();
+            let effective_radius_req: f64 = req_d
+                .get_item("effective_bend_radius_um")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert!((effective_radius_req - 1.5).abs() < 1.0e-9);
+        });
+    }
+
+    #[test]
+    fn auto_and_explicit_none_radius_match() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(80, 80, 0.5, 0.0, 0.0).unwrap();
+        let router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        let route = PyRouteResult {
+            states: vec![PyState::new(2, 20, 0), PyState::new(62, 20, 0)],
+            primitive_ids: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 30.0,
+            total_cost: 30.0,
+            requested_target: PyState::new(62, 20, 0),
+            reached_target: PyState::new(62, 20, 0),
+            segments: vec![],
+            window_attempts: 0,
+            used_full_grid_fallback: false,
+            expanded_states: 0,
+            window_rejects: 0,
+            footprint_rejects: 0,
+            dense_grid_build_failures: 0,
+            max_window_area_cells: 0,
+        };
+        Python::with_gil(|py| {
+            let auto_obj = router
+                .plan_auto_analytic_meander_for_route(
+                    py,
+                    &route,
+                    2.0,
+                    None,
+                    0.0,
+                    4,
+                    8.0,
+                    1.0,
+                    0,
+                    "both",
+                    None,
+                    "fill_box_multi_bump",
+                )
+                .unwrap();
+            let auto_d = auto_obj.bind(py).downcast::<PyDict>().unwrap();
+            let auto_effective: f64 = auto_d
+                .get_item("effective_bend_radius_um")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            let explicit_obj = router
+                .plan_analytic_meander_for_route(
+                    py,
+                    &route,
+                    2.0,
+                    None,
+                    0.0,
+                    4,
+                    "left",
+                    Some((1.0, 32.0, 0.0, 30.0)),
+                    "fill_box_multi_bump",
+                )
+                .unwrap();
+            let explicit_d = explicit_obj.bind(py).downcast::<PyDict>().unwrap();
+            let explicit_effective: f64 = explicit_d
+                .get_item("effective_bend_radius_um")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert!((auto_effective - explicit_effective).abs() < 1.0e-9);
+        });
     }
 
     #[test]
