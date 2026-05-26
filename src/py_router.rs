@@ -8,7 +8,11 @@ use crate::astar::{
     State,
 };
 use crate::geometry_realization::{
+    plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
+    realize_route_polygon_with_auto_checked_analytic_meander as realize_route_polygon_with_auto_checked_analytic_meander_rs,
+    AutoMeanderConfig, AutoMeanderSidePolicy,
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
+    cells_in_grid_rect as cells_in_grid_rect_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
     meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
@@ -366,6 +370,18 @@ fn parse_meander_side(side: &str) -> PyResult<MeanderSide> {
         "right" => Ok(MeanderSide::Right),
         _ => Err(PyValueError::new_err(
             "side must be either 'left' or 'right'",
+        )),
+    }
+}
+
+fn parse_auto_meander_side_policy(side_policy: &str) -> PyResult<AutoMeanderSidePolicy> {
+    let normalized = side_policy.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "left" => Ok(AutoMeanderSidePolicy::Left),
+        "right" => Ok(AutoMeanderSidePolicy::Right),
+        "both" => Ok(AutoMeanderSidePolicy::Both),
+        _ => Err(PyValueError::new_err(
+            "side_policy must be one of 'left', 'right', or 'both'",
         )),
     }
 }
@@ -860,6 +876,233 @@ impl PyPhotonicRouter {
                 }
             }
         }
+    }
+
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None))]
+    fn plan_auto_analytic_meander_for_route(
+        &self,
+        py: Python<'_>,
+        route: &PyRouteResult,
+        requested_extra_length_um: f64,
+        min_bend_radius_um: f64,
+        min_straight_um: f64,
+        max_bumps: usize,
+        box_depth_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        opened_cells: Option<Vec<(i32, i32)>>,
+    ) -> PyResult<PyObject> {
+        if requested_extra_length_um <= 0.0 {
+            return Err(PyValueError::new_err(
+                "requested_extra_length_um must be > 0",
+            ));
+        }
+        if min_bend_radius_um <= 0.0 {
+            return Err(PyValueError::new_err("min_bend_radius_um must be > 0"));
+        }
+        if min_straight_um < 0.0 {
+            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
+        }
+        if max_bumps == 0 {
+            return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        if box_depth_um <= 0.0 {
+            return Err(PyValueError::new_err("box_depth_um must be > 0"));
+        }
+        if min_segment_length_um <= 0.0 {
+            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
+        }
+        if clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
+        }
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let cfg = AutoMeanderConfig {
+            requested_extra_length_um,
+            min_bend_radius_um,
+            min_straight_um,
+            max_bumps,
+            box_depth_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy: policy,
+        };
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        let opened_owned;
+        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            Some(&opened_owned)
+        } else {
+            Some(&self.port_open_cells)
+        };
+        let plan = plan_auto_analytic_meander_for_route_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            &self.obstacle_map,
+            opened_ref,
+            &cfg,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        let d = PyDict::new_bound(py);
+        d.set_item("selected_segment_index", plan.selected_segment_index)?;
+        d.set_item(
+            "selected_segment",
+            (
+                (
+                    plan.selected_segment.start.x_um,
+                    plan.selected_segment.start.y_um,
+                ),
+                (plan.selected_segment.end.x_um, plan.selected_segment.end.y_um),
+            ),
+        )?;
+        d.set_item(
+            "selected_box",
+            (
+                plan.selected_box.min_x_um,
+                plan.selected_box.max_x_um,
+                plan.selected_box.min_y_um,
+                plan.selected_box.max_y_um,
+            ),
+        )?;
+        d.set_item(
+            "selected_grid_rect",
+            (
+                plan.selected_grid_rect.min_x,
+                plan.selected_grid_rect.max_x,
+                plan.selected_grid_rect.min_y,
+                plan.selected_grid_rect.max_y,
+            ),
+        )?;
+        let cl = PyList::empty_bound(py);
+        for p in &plan.plan.centerline {
+            cl.append((p.x_um, p.y_um))?;
+        }
+        d.set_item("centerline", cl)?;
+        d.set_item("inserted_extra_length_um", plan.plan.inserted_extra_length_um)?;
+        d.set_item("bumps", plan.plan.bumps)?;
+        d.set_item(
+            "side",
+            if plan.plan.side == MeanderSide::Left {
+                "left"
+            } else {
+                "right"
+            },
+        )?;
+        Ok(d.into())
+    }
+
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None))]
+    fn realize_route_polygon_with_auto_checked_analytic_meander(
+        &self,
+        route: &PyRouteResult,
+        width_um: f64,
+        requested_extra_length_um: f64,
+        min_bend_radius_um: f64,
+        min_straight_um: f64,
+        max_bumps: usize,
+        box_depth_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        opened_cells: Option<Vec<(i32, i32)>>,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        if width_um <= 0.0 {
+            return Err(PyValueError::new_err("width_um must be > 0"));
+        }
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let cfg = AutoMeanderConfig {
+            requested_extra_length_um,
+            min_bend_radius_um,
+            min_straight_um,
+            max_bumps,
+            box_depth_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy: policy,
+        };
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        let opened_owned;
+        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            Some(&opened_owned)
+        } else {
+            Some(&self.port_open_cells)
+        };
+        realize_route_polygon_with_auto_checked_analytic_meander_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            width_um,
+            &self.obstacle_map,
+            opened_ref,
+            &cfg,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None))]
+    fn cells_for_auto_analytic_meander_box(
+        &self,
+        route: &PyRouteResult,
+        requested_extra_length_um: f64,
+        min_bend_radius_um: f64,
+        min_straight_um: f64,
+        max_bumps: usize,
+        box_depth_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        opened_cells: Option<Vec<(i32, i32)>>,
+    ) -> PyResult<Vec<(i32, i32)>> {
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let cfg = AutoMeanderConfig {
+            requested_extra_length_um,
+            min_bend_radius_um,
+            min_straight_um,
+            max_bumps,
+            box_depth_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy: policy,
+        };
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        let opened_owned;
+        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            Some(&opened_owned)
+        } else {
+            Some(&self.port_open_cells)
+        };
+        let plan = plan_auto_analytic_meander_for_route_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            &self.obstacle_map,
+            opened_ref,
+            &cfg,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        Ok(cells_in_grid_rect_rs(plan.selected_grid_rect))
     }
     fn describe_primitives(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
         describe_primitives(py, &self.primitives)
@@ -1467,6 +1710,57 @@ mod tests {
             assert!(d.contains("grid_rect").unwrap());
             assert!(d.contains("blocked_count").unwrap());
             assert!(d.contains("reason").unwrap());
+        });
+    }
+
+    #[test]
+    fn auto_plan_debug_returns_selected_box_and_grid_rect() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(20, 20, 1.0, 0.0, 0.0).unwrap();
+        let router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        let route = PyRouteResult {
+            states: vec![PyState::new(1, 2, 0), PyState::new(5, 2, 0)],
+            primitive_ids: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: PyState::new(5, 2, 0),
+            reached_target: PyState::new(5, 2, 0),
+            segments: vec![],
+            window_attempts: 0,
+            used_full_grid_fallback: false,
+            expanded_states: 0,
+            window_rejects: 0,
+            footprint_rejects: 0,
+            dense_grid_build_failures: 0,
+            max_window_area_cells: 0,
+        };
+        Python::with_gil(|py| {
+            let obj = router
+                .plan_auto_analytic_meander_for_route(
+                    py,
+                    &route,
+                    3.0,
+                    0.2,
+                    0.1,
+                    2,
+                    1.6,
+                    1.0,
+                    0,
+                    "both",
+                    None,
+                )
+                .unwrap();
+            let d = obj.bind(py).downcast::<PyDict>().unwrap();
+            assert!(d.contains("selected_box").unwrap());
+            assert!(d.contains("selected_grid_rect").unwrap());
         });
     }
 }
