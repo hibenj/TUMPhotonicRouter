@@ -9,6 +9,7 @@ use crate::astar::{
 };
 use crate::geometry_realization::{
     plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
+    realize_route_polygon_from_auto_plan as realize_route_polygon_from_auto_plan_rs,
     realize_route_polygon_with_auto_checked_analytic_meander as realize_route_polygon_with_auto_checked_analytic_meander_rs,
     AutoMeanderConfig, AutoMeanderSidePolicy,
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
@@ -1104,6 +1105,186 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
         Ok(cells_in_grid_rect_rs(plan.selected_grid_rect))
     }
+
+    #[pyo3(signature=(net_id,source,target,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,route_block_radius_cells=0,meander_clearance_radius_cells=0,side_policy="both",opened_cells=None))]
+    fn route_single_net_with_auto_meander_and_commit(
+        &mut self,
+        py: Python<'_>,
+        net_id: u64,
+        source: PyState,
+        target: PyState,
+        width_um: f64,
+        requested_extra_length_um: f64,
+        min_bend_radius_um: f64,
+        min_straight_um: f64,
+        max_bumps: usize,
+        box_depth_um: f64,
+        min_segment_length_um: f64,
+        route_block_radius_cells: i32,
+        meander_clearance_radius_cells: i32,
+        side_policy: &str,
+        opened_cells: Option<Vec<(i32, i32)>>,
+    ) -> PyResult<PyObject> {
+        if self.astar_cfg.target_tolerance_cells < 0 {
+            return Err(PyValueError::new_err("target_tolerance_cells must be >= 0"));
+        }
+        if width_um <= 0.0 {
+            return Err(PyValueError::new_err("width_um must be > 0"));
+        }
+        if requested_extra_length_um <= 0.0 {
+            return Err(PyValueError::new_err(
+                "requested_extra_length_um must be > 0",
+            ));
+        }
+        if min_bend_radius_um <= 0.0 {
+            return Err(PyValueError::new_err("min_bend_radius_um must be > 0"));
+        }
+        if min_straight_um < 0.0 {
+            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
+        }
+        if max_bumps == 0 {
+            return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        if box_depth_um <= 0.0 {
+            return Err(PyValueError::new_err("box_depth_um must be > 0"));
+        }
+        if min_segment_length_um <= 0.0 {
+            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
+        }
+        if meander_clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err(
+                "meander_clearance_radius_cells must be >= 0",
+            ));
+        }
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+
+        let opened_owned;
+        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            Some(&opened_owned)
+        } else {
+            Some(&self.port_open_cells)
+        };
+
+        let allowed_target_angles_mask =
+            allowed_angles_to_mask(self.astar_cfg.allowed_target_angles.as_ref())?;
+        let cfg = AStarConfig {
+            max_iterations: self.astar_cfg.max_iterations,
+            bend_weight: self.astar_cfg.bend_weight * self.primitive_cfg.bend_weight,
+            target_tolerance_cells: self.astar_cfg.target_tolerance_cells,
+            require_target_angle: self.astar_cfg.require_target_angle,
+            allowed_target_angles_mask,
+            use_routing_window: self.astar_cfg.use_routing_window,
+            routing_window_min_margin_cells: self.astar_cfg.routing_window_min_margin_cells,
+            routing_window_scale: self.astar_cfg.routing_window_scale,
+            routing_window_max_expansions: self.astar_cfg.routing_window_max_expansions,
+            routing_window_fallback_full_grid: self.astar_cfg.routing_window_fallback_full_grid,
+            routing_window_growth: self.astar_cfg.routing_window_growth,
+            max_dense_states: AStarConfig::default().max_dense_states,
+            max_dense_obstacle_cells: self.astar_cfg.max_dense_obstacle_cells,
+        };
+
+        let result = route_single_net_with_config(
+            &self.obstacle_map,
+            &self.primitives,
+            State::new(source.x, source.y, source.angle),
+            State::new(target.x, target.y, target.angle),
+            opened_ref,
+            &cfg,
+        )
+        .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
+
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let auto_cfg = AutoMeanderConfig {
+            requested_extra_length_um,
+            min_bend_radius_um,
+            min_straight_um,
+            max_bumps,
+            box_depth_um,
+            min_segment_length_um,
+            clearance_radius_cells: meander_clearance_radius_cells,
+            side_policy: policy,
+        };
+        let auto_plan = plan_auto_analytic_meander_for_route_rs(
+            &result,
+            &self.primitives,
+            &grid,
+            &self.obstacle_map,
+            opened_ref,
+            &auto_cfg,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        let polygon = realize_route_polygon_from_auto_plan_rs(
+            &result,
+            &self.primitives,
+            &grid,
+            width_um,
+            &auto_plan,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        let route_cells = inflate_route_cells(
+            &result.cells,
+            route_block_radius_cells,
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        let reserved_cells = cells_in_grid_rect_rs(auto_plan.selected_grid_rect);
+        let mut merged = Vec::with_capacity(route_cells.len() + reserved_cells.len());
+        let mut seen = FxHashSet::default();
+        for (x, y) in route_cells.into_iter().chain(reserved_cells.iter().copied()) {
+            let key = pack_xy(x, y);
+            if seen.insert(key) {
+                merged.push((x, y));
+            }
+        }
+        if !self.obstacle_map.commit_route(net_id, &merged) {
+            return Err(PyRuntimeError::new_err(
+                "Failed to commit merged route and meander reservation cells",
+            ));
+        }
+
+        let py_route = Py::new(py, convert_result(py, &self.primitives, &result)?)?;
+        let d = PyDict::new_bound(py);
+        d.set_item("route", py_route)?;
+        d.set_item("polygon", polygon)?;
+        d.set_item(
+            "selected_box",
+            (
+                auto_plan.selected_box.min_x_um,
+                auto_plan.selected_box.max_x_um,
+                auto_plan.selected_box.min_y_um,
+                auto_plan.selected_box.max_y_um,
+            ),
+        )?;
+        d.set_item(
+            "selected_grid_rect",
+            (
+                auto_plan.selected_grid_rect.min_x,
+                auto_plan.selected_grid_rect.max_x,
+                auto_plan.selected_grid_rect.min_y,
+                auto_plan.selected_grid_rect.max_y,
+            ),
+        )?;
+        d.set_item("reserved_cells", reserved_cells)?;
+        d.set_item("inserted_extra_length_um", auto_plan.plan.inserted_extra_length_um)?;
+        d.set_item("bumps", auto_plan.plan.bumps)?;
+        d.set_item(
+            "side",
+            if auto_plan.plan.side == MeanderSide::Left {
+                "left"
+            } else {
+                "right"
+            },
+        )?;
+        Ok(d.into())
+    }
     fn describe_primitives(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
         describe_primitives(py, &self.primitives)
     }
@@ -1762,5 +1943,138 @@ mod tests {
             assert!(d.contains("selected_box").unwrap());
             assert!(d.contains("selected_grid_rect").unwrap());
         });
+    }
+
+    #[test]
+    fn auto_meander_and_commit_reserves_selected_box_cells() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(30, 30, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        Python::with_gil(|py| {
+            let obj = router
+                .route_single_net_with_auto_meander_and_commit(
+                    py,
+                    123,
+                    PyState::new(2, 10, 0),
+                    PyState::new(10, 10, 0),
+                    1.0,
+                    4.0,
+                    0.2,
+                    0.1,
+                    2,
+                    1.6,
+                    1.0,
+                    0,
+                    0,
+                    "both",
+                    None,
+                )
+                .unwrap();
+            let d = obj.bind(py).downcast::<PyDict>().unwrap();
+            assert!(d.contains("route").unwrap());
+            assert!(d.contains("polygon").unwrap());
+            assert!(d.contains("selected_box").unwrap());
+            assert!(d.contains("selected_grid_rect").unwrap());
+            assert!(d.contains("reserved_cells").unwrap());
+            assert!(d.contains("inserted_extra_length_um").unwrap());
+            assert!(d.contains("bumps").unwrap());
+            assert!(d.contains("side").unwrap());
+        });
+
+        let cells = router
+            .obstacle_map
+            .get_net_cells(123)
+            .expect("net cells should exist");
+        assert!(!cells.is_empty());
+        for key in cells {
+            let (x, y) = crate::obstacle_map::unpack_xy(*key);
+            assert!(router.obstacle_map.is_blocked(x, y));
+        }
+    }
+
+    #[test]
+    fn auto_meander_commit_error_does_not_commit_route() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(30, 30, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        let err = Python::with_gil(|py| {
+            router
+                .route_single_net_with_auto_meander_and_commit(
+                    py,
+                    124,
+                    PyState::new(2, 10, 0),
+                    PyState::new(10, 10, 0),
+                    1.0,
+                    4.0,
+                    0.2,
+                    0.1,
+                    2,
+                    1.6,
+                    1000.0,
+                    0,
+                    0,
+                    "both",
+                    None,
+                )
+                .unwrap_err()
+        });
+        assert!(!err.to_string().is_empty());
+        assert!(router.obstacle_map.get_net_cells(124).is_none());
+    }
+
+    #[test]
+    fn auto_meander_commit_blocks_cells_for_followup_checks() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(30, 30, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        let reserved_cells: Vec<(i32, i32)> = Python::with_gil(|py| {
+            let obj = router
+                .route_single_net_with_auto_meander_and_commit(
+                    py,
+                    125,
+                    PyState::new(2, 12, 0),
+                    PyState::new(10, 12, 0),
+                    1.0,
+                    4.0,
+                    0.2,
+                    0.1,
+                    2,
+                    1.6,
+                    1.0,
+                    0,
+                    0,
+                    "both",
+                    None,
+                )
+                .unwrap();
+            let d = obj.bind(py).downcast::<PyDict>().unwrap();
+            d.get_item("reserved_cells")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap()
+        });
+        assert!(!reserved_cells.is_empty());
+        for (x, y) in reserved_cells {
+            assert!(router.obstacle_map.is_blocked(x, y));
+        }
     }
 }

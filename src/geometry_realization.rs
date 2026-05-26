@@ -1250,6 +1250,31 @@ pub fn realize_route_polygon_with_auto_checked_analytic_meander(
     generate_waveguide_polygon(&modified, width_um)
 }
 
+pub fn realize_route_polygon_from_auto_plan(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    width_um: f64,
+    auto_plan: &AutoRouteAnalyticMeanderPlan,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
+    let modified = splice_meander_into_centerline(
+        &centerline,
+        auto_plan.selected_segment_index,
+        &auto_plan.plan.centerline,
+    );
+    if modified.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    if modified.iter().any(|&p| !is_finite_point(p)) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    if modified.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
+        return Err(GeometryError::ZeroLengthSegment);
+    }
+    generate_waveguide_polygon(&modified, width_um)
+}
+
 /// Full route realization pipeline with explicit source/target port access.
 pub fn realize_route_polygon_with_port_access(
     route: &RouteResult,
