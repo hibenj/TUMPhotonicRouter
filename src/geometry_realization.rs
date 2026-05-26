@@ -7,6 +7,10 @@ use std::error::Error;
 use std::fmt;
 
 use crate::astar::{RouteResult, State};
+use crate::meander::{
+    plan_analytic_meander, AnalyticMeanderConfig, MeanderBox, MeanderPlanningError, MeanderSide,
+    PhysicalPoint, StraightSegment,
+};
 use crate::primitives::{PrimitiveGeometry, PrimitiveLibrary};
 use crate::static_obstacle_builder::{
     grid_cell_center, physical_to_grid, PortInput, StaticGridSpec,
@@ -81,6 +85,8 @@ pub enum GeometryError {
         expected: (f64, f64),
         actual: (f64, f64),
     },
+    NoMeanderCandidateSegment,
+    MeanderPlanningFailed(MeanderPlanningError),
     PortAccess(PortAccessError),
 }
 
@@ -129,6 +135,12 @@ impl fmt::Display for GeometryError {
                 f,
                 "primitive id={primitive_id} endpoint mismatch: expected {expected:?}, got {actual:?}"
             ),
+            GeometryError::NoMeanderCandidateSegment => {
+                write!(f, "no axis-aligned centerline segment is suitable for meander insertion")
+            }
+            GeometryError::MeanderPlanningFailed(err) => {
+                write!(f, "analytic meander planning failed: {err:?}")
+            }
             GeometryError::PortAccess(err) => write!(f, "{err}"),
         }
     }
@@ -625,6 +637,129 @@ pub fn realize_route_polygon_from_primitives(
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
     let centerline = route_to_primitive_centerline(route, primitives, grid)?;
     generate_waveguide_polygon(&centerline, width_um)
+}
+
+pub(crate) fn splice_meander_into_centerline(
+    centerline: &[(f64, f64)],
+    segment_index: usize,
+    meander: &[PhysicalPoint],
+) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(centerline.len() + meander.len());
+    for p in centerline.iter().take(segment_index + 1).copied() {
+        push_physical_if_different(&mut out, p);
+    }
+    for p in meander.iter().copied() {
+        push_physical_if_different(&mut out, (p.x_um, p.y_um));
+    }
+    for p in centerline.iter().skip(segment_index + 1).copied() {
+        push_physical_if_different(&mut out, p);
+    }
+    out
+}
+
+pub fn realize_route_polygon_with_analytic_meander(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    width_um: f64,
+    requested_extra_length_um: f64,
+    min_bend_radius_um: f64,
+    min_straight_um: f64,
+    max_bumps: usize,
+    meander_side: MeanderSide,
+    available_box: MeanderBox,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+
+    let mut best: Option<(usize, f64)> = None;
+    for (i, w) in centerline.windows(2).enumerate() {
+        let p0 = w[0];
+        let p1 = w[1];
+        let dx = (p1.0 - p0.0).abs();
+        let dy = (p1.1 - p0.1).abs();
+        let is_horizontal = dy <= EPS && dx > EPS;
+        let is_vertical = dx <= EPS && dy > EPS;
+        if !(is_horizontal || is_vertical) {
+            continue;
+        }
+        let intersects = {
+            let in0 = p0.0 >= available_box.min_x_um - EPS
+                && p0.0 <= available_box.max_x_um + EPS
+                && p0.1 >= available_box.min_y_um - EPS
+                && p0.1 <= available_box.max_y_um + EPS;
+            let in1 = p1.0 >= available_box.min_x_um - EPS
+                && p1.0 <= available_box.max_x_um + EPS
+                && p1.1 >= available_box.min_y_um - EPS
+                && p1.1 <= available_box.max_y_um + EPS;
+            if in0 || in1 {
+                true
+            } else if is_horizontal {
+                let y = p0.1;
+                if y < available_box.min_y_um - EPS || y > available_box.max_y_um + EPS {
+                    false
+                } else {
+                    let min_x = p0.0.min(p1.0);
+                    let max_x = p0.0.max(p1.0);
+                    max_x >= available_box.min_x_um - EPS
+                        && min_x <= available_box.max_x_um + EPS
+                }
+            } else {
+                let x = p0.0;
+                if x < available_box.min_x_um - EPS || x > available_box.max_x_um + EPS {
+                    false
+                } else {
+                    let min_y = p0.1.min(p1.1);
+                    let max_y = p0.1.max(p1.1);
+                    max_y >= available_box.min_y_um - EPS
+                        && min_y <= available_box.max_y_um + EPS
+                }
+            }
+        };
+        if !intersects {
+            continue;
+        }
+        let len = distance(p0, p1);
+        match best {
+            Some((_, cur)) if cur >= len => {}
+            _ => best = Some((i, len)),
+        }
+    }
+
+    let (segment_index, _) = best.ok_or(GeometryError::NoMeanderCandidateSegment)?;
+    let segment = StraightSegment {
+        start: PhysicalPoint {
+            x_um: centerline[segment_index].0,
+            y_um: centerline[segment_index].1,
+        },
+        end: PhysicalPoint {
+            x_um: centerline[segment_index + 1].0,
+            y_um: centerline[segment_index + 1].1,
+        },
+    };
+    let cfg = AnalyticMeanderConfig {
+        requested_extra_length_um,
+        min_bend_radius_um,
+        min_straight_um,
+        max_bumps,
+        side: meander_side,
+    };
+    let plan = plan_analytic_meander(segment, available_box, &cfg)
+        .map_err(GeometryError::MeanderPlanningFailed)?;
+
+    let modified = splice_meander_into_centerline(&centerline, segment_index, &plan.centerline);
+    if modified.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    if modified.iter().any(|&p| !is_finite_point(p)) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    if modified.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
+        return Err(GeometryError::ZeroLengthSegment);
+    }
+    generate_waveguide_polygon(&modified, width_um)
 }
 
 /// Full route realization pipeline with explicit source/target port access.
@@ -1604,6 +1739,146 @@ mod tests {
         };
         let polygon = realize_route_polygon_from_primitives(&route, &lib, &grid(), 1.0).unwrap();
         assert_eq!(polygon.first(), polygon.last());
+    }
+
+    #[test]
+    fn splice_meander_preserves_endpoints_and_increases_length() {
+        let centerline = vec![(0.0, 0.0), (10.0, 0.0), (15.0, 0.0)];
+        let meander = vec![
+            PhysicalPoint { x_um: 0.0, y_um: 0.0 },
+            PhysicalPoint { x_um: 3.0, y_um: 2.0 },
+            PhysicalPoint { x_um: 7.0, y_um: 2.0 },
+            PhysicalPoint { x_um: 10.0, y_um: 0.0 },
+        ];
+        let spliced = splice_meander_into_centerline(&centerline, 0, &meander);
+        assert_eq!(spliced.first().copied(), Some((0.0, 0.0)));
+        assert_eq!(spliced.last().copied(), Some((15.0, 0.0)));
+        assert!(spliced.windows(2).all(|w| distance(w[0], w[1]) > EPS));
+        let old_len = centerline.windows(2).map(|w| distance(w[0], w[1])).sum::<f64>();
+        let new_len = spliced.windows(2).map(|w| distance(w[0], w[1])).sum::<f64>();
+        assert!(new_len > old_len);
+        let b = MeanderBox {
+            min_x_um: -1.0,
+            max_x_um: 11.0,
+            min_y_um: -1.0,
+            max_y_um: 3.0,
+        };
+        for p in meander {
+            assert!(p.x_um >= b.min_x_um - EPS && p.x_um <= b.max_x_um + EPS);
+            assert!(p.y_um >= b.min_y_um - EPS && p.y_um <= b.max_y_um + EPS);
+        }
+    }
+
+    #[test]
+    fn realizes_route_polygon_with_analytic_meander_success() {
+        let lib = test_lib();
+        let route = RouteResult {
+            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
+            primitives: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: State::new(5, 2, 0),
+            reached_target: State::new(5, 2, 0),
+            stats: Default::default(),
+        };
+        let poly = realize_route_polygon_with_analytic_meander(
+            &route,
+            &lib,
+            &grid(),
+            1.0,
+            3.0,
+            0.2,
+            0.1,
+            2,
+            MeanderSide::Left,
+            MeanderBox {
+                min_x_um: 1.4,
+                max_x_um: 5.6,
+                min_y_um: 2.4,
+                max_y_um: 4.0,
+            },
+        )
+        .unwrap();
+        assert!(poly.len() >= 4);
+        assert!(poly.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+    }
+
+    #[test]
+    fn analytic_meander_realization_returns_no_candidate_error() {
+        let lib = test_lib();
+        let route = RouteResult {
+            states: vec![State::new(1, 1, 0), State::new(2, 2, 2)],
+            primitives: vec![4],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target: State::new(2, 2, 2),
+            reached_target: State::new(2, 2, 2),
+            stats: Default::default(),
+        };
+        let err = realize_route_polygon_with_analytic_meander(
+            &route,
+            &lib,
+            &grid(),
+            1.0,
+            2.0,
+            0.2,
+            0.1,
+            2,
+            MeanderSide::Left,
+            MeanderBox {
+                min_x_um: 100.0,
+                max_x_um: 110.0,
+                min_y_um: 100.0,
+                max_y_um: 110.0,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, GeometryError::NoMeanderCandidateSegment);
+    }
+
+    #[test]
+    fn analytic_meander_realization_propagates_planning_failure() {
+        let lib = test_lib();
+        let route = RouteResult {
+            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
+            primitives: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: State::new(5, 2, 0),
+            reached_target: State::new(5, 2, 0),
+            stats: Default::default(),
+        };
+        let err = realize_route_polygon_with_analytic_meander(
+            &route,
+            &lib,
+            &grid(),
+            1.0,
+            50.0,
+            0.5,
+            0.5,
+            1,
+            MeanderSide::Left,
+            MeanderBox {
+                min_x_um: 1.4,
+                max_x_um: 5.6,
+                min_y_um: 2.4,
+                max_y_um: 2.9,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            GeometryError::MeanderPlanningFailed(
+                MeanderPlanningError::AvailableBoxTooSmall
+                    | MeanderPlanningError::RequestedExtraLengthDoesNotFit
+            )
+        ));
     }
 
     #[test]

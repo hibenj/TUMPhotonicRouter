@@ -394,44 +394,37 @@ pub(crate) fn analyze_meander_insertion_candidate(
 // Analytic physical meander planner (new path, separate from legacy prototype)
 // -----------------------------------------------------------------------------
 
-#[allow(dead_code)]
 const BEND_SAMPLES_PER_90_DEG: usize = 8;
-#[allow(dead_code)]
 const EPS: f64 = 1.0e-9;
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum MeanderSide {
+pub enum MeanderSide {
     Left,
     Right,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PhysicalPoint {
+pub struct PhysicalPoint {
     pub x_um: f64,
     pub y_um: f64,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct StraightSegment {
+pub struct StraightSegment {
     pub start: PhysicalPoint,
     pub end: PhysicalPoint,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct MeanderBox {
+pub struct MeanderBox {
     pub min_x_um: f64,
     pub max_x_um: f64,
     pub min_y_um: f64,
     pub max_y_um: f64,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AnalyticMeanderConfig {
+pub struct AnalyticMeanderConfig {
     pub requested_extra_length_um: f64,
     pub min_bend_radius_um: f64,
     pub min_straight_um: f64,
@@ -439,18 +432,16 @@ pub(crate) struct AnalyticMeanderConfig {
     pub side: MeanderSide,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AnalyticMeanderPlan {
+pub struct AnalyticMeanderPlan {
     pub centerline: Vec<PhysicalPoint>,
     pub inserted_extra_length_um: f64,
     pub bumps: usize,
     pub side: MeanderSide,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum MeanderPlanningError {
+pub enum MeanderPlanningError {
     NonFiniteInput,
     NonPositiveSegmentLength,
     NonPositiveBendRadius,
@@ -461,19 +452,16 @@ pub(crate) enum MeanderPlanningError {
     MaxBumpsTooSmall,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum AxisOrientation {
     Horizontal,
     Vertical,
 }
 
-#[allow(dead_code)]
 fn is_finite_point(p: PhysicalPoint) -> bool {
     p.x_um.is_finite() && p.y_um.is_finite()
 }
 
-#[allow(dead_code)]
 fn is_finite_box(b: MeanderBox) -> bool {
     b.min_x_um.is_finite()
         && b.max_x_um.is_finite()
@@ -481,7 +469,6 @@ fn is_finite_box(b: MeanderBox) -> bool {
         && b.max_y_um.is_finite()
 }
 
-#[allow(dead_code)]
 fn point_in_box(p: PhysicalPoint, b: MeanderBox) -> bool {
     p.x_um >= b.min_x_um - EPS
         && p.x_um <= b.max_x_um + EPS
@@ -489,7 +476,6 @@ fn point_in_box(p: PhysicalPoint, b: MeanderBox) -> bool {
         && p.y_um <= b.max_y_um + EPS
 }
 
-#[allow(dead_code)]
 fn centerline_length(points: &[PhysicalPoint]) -> f64 {
     points
         .windows(2)
@@ -501,7 +487,6 @@ fn centerline_length(points: &[PhysicalPoint]) -> f64 {
         .sum()
 }
 
-#[allow(dead_code)]
 fn orientation_and_length(seg: StraightSegment) -> Result<(AxisOrientation, f64), MeanderPlanningError> {
     let dx = seg.end.x_um - seg.start.x_um;
     let dy = seg.end.y_um - seg.start.y_um;
@@ -517,7 +502,6 @@ fn orientation_and_length(seg: StraightSegment) -> Result<(AxisOrientation, f64)
     Err(MeanderPlanningError::UnsupportedSegmentOrientation)
 }
 
-#[allow(dead_code)]
 fn world_from_local(
     seg: StraightSegment,
     orientation: AxisOrientation,
@@ -542,7 +526,6 @@ fn world_from_local(
     }
 }
 
-#[allow(dead_code)]
 fn side_capacity_um(
     seg: StraightSegment,
     orientation: AxisOrientation,
@@ -567,7 +550,6 @@ fn side_capacity_um(
     }
 }
 
-#[allow(dead_code)]
 fn append_line_local(
     out: &mut Vec<PhysicalPoint>,
     seg: StraightSegment,
@@ -587,7 +569,6 @@ fn append_line_local(
     out.push(p);
 }
 
-#[allow(dead_code)]
 fn append_quarter_arc_local(
     out: &mut Vec<PhysicalPoint>,
     seg: StraightSegment,
@@ -608,8 +589,7 @@ fn append_quarter_arc_local(
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn plan_analytic_meander(
+pub fn plan_analytic_meander(
     segment: StraightSegment,
     available_box: MeanderBox,
     config: &AnalyticMeanderConfig,
