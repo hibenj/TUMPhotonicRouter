@@ -852,10 +852,26 @@ pub struct AutoMeanderConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AutoRouteAnalyticMeanderPlan {
     pub selected_segment_index: usize,
+    pub selected_run_start_index: usize,
+    pub selected_run_end_index: usize,
     pub selected_segment: StraightSegment,
+    pub selected_run_length_um: f64,
+    pub candidate_runs: usize,
+    pub rejected_box_blocked: usize,
+    pub rejected_planning_failed: usize,
+    pub rejected_too_short: usize,
     pub selected_box: MeanderBox,
     pub selected_grid_rect: GridRect,
     pub plan: AnalyticMeanderPlan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CenterlineStraightRun {
+    pub start_index: usize,
+    pub end_index: usize,
+    pub start: (f64, f64),
+    pub end: (f64, f64),
+    pub length_um: f64,
 }
 
 pub fn build_meander_box_for_segment(
@@ -1015,8 +1031,10 @@ pub fn plan_auto_analytic_meander_for_route(
 
     #[derive(Clone)]
     struct Candidate {
-        selected_segment_index: usize,
+        selected_run_start_index: usize,
+        selected_run_end_index: usize,
         selected_segment: StraightSegment,
+        selected_run_length_um: f64,
         selected_box: MeanderBox,
         selected_grid_rect: GridRect,
         plan: AnalyticMeanderPlan,
@@ -1024,28 +1042,20 @@ pub fn plan_auto_analytic_meander_for_route(
         side_rank: i32,
     }
 
+    let runs = extract_axis_aligned_straight_runs(&centerline, config.min_segment_length_um);
+    let mut rejected_box_blocked = 0usize;
+    let mut rejected_planning_failed = 0usize;
+    let mut rejected_too_short = 0usize;
     let mut best: Option<Candidate> = None;
-    for (idx, w) in centerline.windows(2).enumerate() {
-        let p0 = w[0];
-        let p1 = w[1];
-        let dx = (p1.0 - p0.0).abs();
-        let dy = (p1.1 - p0.1).abs();
-        let axis_aligned = (dx > EPS && dy <= EPS) || (dy > EPS && dx <= EPS);
-        if !axis_aligned {
-            continue;
-        }
-        let seg_len = distance(p0, p1);
-        if seg_len + EPS < config.min_segment_length_um {
-            continue;
-        }
+    for run in &runs {
         let segment = StraightSegment {
             start: PhysicalPoint {
-                x_um: p0.0,
-                y_um: p0.1,
+                x_um: run.start.0,
+                y_um: run.start.1,
             },
             end: PhysicalPoint {
-                x_um: p1.0,
-                y_um: p1.1,
+                x_um: run.end.0,
+                y_um: run.end.1,
             },
         };
 
@@ -1053,7 +1063,10 @@ pub fn plan_auto_analytic_meander_for_route(
             let side_rank = if side == MeanderSide::Left { 0 } else { 1 };
             let box_um = match build_meander_box_for_segment(segment, side, config.box_depth_um) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(_) => {
+                    rejected_planning_failed += 1;
+                    continue;
+                }
             };
             let rect = match check_meander_box_free_with_prefix(
                 box_um,
@@ -1062,7 +1075,10 @@ pub fn plan_auto_analytic_meander_for_route(
                 config.clearance_radius_cells,
             ) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(_) => {
+                    rejected_box_blocked += 1;
+                    continue;
+                }
             };
             let plan_cfg = AnalyticMeanderConfig {
                 requested_extra_length_um: config.requested_extra_length_um,
@@ -1074,15 +1090,21 @@ pub fn plan_auto_analytic_meander_for_route(
             };
             let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(_) => {
+                    rejected_planning_failed += 1;
+                    continue;
+                }
             };
             if plan.inserted_extra_length_um + EPS < config.requested_extra_length_um {
+                rejected_too_short += 1;
                 continue;
             }
             let overshoot = plan.inserted_extra_length_um - config.requested_extra_length_um;
             let cand = Candidate {
-                selected_segment_index: idx,
+                selected_run_start_index: run.start_index,
+                selected_run_end_index: run.end_index,
                 selected_segment: segment,
+                selected_run_length_um: run.length_um,
                 selected_box: box_um,
                 selected_grid_rect: rect,
                 plan,
@@ -1107,9 +1129,9 @@ pub fn plan_auto_analytic_meander_for_route(
                                 || (cand.diff.total_cmp(&cur.diff).is_eq()
                                     && (area_new < area_cur
                                         || (area_new == area_cur
-                                            && (cand.selected_segment_index < cur.selected_segment_index
-                                                || (cand.selected_segment_index
-                                                    == cur.selected_segment_index
+                                            && (cand.selected_run_start_index < cur.selected_run_start_index
+                                                || (cand.selected_run_start_index
+                                                    == cur.selected_run_start_index
                                                     && cand.side_rank < cur.side_rank)))))))
                 }
             };
@@ -1121,12 +1143,142 @@ pub fn plan_auto_analytic_meander_for_route(
 
     let best = best.ok_or(GeometryError::NoAutoMeanderCandidate)?;
     Ok(AutoRouteAnalyticMeanderPlan {
-        selected_segment_index: best.selected_segment_index,
+        selected_segment_index: best.selected_run_start_index,
+        selected_run_start_index: best.selected_run_start_index,
+        selected_run_end_index: best.selected_run_end_index,
         selected_segment: best.selected_segment,
+        selected_run_length_um: best.selected_run_length_um,
+        candidate_runs: runs.len(),
+        rejected_box_blocked,
+        rejected_planning_failed,
+        rejected_too_short,
         selected_box: best.selected_box,
         selected_grid_rect: best.selected_grid_rect,
         plan: best.plan,
     })
+}
+
+pub(crate) fn extract_axis_aligned_straight_runs(
+    centerline: &[(f64, f64)],
+    min_length_um: f64,
+) -> Vec<CenterlineStraightRun> {
+    if centerline.len() < 2 {
+        return Vec::new();
+    }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Axis {
+        Horizontal,
+        Vertical,
+    }
+    #[derive(Clone, Copy)]
+    struct Acc {
+        start_index: usize,
+        end_index: usize,
+        start: (f64, f64),
+        end: (f64, f64),
+        length_um: f64,
+        axis: Axis,
+        dir: i8,
+        line_coord: f64,
+    }
+    let mut runs = Vec::new();
+    let mut acc: Option<Acc> = None;
+    let min_len = min_length_um.max(0.0);
+    for i in 0..(centerline.len() - 1) {
+        let p0 = centerline[i];
+        let p1 = centerline[i + 1];
+        let dx = p1.0 - p0.0;
+        let dy = p1.1 - p0.1;
+        let seg_len = distance(p0, p1);
+        if seg_len <= EPS {
+            continue;
+        }
+        let segment_kind = if dy.abs() <= EPS && dx.abs() > EPS {
+            Some((
+                Axis::Horizontal,
+                if dx > 0.0 { 1 } else { -1 },
+                p0.1,
+                seg_len,
+            ))
+        } else if dx.abs() <= EPS && dy.abs() > EPS {
+            Some((Axis::Vertical, if dy > 0.0 { 1 } else { -1 }, p0.0, seg_len))
+        } else {
+            None
+        };
+        let Some((axis, dir, line_coord, seg_len)) = segment_kind else {
+            if let Some(a) = acc.take() {
+                if a.length_um + EPS >= min_len {
+                    runs.push(CenterlineStraightRun {
+                        start_index: a.start_index,
+                        end_index: a.end_index,
+                        start: a.start,
+                        end: a.end,
+                        length_um: a.length_um,
+                    });
+                }
+            }
+            continue;
+        };
+        match acc.as_mut() {
+            None => {
+                acc = Some(Acc {
+                    start_index: i,
+                    end_index: i + 1,
+                    start: p0,
+                    end: p1,
+                    length_um: seg_len,
+                    axis,
+                    dir,
+                    line_coord,
+                });
+            }
+            Some(a)
+                if a.axis == axis
+                    && a.dir == dir
+                    && (a.line_coord - line_coord).abs() <= EPS
+                    && a.end_index == i
+                    && distance(a.end, p0) <= EPS =>
+            {
+                a.end_index = i + 1;
+                a.end = p1;
+                a.length_um += seg_len;
+            }
+            Some(_) => {
+                let prev = acc.take().expect("acc exists");
+                if prev.length_um + EPS >= min_len {
+                    runs.push(CenterlineStraightRun {
+                        start_index: prev.start_index,
+                        end_index: prev.end_index,
+                        start: prev.start,
+                        end: prev.end,
+                        length_um: prev.length_um,
+                    });
+                }
+                acc = Some(Acc {
+                    start_index: i,
+                    end_index: i + 1,
+                    start: p0,
+                    end: p1,
+                    length_um: seg_len,
+                    axis,
+                    dir,
+                    line_coord,
+                });
+            }
+        }
+    }
+    if let Some(a) = acc.take() {
+        if a.length_um + EPS >= min_len {
+            runs.push(CenterlineStraightRun {
+                start_index: a.start_index,
+                end_index: a.end_index,
+                start: a.start,
+                end: a.end,
+                length_um: a.length_um,
+            });
+        }
+    }
+    runs
 }
 
 pub(crate) fn splice_meander_into_centerline(
@@ -1145,6 +1297,28 @@ pub(crate) fn splice_meander_into_centerline(
         push_physical_if_different(&mut out, p);
     }
     out
+}
+
+pub(crate) fn splice_meander_into_centerline_range(
+    centerline: &[(f64, f64)],
+    start_index: usize,
+    end_index: usize,
+    meander: &[PhysicalPoint],
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    if centerline.len() < 2 || start_index >= end_index || end_index >= centerline.len() {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+    let mut out = Vec::with_capacity(centerline.len() + meander.len());
+    for p in centerline.iter().take(start_index).copied() {
+        push_physical_if_different(&mut out, p);
+    }
+    for p in meander.iter().copied() {
+        push_physical_if_different(&mut out, (p.x_um, p.y_um));
+    }
+    for p in centerline.iter().skip(end_index + 1).copied() {
+        push_physical_if_different(&mut out, p);
+    }
+    Ok(out)
 }
 
 pub fn realize_route_polygon_with_analytic_meander(
@@ -1247,8 +1421,12 @@ pub fn realize_route_polygon_with_auto_checked_analytic_meander(
         opened_cells,
         config,
     )?;
-    let modified =
-        splice_meander_into_centerline(&centerline, auto.selected_segment_index, &auto.plan.centerline);
+    let modified = splice_meander_into_centerline_range(
+        &centerline,
+        auto.selected_run_start_index,
+        auto.selected_run_end_index,
+        &auto.plan.centerline,
+    )?;
     if modified.len() < 2 {
         return Err(GeometryError::DegenerateRoute);
     }
@@ -1269,11 +1447,12 @@ pub fn realize_route_polygon_from_auto_plan(
     auto_plan: &AutoRouteAnalyticMeanderPlan,
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
     let centerline = route_to_primitive_centerline(route, primitives, grid)?;
-    let modified = splice_meander_into_centerline(
+    let modified = splice_meander_into_centerline_range(
         &centerline,
-        auto_plan.selected_segment_index,
+        auto_plan.selected_run_start_index,
+        auto_plan.selected_run_end_index,
         &auto_plan.plan.centerline,
-    );
+    )?;
     if modified.len() < 2 {
         return Err(GeometryError::DegenerateRoute);
     }
@@ -2317,6 +2496,32 @@ mod tests {
     }
 
     #[test]
+    fn extract_straight_runs_merges_consecutive_collinear_segments() {
+        let centerline = vec![(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (30.0, 0.0)];
+        let runs = extract_axis_aligned_straight_runs(&centerline, 25.0);
+        assert_eq!(runs.len(), 1);
+        let r = runs[0];
+        assert_eq!(r.start_index, 0);
+        assert_eq!(r.end_index, 3);
+        assert_eq!(r.start, (0.0, 0.0));
+        assert_eq!(r.end, (30.0, 0.0));
+        assert!((r.length_um - 30.0).abs() < EPS);
+    }
+
+    #[test]
+    fn extract_straight_runs_splits_on_axis_change() {
+        let centerline = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 5.0), (10.0, 15.0)];
+        let runs = extract_axis_aligned_straight_runs(&centerline, 5.0);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].start_index, 0);
+        assert_eq!(runs[0].end_index, 1);
+        assert!((runs[0].length_um - 10.0).abs() < EPS);
+        assert_eq!(runs[1].start_index, 1);
+        assert_eq!(runs[1].end_index, 3);
+        assert!((runs[1].length_um - 15.0).abs() < EPS);
+    }
+
+    #[test]
     fn plan_analytic_meander_for_route_returns_plan_and_segment() {
         let lib = test_lib();
         let route = RouteResult {
@@ -2632,7 +2837,7 @@ mod tests {
             stats: Default::default(),
         };
         let cfg = AutoMeanderConfig {
-            requested_extra_length_um: 3.0,
+            requested_extra_length_um: 1.0,
             min_bend_radius_um: 0.2,
             min_straight_um: 0.1,
             max_bumps: 2,
@@ -2663,7 +2868,7 @@ mod tests {
             stats: Default::default(),
         };
         let cfg = AutoMeanderConfig {
-            requested_extra_length_um: 3.0,
+            requested_extra_length_um: 1.0,
             min_bend_radius_um: 0.2,
             min_straight_um: 0.1,
             max_bumps: 2,
@@ -2695,7 +2900,7 @@ mod tests {
             stats: Default::default(),
         };
         let cfg = AutoMeanderConfig {
-            requested_extra_length_um: 3.0,
+            requested_extra_length_um: 1.0,
             min_bend_radius_um: 0.2,
             min_straight_um: 0.1,
             max_bumps: 2,
@@ -2725,7 +2930,7 @@ mod tests {
             stats: Default::default(),
         };
         let cfg = AutoMeanderConfig {
-            requested_extra_length_um: 3.0,
+            requested_extra_length_um: 1.0,
             min_bend_radius_um: 0.2,
             min_straight_um: 0.1,
             max_bumps: 2,
@@ -2737,7 +2942,28 @@ mod tests {
         };
         let p = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert_eq!(p.selected_segment_index, 0);
+        assert_eq!(p.selected_run_start_index, 0);
+        assert_eq!(p.selected_run_end_index, 2);
         assert_eq!(p.plan.side, MeanderSide::Left);
+    }
+
+    #[test]
+    fn splice_meander_range_replaces_full_run_and_preserves_endpoints() {
+        let centerline = vec![(0.0, 0.0), (5.0, 0.0), (10.0, 0.0), (15.0, 0.0), (20.0, 0.0)];
+        let meander = vec![
+            PhysicalPoint { x_um: 5.0, y_um: 0.0 },
+            PhysicalPoint { x_um: 7.0, y_um: 2.0 },
+            PhysicalPoint { x_um: 10.0, y_um: 0.0 },
+            PhysicalPoint { x_um: 13.0, y_um: -2.0 },
+            PhysicalPoint { x_um: 15.0, y_um: 0.0 },
+        ];
+        let spliced =
+            splice_meander_into_centerline_range(&centerline, 1, 3, &meander).expect("valid splice");
+        assert_eq!(spliced.first().copied(), Some((0.0, 0.0)));
+        assert_eq!(spliced.last().copied(), Some((20.0, 0.0)));
+        assert!(!spliced.windows(2).any(|w| distance(w[0], w[1]) <= EPS));
+        assert!(spliced.contains(&(7.0, 2.0)));
+        assert!(spliced.contains(&(13.0, -2.0)));
     }
 
     #[test]
@@ -2774,6 +3000,48 @@ mod tests {
         };
         let p = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert!(p.plan.bumps >= 2);
+    }
+
+    #[test]
+    fn auto_meander_finds_candidate_on_merged_multi_segment_straight_run() {
+        let lib = create_photonic_primitive_library(PrimitiveLibraryConfig {
+            grid_size_um: 1.0,
+            straight_short_cells: 1,
+            straight_long_cells: 4,
+            bend_radius_cells: 1,
+            allow_45_degree_turns: true,
+        });
+        let map = ObstacleMap::new(40, 40);
+        let route = RouteResult {
+            states: vec![
+                State::new(2, 10, 0),
+                State::new(6, 10, 0),
+                State::new(10, 10, 0),
+                State::new(14, 10, 0),
+            ],
+            primitives: vec![1, 1, 1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 12.0,
+            total_cost: 12.0,
+            requested_target: State::new(14, 10, 0),
+            reached_target: State::new(14, 10, 0),
+            stats: Default::default(),
+        };
+        let cfg = AutoMeanderConfig {
+            requested_extra_length_um: 1.0,
+            min_bend_radius_um: 0.2,
+            min_straight_um: 0.0,
+            max_bumps: 6,
+            box_depth_um: 8.0,
+            min_segment_length_um: 10.0,
+            clearance_radius_cells: 0,
+            side_policy: AutoMeanderSidePolicy::Both,
+            mode: MeanderPlanningMode::FillBoxMultiBump,
+        };
+        let p = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        assert_eq!(p.selected_run_start_index, 0);
+        assert_eq!(p.selected_run_end_index, 3);
     }
 
     #[test]

@@ -1068,6 +1068,13 @@ impl PyPhotonicRouter {
 
         let d = PyDict::new_bound(py);
         d.set_item("selected_segment_index", plan.selected_segment_index)?;
+        d.set_item("selected_run_start_index", plan.selected_run_start_index)?;
+        d.set_item("selected_run_end_index", plan.selected_run_end_index)?;
+        d.set_item("selected_run_length_um", plan.selected_run_length_um)?;
+        d.set_item("candidate_runs", plan.candidate_runs)?;
+        d.set_item("rejected_box_blocked", plan.rejected_box_blocked)?;
+        d.set_item("rejected_planning_failed", plan.rejected_planning_failed)?;
+        d.set_item("rejected_too_short", plan.rejected_too_short)?;
         d.set_item(
             "selected_segment",
             (
@@ -2116,6 +2123,10 @@ mod tests {
             let d = obj.bind(py).downcast::<PyDict>().unwrap();
             assert!(d.contains("selected_box").unwrap());
             assert!(d.contains("selected_grid_rect").unwrap());
+            assert!(d.contains("selected_run_start_index").unwrap());
+            assert!(d.contains("selected_run_end_index").unwrap());
+            assert!(d.contains("selected_run_length_um").unwrap());
+            assert!(d.contains("candidate_runs").unwrap());
             assert!(d.contains("effective_bend_radius_um").unwrap());
             assert!(d.contains("primitive_bend_radius_um").unwrap());
             assert!(d.contains("planning_mode").unwrap());

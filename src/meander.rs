@@ -803,7 +803,7 @@ fn plan_exact_extra_length_meander(
             r,
             r,
             std::f64::consts::PI,
-            std::f64::consts::FRAC_PI_2,
+            3.0 * std::f64::consts::FRAC_PI_2,
         );
     }
     append_line_local(
@@ -960,7 +960,7 @@ pub fn plan_fill_box_multi_bump_meander(
             r,
             r,
             std::f64::consts::PI,
-            std::f64::consts::FRAC_PI_2,
+            3.0 * std::f64::consts::FRAC_PI_2,
         );
     }
     append_line_local(

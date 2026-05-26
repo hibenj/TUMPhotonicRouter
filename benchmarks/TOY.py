@@ -48,7 +48,7 @@ def build_schematic() -> Schematic:
     gc_placement1 = Placement(x=0, y=0, mirror=True)
     gc_placement2 = Placement(x=200, y=100, rotation=0)
     gc_placement3 = Placement(x=200, y=0, rotation=0)
-    mmi_placement = Placement(x=100, y=20, rotation=0)
+    mmi_placement = Placement(x=100, y=80, rotation=0)
 
     # Add instances and placements to schematic
     schematic.add_instance("gc_0", gc_instance, gc_placement0)
