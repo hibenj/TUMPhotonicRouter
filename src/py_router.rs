@@ -10,12 +10,14 @@ use crate::astar::{
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
     realize_route_polygon_from_primitives as realize_route_polygon_from_primitives_rs,
+    realize_route_polygon_with_analytic_meander as realize_route_polygon_with_analytic_meander_rs,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     GeometryGridSpec, PortAccess, PortAccessConfig,
 };
 use crate::meander::{
     analyze_meander_insertion_candidate as analyze_meander_insertion_candidate_rs,
     insert_simple_meander_loop as insert_simple_meander_loop_rs,
+    MeanderBox, MeanderSide,
 };
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::{
@@ -351,6 +353,17 @@ fn allowed_angles_to_mask(angles: Option<&Vec<u8>>) -> PyResult<Option<u8>> {
     Ok(Some(mask))
 }
 
+fn parse_meander_side(side: &str) -> PyResult<MeanderSide> {
+    let normalized = side.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "left" => Ok(MeanderSide::Left),
+        "right" => Ok(MeanderSide::Right),
+        _ => Err(PyValueError::new_err(
+            "side must be either 'left' or 'right'",
+        )),
+    }
+}
+
 #[pymethods]
 impl PyPhotonicRouter {
     #[new]
@@ -613,6 +626,72 @@ impl PyPhotonicRouter {
         realize_route_polygon_from_primitives_rs(&r, &self.primitives, &grid, width_um)
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
+
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None))]
+    fn realize_route_polygon_with_analytic_meander(
+        &self,
+        route: &PyRouteResult,
+        width_um: f64,
+        requested_extra_length_um: f64,
+        min_bend_radius_um: f64,
+        min_straight_um: f64,
+        max_bumps: usize,
+        side: &str,
+        available_box: Option<(f64, f64, f64, f64)>,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        if width_um <= 0.0 {
+            return Err(PyValueError::new_err("width_um must be > 0"));
+        }
+        if requested_extra_length_um <= 0.0 {
+            return Err(PyValueError::new_err(
+                "requested_extra_length_um must be > 0",
+            ));
+        }
+        if min_bend_radius_um <= 0.0 {
+            return Err(PyValueError::new_err("min_bend_radius_um must be > 0"));
+        }
+        if max_bumps == 0 {
+            return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        let meander_side = parse_meander_side(side)?;
+        let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
+            PyValueError::new_err(
+                "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
+            )
+        })?;
+        if min_x_um > max_x_um || min_y_um > max_y_um {
+            return Err(PyValueError::new_err(
+                "available_box is malformed: expected min_x<=max_x and min_y<=max_y",
+            ));
+        }
+        let meander_box = MeanderBox {
+            min_x_um,
+            max_x_um,
+            min_y_um,
+            max_y_um,
+        };
+
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        realize_route_polygon_with_analytic_meander_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            width_um,
+            requested_extra_length_um,
+            min_bend_radius_um,
+            min_straight_um,
+            max_bumps,
+            meander_side,
+            meander_box,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
     fn describe_primitives(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
         describe_primitives(py, &self.primitives)
     }
@@ -840,5 +919,122 @@ mod tests {
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
+    }
+
+    #[test]
+    fn parse_meander_side_variants() {
+        assert_eq!(parse_meander_side("left").unwrap(), MeanderSide::Left);
+        assert_eq!(parse_meander_side("right").unwrap(), MeanderSide::Right);
+        assert!(parse_meander_side("up").is_err());
+    }
+
+    #[test]
+    fn analytic_meander_method_requires_available_box() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(20, 20, 1.0, 0.0, 0.0).unwrap();
+        let router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        let route = PyRouteResult {
+            states: vec![
+                PyState::new(1, 2, 0),
+                PyState::new(5, 2, 0),
+            ],
+            primitive_ids: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: PyState::new(5, 2, 0),
+            reached_target: PyState::new(5, 2, 0),
+            segments: vec![],
+            window_attempts: 0,
+            used_full_grid_fallback: false,
+            expanded_states: 0,
+            window_rejects: 0,
+            footprint_rejects: 0,
+            dense_grid_build_failures: 0,
+            max_window_area_cells: 0,
+        };
+        let err = router
+            .realize_route_polygon_with_analytic_meander(
+                &route,
+                1.0,
+                3.0,
+                0.2,
+                0.1,
+                2,
+                "left",
+                None,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("available_box must be provided"));
+    }
+
+    #[test]
+    fn analytic_meander_method_success_and_too_small_box_error() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(20, 20, 1.0, 0.0, 0.0).unwrap();
+        let router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        let route = PyRouteResult {
+            states: vec![
+                PyState::new(1, 2, 0),
+                PyState::new(5, 2, 0),
+            ],
+            primitive_ids: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: PyState::new(5, 2, 0),
+            reached_target: PyState::new(5, 2, 0),
+            segments: vec![],
+            window_attempts: 0,
+            used_full_grid_fallback: false,
+            expanded_states: 0,
+            window_rejects: 0,
+            footprint_rejects: 0,
+            dense_grid_build_failures: 0,
+            max_window_area_cells: 0,
+        };
+
+        let ok_poly = router
+            .realize_route_polygon_with_analytic_meander(
+                &route,
+                1.0,
+                3.0,
+                0.2,
+                0.1,
+                2,
+                "left",
+                Some((1.4, 5.6, 2.4, 4.0)),
+            )
+            .unwrap();
+        assert!(ok_poly.len() >= 4);
+        assert!(ok_poly.iter().all(|(x, y)| x.is_finite() && y.is_finite()));
+
+        let err = router
+            .realize_route_polygon_with_analytic_meander(
+                &route,
+                1.0,
+                50.0,
+                0.5,
+                0.5,
+                1,
+                "left",
+                Some((1.4, 5.6, 2.4, 2.9)),
+            )
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 }

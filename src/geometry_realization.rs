@@ -685,40 +685,15 @@ pub fn realize_route_polygon_with_analytic_meander(
         if !(is_horizontal || is_vertical) {
             continue;
         }
-        let intersects = {
-            let in0 = p0.0 >= available_box.min_x_um - EPS
-                && p0.0 <= available_box.max_x_um + EPS
-                && p0.1 >= available_box.min_y_um - EPS
-                && p0.1 <= available_box.max_y_um + EPS;
-            let in1 = p1.0 >= available_box.min_x_um - EPS
-                && p1.0 <= available_box.max_x_um + EPS
-                && p1.1 >= available_box.min_y_um - EPS
-                && p1.1 <= available_box.max_y_um + EPS;
-            if in0 || in1 {
-                true
-            } else if is_horizontal {
-                let y = p0.1;
-                if y < available_box.min_y_um - EPS || y > available_box.max_y_um + EPS {
-                    false
-                } else {
-                    let min_x = p0.0.min(p1.0);
-                    let max_x = p0.0.max(p1.0);
-                    max_x >= available_box.min_x_um - EPS
-                        && min_x <= available_box.max_x_um + EPS
-                }
-            } else {
-                let x = p0.0;
-                if x < available_box.min_x_um - EPS || x > available_box.max_x_um + EPS {
-                    false
-                } else {
-                    let min_y = p0.1.min(p1.1);
-                    let max_y = p0.1.max(p1.1);
-                    max_y >= available_box.min_y_um - EPS
-                        && min_y <= available_box.max_y_um + EPS
-                }
-            }
-        };
-        if !intersects {
+        let in0 = p0.0 >= available_box.min_x_um - EPS
+            && p0.0 <= available_box.max_x_um + EPS
+            && p0.1 >= available_box.min_y_um - EPS
+            && p0.1 <= available_box.max_y_um + EPS;
+        let in1 = p1.0 >= available_box.min_x_um - EPS
+            && p1.0 <= available_box.max_x_um + EPS
+            && p1.1 >= available_box.min_y_um - EPS
+            && p1.1 <= available_box.max_y_um + EPS;
+        if !(in0 && in1) {
             continue;
         }
         let len = distance(p0, p1);
