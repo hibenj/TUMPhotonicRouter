@@ -1129,6 +1129,7 @@ def route_nets_rust(
                 route_svgs.append(route_svg)
 
             print("ok")
+        # break
 
     if debug_timing:
         t_astar_end = time.perf_counter()

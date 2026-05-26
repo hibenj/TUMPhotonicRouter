@@ -13,6 +13,10 @@ use crate::geometry_realization::{
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     GeometryGridSpec, PortAccess, PortAccessConfig,
 };
+use crate::meander::{
+    analyze_meander_insertion_candidate as analyze_meander_insertion_candidate_rs,
+    insert_simple_meander_loop as insert_simple_meander_loop_rs,
+};
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::{
     create_photonic_primitive_library, Primitive, PrimitiveLibrary, PrimitiveLibraryConfig,
@@ -347,221 +351,6 @@ fn allowed_angles_to_mask(angles: Option<&Vec<u8>>) -> PyResult<Option<u8>> {
     Ok(Some(mask))
 }
 
-#[derive(Clone, Copy, Debug)]
-struct MeanderCandidate {
-    start_index: usize,
-    end_index: usize,
-    length_um: f64,
-    heading_dx: i32,
-    heading_dy: i32,
-}
-
-fn primitive_length_by_id(lib: &PrimitiveLibrary, start_angle: u8, pid: u16) -> Option<f64> {
-    lib.get_primitives_for_angle(start_angle)
-        .iter()
-        .find(|p| p.id == pid)
-        .map(|p| p.length_um)
-}
-
-fn find_detour_sequence_between_states(
-    lib: &PrimitiveLibrary,
-    start: State,
-    target: State,
-    baseline_length_um: f64,
-    requested_extra_length_um: f64,
-    max_depth: usize,
-) -> Option<(Vec<u16>, f64)> {
-    #[derive(Clone)]
-    struct Ctx<'a> {
-        lib: &'a PrimitiveLibrary,
-        target: State,
-        baseline_length_um: f64,
-        requested_extra_length_um: f64,
-        best_seq: Option<Vec<u16>>,
-        best_len: f64,
-    }
-    fn dfs(
-        ctx: &mut Ctx<'_>,
-        state: State,
-        depth: usize,
-        max_depth: usize,
-        seq: &mut Vec<u16>,
-        length_um: f64,
-        turn_count: usize,
-    ) {
-        if depth > max_depth {
-            return;
-        }
-        // Accept only detours that actually turn and end exactly on target pose.
-        if depth > 0
-            && state.x == ctx.target.x
-            && state.y == ctx.target.y
-            && state.angle == ctx.target.angle
-            && turn_count >= 2
-        {
-            let extra = length_um - ctx.baseline_length_um;
-            if extra > 0.0 && extra <= ctx.requested_extra_length_um + 1.0e-9 {
-                if length_um > ctx.best_len {
-                    ctx.best_len = length_um;
-                    ctx.best_seq = Some(seq.clone());
-                }
-            }
-            return;
-        }
-
-        // Prune if already too long.
-        if length_um - ctx.baseline_length_um > ctx.requested_extra_length_um + 1.0e-9 {
-            return;
-        }
-
-        for p in ctx.lib.get_primitives_for_angle(state.angle) {
-            // Avoid unbounded straight-only expansions.
-            let d = ((p.end_angle as i16 - p.start_angle as i16).rem_euclid(8)) as i16;
-            let next_turn_count = if d == 0 { turn_count } else { turn_count + 1 };
-            let next = State::new(state.x + p.dx, state.y + p.dy, p.end_angle);
-            seq.push(p.id);
-            dfs(
-                ctx,
-                next,
-                depth + 1,
-                max_depth,
-                seq,
-                length_um + p.length_um,
-                next_turn_count,
-            );
-            seq.pop();
-        }
-    }
-
-    let mut ctx = Ctx {
-        lib,
-        target,
-        baseline_length_um,
-        requested_extra_length_um,
-        best_seq: None,
-        best_len: f64::NEG_INFINITY,
-    };
-    let mut seq = Vec::new();
-    dfs(&mut ctx, start, 0, max_depth, &mut seq, 0.0, 0);
-    ctx.best_seq.map(|s| (s, ctx.best_len))
-}
-
-fn extract_straight_candidates(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid_size_um: f64,
-    min_endpoint_margin_cells: i32,
-    min_candidate_straight_length_um: f64,
-) -> Vec<MeanderCandidate> {
-    if route.states.len() < 2 || route.primitives.is_empty() {
-        return Vec::new();
-    }
-
-    let margin = min_endpoint_margin_cells.max(0) as usize;
-    let mut candidates: Vec<MeanderCandidate> = Vec::new();
-    let mut i = 0usize;
-    while i < route.primitives.len() {
-        let start_angle = route.states[i].angle;
-        let pid = route.primitives[i];
-        let p = match primitives
-            .get_primitives_for_angle(start_angle)
-            .iter()
-            .find(|pp| pp.id == pid)
-        {
-            Some(v) => v,
-            None => {
-                i += 1;
-                continue;
-            }
-        };
-        let d = ((p.end_angle as i16 - p.start_angle as i16).rem_euclid(8)) as i16;
-        if d != 0 {
-            i += 1;
-            continue;
-        }
-
-        // Start run of consecutive straight primitives with same heading.
-        let run_start = i;
-        let heading_angle = start_angle;
-        let mut run_end = i;
-
-        i += 1;
-        while i < route.primitives.len() {
-            let a = route.states[i].angle;
-            let pid_i = route.primitives[i];
-            let p_i = match primitives
-                .get_primitives_for_angle(a)
-                .iter()
-                .find(|pp| pp.id == pid_i)
-            {
-                Some(v) => v,
-                None => break,
-            };
-            let d_i = ((p_i.end_angle as i16 - p_i.start_angle as i16).rem_euclid(8)) as i16;
-            if d_i != 0 || a != heading_angle {
-                break;
-            }
-            run_end = i;
-            i += 1;
-        }
-
-        // Trim candidate span by endpoint margins instead of discarding whole run.
-        let first_allowed_state = margin;
-        let last_allowed_state = (route.states.len() - 1).saturating_sub(margin);
-        if first_allowed_state >= last_allowed_state {
-            continue;
-        }
-        let start_state_index = run_start.max(first_allowed_state);
-        let end_state_index = (run_end + 1).min(last_allowed_state);
-        if start_state_index >= end_state_index {
-            continue;
-        }
-
-        // Recompute trimmed physical length from primitive lengths.
-        let mut trimmed_length_um = 0.0f64;
-        for prim_idx in start_state_index..end_state_index {
-            let a = route.states[prim_idx].angle;
-            let pid_t = route.primitives[prim_idx];
-            let p_t = match primitives
-                .get_primitives_for_angle(a)
-                .iter()
-                .find(|pp| pp.id == pid_t)
-            {
-                Some(v) => v,
-                None => continue,
-            };
-            trimmed_length_um += p_t.length_um.max(grid_size_um);
-        }
-        let long_enough = trimmed_length_um >= min_candidate_straight_length_um;
-        if long_enough {
-            let (heading_dx, heading_dy) = match heading_angle % 8 {
-                0 => (1, 0),
-                1 => (1, 1),
-                2 => (0, 1),
-                3 => (-1, 1),
-                4 => (-1, 0),
-                5 => (-1, -1),
-                6 => (0, -1),
-                _ => (1, -1),
-            };
-            candidates.push(MeanderCandidate {
-                start_index: start_state_index,
-                end_index: end_state_index,
-                length_um: trimmed_length_um,
-                heading_dx,
-                heading_dy,
-            });
-        }
-    }
-
-    candidates.sort_by(|a, b| {
-        b.length_um
-            .partial_cmp(&a.length_um)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    candidates
-}
-
 #[pymethods]
 impl PyPhotonicRouter {
     #[new]
@@ -838,129 +627,19 @@ impl PyPhotonicRouter {
         insert_end_state_index: Option<usize>,
     ) -> PyResult<PyObject> {
         let base = to_route_result(route);
-        if requested_extra_length_um <= 0.0 {
-            let py_route = Py::new(py, convert_result(py, &self.primitives, &base)?)?;
-            let d = PyDict::new_bound(py);
-            d.set_item("applied", false)?;
-            d.set_item("reason", "requested_extra_length_non_positive")?;
-            d.set_item("inserted_extra_length_um", 0.0)?;
-            d.set_item("route", py_route)?;
-            return Ok(d.into());
-        }
-        let end_index = insert_end_state_index.unwrap_or(insert_after_state_index + 1);
-        if base.states.len() < 2
-            || insert_after_state_index >= base.states.len() - 1
-            || end_index <= insert_after_state_index
-            || end_index >= base.states.len()
-        {
-            let py_route = Py::new(py, convert_result(py, &self.primitives, &base)?)?;
-            let d = PyDict::new_bound(py);
-            d.set_item("applied", false)?;
-            d.set_item("reason", "invalid_insert_index")?;
-            d.set_item("inserted_extra_length_um", 0.0)?;
-            d.set_item("route", py_route)?;
-            return Ok(d.into());
-        }
-        let start_state = base.states[insert_after_state_index];
-        let end_state = base.states[end_index];
-        let baseline_slice = &base.primitives[insert_after_state_index..end_index];
-        let mut baseline_len = 0.0f64;
-        let mut running_angle = start_state.angle;
-        for pid in baseline_slice.iter().copied() {
-            let p = self
-                .primitives
-                .get_primitives_for_angle(running_angle)
-                .iter()
-                .find(|p| p.id == pid)
-                .ok_or_else(|| PyRuntimeError::new_err("Baseline primitive lookup failed"))?;
-            baseline_len += p.length_um;
-            running_angle = p.end_angle;
-        }
-
-        let (detour_ids, detour_len) = match find_detour_sequence_between_states(
+        let report = insert_simple_meander_loop_rs(
             &self.primitives,
-            start_state,
-            end_state,
-            baseline_len,
+            &base,
             requested_extra_length_um,
-            12,
-        ) {
-            Some(v) => v,
-            None => {
-                let py_route = Py::new(py, convert_result(py, &self.primitives, &base)?)?;
-                let d = PyDict::new_bound(py);
-                d.set_item("applied", false)?;
-                d.set_item("reason", "no_forward_meander_detour_found")?;
-                d.set_item("inserted_extra_length_um", 0.0)?;
-                d.set_item("route", py_route)?;
-                return Ok(d.into());
-            }
-        };
-
-        let inserted_extra = detour_len - baseline_len;
-        if inserted_extra <= 0.0 {
-            let py_route = Py::new(py, convert_result(py, &self.primitives, &base)?)?;
-            let d = PyDict::new_bound(py);
-            d.set_item("applied", false)?;
-            d.set_item("reason", "detour_does_not_increase_length")?;
-            d.set_item("inserted_extra_length_um", 0.0)?;
-            d.set_item("route", py_route)?;
-            return Ok(d.into());
-        }
-
-        let mut new_primitives = Vec::with_capacity(
-            base.primitives.len() - baseline_slice.len() + detour_ids.len(),
-        );
-        new_primitives.extend_from_slice(&base.primitives[..insert_after_state_index]);
-        new_primitives.extend(detour_ids.iter().copied());
-        new_primitives.extend_from_slice(&base.primitives[end_index..]);
-
-        let mut new_states: Vec<State> = Vec::with_capacity(new_primitives.len() + 1);
-        new_states.push(base.states[0]);
-        for pid in new_primitives.iter().copied() {
-            let cur = *new_states
-                .last()
-                .ok_or_else(|| PyRuntimeError::new_err("state build underflow"))?;
-            let p = self
-                .primitives
-                .get_primitives_for_angle(cur.angle)
-                .iter()
-                .find(|p| p.id == pid)
-                .ok_or_else(|| PyRuntimeError::new_err("Primitive id invalid for state angle"))?;
-            new_states.push(State::new(cur.x + p.dx, cur.y + p.dy, p.end_angle));
-        }
-
-        let mut new_total_length_um = 0.0f64;
-        let mut running_angle2 = new_states[0].angle;
-        for pid in new_primitives.iter().copied() {
-            let len = primitive_length_by_id(&self.primitives, running_angle2, pid)
-                .ok_or_else(|| PyRuntimeError::new_err("Primitive length lookup failed"))?;
-            new_total_length_um += len;
-            let p = self
-                .primitives
-                .get_primitives_for_angle(running_angle2)
-                .iter()
-                .find(|p| p.id == pid)
-                .ok_or_else(|| PyRuntimeError::new_err("Primitive lookup failed"))?;
-            running_angle2 = p.end_angle;
-        }
-
-        let new_route = RouteResult {
-            states: new_states,
-            primitives: new_primitives,
-            cells: base.cells.clone(),
-            compressed_waypoints: base.compressed_waypoints.clone(),
-            total_length_um: new_total_length_um,
-            total_cost: base.total_cost + inserted_extra,
-            requested_target: base.requested_target,
-            reached_target: base.reached_target,
-            stats: base.stats.clone(),
-        };
-        let py_route = Py::new(py, convert_result(py, &self.primitives, &new_route)?)?;
+            insert_after_state_index,
+            insert_end_state_index,
+        )
+        .map_err(PyRuntimeError::new_err)?;
+        let py_route = Py::new(py, convert_result(py, &self.primitives, &report.route)?)?;
         let d = PyDict::new_bound(py);
-        d.set_item("applied", true)?;
-        d.set_item("reason", "applied_forward_meander_detour")?;
-        d.set_item("inserted_extra_length_um", inserted_extra)?;
+        d.set_item("applied", report.applied)?;
+        d.set_item("reason", report.reason)?;
+        d.set_item("inserted_extra_length_um", report.inserted_extra_length_um)?;
         d.set_item("route", py_route)?;
         Ok(d.into())
     }
@@ -977,21 +656,30 @@ impl PyPhotonicRouter {
         conservative_legal_check: bool,
     ) -> PyResult<PyObject> {
         let route_rs = to_route_result(route);
-        let candidates = extract_straight_candidates(
+        let report_rs = analyze_meander_insertion_candidate_rs(
             &route_rs,
             &self.primitives,
             self.grid.grid_size_um,
+            requested_extra_length_um,
             min_endpoint_margin_cells,
             min_candidate_straight_length_um,
+            max_extra_length_per_region_um,
+            conservative_legal_check,
         );
 
         let report = PyDict::new_bound(py);
-        report.set_item("requested_extra_length_um", requested_extra_length_um)?;
-        report.set_item("inserted_extra_length_um", 0.0f64)?;
-        report.set_item("conservative_legal_check", conservative_legal_check)?;
+        report.set_item(
+            "requested_extra_length_um",
+            report_rs.requested_extra_length_um,
+        )?;
+        report.set_item("inserted_extra_length_um", report_rs.inserted_extra_length_um)?;
+        report.set_item(
+            "conservative_legal_check",
+            report_rs.conservative_legal_check,
+        )?;
 
         let candidate_dicts = PyList::empty_bound(py);
-        for c in candidates.iter() {
+        for c in report_rs.candidates.iter() {
             let d = PyDict::new_bound(py);
             d.set_item("start_index", c.start_index)?;
             d.set_item("end_index", c.end_index)?;
@@ -1001,25 +689,8 @@ impl PyPhotonicRouter {
             candidate_dicts.append(d)?;
         }
         report.set_item("candidates", candidate_dicts)?;
-
-        if requested_extra_length_um <= 0.0 {
-            report.set_item("status", "illegal")?;
-            report.set_item("reason", "requested_extra_length_non_positive")?;
-            return Ok(report.into());
-        }
-        if candidates.is_empty() {
-            report.set_item("status", "no_candidate")?;
-            report.set_item("reason", "no_valid_straight_candidate_region")?;
-            return Ok(report.into());
-        }
-        if requested_extra_length_um > max_extra_length_per_region_um {
-            report.set_item("status", "illegal")?;
-            report.set_item("reason", "exceeds_max_extra_per_region")?;
-            return Ok(report.into());
-        }
-
-        report.set_item("status", "unsupported_route_object")?;
-        report.set_item("reason", "route-object mutation not implemented yet")?;
+        report.set_item("status", report_rs.status)?;
+        report.set_item("reason", report_rs.reason)?;
         Ok(report.into())
     }
 }
