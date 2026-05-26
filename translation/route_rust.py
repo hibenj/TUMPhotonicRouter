@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SOURCE = PROJECT_ROOT / "python"
@@ -54,15 +54,7 @@ class RoutedNetRecord:
     target: PortRef
     route_obj: object
     total_length_um: float
-    meander_gap_plan: "MeanderGapPlan | None" = None
     meander_auto_plan: dict[str, object] | None = None
-
-
-class MeanderGapPlan(TypedDict):
-    gap_start_um: tuple[float, float]
-    gap_end_um: tuple[float, float]
-    meander_height_um: float
-    side: int
 
 
 @dataclass(frozen=True)
@@ -212,31 +204,6 @@ def _as_int(value: object, default: int = 0) -> int:
         return default
 
 
-def _plan_gap_on_candidate(
-    start_um: tuple[float, float],
-    end_um: tuple[float, float],
-    *,
-    gap_width_um: float,
-    anchor: str,
-) -> tuple[tuple[float, float], tuple[float, float]] | None:
-    dx = float(end_um[0]) - float(start_um[0])
-    dy = float(end_um[1]) - float(start_um[1])
-    length = math.hypot(dx, dy)
-    if length <= 1.0e-12 or gap_width_um <= 0.0 or gap_width_um > length + 1.0e-12:
-        return None
-    ux, uy = dx / length, dy / length
-    if anchor == "begin":
-        start_offset = 0.0
-    elif anchor == "end":
-        start_offset = length - gap_width_um
-    else:
-        start_offset = (length - gap_width_um) / 2.0
-    start_offset = max(0.0, min(start_offset, length - gap_width_um))
-    gs = (start_um[0] + ux * start_offset, start_um[1] + uy * start_offset)
-    ge = (gs[0] + ux * gap_width_um, gs[1] + uy * gap_width_um)
-    return gs, ge
-
-
 def analyze_meander_insertion_for_requirements(
     routed_net_records: list[RoutedNetRecord],
     requirements: list[MissingLengthRequirement],
@@ -245,7 +212,6 @@ def analyze_meander_insertion_for_requirements(
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool,
     bend_radius_cells: int,
-    gap_anchor: str = "middle",
 ) -> tuple[list[RoutedNetRecord], dict[str, object]]:
     """Plan meander insertion using auto analytic multi-bump planning."""
     rust_backend = _load_rust_backend()
@@ -379,7 +345,6 @@ def analyze_meander_insertion_for_requirements(
             target=record.target,
             route_obj=record.route_obj,
             total_length_um=record.total_length_um,
-            meander_gap_plan=None,
             meander_auto_plan={
                 "requested_extra_length_um": best_requested_probe_um,
                 "min_bend_radius_um": None,
@@ -435,7 +400,6 @@ def insert_meanders_for_requirements(
         realization_grid_spec=realization_grid_spec,
         allow_45_degree_turns=allow_45_degree_turns,
         bend_radius_cells=bend_radius_cells,
-        gap_anchor="middle",
     )
     results: list[MeanderInsertionResult] = []
     raw_results = cast(list[dict[str, object]], raw_report.get("results", []))
@@ -527,7 +491,6 @@ def route_match_and_realize(
             realization_grid_spec=debug_artifacts.realization_grid_spec,
             allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
-            gap_anchor="middle",
         )
 
     if debug_artifacts.realization_grid_spec is None:
@@ -705,172 +668,6 @@ def realize_routed_net_records(
             left.append((p[0] + nx * hw, p[1] + ny * hw))
             right.append((p[0] - nx * hw, p[1] - ny * hw))
         return left + list(reversed(right))
-
-    def _insert_gap_in_centerline(
-        centerline: list[tuple[float, float]],
-        gap_start: tuple[float, float],
-        gap_end: tuple[float, float],
-    ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]] | None:
-        if len(centerline) < 2:
-            return None
-        tol = 1.0e-9
-        seg_lens: list[float] = []
-        cum = [0.0]
-        for i in range(len(centerline) - 1):
-            a = centerline[i]
-            b = centerline[i + 1]
-            l = math.hypot(b[0] - a[0], b[1] - a[1])
-            seg_lens.append(l)
-            cum.append(cum[-1] + l)
-        total = cum[-1]
-        if total <= tol:
-            return None
-
-        def proj_s(p: tuple[float, float]) -> float:
-            best_s = 0.0
-            best_d2 = float("inf")
-            for i, l in enumerate(seg_lens):
-                if l <= tol:
-                    continue
-                a = centerline[i]
-                b = centerline[i + 1]
-                dx = b[0] - a[0]
-                dy = b[1] - a[1]
-                t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (l * l)
-                t = max(0.0, min(1.0, t))
-                q = (a[0] + dx * t, a[1] + dy * t)
-                d2 = (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2
-                if d2 < best_d2:
-                    best_d2 = d2
-                    best_s = cum[i] + t * l
-            return best_s
-
-        s0 = proj_s(gap_start)
-        s1 = proj_s(gap_end)
-        if s1 < s0:
-            s0, s1 = s1, s0
-        if s1 - s0 <= 1.0e-6:
-            return None
-
-        def split_at_s(s: float) -> tuple[int, tuple[float, float]]:
-            for i, l in enumerate(seg_lens):
-                if cum[i + 1] + tol < s:
-                    continue
-                if l <= tol:
-                    return i, centerline[i]
-                a = centerline[i]
-                b = centerline[i + 1]
-                t = (s - cum[i]) / l
-                t = max(0.0, min(1.0, t))
-                return i, (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
-            return len(seg_lens) - 1, centerline[-1]
-
-        i0, p0 = split_at_s(s0)
-        i1, p1 = split_at_s(s1)
-        first = list(centerline[: i0 + 1])
-        if math.hypot(first[-1][0] - p0[0], first[-1][1] - p0[1]) > 1.0e-6:
-            first.append(p0)
-        second = [p1]
-        second.extend(centerline[i1 + 1 :])
-        if len(second) == 1:
-            second.append(centerline[-1])
-        if len(first) < 2 or len(second) < 2:
-            return None
-        return first, second
-
-    def _build_single_bump_meander_centerline(
-        gap_start: tuple[float, float],
-        gap_end: tuple[float, float],
-        *,
-        meander_height_um: float,
-        side: int,
-        samples_per_90: int = 24,
-    ) -> list[tuple[float, float]] | None:
-        # Exact topology: 90 -> straight -> 180 -> straight -> 90
-        dx = float(gap_end[0]) - float(gap_start[0])
-        dy = float(gap_end[1]) - float(gap_start[1])
-        width = math.hypot(dx, dy)
-        if width <= 1.0e-9:
-            return None
-        r = width / 4.0
-        h = float(meander_height_um)
-        if r <= 1.0e-9 or h < 0.0:
-            return None
-        ux, uy = dx / width, dy / width
-        nx, ny = -uy, ux
-        sgn = 1.0 if int(side) >= 0 else -1.0
-        nx *= sgn
-        ny *= sgn
-
-        def world(xl: float, yl: float) -> tuple[float, float]:
-            return (
-                gap_start[0] + xl * ux + yl * nx,
-                gap_start[1] + xl * uy + yl * ny,
-            )
-
-        pts: list[tuple[float, float]] = [world(0.0, 0.0)]
-
-        def append_arc(
-            center_local: tuple[float, float],
-            start_local: tuple[float, float],
-            end_local: tuple[float, float],
-            sweep_sign: float,
-            sweep_mag: float,
-            n90_scale: float,
-        ) -> None:
-            c = world(center_local[0], center_local[1])
-            s = world(start_local[0], start_local[1])
-            e = world(end_local[0], end_local[1])
-            a0 = math.atan2(s[1] - c[1], s[0] - c[0])
-            sweep = sweep_sign * sweep_mag
-            n = max(8, int(samples_per_90 * n90_scale))
-            for i in range(1, n + 1):
-                t = i / n
-                a = a0 + sweep * t
-                p = (c[0] + r * math.cos(a), c[1] + r * math.sin(a))
-                if i == n:
-                    p = e
-                if math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 1.0e-9:
-                    pts.append(p)
-
-        # Arc 1: from (0,0) to (r,r), CCW 90 in local frame.
-        append_arc(
-            center_local=(0.0, r),
-            start_local=(0.0, 0.0),
-            end_local=(r, r),
-            sweep_sign=1.0,
-            sweep_mag=math.pi / 2.0,
-            n90_scale=1.0,
-        )
-        # Straight up.
-        p = world(r, r + h)
-        if math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 1.0e-9:
-            pts.append(p)
-        # Arc 2: from (r,r+h) to (3r,r+h), CW 180 in local frame.
-        append_arc(
-            center_local=(2.0 * r, r + h),
-            start_local=(r, r + h),
-            end_local=(3.0 * r, r + h),
-            sweep_sign=-1.0,
-            sweep_mag=math.pi,
-            n90_scale=2.0,
-        )
-        # Straight down.
-        p = world(3.0 * r, r)
-        if math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 1.0e-9:
-            pts.append(p)
-        # Arc 3: from (3r,r) to (4r,0), CW 90 in local frame.
-        append_arc(
-            center_local=(4.0 * r, r),
-            start_local=(3.0 * r, r),
-            end_local=(4.0 * r, 0.0),
-            sweep_sign=1.0,
-            sweep_mag=math.pi / 2.0,
-            n90_scale=1.0,
-        )
-        if math.hypot(gap_end[0] - pts[-1][0], gap_end[1] - pts[-1][1]) > 1.0e-9:
-            pts.append((float(gap_end[0]), float(gap_end[1])))
-        return pts
 
     for record in routed_net_records:
         if record.meander_auto_plan is not None:
