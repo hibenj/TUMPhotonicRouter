@@ -440,6 +440,13 @@ pub struct AnalyticMeanderConfig {
     pub min_straight_um: f64,
     pub max_bumps: usize,
     pub side: MeanderSide,
+    pub mode: MeanderPlanningMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeanderPlanningMode {
+    ExactExtraLength,
+    FillBoxMultiBump,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -460,6 +467,33 @@ pub enum MeanderPlanningError {
     AvailableBoxTooSmall,
     RequestedExtraLengthDoesNotFit,
     MaxBumpsTooSmall,
+}
+
+pub fn bend_radius_cells_from_min_radius(
+    min_bend_radius_um: f64,
+    grid_size_um: f64,
+) -> Result<i32, String> {
+    if !min_bend_radius_um.is_finite() || min_bend_radius_um <= 0.0 {
+        return Err("min_bend_radius_um must be finite and > 0".to_string());
+    }
+    if !grid_size_um.is_finite() || grid_size_um <= 0.0 {
+        return Err("grid_size_um must be finite and > 0".to_string());
+    }
+    let cells = (min_bend_radius_um / grid_size_um).ceil() as i32;
+    Ok(cells.max(1))
+}
+
+pub fn actual_bend_radius_um_from_cells(
+    bend_radius_cells: i32,
+    grid_size_um: f64,
+) -> Result<f64, String> {
+    if bend_radius_cells <= 0 {
+        return Err("bend_radius_cells must be > 0".to_string());
+    }
+    if !grid_size_um.is_finite() || grid_size_um <= 0.0 {
+        return Err("grid_size_um must be finite and > 0".to_string());
+    }
+    Ok((bend_radius_cells as f64) * grid_size_um)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -599,7 +633,7 @@ fn append_quarter_arc_local(
     }
 }
 
-pub fn plan_analytic_meander(
+fn plan_exact_extra_length_meander(
     segment: StraightSegment,
     available_box: MeanderBox,
     config: &AnalyticMeanderConfig,
@@ -801,6 +835,174 @@ pub fn plan_analytic_meander(
     })
 }
 
+pub fn plan_fill_box_multi_bump_meander(
+    segment: StraightSegment,
+    available_box: MeanderBox,
+    config: &AnalyticMeanderConfig,
+) -> Result<AnalyticMeanderPlan, MeanderPlanningError> {
+    if !is_finite_point(segment.start)
+        || !is_finite_point(segment.end)
+        || !is_finite_box(available_box)
+        || !config.requested_extra_length_um.is_finite()
+        || !config.min_bend_radius_um.is_finite()
+        || !config.min_straight_um.is_finite()
+    {
+        return Err(MeanderPlanningError::NonFiniteInput);
+    }
+    if config.min_bend_radius_um <= 0.0 {
+        return Err(MeanderPlanningError::NonPositiveBendRadius);
+    }
+    if config.requested_extra_length_um <= 0.0 {
+        return Err(MeanderPlanningError::NonPositiveRequestedExtraLength);
+    }
+    let (orientation, segment_length_um) = orientation_and_length(segment)?;
+    let r = config.min_bend_radius_um;
+    let min_straight = config.min_straight_um.max(0.0);
+    let depth = side_capacity_um(segment, orientation, available_box, config.side);
+    if depth + EPS < 4.0 * r {
+        return Err(MeanderPlanningError::AvailableBoxTooSmall);
+    }
+    if segment_length_um + EPS < 2.0 * r {
+        return Err(MeanderPlanningError::AvailableBoxTooSmall);
+    }
+
+    let mut num_meanders = (depth / (2.0 * r)).floor() as usize;
+    if num_meanders % 2 == 1 {
+        num_meanders = num_meanders.saturating_sub(1);
+    }
+    num_meanders = num_meanders.min(config.max_bumps);
+    if num_meanders % 2 == 1 {
+        num_meanders = num_meanders.saturating_sub(1);
+    }
+    if num_meanders <= 1 {
+        return Err(MeanderPlanningError::MaxBumpsTooSmall);
+    }
+
+    let residual_depth = (depth - (num_meanders as f64) * 2.0 * r).max(0.0);
+    let extra_straight_per_meander = residual_depth / (num_meanders as f64);
+    let amplitude = 2.0 * r + extra_straight_per_meander;
+
+    let span = segment_length_um / (num_meanders as f64);
+    let top_straight = span - 4.0 * r;
+    if top_straight + EPS < 2.0 * r + min_straight {
+        return Err(MeanderPlanningError::AvailableBoxTooSmall);
+    }
+    let vertical = amplitude - 2.0 * r;
+
+    let mut centerline = Vec::new();
+    append_line_local(&mut centerline, segment, orientation, config.side, 0.0, 0.0);
+    for i in 0..num_meanders {
+        let x0 = (i as f64) * span;
+        append_line_local(&mut centerline, segment, orientation, config.side, x0, 0.0);
+        append_quarter_arc_local(
+            &mut centerline,
+            segment,
+            orientation,
+            config.side,
+            x0 + r,
+            r,
+            r,
+            -std::f64::consts::FRAC_PI_2,
+            0.0,
+        );
+        append_line_local(
+            &mut centerline,
+            segment,
+            orientation,
+            config.side,
+            x0 + 2.0 * r,
+            r + vertical,
+        );
+        append_quarter_arc_local(
+            &mut centerline,
+            segment,
+            orientation,
+            config.side,
+            x0 + 3.0 * r,
+            amplitude - r,
+            r,
+            std::f64::consts::PI,
+            std::f64::consts::FRAC_PI_2,
+        );
+        append_line_local(
+            &mut centerline,
+            segment,
+            orientation,
+            config.side,
+            x0 + 2.0 * r + top_straight,
+            amplitude,
+        );
+        append_quarter_arc_local(
+            &mut centerline,
+            segment,
+            orientation,
+            config.side,
+            x0 + 2.0 * r + top_straight,
+            amplitude - r,
+            r,
+            std::f64::consts::FRAC_PI_2,
+            0.0,
+        );
+        append_line_local(
+            &mut centerline,
+            segment,
+            orientation,
+            config.side,
+            x0 + 3.0 * r + top_straight,
+            r,
+        );
+        append_quarter_arc_local(
+            &mut centerline,
+            segment,
+            orientation,
+            config.side,
+            x0 + 4.0 * r + top_straight,
+            r,
+            r,
+            std::f64::consts::PI,
+            std::f64::consts::FRAC_PI_2,
+        );
+    }
+    append_line_local(
+        &mut centerline,
+        segment,
+        orientation,
+        config.side,
+        segment_length_um,
+        0.0,
+    );
+    for p in centerline.iter().copied() {
+        if !point_in_box(p, available_box) {
+            return Err(MeanderPlanningError::AvailableBoxTooSmall);
+        }
+    }
+    let inserted_extra = centerline_length(&centerline) - segment_length_um;
+    if inserted_extra + EPS < config.requested_extra_length_um {
+        return Err(MeanderPlanningError::RequestedExtraLengthDoesNotFit);
+    }
+    Ok(AnalyticMeanderPlan {
+        centerline,
+        inserted_extra_length_um: inserted_extra,
+        bumps: num_meanders,
+        side: config.side,
+    })
+}
+
+pub fn plan_analytic_meander(
+    segment: StraightSegment,
+    available_box: MeanderBox,
+    config: &AnalyticMeanderConfig,
+) -> Result<AnalyticMeanderPlan, MeanderPlanningError> {
+    match config.mode {
+        MeanderPlanningMode::ExactExtraLength => {
+            plan_exact_extra_length_meander(segment, available_box, config)
+        }
+        MeanderPlanningMode::FillBoxMultiBump => {
+            plan_fill_box_multi_bump_meander(segment, available_box, config)
+        }
+    }
+}
+
 #[cfg(test)]
 mod analytic_tests {
     use super::*;
@@ -840,6 +1042,7 @@ mod analytic_tests {
             min_straight_um: 2.0,
             max_bumps: 8,
             side: MeanderSide::Left,
+            mode: MeanderPlanningMode::ExactExtraLength,
         };
         let plan = plan_analytic_meander(seg, b, &cfg).expect("plan should succeed");
         assert_plan_basics(&plan, seg, b);
@@ -863,6 +1066,7 @@ mod analytic_tests {
             min_straight_um: 2.0,
             max_bumps: 6,
             side: MeanderSide::Right,
+            mode: MeanderPlanningMode::ExactExtraLength,
         };
         let plan = plan_analytic_meander(seg, b, &cfg).expect("plan should succeed");
         assert_plan_basics(&plan, seg, b);
@@ -886,6 +1090,7 @@ mod analytic_tests {
             min_straight_um: 2.0,
             max_bumps: 4,
             side: MeanderSide::Left,
+            mode: MeanderPlanningMode::ExactExtraLength,
         };
         let err = plan_analytic_meander(seg, b, &cfg).unwrap_err();
         assert!(matches!(
@@ -913,6 +1118,7 @@ mod analytic_tests {
             min_straight_um: 1.0,
             max_bumps: 2,
             side: MeanderSide::Left,
+            mode: MeanderPlanningMode::ExactExtraLength,
         };
         let err = plan_analytic_meander(seg, b, &cfg).unwrap_err();
         assert_eq!(err, MeanderPlanningError::UnsupportedSegmentOrientation);
@@ -937,6 +1143,7 @@ mod analytic_tests {
             min_straight_um: 1.0,
             max_bumps: 2,
             side: MeanderSide::Left,
+            mode: MeanderPlanningMode::ExactExtraLength,
         };
         let err = plan_analytic_meander(seg, b, &bad_radius).unwrap_err();
         assert_eq!(err, MeanderPlanningError::NonPositiveBendRadius);
@@ -947,8 +1154,96 @@ mod analytic_tests {
             min_straight_um: 1.0,
             max_bumps: 2,
             side: MeanderSide::Left,
+            mode: MeanderPlanningMode::ExactExtraLength,
         };
         let err = plan_analytic_meander(seg, b, &bad_extra).unwrap_err();
         assert_eq!(err, MeanderPlanningError::NonPositiveRequestedExtraLength);
+    }
+
+    #[test]
+    fn fill_box_multi_bump_produces_multiple_bumps() {
+        let seg = StraightSegment {
+            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
+            end: PhysicalPoint { x_um: 220.0, y_um: 0.0 },
+        };
+        let b = MeanderBox {
+            min_x_um: 0.0,
+            max_x_um: 220.0,
+            min_y_um: -1.0,
+            max_y_um: 30.0,
+        };
+        let cfg = AnalyticMeanderConfig {
+            requested_extra_length_um: 20.0,
+            min_bend_radius_um: 2.0,
+            min_straight_um: 1.0,
+            max_bumps: 20,
+            side: MeanderSide::Left,
+            mode: MeanderPlanningMode::FillBoxMultiBump,
+        };
+        let plan = plan_analytic_meander(seg, b, &cfg).unwrap();
+        assert!(plan.bumps > 1);
+    }
+
+    #[test]
+    fn fill_box_multi_bump_count_monotonic_with_depth() {
+        let seg = StraightSegment {
+            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
+            end: PhysicalPoint { x_um: 220.0, y_um: 0.0 },
+        };
+        let shallow = MeanderBox {
+            min_x_um: 0.0,
+            max_x_um: 220.0,
+            min_y_um: -1.0,
+            max_y_um: 16.0,
+        };
+        let deep = MeanderBox {
+            min_x_um: 0.0,
+            max_x_um: 220.0,
+            min_y_um: -1.0,
+            max_y_um: 30.0,
+        };
+        let cfg = AnalyticMeanderConfig {
+            requested_extra_length_um: 10.0,
+            min_bend_radius_um: 2.0,
+            min_straight_um: 1.0,
+            max_bumps: 20,
+            side: MeanderSide::Left,
+            mode: MeanderPlanningMode::FillBoxMultiBump,
+        };
+        let p1 = plan_analytic_meander(seg, shallow, &cfg).unwrap();
+        let p2 = plan_analytic_meander(seg, deep, &cfg).unwrap();
+        assert!(p2.bumps >= p1.bumps);
+    }
+
+    #[test]
+    fn bend_radius_cell_conversion_rounds_up() {
+        let cells = bend_radius_cells_from_min_radius(5.1, 1.0).unwrap();
+        assert_eq!(cells, 6);
+        let actual = actual_bend_radius_um_from_cells(cells, 1.0).unwrap();
+        assert_eq!(actual, 6.0);
+    }
+
+    #[test]
+    fn fill_box_multi_bump_fails_if_requested_extra_too_large() {
+        let seg = StraightSegment {
+            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
+            end: PhysicalPoint { x_um: 80.0, y_um: 0.0 },
+        };
+        let b = MeanderBox {
+            min_x_um: 0.0,
+            max_x_um: 80.0,
+            min_y_um: 0.0,
+            max_y_um: 12.0,
+        };
+        let cfg = AnalyticMeanderConfig {
+            requested_extra_length_um: 500.0,
+            min_bend_radius_um: 2.0,
+            min_straight_um: 1.0,
+            max_bumps: 20,
+            side: MeanderSide::Left,
+            mode: MeanderPlanningMode::FillBoxMultiBump,
+        };
+        let err = plan_analytic_meander(seg, b, &cfg).unwrap_err();
+        assert_eq!(err, MeanderPlanningError::RequestedExtraLengthDoesNotFit);
     }
 }

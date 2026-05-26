@@ -27,8 +27,10 @@ use crate::geometry_realization::{
 #[allow(deprecated)]
 use crate::meander::{
     analyze_meander_insertion_candidate as analyze_meander_insertion_candidate_rs,
+    actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
+    bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs,
     insert_simple_meander_loop as insert_simple_meander_loop_rs,
-    MeanderBox, MeanderSide,
+    MeanderBox, MeanderPlanningMode, MeanderSide,
 };
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::{
@@ -111,6 +113,18 @@ impl PyPrimitiveLibraryConfig {
             allow_45_degree_turns,
             bend_weight,
         }
+    }
+
+    #[staticmethod]
+    fn bend_radius_cells_from_min_radius(min_bend_radius_um: f64, grid_size_um: f64) -> PyResult<i32> {
+        bend_radius_cells_from_min_radius_rs(min_bend_radius_um, grid_size_um)
+            .map_err(PyValueError::new_err)
+    }
+
+    #[staticmethod]
+    fn actual_bend_radius_um_from_cells(bend_radius_cells: i32, grid_size_um: f64) -> PyResult<f64> {
+        actual_bend_radius_um_from_cells_rs(bend_radius_cells, grid_size_um)
+            .map_err(PyValueError::new_err)
     }
 }
 
@@ -387,6 +401,16 @@ fn parse_auto_meander_side_policy(side_policy: &str) -> PyResult<AutoMeanderSide
     }
 }
 
+fn parse_meander_planning_mode(mode: &str) -> PyResult<MeanderPlanningMode> {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "fill_box_multi_bump" => Ok(MeanderPlanningMode::FillBoxMultiBump),
+        "exact_extra_length" => Ok(MeanderPlanningMode::ExactExtraLength),
+        _ => Err(PyValueError::new_err(
+            "planning_mode must be 'fill_box_multi_bump' or 'exact_extra_length'",
+        )),
+    }
+}
+
 #[pymethods]
 impl PyPhotonicRouter {
     #[new]
@@ -650,7 +674,7 @@ impl PyPhotonicRouter {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None))]
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="exact_extra_length"))]
     fn realize_route_polygon_with_analytic_meander(
         &self,
         route: &PyRouteResult,
@@ -661,6 +685,7 @@ impl PyPhotonicRouter {
         max_bumps: usize,
         side: &str,
         available_box: Option<(f64, f64, f64, f64)>,
+        planning_mode: &str,
     ) -> PyResult<Vec<(f64, f64)>> {
         if width_um <= 0.0 {
             return Err(PyValueError::new_err("width_um must be > 0"));
@@ -677,6 +702,7 @@ impl PyPhotonicRouter {
             return Err(PyValueError::new_err("max_bumps must be > 0"));
         }
         let meander_side = parse_meander_side(side)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
         let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
             PyValueError::new_err(
                 "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
@@ -712,11 +738,12 @@ impl PyPhotonicRouter {
             max_bumps,
             meander_side,
             meander_box,
+            mode,
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,clearance_radius_cells=0,opened_cells=None))]
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,clearance_radius_cells=0,opened_cells=None,planning_mode="exact_extra_length"))]
     fn realize_route_polygon_with_checked_analytic_meander_box(
         &self,
         route: &PyRouteResult,
@@ -729,6 +756,7 @@ impl PyPhotonicRouter {
         available_box: Option<(f64, f64, f64, f64)>,
         clearance_radius_cells: i32,
         opened_cells: Option<Vec<(i32, i32)>>,
+        planning_mode: &str,
     ) -> PyResult<Vec<(f64, f64)>> {
         if width_um <= 0.0 {
             return Err(PyValueError::new_err("width_um must be > 0"));
@@ -748,6 +776,7 @@ impl PyPhotonicRouter {
             return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
         }
         let meander_side = parse_meander_side(side)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
         let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
             PyValueError::new_err(
                 "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
@@ -793,6 +822,7 @@ impl PyPhotonicRouter {
             &self.obstacle_map,
             opened_ref,
             clearance_radius_cells,
+            mode,
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
@@ -879,7 +909,7 @@ impl PyPhotonicRouter {
         }
     }
 
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None))]
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn plan_auto_analytic_meander_for_route(
         &self,
         py: Python<'_>,
@@ -893,6 +923,7 @@ impl PyPhotonicRouter {
         clearance_radius_cells: i32,
         side_policy: &str,
         opened_cells: Option<Vec<(i32, i32)>>,
+        planning_mode: &str,
     ) -> PyResult<PyObject> {
         if requested_extra_length_um <= 0.0 {
             return Err(PyValueError::new_err(
@@ -918,6 +949,7 @@ impl PyPhotonicRouter {
             return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
         }
         let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
         let cfg = AutoMeanderConfig {
             requested_extra_length_um,
             min_bend_radius_um,
@@ -927,6 +959,7 @@ impl PyPhotonicRouter {
             min_segment_length_um,
             clearance_radius_cells,
             side_policy: policy,
+            mode,
         };
         let grid = GeometryGridSpec::new(
             self.grid.grid_size_um,
@@ -1000,7 +1033,7 @@ impl PyPhotonicRouter {
         Ok(d.into())
     }
 
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None))]
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn realize_route_polygon_with_auto_checked_analytic_meander(
         &self,
         route: &PyRouteResult,
@@ -1014,11 +1047,13 @@ impl PyPhotonicRouter {
         clearance_radius_cells: i32,
         side_policy: &str,
         opened_cells: Option<Vec<(i32, i32)>>,
+        planning_mode: &str,
     ) -> PyResult<Vec<(f64, f64)>> {
         if width_um <= 0.0 {
             return Err(PyValueError::new_err("width_um must be > 0"));
         }
         let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
         let cfg = AutoMeanderConfig {
             requested_extra_length_um,
             min_bend_radius_um,
@@ -1028,6 +1063,7 @@ impl PyPhotonicRouter {
             min_segment_length_um,
             clearance_radius_cells,
             side_policy: policy,
+            mode,
         };
         let grid = GeometryGridSpec::new(
             self.grid.grid_size_um,
@@ -1055,7 +1091,7 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None))]
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn cells_for_auto_analytic_meander_box(
         &self,
         route: &PyRouteResult,
@@ -1068,8 +1104,10 @@ impl PyPhotonicRouter {
         clearance_radius_cells: i32,
         side_policy: &str,
         opened_cells: Option<Vec<(i32, i32)>>,
+        planning_mode: &str,
     ) -> PyResult<Vec<(i32, i32)>> {
         let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
         let cfg = AutoMeanderConfig {
             requested_extra_length_um,
             min_bend_radius_um,
@@ -1079,6 +1117,7 @@ impl PyPhotonicRouter {
             min_segment_length_um,
             clearance_radius_cells,
             side_policy: policy,
+            mode,
         };
         let grid = GeometryGridSpec::new(
             self.grid.grid_size_um,
@@ -1106,7 +1145,7 @@ impl PyPhotonicRouter {
         Ok(cells_in_grid_rect_rs(plan.selected_grid_rect))
     }
 
-    #[pyo3(signature=(net_id,source,target,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,route_block_radius_cells=0,meander_clearance_radius_cells=0,side_policy="both",opened_cells=None))]
+    #[pyo3(signature=(net_id,source,target,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,route_block_radius_cells=0,meander_clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn route_single_net_with_auto_meander_and_commit(
         &mut self,
         py: Python<'_>,
@@ -1124,6 +1163,7 @@ impl PyPhotonicRouter {
         meander_clearance_radius_cells: i32,
         side_policy: &str,
         opened_cells: Option<Vec<(i32, i32)>>,
+        planning_mode: &str,
     ) -> PyResult<PyObject> {
         if self.astar_cfg.target_tolerance_cells < 0 {
             return Err(PyValueError::new_err("target_tolerance_cells must be >= 0"));
@@ -1157,6 +1197,7 @@ impl PyPhotonicRouter {
             ));
         }
         let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
 
         let opened_owned;
         let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
@@ -1209,6 +1250,7 @@ impl PyPhotonicRouter {
             min_segment_length_um,
             clearance_radius_cells: meander_clearance_radius_cells,
             side_policy: policy,
+            mode,
         };
         let auto_plan = plan_auto_analytic_meander_for_route_rs(
             &result,
@@ -1380,7 +1422,7 @@ impl PyPhotonicRouter {
         Ok(report.into())
     }
 
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None))]
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="exact_extra_length"))]
     fn plan_analytic_meander_for_route(
         &self,
         py: Python<'_>,
@@ -1391,6 +1433,7 @@ impl PyPhotonicRouter {
         max_bumps: usize,
         side: &str,
         available_box: Option<(f64, f64, f64, f64)>,
+        planning_mode: &str,
     ) -> PyResult<PyObject> {
         if requested_extra_length_um <= 0.0 {
             return Err(PyValueError::new_err(
@@ -1404,6 +1447,7 @@ impl PyPhotonicRouter {
             return Err(PyValueError::new_err("max_bumps must be > 0"));
         }
         let meander_side = parse_meander_side(side)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
         let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
             PyValueError::new_err(
                 "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
@@ -1438,6 +1482,7 @@ impl PyPhotonicRouter {
             max_bumps,
             meander_side,
             meander_box,
+            mode,
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
 
@@ -1665,6 +1710,7 @@ mod tests {
                 2,
                 "left",
                 None,
+                "exact_extra_length",
             )
             .unwrap_err();
         assert!(err.to_string().contains("available_box must be provided"));
@@ -1713,6 +1759,7 @@ mod tests {
                 2,
                 "left",
                 Some((1.4, 5.6, 2.4, 4.0)),
+                "exact_extra_length",
             )
             .unwrap();
         assert!(ok_poly.len() >= 4);
@@ -1728,6 +1775,7 @@ mod tests {
                 1,
                 "left",
                 Some((1.4, 5.6, 2.4, 2.9)),
+                "exact_extra_length",
             )
             .unwrap_err();
         assert!(!err.to_string().is_empty());
@@ -1773,6 +1821,7 @@ mod tests {
                     2,
                     "left",
                     Some((1.4, 5.6, 2.4, 4.0)),
+                    "exact_extra_length",
                 )
                 .unwrap();
             let d = obj.bind(py).downcast::<PyDict>().unwrap();
@@ -1865,6 +1914,7 @@ mod tests {
                 Some((1.4, 5.6, 2.4, 4.0)),
                 0,
                 None,
+                "exact_extra_length",
             )
             .unwrap_err();
         assert!(!err.to_string().is_empty());
@@ -1932,11 +1982,12 @@ mod tests {
                     0.2,
                     0.1,
                     2,
-                    1.6,
+                    8.0,
                     1.0,
                     0,
                     "both",
                     None,
+                    "fill_box_multi_bump",
                 )
                 .unwrap();
             let d = obj.bind(py).downcast::<PyDict>().unwrap();
@@ -1968,12 +2019,13 @@ mod tests {
                     0.2,
                     0.1,
                     2,
-                    1.6,
+                    8.0,
                     1.0,
                     0,
                     0,
                     "both",
                     None,
+                    "fill_box_multi_bump",
                 )
                 .unwrap();
             let d = obj.bind(py).downcast::<PyDict>().unwrap();
@@ -2027,6 +2079,7 @@ mod tests {
                     0,
                     "both",
                     None,
+                    "fill_box_multi_bump",
                 )
                 .unwrap_err()
         });
@@ -2057,12 +2110,13 @@ mod tests {
                     0.2,
                     0.1,
                     2,
-                    1.6,
+                    8.0,
                     1.0,
                     0,
                     0,
                     "both",
                     None,
+                    "fill_box_multi_bump",
                 )
                 .unwrap();
             let d = obj.bind(py).downcast::<PyDict>().unwrap();

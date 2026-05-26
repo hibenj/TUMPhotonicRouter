@@ -30,8 +30,9 @@ pub use geometry_realization::{
     PortAccessError, RouteAnalyticMeanderPlan,
 };
 pub use meander::{
-    plan_analytic_meander, AnalyticMeanderConfig, AnalyticMeanderPlan, MeanderBox,
-    MeanderPlanningError, MeanderSide, PhysicalPoint, StraightSegment,
+    actual_bend_radius_um_from_cells, bend_radius_cells_from_min_radius, plan_analytic_meander,
+    plan_fill_box_multi_bump_meander, AnalyticMeanderConfig, AnalyticMeanderPlan, MeanderBox,
+    MeanderPlanningError, MeanderPlanningMode, MeanderSide, PhysicalPoint, StraightSegment,
 };
 pub use obstacle_map::{
     pack_xy, unpack_xy, CellKey, ClearanceMetric, NetId, ObstacleMap, WaveguideFootprint,
