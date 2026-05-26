@@ -16,12 +16,15 @@ pub use astar::{
     State,
 };
 pub use geometry_realization::{
-    build_port_access, build_port_accesses, compress_grid_waypoints, compress_route_waypoints,
-    generate_waveguide_polygon, grid_path_to_centerline, realize_route_polygon,
-    plan_analytic_meander_for_route, realize_route_polygon_from_primitives,
-    realize_route_polygon_with_analytic_meander, realize_route_polygon_with_port_access,
-    route_to_grid_path, route_to_primitive_centerline, snap_centerline_endpoints, GeometryError,
-    GeometryGridSpec, PortAccess, PortAccessConfig, PortAccessError, RouteAnalyticMeanderPlan,
+    build_port_access, build_port_accesses, cells_in_grid_rect, check_meander_box_free,
+    check_meander_box_free_with_prefix, compress_grid_waypoints, compress_route_waypoints,
+    generate_waveguide_polygon, grid_path_to_centerline, meander_box_to_grid_rect,
+    plan_analytic_meander_for_route, realize_route_polygon,
+    realize_route_polygon_from_primitives, realize_route_polygon_with_analytic_meander,
+    realize_route_polygon_with_checked_analytic_meander_box, realize_route_polygon_with_port_access,
+    route_to_grid_path, route_to_primitive_centerline, snap_centerline_endpoints,
+    DenseOccupancyPrefix, GeometryError, GeometryGridSpec, GridRect, PortAccess, PortAccessConfig,
+    PortAccessError, RouteAnalyticMeanderPlan,
 };
 pub use meander::{
     plan_analytic_meander, AnalyticMeanderConfig, AnalyticMeanderPlan, MeanderBox,

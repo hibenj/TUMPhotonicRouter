@@ -6,11 +6,14 @@
 use std::error::Error;
 use std::fmt;
 
+use rustc_hash::FxHashSet;
+
 use crate::astar::{RouteResult, State};
 use crate::meander::{
     plan_analytic_meander, AnalyticMeanderConfig, AnalyticMeanderPlan, MeanderBox,
     MeanderPlanningError, MeanderSide, PhysicalPoint, StraightSegment,
 };
+use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::{PrimitiveGeometry, PrimitiveLibrary};
 use crate::static_obstacle_builder::{
     grid_cell_center, physical_to_grid, PortInput, StaticGridSpec,
@@ -19,6 +22,86 @@ use crate::static_obstacle_builder::{
 const EPS: f64 = 1.0e-9;
 const MITER_LIMIT: f64 = 4.0;
 const DEFAULT_BEND_SAMPLES_PER_90_DEG: usize = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridRect {
+    pub min_x: i32,
+    pub max_x: i32,
+    pub min_y: i32,
+    pub max_y: i32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DenseOccupancyPrefix {
+    width: i32,
+    height: i32,
+    prefix: Vec<u32>,
+}
+
+impl DenseOccupancyPrefix {
+    pub fn from_obstacle_map(
+        obstacle_map: &ObstacleMap,
+        opened_cells: Option<&FxHashSet<CellKey>>,
+    ) -> Self {
+        let width = obstacle_map.width();
+        let height = obstacle_map.height();
+        let w = usize::try_from(width).unwrap_or(0);
+        let h = usize::try_from(height).unwrap_or(0);
+        let stride = w + 1;
+        let mut prefix = vec![0u32; (w + 1) * (h + 1)];
+
+        for y in 0..h {
+            let mut row_sum = 0u32;
+            for x in 0..w {
+                let xi = i32::try_from(x).expect("x fits i32");
+                let yi = i32::try_from(y).expect("y fits i32");
+                let key = pack_xy(xi, yi);
+                let opened = opened_cells.map(|s| s.contains(&key)).unwrap_or(false);
+                let blocked = if opened || !obstacle_map.is_blocked(xi, yi) {
+                    0u32
+                } else {
+                    1u32
+                };
+                row_sum = row_sum.saturating_add(blocked);
+                let idx = (y + 1) * stride + (x + 1);
+                let above = prefix[y * stride + (x + 1)];
+                prefix[idx] = above.saturating_add(row_sum);
+            }
+        }
+
+        Self {
+            width,
+            height,
+            prefix,
+        }
+    }
+
+    pub fn blocked_count_in_rect(
+        &self,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> Option<u32> {
+        if min_x > max_x || min_y > max_y {
+            return None;
+        }
+        if min_x < 0 || min_y < 0 || max_x >= self.width || max_y >= self.height {
+            return None;
+        }
+        let w = usize::try_from(self.width).ok()?;
+        let stride = w + 1;
+        let x1 = usize::try_from(min_x).ok()?;
+        let y1 = usize::try_from(min_y).ok()?;
+        let x2 = usize::try_from(max_x).ok()?;
+        let y2 = usize::try_from(max_y).ok()?;
+        let a = self.prefix[(y2 + 1) * stride + (x2 + 1)];
+        let b = self.prefix[y1 * stride + (x2 + 1)];
+        let c = self.prefix[(y2 + 1) * stride + x1];
+        let d = self.prefix[y1 * stride + x1];
+        Some(a.saturating_sub(b).saturating_sub(c).saturating_add(d))
+    }
+}
 
 /// Minimal grid information required to convert grid cells to physical points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -85,6 +168,12 @@ pub enum GeometryError {
         expected: (f64, f64),
         actual: (f64, f64),
     },
+    InvalidMeanderBox,
+    MeanderBoxOutOfBounds(GridRect),
+    MeanderBoxBlocked {
+        rect: GridRect,
+        blocked_count: u32,
+    },
     NoMeanderCandidateSegment,
     MeanderPlanningFailed(MeanderPlanningError),
     PortAccess(PortAccessError),
@@ -134,6 +223,17 @@ impl fmt::Display for GeometryError {
             } => write!(
                 f,
                 "primitive id={primitive_id} endpoint mismatch: expected {expected:?}, got {actual:?}"
+            ),
+            GeometryError::InvalidMeanderBox => write!(f, "invalid meander box"),
+            GeometryError::MeanderBoxOutOfBounds(rect) => {
+                write!(f, "meander box out of bounds after grid conversion: {rect:?}")
+            }
+            GeometryError::MeanderBoxBlocked {
+                rect,
+                blocked_count,
+            } => write!(
+                f,
+                "meander box overlaps blocked cells: rect={rect:?}, blocked_count={blocked_count}"
             ),
             GeometryError::NoMeanderCandidateSegment => {
                 write!(f, "no axis-aligned centerline segment is suitable for meander insertion")
@@ -639,6 +739,85 @@ pub fn realize_route_polygon_from_primitives(
     generate_waveguide_polygon(&centerline, width_um)
 }
 
+pub fn meander_box_to_grid_rect(
+    box_um: MeanderBox,
+    grid: &GeometryGridSpec,
+    clearance_radius_cells: i32,
+) -> Result<GridRect, GeometryError> {
+    if !box_um.min_x_um.is_finite()
+        || !box_um.max_x_um.is_finite()
+        || !box_um.min_y_um.is_finite()
+        || !box_um.max_y_um.is_finite()
+    {
+        return Err(GeometryError::InvalidMeanderBox);
+    }
+    if box_um.min_x_um > box_um.max_x_um || box_um.min_y_um > box_um.max_y_um {
+        return Err(GeometryError::InvalidMeanderBox);
+    }
+    if clearance_radius_cells < 0 {
+        return Err(GeometryError::InvalidMeanderBox);
+    }
+
+    let gx0 = ((box_um.min_x_um - grid.origin_x_um) / grid.grid_size_um).floor() as i32;
+    let gy0 = ((box_um.min_y_um - grid.origin_y_um) / grid.grid_size_um).floor() as i32;
+    let gx1 = ((box_um.max_x_um - grid.origin_x_um) / grid.grid_size_um).ceil() as i32 - 1;
+    let gy1 = ((box_um.max_y_um - grid.origin_y_um) / grid.grid_size_um).ceil() as i32 - 1;
+
+    let rect = GridRect {
+        min_x: gx0 - clearance_radius_cells,
+        max_x: gx1 + clearance_radius_cells,
+        min_y: gy0 - clearance_radius_cells,
+        max_y: gy1 + clearance_radius_cells,
+    };
+    if rect.min_x > rect.max_x || rect.min_y > rect.max_y {
+        return Err(GeometryError::InvalidMeanderBox);
+    }
+    Ok(rect)
+}
+
+pub fn check_meander_box_free_with_prefix(
+    box_um: MeanderBox,
+    grid: &GeometryGridSpec,
+    prefix: &DenseOccupancyPrefix,
+    clearance_radius_cells: i32,
+) -> Result<GridRect, GeometryError> {
+    let rect = meander_box_to_grid_rect(box_um, grid, clearance_radius_cells)?;
+    let blocked = prefix
+        .blocked_count_in_rect(rect.min_x, rect.max_x, rect.min_y, rect.max_y)
+        .ok_or(GeometryError::MeanderBoxOutOfBounds(rect))?;
+    if blocked > 0 {
+        return Err(GeometryError::MeanderBoxBlocked {
+            rect,
+            blocked_count: blocked,
+        });
+    }
+    Ok(rect)
+}
+
+pub fn check_meander_box_free(
+    box_um: MeanderBox,
+    grid: &GeometryGridSpec,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    clearance_radius_cells: i32,
+) -> Result<GridRect, GeometryError> {
+    let prefix = DenseOccupancyPrefix::from_obstacle_map(obstacle_map, opened_cells);
+    check_meander_box_free_with_prefix(box_um, grid, &prefix, clearance_radius_cells)
+}
+
+pub fn cells_in_grid_rect(rect: GridRect) -> Vec<(i32, i32)> {
+    if rect.min_x > rect.max_x || rect.min_y > rect.max_y {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for y in rect.min_y..=rect.max_y {
+        for x in rect.min_x..=rect.max_x {
+            out.push((x, y));
+        }
+    }
+    out
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouteAnalyticMeanderPlan {
     pub selected_segment_index: usize,
@@ -785,6 +964,42 @@ pub fn realize_route_polygon_with_analytic_meander(
         return Err(GeometryError::ZeroLengthSegment);
     }
     generate_waveguide_polygon(&modified, width_um)
+}
+
+pub fn realize_route_polygon_with_checked_analytic_meander_box(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    width_um: f64,
+    requested_extra_length_um: f64,
+    min_bend_radius_um: f64,
+    min_straight_um: f64,
+    max_bumps: usize,
+    meander_side: MeanderSide,
+    available_box: MeanderBox,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    clearance_radius_cells: i32,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    let _rect = check_meander_box_free(
+        available_box,
+        grid,
+        obstacle_map,
+        opened_cells,
+        clearance_radius_cells,
+    )?;
+    realize_route_polygon_with_analytic_meander(
+        route,
+        primitives,
+        grid,
+        width_um,
+        requested_extra_length_um,
+        min_bend_radius_um,
+        min_straight_um,
+        max_bumps,
+        meander_side,
+        available_box,
+    )
 }
 
 /// Full route realization pipeline with explicit source/target port access.
@@ -1297,6 +1512,7 @@ fn rotate_right(v: (f64, f64)) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustc_hash::FxHashSet;
     use crate::primitives::{create_photonic_primitive_library, PrimitiveLibraryConfig};
     use crate::static_obstacle_builder::make_grid_spec;
 
@@ -1963,6 +2179,151 @@ mod tests {
                     | MeanderPlanningError::RequestedExtraLengthDoesNotFit
             )
         ));
+    }
+
+    #[test]
+    fn dense_prefix_counts_blocked_cells_in_rectangles() {
+        let mut map = ObstacleMap::new(6, 6);
+        assert!(map.add_static_cell(2, 3));
+        let prefix = DenseOccupancyPrefix::from_obstacle_map(&map, None);
+        assert!(prefix.blocked_count_in_rect(1, 3, 2, 4).unwrap() > 0);
+        assert_eq!(prefix.blocked_count_in_rect(0, 1, 0, 1).unwrap(), 0);
+    }
+
+    #[test]
+    fn meander_box_converts_to_expected_grid_rect() {
+        let g = GeometryGridSpec::new(1.0, 0.0, 0.0).unwrap();
+        let rect = meander_box_to_grid_rect(
+            MeanderBox {
+                min_x_um: 1.0,
+                max_x_um: 3.0,
+                min_y_um: 2.0,
+                max_y_um: 4.0,
+            },
+            &g,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            rect,
+            GridRect {
+                min_x: 1,
+                max_x: 2,
+                min_y: 2,
+                max_y: 3
+            }
+        );
+    }
+
+    #[test]
+    fn meander_box_out_of_bounds_is_error() {
+        let map = ObstacleMap::new(5, 5);
+        let g = GeometryGridSpec::new(1.0, 0.0, 0.0).unwrap();
+        let err = check_meander_box_free(
+            MeanderBox {
+                min_x_um: -1.0,
+                max_x_um: 1.0,
+                min_y_um: 0.0,
+                max_y_um: 1.0,
+            },
+            &g,
+            &map,
+            None,
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, GeometryError::MeanderBoxOutOfBounds(_)));
+    }
+
+    #[test]
+    fn checked_analytic_meander_box_realization_succeeds_when_free() {
+        let lib = test_lib();
+        let map = ObstacleMap::new(20, 20);
+        let route = RouteResult {
+            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
+            primitives: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: State::new(5, 2, 0),
+            reached_target: State::new(5, 2, 0),
+            stats: Default::default(),
+        };
+        let empty = FxHashSet::default();
+        let poly = realize_route_polygon_with_checked_analytic_meander_box(
+            &route,
+            &lib,
+            &grid(),
+            1.0,
+            3.0,
+            0.2,
+            0.1,
+            2,
+            MeanderSide::Left,
+            MeanderBox {
+                min_x_um: 1.4,
+                max_x_um: 5.6,
+                min_y_um: 2.4,
+                max_y_um: 4.0,
+            },
+            &map,
+            Some(&empty),
+            0,
+        )
+        .unwrap();
+        assert!(poly.len() >= 4);
+    }
+
+    #[test]
+    fn checked_analytic_meander_box_realization_fails_when_blocked() {
+        let lib = test_lib();
+        let mut map = ObstacleMap::new(20, 20);
+        assert!(map.add_static_cell(3, 3));
+        let route = RouteResult {
+            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
+            primitives: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: State::new(5, 2, 0),
+            reached_target: State::new(5, 2, 0),
+            stats: Default::default(),
+        };
+        let err = realize_route_polygon_with_checked_analytic_meander_box(
+            &route,
+            &lib,
+            &grid(),
+            1.0,
+            3.0,
+            0.2,
+            0.1,
+            2,
+            MeanderSide::Left,
+            MeanderBox {
+                min_x_um: 1.4,
+                max_x_um: 5.6,
+                min_y_um: 2.4,
+                max_y_um: 4.0,
+            },
+            &map,
+            None,
+            0,
+        )
+        .unwrap_err();
+        assert!(matches!(err, GeometryError::MeanderBoxBlocked { .. }));
+    }
+
+    #[test]
+    fn cells_in_grid_rect_count_matches_area() {
+        let rect = GridRect {
+            min_x: 2,
+            max_x: 4,
+            min_y: 1,
+            max_y: 3,
+        };
+        assert_eq!(cells_in_grid_rect(rect).len(), 9);
     }
 
     #[test]

@@ -9,11 +9,15 @@ use crate::astar::{
 };
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
+    check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
+    meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
     realize_route_polygon_from_primitives as realize_route_polygon_from_primitives_rs,
     realize_route_polygon_with_analytic_meander as realize_route_polygon_with_analytic_meander_rs,
+    realize_route_polygon_with_checked_analytic_meander_box as realize_route_polygon_with_checked_analytic_meander_box_rs,
+    DenseOccupancyPrefix,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
-    GeometryGridSpec, PortAccess, PortAccessConfig,
+    GeometryGridSpec, GeometryError, PortAccess, PortAccessConfig,
 };
 #[allow(deprecated)]
 use crate::meander::{
@@ -694,6 +698,169 @@ impl PyPhotonicRouter {
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
+
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,clearance_radius_cells=0,opened_cells=None))]
+    fn realize_route_polygon_with_checked_analytic_meander_box(
+        &self,
+        route: &PyRouteResult,
+        width_um: f64,
+        requested_extra_length_um: f64,
+        min_bend_radius_um: f64,
+        min_straight_um: f64,
+        max_bumps: usize,
+        side: &str,
+        available_box: Option<(f64, f64, f64, f64)>,
+        clearance_radius_cells: i32,
+        opened_cells: Option<Vec<(i32, i32)>>,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        if width_um <= 0.0 {
+            return Err(PyValueError::new_err("width_um must be > 0"));
+        }
+        if requested_extra_length_um <= 0.0 {
+            return Err(PyValueError::new_err(
+                "requested_extra_length_um must be > 0",
+            ));
+        }
+        if min_bend_radius_um <= 0.0 {
+            return Err(PyValueError::new_err("min_bend_radius_um must be > 0"));
+        }
+        if max_bumps == 0 {
+            return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        if clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
+        }
+        let meander_side = parse_meander_side(side)?;
+        let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
+            PyValueError::new_err(
+                "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
+            )
+        })?;
+        if min_x_um > max_x_um || min_y_um > max_y_um {
+            return Err(PyValueError::new_err(
+                "available_box is malformed: expected min_x<=max_x and min_y<=max_y",
+            ));
+        }
+        let meander_box = MeanderBox {
+            min_x_um,
+            max_x_um,
+            min_y_um,
+            max_y_um,
+        };
+
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        let opened_owned;
+        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            Some(&opened_owned)
+        } else {
+            Some(&self.port_open_cells)
+        };
+        realize_route_polygon_with_checked_analytic_meander_box_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            width_um,
+            requested_extra_length_um,
+            min_bend_radius_um,
+            min_straight_um,
+            max_bumps,
+            meander_side,
+            meander_box,
+            &self.obstacle_map,
+            opened_ref,
+            clearance_radius_cells,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    #[pyo3(signature=(available_box,clearance_radius_cells=0,opened_cells=None))]
+    fn check_meander_box_free(
+        &self,
+        py: Python<'_>,
+        available_box: (f64, f64, f64, f64),
+        clearance_radius_cells: i32,
+        opened_cells: Option<Vec<(i32, i32)>>,
+    ) -> PyResult<PyObject> {
+        if clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
+        }
+        let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box;
+        if min_x_um > max_x_um || min_y_um > max_y_um {
+            return Err(PyValueError::new_err(
+                "available_box is malformed: expected min_x<=max_x and min_y<=max_y",
+            ));
+        }
+        let meander_box = MeanderBox {
+            min_x_um,
+            max_x_um,
+            min_y_um,
+            max_y_um,
+        };
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let opened_owned;
+        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            Some(&opened_owned)
+        } else {
+            Some(&self.port_open_cells)
+        };
+        let prefix = DenseOccupancyPrefix::from_obstacle_map(&self.obstacle_map, opened_ref);
+        let d = PyDict::new_bound(py);
+
+        match meander_box_to_grid_rect_rs(meander_box, &grid, clearance_radius_cells) {
+            Err(e) => {
+                d.set_item("free", false)?;
+                d.set_item("grid_rect", py.None())?;
+                d.set_item("blocked_count", 0u32)?;
+                d.set_item("reason", e.to_string())?;
+                Ok(d.into())
+            }
+            Ok(rect) => {
+                d.set_item(
+                    "grid_rect",
+                    (rect.min_x, rect.max_x, rect.min_y, rect.max_y),
+                )?;
+                match check_meander_box_free_with_prefix_rs(
+                    meander_box,
+                    &grid,
+                    &prefix,
+                    clearance_radius_cells,
+                ) {
+                    Ok(_) => {
+                        d.set_item("free", true)?;
+                        d.set_item("blocked_count", 0u32)?;
+                        d.set_item("reason", "free")?;
+                        Ok(d.into())
+                    }
+                    Err(GeometryError::MeanderBoxBlocked { blocked_count, .. }) => {
+                        d.set_item("free", false)?;
+                        d.set_item("blocked_count", blocked_count)?;
+                        d.set_item("reason", "box_blocked")?;
+                        Ok(d.into())
+                    }
+                    Err(e @ GeometryError::MeanderBoxOutOfBounds(_)) => {
+                        d.set_item("free", false)?;
+                        d.set_item("blocked_count", 0u32)?;
+                        d.set_item("reason", e.to_string())?;
+                        Ok(d.into())
+                    }
+                    Err(e) => Err(PyValueError::new_err(e.to_string())),
+                }
+            }
+        }
+    }
     fn describe_primitives(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
         describe_primitives(py, &self.primitives)
     }
@@ -1229,6 +1396,77 @@ mod tests {
                 .unwrap();
             let d = obj.bind(py).downcast::<PyDict>().unwrap();
             assert!(d.contains("warning").unwrap());
+        });
+    }
+
+    #[test]
+    fn checked_analytic_meander_box_method_fails_on_blocked_box() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(20, 20, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        router.add_static_cells(vec![(3, 3)]);
+        let route = PyRouteResult {
+            states: vec![PyState::new(1, 2, 0), PyState::new(5, 2, 0)],
+            primitive_ids: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: PyState::new(5, 2, 0),
+            reached_target: PyState::new(5, 2, 0),
+            segments: vec![],
+            window_attempts: 0,
+            used_full_grid_fallback: false,
+            expanded_states: 0,
+            window_rejects: 0,
+            footprint_rejects: 0,
+            dense_grid_build_failures: 0,
+            max_window_area_cells: 0,
+        };
+        let err = router
+            .realize_route_polygon_with_checked_analytic_meander_box(
+                &route,
+                1.0,
+                3.0,
+                0.2,
+                0.1,
+                2,
+                "left",
+                Some((1.4, 5.6, 2.4, 4.0)),
+                0,
+                None,
+            )
+            .unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn check_meander_box_free_debug_reports_status() {
+        pyo3::prepare_freethreaded_python();
+        let grid = PyGridSpec::new(20, 20, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
+            ),
+        );
+        router.add_static_cells(vec![(3, 3)]);
+        Python::with_gil(|py| {
+            let obj = router
+                .check_meander_box_free(py, (1.4, 5.6, 2.4, 4.0), 0, None)
+                .unwrap();
+            let d = obj.bind(py).downcast::<PyDict>().unwrap();
+            assert!(d.contains("free").unwrap());
+            assert!(d.contains("grid_rect").unwrap());
+            assert!(d.contains("blocked_count").unwrap());
+            assert!(d.contains("reason").unwrap());
         });
     }
 }
