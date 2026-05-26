@@ -173,27 +173,23 @@ def run_routing_flow(
                 reason = entry.get("reason", "")
                 req = float(entry.get("requested_extra_length_um", 0.0))
                 ins = float(entry.get("inserted_extra_length_um", 0.0))
-                bumps = entry.get("number_of_bumps", None)
-                height = entry.get("meander_height_um", None)
-                width = entry.get("meander_width_um", None)
+                unmatched = float(entry.get("unmatched_length_um", max(0.0, req - ins)))
+                planning_mode = entry.get("planning_mode", None)
+                effective_radius = entry.get("effective_bend_radius_um", None)
+                primitive_radius = entry.get("primitive_bend_radius_um", None)
+                selected_box = entry.get("selected_box", None)
+                selected_grid_rect = entry.get("selected_grid_rect", None)
+                bumps = entry.get("bumps", None)
                 side = entry.get("side", None)
-                candidate_count = entry.get("candidate_count", None)
-                candidate_lengths = entry.get("candidate_lengths_um", None)
-                analysis_found = entry.get("analysis_found_solution", None)
-                analysis_reason = entry.get("analysis_reason", None)
-                planned_extra = entry.get("planned_extra_length_um", None)
-                residual = entry.get("residual_um", None)
-                gap_anchor = entry.get("gap_anchor", None)
-                gap_start = entry.get("gap_start_um", None)
-                gap_end = entry.get("gap_end_um", None)
+                reserved_cells_count = entry.get("reserved_cells_count", None)
                 print(
                     f"        • {net_name}: status={status}, requested={req:.3f}um, "
-                    f"inserted={ins:.3f}um, side={side}, bumps={bumps}, "
-                    f"height_um={height}, width_um={width}, candidates={candidate_count}, "
-                    f"candidate_lengths_um={candidate_lengths}, reason={reason}, "
-                    f"analysis_found={analysis_found}, analysis_reason={analysis_reason}, "
-                    f"planned_extra_um={planned_extra}, residual_um={residual}, "
-                    f"gap_anchor={gap_anchor}, gap_start_um={gap_start}, gap_end_um={gap_end}"
+                    f"inserted={ins:.3f}um, unmatched={unmatched:.3f}um, "
+                    f"planning_mode={planning_mode}, side={side}, bumps={bumps}, "
+                    f"effective_bend_radius_um={effective_radius}, "
+                    f"primitive_bend_radius_um={primitive_radius}, "
+                    f"selected_box={selected_box}, selected_grid_rect={selected_grid_rect}, "
+                    f"reserved_cells_count={reserved_cells_count}, reason={reason}"
                 )
 
     if debug_svgs:

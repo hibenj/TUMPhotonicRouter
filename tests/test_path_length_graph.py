@@ -1,6 +1,7 @@
 from routing_flow import load_benchmark_metadata
 from benchmarks.TOY import build_schematic
 import pytest
+from typing import cast
 from gdsfactory.component import Component
 from photonic_router.static_obstacle_builder import _load_rust_backend
 from photonic_router.path_length_graph import (
@@ -14,6 +15,7 @@ from translation.route_rust import (
     RustRouteDebugArtifacts,
     RoutedNetRecord,
     MeanderInsertionConfig,
+    analyze_meander_insertion_for_requirements,
     analyze_path_length_matching,
     insert_meanders_for_requirements,
 )
@@ -261,7 +263,7 @@ def test_main_flow_matching_uses_record_lengths(monkeypatch):
     assert layout.info["meander_requirements"][0]["edge"]["net_name"] == "n0"
 
 
-def test_m2_skeleton_reports_unsupported_for_legal_candidate():
+def test_main_meander_report_uses_auto_multi_bump_path():
     edge = RoutedEdgeKey(
         net_name="n0",
         source=PortRef(instance="src0", port="o1"),
@@ -277,7 +279,7 @@ def test_m2_skeleton_reports_unsupported_for_legal_candidate():
     )
     req = MissingLengthRequirement(edge_key=edge, missing_length_um=12.0)
 
-    updated, report = insert_meanders_for_requirements(
+    updated, report = analyze_meander_insertion_for_requirements(
         [record],
         [req],
         config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=5.0),
@@ -287,9 +289,21 @@ def test_m2_skeleton_reports_unsupported_for_legal_candidate():
     )
 
     assert updated[0].total_length_um == 30.0
-    assert len(report.results) == 1
-    assert report.results[0].status == "unsupported_representation"
-    assert report.unmatched_length_um == 12.0
+    results = cast(list[dict[str, object]], report["results"])
+    assert len(results) == 1
+    entry = results[0]
+    assert entry["status"] != "unsupported_route_object"
+    assert entry.get("reason", "") != "route-object mutation not implemented yet"
+    assert entry.get("planning_mode") == "fill_box_multi_bump"
+    bumps_obj = entry.get("bumps", 0)
+    assert isinstance(bumps_obj, (int, float))
+    assert int(bumps_obj) > 1
+    assert entry.get("using_legacy_meander_path") is False
+    assert (
+        entry.get("effective_bend_radius_um")
+        == entry.get("primitive_bend_radius_um")
+    )
+    assert entry.get("effective_bend_radius_um") is not None
 
 
 def test_m2_skeleton_reports_no_candidate_when_too_short():

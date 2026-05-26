@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence, TypedDict, cast
+from typing import TypedDict, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SOURCE = PROJECT_ROOT / "python"
@@ -55,6 +55,7 @@ class RoutedNetRecord:
     route_obj: object
     total_length_um: float
     meander_gap_plan: "MeanderGapPlan | None" = None
+    meander_auto_plan: dict[str, object] | None = None
 
 
 class MeanderGapPlan(TypedDict):
@@ -200,6 +201,17 @@ def _as_float(value: object, default: float = 0.0) -> float:
         return default
 
 
+def _as_int(value: object, default: int = 0) -> int:
+    try:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float, str, bytes, bytearray)):
+            return int(value)
+        return default
+    except (TypeError, ValueError):
+        return default
+
+
 def _plan_gap_on_candidate(
     start_um: tuple[float, float],
     end_um: tuple[float, float],
@@ -229,12 +241,13 @@ def analyze_meander_insertion_for_requirements(
     routed_net_records: list[RoutedNetRecord],
     requirements: list[MissingLengthRequirement],
     *,
+    config: MeanderInsertionConfig,
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool,
     bend_radius_cells: int,
     gap_anchor: str = "middle",
 ) -> tuple[list[RoutedNetRecord], dict[str, object]]:
-    """Gap-only plan (no meander insertion)."""
+    """Plan meander insertion using auto analytic multi-bump planning."""
     rust_backend = _load_rust_backend()
     if rust_backend is None:
         raise RuntimeError("Rust router backend unavailable for meander analysis.")
@@ -258,11 +271,7 @@ def analyze_meander_insertion_for_requirements(
     updated = dict(by_edge)
     results: list[dict[str, object]] = []
     total_requested = 0.0
-    min_bend_radius_um = 10.0
-    spacing_um = 2.0
-    max_height_um = 80.0
-    min_height_um = max(min_bend_radius_um + spacing_um, spacing_um)
-    width_um = 4.0 * min_bend_radius_um
+    total_inserted = 0.0
 
     for req in requirements:
         requested = float(req.missing_length_um)
@@ -272,105 +281,128 @@ def analyze_meander_insertion_for_requirements(
         entry = {
             "edge": edge_key_to_dict(edge_key),
             "requested_extra_length_um": requested,
-            "inserted_extra_length_um": 0.0,
             "status": "no_candidate",
             "reason": "no_matching_routed_record",
-            "candidate_count": 0,
-            "candidate_lengths_um": [],
-            "analysis_found_solution": False,
-            "analysis_reason": "no_matching_routed_record",
-            "side": 1,
-            "number_of_bumps": 1,
-            "meander_height_um": None,
-            "meander_width_um": width_um,
-            "planned_extra_length_um": 0.0,
-            "residual_um": requested,
-            "gap_anchor": gap_anchor,
-            "gap_start_um": None,
-            "gap_end_um": None,
+            "planning_mode": "fill_box_multi_bump",
+            "inserted_extra_length_um": 0.0,
+            "unmatched_length_um": requested,
+            "effective_bend_radius_um": None,
+            "primitive_bend_radius_um": None,
+            "selected_box": None,
+            "selected_grid_rect": None,
+            "bumps": 0,
+            "side": None,
+            "using_legacy_meander_path": False,
         }
         if record is None:
             results.append(entry)
             continue
-        rr = router.analyze_meander_insertion_candidate(
-            record.route_obj,
+        # Adaptive search: a single fixed box depth can miss legal meanders if that box
+        # intersects nearby structures; sweep depths and keep the best legal plan.
+        min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
+        min_seg_um = max(0.5, float(config.min_candidate_straight_length_um))
+        depth_candidates_um = [40.0, 30.0, 24.0, 20.0, 16.0, 12.0, 10.0, 8.0, 6.0, 4.0, 3.0, 2.0]
+        # The Rust planner currently requires inserted_extra_length_um >= requested_extra_length_um
+        # even in fill-box mode. Probe down to get a best-effort legal meander when full matching
+        # is not possible in one segment/box.
+        request_probe_um = [
             requested,
-            min_endpoint_margin_cells=1,
-            min_candidate_straight_length_um=2.0,
-            max_extra_length_per_region_um=200.0,
-            conservative_legal_check=True,
-        )
-        candidates = list(rr.get("candidates", []))
-        lengths = [float(c.get("length_um", 0.0)) for c in candidates]
-        entry["status"] = str(rr.get("status", "unknown"))
-        entry["reason"] = str(rr.get("reason", ""))
-        entry["candidate_count"] = len(candidates)
-        entry["candidate_lengths_um"] = lengths
-        if not candidates:
+            requested * 0.75,
+            requested * 0.5,
+            requested * 0.33,
+            requested * 0.25,
+            requested * 0.1,
+            10.0,
+            5.0,
+            2.0,
+            1.0,
+            0.5,
+        ]
+        request_probe_um = [max(0.1, float(v)) for v in request_probe_um]
+        best_rr: dict[str, object] | None = None
+        last_exc: Exception | None = None
+        best_requested_probe_um = requested
+        for req_probe in request_probe_um:
+            for depth_um in depth_candidates_um:
+                try:
+                    rr = cast(
+                        dict[str, object],
+                        router.plan_auto_analytic_meander_for_route(
+                            record.route_obj,
+                            requested_extra_length_um=float(req_probe),
+                            min_bend_radius_um=None,
+                            min_straight_um=min_straight_um,
+                            max_bumps=32,
+                            box_depth_um=float(depth_um),
+                            min_segment_length_um=min_seg_um,
+                            clearance_radius_cells=0,
+                            side_policy="both",
+                            opened_cells=None,
+                            planning_mode="fill_box_multi_bump",
+                        ),
+                    )
+                    if best_rr is None or _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0) > _as_float(
+                        best_rr.get("inserted_extra_length_um", 0.0), 0.0
+                    ):
+                        best_rr = rr
+                        best_requested_probe_um = float(req_probe)
+                except Exception as exc:
+                    last_exc = exc
+                    continue
+
+        if best_rr is None:
+            entry["status"] = "no_candidate"
+            entry["reason"] = str(last_exc) if last_exc is not None else "no legal auto-analytic meander candidate found"
             results.append(entry)
             continue
-        h = (requested - (2.0 * math.pi * min_bend_radius_um) + width_um) / 2.0
-        entry["meander_height_um"] = h
-        if h < min_height_um:
-            entry["analysis_reason"] = "required_height_below_minimum"
-            results.append(entry)
-            continue
-        if h > max_height_um:
-            entry["analysis_reason"] = "required_height_above_maximum"
-            results.append(entry)
-            continue
-        cand = candidates[0]
-        states_obj = getattr(record.route_obj, "states", None)
-        if states_obj is None:
-            entry["analysis_reason"] = "route_states_unavailable"
-            results.append(entry)
-            continue
-        states = cast(Sequence[object], states_obj)
-        sidx = int(cand.get("start_index", -1))
-        eidx = int(cand.get("end_index", -1))
-        if sidx < 0 or eidx <= sidx or eidx >= len(states):
-            entry["analysis_reason"] = "candidate_indices_invalid"
-            results.append(entry)
-            continue
-        sx, sy = _state_xy(states[sidx])
-        ex, ey = _state_xy(states[eidx])
-        cand_start = _grid_to_um(sx, sy, realization_grid_spec)
-        cand_end = _grid_to_um(ex, ey, realization_grid_spec)
-        gap = _plan_gap_on_candidate(cand_start, cand_end, gap_width_um=width_um, anchor=gap_anchor)
-        if gap is None:
-            entry["analysis_reason"] = "failed_to_place_gap_on_candidate"
-            results.append(entry)
-            continue
-        gs, ge = gap
-        entry["analysis_found_solution"] = True
-        entry["analysis_reason"] = "continuous_single_bump_solution_found"
-        entry["planned_extra_length_um"] = requested
-        entry["residual_um"] = 0.0
-        entry["gap_start_um"] = gs
-        entry["gap_end_um"] = ge
-        gap_plan: MeanderGapPlan = {
-            "gap_start_um": gs,
-            "gap_end_um": ge,
-            "meander_height_um": float(h),
-            "side": 1,
-        }
+        rr = best_rr
+        inserted = _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+        unmatched = max(0.0, requested - inserted)
+        entry["status"] = "planned"
+        entry["reason"] = ""
+        entry["inserted_extra_length_um"] = inserted
+        entry["unmatched_length_um"] = unmatched
+        entry["effective_bend_radius_um"] = rr.get("effective_bend_radius_um")
+        entry["primitive_bend_radius_um"] = rr.get("primitive_bend_radius_um")
+        entry["selected_box"] = rr.get("selected_box")
+        entry["selected_grid_rect"] = rr.get("selected_grid_rect")
+        entry["bumps"] = rr.get("bumps")
+        entry["side"] = rr.get("side")
+        entry["planning_mode"] = rr.get("planning_mode", "fill_box_multi_bump")
+        entry["requested_probe_length_um"] = best_requested_probe_um
+        if unmatched > 1.0e-9:
+            entry["status"] = "planned_partial"
+        total_inserted += inserted
         updated[edge_key] = RoutedNetRecord(
             net_name=record.net_name,
             source=record.source,
             target=record.target,
             route_obj=record.route_obj,
             total_length_um=record.total_length_um,
-            meander_gap_plan=gap_plan,
+            meander_gap_plan=None,
+            meander_auto_plan={
+                "requested_extra_length_um": best_requested_probe_um,
+                "min_bend_radius_um": None,
+                "min_straight_um": min_straight_um,
+                "max_bumps": 32,
+                "box_depth_um": _as_float(rr.get("box_depth_um", 20.0), 20.0),
+                "min_segment_length_um": min_seg_um,
+                "clearance_radius_cells": 0,
+                "side_policy": "both",
+                "planning_mode": "fill_box_multi_bump",
+            },
         )
         results.append(entry)
 
+    total_unmatched = max(0.0, total_requested - total_inserted)
     return (
         [updated.get(_record_edge_key(r), r) for r in routed_net_records],
         {
             "results": results,
             "total_requested_extra_length_um": float(total_requested),
-            "total_inserted_extra_length_um": 0.0,
-            "unmatched_length_um": float(total_requested),
+            "total_inserted_extra_length_um": float(total_inserted),
+            "unmatched_length_um": float(total_unmatched),
+            "using_legacy_meander_path": False,
         },
     )
 
@@ -399,6 +431,7 @@ def insert_meanders_for_requirements(
     updated, raw_report = analyze_meander_insertion_for_requirements(
         routed_net_records,
         requirements,
+        config=config,
         realization_grid_spec=realization_grid_spec,
         allow_45_degree_turns=allow_45_degree_turns,
         bend_radius_cells=bend_radius_cells,
@@ -423,14 +456,11 @@ def insert_meanders_for_requirements(
         )
         status = str(item.get("status", "unknown"))
         reason = str(item.get("reason", ""))
-        if status not in {"no_candidate", "insufficient_space"}:
-            status = "unsupported_representation"
-            reason = "meander polygon realization not implemented for this candidate shape"
         results.append(
             MeanderInsertionResult(
                 edge=edge,
                 requested_extra_length_um=_as_float(item.get("requested_extra_length_um", 0.0), 0.0),
-                inserted_extra_length_um=0.0,
+                inserted_extra_length_um=_as_float(item.get("inserted_extra_length_um", 0.0), 0.0),
                 status=status,
                 reason=reason,
             )
@@ -493,6 +523,7 @@ def route_match_and_realize(
         records_for_realization, meander_report_info = analyze_meander_insertion_for_requirements(
             debug_artifacts.routed_net_records,
             requirements,
+            config=MeanderInsertionConfig(enabled=True),
             realization_grid_spec=debug_artifacts.realization_grid_spec,
             allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
@@ -842,37 +873,24 @@ def realize_routed_net_records(
         return pts
 
     for record in routed_net_records:
-        if record.meander_gap_plan is not None:
-            cl = _route_centerline_points(record.route_obj)
-            gs = record.meander_gap_plan["gap_start_um"]
-            ge = record.meander_gap_plan["gap_end_um"]
-            split = _insert_gap_in_centerline(cl, gs, ge)
-            if split is not None:
-                first_cl, second_cl = split
-                h = float(record.meander_gap_plan["meander_height_um"])
-                side = int(record.meander_gap_plan["side"])
-                meander_cl = _build_single_bump_meander_centerline(
-                    gs,
-                    ge,
-                    meander_height_um=h,
-                    side=side,
-                )
-                if meander_cl is not None and len(meander_cl) >= 2:
-                    combined = list(first_cl)
-                    combined.extend(meander_cl[1:])
-                    combined.extend(second_cl[1:])
-                    poly = _poly_from_centerline(combined, route_width_um)
-                    if poly:
-                        routed_layout.add_polygon(poly, layer=route_layer)
-                        continue
-                # Fallback to gap-only if meander construction fails.
-                poly1 = _poly_from_centerline(first_cl, route_width_um)
-                poly2 = _poly_from_centerline(second_cl, route_width_um)
-                if poly1:
-                    routed_layout.add_polygon(poly1, layer=route_layer)
-                if poly2:
-                    routed_layout.add_polygon(poly2, layer=route_layer)
-                continue
+        if record.meander_auto_plan is not None:
+            plan = record.meander_auto_plan
+            polygon = router.realize_route_polygon_with_auto_checked_analytic_meander(
+                record.route_obj,
+                float(route_width_um),
+                requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
+                min_bend_radius_um=plan["min_bend_radius_um"],
+                min_straight_um=_as_float(plan["min_straight_um"], 0.0),
+                max_bumps=_as_int(plan["max_bumps"], 8),
+                box_depth_um=_as_float(plan["box_depth_um"], 20.0),
+                min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
+                clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),
+                side_policy=str(plan["side_policy"]),
+                opened_cells=None,
+                planning_mode=str(plan["planning_mode"]),
+            )
+            routed_layout.add_polygon(polygon, layer=route_layer)
+            continue
         polygon = router.realize_route_polygon(record.route_obj, float(route_width_um))
         routed_layout.add_polygon(polygon, layer=route_layer)
 

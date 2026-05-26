@@ -1464,11 +1464,12 @@ impl PyPhotonicRouter {
         let py_route = Py::new(py, convert_result(py, &self.primitives, &report.route)?)?;
         let d = PyDict::new_bound(py);
         d.set_item("applied", report.applied)?;
+        d.set_item("legacy", true)?;
         d.set_item("reason", report.reason)?;
         d.set_item("inserted_extra_length_um", report.inserted_extra_length_um)?;
         d.set_item(
             "warning",
-            "legacy primitive-based meander prototype; use realize_route_polygon_with_analytic_meander instead",
+            "legacy single-bump meander analysis; not used by main auto-meander flow",
         )?;
         d.set_item("route", py_route)?;
         Ok(d.into())
@@ -1522,11 +1523,12 @@ impl PyPhotonicRouter {
             candidate_dicts.append(d)?;
         }
         report.set_item("candidates", candidate_dicts)?;
+        report.set_item("legacy", true)?;
         report.set_item("status", report_rs.status)?;
         report.set_item("reason", report_rs.reason)?;
         report.set_item(
             "warning",
-            "legacy primitive-based meander prototype; use realize_route_polygon_with_analytic_meander instead",
+            "legacy single-bump meander analysis; not used by main auto-meander flow",
         )?;
         Ok(report.into())
     }
