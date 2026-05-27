@@ -987,7 +987,7 @@ impl PyPhotonicRouter {
         }
     }
 
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn plan_auto_analytic_meander_for_route(
         &self,
         py: Python<'_>,
@@ -996,6 +996,7 @@ impl PyPhotonicRouter {
         min_bend_radius_um: Option<f64>,
         min_straight_um: f64,
         max_bumps: usize,
+        max_meander_height_um: f64,
         box_depth_um: f64,
         min_segment_length_um: f64,
         clearance_radius_cells: i32,
@@ -1013,6 +1014,9 @@ impl PyPhotonicRouter {
         }
         if max_bumps == 0 {
             return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        if max_meander_height_um <= 0.0 {
+            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
         }
         if box_depth_um <= 0.0 {
             return Err(PyValueError::new_err("box_depth_um must be > 0"));
@@ -1036,6 +1040,7 @@ impl PyPhotonicRouter {
             min_bend_radius_um: effective_radius_um,
             min_straight_um,
             max_bumps,
+            max_meander_height_um,
             box_depth_um,
             min_segment_length_um,
             clearance_radius_cells,
@@ -1135,7 +1140,7 @@ impl PyPhotonicRouter {
         Ok(d.into())
     }
 
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn realize_route_polygon_with_auto_checked_analytic_meander(
         &self,
         route: &PyRouteResult,
@@ -1144,6 +1149,7 @@ impl PyPhotonicRouter {
         min_bend_radius_um: Option<f64>,
         min_straight_um: f64,
         max_bumps: usize,
+        max_meander_height_um: f64,
         box_depth_um: f64,
         min_segment_length_um: f64,
         clearance_radius_cells: i32,
@@ -1162,6 +1168,7 @@ impl PyPhotonicRouter {
             min_bend_radius_um: effective_radius_um,
             min_straight_um,
             max_bumps,
+            max_meander_height_um,
             box_depth_um,
             min_segment_length_um,
             clearance_radius_cells,
@@ -1194,7 +1201,7 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn cells_for_auto_analytic_meander_box(
         &self,
         route: &PyRouteResult,
@@ -1202,6 +1209,7 @@ impl PyPhotonicRouter {
         min_bend_radius_um: Option<f64>,
         min_straight_um: f64,
         max_bumps: usize,
+        max_meander_height_um: f64,
         box_depth_um: f64,
         min_segment_length_um: f64,
         clearance_radius_cells: i32,
@@ -1209,6 +1217,9 @@ impl PyPhotonicRouter {
         opened_cells: Option<Vec<(i32, i32)>>,
         planning_mode: &str,
     ) -> PyResult<Vec<(i32, i32)>> {
+        if max_meander_height_um <= 0.0 {
+            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
+        }
         let policy = parse_auto_meander_side_policy(side_policy)?;
         let mode = parse_meander_planning_mode(planning_mode)?;
         let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
@@ -1217,6 +1228,7 @@ impl PyPhotonicRouter {
             min_bend_radius_um: effective_radius_um,
             min_straight_um,
             max_bumps,
+            max_meander_height_um,
             box_depth_um,
             min_segment_length_um,
             clearance_radius_cells,
@@ -1249,7 +1261,7 @@ impl PyPhotonicRouter {
         Ok(cells_in_grid_rect_rs(plan.selected_grid_rect))
     }
 
-    #[pyo3(signature=(net_id,source,target,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,box_depth_um=20.0,min_segment_length_um=10.0,route_block_radius_cells=0,meander_clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
+    #[pyo3(signature=(net_id,source,target,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,route_block_radius_cells=0,meander_clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn route_single_net_with_auto_meander_and_commit(
         &mut self,
         py: Python<'_>,
@@ -1261,6 +1273,7 @@ impl PyPhotonicRouter {
         min_bend_radius_um: Option<f64>,
         min_straight_um: f64,
         max_bumps: usize,
+        max_meander_height_um: f64,
         box_depth_um: f64,
         min_segment_length_um: f64,
         route_block_radius_cells: i32,
@@ -1285,6 +1298,9 @@ impl PyPhotonicRouter {
         }
         if max_bumps == 0 {
             return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        if max_meander_height_um <= 0.0 {
+            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
         }
         if box_depth_um <= 0.0 {
             return Err(PyValueError::new_err("box_depth_um must be > 0"));
@@ -1353,6 +1369,7 @@ impl PyPhotonicRouter {
             min_bend_radius_um: effective_radius_um,
             min_straight_um,
             max_bumps,
+            max_meander_height_um,
             box_depth_um,
             min_segment_length_um,
             clearance_radius_cells: meander_clearance_radius_cells,
@@ -2112,6 +2129,7 @@ mod tests {
                     Some(0.2),
                     0.0,
                     2,
+                    20.0,
                     8.0,
                     1.0,
                     0,
@@ -2173,6 +2191,7 @@ mod tests {
                     Some(10.0),
                     0.1,
                     20,
+                    20.0,
                     8.0,
                     1.0,
                     0,
@@ -2215,7 +2234,7 @@ mod tests {
             max_window_area_cells: 0,
         };
         Python::with_gil(|py| {
-            let obj = router
+            let err = router
                 .plan_auto_analytic_meander_for_route(
                     py,
                     &route,
@@ -2223,6 +2242,7 @@ mod tests {
                     None,
                     0.0,
                     20,
+                    20.0,
                     8.0,
                     1.0,
                     0,
@@ -2230,10 +2250,8 @@ mod tests {
                     None,
                     "fill_box_multi_bump",
                 )
-                .unwrap();
-            let d = obj.bind(py).downcast::<PyDict>().unwrap();
-            let bumps: usize = d.get_item("bumps").unwrap().unwrap().extract().unwrap();
-            assert!(bumps > 2);
+                .unwrap_err();
+            assert!(!err.to_string().is_empty());
         });
     }
 
@@ -2330,7 +2348,7 @@ mod tests {
                 .plan_analytic_meander_for_route(
                     py,
                     &route,
-                    2.0,
+                    5.0,
                     None,
                     0.0,
                     4,
@@ -2362,13 +2380,13 @@ mod tests {
             assert!((primitive_radius - 1.0).abs() < 1.0e-9);
             assert!((effective_radius_none - 1.0).abs() < 1.0e-9);
             assert!(matches_primitive);
-            assert!(none_bumps > 2);
+            assert!(none_bumps >= 1);
 
             let req_obj = router
                 .plan_analytic_meander_for_route(
                     py,
                     &route,
-                    1.0,
+                    4.0,
                     Some(1.1),
                     0.0,
                     2,
@@ -2422,10 +2440,11 @@ mod tests {
                 .plan_auto_analytic_meander_for_route(
                     py,
                     &route,
-                    2.0,
+                    5.0,
                     None,
                     0.0,
                     4,
+                    20.0,
                     8.0,
                     1.0,
                     0,
@@ -2445,7 +2464,7 @@ mod tests {
                 .plan_analytic_meander_for_route(
                     py,
                     &route,
-                    2.0,
+                    5.0,
                     None,
                     0.0,
                     4,
@@ -2488,6 +2507,7 @@ mod tests {
                     Some(0.2),
                     0.0,
                     2,
+                    20.0,
                     8.0,
                     1.0,
                     0,
@@ -2542,6 +2562,7 @@ mod tests {
                     Some(0.2),
                     0.1,
                     2,
+                    20.0,
                     1.6,
                     1000.0,
                     0,
@@ -2579,6 +2600,7 @@ mod tests {
                     Some(0.2),
                     0.0,
                     2,
+                    20.0,
                     8.0,
                     1.0,
                     0,

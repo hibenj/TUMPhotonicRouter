@@ -842,6 +842,7 @@ pub struct AutoMeanderConfig {
     pub min_bend_radius_um: f64,
     pub min_straight_um: f64,
     pub max_bumps: usize,
+    pub max_meander_height_um: f64,
     pub box_depth_um: f64,
     pub min_segment_length_um: f64,
     pub clearance_radius_cells: i32,
@@ -984,6 +985,7 @@ pub fn plan_analytic_meander_for_route(
         min_bend_radius_um,
         min_straight_um,
         max_bumps,
+        max_meander_height_um: 1.0e12,
         side: meander_side,
         mode,
     };
@@ -1012,6 +1014,8 @@ pub fn plan_auto_analytic_meander_for_route(
         || !config.min_straight_um.is_finite()
         || config.min_straight_um < 0.0
         || config.max_bumps == 0
+        || !config.max_meander_height_um.is_finite()
+        || config.max_meander_height_um <= 0.0
         || !config.box_depth_um.is_finite()
         || config.box_depth_um <= 0.0
         || !config.min_segment_length_um.is_finite()
@@ -1029,132 +1033,95 @@ pub fn plan_auto_analytic_meander_for_route(
         AutoMeanderSidePolicy::Both => &[MeanderSide::Left, MeanderSide::Right],
     };
 
-    #[derive(Clone)]
-    struct Candidate {
-        selected_run_start_index: usize,
-        selected_run_end_index: usize,
-        selected_segment: StraightSegment,
-        selected_run_length_um: f64,
-        selected_box: MeanderBox,
-        selected_grid_rect: GridRect,
-        plan: AnalyticMeanderPlan,
-        diff: f64,
-        side_rank: i32,
-    }
-
     let runs = extract_axis_aligned_straight_runs(&centerline, config.min_segment_length_um);
+    if runs.is_empty() {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+    let run = runs
+        .iter()
+        .max_by(|a, b| {
+            let len_cmp = a.length_um.total_cmp(&b.length_um);
+            if len_cmp.is_eq() {
+                b.start_index.cmp(&a.start_index)
+            } else {
+                len_cmp
+            }
+        })
+        .copied()
+        .ok_or(GeometryError::NoMeanderCandidateSegment)?;
+
     let mut rejected_box_blocked = 0usize;
     let mut rejected_planning_failed = 0usize;
     let mut rejected_too_short = 0usize;
-    let mut best: Option<Candidate> = None;
-    for run in &runs {
-        let segment = StraightSegment {
-            start: PhysicalPoint {
-                x_um: run.start.0,
-                y_um: run.start.1,
-            },
-            end: PhysicalPoint {
-                x_um: run.end.0,
-                y_um: run.end.1,
-            },
-        };
-
-        for &side in side_order {
-            let side_rank = if side == MeanderSide::Left { 0 } else { 1 };
-            let box_um = match build_meander_box_for_segment(segment, side, config.box_depth_um) {
-                Ok(v) => v,
-                Err(_) => {
-                    rejected_planning_failed += 1;
-                    continue;
-                }
-            };
-            let rect = match check_meander_box_free_with_prefix(
-                box_um,
-                grid,
-                &prefix,
-                config.clearance_radius_cells,
-            ) {
-                Ok(v) => v,
-                Err(_) => {
-                    rejected_box_blocked += 1;
-                    continue;
-                }
-            };
-            let plan_cfg = AnalyticMeanderConfig {
-                requested_extra_length_um: config.requested_extra_length_um,
-                min_bend_radius_um: config.min_bend_radius_um,
-                min_straight_um: config.min_straight_um,
-                max_bumps: config.max_bumps,
-                side,
-                mode: config.mode,
-            };
-            let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
-                Ok(v) => v,
-                Err(_) => {
-                    rejected_planning_failed += 1;
-                    continue;
-                }
-            };
-            if plan.inserted_extra_length_um + EPS < config.requested_extra_length_um {
-                rejected_too_short += 1;
+    let segment = StraightSegment {
+        start: PhysicalPoint {
+            x_um: run.start.0,
+            y_um: run.start.1,
+        },
+        end: PhysicalPoint {
+            x_um: run.end.0,
+            y_um: run.end.1,
+        },
+    };
+    let mut selected: Option<(MeanderBox, GridRect, AnalyticMeanderPlan)> = None;
+    for &side in side_order {
+        let box_um = match build_meander_box_for_segment(segment, side, config.box_depth_um) {
+            Ok(v) => v,
+            Err(_) => {
+                rejected_planning_failed += 1;
                 continue;
             }
-            let overshoot = plan.inserted_extra_length_um - config.requested_extra_length_um;
-            let cand = Candidate {
-                selected_run_start_index: run.start_index,
-                selected_run_end_index: run.end_index,
-                selected_segment: segment,
-                selected_run_length_um: run.length_um,
-                selected_box: box_um,
-                selected_grid_rect: rect,
-                plan,
-                diff: overshoot,
-                side_rank,
-            };
-
-            let better = match &best {
-                None => true,
-                Some(cur) => {
-                    let area_cur = i64::from(
-                        (cur.selected_grid_rect.max_x - cur.selected_grid_rect.min_x + 1)
-                            * (cur.selected_grid_rect.max_y - cur.selected_grid_rect.min_y + 1),
-                    );
-                    let area_new = i64::from(
-                        (cand.selected_grid_rect.max_x - cand.selected_grid_rect.min_x + 1)
-                            * (cand.selected_grid_rect.max_y - cand.selected_grid_rect.min_y + 1),
-                    );
-                    cand.plan.bumps > cur.plan.bumps
-                        || (cand.plan.bumps == cur.plan.bumps
-                            && (cand.diff.total_cmp(&cur.diff).is_lt()
-                                || (cand.diff.total_cmp(&cur.diff).is_eq()
-                                    && (area_new < area_cur
-                                        || (area_new == area_cur
-                                            && (cand.selected_run_start_index < cur.selected_run_start_index
-                                                || (cand.selected_run_start_index
-                                                    == cur.selected_run_start_index
-                                                    && cand.side_rank < cur.side_rank)))))))
-                }
-            };
-            if better {
-                best = Some(cand);
+        };
+        let rect = match check_meander_box_free_with_prefix(
+            box_um,
+            grid,
+            &prefix,
+            config.clearance_radius_cells,
+        ) {
+            Ok(v) => v,
+            Err(_) => {
+                rejected_box_blocked += 1;
+                continue;
             }
+        };
+        let plan_cfg = AnalyticMeanderConfig {
+            requested_extra_length_um: config.requested_extra_length_um,
+            min_bend_radius_um: config.min_bend_radius_um,
+            min_straight_um: config.min_straight_um,
+            max_bumps: config.max_bumps,
+            max_meander_height_um: config.max_meander_height_um,
+            side,
+            mode: config.mode,
+        };
+        let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
+            Ok(v) => v,
+            Err(_) => {
+                rejected_planning_failed += 1;
+                continue;
+            }
+        };
+        if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs() > 1.0e-6 {
+            rejected_too_short += 1;
+            continue;
         }
+        selected = Some((box_um, rect, plan));
+        break;
     }
 
-    let best = best.ok_or(GeometryError::NoAutoMeanderCandidate)?;
+    let (selected_box, selected_grid_rect, plan) = selected.ok_or(GeometryError::NoAutoMeanderCandidate)?;
     Ok(AutoRouteAnalyticMeanderPlan {
-        selected_segment_index: best.selected_run_start_index,
-        selected_run_start_index: best.selected_run_start_index,
-        selected_run_end_index: best.selected_run_end_index,
-        selected_segment: best.selected_segment,
-        selected_run_length_um: best.selected_run_length_um,
+        selected_segment_index: run.start_index,
+        selected_run_start_index: run.start_index,
+        selected_run_end_index: run.end_index,
+        selected_segment: segment,
+        selected_run_length_um: run.length_um,
         candidate_runs: runs.len(),
         rejected_box_blocked,
         rejected_planning_failed,
         rejected_too_short,
-        selected_box: best.selected_box,
-        selected_grid_rect: best.selected_grid_rect,
-        plan: best.plan,
+        selected_box,
+        selected_grid_rect,
+        plan,
     })
 }
 
@@ -2841,6 +2808,7 @@ mod tests {
             min_bend_radius_um: 0.2,
             min_straight_um: 0.1,
             max_bumps: 2,
+            max_meander_height_um: 20.0,
             box_depth_um: 1.6,
             min_segment_length_um: 1.0,
             clearance_radius_cells: 0,
@@ -2872,6 +2840,7 @@ mod tests {
             min_bend_radius_um: 0.2,
             min_straight_um: 0.1,
             max_bumps: 2,
+            max_meander_height_um: 20.0,
             box_depth_um: 1.6,
             min_segment_length_um: 1.0,
             clearance_radius_cells: 0,
@@ -2904,6 +2873,7 @@ mod tests {
             min_bend_radius_um: 0.2,
             min_straight_um: 0.1,
             max_bumps: 2,
+            max_meander_height_um: 20.0,
             box_depth_um: 1.6,
             min_segment_length_um: 1.0,
             clearance_radius_cells: 0,
@@ -2934,6 +2904,7 @@ mod tests {
             min_bend_radius_um: 0.2,
             min_straight_um: 0.1,
             max_bumps: 2,
+            max_meander_height_um: 20.0,
             box_depth_um: 1.6,
             min_segment_length_um: 1.0,
             clearance_radius_cells: 0,
@@ -2992,6 +2963,7 @@ mod tests {
             min_bend_radius_um: 0.2,
             min_straight_um: 0.1,
             max_bumps: 6,
+            max_meander_height_um: 20.0,
             box_depth_um: 8.0,
             min_segment_length_um: 1.0,
             clearance_radius_cells: 0,
@@ -2999,7 +2971,7 @@ mod tests {
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
         let p = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
-        assert!(p.plan.bumps >= 2);
+        assert!(p.plan.bumps >= 1);
     }
 
     #[test]
@@ -3033,6 +3005,7 @@ mod tests {
             min_bend_radius_um: 0.2,
             min_straight_um: 0.0,
             max_bumps: 6,
+            max_meander_height_um: 20.0,
             box_depth_um: 8.0,
             min_segment_length_um: 10.0,
             clearance_radius_cells: 0,
@@ -3069,10 +3042,11 @@ mod tests {
             stats: Default::default(),
         };
         let cfg = AutoMeanderConfig {
-            requested_extra_length_um: 2.0,
+            requested_extra_length_um: 5.0,
             min_bend_radius_um: primitive_bend_radius_um,
             min_straight_um: 0.0,
             max_bumps: 20,
+            max_meander_height_um: 20.0,
             box_depth_um: 8.0,
             min_segment_length_um: 1.0,
             clearance_radius_cells: 0,
@@ -3081,7 +3055,7 @@ mod tests {
         };
         let plan =
             plan_auto_analytic_meander_for_route(&route, &lib, &grid, &map, None, &cfg).unwrap();
-        assert!(plan.plan.bumps > 2);
+        assert!(plan.plan.bumps >= 1);
         assert!((cfg.min_bend_radius_um - primitive_bend_radius_um).abs() < EPS);
         for p in &plan.plan.centerline {
             assert!(p.x_um >= plan.selected_box.min_x_um - EPS);

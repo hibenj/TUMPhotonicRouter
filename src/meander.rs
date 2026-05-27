@@ -439,6 +439,7 @@ pub struct AnalyticMeanderConfig {
     pub min_bend_radius_um: f64,
     pub min_straight_um: f64,
     pub max_bumps: usize,
+    pub max_meander_height_um: f64,
     pub side: MeanderSide,
     pub mode: MeanderPlanningMode,
 }
@@ -644,6 +645,7 @@ fn plan_exact_extra_length_meander(
         || !config.requested_extra_length_um.is_finite()
         || !config.min_bend_radius_um.is_finite()
         || !config.min_straight_um.is_finite()
+        || !config.max_meander_height_um.is_finite()
     {
         return Err(MeanderPlanningError::NonFiniteInput);
     }
@@ -858,111 +860,160 @@ pub fn plan_fill_box_multi_bump_meander(
     let (orientation, segment_length_um) = orientation_and_length(segment)?;
     let r = config.min_bend_radius_um;
     let min_straight = config.min_straight_um.max(0.0);
-    let depth = side_capacity_um(segment, orientation, available_box, config.side);
-    if depth + EPS < 4.0 * r {
+    let depth = side_capacity_um(segment, orientation, available_box, config.side)
+        .min(config.max_meander_height_um);
+    if depth + EPS < 2.0 * r + min_straight {
         return Err(MeanderPlanningError::AvailableBoxTooSmall);
     }
     if segment_length_um + EPS < 2.0 * r {
         return Err(MeanderPlanningError::AvailableBoxTooSmall);
     }
-
-    let mut num_meanders = (depth / (2.0 * r)).floor() as usize;
-    if num_meanders % 2 == 1 {
-        num_meanders = num_meanders.saturating_sub(1);
-    }
-    num_meanders = num_meanders.min(config.max_bumps);
-    if num_meanders % 2 == 1 {
-        num_meanders = num_meanders.saturating_sub(1);
-    }
-    if num_meanders <= 1 {
+    // Dense comb with explicit 180-degree turns:
+    // two 90-degree connectors only at entry/exit, all internal reversals are U-turns.
+    let max_feasible_bumps = (((segment_length_um / r) - 3.0) * 0.5).floor() as isize;
+    let max_feasible_bumps = (max_feasible_bumps.max(0) as usize).min(config.max_bumps);
+    if max_feasible_bumps == 0 {
         return Err(MeanderPlanningError::MaxBumpsTooSmall);
     }
-
-    let residual_depth = (depth - (num_meanders as f64) * 2.0 * r).max(0.0);
-    let extra_straight_per_meander = residual_depth / (num_meanders as f64);
-    let amplitude = 2.0 * r + extra_straight_per_meander;
-
-    let span = segment_length_um / (num_meanders as f64);
-    let top_straight = span - 4.0 * r;
-    if top_straight + EPS < 2.0 * r + min_straight {
+    let min_height = 2.0 * r + min_straight;
+    // With `n` internal U-turns (odd), extra length is:
+    //   extra = n*H + r * ((n+1)*pi - (4*n + 3))
+    let mut chosen: Option<(usize, f64)> = None;
+    for bumps in (1..=max_feasible_bumps).filter(|b| b % 2 == 1) {
+        let n = bumps as f64;
+        let h = (config.requested_extra_length_um
+            - r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0)))
+            / n;
+        if h + EPS < min_height || h - EPS > depth {
+            continue;
+        }
+        chosen = Some((bumps, h.clamp(min_height, depth)));
+        break;
+    }
+    let (num_meanders, amplitude) = chosen.ok_or(MeanderPlanningError::RequestedExtraLengthDoesNotFit)?;
+    let insertion_width_um = r * (2.0 * (num_meanders as f64) + 3.0);
+    if insertion_width_um - EPS > segment_length_um {
         return Err(MeanderPlanningError::AvailableBoxTooSmall);
     }
-    let vertical = amplitude - 2.0 * r;
 
     let mut centerline = Vec::new();
     append_line_local(&mut centerline, segment, orientation, config.side, 0.0, 0.0);
-    for i in 0..num_meanders {
-        let x0 = (i as f64) * span;
-        append_line_local(&mut centerline, segment, orientation, config.side, x0, 0.0);
-        append_quarter_arc_local(
-            &mut centerline,
-            segment,
-            orientation,
-            config.side,
-            x0 + r,
-            r,
-            r,
-            -std::f64::consts::FRAC_PI_2,
-            0.0,
-        );
-        append_line_local(
-            &mut centerline,
-            segment,
-            orientation,
-            config.side,
-            x0 + 2.0 * r,
-            r + vertical,
-        );
-        append_quarter_arc_local(
-            &mut centerline,
-            segment,
-            orientation,
-            config.side,
-            x0 + 3.0 * r,
-            amplitude - r,
-            r,
-            std::f64::consts::PI,
-            std::f64::consts::FRAC_PI_2,
-        );
-        append_line_local(
-            &mut centerline,
-            segment,
-            orientation,
-            config.side,
-            x0 + 2.0 * r + top_straight,
-            amplitude,
-        );
-        append_quarter_arc_local(
-            &mut centerline,
-            segment,
-            orientation,
-            config.side,
-            x0 + 2.0 * r + top_straight,
-            amplitude - r,
-            r,
-            std::f64::consts::FRAC_PI_2,
-            0.0,
-        );
-        append_line_local(
-            &mut centerline,
-            segment,
-            orientation,
-            config.side,
-            x0 + 3.0 * r + top_straight,
-            r,
-        );
-        append_quarter_arc_local(
-            &mut centerline,
-            segment,
-            orientation,
-            config.side,
-            x0 + 4.0 * r + top_straight,
-            r,
-            r,
-            std::f64::consts::PI,
-            3.0 * std::f64::consts::FRAC_PI_2,
-        );
+    // Entry connector (90 deg): +x baseline -> +y vertical
+    append_quarter_arc_local(
+        &mut centerline,
+        segment,
+        orientation,
+        config.side,
+        r,
+        r,
+        r,
+        -std::f64::consts::FRAC_PI_2,
+        0.0,
+    );
+    let mut x = 2.0 * r;
+    let mut going_up = true;
+    for _ in 0..num_meanders {
+        if going_up {
+            append_line_local(
+                &mut centerline,
+                segment,
+                orientation,
+                config.side,
+                x,
+                amplitude - r,
+            );
+            // Top U-turn (180 deg): +y -> -y
+            append_quarter_arc_local(
+                &mut centerline,
+                segment,
+                orientation,
+                config.side,
+                x + r,
+                amplitude - r,
+                r,
+                std::f64::consts::PI,
+                std::f64::consts::FRAC_PI_2,
+            );
+            append_quarter_arc_local(
+                &mut centerline,
+                segment,
+                orientation,
+                config.side,
+                x + r,
+                amplitude - r,
+                r,
+                std::f64::consts::FRAC_PI_2,
+                0.0,
+            );
+            x += 2.0 * r;
+            going_up = false;
+        } else {
+            append_line_local(
+                &mut centerline,
+                segment,
+                orientation,
+                config.side,
+                x,
+                r,
+            );
+            // Bottom U-turn (180 deg): -y -> +y
+            append_quarter_arc_local(
+                &mut centerline,
+                segment,
+                orientation,
+                config.side,
+                x + r,
+                r,
+                r,
+                std::f64::consts::PI,
+                3.0 * std::f64::consts::FRAC_PI_2,
+            );
+            append_quarter_arc_local(
+                &mut centerline,
+                segment,
+                orientation,
+                config.side,
+                x + r,
+                r,
+                r,
+                3.0 * std::f64::consts::FRAC_PI_2,
+                2.0 * std::f64::consts::PI,
+            );
+            x += 2.0 * r;
+            going_up = true;
+        }
     }
+    if going_up {
+        return Err(MeanderPlanningError::RequestedExtraLengthDoesNotFit);
+    }
+    append_line_local(
+        &mut centerline,
+        segment,
+        orientation,
+        config.side,
+        x,
+        r,
+    );
+    // Exit connector (90 deg): -y vertical -> +x baseline
+    append_quarter_arc_local(
+        &mut centerline,
+        segment,
+        orientation,
+        config.side,
+        x + r,
+        r,
+        r,
+        std::f64::consts::PI,
+        3.0 * std::f64::consts::FRAC_PI_2,
+    );
+    append_line_local(
+        &mut centerline,
+        segment,
+        orientation,
+        config.side,
+        insertion_width_um,
+        0.0,
+    );
     append_line_local(
         &mut centerline,
         segment,
@@ -976,8 +1027,10 @@ pub fn plan_fill_box_multi_bump_meander(
             return Err(MeanderPlanningError::AvailableBoxTooSmall);
         }
     }
-    let inserted_extra = centerline_length(&centerline) - segment_length_um;
-    if inserted_extra + EPS < config.requested_extra_length_um {
+    let n = num_meanders as f64;
+    let inserted_extra =
+        n * amplitude + r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0));
+    if (inserted_extra - config.requested_extra_length_um).abs() > 1.0e-6 {
         return Err(MeanderPlanningError::RequestedExtraLengthDoesNotFit);
     }
     Ok(AnalyticMeanderPlan {
@@ -1041,6 +1094,7 @@ mod analytic_tests {
             min_bend_radius_um: 5.0,
             min_straight_um: 2.0,
             max_bumps: 8,
+            max_meander_height_um: 20.0,
             side: MeanderSide::Left,
             mode: MeanderPlanningMode::ExactExtraLength,
         };
@@ -1065,6 +1119,7 @@ mod analytic_tests {
             min_bend_radius_um: 4.0,
             min_straight_um: 2.0,
             max_bumps: 6,
+            max_meander_height_um: 20.0,
             side: MeanderSide::Right,
             mode: MeanderPlanningMode::ExactExtraLength,
         };
@@ -1089,6 +1144,7 @@ mod analytic_tests {
             min_bend_radius_um: 3.0,
             min_straight_um: 2.0,
             max_bumps: 4,
+            max_meander_height_um: 20.0,
             side: MeanderSide::Left,
             mode: MeanderPlanningMode::ExactExtraLength,
         };
@@ -1117,6 +1173,7 @@ mod analytic_tests {
             min_bend_radius_um: 2.0,
             min_straight_um: 1.0,
             max_bumps: 2,
+            max_meander_height_um: 20.0,
             side: MeanderSide::Left,
             mode: MeanderPlanningMode::ExactExtraLength,
         };
@@ -1142,6 +1199,7 @@ mod analytic_tests {
             min_bend_radius_um: 0.0,
             min_straight_um: 1.0,
             max_bumps: 2,
+            max_meander_height_um: 20.0,
             side: MeanderSide::Left,
             mode: MeanderPlanningMode::ExactExtraLength,
         };
@@ -1153,6 +1211,7 @@ mod analytic_tests {
             min_bend_radius_um: 2.0,
             min_straight_um: 1.0,
             max_bumps: 2,
+            max_meander_height_um: 20.0,
             side: MeanderSide::Left,
             mode: MeanderPlanningMode::ExactExtraLength,
         };
@@ -1177,11 +1236,13 @@ mod analytic_tests {
             min_bend_radius_um: 2.0,
             min_straight_um: 1.0,
             max_bumps: 20,
+            max_meander_height_um: 20.0,
             side: MeanderSide::Left,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
         let plan = plan_analytic_meander(seg, b, &cfg).unwrap();
-        assert!(plan.bumps > 1);
+        assert!(plan.bumps >= 1);
+        assert!((plan.inserted_extra_length_um - cfg.requested_extra_length_um).abs() <= 1.0e-6);
     }
 
     #[test]
@@ -1207,6 +1268,7 @@ mod analytic_tests {
             min_bend_radius_um: 2.0,
             min_straight_um: 1.0,
             max_bumps: 20,
+            max_meander_height_um: 20.0,
             side: MeanderSide::Left,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
@@ -1240,6 +1302,7 @@ mod analytic_tests {
             min_bend_radius_um: 2.0,
             min_straight_um: 1.0,
             max_bumps: 20,
+            max_meander_height_um: 20.0,
             side: MeanderSide::Left,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };

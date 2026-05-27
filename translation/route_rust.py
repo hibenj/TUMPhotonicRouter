@@ -63,6 +63,7 @@ class MeanderInsertionConfig:
     min_candidate_straight_length_um: float = 2.0
     max_extra_length_per_region_um: float = 200.0
     conservative_legal_check: bool = True
+    max_meander_height_um: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -263,66 +264,58 @@ def analyze_meander_insertion_for_requirements(
         if record is None:
             results.append(entry)
             continue
-        # Adaptive search: a single fixed box depth can miss legal meanders if that box
-        # intersects nearby structures; sweep depths and keep the best legal plan.
+        # Sweep box depth for legality, but keep requested length fixed and require
+        # exact compensation (within tiny FP epsilon).
         min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
         min_seg_um = max(0.5, float(config.min_candidate_straight_length_um))
         depth_candidates_um = [40.0, 30.0, 24.0, 20.0, 16.0, 12.0, 10.0, 8.0, 6.0, 4.0, 3.0, 2.0]
-        # The Rust planner currently requires inserted_extra_length_um >= requested_extra_length_um
-        # even in fill-box mode. Probe down to get a best-effort legal meander when full matching
-        # is not possible in one segment/box.
-        request_probe_um = [
-            requested,
-            requested * 0.75,
-            requested * 0.5,
-            requested * 0.33,
-            requested * 0.25,
-            requested * 0.1,
-            10.0,
-            5.0,
-            2.0,
-            1.0,
-            0.5,
-        ]
-        request_probe_um = [max(0.1, float(v)) for v in request_probe_um]
+        exact_eps_um = 1.0e-6
         best_rr: dict[str, object] | None = None
         last_exc: Exception | None = None
-        best_requested_probe_um = requested
-        for req_probe in request_probe_um:
-            for depth_um in depth_candidates_um:
-                try:
-                    rr = cast(
-                        dict[str, object],
-                        router.plan_auto_analytic_meander_for_route(
-                            record.route_obj,
-                            requested_extra_length_um=float(req_probe),
-                            min_bend_radius_um=None,
-                            min_straight_um=min_straight_um,
-                            max_bumps=32,
-                            box_depth_um=float(depth_um),
-                            min_segment_length_um=min_seg_um,
-                            clearance_radius_cells=0,
-                            side_policy="both",
-                            opened_cells=None,
-                            planning_mode="fill_box_multi_bump",
-                        ),
-                    )
-                    if best_rr is None or _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0) > _as_float(
-                        best_rr.get("inserted_extra_length_um", 0.0), 0.0
-                    ):
-                        best_rr = rr
-                        best_requested_probe_um = float(req_probe)
-                except Exception as exc:
-                    last_exc = exc
+        for depth_um in depth_candidates_um:
+            try:
+                rr = cast(
+                    dict[str, object],
+                    router.plan_auto_analytic_meander_for_route(
+                        record.route_obj,
+                        requested_extra_length_um=float(requested),
+                        min_bend_radius_um=None,
+                        min_straight_um=min_straight_um,
+                        max_bumps=32,
+                        max_meander_height_um=float(config.max_meander_height_um),
+                        box_depth_um=float(depth_um),
+                        min_segment_length_um=min_seg_um,
+                        clearance_radius_cells=0,
+                        side_policy="both",
+                        opened_cells=None,
+                        planning_mode="fill_box_multi_bump",
+                    ),
+                )
+                inserted_rr = _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+                if abs(inserted_rr - requested) > exact_eps_um:
                     continue
+                best_rr = rr
+                break
+            except Exception as exc:
+                last_exc = exc
+                continue
 
         if best_rr is None:
             entry["status"] = "no_candidate"
-            entry["reason"] = str(last_exc) if last_exc is not None else "no legal auto-analytic meander candidate found"
+            entry["reason"] = (
+                str(last_exc)
+                if last_exc is not None
+                else f"no exact meander candidate found (|inserted-requested| <= {exact_eps_um} um)"
+            )
             results.append(entry)
             continue
         rr = best_rr
         inserted = _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+        if abs(inserted - requested) > exact_eps_um:
+            entry["status"] = "no_candidate"
+            entry["reason"] = f"candidate residual {abs(inserted - requested):.6g} um exceeds hard limit {exact_eps_um} um"
+            results.append(entry)
+            continue
         unmatched = max(0.0, requested - inserted)
         entry["status"] = "planned"
         entry["reason"] = ""
@@ -335,7 +328,7 @@ def analyze_meander_insertion_for_requirements(
         entry["bumps"] = rr.get("bumps")
         entry["side"] = rr.get("side")
         entry["planning_mode"] = rr.get("planning_mode", "fill_box_multi_bump")
-        entry["requested_probe_length_um"] = best_requested_probe_um
+        entry["requested_probe_length_um"] = requested
         if unmatched > 1.0e-9:
             entry["status"] = "planned_partial"
         total_inserted += inserted
@@ -346,10 +339,11 @@ def analyze_meander_insertion_for_requirements(
             route_obj=record.route_obj,
             total_length_um=record.total_length_um,
             meander_auto_plan={
-                "requested_extra_length_um": best_requested_probe_um,
+                "requested_extra_length_um": requested,
                 "min_bend_radius_um": None,
                 "min_straight_um": min_straight_um,
                 "max_bumps": 32,
+                "max_meander_height_um": float(config.max_meander_height_um),
                 "box_depth_um": _as_float(rr.get("box_depth_um", 20.0), 20.0),
                 "min_segment_length_um": min_seg_um,
                 "clearance_radius_cells": 0,
@@ -679,6 +673,7 @@ def realize_routed_net_records(
                 min_bend_radius_um=plan["min_bend_radius_um"],
                 min_straight_um=_as_float(plan["min_straight_um"], 0.0),
                 max_bumps=_as_int(plan["max_bumps"], 8),
+                max_meander_height_um=_as_float(plan.get("max_meander_height_um", 20.0), 20.0),
                 box_depth_um=_as_float(plan["box_depth_um"], 20.0),
                 min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
                 clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),
