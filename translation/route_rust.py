@@ -799,13 +799,17 @@ def route_nets_rust(
         bend_radius_cells=4,
         allow_45_degree_turns=allow_45_degree_turns,
     )
+    bend_radius_cells = int(primitive_cfg.bend_radius_cells)
     astar_cfg = rust_backend.AStarConfig(max_iterations=int(max_iterations))
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
     block_radius_cells = max(
         0, math.ceil((float(route_width_um) / 2.0) / float(grid.grid_size_um))
     )
-    router.set_static_cells(sorted(obstacle_map.blocked_cells))
+    port_entry_length_cells = max(2, bend_radius_cells + 2)
+    port_entry_half_width_cells = max(1, bend_radius_cells + block_radius_cells + 1)
+    port_lane_length_cells = max(3, 2 * bend_radius_cells + 2)
+    port_lane_half_width_cells = max(1, block_radius_cells + 1)
     net_id = 0
 
     def _orientation_to_angle(orientation: float | None, *, flip: bool = False) -> int:
@@ -832,6 +836,10 @@ def route_nets_rust(
             (1, -1),   # 7 southeast
         ]
         return steps[angle % 8]
+
+
+    def _in_bounds(gx: int, gy: int) -> bool:
+        return 0 <= gx < int(grid.width) and 0 <= gy < int(grid.height)
 
 
     def port_to_grid_state(
@@ -862,84 +870,180 @@ def route_nets_rust(
 
         return rust_backend.State(gx, gy, route_angle)
 
-    t_astar_start = 0.0
-    if debug_timing:
-        t_astar_start = time.perf_counter()
 
+    def _collect_inflated_step_cells(
+        base_x: int,
+        base_y: int,
+        *,
+        step_x: int,
+        step_y: int,
+        length_cells: int,
+        half_width_cells: int,
+    ) -> set[tuple[int, int]]:
+        cells: set[tuple[int, int]] = set()
+        for step_idx in range(length_cells):
+            cx = base_x + step_x * step_idx
+            cy = base_y + step_y * step_idx
+            if not _in_bounds(cx, cy):
+                continue
+            for dx in range(-half_width_cells, half_width_cells + 1):
+                for dy in range(-half_width_cells, half_width_cells + 1):
+                    nx = cx + dx
+                    ny = cy + dy
+                    if _in_bounds(nx, ny):
+                        cells.add((nx, ny))
+        return cells
+
+    def build_port_access_cells(port: Port) -> set[tuple[int, int]]:
+        state = port_to_grid_state(
+            port,
+            origin_x_um,
+            origin_y_um,
+            float(grid.grid_size_um),
+            as_target=False,
+        )
+        port_angle = _orientation_to_angle(port.orientation, flip=False)
+        sx, sy = _angle_to_step(port_angle)
+        base_x = int(state.x)
+        base_y = int(state.y)
+        entry_zone = _collect_inflated_step_cells(
+            base_x,
+            base_y,
+            step_x=sx,
+            step_y=sy,
+            length_cells=port_entry_length_cells,
+            half_width_cells=port_entry_half_width_cells,
+        )
+        lane_zone = _collect_inflated_step_cells(
+            base_x,
+            base_y,
+            step_x=sx,
+            step_y=sy,
+            length_cells=port_lane_length_cells,
+            half_width_cells=port_lane_half_width_cells,
+        )
+        cells = entry_zone | lane_zone
+        cells.add((int(state.x), int(state.y)))
+        return cells
+
+    route_jobs: list[tuple[str, str, str, str, str, Port, Port]] = []
+    port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     for net_name, bundle in nets.items():
         links = bundle.links
         for port1_spec, port2_spec in links.items():
             inst1, port1 = port1_spec.split(",")
             inst2, port2 = port2_spec.split(",")
-
             source_port = get_port_from_instance(routed_layout, inst1, port1)
             target_port = get_port_from_instance(routed_layout, inst2, port2)
+            route_jobs.append((net_name, inst1, port1, inst2, port2, source_port, target_port))
+            if port1_spec not in port_access_cells_by_spec:
+                port_access_cells_by_spec[port1_spec] = build_port_access_cells(source_port)
+            if port2_spec not in port_access_cells_by_spec:
+                port_access_cells_by_spec[port2_spec] = build_port_access_cells(target_port)
 
-            source_state = port_to_grid_state(
-                source_port,
-                origin_x_um,
-                origin_y_um,
-                float(grid.grid_size_um),
-                as_target=False,
-            )
-            target_state = port_to_grid_state(
-                target_port,
-                origin_x_um,
-                origin_y_um,
-                float(grid.grid_size_um),
-                as_target=True,
-            )
+    reserved_port_access_cells: set[tuple[int, int]] = set()
+    for cells in port_access_cells_by_spec.values():
+        reserved_port_access_cells.update(cells)
+    static_cells = set(obstacle_map.blocked_cells)
+    static_cells.update(reserved_port_access_cells)
+    router.set_static_cells(sorted(static_cells))
 
-            print(f"  Routing {net_name}: {port1_spec} -> {port2_spec}...", end=" ")
+    t_astar_start = 0.0
+    if debug_timing:
+        t_astar_start = time.perf_counter()
 
-            net_id += 1
-            opened_cells = sorted(
-                {
-                    (int(source_state.x), int(source_state.y)),
-                    (int(target_state.x), int(target_state.y)),
-                }
-            )
-            try:
-                route_obj = router.route_single_net_and_commit(
-                    net_id,
-                    source_state,
-                    target_state,
-                    block_radius_cells,
-                    opened_cells,
-                )
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    f"No route found for {net_name}: {port1_spec} -> {port2_spec}. "
-                    f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
-                    f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                    f"allow_45_degree_turns={allow_45_degree_turns}"
-                ) from exc
+    for net_name, inst1, port1, inst2, port2, source_port, target_port in route_jobs:
+        port1_spec = f"{inst1},{port1}"
+        port2_spec = f"{inst2},{port2}"
+        source_state = port_to_grid_state(
+            source_port,
+            origin_x_um,
+            origin_y_um,
+            float(grid.grid_size_um),
+            as_target=False,
+        )
+        target_state = port_to_grid_state(
+            target_port,
+            origin_x_um,
+            origin_y_um,
+            float(grid.grid_size_um),
+            as_target=True,
+        )
 
-            edge_key = RoutedEdgeKey(
-                net_name=net_name,
-                source=PortRef(instance=inst1, port=port1),
-                target=PortRef(instance=inst2, port=port2),
-            )
-            routed_net_records.append(
-                RoutedNetRecord(
-                    net_name=net_name,
-                    source=edge_key.source,
-                    target=edge_key.target,
-                    route_obj=route_obj,
-                    total_length_um=float(route_obj.total_length_um),
-                )
-            )
-            routed_edge_lengths_um[edge_key] = float(route_obj.total_length_um)
+        print(f"  Routing {net_name}: {port1_spec} -> {port2_spec}...", end=" ")
 
+        net_id += 1
+        opened_cells_set = set(port_access_cells_by_spec.get(port1_spec, set()))
+        opened_cells_set.update(port_access_cells_by_spec.get(port2_spec, set()))
+        opened_cells_set.update(
+            {
+                (int(source_state.x), int(source_state.y)),
+                (int(target_state.x), int(target_state.y)),
+            }
+        )
+        opened_cells = sorted(opened_cells_set)
+        try:
+            route_obj = router.route_single_net_and_commit(
+                net_id,
+                source_state,
+                target_state,
+                block_radius_cells,
+                opened_cells,
+            )
+        except RuntimeError as exc:
             if debug_path is not None:
                 route_dir = debug_path / "routes"
                 _ensure_dir(route_dir)
-                route_svg = route_dir / f"{debug_prefix}_{net_name}.svg"
-                route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
-                route_svgs.append(route_svg)
+                fail_txt = route_dir / f"{debug_prefix}_{net_name}_FAILED.txt"
+                fail_lines = [
+                    f"net_name={net_name}",
+                    f"source_spec={port1_spec}",
+                    f"target_spec={port2_spec}",
+                    f"source_state=({int(source_state.x)}, {int(source_state.y)}, {int(source_state.angle)})",
+                    f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
+                    f"allow_45_degree_turns={allow_45_degree_turns}",
+                    f"block_radius_cells={block_radius_cells}",
+                    f"bend_radius_cells={bend_radius_cells}",
+                    f"port_entry_length_cells={port_entry_length_cells}",
+                    f"port_entry_half_width_cells={port_entry_half_width_cells}",
+                    f"port_lane_length_cells={port_lane_length_cells}",
+                    f"port_lane_half_width_cells={port_lane_half_width_cells}",
+                    f"opened_cells_count={len(opened_cells)}",
+                    f"opened_cells={opened_cells}",
+                    f"error={exc}",
+                ]
+                fail_txt.write_text("\n".join(fail_lines) + "\n", encoding="utf-8")
+            raise RuntimeError(
+                f"No route found for {net_name}: {port1_spec} -> {port2_spec}. "
+                f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
+                f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
+                f"allow_45_degree_turns={allow_45_degree_turns}"
+            ) from exc
 
-            print("ok")
-        # break
+        edge_key = RoutedEdgeKey(
+            net_name=net_name,
+            source=PortRef(instance=inst1, port=port1),
+            target=PortRef(instance=inst2, port=port2),
+        )
+        routed_net_records.append(
+            RoutedNetRecord(
+                net_name=net_name,
+                source=edge_key.source,
+                target=edge_key.target,
+                route_obj=route_obj,
+                total_length_um=float(route_obj.total_length_um),
+            )
+        )
+        routed_edge_lengths_um[edge_key] = float(route_obj.total_length_um)
+
+        if debug_path is not None:
+            route_dir = debug_path / "routes"
+            _ensure_dir(route_dir)
+            route_svg = route_dir / f"{debug_prefix}_{net_name}.svg"
+            route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
+            route_svgs.append(route_svg)
+
+        print("ok")
 
     if debug_timing:
         t_astar_end = time.perf_counter()
@@ -960,7 +1064,7 @@ def route_nets_rust(
             route_layer=route_layer,
             realization_grid_spec=realization_grid_spec,
             allow_45_degree_turns=allow_45_degree_turns,
-            bend_radius_cells=4,
+            bend_radius_cells=bend_radius_cells,
         )
 
     return routed_layout, RustRouteDebugArtifacts(
@@ -970,5 +1074,5 @@ def route_nets_rust(
         routed_net_records=routed_net_records,
         realization_grid_spec=realization_grid_spec,
         realization_allow_45_degree_turns=allow_45_degree_turns,
-        realization_bend_radius_cells=4,
+        realization_bend_radius_cells=bend_radius_cells,
     )

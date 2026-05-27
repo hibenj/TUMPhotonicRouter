@@ -96,6 +96,45 @@ def run_routing_flow(
     print(f"Routing Flow: {benchmark_name}")
     print(f"{'='*60}")
 
+    if debug_svgs:
+        prefix = benchmark_name.lower()
+        for pattern in (
+            f"build/static_obstacles/{prefix}_*.svg",
+            f"build/routes/{prefix}_*.svg",
+            f"build/routes/{prefix}_*_FAILED.txt",
+        ):
+            for path in Path(".").glob(pattern):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+    def _report_partial_debug_artifacts() -> None:
+        if not debug_svgs:
+            return
+        prefix = benchmark_name.lower()
+        build_dir = Path("build")
+        obstacle_dir = build_dir / "static_obstacles"
+        routes_dir = build_dir / "routes"
+        obstacle_svgs = sorted(obstacle_dir.glob(f"{prefix}_*.svg")) if obstacle_dir.exists() else []
+        route_svgs = sorted(routes_dir.glob(f"{prefix}_*.svg")) if routes_dir.exists() else []
+        failed_logs = sorted(routes_dir.glob(f"{prefix}_*_FAILED.txt")) if routes_dir.exists() else []
+
+        print("      - Partial debug artifacts:")
+        print(f"        static obstacle SVGs: {len(obstacle_svgs)}")
+        print(f"        route SVGs: {len(route_svgs)}")
+        print(f"        failure logs: {len(failed_logs)}")
+        for failed_log in failed_logs:
+            print(f"        failure log: {failed_log}")
+
+        try:
+            for svg_path in obstacle_svgs:
+                webbrowser.open_new_tab(svg_path.resolve().as_uri())
+            for svg_path in route_svgs:
+                webbrowser.open_new_tab(svg_path.resolve().as_uri())
+        except Exception as e:
+            print(f"      - Warning: failed to open partial SVGs automatically: {e}")
+
     # Step 1: Load benchmark
     t0 = 0.0
     if debug_timing:
@@ -122,18 +161,23 @@ def run_routing_flow(
     t_route_start = 0.0
     if debug_timing:
         t_route_start = time.perf_counter()
-    route_result = route_match_and_realize(
-        unrouted_layout,
-        schematic,
-        enable_path_length_matching=enable_path_length_matching,
-        node_types=metadata.get("node_types"),
-        internal_delays_um=metadata.get("internal_delays_um"),
-        debug_dir=debug_dir,
-        debug_prefix=benchmark_name.lower(),
-        debug_timing=debug_timing,
-        allow_45_degree_turns=allow_45_degree_turns,
-        max_iterations=max_iterations,
-    )
+    try:
+        route_result = route_match_and_realize(
+            unrouted_layout,
+            schematic,
+            enable_path_length_matching=enable_path_length_matching,
+            node_types=metadata.get("node_types"),
+            internal_delays_um=metadata.get("internal_delays_um"),
+            debug_dir=debug_dir,
+            debug_prefix=benchmark_name.lower(),
+            debug_timing=debug_timing,
+            allow_45_degree_turns=allow_45_degree_turns,
+            max_iterations=max_iterations,
+        )
+    except Exception:
+        print("      ✗ Routing failed.")
+        _report_partial_debug_artifacts()
+        raise
     routed_layout = route_result.routed_layout
     debug_artifacts = route_result.debug_artifacts
     if debug_timing:
@@ -231,7 +275,7 @@ def run_routing_flow(
 
 if __name__ == "__main__":
     run_routing_flow("TOY",
-                     debug_svgs=False,
+                     debug_svgs=True,
                      debug_timing=True,
                      show_klayout=True,
                      allow_45_degree_turns=False,
