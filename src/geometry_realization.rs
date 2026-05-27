@@ -2506,7 +2506,7 @@ mod tests {
             &route,
             &lib,
             &grid(),
-            3.0,
+            1.0,
             0.2,
             0.1,
             2,
@@ -2517,7 +2517,7 @@ mod tests {
                 min_y_um: 2.4,
                 max_y_um: 4.0,
             },
-            MeanderPlanningMode::ExactExtraLength,
+            MeanderPlanningMode::FillBoxMultiBump,
         )
         .unwrap();
         assert_eq!(plan.selected_segment_index, 0);
@@ -2545,7 +2545,7 @@ mod tests {
             &lib,
             &grid(),
             1.0,
-            3.0,
+            1.0,
             0.2,
             0.1,
             2,
@@ -2556,7 +2556,7 @@ mod tests {
                 min_y_um: 2.4,
                 max_y_um: 4.0,
             },
-            MeanderPlanningMode::ExactExtraLength,
+            MeanderPlanningMode::FillBoxMultiBump,
         )
         .unwrap();
         assert!(poly.len() >= 4);
@@ -2593,7 +2593,7 @@ mod tests {
                 min_y_um: 100.0,
                 max_y_um: 110.0,
             },
-            MeanderPlanningMode::ExactExtraLength,
+            MeanderPlanningMode::FillBoxMultiBump,
         )
         .unwrap_err();
         assert_eq!(err, GeometryError::NoMeanderCandidateSegment);
@@ -2629,7 +2629,7 @@ mod tests {
                 min_y_um: 2.4,
                 max_y_um: 2.9,
             },
-            MeanderPlanningMode::ExactExtraLength,
+            MeanderPlanningMode::FillBoxMultiBump,
         )
         .unwrap_err();
         assert!(matches!(
@@ -2716,7 +2716,7 @@ mod tests {
             &lib,
             &grid(),
             1.0,
-            3.0,
+            1.0,
             0.2,
             0.1,
             2,
@@ -2730,7 +2730,7 @@ mod tests {
             &map,
             Some(&empty),
             0,
-            MeanderPlanningMode::ExactExtraLength,
+            MeanderPlanningMode::FillBoxMultiBump,
         )
         .unwrap();
         assert!(poly.len() >= 4);
@@ -2771,7 +2771,7 @@ mod tests {
             &map,
             None,
             0,
-            MeanderPlanningMode::ExactExtraLength,
+            MeanderPlanningMode::FillBoxMultiBump,
         )
         .unwrap_err();
         assert!(matches!(err, GeometryError::MeanderBoxBlocked { .. }));

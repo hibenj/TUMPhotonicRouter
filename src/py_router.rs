@@ -24,12 +24,9 @@ use crate::geometry_realization::{
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     GeometryGridSpec, GeometryError, PortAccess, PortAccessConfig,
 };
-#[allow(deprecated)]
 use crate::meander::{
-    analyze_meander_insertion_candidate as analyze_meander_insertion_candidate_rs,
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
     bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs,
-    insert_simple_meander_loop as insert_simple_meander_loop_rs,
     MeanderBox, MeanderPlanningMode, MeanderSide,
 };
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
@@ -404,18 +401,13 @@ fn parse_auto_meander_side_policy(side_policy: &str) -> PyResult<AutoMeanderSide
 fn parse_meander_planning_mode(mode: &str) -> PyResult<MeanderPlanningMode> {
     match mode.trim().to_ascii_lowercase().as_str() {
         "fill_box_multi_bump" => Ok(MeanderPlanningMode::FillBoxMultiBump),
-        "exact_extra_length" => Ok(MeanderPlanningMode::ExactExtraLength),
-        _ => Err(PyValueError::new_err(
-            "planning_mode must be 'fill_box_multi_bump' or 'exact_extra_length'",
-        )),
+        _ => Err(PyValueError::new_err("planning_mode must be 'fill_box_multi_bump'")),
     }
 }
 
 fn planning_mode_to_str(mode: MeanderPlanningMode) -> &'static str {
-    match mode {
-        MeanderPlanningMode::FillBoxMultiBump => "fill_box_multi_bump",
-        MeanderPlanningMode::ExactExtraLength => "exact_extra_length",
-    }
+    let _ = mode;
+    "fill_box_multi_bump"
 }
 
 fn add_bend_radius_debug_metadata(
@@ -756,7 +748,7 @@ impl PyPhotonicRouter {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="exact_extra_length"))]
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="fill_box_multi_bump"))]
     fn realize_route_polygon_with_analytic_meander(
         &self,
         route: &PyRouteResult,
@@ -823,7 +815,7 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,clearance_radius_cells=0,opened_cells=None,planning_mode="exact_extra_length"))]
+    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,clearance_radius_cells=0,opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn realize_route_polygon_with_checked_analytic_meander_box(
         &self,
         route: &PyRouteResult,
@@ -1464,100 +1456,7 @@ impl PyPhotonicRouter {
         describe_primitives(py, &self.primitives)
     }
 
-    // Legacy prototype API: primitive-based meander insertion on discrete route objects.
-    // Kept for compatibility only; use realize_route_polygon_with_analytic_meander instead.
-    #[pyo3(signature=(route,requested_extra_length_um,insert_after_state_index=0,insert_end_state_index=None))]
-    fn insert_simple_meander_loop(
-        &self,
-        py: Python<'_>,
-        route: &PyRouteResult,
-        requested_extra_length_um: f64,
-        insert_after_state_index: usize,
-        insert_end_state_index: Option<usize>,
-    ) -> PyResult<PyObject> {
-        let base = to_route_result(route);
-        #[allow(deprecated)]
-        let report = insert_simple_meander_loop_rs(
-            &self.primitives,
-            &base,
-            requested_extra_length_um,
-            insert_after_state_index,
-            insert_end_state_index,
-        )
-        .map_err(PyRuntimeError::new_err)?;
-        let py_route = Py::new(py, convert_result(py, &self.primitives, &report.route)?)?;
-        let d = PyDict::new_bound(py);
-        d.set_item("applied", report.applied)?;
-        d.set_item("legacy", true)?;
-        d.set_item("reason", report.reason)?;
-        d.set_item("inserted_extra_length_um", report.inserted_extra_length_um)?;
-        d.set_item(
-            "warning",
-            "legacy single-bump meander analysis; not used by main auto-meander flow",
-        )?;
-        d.set_item("route", py_route)?;
-        Ok(d.into())
-    }
-
-    // Legacy prototype API: candidate analysis for primitive-based insertion.
-    // Kept for compatibility only; use plan_analytic_meander_for_route instead.
-    #[pyo3(signature=(route,requested_extra_length_um,min_endpoint_margin_cells=4,min_candidate_straight_length_um=10.0,max_extra_length_per_region_um=200.0,conservative_legal_check=true))]
-    fn analyze_meander_insertion_candidate(
-        &self,
-        py: Python<'_>,
-        route: &PyRouteResult,
-        requested_extra_length_um: f64,
-        min_endpoint_margin_cells: i32,
-        min_candidate_straight_length_um: f64,
-        max_extra_length_per_region_um: f64,
-        conservative_legal_check: bool,
-    ) -> PyResult<PyObject> {
-        let route_rs = to_route_result(route);
-        #[allow(deprecated)]
-        let report_rs = analyze_meander_insertion_candidate_rs(
-            &route_rs,
-            &self.primitives,
-            self.grid.grid_size_um,
-            requested_extra_length_um,
-            min_endpoint_margin_cells,
-            min_candidate_straight_length_um,
-            max_extra_length_per_region_um,
-            conservative_legal_check,
-        );
-
-        let report = PyDict::new_bound(py);
-        report.set_item(
-            "requested_extra_length_um",
-            report_rs.requested_extra_length_um,
-        )?;
-        report.set_item("inserted_extra_length_um", report_rs.inserted_extra_length_um)?;
-        report.set_item(
-            "conservative_legal_check",
-            report_rs.conservative_legal_check,
-        )?;
-
-        let candidate_dicts = PyList::empty_bound(py);
-        for c in report_rs.candidates.iter() {
-            let d = PyDict::new_bound(py);
-            d.set_item("start_index", c.start_index)?;
-            d.set_item("end_index", c.end_index)?;
-            d.set_item("length_um", c.length_um)?;
-            d.set_item("heading_dx", c.heading_dx)?;
-            d.set_item("heading_dy", c.heading_dy)?;
-            candidate_dicts.append(d)?;
-        }
-        report.set_item("candidates", candidate_dicts)?;
-        report.set_item("legacy", true)?;
-        report.set_item("status", report_rs.status)?;
-        report.set_item("reason", report_rs.reason)?;
-        report.set_item(
-            "warning",
-            "legacy single-bump meander analysis; not used by main auto-meander flow",
-        )?;
-        Ok(report.into())
-    }
-
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="exact_extra_length"))]
+    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="fill_box_multi_bump"))]
     fn plan_analytic_meander_for_route(
         &self,
         py: Python<'_>,
@@ -1857,7 +1756,7 @@ mod tests {
                 2,
                 "left",
                 None,
-                "exact_extra_length",
+                "fill_box_multi_bump",
             )
             .unwrap_err();
         assert!(err.to_string().contains("available_box must be provided"));
@@ -1906,7 +1805,7 @@ mod tests {
                 2,
                 "left",
                 Some((1.4, 13.6, 2.4, 8.0)),
-                "exact_extra_length",
+                "fill_box_multi_bump",
             )
             .unwrap();
         assert!(ok_poly.len() >= 4);
@@ -1922,7 +1821,7 @@ mod tests {
                 1,
                 "left",
                 Some((1.4, 13.6, 2.4, 2.9)),
-                "exact_extra_length",
+                "fill_box_multi_bump",
             )
             .unwrap_err();
         assert!(!err.to_string().is_empty());
@@ -1968,7 +1867,7 @@ mod tests {
                     4,
                     "left",
                     Some((1.4, 13.6, 2.4, 8.0)),
-                    "exact_extra_length",
+                    "fill_box_multi_bump",
                 )
                 .unwrap();
             let d = obj.bind(py).downcast::<PyDict>().unwrap();
@@ -1978,44 +1877,6 @@ mod tests {
             assert!(d.contains("inserted_extra_length_um").unwrap());
             assert!(d.contains("bumps").unwrap());
             assert!(d.contains("side").unwrap());
-        });
-    }
-
-    #[test]
-    fn legacy_insert_simple_meander_loop_contains_warning_field() {
-        pyo3::prepare_freethreaded_python();
-        let grid = PyGridSpec::new(20, 20, 1.0, 0.0, 0.0).unwrap();
-        let router = PyPhotonicRouter::new(
-            grid,
-            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
-            PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000,
-            ),
-        );
-        let route = PyRouteResult {
-            states: vec![PyState::new(1, 2, 0), PyState::new(5, 2, 0)],
-            primitive_ids: vec![1],
-            cells: vec![],
-            compressed_waypoints: vec![],
-            total_length_um: 4.0,
-            total_cost: 4.0,
-            requested_target: PyState::new(5, 2, 0),
-            reached_target: PyState::new(5, 2, 0),
-            segments: vec![],
-            window_attempts: 0,
-            used_full_grid_fallback: false,
-            expanded_states: 0,
-            window_rejects: 0,
-            footprint_rejects: 0,
-            dense_grid_build_failures: 0,
-            max_window_area_cells: 0,
-        };
-        Python::with_gil(|py| {
-            let obj = router
-                .insert_simple_meander_loop(py, &route, 1.0, 0, None)
-                .unwrap();
-            let d = obj.bind(py).downcast::<PyDict>().unwrap();
-            assert!(d.contains("warning").unwrap());
         });
     }
 
@@ -2061,7 +1922,7 @@ mod tests {
                 Some((1.4, 5.6, 2.4, 4.0)),
                 0,
                 None,
-                "exact_extra_length",
+                "fill_box_multi_bump",
             )
             .unwrap_err();
         assert!(!err.to_string().is_empty());
