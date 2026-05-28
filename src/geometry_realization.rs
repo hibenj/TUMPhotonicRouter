@@ -371,6 +371,20 @@ pub fn route_to_grid_path(
     if route.states.is_empty() {
         return Err(GeometryError::EmptyRoute);
     }
+
+    // Simple pre-routes may return grid-polyline results without primitive IDs.
+    // In that case we can still realize geometry by walking the state polyline.
+    if route.primitives.is_empty() {
+        let mut path = Vec::with_capacity(route.states.len());
+        for state in &route.states {
+            push_if_different(&mut path, (state.x, state.y));
+        }
+        if path.len() < 2 {
+            return Err(GeometryError::DegenerateRoute);
+        }
+        return Ok(path);
+    }
+
     if route.states.len() != route.primitives.len() + 1 {
         return Err(GeometryError::InvalidRouteTopology {
             states: route.states.len(),
@@ -1108,7 +1122,8 @@ pub fn plan_auto_analytic_meander_for_route(
         break;
     }
 
-    let (selected_box, selected_grid_rect, plan) = selected.ok_or(GeometryError::NoAutoMeanderCandidate)?;
+    let (selected_box, selected_grid_rect, plan) =
+        selected.ok_or(GeometryError::NoAutoMeanderCandidate)?;
     Ok(AutoRouteAnalyticMeanderPlan {
         selected_segment_index: run.start_index,
         selected_run_start_index: run.start_index,
@@ -1942,9 +1957,9 @@ fn rotate_right(v: (f64, f64)) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustc_hash::FxHashSet;
     use crate::primitives::{create_photonic_primitive_library, PrimitiveLibraryConfig};
     use crate::static_obstacle_builder::make_grid_spec;
+    use rustc_hash::FxHashSet;
 
     fn grid() -> GeometryGridSpec {
         GeometryGridSpec::new(1.0, 0.0, 0.0).unwrap()
@@ -2416,17 +2431,35 @@ mod tests {
     fn splice_meander_preserves_endpoints_and_increases_length() {
         let centerline = vec![(0.0, 0.0), (10.0, 0.0), (15.0, 0.0)];
         let meander = vec![
-            PhysicalPoint { x_um: 0.0, y_um: 0.0 },
-            PhysicalPoint { x_um: 3.0, y_um: 2.0 },
-            PhysicalPoint { x_um: 7.0, y_um: 2.0 },
-            PhysicalPoint { x_um: 10.0, y_um: 0.0 },
+            PhysicalPoint {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            PhysicalPoint {
+                x_um: 3.0,
+                y_um: 2.0,
+            },
+            PhysicalPoint {
+                x_um: 7.0,
+                y_um: 2.0,
+            },
+            PhysicalPoint {
+                x_um: 10.0,
+                y_um: 0.0,
+            },
         ];
         let spliced = splice_meander_into_centerline(&centerline, 0, &meander);
         assert_eq!(spliced.first().copied(), Some((0.0, 0.0)));
         assert_eq!(spliced.last().copied(), Some((15.0, 0.0)));
         assert!(spliced.windows(2).all(|w| distance(w[0], w[1]) > EPS));
-        let old_len = centerline.windows(2).map(|w| distance(w[0], w[1])).sum::<f64>();
-        let new_len = spliced.windows(2).map(|w| distance(w[0], w[1])).sum::<f64>();
+        let old_len = centerline
+            .windows(2)
+            .map(|w| distance(w[0], w[1]))
+            .sum::<f64>();
+        let new_len = spliced
+            .windows(2)
+            .map(|w| distance(w[0], w[1]))
+            .sum::<f64>();
         assert!(new_len > old_len);
         let b = MeanderBox {
             min_x_um: -1.0,
@@ -2442,13 +2475,7 @@ mod tests {
 
     #[test]
     fn select_meander_segment_prefers_longest_fully_contained_axis_aligned() {
-        let centerline = vec![
-            (0.0, 0.0),
-            (2.0, 0.0),
-            (2.0, 1.0),
-            (7.0, 1.0),
-            (9.0, 3.0),
-        ];
+        let centerline = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (7.0, 1.0), (9.0, 3.0)];
         let idx = select_meander_segment(
             &centerline,
             MeanderBox {
@@ -2815,7 +2842,8 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p =
+            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert!(!p.plan.centerline.is_empty());
     }
 
@@ -2847,7 +2875,8 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p =
+            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert_eq!(p.plan.side, MeanderSide::Right);
     }
 
@@ -2880,7 +2909,8 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let err = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap_err();
+        let err = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg)
+            .unwrap_err();
         assert_eq!(err, GeometryError::NoAutoMeanderCandidate);
     }
 
@@ -2889,7 +2919,11 @@ mod tests {
         let lib = test_lib();
         let map = ObstacleMap::new(30, 30);
         let route = RouteResult {
-            states: vec![State::new(2, 10, 0), State::new(6, 10, 0), State::new(10, 10, 0)],
+            states: vec![
+                State::new(2, 10, 0),
+                State::new(6, 10, 0),
+                State::new(10, 10, 0),
+            ],
             primitives: vec![1, 1],
             cells: vec![],
             compressed_waypoints: vec![],
@@ -2911,7 +2945,8 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p =
+            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert_eq!(p.selected_segment_index, 0);
         assert_eq!(p.selected_run_start_index, 0);
         assert_eq!(p.selected_run_end_index, 2);
@@ -2920,16 +2955,37 @@ mod tests {
 
     #[test]
     fn splice_meander_range_replaces_full_run_and_preserves_endpoints() {
-        let centerline = vec![(0.0, 0.0), (5.0, 0.0), (10.0, 0.0), (15.0, 0.0), (20.0, 0.0)];
-        let meander = vec![
-            PhysicalPoint { x_um: 5.0, y_um: 0.0 },
-            PhysicalPoint { x_um: 7.0, y_um: 2.0 },
-            PhysicalPoint { x_um: 10.0, y_um: 0.0 },
-            PhysicalPoint { x_um: 13.0, y_um: -2.0 },
-            PhysicalPoint { x_um: 15.0, y_um: 0.0 },
+        let centerline = vec![
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (10.0, 0.0),
+            (15.0, 0.0),
+            (20.0, 0.0),
         ];
-        let spliced =
-            splice_meander_into_centerline_range(&centerline, 1, 3, &meander).expect("valid splice");
+        let meander = vec![
+            PhysicalPoint {
+                x_um: 5.0,
+                y_um: 0.0,
+            },
+            PhysicalPoint {
+                x_um: 7.0,
+                y_um: 2.0,
+            },
+            PhysicalPoint {
+                x_um: 10.0,
+                y_um: 0.0,
+            },
+            PhysicalPoint {
+                x_um: 13.0,
+                y_um: -2.0,
+            },
+            PhysicalPoint {
+                x_um: 15.0,
+                y_um: 0.0,
+            },
+        ];
+        let spliced = splice_meander_into_centerline_range(&centerline, 1, 3, &meander)
+            .expect("valid splice");
         assert_eq!(spliced.first().copied(), Some((0.0, 0.0)));
         assert_eq!(spliced.last().copied(), Some((20.0, 0.0)));
         assert!(!spliced.windows(2).any(|w| distance(w[0], w[1]) <= EPS));
@@ -2970,7 +3026,8 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p =
+            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert!(p.plan.bumps >= 1);
     }
 
@@ -3012,7 +3069,8 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p =
+            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert_eq!(p.selected_run_start_index, 0);
         assert_eq!(p.selected_run_end_index, 3);
     }

@@ -8,26 +8,25 @@ use crate::astar::{
     State,
 };
 use crate::geometry_realization::{
-    plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
-    realize_route_polygon_from_auto_plan as realize_route_polygon_from_auto_plan_rs,
-    realize_route_polygon_with_auto_checked_analytic_meander as realize_route_polygon_with_auto_checked_analytic_meander_rs,
-    AutoMeanderConfig, AutoMeanderSidePolicy,
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
     cells_in_grid_rect as cells_in_grid_rect_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
     meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
+    plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
+    realize_route_polygon_from_auto_plan as realize_route_polygon_from_auto_plan_rs,
     realize_route_polygon_from_primitives as realize_route_polygon_from_primitives_rs,
     realize_route_polygon_with_analytic_meander as realize_route_polygon_with_analytic_meander_rs,
+    realize_route_polygon_with_auto_checked_analytic_meander as realize_route_polygon_with_auto_checked_analytic_meander_rs,
     realize_route_polygon_with_checked_analytic_meander_box as realize_route_polygon_with_checked_analytic_meander_box_rs,
-    DenseOccupancyPrefix,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
-    GeometryGridSpec, GeometryError, PortAccess, PortAccessConfig,
+    AutoMeanderConfig, AutoMeanderSidePolicy, DenseOccupancyPrefix, GeometryError,
+    GeometryGridSpec, PortAccess, PortAccessConfig,
 };
 use crate::meander::{
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
-    bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs,
-    MeanderBox, MeanderPlanningMode, MeanderSide,
+    bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs, MeanderBox,
+    MeanderPlanningMode, MeanderSide,
 };
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::{
@@ -113,13 +112,19 @@ impl PyPrimitiveLibraryConfig {
     }
 
     #[staticmethod]
-    fn bend_radius_cells_from_min_radius(min_bend_radius_um: f64, grid_size_um: f64) -> PyResult<i32> {
+    fn bend_radius_cells_from_min_radius(
+        min_bend_radius_um: f64,
+        grid_size_um: f64,
+    ) -> PyResult<i32> {
         bend_radius_cells_from_min_radius_rs(min_bend_radius_um, grid_size_um)
             .map_err(PyValueError::new_err)
     }
 
     #[staticmethod]
-    fn actual_bend_radius_um_from_cells(bend_radius_cells: i32, grid_size_um: f64) -> PyResult<f64> {
+    fn actual_bend_radius_um_from_cells(
+        bend_radius_cells: i32,
+        grid_size_um: f64,
+    ) -> PyResult<f64> {
         actual_bend_radius_um_from_cells_rs(bend_radius_cells, grid_size_um)
             .map_err(PyValueError::new_err)
     }
@@ -152,6 +157,12 @@ pub struct PyAStarConfig {
     pub routing_window_growth: f64,
     #[pyo3(get, set)]
     pub max_dense_obstacle_cells: usize,
+    #[pyo3(get, set)]
+    pub enable_simple_routes: bool,
+    #[pyo3(get, set)]
+    pub simple_route_max_offset_cells: i32,
+    #[pyo3(get, set)]
+    pub simple_route_min_leg_len_cells: i32,
 }
 #[pymethods]
 impl PyAStarConfig {
@@ -184,6 +195,9 @@ impl PyAStarConfig {
             routing_window_fallback_full_grid,
             routing_window_growth,
             max_dense_obstacle_cells,
+            enable_simple_routes: true,
+            simple_route_max_offset_cells: 16,
+            simple_route_min_leg_len_cells: 1,
         }
     }
 }
@@ -401,7 +415,9 @@ fn parse_auto_meander_side_policy(side_policy: &str) -> PyResult<AutoMeanderSide
 fn parse_meander_planning_mode(mode: &str) -> PyResult<MeanderPlanningMode> {
     match mode.trim().to_ascii_lowercase().as_str() {
         "fill_box_multi_bump" => Ok(MeanderPlanningMode::FillBoxMultiBump),
-        _ => Err(PyValueError::new_err("planning_mode must be 'fill_box_multi_bump'")),
+        _ => Err(PyValueError::new_err(
+            "planning_mode must be 'fill_box_multi_bump'",
+        )),
     }
 }
 
@@ -419,10 +435,7 @@ fn add_bend_radius_debug_metadata(
     planning_mode: MeanderPlanningMode,
     box_depth_um: Option<f64>,
 ) -> PyResult<()> {
-    dict.set_item(
-        "requested_min_bend_radius_um",
-        requested_min_bend_radius_um,
-    )?;
+    dict.set_item("requested_min_bend_radius_um", requested_min_bend_radius_um)?;
     dict.set_item("effective_bend_radius_um", effective_bend_radius_um)?;
     dict.set_item("primitive_bend_radius_cells", primitive_bend_radius_cells)?;
     dict.set_item("primitive_bend_radius_um", primitive_bend_radius_um)?;
@@ -448,7 +461,8 @@ impl PyPhotonicRouter {
         match min_bend_radius_um {
             None => {
                 let cells = self.primitive_cfg.bend_radius_cells;
-                actual_bend_radius_um_from_cells_rs(cells, grid_size_um).map_err(PyValueError::new_err)
+                actual_bend_radius_um_from_cells_rs(cells, grid_size_um)
+                    .map_err(PyValueError::new_err)
             }
             Some(v) => {
                 if !v.is_finite() || v <= 0.0 {
@@ -456,15 +470,20 @@ impl PyPhotonicRouter {
                         "min_bend_radius_um must be finite and > 0 when provided",
                     ));
                 }
-                let cells =
-                    bend_radius_cells_from_min_radius_rs(v, grid_size_um).map_err(PyValueError::new_err)?;
-                actual_bend_radius_um_from_cells_rs(cells, grid_size_um).map_err(PyValueError::new_err)
+                let cells = bend_radius_cells_from_min_radius_rs(v, grid_size_um)
+                    .map_err(PyValueError::new_err)?;
+                actual_bend_radius_um_from_cells_rs(cells, grid_size_um)
+                    .map_err(PyValueError::new_err)
             }
         }
     }
 
     #[pyo3(signature=(min_bend_radius_um=None))]
-    fn describe_bend_radius(&self, py: Python<'_>, min_bend_radius_um: Option<f64>) -> PyResult<PyObject> {
+    fn describe_bend_radius(
+        &self,
+        py: Python<'_>,
+        min_bend_radius_um: Option<f64>,
+    ) -> PyResult<PyObject> {
         let primitive_bend_radius_cells = self.primitive_cfg.bend_radius_cells;
         let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
             primitive_bend_radius_cells,
@@ -472,11 +491,9 @@ impl PyPhotonicRouter {
         )
         .map_err(PyValueError::new_err)?;
         let effective_bend_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let effective_bend_radius_cells = bend_radius_cells_from_min_radius_rs(
-            effective_bend_radius_um,
-            self.grid.grid_size_um,
-        )
-        .map_err(PyValueError::new_err)?;
+        let effective_bend_radius_cells =
+            bend_radius_cells_from_min_radius_rs(effective_bend_radius_um, self.grid.grid_size_um)
+                .map_err(PyValueError::new_err)?;
         let d = PyDict::new_bound(py);
         d.set_item("grid_size_um", self.grid.grid_size_um)?;
         d.set_item("primitive_bend_radius_cells", primitive_bend_radius_cells)?;
@@ -565,6 +582,9 @@ impl PyPhotonicRouter {
             routing_window_growth: self.astar_cfg.routing_window_growth,
             max_dense_states: AStarConfig::default().max_dense_states,
             max_dense_obstacle_cells: self.astar_cfg.max_dense_obstacle_cells,
+            enable_simple_routes: self.astar_cfg.enable_simple_routes,
+            simple_route_max_offset_cells: self.astar_cfg.simple_route_max_offset_cells,
+            simple_route_min_leg_len_cells: self.astar_cfg.simple_route_min_leg_len_cells,
         };
         let result = route_single_net_with_config(
             &self.obstacle_map,
@@ -614,6 +634,9 @@ impl PyPhotonicRouter {
             routing_window_growth: self.astar_cfg.routing_window_growth,
             max_dense_states: AStarConfig::default().max_dense_states,
             max_dense_obstacle_cells: self.astar_cfg.max_dense_obstacle_cells,
+            enable_simple_routes: self.astar_cfg.enable_simple_routes,
+            simple_route_max_offset_cells: self.astar_cfg.simple_route_max_offset_cells,
+            simple_route_min_leg_len_cells: self.astar_cfg.simple_route_min_leg_len_cells,
         };
         let result = route_single_net_with_config(
             &self.obstacle_map,
@@ -1079,7 +1102,10 @@ impl PyPhotonicRouter {
                     plan.selected_segment.start.x_um,
                     plan.selected_segment.start.y_um,
                 ),
-                (plan.selected_segment.end.x_um, plan.selected_segment.end.y_um),
+                (
+                    plan.selected_segment.end.x_um,
+                    plan.selected_segment.end.y_um,
+                ),
             ),
         )?;
         d.set_item(
@@ -1105,7 +1131,10 @@ impl PyPhotonicRouter {
             cl.append((p.x_um, p.y_um))?;
         }
         d.set_item("centerline", cl)?;
-        d.set_item("inserted_extra_length_um", plan.plan.inserted_extra_length_um)?;
+        d.set_item(
+            "inserted_extra_length_um",
+            plan.plan.inserted_extra_length_um,
+        )?;
         d.set_item("bumps", plan.plan.bumps)?;
         d.set_item(
             "side",
@@ -1128,7 +1157,10 @@ impl PyPhotonicRouter {
         if max_possible_bumps % 2 != 0 {
             max_possible_bumps -= 1;
         }
-        d.set_item("max_possible_bumps_from_box_depth", max_possible_bumps.max(0))?;
+        d.set_item(
+            "max_possible_bumps_from_box_depth",
+            max_possible_bumps.max(0),
+        )?;
         Ok(d.into())
     }
 
@@ -1338,6 +1370,11 @@ impl PyPhotonicRouter {
             routing_window_growth: self.astar_cfg.routing_window_growth,
             max_dense_states: AStarConfig::default().max_dense_states,
             max_dense_obstacle_cells: self.astar_cfg.max_dense_obstacle_cells,
+            // Auto-meander realization currently relies on primitive replay IDs.
+            // Keep deterministic simple pre-routes disabled on this path.
+            enable_simple_routes: false,
+            simple_route_max_offset_cells: self.astar_cfg.simple_route_max_offset_cells,
+            simple_route_min_leg_len_cells: self.astar_cfg.simple_route_min_leg_len_cells,
         };
 
         let result = route_single_net_with_config(
@@ -1396,7 +1433,10 @@ impl PyPhotonicRouter {
         let reserved_cells = cells_in_grid_rect_rs(auto_plan.selected_grid_rect);
         let mut merged = Vec::with_capacity(route_cells.len() + reserved_cells.len());
         let mut seen = FxHashSet::default();
-        for (x, y) in route_cells.into_iter().chain(reserved_cells.iter().copied()) {
+        for (x, y) in route_cells
+            .into_iter()
+            .chain(reserved_cells.iter().copied())
+        {
             let key = pack_xy(x, y);
             if seen.insert(key) {
                 merged.push((x, y));
@@ -1431,7 +1471,10 @@ impl PyPhotonicRouter {
             ),
         )?;
         d.set_item("reserved_cells", reserved_cells)?;
-        d.set_item("inserted_extra_length_um", auto_plan.plan.inserted_extra_length_um)?;
+        d.set_item(
+            "inserted_extra_length_um",
+            auto_plan.plan.inserted_extra_length_um,
+        )?;
         d.set_item("bumps", auto_plan.plan.bumps)?;
         d.set_item(
             "side",
@@ -1532,7 +1575,10 @@ impl PyPhotonicRouter {
                     plan.selected_segment.start.x_um,
                     plan.selected_segment.start.y_um,
                 ),
-                (plan.selected_segment.end.x_um, plan.selected_segment.end.y_um),
+                (
+                    plan.selected_segment.end.x_um,
+                    plan.selected_segment.end.y_um,
+                ),
             ),
         )?;
         let py_side = match plan.plan.side {
@@ -1544,7 +1590,10 @@ impl PyPhotonicRouter {
             cl.append((p.x_um, p.y_um))?;
         }
         d.set_item("centerline", cl)?;
-        d.set_item("inserted_extra_length_um", plan.plan.inserted_extra_length_um)?;
+        d.set_item(
+            "inserted_extra_length_um",
+            plan.plan.inserted_extra_length_um,
+        )?;
         d.set_item("bumps", plan.plan.bumps)?;
         d.set_item("side", py_side)?;
         add_bend_radius_debug_metadata(
@@ -1726,10 +1775,7 @@ mod tests {
             ),
         );
         let route = PyRouteResult {
-            states: vec![
-                PyState::new(1, 2, 0),
-                PyState::new(13, 2, 0),
-            ],
+            states: vec![PyState::new(1, 2, 0), PyState::new(13, 2, 0)],
             primitive_ids: vec![1],
             cells: vec![],
             compressed_waypoints: vec![],
@@ -1774,10 +1820,7 @@ mod tests {
             ),
         );
         let route = PyRouteResult {
-            states: vec![
-                PyState::new(1, 2, 0),
-                PyState::new(13, 2, 0),
-            ],
+            states: vec![PyState::new(1, 2, 0), PyState::new(13, 2, 0)],
             primitive_ids: vec![1],
             cells: vec![],
             compressed_waypoints: vec![],
@@ -2237,7 +2280,12 @@ mod tests {
                 .unwrap()
                 .extract()
                 .unwrap();
-            let none_bumps: usize = none_d.get_item("bumps").unwrap().unwrap().extract().unwrap();
+            let none_bumps: usize = none_d
+                .get_item("bumps")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
             assert!((primitive_radius - 1.0).abs() < 1.0e-9);
             assert!((effective_radius_none - 1.0).abs() < 1.0e-9);
             assert!(matches_primitive);

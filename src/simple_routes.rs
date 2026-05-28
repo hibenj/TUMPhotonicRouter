@@ -231,10 +231,8 @@ pub fn try_straight_candidate(
         return None;
     }
 
-    let candidate = SimpleRouteCandidate::new(
-        SimpleRouteKind::Straight,
-        vec![source_point, target_point],
-    );
+    let candidate =
+        SimpleRouteCandidate::new(SimpleRouteKind::Straight, vec![source_point, target_point]);
     if check_simple_candidate(&candidate, obstacle_map, opened_cells) {
         Some(candidate)
     } else {
@@ -438,7 +436,9 @@ pub fn try_straight_l_or_z_candidate_with_config(
 ) -> Option<SimpleRouteCandidate> {
     try_straight_candidate(source, target, obstacle_map, opened_cells)
         .or_else(|| try_l_candidate(source, target, obstacle_map, opened_cells))
-        .or_else(|| try_z_candidate_with_config(source, target, obstacle_map, opened_cells, z_config))
+        .or_else(|| {
+            try_z_candidate_with_config(source, target, obstacle_map, opened_cells, z_config)
+        })
 }
 
 /// Try deterministic straight, then L, then Z using default Z config.
@@ -837,20 +837,10 @@ mod tests {
     #[test]
     fn l_candidate_rejects_wrong_headings() {
         let map = ObstacleMap::new(10, 10);
-        let wrong_source = try_l_candidate(
-            State::new(1, 1, 2),
-            State::new(5, 4, 2),
-            &map,
-            None,
-        );
+        let wrong_source = try_l_candidate(State::new(1, 1, 2), State::new(5, 4, 2), &map, None);
         assert!(wrong_source.is_none());
 
-        let wrong_target = try_l_candidate(
-            State::new(1, 1, 0),
-            State::new(5, 4, 0),
-            &map,
-            None,
-        );
+        let wrong_target = try_l_candidate(State::new(1, 1, 0), State::new(5, 4, 0), &map, None);
         assert!(wrong_target.is_none());
     }
 
@@ -893,20 +883,14 @@ mod tests {
     #[test]
     fn diagonal_headings_are_rejected() {
         let map = ObstacleMap::new(10, 10);
-        assert!(try_straight_or_l_candidate(
-            State::new(1, 1, 1),
-            State::new(5, 1, 0),
-            &map,
-            None
-        )
-        .is_none());
-        assert!(try_straight_or_l_candidate(
-            State::new(1, 1, 0),
-            State::new(5, 1, 7),
-            &map,
-            None
-        )
-        .is_none());
+        assert!(
+            try_straight_or_l_candidate(State::new(1, 1, 1), State::new(5, 1, 0), &map, None)
+                .is_none()
+        );
+        assert!(
+            try_straight_or_l_candidate(State::new(1, 1, 0), State::new(5, 1, 7), &map, None)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1021,10 +1005,14 @@ mod tests {
             include_zero_offset: true,
             min_leg_len_cells: 1,
         };
-        assert!(
-            try_z_candidate_with_config(State::new(1, 1, 0), State::new(5, 1, 4), &map, None, &cfg)
-                .is_none()
-        );
+        assert!(try_z_candidate_with_config(
+            State::new(1, 1, 0),
+            State::new(5, 1, 4),
+            &map,
+            None,
+            &cfg
+        )
+        .is_none());
     }
 
     #[test]
@@ -1036,14 +1024,9 @@ mod tests {
             include_zero_offset: true,
             min_leg_len_cells: 1,
         };
-        let candidate = try_z_candidate_with_config(
-            State::new(1, 1, 0),
-            State::new(5, 4, 4),
-            &map,
-            None,
-            &cfg,
-        )
-        .expect("distance 2 should be selected after distance 1 is blocked");
+        let candidate =
+            try_z_candidate_with_config(State::new(1, 1, 0), State::new(5, 4, 4), &map, None, &cfg)
+                .expect("distance 2 should be selected after distance 1 is blocked");
         assert_eq!(
             candidate.points,
             vec![
@@ -1066,16 +1049,14 @@ mod tests {
             include_zero_offset: true,
             min_leg_len_cells: 1,
         };
-        assert!(
-            try_z_candidate_with_config(
-                State::new(1, 1, 0),
-                State::new(5, 4, 4),
-                &map,
-                None,
-                &cfg,
-            )
-            .is_none()
-        );
+        assert!(try_z_candidate_with_config(
+            State::new(1, 1, 0),
+            State::new(5, 4, 4),
+            &map,
+            None,
+            &cfg,
+        )
+        .is_none());
     }
 
     #[test]

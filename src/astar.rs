@@ -10,6 +10,10 @@ use rustc_hash::FxHashSet;
 
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::PrimitiveLibrary;
+use crate::simple_routes::{
+    direction_between as simple_direction_between, expand_candidate_to_grid_points,
+    try_straight_l_or_z_candidate_with_config, GridPoint, SimpleRouteCandidate, SimpleZRouteConfig,
+};
 
 /// Router search state: grid position plus 45-degree heading index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -45,6 +49,9 @@ pub struct AStarConfig {
     pub routing_window_growth: f64,
     pub max_dense_states: usize,
     pub max_dense_obstacle_cells: usize,
+    pub enable_simple_routes: bool,
+    pub simple_route_max_offset_cells: i32,
+    pub simple_route_min_leg_len_cells: i32,
 }
 
 impl Default for AStarConfig {
@@ -63,6 +70,9 @@ impl Default for AStarConfig {
             routing_window_growth: 0.5,
             max_dense_states: 20_000_000,
             max_dense_obstacle_cells: 10_000_000,
+            enable_simple_routes: true,
+            simple_route_max_offset_cells: 16,
+            simple_route_min_leg_len_cells: 1,
         }
     }
 }
@@ -355,6 +365,31 @@ pub fn route_single_net_with_config(
     }
 
     let mut stats = RouteSearchStats::default();
+    if config.enable_simple_routes {
+        let z_config = SimpleZRouteConfig {
+            max_offset_cells: config.simple_route_max_offset_cells,
+            include_zero_offset: true,
+            min_leg_len_cells: config.simple_route_min_leg_len_cells,
+        };
+        if let Some(candidate) = try_straight_l_or_z_candidate_with_config(
+            source,
+            target,
+            obstacle_map,
+            port_open_cells,
+            &z_config,
+        ) {
+            if let Some(simple_route) = simple_candidate_to_route_result(
+                &candidate,
+                source,
+                target,
+                primitives,
+                stats.clone(),
+            ) {
+                return Some(simple_route);
+            }
+        }
+    }
+
     if !config.use_routing_window {
         return route_single_net_with_bounds(
             obstacle_map,
@@ -403,6 +438,68 @@ pub fn route_single_net_with_config(
     }
 
     None
+}
+
+fn simple_candidate_to_route_result(
+    candidate: &SimpleRouteCandidate,
+    source: State,
+    target: State,
+    primitives: &PrimitiveLibrary,
+    stats: RouteSearchStats,
+) -> Option<RouteResult> {
+    let expanded = expand_candidate_to_grid_points(candidate);
+    if expanded.len() < 2 {
+        return None;
+    }
+
+    let mut states = Vec::with_capacity(expanded.len());
+    states.push(source);
+    for i in 1..expanded.len() - 1 {
+        let heading = simple_direction_between(expanded[i], expanded[i + 1])?;
+        states.push(State::new(expanded[i].x, expanded[i].y, heading));
+    }
+    states.push(target);
+
+    let start_point = grid_point_from_state(source);
+    let end_point = grid_point_from_state(target);
+    if expanded.first().copied() != Some(start_point) || expanded.last().copied() != Some(end_point)
+    {
+        return None;
+    }
+
+    let mut cells = Vec::with_capacity(expanded.len());
+    let mut seen_cells = FxHashSet::default();
+    let mut ordered_path = Vec::with_capacity(expanded.len());
+    for point in expanded {
+        let cell = (point.x, point.y);
+        push_if_different(&mut ordered_path, cell);
+        if seen_cells.insert(pack_xy(cell.0, cell.1)) {
+            cells.push(cell);
+        }
+    }
+
+    let compressed_waypoints = compress_grid_waypoints(&ordered_path);
+    let total_length_um = (candidate.total_manhattan_len() as f64) * primitives.grid_size_um();
+
+    // Simple pre-routes currently return grid-polyline RouteResult objects
+    // without primitive replay IDs. Primitive-level replay support can be
+    // added later if needed.
+    Some(RouteResult {
+        states,
+        primitives: Vec::new(),
+        cells,
+        compressed_waypoints,
+        total_length_um,
+        total_cost: total_length_um,
+        requested_target: target,
+        reached_target: target,
+        stats,
+    })
+}
+
+#[inline]
+fn grid_point_from_state(state: State) -> GridPoint {
+    GridPoint::new(state.x, state.y)
 }
 
 fn route_single_net_with_bounds(
@@ -957,12 +1054,16 @@ mod tests {
     fn reconstruction_uses_primitive_ids_and_preserves_cells() {
         let map = ObstacleMap::new(10, 5);
         let library = primitive_library();
-        let result = route_single_net(
+        let result = route_single_net_with_config(
             &map,
             &library,
             State::new(1, 1, 0),
             State::new(5, 1, 0),
             None,
+            &AStarConfig {
+                enable_simple_routes: false,
+                ..AStarConfig::default()
+            },
         )
         .expect("route should exist");
 
@@ -989,6 +1090,166 @@ mod tests {
         }
 
         assert_eq!(result.cells, expected_cells);
+    }
+
+    #[test]
+    fn simple_straight_route_used_before_astar() {
+        let map = ObstacleMap::new(10, 6);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("simple straight route should exist");
+        assert_eq!(result.compressed_waypoints, vec![(1, 1), (5, 1)]);
+        assert_eq!(result.stats.expanded_states, 0);
+    }
+
+    #[test]
+    fn simple_l_route_used_before_astar() {
+        let map = ObstacleMap::new(10, 10);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(5, 4, 2),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("simple L route should exist");
+        assert_eq!(result.compressed_waypoints, vec![(1, 1), (5, 1), (5, 4)]);
+        assert_eq!(result.stats.expanded_states, 0);
+    }
+
+    #[test]
+    fn simple_z_route_used_before_astar() {
+        let map = ObstacleMap::new(10, 10);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(5, 4, 4),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("simple Z route should exist");
+        assert_eq!(
+            result.compressed_waypoints,
+            vec![(1, 1), (2, 1), (2, 4), (5, 4)]
+        );
+        assert_eq!(result.stats.expanded_states, 0);
+    }
+
+    #[test]
+    fn simple_route_disabled_uses_astar() {
+        let map = ObstacleMap::new(10, 6);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: false,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("A* route should exist with simple routes disabled");
+        assert!(result.stats.expanded_states > 0);
+    }
+
+    #[test]
+    fn simple_route_blocked_falls_back_to_astar() {
+        let mut map = ObstacleMap::new(12, 8);
+        map.add_static_cell(3, 1);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("A* fallback should route around blocked simple path");
+        assert!(result.stats.expanded_states > 0);
+    }
+
+    #[test]
+    fn simple_route_respects_opened_cells() {
+        let mut map = ObstacleMap::new(10, 6);
+        map.add_static_cell(1, 1);
+        map.add_static_cell(5, 1);
+        let mut opened = FxHashSet::default();
+        opened.insert(pack_xy(1, 1));
+        opened.insert(pack_xy(5, 1));
+
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            Some(&opened),
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("simple route should allow opened endpoint cells");
+        assert_eq!(result.stats.expanded_states, 0);
+    }
+
+    #[test]
+    fn simple_route_rejects_blocked_middle_cell() {
+        let mut map = ObstacleMap::new(7, 1);
+        map.add_static_cell(3, 0);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 0, 0),
+            State::new(5, 0, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                use_routing_window: false,
+                ..AStarConfig::default()
+            },
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn disabling_simple_routes_preserves_old_behavior() {
+        let map = ObstacleMap::new(10, 5);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 2, 0),
+            State::new(5, 2, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: false,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("A* should still find the old straight route");
+        assert!(!result.primitives.is_empty());
+        assert!(result.stats.expanded_states > 0);
     }
 
     #[test]
@@ -1176,6 +1437,7 @@ mod tests {
             &AStarConfig {
                 use_routing_window: false,
                 max_dense_states: 8,
+                enable_simple_routes: false,
                 ..AStarConfig::default()
             },
         );
@@ -1258,6 +1520,7 @@ mod tests {
             &AStarConfig {
                 use_routing_window: false,
                 max_dense_obstacle_cells: 10,
+                enable_simple_routes: false,
                 ..AStarConfig::default()
             },
         );

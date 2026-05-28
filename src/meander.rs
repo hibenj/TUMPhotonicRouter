@@ -130,7 +130,9 @@ fn centerline_length(points: &[PhysicalPoint]) -> f64 {
         .sum()
 }
 
-fn orientation_and_length(seg: StraightSegment) -> Result<(AxisOrientation, f64), MeanderPlanningError> {
+fn orientation_and_length(
+    seg: StraightSegment,
+) -> Result<(AxisOrientation, f64), MeanderPlanningError> {
     let dx = seg.end.x_um - seg.start.x_um;
     let dy = seg.end.y_um - seg.start.y_um;
     if dx.abs() <= EPS && dy.abs() <= EPS {
@@ -285,7 +287,8 @@ pub fn plan_fill_box_multi_bump_meander(
         chosen = Some((bumps, h.clamp(min_height, depth)));
         break;
     }
-    let (num_meanders, amplitude) = chosen.ok_or(MeanderPlanningError::RequestedExtraLengthDoesNotFit)?;
+    let (num_meanders, amplitude) =
+        chosen.ok_or(MeanderPlanningError::RequestedExtraLengthDoesNotFit)?;
     let insertion_width_um = r * (2.0 * (num_meanders as f64) + 3.0);
     if insertion_width_um - EPS > segment_length_um {
         return Err(MeanderPlanningError::AvailableBoxTooSmall);
@@ -343,14 +346,7 @@ pub fn plan_fill_box_multi_bump_meander(
             x += 2.0 * r;
             going_up = false;
         } else {
-            append_line_local(
-                &mut centerline,
-                segment,
-                orientation,
-                config.side,
-                x,
-                r,
-            );
+            append_line_local(&mut centerline, segment, orientation, config.side, x, r);
             // Bottom U-turn (180 deg): -y -> +y
             append_quarter_arc_local(
                 &mut centerline,
@@ -381,14 +377,7 @@ pub fn plan_fill_box_multi_bump_meander(
     if going_up {
         return Err(MeanderPlanningError::RequestedExtraLengthDoesNotFit);
     }
-    append_line_local(
-        &mut centerline,
-        segment,
-        orientation,
-        config.side,
-        x,
-        r,
-    );
+    append_line_local(&mut centerline, segment, orientation, config.side, x, r);
     // Exit connector (90 deg): -y vertical -> +x baseline
     append_quarter_arc_local(
         &mut centerline,
@@ -423,8 +412,7 @@ pub fn plan_fill_box_multi_bump_meander(
         }
     }
     let n = num_meanders as f64;
-    let inserted_extra =
-        n * amplitude + r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0));
+    let inserted_extra = n * amplitude + r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0));
     if (inserted_extra - config.requested_extra_length_um).abs() > 1.0e-6 {
         return Err(MeanderPlanningError::RequestedExtraLengthDoesNotFit);
     }
@@ -460,7 +448,9 @@ mod analytic_tests {
         for p in &plan.centerline {
             assert!(point_in_box(*p, b));
         }
-        let base_len = ((seg.end.x_um - seg.start.x_um).powi(2) + (seg.end.y_um - seg.start.y_um).powi(2)).sqrt();
+        let base_len = ((seg.end.x_um - seg.start.x_um).powi(2)
+            + (seg.end.y_um - seg.start.y_um).powi(2))
+        .sqrt();
         let planned_len = centerline_length(&plan.centerline);
         assert!(plan.inserted_extra_length_um > 0.0);
         assert!(planned_len > base_len);
@@ -469,8 +459,14 @@ mod analytic_tests {
     #[test]
     fn analytic_meander_horizontal_success() {
         let seg = StraightSegment {
-            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
-            end: PhysicalPoint { x_um: 200.0, y_um: 0.0 },
+            start: PhysicalPoint {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            end: PhysicalPoint {
+                x_um: 200.0,
+                y_um: 0.0,
+            },
         };
         let b = MeanderBox {
             min_x_um: -10.0,
@@ -494,8 +490,14 @@ mod analytic_tests {
     #[test]
     fn analytic_meander_vertical_success() {
         let seg = StraightSegment {
-            start: PhysicalPoint { x_um: 50.0, y_um: 0.0 },
-            end: PhysicalPoint { x_um: 50.0, y_um: 180.0 },
+            start: PhysicalPoint {
+                x_um: 50.0,
+                y_um: 0.0,
+            },
+            end: PhysicalPoint {
+                x_um: 50.0,
+                y_um: 180.0,
+            },
         };
         let b = MeanderBox {
             min_x_um: -20.0,
@@ -519,8 +521,14 @@ mod analytic_tests {
     #[test]
     fn analytic_meander_requested_extra_too_large() {
         let seg = StraightSegment {
-            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
-            end: PhysicalPoint { x_um: 80.0, y_um: 0.0 },
+            start: PhysicalPoint {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            end: PhysicalPoint {
+                x_um: 80.0,
+                y_um: 0.0,
+            },
         };
         let b = MeanderBox {
             min_x_um: 0.0,
@@ -548,8 +556,14 @@ mod analytic_tests {
     #[test]
     fn analytic_meander_diagonal_unsupported() {
         let seg = StraightSegment {
-            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
-            end: PhysicalPoint { x_um: 100.0, y_um: 100.0 },
+            start: PhysicalPoint {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            end: PhysicalPoint {
+                x_um: 100.0,
+                y_um: 100.0,
+            },
         };
         let b = MeanderBox {
             min_x_um: -10.0,
@@ -573,8 +587,14 @@ mod analytic_tests {
     #[test]
     fn analytic_meander_invalid_inputs() {
         let seg = StraightSegment {
-            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
-            end: PhysicalPoint { x_um: 100.0, y_um: 0.0 },
+            start: PhysicalPoint {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            end: PhysicalPoint {
+                x_um: 100.0,
+                y_um: 0.0,
+            },
         };
         let b = MeanderBox {
             min_x_um: -5.0,
@@ -611,8 +631,14 @@ mod analytic_tests {
     #[test]
     fn fill_box_multi_bump_produces_multiple_bumps() {
         let seg = StraightSegment {
-            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
-            end: PhysicalPoint { x_um: 220.0, y_um: 0.0 },
+            start: PhysicalPoint {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            end: PhysicalPoint {
+                x_um: 220.0,
+                y_um: 0.0,
+            },
         };
         let b = MeanderBox {
             min_x_um: 0.0,
@@ -637,8 +663,14 @@ mod analytic_tests {
     #[test]
     fn fill_box_multi_bump_count_monotonic_with_depth() {
         let seg = StraightSegment {
-            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
-            end: PhysicalPoint { x_um: 220.0, y_um: 0.0 },
+            start: PhysicalPoint {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            end: PhysicalPoint {
+                x_um: 220.0,
+                y_um: 0.0,
+            },
         };
         let shallow = MeanderBox {
             min_x_um: 0.0,
@@ -677,8 +709,14 @@ mod analytic_tests {
     #[test]
     fn fill_box_multi_bump_fails_if_requested_extra_too_large() {
         let seg = StraightSegment {
-            start: PhysicalPoint { x_um: 0.0, y_um: 0.0 },
-            end: PhysicalPoint { x_um: 80.0, y_um: 0.0 },
+            start: PhysicalPoint {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            end: PhysicalPoint {
+                x_um: 80.0,
+                y_um: 0.0,
+            },
         };
         let b = MeanderBox {
             min_x_um: 0.0,
