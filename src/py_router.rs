@@ -11,6 +11,7 @@ use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
     cells_in_grid_rect as cells_in_grid_rect_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
+    generate_waveguide_polygon as generate_waveguide_polygon_rs,
     meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
     plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
@@ -20,13 +21,15 @@ use crate::geometry_realization::{
     realize_route_polygon_with_auto_checked_analytic_meander as realize_route_polygon_with_auto_checked_analytic_meander_rs,
     realize_route_polygon_with_checked_analytic_meander_box as realize_route_polygon_with_checked_analytic_meander_box_rs,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
+    route_to_primitive_centerline as route_to_primitive_centerline_rs,
+    splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
     AutoMeanderConfig, AutoMeanderSidePolicy, DenseOccupancyPrefix, GeometryError,
     GeometryGridSpec, PortAccess, PortAccessConfig,
 };
 use crate::meander::{
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
     bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs, MeanderBox,
-    MeanderPlanningMode, MeanderSide,
+    MeanderPlanningMode, MeanderSide, PhysicalPoint,
 };
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::{
@@ -1225,6 +1228,42 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
+    #[pyo3(signature=(route,width_um,selected_run_start_index,selected_run_end_index,meander_centerline))]
+    fn realize_route_polygon_from_planned_auto_meander(
+        &self,
+        route: &PyRouteResult,
+        width_um: f64,
+        selected_run_start_index: usize,
+        selected_run_end_index: usize,
+        meander_centerline: Vec<(f64, f64)>,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        if width_um <= 0.0 {
+            return Err(PyValueError::new_err("width_um must be > 0"));
+        }
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        let base_centerline = route_to_primitive_centerline_rs(&r, &self.primitives, &grid)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let meander_points: Vec<PhysicalPoint> = meander_centerline
+            .into_iter()
+            .map(|(x_um, y_um)| PhysicalPoint { x_um, y_um })
+            .collect();
+        let spliced = splice_meander_into_centerline_range_rs(
+            &base_centerline,
+            selected_run_start_index,
+            selected_run_end_index,
+            &meander_points,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        generate_waveguide_polygon_rs(&spliced, width_um)
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
     #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn cells_for_auto_analytic_meander_box(
         &self,
@@ -1370,9 +1409,7 @@ impl PyPhotonicRouter {
             routing_window_growth: self.astar_cfg.routing_window_growth,
             max_dense_states: AStarConfig::default().max_dense_states,
             max_dense_obstacle_cells: self.astar_cfg.max_dense_obstacle_cells,
-            // Auto-meander realization currently relies on primitive replay IDs.
-            // Keep deterministic simple pre-routes disabled on this path.
-            enable_simple_routes: false,
+            enable_simple_routes: self.astar_cfg.enable_simple_routes,
             simple_route_max_offset_cells: self.astar_cfg.simple_route_max_offset_cells,
             simple_route_min_leg_len_cells: self.astar_cfg.simple_route_min_leg_len_cells,
         };

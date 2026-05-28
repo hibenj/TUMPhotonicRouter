@@ -9,6 +9,7 @@ use std::collections::BinaryHeap;
 use rustc_hash::FxHashSet;
 
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
+use crate::primitives::PrimitiveGeometry;
 use crate::primitives::PrimitiveLibrary;
 use crate::simple_routes::{
     direction_between as simple_direction_between, expand_candidate_to_grid_points,
@@ -366,10 +367,13 @@ pub fn route_single_net_with_config(
 
     let mut stats = RouteSearchStats::default();
     if config.enable_simple_routes {
+        let bend_radius_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
         let z_config = SimpleZRouteConfig {
             max_offset_cells: config.simple_route_max_offset_cells,
             include_zero_offset: true,
-            min_leg_len_cells: config.simple_route_min_leg_len_cells,
+            min_leg_len_cells: config
+                .simple_route_min_leg_len_cells
+                .max(bend_radius_cells),
         };
         if let Some(candidate) = try_straight_l_or_z_candidate_with_config(
             source,
@@ -448,18 +452,9 @@ fn simple_candidate_to_route_result(
     stats: RouteSearchStats,
 ) -> Option<RouteResult> {
     let expanded = expand_candidate_to_grid_points(candidate);
-    if expanded.len() < 2 {
+    if expanded.len() < 2 || candidate.points.len() < 2 {
         return None;
     }
-
-    let mut states = Vec::with_capacity(expanded.len());
-    states.push(source);
-    for i in 1..expanded.len() - 1 {
-        let heading = simple_direction_between(expanded[i], expanded[i + 1])?;
-        states.push(State::new(expanded[i].x, expanded[i].y, heading));
-    }
-    states.push(target);
-
     let start_point = grid_point_from_state(source);
     let end_point = grid_point_from_state(target);
     if expanded.first().copied() != Some(start_point) || expanded.last().copied() != Some(end_point)
@@ -467,26 +462,107 @@ fn simple_candidate_to_route_result(
         return None;
     }
 
-    let mut cells = Vec::with_capacity(expanded.len());
-    let mut seen_cells = FxHashSet::default();
-    let mut ordered_path = Vec::with_capacity(expanded.len());
-    for point in expanded {
-        let cell = (point.x, point.y);
-        push_if_different(&mut ordered_path, cell);
-        if seen_cells.insert(pack_xy(cell.0, cell.1)) {
-            cells.push(cell);
+    let segment_count = candidate.points.len() - 1;
+    let mut headings = Vec::with_capacity(segment_count);
+    let mut segment_lengths = Vec::with_capacity(segment_count);
+    for i in 0..segment_count {
+        let a = candidate.points[i];
+        let b = candidate.points[i + 1];
+        headings.push(simple_direction_between(a, b)?);
+        segment_lengths.push((b.x - a.x).abs() + (b.y - a.y).abs());
+    }
+
+    let bend_radius_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
+    let mut trimmed_lengths = Vec::with_capacity(segment_count);
+    for (idx, &length) in segment_lengths.iter().enumerate() {
+        let mut trimmed = length;
+        if idx > 0 {
+            trimmed -= bend_radius_cells;
+        }
+        if idx + 1 < segment_count {
+            trimmed -= bend_radius_cells;
+        }
+        if trimmed < 0 {
+            return None;
+        }
+        trimmed_lengths.push(trimmed);
+    }
+
+    if segment_count == 3 && bend_radius_cells > 0 {
+        // Two bends consume one bend radius from both ends of the middle leg.
+        if segment_lengths[1] < 2 * bend_radius_cells {
+            return None;
         }
     }
 
-    let compressed_waypoints = compress_grid_waypoints(&ordered_path);
-    let total_length_um = (candidate.total_manhattan_len() as f64) * primitives.grid_size_um();
+    let mut states = vec![source];
+    let mut primitive_ids = Vec::new();
+    let mut total_length_um = 0.0;
+    let mut current = source;
 
-    // Simple pre-routes currently return grid-polyline RouteResult objects
-    // without primitive replay IDs. Primitive-level replay support can be
-    // added later if needed.
+    for i in 0..segment_count {
+        let straight_cells = trimmed_lengths[i];
+        if straight_cells > 0 {
+            let straight_primitive_ids =
+                decompose_straight_cells(current.angle, straight_cells, primitives)?;
+            for primitive_id in straight_primitive_ids {
+                let primitive = find_primitive(primitives, current.angle, primitive_id)?;
+                primitive_ids.push(primitive.id);
+                total_length_um += primitive.length_um;
+                current = State::new(
+                    current.x.checked_add(primitive.dx)?,
+                    current.y.checked_add(primitive.dy)?,
+                    primitive.end_angle,
+                );
+                states.push(current);
+            }
+        }
+
+        if i + 1 < segment_count {
+            let delta = turn_delta(headings[i], headings[i + 1])?;
+            let bend_primitive_id = find_bend_primitive_id(
+                current.angle,
+                delta,
+                bend_radius_cells,
+                primitives,
+            )?;
+            let primitive = find_primitive(primitives, current.angle, bend_primitive_id)?;
+            primitive_ids.push(primitive.id);
+            total_length_um += primitive.length_um;
+            current = State::new(
+                current.x.checked_add(primitive.dx)?,
+                current.y.checked_add(primitive.dy)?,
+                primitive.end_angle,
+            );
+            states.push(current);
+        }
+    }
+
+    if current != target {
+        return None;
+    }
+
+    let mut cells = Vec::new();
+    let mut seen_cells = FxHashSet::default();
+    let mut ordered_path = Vec::new();
+    push_if_different(&mut ordered_path, (source.x, source.y));
+    for (idx, primitive_id) in primitive_ids.iter().copied().enumerate() {
+        let origin = states[idx];
+        let primitive = find_primitive(primitives, origin.angle, primitive_id)?;
+        for (dx, dy) in primitive.footprint.iter().copied() {
+            let cell = (origin.x + dx, origin.y + dy);
+            push_if_different(&mut ordered_path, cell);
+            if seen_cells.insert(pack_xy(cell.0, cell.1)) {
+                cells.push(cell);
+            }
+        }
+    }
+    push_if_different(&mut ordered_path, (target.x, target.y));
+
+    let compressed_waypoints = compress_grid_waypoints(&ordered_path);
     Some(RouteResult {
         states,
-        primitives: Vec::new(),
+        primitives: primitive_ids,
         cells,
         compressed_waypoints,
         total_length_um,
@@ -500,6 +576,151 @@ fn simple_candidate_to_route_result(
 #[inline]
 fn grid_point_from_state(state: State) -> GridPoint {
     GridPoint::new(state.x, state.y)
+}
+
+fn infer_bend_radius_cells(primitives: &PrimitiveLibrary) -> Option<i32> {
+    let grid_size = primitives.grid_size_um();
+    if grid_size <= 0.0 {
+        return None;
+    }
+
+    for angle in 0..8u8 {
+        for primitive in primitives.get_primitives_for_angle(angle) {
+            if let PrimitiveGeometry::Bend {
+                radius_um,
+                angle_delta,
+            } = primitive.geometry
+            {
+                if angle_delta.unsigned_abs() == 2 {
+                    let cells = (radius_um / grid_size).round() as i32;
+                    if cells > 0 {
+                        return Some(cells);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn decompose_straight_cells(
+    start_angle: u8,
+    total_cells: i32,
+    primitives: &PrimitiveLibrary,
+) -> Option<Vec<u16>> {
+    if total_cells < 0 {
+        return None;
+    }
+    if total_cells == 0 {
+        return Some(Vec::new());
+    }
+
+    let mut options: Vec<(usize, u16)> = primitives
+        .get_primitives_for_angle(start_angle)
+        .iter()
+        .filter_map(|primitive| {
+            if let PrimitiveGeometry::Straight { .. } = primitive.geometry {
+                if primitive.end_angle != start_angle {
+                    return None;
+                }
+                let cells = (primitive.dx.abs() + primitive.dy.abs()) as usize;
+                if cells == 0 {
+                    return None;
+                }
+                Some((cells, primitive.id))
+            } else {
+                None
+            }
+        })
+        .collect();
+    options.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    options.dedup();
+    if options.is_empty() {
+        return None;
+    }
+
+    let target = usize::try_from(total_cells).ok()?;
+    let mut best_count: Vec<usize> = vec![usize::MAX; target + 1];
+    let mut prev_sum: Vec<usize> = vec![usize::MAX; target + 1];
+    let mut prev_opt: Vec<usize> = vec![usize::MAX; target + 1];
+    best_count[0] = 0;
+
+    for sum in 0..=target {
+        if best_count[sum] == usize::MAX {
+            continue;
+        }
+        for (opt_idx, (cells, _)) in options.iter().copied().enumerate() {
+            let next = sum + cells;
+            if next > target {
+                continue;
+            }
+            let candidate_count = best_count[sum] + 1;
+            if candidate_count < best_count[next] {
+                best_count[next] = candidate_count;
+                prev_sum[next] = sum;
+                prev_opt[next] = opt_idx;
+            }
+        }
+    }
+
+    if best_count[target] == usize::MAX {
+        return None;
+    }
+
+    let mut ids_reversed = Vec::new();
+    let mut cur = target;
+    while cur > 0 {
+        let opt_idx = prev_opt[cur];
+        if opt_idx == usize::MAX {
+            return None;
+        }
+        ids_reversed.push(options[opt_idx].1);
+        cur = prev_sum[cur];
+    }
+    ids_reversed.reverse();
+    Some(ids_reversed)
+}
+
+fn turn_delta(from: u8, to: u8) -> Option<i8> {
+    let delta = (to as i16 - from as i16).rem_euclid(8) as u8;
+    match delta {
+        2 => Some(2),
+        6 => Some(-2),
+        _ => None,
+    }
+}
+
+fn find_bend_primitive_id(
+    start_angle: u8,
+    angle_delta: i8,
+    bend_radius_cells: i32,
+    primitives: &PrimitiveLibrary,
+) -> Option<u16> {
+    let grid_size = primitives.grid_size_um();
+    let mut candidates = primitives
+        .get_primitives_for_angle(start_angle)
+        .iter()
+        .filter_map(|primitive| {
+            if let PrimitiveGeometry::Bend {
+                radius_um,
+                angle_delta: primitive_delta,
+            } = primitive.geometry
+            {
+                if primitive_delta != angle_delta {
+                    return None;
+                }
+                let cells = (radius_um / grid_size).round() as i32;
+                if bend_radius_cells > 0 && cells != bend_radius_cells {
+                    return None;
+                }
+                Some(primitive.id)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_unstable();
+    candidates.into_iter().next()
 }
 
 fn route_single_net_with_bounds(
@@ -867,6 +1088,7 @@ fn direction(a: (i32, i32), b: (i32, i32)) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry_realization::{route_to_primitive_centerline, GeometryGridSpec};
     use crate::obstacle_map::ObstacleMap;
     use crate::primitives::{create_photonic_primitive_library, PrimitiveLibraryConfig};
 
@@ -1137,7 +1359,7 @@ mod tests {
             &map,
             &primitive_library(),
             State::new(1, 1, 0),
-            State::new(5, 4, 4),
+            State::new(5, 4, 0),
             None,
             &AStarConfig {
                 enable_simple_routes: true,
@@ -1150,6 +1372,33 @@ mod tests {
             vec![(1, 1), (2, 1), (2, 4), (5, 4)]
         );
         assert_eq!(result.stats.expanded_states, 0);
+    }
+
+    #[test]
+    fn simple_z_route_has_primitives_and_replay_centerline() {
+        let map = ObstacleMap::new(20, 20);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(5, 4, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("simple Z route should exist");
+
+        assert_eq!(result.stats.expanded_states, 0);
+        assert!(!result.primitives.is_empty());
+        assert_eq!(result.states.len(), result.primitives.len() + 1);
+
+        let grid = GeometryGridSpec::new(1.0, 0.0, 0.0).expect("grid spec");
+        let centerline = route_to_primitive_centerline(&result, &library, &grid)
+            .expect("primitive replay centerline should succeed");
+        assert!(centerline.len() >= 2);
     }
 
     #[test]

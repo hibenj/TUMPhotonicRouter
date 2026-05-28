@@ -344,7 +344,7 @@ pub fn try_z_candidate_with_config(
     if !is_cardinal_heading(source_heading) || !is_cardinal_heading(target_heading) {
         return None;
     }
-    if opposite_heading(source_heading) != target_heading {
+    if source_heading != target_heading {
         return None;
     }
 
@@ -578,7 +578,7 @@ fn is_valid_z_candidate(
     if h01 != source_heading {
         return false;
     }
-    if h23 != opposite_heading(target_heading) {
+    if h23 != target_heading {
         return false;
     }
     if !heading_delta_is_perpendicular(h01, h12) || !heading_delta_is_perpendicular(h12, h23) {
@@ -907,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn z_candidate_horizontal_east_to_west_succeeds() {
+    fn z_candidate_horizontal_east_to_east_succeeds() {
         let map = ObstacleMap::new(20, 20);
         let cfg = SimpleZRouteConfig {
             max_offset_cells: 4,
@@ -915,7 +915,7 @@ mod tests {
             min_leg_len_cells: 1,
         };
         let source = State::new(1, 1, 0);
-        let target = State::new(5, 4, 4);
+        let target = State::new(5, 4, 0);
         let candidate = try_z_candidate_with_config(source, target, &map, None, &cfg)
             .expect("expected horizontal Z candidate");
         assert_eq!(candidate.kind, SimpleRouteKind::ZShape);
@@ -931,10 +931,10 @@ mod tests {
     }
 
     #[test]
-    fn z_candidate_horizontal_west_to_east_succeeds() {
+    fn z_candidate_horizontal_west_to_west_succeeds() {
         let map = ObstacleMap::new(20, 20);
         let source = State::new(5, 1, 4);
-        let target = State::new(1, 4, 0);
+        let target = State::new(1, 4, 4);
         let candidate =
             try_z_candidate(source, target, &map, None).expect("expected horizontal Z candidate");
         assert_eq!(
@@ -949,10 +949,10 @@ mod tests {
     }
 
     #[test]
-    fn z_candidate_vertical_north_to_south_succeeds() {
+    fn z_candidate_vertical_north_to_north_succeeds() {
         let map = ObstacleMap::new(20, 20);
         let source = State::new(1, 1, 2);
-        let target = State::new(4, 5, 6);
+        let target = State::new(4, 5, 2);
         let candidate =
             try_z_candidate(source, target, &map, None).expect("expected vertical Z candidate");
         assert_eq!(
@@ -967,10 +967,10 @@ mod tests {
     }
 
     #[test]
-    fn z_candidate_vertical_south_to_north_succeeds() {
+    fn z_candidate_vertical_south_to_south_succeeds() {
         let map = ObstacleMap::new(20, 20);
         let source = State::new(1, 5, 6);
-        let target = State::new(4, 1, 2);
+        let target = State::new(4, 1, 6);
         let candidate =
             try_z_candidate(source, target, &map, None).expect("expected vertical Z candidate");
         assert_eq!(
@@ -985,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn z_candidate_rejects_non_opposite_headings() {
+    fn z_candidate_rejects_non_matching_headings() {
         let map = ObstacleMap::new(20, 20);
         assert!(try_z_candidate(State::new(1, 1, 0), State::new(5, 4, 2), &map, None).is_none());
     }
@@ -1007,7 +1007,7 @@ mod tests {
         };
         assert!(try_z_candidate_with_config(
             State::new(1, 1, 0),
-            State::new(5, 1, 4),
+            State::new(5, 1, 0),
             &map,
             None,
             &cfg
@@ -1025,7 +1025,7 @@ mod tests {
             min_leg_len_cells: 1,
         };
         let candidate =
-            try_z_candidate_with_config(State::new(1, 1, 0), State::new(5, 4, 4), &map, None, &cfg)
+            try_z_candidate_with_config(State::new(1, 1, 0), State::new(5, 4, 0), &map, None, &cfg)
                 .expect("distance 2 should be selected after distance 1 is blocked");
         assert_eq!(
             candidate.points,
@@ -1051,7 +1051,7 @@ mod tests {
         };
         assert!(try_z_candidate_with_config(
             State::new(1, 1, 0),
-            State::new(5, 4, 4),
+            State::new(5, 4, 0),
             &map,
             None,
             &cfg,
@@ -1076,9 +1076,9 @@ mod tests {
     }
 
     #[test]
-    fn try_straight_l_or_z_uses_z_for_opposite_headings() {
+    fn try_straight_l_or_z_uses_z_for_matching_headings() {
         let map = ObstacleMap::new(20, 20);
-        let c = try_straight_l_or_z_candidate(State::new(1, 1, 0), State::new(5, 4, 4), &map, None)
+        let c = try_straight_l_or_z_candidate(State::new(1, 1, 0), State::new(5, 4, 0), &map, None)
             .expect("Z candidate expected");
         assert_eq!(c.kind, SimpleRouteKind::ZShape);
     }

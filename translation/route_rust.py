@@ -42,6 +42,7 @@ class RustRouteDebugArtifacts:
     route_svgs: list[Path]
     routed_edge_lengths_um: dict[RoutedEdgeKey, float]
     routed_net_records: list["RoutedNetRecord"] = field(default_factory=list)
+    static_blocked_cells: tuple[tuple[int, int], ...] = ()
     realization_grid_spec: tuple[int, int, float, float, float] | None = None
     realization_allow_45_degree_turns: bool = True
     realization_bend_radius_cells: int = 4
@@ -213,6 +214,7 @@ def analyze_meander_insertion_for_requirements(
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool,
     bend_radius_cells: int,
+    static_blocked_cells: list[tuple[int, int]] | tuple[tuple[int, int], ...] | None = None,
 ) -> tuple[list[RoutedNetRecord], dict[str, object]]:
     """Plan meander insertion using auto analytic multi-bump planning."""
     rust_backend = _load_rust_backend()
@@ -233,6 +235,34 @@ def analyze_meander_insertion_for_requirements(
     )
     astar_cfg = rust_backend.AStarConfig(max_iterations=1)
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+    base_static_cells: set[tuple[int, int]] = set(static_blocked_cells or [])
+
+    def _edge_route_cells(edge: RoutedEdgeKey) -> set[tuple[int, int]]:
+        record = updated.get(edge) or by_edge.get(edge)
+        if record is None:
+            return set()
+        cells = getattr(record.route_obj, "cells", None) or []
+        return {(int(x), int(y)) for x, y in cells}
+
+    def _grid_rect_cells(grid_rect: object) -> set[tuple[int, int]]:
+        if (
+            not isinstance(grid_rect, (tuple, list))
+            or len(grid_rect) != 4
+        ):
+            return set()
+        min_x = _as_int(grid_rect[0], 0)
+        max_x = _as_int(grid_rect[1], -1)
+        min_y = _as_int(grid_rect[2], 0)
+        max_y = _as_int(grid_rect[3], -1)
+        if max_x < min_x or max_y < min_y:
+            return set()
+        return {
+            (x, y)
+            for x in range(min_x, max_x + 1)
+            for y in range(min_y, max_y + 1)
+        }
+
+    reserved_meander_cells: set[tuple[int, int]] = set()
 
     by_edge = {_record_edge_key(r): r for r in routed_net_records}
     updated = dict(by_edge)
@@ -264,6 +294,14 @@ def analyze_meander_insertion_for_requirements(
         if record is None:
             results.append(entry)
             continue
+        blocked_cells = set(base_static_cells)
+        blocked_cells.update(reserved_meander_cells)
+        for other_edge in by_edge.keys():
+            if other_edge == edge_key:
+                continue
+            blocked_cells.update(_edge_route_cells(other_edge))
+        router.set_static_cells(sorted(blocked_cells))
+
         # Sweep box depth for legality, but keep requested length fixed and require
         # exact compensation (within tiny FP epsilon).
         min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
@@ -332,6 +370,8 @@ def analyze_meander_insertion_for_requirements(
         if unmatched > 1.0e-9:
             entry["status"] = "planned_partial"
         total_inserted += inserted
+        selected_grid_rect = rr.get("selected_grid_rect")
+        reserved_meander_cells.update(_grid_rect_cells(selected_grid_rect))
         updated[edge_key] = RoutedNetRecord(
             net_name=record.net_name,
             source=record.source,
@@ -348,6 +388,12 @@ def analyze_meander_insertion_for_requirements(
                 "min_segment_length_um": min_seg_um,
                 "clearance_radius_cells": 0,
                 "side_policy": "both",
+                "selected_side": rr.get("side"),
+                "selected_box": rr.get("selected_box"),
+                "selected_grid_rect": rr.get("selected_grid_rect"),
+                "selected_run_start_index": rr.get("selected_run_start_index"),
+                "selected_run_end_index": rr.get("selected_run_end_index"),
+                "selected_meander_centerline": rr.get("centerline"),
                 "planning_mode": "fill_box_multi_bump",
             },
         )
@@ -485,6 +531,7 @@ def route_match_and_realize(
             realization_grid_spec=debug_artifacts.realization_grid_spec,
             allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+            static_blocked_cells=debug_artifacts.static_blocked_cells,
         )
 
     if debug_artifacts.realization_grid_spec is None:
@@ -545,142 +592,73 @@ def realize_routed_net_records(
     astar_cfg = rust_backend.AStarConfig(max_iterations=1)
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
-    def _route_centerline_points(route_obj: object) -> list[tuple[float, float]]:
-        segments = getattr(route_obj, "segments", None) or []
-        pts: list[tuple[float, float]] = []
-        for seg in segments:
-            kind = str(seg.get("kind", ""))
-            start = seg.get("start", None)
-            end = seg.get("end", None)
-            if start is None or end is None:
-                continue
-            s_um = _grid_to_um(int(start[0]), int(start[1]), realization_grid_spec)
-            e_um = _grid_to_um(int(end[0]), int(end[1]), realization_grid_spec)
-            if not pts:
-                pts.append(s_um)
-            if kind == "straight":
-                pts.append(e_um)
-                continue
-
-            # Arc-aware bend reconstruction from primitive metadata.
-            start_angle_idx = int(seg.get("start_angle", 0)) % 8
-            end_angle_idx = int(seg.get("end_angle", start_angle_idx)) % 8
-            delta = (end_angle_idx - start_angle_idx) % 8
-            if delta == 0:
-                pts.append(e_um)
-                continue
-            if delta in (1, 2):
-                turn_sign = 1.0  # CCW
-                theta = (math.pi / 4.0) * float(delta)
-            elif delta in (6, 7):
-                turn_sign = -1.0  # CW
-                theta = (math.pi / 4.0) * float(8 - delta)
-            else:
-                pts.append(e_um)
-                continue
-            if theta <= 1.0e-12:
-                pts.append(e_um)
-                continue
-
-            # Build arc from endpoints + known sweep, so endpoints are consistent.
-            vx = e_um[0] - s_um[0]
-            vy = e_um[1] - s_um[1]
-            chord = math.hypot(vx, vy)
-            if chord <= 1.0e-12:
-                pts.append(e_um)
-                continue
-            sin_half = math.sin(theta / 2.0)
-            if abs(sin_half) <= 1.0e-12:
-                pts.append(e_um)
-                continue
-            radius = chord / (2.0 * sin_half)
-            mid = ((s_um[0] + e_um[0]) / 2.0, (s_um[1] + e_um[1]) / 2.0)
-            nx = -vy / chord
-            ny = vx / chord
-            center_off = math.sqrt(max(0.0, (radius * radius) - ((chord * 0.5) ** 2)))
-            c1 = (mid[0] + nx * center_off, mid[1] + ny * center_off)
-            c2 = (mid[0] - nx * center_off, mid[1] - ny * center_off)
-
-            def _norm_angle(a: float) -> float:
-                return (a + 2.0 * math.pi) % (2.0 * math.pi)
-
-            def _candidate(center: tuple[float, float]) -> tuple[float, float, float]:
-                a0c = math.atan2(s_um[1] - center[1], s_um[0] - center[0])
-                a1c = math.atan2(e_um[1] - center[1], e_um[0] - center[0])
-                if turn_sign > 0:
-                    sw = _norm_angle(a1c - a0c)
-                else:
-                    sw = -_norm_angle(a0c - a1c)
-                return a0c, a1c, sw
-
-            a0_1, _, sw1 = _candidate(c1)
-            a0_2, _, sw2 = _candidate(c2)
-            err1 = abs(abs(sw1) - theta) + (0.0 if sw1 * turn_sign > 0 else 10.0)
-            err2 = abs(abs(sw2) - theta) + (0.0 if sw2 * turn_sign > 0 else 10.0)
-            if err1 <= err2:
-                center = c1
-                a0 = a0_1
-                sweep = sw1
-            else:
-                center = c2
-                a0 = a0_2
-                sweep = sw2
-
-            n = max(6, int(24 * (abs(sweep) / (math.pi / 2.0))))
-            for i in range(1, n + 1):
-                t = i / n
-                a = a0 + sweep * t
-                p = (center[0] + radius * math.cos(a), center[1] + radius * math.sin(a))
-                if i == n:
-                    # Preserve exact segment chaining endpoint.
-                    p = e_um
-                if math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 1.0e-9:
-                    pts.append(p)
-        return pts
-
-    def _poly_from_centerline(centerline: list[tuple[float, float]], width_um_local: float) -> list[tuple[float, float]]:
-        if len(centerline) < 2:
-            return []
-        hw = float(width_um_local) / 2.0
-        left: list[tuple[float, float]] = []
-        right: list[tuple[float, float]] = []
-        for i, p in enumerate(centerline):
-            if i == 0:
-                p_next = centerline[i + 1]
-                dx, dy = p_next[0] - p[0], p_next[1] - p[1]
-            elif i == len(centerline) - 1:
-                p_prev = centerline[i - 1]
-                dx, dy = p[0] - p_prev[0], p[1] - p_prev[1]
-            else:
-                p_prev = centerline[i - 1]
-                p_next = centerline[i + 1]
-                dx, dy = p_next[0] - p_prev[0], p_next[1] - p_prev[1]
-            seg = math.hypot(dx, dy)
-            if seg <= 1.0e-9:
-                continue
-            nx, ny = -dy / seg, dx / seg
-            left.append((p[0] + nx * hw, p[1] + ny * hw))
-            right.append((p[0] - nx * hw, p[1] - ny * hw))
-        return left + list(reversed(right))
-
     for record in routed_net_records:
         if record.meander_auto_plan is not None:
             plan = record.meander_auto_plan
-            polygon = router.realize_route_polygon_with_auto_checked_analytic_meander(
-                record.route_obj,
-                float(route_width_um),
-                requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
-                min_bend_radius_um=plan["min_bend_radius_um"],
-                min_straight_um=_as_float(plan["min_straight_um"], 0.0),
-                max_bumps=_as_int(plan["max_bumps"], 8),
-                max_meander_height_um=_as_float(plan.get("max_meander_height_um", 20.0), 20.0),
-                box_depth_um=_as_float(plan["box_depth_um"], 20.0),
-                min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
-                clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),
-                side_policy=str(plan["side_policy"]),
-                opened_cells=None,
-                planning_mode=str(plan["planning_mode"]),
-            )
+            selected_side = plan.get("selected_side")
+            selected_box = plan.get("selected_box")
+            selected_run_start_index = plan.get("selected_run_start_index")
+            selected_run_end_index = plan.get("selected_run_end_index")
+            selected_meander_centerline = plan.get("selected_meander_centerline")
+            if (
+                isinstance(selected_run_start_index, (int, float))
+                and isinstance(selected_run_end_index, (int, float))
+                and isinstance(selected_meander_centerline, list)
+                and len(selected_meander_centerline) >= 2
+            ):
+                meander_centerline = [
+                    (_as_float(p[0], 0.0), _as_float(p[1], 0.0))
+                    for p in selected_meander_centerline
+                    if isinstance(p, (tuple, list)) and len(p) == 2
+                ]
+                polygon = router.realize_route_polygon_from_planned_auto_meander(
+                    record.route_obj,
+                    float(route_width_um),
+                    selected_run_start_index=_as_int(selected_run_start_index, 0),
+                    selected_run_end_index=_as_int(selected_run_end_index, 0),
+                    meander_centerline=meander_centerline,
+                )
+            elif (
+                isinstance(selected_side, str)
+                and selected_side in {"left", "right"}
+                and isinstance(selected_box, (tuple, list))
+                and len(selected_box) == 4
+            ):
+                box_tuple = (
+                    _as_float(selected_box[0], 0.0),
+                    _as_float(selected_box[1], 0.0),
+                    _as_float(selected_box[2], 0.0),
+                    _as_float(selected_box[3], 0.0),
+                )
+                polygon = router.realize_route_polygon_with_analytic_meander(
+                    record.route_obj,
+                    float(route_width_um),
+                    requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
+                    min_bend_radius_um=plan["min_bend_radius_um"],
+                    min_straight_um=_as_float(plan["min_straight_um"], 0.0),
+                    max_bumps=_as_int(plan["max_bumps"], 8),
+                    side=selected_side,
+                    available_box=box_tuple,
+                    planning_mode=str(plan["planning_mode"]),
+                )
+            else:
+                # Backward-compatibility fallback for records created before
+                # selected_side/selected_box were persisted.
+                polygon = router.realize_route_polygon_with_auto_checked_analytic_meander(
+                    record.route_obj,
+                    float(route_width_um),
+                    requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
+                    min_bend_radius_um=plan["min_bend_radius_um"],
+                    min_straight_um=_as_float(plan["min_straight_um"], 0.0),
+                    max_bumps=_as_int(plan["max_bumps"], 8),
+                    max_meander_height_um=_as_float(plan.get("max_meander_height_um", 20.0), 20.0),
+                    box_depth_um=_as_float(plan["box_depth_um"], 20.0),
+                    min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
+                    clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),
+                    side_policy=str(plan["side_policy"]),
+                    opened_cells=None,
+                    planning_mode=str(plan["planning_mode"]),
+                )
             routed_layout.add_polygon(polygon, layer=route_layer)
             continue
         polygon = router.realize_route_polygon(record.route_obj, float(route_width_um))
@@ -1072,6 +1050,11 @@ def route_nets_rust(
         route_svgs=route_svgs,
         routed_edge_lengths_um=routed_edge_lengths_um,
         routed_net_records=routed_net_records,
+        # Keep meander planning base obstacles limited to layout-static geometry.
+        # Port-access reservation lanes are routing-time guards and are added to
+        # `static_cells` above for net-to-net A* ordering, but they should not
+        # globally block post-route meander box checks.
+        static_blocked_cells=tuple(sorted(set(obstacle_map.blocked_cells))),
         realization_grid_spec=realization_grid_spec,
         realization_allow_45_degree_turns=allow_45_degree_turns,
         realization_bend_radius_cells=bend_radius_cells,

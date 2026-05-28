@@ -95,11 +95,15 @@ impl DenseOccupancyPrefix {
         let y1 = usize::try_from(min_y).ok()?;
         let x2 = usize::try_from(max_x).ok()?;
         let y2 = usize::try_from(max_y).ok()?;
-        let a = self.prefix[(y2 + 1) * stride + (x2 + 1)];
-        let b = self.prefix[y1 * stride + (x2 + 1)];
-        let c = self.prefix[(y2 + 1) * stride + x1];
-        let d = self.prefix[y1 * stride + x1];
-        Some(a.saturating_sub(b).saturating_sub(c).saturating_add(d))
+        let a = i64::from(self.prefix[(y2 + 1) * stride + (x2 + 1)]);
+        let b = i64::from(self.prefix[y1 * stride + (x2 + 1)]);
+        let c = i64::from(self.prefix[(y2 + 1) * stride + x1]);
+        let d = i64::from(self.prefix[y1 * stride + x1]);
+        let total = a + d - b - c;
+        if total < 0 {
+            return Some(0);
+        }
+        Some(total as u32)
     }
 }
 
@@ -174,7 +178,12 @@ pub enum GeometryError {
         rect: GridRect,
         blocked_count: u32,
     },
-    NoAutoMeanderCandidate,
+    NoAutoMeanderCandidate {
+        candidate_runs: usize,
+        rejected_box_blocked: usize,
+        rejected_planning_failed: usize,
+        rejected_too_short: usize,
+    },
     NoMeanderCandidateSegment,
     MeanderPlanningFailed(MeanderPlanningError),
     PortAccess(PortAccessError),
@@ -236,9 +245,15 @@ impl fmt::Display for GeometryError {
                 f,
                 "meander box overlaps blocked cells: rect={rect:?}, blocked_count={blocked_count}"
             ),
-            GeometryError::NoAutoMeanderCandidate => {
-                write!(f, "no legal auto-analytic meander candidate found")
-            }
+            GeometryError::NoAutoMeanderCandidate {
+                candidate_runs,
+                rejected_box_blocked,
+                rejected_planning_failed,
+                rejected_too_short,
+            } => write!(
+                f,
+                "no legal auto-analytic meander candidate found (candidate_runs={candidate_runs}, rejected_box_blocked={rejected_box_blocked}, rejected_planning_failed={rejected_planning_failed}, rejected_too_short={rejected_too_short})"
+            ),
             GeometryError::NoMeanderCandidateSegment => {
                 write!(f, "no axis-aligned centerline segment is suitable for meander insertion")
             }
@@ -1051,79 +1066,89 @@ pub fn plan_auto_analytic_meander_for_route(
     if runs.is_empty() {
         return Err(GeometryError::NoMeanderCandidateSegment);
     }
-    let run = runs
-        .iter()
-        .max_by(|a, b| {
-            let len_cmp = a.length_um.total_cmp(&b.length_um);
-            if len_cmp.is_eq() {
-                b.start_index.cmp(&a.start_index)
-            } else {
-                len_cmp
-            }
-        })
-        .copied()
-        .ok_or(GeometryError::NoMeanderCandidateSegment)?;
+    let mut run_order: Vec<CenterlineStraightRun> = runs.clone();
+    run_order.sort_by(|a, b| {
+        let len_cmp = b.length_um.total_cmp(&a.length_um);
+        if len_cmp.is_eq() {
+            a.start_index.cmp(&b.start_index)
+        } else {
+            len_cmp
+        }
+    });
 
     let mut rejected_box_blocked = 0usize;
     let mut rejected_planning_failed = 0usize;
     let mut rejected_too_short = 0usize;
-    let segment = StraightSegment {
-        start: PhysicalPoint {
-            x_um: run.start.0,
-            y_um: run.start.1,
-        },
-        end: PhysicalPoint {
-            x_um: run.end.0,
-            y_um: run.end.1,
-        },
-    };
     let mut selected: Option<(MeanderBox, GridRect, AnalyticMeanderPlan)> = None;
-    for &side in side_order {
-        let box_um = match build_meander_box_for_segment(segment, side, config.box_depth_um) {
-            Ok(v) => v,
-            Err(_) => {
-                rejected_planning_failed += 1;
+    let mut selected_run: Option<CenterlineStraightRun> = None;
+    let mut selected_segment: Option<StraightSegment> = None;
+    'outer: for run in run_order.iter().copied() {
+        let segment = StraightSegment {
+            start: PhysicalPoint {
+                x_um: run.start.0,
+                y_um: run.start.1,
+            },
+            end: PhysicalPoint {
+                x_um: run.end.0,
+                y_um: run.end.1,
+            },
+        };
+        for &side in side_order {
+            let box_um = match build_meander_box_for_segment(segment, side, config.box_depth_um) {
+                Ok(v) => v,
+                Err(_) => {
+                    rejected_planning_failed += 1;
+                    continue;
+                }
+            };
+            let rect = match check_meander_box_free_with_prefix(
+                box_um,
+                grid,
+                &prefix,
+                config.clearance_radius_cells,
+            ) {
+                Ok(v) => v,
+                Err(_) => {
+                    rejected_box_blocked += 1;
+                    continue;
+                }
+            };
+            let plan_cfg = AnalyticMeanderConfig {
+                requested_extra_length_um: config.requested_extra_length_um,
+                min_bend_radius_um: config.min_bend_radius_um,
+                min_straight_um: config.min_straight_um,
+                max_bumps: config.max_bumps,
+                max_meander_height_um: config.max_meander_height_um,
+                side,
+                mode: config.mode,
+            };
+            let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
+                Ok(v) => v,
+                Err(_) => {
+                    rejected_planning_failed += 1;
+                    continue;
+                }
+            };
+            if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs() > 1.0e-6 {
+                rejected_too_short += 1;
                 continue;
             }
-        };
-        let rect = match check_meander_box_free_with_prefix(
-            box_um,
-            grid,
-            &prefix,
-            config.clearance_radius_cells,
-        ) {
-            Ok(v) => v,
-            Err(_) => {
-                rejected_box_blocked += 1;
-                continue;
-            }
-        };
-        let plan_cfg = AnalyticMeanderConfig {
-            requested_extra_length_um: config.requested_extra_length_um,
-            min_bend_radius_um: config.min_bend_radius_um,
-            min_straight_um: config.min_straight_um,
-            max_bumps: config.max_bumps,
-            max_meander_height_um: config.max_meander_height_um,
-            side,
-            mode: config.mode,
-        };
-        let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
-            Ok(v) => v,
-            Err(_) => {
-                rejected_planning_failed += 1;
-                continue;
-            }
-        };
-        if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs() > 1.0e-6 {
-            rejected_too_short += 1;
-            continue;
+            selected_run = Some(run);
+            selected_segment = Some(segment);
+            selected = Some((box_um, rect, plan));
+            break 'outer;
         }
-        selected = Some((box_um, rect, plan));
-        break;
     }
 
-    let (selected_box, selected_grid_rect, plan) =
-        selected.ok_or(GeometryError::NoAutoMeanderCandidate)?;
+    let no_auto_err = || GeometryError::NoAutoMeanderCandidate {
+        candidate_runs: runs.len(),
+        rejected_box_blocked,
+        rejected_planning_failed,
+        rejected_too_short,
+    };
+    let (selected_box, selected_grid_rect, plan) = selected.ok_or_else(no_auto_err)?;
+    let run = selected_run.ok_or_else(no_auto_err)?;
+    let segment = selected_segment.ok_or_else(no_auto_err)?;
     Ok(AutoRouteAnalyticMeanderPlan {
         selected_segment_index: run.start_index,
         selected_run_start_index: run.start_index,
@@ -1973,6 +1998,37 @@ mod tests {
             bend_radius_cells: 1,
             allow_45_degree_turns: true,
         })
+    }
+
+    fn primitive_id_for<F>(lib: &PrimitiveLibrary, start_angle: u8, predicate: F) -> u16
+    where
+        F: Fn(&crate::primitives::Primitive) -> bool,
+    {
+        lib.get_primitives_for_angle(start_angle)
+            .iter()
+            .find(|p| predicate(p))
+            .expect("missing primitive for test setup")
+            .id
+    }
+
+    fn states_from_primitives(
+        lib: &PrimitiveLibrary,
+        start: State,
+        primitive_ids: &[u16],
+    ) -> Vec<State> {
+        let mut out = Vec::with_capacity(primitive_ids.len() + 1);
+        out.push(start);
+        let mut cur = start;
+        for primitive_id in primitive_ids {
+            let primitive = lib
+                .get_primitives_for_angle(cur.angle)
+                .iter()
+                .find(|p| p.id == *primitive_id)
+                .expect("primitive id must exist for current angle");
+            cur = State::new(cur.x + primitive.dx, cur.y + primitive.dy, primitive.end_angle);
+            out.push(cur);
+        }
+        out
     }
 
     #[test]
@@ -2881,6 +2937,81 @@ mod tests {
     }
 
     #[test]
+    fn auto_meander_tries_later_runs_when_first_run_is_blocked_on_both_sides() {
+        let lib = test_lib();
+        let mut map = ObstacleMap::new(40, 40);
+
+        // Build a route with multiple straight runs:
+        // long east run -> bend -> north run -> bend -> east run.
+        let east_long = primitive_id_for(&lib, 0, |p| {
+            matches!(p.geometry, PrimitiveGeometry::Straight { .. }) && p.dx == 4 && p.dy == 0
+        });
+        let bend_left_from_east = primitive_id_for(&lib, 0, |p| {
+            matches!(
+                p.geometry,
+                PrimitiveGeometry::Bend {
+                    angle_delta: 2,
+                    ..
+                }
+            )
+        });
+        let north_long = primitive_id_for(&lib, 2, |p| {
+            matches!(p.geometry, PrimitiveGeometry::Straight { .. }) && p.dx == 0 && p.dy == 4
+        });
+        let bend_right_from_north = primitive_id_for(&lib, 2, |p| {
+            matches!(
+                p.geometry,
+                PrimitiveGeometry::Bend {
+                    angle_delta: -2,
+                    ..
+                }
+            )
+        });
+
+        let primitive_ids = vec![
+            east_long,
+            east_long,
+            bend_left_from_east,
+            north_long,
+            bend_right_from_north,
+            east_long,
+        ];
+        let states = states_from_primitives(&lib, State::new(2, 10, 0), &primitive_ids);
+        let route = RouteResult {
+            states: states.clone(),
+            primitives: primitive_ids,
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target: *states.last().unwrap(),
+            reached_target: *states.last().unwrap(),
+            stats: Default::default(),
+        };
+
+        // Block both sides of the first long eastbound run (y=10).
+        assert!(map.add_static_cell(3, 11));
+        assert!(map.add_static_cell(3, 9));
+
+        let cfg = AutoMeanderConfig {
+            requested_extra_length_um: 1.0,
+            min_bend_radius_um: 0.2,
+            min_straight_um: 0.1,
+            max_bumps: 8,
+            max_meander_height_um: 20.0,
+            box_depth_um: 1.6,
+            min_segment_length_um: 1.0,
+            clearance_radius_cells: 0,
+            side_policy: AutoMeanderSidePolicy::Both,
+            mode: MeanderPlanningMode::FillBoxMultiBump,
+        };
+
+        let plan =
+            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        assert!(plan.selected_run_start_index > 0);
+    }
+
+    #[test]
     fn auto_meander_returns_error_when_both_sides_blocked() {
         let lib = test_lib();
         let mut map = ObstacleMap::new(20, 20);
@@ -2911,7 +3042,14 @@ mod tests {
         };
         let err = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg)
             .unwrap_err();
-        assert_eq!(err, GeometryError::NoAutoMeanderCandidate);
+        assert!(matches!(
+            err,
+            GeometryError::NoAutoMeanderCandidate {
+                candidate_runs: 1,
+                rejected_box_blocked: 2,
+                ..
+            }
+        ));
     }
 
     #[test]
