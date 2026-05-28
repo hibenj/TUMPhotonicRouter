@@ -9,6 +9,7 @@ pub mod meander;
 pub mod obstacle_map;
 pub mod primitives;
 pub mod py_router;
+pub mod simple_routes;
 pub mod static_obstacle_builder;
 
 pub use astar::{
@@ -40,6 +41,10 @@ pub use obstacle_map::{
 pub use primitives::{
     create_photonic_primitive_library, Primitive, PrimitiveGeometry, PrimitiveLibrary,
     PrimitiveLibraryConfig, DIRECTIONS,
+};
+pub use crate::simple_routes::{
+    check_simple_candidate, direction_between, expand_candidate_to_grid_points, GridPoint, Segment,
+    SimpleRouteCandidate, SimpleRouteKind,
 };
 pub use static_obstacle_builder::{
     build_static_obstacle_map_from_geometry, compute_bbox, expand_bbox, grid_cell_center,

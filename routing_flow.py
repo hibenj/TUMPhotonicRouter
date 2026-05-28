@@ -275,7 +275,7 @@ def run_routing_flow(
 
 if __name__ == "__main__":
     run_routing_flow("TOY",
-                     debug_svgs=True,
+                     debug_svgs=False,
                      debug_timing=True,
                      show_klayout=True,
                      allow_45_degree_turns=False,
