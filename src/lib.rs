@@ -43,10 +43,12 @@ pub use primitives::{
     PrimitiveLibraryConfig, DIRECTIONS,
 };
 pub use crate::simple_routes::{
-    check_simple_candidate, direction_between, expand_candidate_to_grid_points,
+    check_simple_candidate, compact_offset_order, direction_between, expand_candidate_to_grid_points,
     grid_point_from_state, heading_delta_is_perpendicular, is_cardinal_heading, opposite_heading,
-    state_from_grid_point, try_l_candidate, try_straight_candidate, try_straight_or_l_candidate,
-    GridPoint, Segment, SimpleRouteCandidate, SimpleRouteKind,
+    state_from_grid_point, try_l_candidate, try_straight_candidate, try_straight_l_or_z_candidate,
+    try_straight_l_or_z_candidate_with_config, try_straight_or_l_candidate, try_z_candidate,
+    try_z_candidate_with_config, GridPoint, Segment, SimpleRouteCandidate, SimpleRouteKind,
+    SimpleZRouteConfig,
 };
 pub use static_obstacle_builder::{
     build_static_obstacle_map_from_geometry, compute_bbox, expand_bbox, grid_cell_center,

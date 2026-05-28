@@ -90,6 +90,24 @@ pub enum SimpleRouteKind {
     ZShape,
 }
 
+/// Configuration for deterministic Z-shape exploration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SimpleZRouteConfig {
+    pub max_offset_cells: i32,
+    pub include_zero_offset: bool,
+    pub min_leg_len_cells: i32,
+}
+
+impl Default for SimpleZRouteConfig {
+    fn default() -> Self {
+        Self {
+            max_offset_cells: 16,
+            include_zero_offset: true,
+            min_leg_len_cells: 1,
+        }
+    }
+}
+
 /// Polyline candidate for deterministic pre-routing checks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SimpleRouteCandidate {
@@ -298,6 +316,147 @@ pub fn try_straight_or_l_candidate(
         .or_else(|| try_l_candidate(source, target, obstacle_map, opened_cells))
 }
 
+/// Generate compact symmetric signed offsets.
+///
+/// Example:
+/// `compact_offset_order(3, true)` -> `[0, 1, -1, 2, -2, 3, -3]`
+pub fn compact_offset_order(max_offset_cells: i32, include_zero: bool) -> Vec<i32> {
+    let max_offset_cells = max_offset_cells.max(0);
+    let mut out = Vec::new();
+    if include_zero {
+        out.push(0);
+    }
+    for d in 1..=max_offset_cells {
+        out.push(d);
+        out.push(-d);
+    }
+    out
+}
+
+/// Try constructing a deterministic two-bend Z-route candidate with config.
+pub fn try_z_candidate_with_config(
+    source: State,
+    target: State,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    config: &SimpleZRouteConfig,
+) -> Option<SimpleRouteCandidate> {
+    let source_heading = source.angle % 8;
+    let target_heading = target.angle % 8;
+    if !is_cardinal_heading(source_heading) || !is_cardinal_heading(target_heading) {
+        return None;
+    }
+    if opposite_heading(source_heading) != target_heading {
+        return None;
+    }
+
+    let source_point = grid_point_from_state(source);
+    let target_point = grid_point_from_state(target);
+    if source_point == target_point {
+        return None;
+    }
+
+    let min_leg_len = config.min_leg_len_cells.max(0);
+    let offsets = compact_offset_order(config.max_offset_cells, config.include_zero_offset);
+    let distances = distances_from_offsets(min_leg_len, &offsets);
+    if distances.is_empty() {
+        return None;
+    }
+
+    for distance in distances {
+        let candidate = if source_heading == 0 || source_heading == 4 {
+            let bend_x = if source_heading == 0 {
+                source_point.x + distance
+            } else {
+                source_point.x - distance
+            };
+            SimpleRouteCandidate::new(
+                SimpleRouteKind::ZShape,
+                vec![
+                    source_point,
+                    GridPoint::new(bend_x, source_point.y),
+                    GridPoint::new(bend_x, target_point.y),
+                    target_point,
+                ],
+            )
+        } else {
+            let bend_y = if source_heading == 2 {
+                source_point.y + distance
+            } else {
+                source_point.y - distance
+            };
+            SimpleRouteCandidate::new(
+                SimpleRouteKind::ZShape,
+                vec![
+                    source_point,
+                    GridPoint::new(source_point.x, bend_y),
+                    GridPoint::new(target_point.x, bend_y),
+                    target_point,
+                ],
+            )
+        };
+
+        if !is_valid_z_candidate(
+            &candidate,
+            source_heading,
+            target_heading,
+            min_leg_len,
+            obstacle_map,
+            opened_cells,
+        ) {
+            continue;
+        }
+        return Some(candidate);
+    }
+
+    None
+}
+
+/// Try constructing a deterministic two-bend Z-route candidate with defaults.
+pub fn try_z_candidate(
+    source: State,
+    target: State,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<SimpleRouteCandidate> {
+    try_z_candidate_with_config(
+        source,
+        target,
+        obstacle_map,
+        opened_cells,
+        &SimpleZRouteConfig::default(),
+    )
+}
+
+/// Try deterministic straight, then L, then Z.
+pub fn try_straight_l_or_z_candidate_with_config(
+    source: State,
+    target: State,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    z_config: &SimpleZRouteConfig,
+) -> Option<SimpleRouteCandidate> {
+    try_straight_candidate(source, target, obstacle_map, opened_cells)
+        .or_else(|| try_l_candidate(source, target, obstacle_map, opened_cells))
+        .or_else(|| try_z_candidate_with_config(source, target, obstacle_map, opened_cells, z_config))
+}
+
+/// Try deterministic straight, then L, then Z using default Z config.
+pub fn try_straight_l_or_z_candidate(
+    source: State,
+    target: State,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<SimpleRouteCandidate> {
+    try_straight_l_or_z_candidate_with_config(
+        source,
+        target,
+        obstacle_map,
+        opened_cells,
+        &SimpleZRouteConfig::default(),
+    )
+}
+
 /// Expand a corner polyline into every touched grid point.
 ///
 /// Example:
@@ -373,6 +532,68 @@ fn expand_segment_points(segment: Segment) -> Option<Vec<GridPoint>> {
     }
 
     Some(points)
+}
+
+fn distances_from_offsets(min_leg_len_cells: i32, offsets: &[i32]) -> Vec<i32> {
+    let mut out = Vec::new();
+    for &offset in offsets {
+        let distance = min_leg_len_cells + offset.abs();
+        if !out.contains(&distance) {
+            out.push(distance);
+        }
+    }
+    out
+}
+
+fn is_valid_z_candidate(
+    candidate: &SimpleRouteCandidate,
+    source_heading: u8,
+    target_heading: u8,
+    min_leg_len: i32,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> bool {
+    if candidate.kind != SimpleRouteKind::ZShape || candidate.points.len() != 4 {
+        return false;
+    }
+    if candidate.has_duplicate_consecutive_points() || !candidate.is_axis_aligned() {
+        return false;
+    }
+
+    let p0 = candidate.points[0];
+    let p1 = candidate.points[1];
+    let p2 = candidate.points[2];
+    let p3 = candidate.points[3];
+
+    let Some(h01) = direction_between(p0, p1) else {
+        return false;
+    };
+    let Some(h12) = direction_between(p1, p2) else {
+        return false;
+    };
+    let Some(h23) = direction_between(p2, p3) else {
+        return false;
+    };
+
+    if h01 != source_heading {
+        return false;
+    }
+    if h23 != opposite_heading(target_heading) {
+        return false;
+    }
+    if !heading_delta_is_perpendicular(h01, h12) || !heading_delta_is_perpendicular(h12, h23) {
+        return false;
+    }
+
+    let too_short = candidate
+        .segments()
+        .iter()
+        .any(|segment| segment.manhattan_len() < min_leg_len);
+    if too_short {
+        return false;
+    }
+
+    check_simple_candidate(candidate, obstacle_map, opened_cells)
 }
 
 #[cfg(test)]
@@ -686,6 +907,199 @@ mod tests {
             None
         )
         .is_none());
+    }
+
+    #[test]
+    fn compact_offset_order_with_zero() {
+        assert_eq!(compact_offset_order(3, true), vec![0, 1, -1, 2, -2, 3, -3]);
+        assert_eq!(compact_offset_order(0, true), vec![0]);
+        assert_eq!(compact_offset_order(-2, true), vec![0]);
+    }
+
+    #[test]
+    fn compact_offset_order_without_zero() {
+        assert_eq!(compact_offset_order(3, false), vec![1, -1, 2, -2, 3, -3]);
+        assert!(compact_offset_order(0, false).is_empty());
+    }
+
+    #[test]
+    fn z_candidate_horizontal_east_to_west_succeeds() {
+        let map = ObstacleMap::new(20, 20);
+        let cfg = SimpleZRouteConfig {
+            max_offset_cells: 4,
+            include_zero_offset: true,
+            min_leg_len_cells: 1,
+        };
+        let source = State::new(1, 1, 0);
+        let target = State::new(5, 4, 4);
+        let candidate = try_z_candidate_with_config(source, target, &map, None, &cfg)
+            .expect("expected horizontal Z candidate");
+        assert_eq!(candidate.kind, SimpleRouteKind::ZShape);
+        assert_eq!(
+            candidate.points,
+            vec![
+                GridPoint::new(1, 1),
+                GridPoint::new(2, 1),
+                GridPoint::new(2, 4),
+                GridPoint::new(5, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn z_candidate_horizontal_west_to_east_succeeds() {
+        let map = ObstacleMap::new(20, 20);
+        let source = State::new(5, 1, 4);
+        let target = State::new(1, 4, 0);
+        let candidate =
+            try_z_candidate(source, target, &map, None).expect("expected horizontal Z candidate");
+        assert_eq!(
+            candidate.points,
+            vec![
+                GridPoint::new(5, 1),
+                GridPoint::new(4, 1),
+                GridPoint::new(4, 4),
+                GridPoint::new(1, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn z_candidate_vertical_north_to_south_succeeds() {
+        let map = ObstacleMap::new(20, 20);
+        let source = State::new(1, 1, 2);
+        let target = State::new(4, 5, 6);
+        let candidate =
+            try_z_candidate(source, target, &map, None).expect("expected vertical Z candidate");
+        assert_eq!(
+            candidate.points,
+            vec![
+                GridPoint::new(1, 1),
+                GridPoint::new(1, 2),
+                GridPoint::new(4, 2),
+                GridPoint::new(4, 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn z_candidate_vertical_south_to_north_succeeds() {
+        let map = ObstacleMap::new(20, 20);
+        let source = State::new(1, 5, 6);
+        let target = State::new(4, 1, 2);
+        let candidate =
+            try_z_candidate(source, target, &map, None).expect("expected vertical Z candidate");
+        assert_eq!(
+            candidate.points,
+            vec![
+                GridPoint::new(1, 5),
+                GridPoint::new(1, 4),
+                GridPoint::new(4, 4),
+                GridPoint::new(4, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn z_candidate_rejects_non_opposite_headings() {
+        let map = ObstacleMap::new(20, 20);
+        assert!(try_z_candidate(State::new(1, 1, 0), State::new(5, 4, 2), &map, None).is_none());
+    }
+
+    #[test]
+    fn z_candidate_rejects_diagonal_heading() {
+        let map = ObstacleMap::new(20, 20);
+        assert!(try_z_candidate(State::new(1, 1, 1), State::new(5, 4, 4), &map, None).is_none());
+        assert!(try_z_candidate(State::new(1, 1, 0), State::new(5, 4, 7), &map, None).is_none());
+    }
+
+    #[test]
+    fn z_candidate_rejects_degenerate_aligned_case() {
+        let map = ObstacleMap::new(20, 20);
+        let cfg = SimpleZRouteConfig {
+            max_offset_cells: 0,
+            include_zero_offset: true,
+            min_leg_len_cells: 1,
+        };
+        assert!(
+            try_z_candidate_with_config(State::new(1, 1, 0), State::new(5, 1, 4), &map, None, &cfg)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn z_candidate_avoids_blocked_first_candidate_and_uses_next_distance() {
+        let mut map = ObstacleMap::new(20, 20);
+        assert!(map.add_static_cell(2, 2));
+        let cfg = SimpleZRouteConfig {
+            max_offset_cells: 2,
+            include_zero_offset: true,
+            min_leg_len_cells: 1,
+        };
+        let candidate = try_z_candidate_with_config(
+            State::new(1, 1, 0),
+            State::new(5, 4, 4),
+            &map,
+            None,
+            &cfg,
+        )
+        .expect("distance 2 should be selected after distance 1 is blocked");
+        assert_eq!(
+            candidate.points,
+            vec![
+                GridPoint::new(1, 1),
+                GridPoint::new(3, 1),
+                GridPoint::new(3, 4),
+                GridPoint::new(5, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn z_candidate_rejects_blocked_all_candidates() {
+        let mut map = ObstacleMap::new(20, 20);
+        assert!(map.add_static_cell(2, 1));
+        assert!(map.add_static_cell(3, 1));
+        assert!(map.add_static_cell(4, 1));
+        let cfg = SimpleZRouteConfig {
+            max_offset_cells: 2,
+            include_zero_offset: true,
+            min_leg_len_cells: 1,
+        };
+        assert!(
+            try_z_candidate_with_config(
+                State::new(1, 1, 0),
+                State::new(5, 4, 4),
+                &map,
+                None,
+                &cfg,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn try_straight_l_or_z_prefers_straight() {
+        let map = ObstacleMap::new(20, 20);
+        let c = try_straight_l_or_z_candidate(State::new(1, 1, 0), State::new(5, 1, 0), &map, None)
+            .expect("straight candidate expected");
+        assert_eq!(c.kind, SimpleRouteKind::Straight);
+    }
+
+    #[test]
+    fn try_straight_l_or_z_prefers_l_before_z() {
+        let map = ObstacleMap::new(20, 20);
+        let c = try_straight_l_or_z_candidate(State::new(1, 1, 0), State::new(5, 4, 2), &map, None)
+            .expect("L candidate expected");
+        assert_eq!(c.kind, SimpleRouteKind::LShape);
+    }
+
+    #[test]
+    fn try_straight_l_or_z_uses_z_for_opposite_headings() {
+        let map = ObstacleMap::new(20, 20);
+        let c = try_straight_l_or_z_candidate(State::new(1, 1, 0), State::new(5, 4, 4), &map, None)
+            .expect("Z candidate expected");
+        assert_eq!(c.kind, SimpleRouteKind::ZShape);
     }
 
     #[test]
