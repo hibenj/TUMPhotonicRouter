@@ -192,3 +192,34 @@ def test_build_static_obstacle_map_and_debug_svg(tmp_path):
 
     if should_show_svg_popup():
         webbrowser.open_new_tab(debug_path.as_uri())
+
+
+def test_build_static_obstacle_map_can_filter_obstacle_layers():
+    component = gf.Component("layer_filter_test")
+    component.add_polygon(
+        [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)],
+        layer=(1, 0),
+    )
+    component.add_polygon(
+        [(10.0, 10.0), (12.0, 10.0), (12.0, 12.0), (10.0, 12.0)],
+        layer=(49, 0),
+    )
+
+    data = build_static_obstacle_map(
+        component,
+        StaticObstacleMapConfig(
+            grid_size_um=1.0,
+            security_margin_um=0.0,
+            clearance_um=0.0,
+            port_open_radius_um=0.0,
+            die_bbox=(0.0, 0.0, 15.0, 15.0),
+            obstacle_layers=((1, 0),),
+        ),
+    )
+
+    # Optical layer cells are blocked.
+    assert (0, 0) in data.blocked_cells
+    assert (1, 1) in data.blocked_cells
+    # Non-optical layer cells are ignored.
+    assert (10, 10) not in data.blocked_cells
+    assert (11, 11) not in data.blocked_cells

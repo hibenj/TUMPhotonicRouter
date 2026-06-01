@@ -25,6 +25,7 @@ class StaticObstacleMapConfig:
     clearance_metric: str = "chebyshev"
     port_open_radius_um: float = 0.5
     die_bbox: Optional[BBox] = None
+    obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = None
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ def build_static_obstacle_map(
     """
 
     config = config or StaticObstacleMapConfig()
-    benchmark = extract_benchmark(component)
+    benchmark = extract_benchmark(component, layers=config.obstacle_layers)
 
     rust_backend = _load_rust_backend()
     if rust_backend is not None:
@@ -165,21 +166,37 @@ def _build_static_obstacle_map_rust(
         config.die_bbox,
     )
 
-    width, height, grid_size_um, origin, die_bbox = result["grid"]
+    width_raw, height_raw, grid_size_raw, origin_raw, die_bbox_raw = result["grid"]
+    width = int(width_raw)
+    height = int(height_raw)
+    grid_size_um = float(grid_size_raw)
+    origin = (float(origin_raw[0]), float(origin_raw[1]))
+    die_bbox = (
+        float(die_bbox_raw[0]),
+        float(die_bbox_raw[1]),
+        float(die_bbox_raw[2]),
+        float(die_bbox_raw[3]),
+    )
+    stats_raw = result.get("stats")
+    build_stats = (
+        {str(key): value for key, value in stats_raw.items()}
+        if isinstance(stats_raw, dict)
+        else None
+    )
     return StaticObstacleMapData(
         grid=GridSpec(
             width=width,
             height=height,
             grid_size_um=grid_size_um,
-            origin=tuple(origin),
-            die_bbox=tuple(die_bbox),
+            origin=origin,
+            die_bbox=die_bbox,
         ),
         raw_blocked_cells=set(map(tuple, result["raw_blocked_cells"])),
         blocked_cells=set(map(tuple, result["blocked_cells"])),
         port_open_cells=set(map(tuple, result["port_open_cells"])),
         benchmark=benchmark,
         backend="rust",
-        build_stats=dict(result["stats"]),
+        build_stats=build_stats,
     )
 
 

@@ -6,9 +6,9 @@ import importlib
 import math
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SOURCE = PROJECT_ROOT / "python"
@@ -32,6 +32,7 @@ from photonic_router.path_length_graph import (
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 GridSpec = _sob.GridSpec
+StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
 build_static_obstacle_map = _sob.build_static_obstacle_map
 _load_rust_backend = _sob._load_rust_backend
 
@@ -679,6 +680,40 @@ def _grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
     )
 
 
+def _default_obstacle_layers(route_layer: tuple[int, int]) -> tuple[tuple[int, int], ...]:
+    return ((int(route_layer[0]), int(route_layer[1])),)
+
+
+def _resolve_obstacle_config(
+    obstacle_config: object | None,
+    *,
+    route_layer: tuple[int, int],
+) -> object:
+    """Default obstacle extraction to the photonic routing layer."""
+
+    default_layers = _default_obstacle_layers(route_layer)
+    if obstacle_config is None:
+        return StaticObstacleMapConfig(obstacle_layers=default_layers)
+
+    if isinstance(obstacle_config, dict):
+        if obstacle_config.get("obstacle_layers") is None:
+            config_dict = dict(obstacle_config)
+            config_dict["obstacle_layers"] = default_layers
+            return StaticObstacleMapConfig(**config_dict)
+        return StaticObstacleMapConfig(**obstacle_config)
+
+    obstacle_layers = getattr(obstacle_config, "obstacle_layers", None)
+    if obstacle_layers is None:
+        if is_dataclass(obstacle_config) and not isinstance(obstacle_config, type):
+            try:
+                return replace(cast(Any, obstacle_config), obstacle_layers=default_layers)
+            except Exception:
+                return obstacle_config
+        return obstacle_config
+
+    return obstacle_config
+
+
 def route_nets_rust(
     unrouted_layout: Component,
     schematic: Schematic,
@@ -737,7 +772,11 @@ def route_nets_rust(
     t_obstacle_start = 0.0
     if debug_timing:
         t_obstacle_start = time.perf_counter()
-    obstacle_map = build_static_obstacle_map(unrouted_layout, config=obstacle_config)
+    resolved_obstacle_config = _resolve_obstacle_config(
+        obstacle_config,
+        route_layer=route_layer,
+    )
+    obstacle_map = build_static_obstacle_map(unrouted_layout, config=resolved_obstacle_config)
     if debug_timing:
         t_obstacle_end = time.perf_counter()
         print(f"      - Obstacle Map time: {t_obstacle_end - t_obstacle_start:.4f} s")

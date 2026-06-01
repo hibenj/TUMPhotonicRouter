@@ -274,7 +274,7 @@ def run_routing_flow(
 
 
 if __name__ == "__main__":
-    run_routing_flow("TOY",
+    run_routing_flow("mmi_heater",
                      debug_svgs=False,
                      debug_timing=True,
                      show_klayout=True,
