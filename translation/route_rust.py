@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass, field, is_dataclass, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Iterable, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SOURCE = PROJECT_ROOT / "python"
@@ -670,6 +670,24 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _cells_bbox(cells: set[tuple[int, int]]) -> tuple[int, int, int, int] | None:
+    if not cells:
+        return None
+    xs = [c[0] for c in cells]
+    ys = [c[1] for c in cells]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _format_cells_preview(cells: set[tuple[int, int]], *, limit: int = 120) -> str:
+    if not cells:
+        return "[]"
+    ordered = sorted(cells)
+    if len(ordered) <= limit:
+        return str(ordered)
+    head = ordered[:limit]
+    return f"{head} ... (+{len(ordered) - limit} more)"
+
+
 def _grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
     if hasattr(grid, "origin"):
         origin = getattr(grid, "origin")
@@ -943,6 +961,23 @@ def route_nets_rust(
         cells.add((int(state.x), int(state.y)))
         return cells
 
+    def _inflate_cells_square(
+        cells: set[tuple[int, int]],
+        *,
+        radius_cells: int,
+    ) -> set[tuple[int, int]]:
+        if radius_cells <= 0:
+            return {(x, y) for (x, y) in cells if _in_bounds(x, y)}
+        inflated: set[tuple[int, int]] = set()
+        for x, y in cells:
+            for dx in range(-radius_cells, radius_cells + 1):
+                for dy in range(-radius_cells, radius_cells + 1):
+                    nx = x + dx
+                    ny = y + dy
+                    if _in_bounds(nx, ny):
+                        inflated.add((nx, ny))
+        return inflated
+
     route_jobs: list[tuple[str, str, str, str, str, Port, Port]] = []
     port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     for net_name, bundle in nets.items():
@@ -958,12 +993,19 @@ def route_nets_rust(
             if port2_spec not in port_access_cells_by_spec:
                 port_access_cells_by_spec[port2_spec] = build_port_access_cells(target_port)
 
-    reserved_port_access_cells: set[tuple[int, int]] = set()
-    for cells in port_access_cells_by_spec.values():
-        reserved_port_access_cells.update(cells)
-    static_cells = set(obstacle_map.blocked_cells)
-    static_cells.update(reserved_port_access_cells)
+    # Use raw static geometry as the baseline truth for "real component body"
+    # checks. `blocked_cells` may exclude port-open carve-outs.
+    raw_blocked_obj: object
+    if hasattr(obstacle_map, "raw_blocked_cells"):
+        raw_blocked_obj = getattr(obstacle_map, "raw_blocked_cells")
+    else:
+        raw_blocked_obj = obstacle_map.blocked_cells
+    raw_blocked_cells = cast(Iterable[tuple[int, int]], raw_blocked_obj)
+    raw_static_cells = {(int(cell[0]), int(cell[1])) for cell in raw_blocked_cells}
+    static_blocked_cells_before_port_reservations = raw_static_cells
+    static_cells = set(static_blocked_cells_before_port_reservations)
     router.set_static_cells(sorted(static_cells))
+    committed_dynamic_cells: set[tuple[int, int]] = set()
 
     t_astar_start = 0.0
     if debug_timing:
@@ -990,15 +1032,123 @@ def route_nets_rust(
         print(f"  Routing {net_name}: {port1_spec} -> {port2_spec}...", end=" ")
 
         net_id += 1
-        opened_cells_set = set(port_access_cells_by_spec.get(port1_spec, set()))
-        opened_cells_set.update(port_access_cells_by_spec.get(port2_spec, set()))
-        opened_cells_set.update(
-            {
-                (int(source_state.x), int(source_state.y)),
-                (int(target_state.x), int(target_state.y)),
-            }
-        )
+        source_anchor_cell = (int(source_state.x), int(source_state.y))
+        target_anchor_cell = (int(target_state.x), int(target_state.y))
+        opened_candidate_cells = set(port_access_cells_by_spec.get(port1_spec, set()))
+        opened_candidate_cells.update(port_access_cells_by_spec.get(port2_spec, set()))
+        opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
+
+        opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
+        opened_cells_set = set(opened_candidate_cells)
         opened_cells = sorted(opened_cells_set)
+
+        opened_candidate_static_overlap = (
+            opened_candidate_cells & static_blocked_cells_before_port_reservations
+        )
+        opened_static_overlap = (
+            opened_cells_set & static_blocked_cells_before_port_reservations
+        )
+        opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
+
+        route_dir = debug_path / "routes" if debug_path is not None else None
+        diag_txt: Path | None = None
+        if route_dir is not None:
+            _ensure_dir(route_dir)
+            diag_txt = route_dir / f"{debug_prefix}_{net_name}_diagnostics.txt"
+
+        def _write_diagnostics(
+            *,
+            status: str,
+            error_text: str | None = None,
+            route_cells: set[tuple[int, int]] | None = None,
+        ) -> None:
+            if diag_txt is None:
+                return
+            route_cells = route_cells or set()
+            route_static_overlap = (
+                route_cells & static_blocked_cells_before_port_reservations
+            )
+            route_overlap_with_candidate_opened_static = (
+                route_cells & opened_candidate_static_overlap
+            )
+            route_overlap_with_effective_opened_static = (
+                route_cells & opened_static_overlap
+            )
+            route_dynamic_overlap = route_cells & committed_dynamic_cells
+            route_overlap_with_candidate_opened_dynamic = (
+                route_cells & opened_candidate_dynamic_overlap
+            )
+            route_overlap_with_effective_opened_dynamic = (
+                route_cells & opened_dynamic_overlap
+            )
+            lines = [
+                f"net_name={net_name}",
+                f"status={status}",
+                f"source_spec={port1_spec}",
+                f"target_spec={port2_spec}",
+                f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
+                f"target_state=({target_anchor_cell[0]}, {target_anchor_cell[1]}, {int(target_state.angle)})",
+                f"opened_candidate_cells_count={len(opened_candidate_cells)}",
+                f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
+                f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
+                f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
+                f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
+                (
+                    "opened_candidate_static_overlap_cells="
+                    f"{_format_cells_preview(opened_candidate_static_overlap)}"
+                ),
+                f"opened_cells_count={len(opened_cells_set)}",
+                f"opened_cells={sorted(opened_cells_set)}",
+                f"opened_static_overlap_count={len(opened_static_overlap)}",
+                f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
+                f"opened_static_overlap_cells={_format_cells_preview(opened_static_overlap)}",
+                f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
+                f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
+                f"opened_dynamic_overlap_cells={_format_cells_preview(opened_dynamic_overlap)}",
+                f"route_cells_count={len(route_cells)}",
+                f"route_static_blocked_overlap_count={len(route_static_overlap)}",
+                f"route_static_blocked_overlap_bbox={_cells_bbox(route_static_overlap)}",
+                f"route_static_blocked_overlap_cells={_format_cells_preview(route_static_overlap)}",
+                f"route_dynamic_overlap_count={len(route_dynamic_overlap)}",
+                f"route_dynamic_overlap_bbox={_cells_bbox(route_dynamic_overlap)}",
+                f"route_dynamic_overlap_cells={_format_cells_preview(route_dynamic_overlap)}",
+                (
+                    "route_overlap_candidate_opened_static_count="
+                    f"{len(route_overlap_with_candidate_opened_static)}"
+                ),
+                (
+                    "route_overlap_candidate_opened_static_bbox="
+                    f"{_cells_bbox(route_overlap_with_candidate_opened_static)}"
+                ),
+                (
+                    "route_overlap_effective_opened_static_count="
+                    f"{len(route_overlap_with_effective_opened_static)}"
+                ),
+                (
+                    "route_overlap_effective_opened_static_bbox="
+                    f"{_cells_bbox(route_overlap_with_effective_opened_static)}"
+                ),
+                (
+                    "route_overlap_candidate_opened_dynamic_count="
+                    f"{len(route_overlap_with_candidate_opened_dynamic)}"
+                ),
+                (
+                    "route_overlap_candidate_opened_dynamic_bbox="
+                    f"{_cells_bbox(route_overlap_with_candidate_opened_dynamic)}"
+                ),
+                (
+                    "route_overlap_effective_opened_dynamic_count="
+                    f"{len(route_overlap_with_effective_opened_dynamic)}"
+                ),
+                (
+                    "route_overlap_effective_opened_dynamic_bbox="
+                    f"{_cells_bbox(route_overlap_with_effective_opened_dynamic)}"
+                ),
+            ]
+            if error_text is not None:
+                lines.append(f"error={error_text}")
+            diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
         try:
             route_obj = router.route_single_net_and_commit(
                 net_id,
@@ -1008,9 +1158,9 @@ def route_nets_rust(
                 opened_cells,
             )
         except RuntimeError as exc:
+            _write_diagnostics(status="failed", error_text=str(exc))
             if debug_path is not None:
-                route_dir = debug_path / "routes"
-                _ensure_dir(route_dir)
+                assert route_dir is not None
                 fail_txt = route_dir / f"{debug_prefix}_{net_name}_FAILED.txt"
                 fail_lines = [
                     f"net_name={net_name}",
@@ -1025,8 +1175,17 @@ def route_nets_rust(
                     f"port_entry_half_width_cells={port_entry_half_width_cells}",
                     f"port_lane_length_cells={port_lane_length_cells}",
                     f"port_lane_half_width_cells={port_lane_half_width_cells}",
+                    f"opened_candidate_cells_count={len(opened_candidate_cells)}",
+                    f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
+                    f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
+                    f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
+                    f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
                     f"opened_cells_count={len(opened_cells)}",
                     f"opened_cells={opened_cells}",
+                    f"opened_static_overlap_count={len(opened_static_overlap)}",
+                    f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
+                    f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
+                    f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
                     f"error={exc}",
                 ]
                 fail_txt.write_text("\n".join(fail_lines) + "\n", encoding="utf-8")
@@ -1053,9 +1212,17 @@ def route_nets_rust(
         )
         routed_edge_lengths_um[edge_key] = float(route_obj.total_length_um)
 
+        route_cells = {
+            (int(cell[0]), int(cell[1]))
+            for cell in (getattr(route_obj, "cells", None) or [])
+        }
+        _write_diagnostics(status="ok", route_cells=route_cells)
+        committed_dynamic_cells.update(
+            _inflate_cells_square(route_cells, radius_cells=block_radius_cells)
+        )
+
         if debug_path is not None:
-            route_dir = debug_path / "routes"
-            _ensure_dir(route_dir)
+            assert route_dir is not None
             route_svg = route_dir / f"{debug_prefix}_{net_name}.svg"
             route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
             route_svgs.append(route_svg)

@@ -347,7 +347,7 @@ pub fn route_single_net_with_config(
     primitives: &PrimitiveLibrary,
     source: State,
     target: State,
-    port_open_cells: Option<&FxHashSet<CellKey>>,
+    _port_open_cells: Option<&FxHashSet<CellKey>>,
     config: &AStarConfig,
 ) -> Option<RouteResult> {
     if config.target_tolerance_cells < 0 {
@@ -364,6 +364,9 @@ pub fn route_single_net_with_config(
     if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
         return None;
     }
+    let mut anchor_open_cells = FxHashSet::default();
+    anchor_open_cells.insert(pack_xy(source.x, source.y));
+    anchor_open_cells.insert(pack_xy(target.x, target.y));
 
     let mut stats = RouteSearchStats::default();
     if config.enable_simple_routes {
@@ -379,7 +382,7 @@ pub fn route_single_net_with_config(
             source,
             target,
             obstacle_map,
-            port_open_cells,
+            Some(&anchor_open_cells),
             &z_config,
         ) {
             if let Some(simple_route) = simple_candidate_to_route_result(
@@ -400,7 +403,7 @@ pub fn route_single_net_with_config(
             primitives,
             source,
             target,
-            port_open_cells,
+            Some(&anchor_open_cells),
             config,
             None,
             &mut stats,
@@ -417,7 +420,7 @@ pub fn route_single_net_with_config(
             primitives,
             source,
             target,
-            port_open_cells,
+            Some(&anchor_open_cells),
             config,
             Some(bounds),
             &mut stats,
@@ -434,7 +437,7 @@ pub fn route_single_net_with_config(
             primitives,
             source,
             target,
-            port_open_cells,
+            Some(&anchor_open_cells),
             config,
             None,
             &mut stats,
@@ -1479,6 +1482,49 @@ mod tests {
             },
         );
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn opened_cells_cannot_unblock_non_anchor_static_cells() {
+        let mut map = ObstacleMap::new(7, 1);
+        map.add_static_cell(3, 0);
+        let mut opened = FxHashSet::default();
+        opened.insert(pack_xy(3, 0));
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 0, 0),
+            State::new(5, 0, 0),
+            Some(&opened),
+            &AStarConfig {
+                enable_simple_routes: true,
+                use_routing_window: false,
+                ..AStarConfig::default()
+            },
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn source_and_target_cells_are_opened_implicitly() {
+        let mut map = ObstacleMap::new(7, 1);
+        map.add_static_cell(1, 0);
+        map.add_static_cell(5, 0);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 0, 0),
+            State::new(5, 0, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                use_routing_window: false,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("blocked endpoints should be routed using implicit anchor opening");
+        assert_eq!(result.states.first().copied(), Some(State::new(1, 0, 0)));
+        assert_eq!(result.states.last().copied(), Some(State::new(5, 0, 0)));
     }
 
     #[test]
