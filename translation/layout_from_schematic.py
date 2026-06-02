@@ -3,6 +3,7 @@
 import gdsfactory as gf
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
+from uuid import uuid4
 
 
 def layout_from_schematic(schematic: Schematic) -> Component:
@@ -18,7 +19,7 @@ def layout_from_schematic(schematic: Schematic) -> Component:
         A gdsfactory Component with all instances placed but not routed.
     """
     # Create a new component to hold the layout
-    component = gf.Component("unrouted_layout")
+    component = gf.Component(f"unrouted_layout_{uuid4().hex}")
 
     # Iterate through instances and placements
     for instance_name, instance in schematic.netlist.instances.items():
@@ -51,4 +52,3 @@ def layout_from_schematic(schematic: Schematic) -> Component:
             ref.mirror()
 
     return component
-

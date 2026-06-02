@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from graphlib import TopologicalSorter
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping, Protocol
 
-from gdsfactory.schematic import Schematic
+class SchematicLike(Protocol):
+    netlist: Any
 
 
 class NodeType(str, Enum):
@@ -66,9 +67,30 @@ class MissingLengthRequirement:
 
 
 @dataclass
+class NodeIncomingEdgeTiming:
+    edge_key: RoutedEdgeKey
+    routed_length_um: float
+    edge_arrival_um: float
+    missing_length_um: float
+
+
+@dataclass
+class NodeTiming:
+    node_name: str
+    node_type: NodeType
+    internal_delay_um: float
+    input_arrival_um: float
+    output_arrival_um: float
+    incoming_edges: list[NodeIncomingEdgeTiming]
+
+
+@dataclass
 class PathLengthAnalysisResult:
     topological_order: list[str]
     node_arrival_um: dict[str, float]
+    node_arrival_input_um: dict[str, float]
+    node_arrival_output_um: dict[str, float]
+    node_timings: dict[str, NodeTiming]
     edge_missing_lengths_um: dict[RoutedEdgeKey, float]
     requirements: list[MissingLengthRequirement]
 
@@ -92,35 +114,53 @@ class PhotonicRoutingGraph:
         self, *, tolerance_um: float = 1.0e-9
     ) -> PathLengthAnalysisResult:
         order = self.topological_order()
-        arrivals: dict[str, float] = {}
+        input_arrivals: dict[str, float] = {}
+        output_arrivals: dict[str, float] = {}
         edge_missing: dict[RoutedEdgeKey, float] = {}
+        node_timings: dict[str, NodeTiming] = {}
         requirements: list[MissingLengthRequirement] = []
 
         for node_name in order:
             node = self.nodes[node_name]
             in_edges = self.incoming_edges.get(node_name, [])
             if not in_edges:
-                base = 0.0
+                input_arrival = 0.0
+                incoming_timings: list[NodeIncomingEdgeTiming] = []
             else:
-                input_arrivals: dict[RoutedEdgeKey, float] = {}
+                incoming_arrivals: dict[RoutedEdgeKey, float] = {}
                 for edge_key in in_edges:
                     edge = self.edges[edge_key]
-                    src_arrival = arrivals.get(edge.source.instance, 0.0)
+                    src_arrival = output_arrivals.get(edge.source.instance, 0.0)
                     if edge.routed_length_um is None:
                         raise ValueError(
                             f"Missing routed length for edge {edge.key.net_name} "
                             f"{edge.source.instance},{edge.source.port} -> "
                             f"{edge.target.instance},{edge.target.port}"
                         )
-                    input_arrivals[edge_key] = src_arrival + edge.routed_length_um
+                    edge_arrival = src_arrival + edge.routed_length_um
+                    incoming_arrivals[edge_key] = edge_arrival
 
-                target = max(input_arrivals.values())
-                for edge_key, arrival in input_arrivals.items():
-                    missing = max(0.0, target - arrival)
+                input_arrival = max(incoming_arrivals.values())
+                incoming_timings = []
+                for edge_key, arrival in incoming_arrivals.items():
+                    missing = max(0.0, input_arrival - arrival)
                     if missing <= tolerance_um:
                         missing = 0.0
                     self.edges[edge_key].required_extra_length_um = missing
                     edge_missing[edge_key] = missing
+                    routed_length_um = self.edges[edge_key].routed_length_um
+                    if routed_length_um is None:
+                        raise ValueError(
+                            f"Missing routed length for edge {edge_key.net_name}"
+                        )
+                    incoming_timings.append(
+                        NodeIncomingEdgeTiming(
+                            edge_key=edge_key,
+                            routed_length_um=float(routed_length_um),
+                            edge_arrival_um=arrival,
+                            missing_length_um=missing,
+                        )
+                    )
                     if missing > 0.0:
                         requirements.append(
                             MissingLengthRequirement(
@@ -128,13 +168,25 @@ class PhotonicRoutingGraph:
                                 missing_length_um=missing,
                             )
                         )
-                base = target
 
-            arrivals[node_name] = base + float(node.internal_delay_um)
+            output_arrival = input_arrival + float(node.internal_delay_um)
+            input_arrivals[node_name] = input_arrival
+            output_arrivals[node_name] = output_arrival
+            node_timings[node_name] = NodeTiming(
+                node_name=node.name,
+                node_type=node.node_type,
+                internal_delay_um=float(node.internal_delay_um),
+                input_arrival_um=float(input_arrival),
+                output_arrival_um=float(output_arrival),
+                incoming_edges=incoming_timings,
+            )
 
         return PathLengthAnalysisResult(
             topological_order=order,
-            node_arrival_um=arrivals,
+            node_arrival_um=output_arrivals,
+            node_arrival_input_um=input_arrivals,
+            node_arrival_output_um=output_arrivals,
+            node_timings=node_timings,
             edge_missing_lengths_um=edge_missing,
             requirements=requirements,
         )
@@ -158,7 +210,7 @@ def _resolve_node_type(
 
 
 def build_graph_from_schematic(
-    schematic: Schematic,
+    schematic: SchematicLike,
     *,
     node_types: Mapping[str, NodeType | str] | None = None,
     internal_delays_um: Mapping[str, float] | None = None,

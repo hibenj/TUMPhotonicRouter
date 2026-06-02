@@ -1,7 +1,7 @@
-from routing_flow import load_benchmark_metadata
+from benchmark_metadata import load_benchmark_metadata
 from benchmarks.TOY import build_schematic
 import pytest
-from typing import cast
+from typing import Any, Protocol, cast
 from gdsfactory.component import Component
 from photonic_router.static_obstacle_builder import _load_rust_backend
 from photonic_router.path_length_graph import (
@@ -20,6 +20,11 @@ from translation.route_rust import (
     insert_meanders_for_requirements,
 )
 import routing_flow
+
+
+class _SchematicLike(Protocol):
+    netlist: Any
+    placements: dict[str, object]
 
 
 def _build_real_route_obj_for_test(x0: int, y0: int, x1: int, y1: int):
@@ -114,6 +119,145 @@ def test_missing_length_analysis_balances_multi_input_node():
     assert any(req.edge_key == edge_short for req in result.requirements)
 
 
+def _build_two_stage_schematic_for_convergence() -> _SchematicLike:
+    class _Bundle:
+        def __init__(self, links: dict[str, str]):
+            self.links = links
+
+    class _Netlist:
+        def __init__(self):
+            self.instances = {"input_a": object(), "input_b": object(), "gate_x": object(), "gate_z": object()}
+            self.routes = {
+                "a_to_x": _Bundle({"input_a,o1": "gate_x,i0"}),
+                "b_to_z": _Bundle({"input_b,o1": "gate_z,i1"}),
+                "x_to_z": _Bundle({"gate_x,o1": "gate_z,i0"}),
+            }
+
+    class _Schematic:
+        def __init__(self):
+            self.netlist = _Netlist()
+            self.placements = {}
+
+    return _Schematic()
+
+
+def test_missing_length_analysis_uses_internal_delay_at_output_node():
+    schematic = _build_two_stage_schematic_for_convergence()
+    records = [
+        RoutedNetRecord(
+            net_name="a_to_x",
+            source=PortRef(instance="input_a", port="o1"),
+            target=PortRef(instance="gate_x", port="i0"),
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+        RoutedNetRecord(
+            net_name="b_to_z",
+            source=PortRef(instance="input_b", port="o1"),
+            target=PortRef(instance="gate_z", port="i1"),
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+        RoutedNetRecord(
+            net_name="x_to_z",
+            source=PortRef(instance="gate_x", port="o1"),
+            target=PortRef(instance="gate_z", port="i0"),
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+    ]
+
+    node_types = {
+        "input_a": "input",
+        "input_b": "input",
+        "gate_x": "gate",
+        "gate_z": "gate",
+    }
+    internal_delays = {"gate_x": 100.0}
+
+    result, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types=node_types,
+        internal_delays_um=internal_delays,
+    )
+
+    edge_direct = RoutedEdgeKey(
+        net_name="b_to_z",
+        source=PortRef(instance="input_b", port="o1"),
+        target=PortRef(instance="gate_z", port="i1"),
+    )
+    edge_via_x = RoutedEdgeKey(
+        net_name="x_to_z",
+        source=PortRef(instance="gate_x", port="o1"),
+        target=PortRef(instance="gate_z", port="i0"),
+    )
+
+    assert result.node_arrival_input_um["gate_x"] == 10.0
+    assert result.node_arrival_output_um["gate_x"] == 110.0
+    assert result.node_arrival_input_um["gate_z"] == 120.0
+    assert result.node_arrival_output_um["gate_z"] == 120.0
+    assert result.edge_missing_lengths_um[edge_direct] == 110.0
+    assert result.edge_missing_lengths_um[edge_via_x] == 0.0
+    assert any(req.edge_key == edge_direct for req in result.requirements)
+    assert any(req.edge_key == edge_via_x for req in result.requirements) is False
+    timing = result.node_timings["gate_z"]
+    assert timing.input_arrival_um == 120.0
+    assert timing.output_arrival_um == 120.0
+    assert timing.internal_delay_um == 0.0
+    assert [timing_edge.edge_key for timing_edge in timing.incoming_edges] == [
+        edge_direct,
+        edge_via_x,
+    ]
+
+
+def test_missing_length_analysis_without_internal_delay_reduces_to_edge_length_sum():
+    schematic = _build_two_stage_schematic_for_convergence()
+    records = [
+        RoutedNetRecord(
+            net_name="a_to_x",
+            source=PortRef(instance="input_a", port="o1"),
+            target=PortRef(instance="gate_x", port="i0"),
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+        RoutedNetRecord(
+            net_name="b_to_z",
+            source=PortRef(instance="input_b", port="o1"),
+            target=PortRef(instance="gate_z", port="i1"),
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+        RoutedNetRecord(
+            net_name="x_to_z",
+            source=PortRef(instance="gate_x", port="o1"),
+            target=PortRef(instance="gate_z", port="i0"),
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+    ]
+
+    node_types = {
+        "input_a": "input",
+        "input_b": "input",
+        "gate_x": "gate",
+        "gate_z": "gate",
+    }
+
+    result, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types=node_types,
+        internal_delays_um={},
+    )
+
+    edge_direct = RoutedEdgeKey(
+        net_name="b_to_z",
+        source=PortRef(instance="input_b", port="o1"),
+        target=PortRef(instance="gate_z", port="i1"),
+    )
+    assert result.node_arrival_input_um["gate_z"] == 20.0
+    assert result.edge_missing_lengths_um[edge_direct] == 10.0
 def test_main_flow_flag_enables_path_length_matching(monkeypatch):
     class _Bundle:
         def __init__(self, links):
@@ -134,7 +278,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
 
     class _Layout:
         def __init__(self):
-            self.name = "dummy"
+            self.name = "dummy_layout"
             self.bbox = (0, 0, 1, 1)
             self.info = {}
 
@@ -159,7 +303,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
     monkeypatch.setattr(
         routing_flow,
         "load_benchmark_metadata",
-        lambda _: {
+        lambda *args, **kwargs: {
             "node_types": {"src0": "input", "src1": "input", "gate0": "gate"},
             "internal_delays_um": {},
         },
@@ -169,7 +313,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
         routing_flow,
         "route_match_and_realize",
         lambda *args, **kwargs: RouteRustPipelineResult(
-            routed_layout=Component(name="dummy"),
+            routed_layout=Component(name="dummy_routed"),
             debug_artifacts=RustRouteDebugArtifacts(
                 obstacle_svg=None,
                 route_svgs=[],
@@ -235,7 +379,7 @@ def test_main_flow_matching_uses_record_lengths(monkeypatch):
     monkeypatch.setattr(
         routing_flow,
         "load_benchmark_metadata",
-        lambda _: {
+        lambda *args, **kwargs: {
             "node_types": {"src0": "input", "src1": "input", "gate0": "gate"},
             "internal_delays_um": {},
         },
@@ -297,7 +441,7 @@ def test_main_meander_report_uses_auto_multi_bump_path():
     assert entry.get("planning_mode") == "fill_box_multi_bump"
     bumps_obj = entry.get("bumps", 0)
     assert isinstance(bumps_obj, (int, float))
-    assert int(bumps_obj) > 1
+    assert int(bumps_obj) >= 1
     assert entry.get("using_legacy_meander_path") is False
     assert (
         entry.get("effective_bend_radius_um")

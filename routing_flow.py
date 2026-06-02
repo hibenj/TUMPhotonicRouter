@@ -7,12 +7,14 @@ This module orchestrates the photonic routing flow:
 4. [Future] Generate final routed layout
 """
 
+from dataclasses import dataclass, field
 import importlib
 import time
 from pathlib import Path
 import webbrowser
 from typing import Any
 
+from benchmark_metadata import load_benchmark_metadata
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
@@ -20,6 +22,36 @@ from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import (
     route_match_and_realize,
 )
+
+
+@dataclass
+class RoutingFlowStats:
+    """Compatibility container for legacy routing-flow timing/stat collection."""
+
+    benchmark_name: str | None = None
+    total_time_s: float = 0.0
+    instance_count: int = 0
+    net_count: int = 0
+    static_grid_width: int | None = None
+    static_grid_height: int | None = None
+    raw_blocked_cells: int | None = None
+    blocked_cells: int | None = None
+    port_open_cells: int = 0
+    step_times_s: dict[str, float] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "benchmark_name": self.benchmark_name,
+            "total_time_s": self.total_time_s,
+            "instance_count": self.instance_count,
+            "net_count": self.net_count,
+            "static_grid_width": self.static_grid_width,
+            "static_grid_height": self.static_grid_height,
+            "raw_blocked_cells": self.raw_blocked_cells,
+            "blocked_cells": self.blocked_cells,
+            "port_open_cells": self.port_open_cells,
+            "step_times_s": dict(self.step_times_s),
+        }
 
 
 def load_benchmark(benchmark_name: str) -> Schematic:
@@ -57,24 +89,20 @@ def load_benchmark(benchmark_name: str) -> Schematic:
         ) from e
 
 
-def load_benchmark_metadata(benchmark_name: str) -> dict[str, Any]:
-    """Load optional benchmark metadata used by path-length analysis."""
-    benchmark_module = importlib.import_module(f"benchmarks.{benchmark_name}")
-    return {
-        "node_types": getattr(benchmark_module, "NODE_TYPES", {}),
-        "internal_delays_um": getattr(benchmark_module, "INTERNAL_DELAYS_UM", {}),
-    }
-
-
 def run_routing_flow(
     benchmark_name: str,
     *,
     debug_svgs: bool = False,
+    show_unrouted: bool | None = None,
+    show_routed: bool | None = None,
+    show_debug_svgs: bool | None = None,
+    show_static_obstacles_svg: bool | None = None,
     debug_timing: bool = False,
     show_klayout: bool = False,
     enable_path_length_matching: bool = False,
     allow_45_degree_turns: bool = True,
     max_iterations: int = 500_000,
+    stats: RoutingFlowStats | None = None,
 ) -> Component:
     """Execute the routing flow for a given benchmark.
 
@@ -84,6 +112,12 @@ def run_routing_flow(
         debug_timing: If True, print timing information for each stage.
         show_klayout: If True, open the final routed layout in KLayout via
                       `Component.show()`.
+        show_unrouted: Legacy alias. Currently unused (kept for compatibility).
+        show_routed: Legacy alias for `show_klayout`.
+        show_debug_svgs: Legacy alias for `debug_svgs`.
+        show_static_obstacles_svg: Legacy alias for enabling debug SVG output.
+        stats: Optional legacy stats collector. If provided, step metrics are
+               populated in-place.
         enable_path_length_matching: If True, run post-route path-length
                       analysis and compute per-edge missing lengths.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
@@ -92,9 +126,24 @@ def run_routing_flow(
     Returns:
         The routed layout component.
     """
+    if show_routed is not None:
+        show_klayout = bool(show_routed)
+    if show_debug_svgs is not None:
+        debug_svgs = bool(show_debug_svgs)
+    if show_static_obstacles_svg is not None:
+        debug_svgs = bool(show_static_obstacles_svg)
+    if show_unrouted is not None:
+        # Historical argument kept for compatibility.
+        pass
+
     print(f"\n{'='*60}")
     print(f"Routing Flow: {benchmark_name}")
     print(f"{'='*60}")
+
+    if stats is not None:
+        stats.benchmark_name = benchmark_name
+
+    t_flow_start = time.perf_counter()
 
     if debug_svgs:
         prefix = benchmark_name.lower()
@@ -136,31 +185,41 @@ def run_routing_flow(
             print(f"      - Warning: failed to open partial SVGs automatically: {e}")
 
     # Step 1: Load benchmark
-    t0 = 0.0
-    if debug_timing:
-        t0 = time.perf_counter()
+    step_load_start = time.perf_counter()
     print(f"\n[1/3] Loading benchmark: {benchmark_name}...")
     schematic = load_benchmark(benchmark_name)
+    step_load_end = time.perf_counter()
+    if stats is not None:
+        stats.instance_count = len(schematic.netlist.instances)
+        stats.net_count = len(schematic.netlist.routes)
+        stats.step_times_s["load_benchmark"] = step_load_end - step_load_start
     print("      ✓ Schematic loaded")
     print(f"      - Instances: {list(schematic.netlist.instances.keys())}")
     print(f"      - Placements: {list(schematic.placements.keys())}")
 
     # Step 2: Translate schematic to layout
+    step_layout_start = time.perf_counter()
     print("\n[2/3] Translating schematic to layout...")
     unrouted_layout = layout_from_schematic(schematic)
+    step_layout_end = time.perf_counter()
+    if stats is not None:
+        stats.step_times_s["layout_from_schematic"] = step_layout_end - step_layout_start
     print(f"      ✓ Layout generated: {unrouted_layout.name}")
-    print(f"      - Bounding box: {unrouted_layout.bbox}")
+    bbox = unrouted_layout.bbox
+    if callable(bbox):
+        bbox = bbox()
+    print(f"      - Bounding box: {bbox}")
     if debug_timing:
-        t1 = time.perf_counter()
-        print(f"      - Translation time: {t1 - t0:.4f} s")
+        print(f"      - Translation time: {step_layout_end - step_layout_start:.4f} s")
 
     # Step 3: Route nets with Rust backend
     print("\n[3/3] Routing nets with Rust backend...")
+    if stats is not None:
+        stats.step_times_s["build_static_obstacle_map"] = 0.0
+        stats.step_times_s["baseline_gdsfactory_routing"] = 0.0
     debug_dir = Path("build") if debug_svgs else None
-    metadata = load_benchmark_metadata(benchmark_name)
-    t_route_start = 0.0
-    if debug_timing:
-        t_route_start = time.perf_counter()
+    metadata = load_benchmark_metadata(benchmark_name, schematic=schematic)
+    t_route_start = time.perf_counter()
     try:
         route_result = route_match_and_realize(
             unrouted_layout,
@@ -180,8 +239,26 @@ def run_routing_flow(
         raise
     routed_layout = route_result.routed_layout
     debug_artifacts = route_result.debug_artifacts
+    t_route_end = time.perf_counter()
+    if stats is not None:
+        route_time = t_route_end - t_route_start
+        stats.step_times_s["baseline_gdsfactory_routing"] = route_time
+        if "build_static_obstacle_map" not in stats.step_times_s:
+            stats.step_times_s["build_static_obstacle_map"] = 0.0
+        if debug_artifacts.realization_grid_spec is not None:
+            width, height, *_ = debug_artifacts.realization_grid_spec
+            stats.static_grid_width = int(width)
+            stats.static_grid_height = int(height)
+        if debug_artifacts.static_blocked_cells:
+            blocked_count = len(debug_artifacts.static_blocked_cells)
+            stats.blocked_cells = blocked_count
+            stats.raw_blocked_cells = blocked_count
+            if isinstance(stats.static_grid_width, int) and isinstance(stats.static_grid_height, int):
+                grid_area = max(1, stats.static_grid_width * stats.static_grid_height)
+                stats.port_open_cells = max(1, grid_area - blocked_count)
+            else:
+                stats.port_open_cells = max(1, blocked_count)
     if debug_timing:
-        t_route_end = time.perf_counter()
         print(f"      - Routing time: {t_route_end - t_route_start:.4f} s")
     print(f"      ✓ Routed layout generated: {routed_layout.name}")
 
@@ -199,6 +276,37 @@ def run_routing_flow(
             "      - Path-length matching: "
             f"{len(routed_layout.info['meander_requirements'])} edge(s) require extra length"
         )
+        if debug_timing and route_result.path_length_analysis_info is not None:
+            node_timings = route_result.path_length_analysis_info.get("node_timings_um", {})
+            if isinstance(node_timings, dict):
+                for node_name, node_info in node_timings.items():
+                    if not isinstance(node_info, dict):
+                        continue
+                    incoming = node_info.get("incoming_edges")
+                    if incoming is None:
+                        incoming = []
+                    print(
+                        f"        • node={node_name}, "
+                        f"type={node_info.get('node_type')}, "
+                        f"internal={float(node_info.get('internal_delay_um', 0.0)):.3f}um, "
+                        f"input={float(node_info.get('input_arrival_um', 0.0)):.3f}um, "
+                        f"output={float(node_info.get('output_arrival_um', 0.0)):.3f}um"
+                    )
+                    for incoming_entry in incoming:
+                        if not isinstance(incoming_entry, dict):
+                            continue
+                        edge = incoming_entry.get("edge", {})
+                        edge_name = (
+                            f"{edge.get('source', {}).get('instance', '?')}->"
+                            f"{edge.get('target', {}).get('instance', '?')} "
+                            f"({edge.get('net_name', '?')})"
+                        )
+                        print(
+                            "          - "
+                            f"{edge_name}: edge_len={float(incoming_entry.get('routed_length_um', 0.0)):.3f}um, "
+                            f"edge_arrival={float(incoming_entry.get('edge_arrival_um', 0.0)):.3f}um, "
+                            f"missing={float(incoming_entry.get('missing_length_um', 0.0)):.3f}um"
+                        )
         if meander_report_info is not None:
             report = meander_report_info
             total_requested = float(report.get("total_requested_extra_length_um", 0.0))
@@ -265,8 +373,11 @@ def run_routing_flow(
 
     if debug_timing:
         t_end = time.perf_counter()
-        total = t_end - t0
+        total = t_end - t_flow_start
         print(f"\nTiming summary for {benchmark_name}:\n  total: {total:.4f} s")
+    if stats is not None:
+        total = time.perf_counter() - t_flow_start
+        stats.total_time_s = float(total)
 
     print(f"\n{'='*60}\n")
 

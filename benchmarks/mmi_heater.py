@@ -17,7 +17,8 @@ INTERNAL_DELAYS_UM = {
     "gc_0": 0.0,
     "gc_1": 0.0,
     "mmi_0": 0.0,
-    "heater_0": 0.0,
+    # Resolved from straight_heater_metal.info.length at metadata load time.
+    "heater_0": "auto",
     "mmi_1": 0.0,
     "gc_2": 0.0,
     "gc_3": 0.0,
