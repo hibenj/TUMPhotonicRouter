@@ -98,6 +98,7 @@ def run_routing_flow(
     show_debug_svgs: bool | None = None,
     show_static_obstacles_svg: bool | None = None,
     debug_timing: bool = False,
+    debug_meanders: bool = False,
     show_klayout: bool = False,
     enable_path_length_matching: bool = False,
     allow_45_degree_turns: bool = True,
@@ -110,6 +111,8 @@ def run_routing_flow(
         benchmark_name: Name of the benchmark to run (e.g., 'TOY').
         debug_svgs: If True, generate debug SVGs into the build/ directory.
         debug_timing: If True, print timing information for each stage.
+        debug_meanders: If True, print verbose path-length and meander
+                      insertion details when path-length matching is enabled.
         show_klayout: If True, open the final routed layout in KLayout via
                       `Component.show()`.
         show_unrouted: Legacy alias. Currently unused (kept for compatibility).
@@ -276,7 +279,7 @@ def run_routing_flow(
             "      - Path-length matching: "
             f"{len(routed_layout.info['meander_requirements'])} edge(s) require extra length"
         )
-        if debug_timing and route_result.path_length_analysis_info is not None:
+        if debug_meanders and route_result.path_length_analysis_info is not None:
             node_timings = route_result.path_length_analysis_info.get("node_timings_um", {})
             if isinstance(node_timings, dict):
                 for node_name, node_info in node_timings.items():
@@ -318,31 +321,32 @@ def run_routing_flow(
                 f"inserted={total_inserted:.3f}um, "
                 f"unmatched={unmatched:.3f}um"
             )
-            for entry in report.get("results", []):
-                edge = entry.get("edge", {})
-                net_name = edge.get("net_name", "<unknown>")
-                status = entry.get("status", "<unknown>")
-                reason = entry.get("reason", "")
-                req = float(entry.get("requested_extra_length_um", 0.0))
-                ins = float(entry.get("inserted_extra_length_um", 0.0))
-                unmatched = float(entry.get("unmatched_length_um", max(0.0, req - ins)))
-                planning_mode = entry.get("planning_mode", None)
-                effective_radius = entry.get("effective_bend_radius_um", None)
-                primitive_radius = entry.get("primitive_bend_radius_um", None)
-                selected_box = entry.get("selected_box", None)
-                selected_grid_rect = entry.get("selected_grid_rect", None)
-                bumps = entry.get("bumps", None)
-                side = entry.get("side", None)
-                reserved_cells_count = entry.get("reserved_cells_count", None)
-                print(
-                    f"        • {net_name}: status={status}, requested={req:.3f}um, "
-                    f"inserted={ins:.3f}um, unmatched={unmatched:.3f}um, "
-                    f"planning_mode={planning_mode}, side={side}, bumps={bumps}, "
-                    f"effective_bend_radius_um={effective_radius}, "
-                    f"primitive_bend_radius_um={primitive_radius}, "
-                    f"selected_box={selected_box}, selected_grid_rect={selected_grid_rect}, "
-                    f"reserved_cells_count={reserved_cells_count}, reason={reason}"
-                )
+            if debug_meanders:
+                for entry in report.get("results", []):
+                    edge = entry.get("edge", {})
+                    net_name = edge.get("net_name", "<unknown>")
+                    status = entry.get("status", "<unknown>")
+                    reason = entry.get("reason", "")
+                    req = float(entry.get("requested_extra_length_um", 0.0))
+                    ins = float(entry.get("inserted_extra_length_um", 0.0))
+                    unmatched = float(entry.get("unmatched_length_um", max(0.0, req - ins)))
+                    planning_mode = entry.get("planning_mode", None)
+                    effective_radius = entry.get("effective_bend_radius_um", None)
+                    primitive_radius = entry.get("primitive_bend_radius_um", None)
+                    selected_box = entry.get("selected_box", None)
+                    selected_grid_rect = entry.get("selected_grid_rect", None)
+                    bumps = entry.get("bumps", None)
+                    side = entry.get("side", None)
+                    reserved_cells_count = entry.get("reserved_cells_count", None)
+                    print(
+                        f"        • {net_name}: status={status}, requested={req:.3f}um, "
+                        f"inserted={ins:.3f}um, unmatched={unmatched:.3f}um, "
+                        f"planning_mode={planning_mode}, side={side}, bumps={bumps}, "
+                        f"effective_bend_radius_um={effective_radius}, "
+                        f"primitive_bend_radius_um={primitive_radius}, "
+                        f"selected_box={selected_box}, selected_grid_rect={selected_grid_rect}, "
+                        f"reserved_cells_count={reserved_cells_count}, reason={reason}"
+                    )
 
     if debug_svgs:
         if debug_artifacts.obstacle_svg is not None:
@@ -388,6 +392,7 @@ if __name__ == "__main__":
     run_routing_flow("mmi_heater_8x4",
                      debug_svgs=False,
                      debug_timing=True,
+                     debug_meanders=False,
                      show_klayout=True,
                      allow_45_degree_turns=False,
                      enable_path_length_matching=True)
