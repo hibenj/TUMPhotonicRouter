@@ -886,6 +886,7 @@ pub struct AutoRouteAnalyticMeanderPlan {
     pub selected_run_end_index: usize,
     pub selected_segment: StraightSegment,
     pub selected_run_length_um: f64,
+    pub selected_box_depth_um: f64,
     pub candidate_runs: usize,
     pub rejected_box_blocked: usize,
     pub rejected_planning_failed: usize,
@@ -1036,6 +1037,26 @@ pub fn plan_auto_analytic_meander_for_route(
     opened_cells: Option<&FxHashSet<CellKey>>,
     config: &AutoMeanderConfig,
 ) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
+    plan_auto_analytic_meander_for_route_depth_sweep(
+        route,
+        primitives,
+        grid,
+        obstacle_map,
+        opened_cells,
+        config,
+        &[config.box_depth_um],
+    )
+}
+
+pub fn plan_auto_analytic_meander_for_route_depth_sweep(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    config: &AutoMeanderConfig,
+    box_depths_um: &[f64],
+) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
     if !config.requested_extra_length_um.is_finite()
         || config.requested_extra_length_um <= 0.0
         || !config.min_bend_radius_um.is_finite()
@@ -1050,8 +1071,14 @@ pub fn plan_auto_analytic_meander_for_route(
         || !config.min_segment_length_um.is_finite()
         || config.min_segment_length_um <= 0.0
         || config.clearance_radius_cells < 0
+        || box_depths_um.is_empty()
     {
         return Err(GeometryError::InvalidMeanderBox);
+    }
+    for depth_um in box_depths_um {
+        if !depth_um.is_finite() || *depth_um <= 0.0 {
+            return Err(GeometryError::InvalidMeanderBox);
+        }
     }
 
     let centerline = route_to_primitive_centerline(route, primitives, grid)?;
@@ -1079,64 +1106,68 @@ pub fn plan_auto_analytic_meander_for_route(
     let mut rejected_box_blocked = 0usize;
     let mut rejected_planning_failed = 0usize;
     let mut rejected_too_short = 0usize;
-    let mut selected: Option<(MeanderBox, GridRect, AnalyticMeanderPlan)> = None;
+    let mut selected: Option<(MeanderBox, GridRect, AnalyticMeanderPlan, f64)> = None;
     let mut selected_run: Option<CenterlineStraightRun> = None;
     let mut selected_segment: Option<StraightSegment> = None;
-    'outer: for run in run_order.iter().copied() {
-        let segment = StraightSegment {
-            start: PhysicalPoint {
-                x_um: run.start.0,
-                y_um: run.start.1,
-            },
-            end: PhysicalPoint {
-                x_um: run.end.0,
-                y_um: run.end.1,
-            },
-        };
-        for &side in side_order {
-            let box_um = match build_meander_box_for_segment(segment, side, config.box_depth_um) {
-                Ok(v) => v,
-                Err(_) => {
-                    rejected_planning_failed += 1;
+    'outer: for &box_depth_um in box_depths_um {
+        for run in run_order.iter().copied() {
+            let segment = StraightSegment {
+                start: PhysicalPoint {
+                    x_um: run.start.0,
+                    y_um: run.start.1,
+                },
+                end: PhysicalPoint {
+                    x_um: run.end.0,
+                    y_um: run.end.1,
+                },
+            };
+            for &side in side_order {
+                let box_um = match build_meander_box_for_segment(segment, side, box_depth_um) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        rejected_planning_failed += 1;
+                        continue;
+                    }
+                };
+                let rect = match check_meander_box_free_with_prefix(
+                    box_um,
+                    grid,
+                    &prefix,
+                    config.clearance_radius_cells,
+                ) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        rejected_box_blocked += 1;
+                        continue;
+                    }
+                };
+                let plan_cfg = AnalyticMeanderConfig {
+                    requested_extra_length_um: config.requested_extra_length_um,
+                    min_bend_radius_um: config.min_bend_radius_um,
+                    min_straight_um: config.min_straight_um,
+                    max_bumps: config.max_bumps,
+                    max_meander_height_um: config.max_meander_height_um,
+                    side,
+                    mode: config.mode,
+                };
+                let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        rejected_planning_failed += 1;
+                        continue;
+                    }
+                };
+                if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs()
+                    > 1.0e-6
+                {
+                    rejected_too_short += 1;
                     continue;
                 }
-            };
-            let rect = match check_meander_box_free_with_prefix(
-                box_um,
-                grid,
-                &prefix,
-                config.clearance_radius_cells,
-            ) {
-                Ok(v) => v,
-                Err(_) => {
-                    rejected_box_blocked += 1;
-                    continue;
-                }
-            };
-            let plan_cfg = AnalyticMeanderConfig {
-                requested_extra_length_um: config.requested_extra_length_um,
-                min_bend_radius_um: config.min_bend_radius_um,
-                min_straight_um: config.min_straight_um,
-                max_bumps: config.max_bumps,
-                max_meander_height_um: config.max_meander_height_um,
-                side,
-                mode: config.mode,
-            };
-            let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
-                Ok(v) => v,
-                Err(_) => {
-                    rejected_planning_failed += 1;
-                    continue;
-                }
-            };
-            if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs() > 1.0e-6 {
-                rejected_too_short += 1;
-                continue;
+                selected_run = Some(run);
+                selected_segment = Some(segment);
+                selected = Some((box_um, rect, plan, box_depth_um));
+                break 'outer;
             }
-            selected_run = Some(run);
-            selected_segment = Some(segment);
-            selected = Some((box_um, rect, plan));
-            break 'outer;
         }
     }
 
@@ -1146,7 +1177,8 @@ pub fn plan_auto_analytic_meander_for_route(
         rejected_planning_failed,
         rejected_too_short,
     };
-    let (selected_box, selected_grid_rect, plan) = selected.ok_or_else(no_auto_err)?;
+    let (selected_box, selected_grid_rect, plan, selected_box_depth_um) =
+        selected.ok_or_else(no_auto_err)?;
     let run = selected_run.ok_or_else(no_auto_err)?;
     let segment = selected_segment.ok_or_else(no_auto_err)?;
     Ok(AutoRouteAnalyticMeanderPlan {
@@ -1155,6 +1187,7 @@ pub fn plan_auto_analytic_meander_for_route(
         selected_run_end_index: run.end_index,
         selected_segment: segment,
         selected_run_length_um: run.length_um,
+        selected_box_depth_um,
         candidate_runs: runs.len(),
         rejected_box_blocked,
         rejected_planning_failed,

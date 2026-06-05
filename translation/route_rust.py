@@ -38,6 +38,22 @@ StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
 build_static_obstacle_map = _sob.build_static_obstacle_map
 _load_rust_backend = _sob._load_rust_backend
 
+MEANDER_DEPTH_CANDIDATES_UM = (
+    40.0,
+    30.0,
+    24.0,
+    20.0,
+    16.0,
+    12.0,
+    10.0,
+    8.0,
+    6.0,
+    4.0,
+    3.0,
+    2.0,
+)
+EXACT_MEANDER_EPS_UM = 1.0e-6
+
 
 @dataclass(frozen=True)
 class RustRouteDebugArtifacts:
@@ -240,6 +256,16 @@ def _as_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _minimum_four_bend_extra_length_um(
+    *,
+    grid_size_um: float,
+    bend_radius_cells: int,
+) -> float:
+    """Minimum practical matching request: one bump needs four 90-degree bends."""
+    bend_radius_um = max(0.0, float(grid_size_um) * float(bend_radius_cells))
+    return 2.0 * math.pi * bend_radius_um
+
+
 def analyze_meander_insertion_for_requirements(
     routed_net_records: list[RoutedNetRecord],
     requirements: list[MissingLengthRequirement],
@@ -303,10 +329,15 @@ def analyze_meander_insertion_for_requirements(
     results: list[dict[str, object]] = []
     total_requested = 0.0
     total_inserted = 0.0
+    total_disregarded = 0.0
+    planner_calls = 0
+    min_insertable_extra_um = _minimum_four_bend_extra_length_um(
+        grid_size_um=float(grid_size_um_cfg),
+        bend_radius_cells=int(bend_radius_cells),
+    )
 
     for req in requirements:
         requested = float(req.missing_length_um)
-        total_requested += requested
         edge_key = req.edge_key
         record = by_edge.get(edge_key)
         entry = {
@@ -324,7 +355,19 @@ def analyze_meander_insertion_for_requirements(
             "bumps": 0,
             "side": None,
             "using_legacy_meander_path": False,
+            "minimum_insertable_extra_length_um": min_insertable_extra_um,
         }
+        if requested < min_insertable_extra_um:
+            total_disregarded += requested
+            entry["status"] = "below_minimum_bump"
+            entry["reason"] = (
+                "requested extra length is below the four-90-degree-bend "
+                f"minimum ({min_insertable_extra_um:.6g} um)"
+            )
+            entry["unmatched_length_um"] = 0.0
+            results.append(entry)
+            continue
+        total_requested += requested
         if record is None:
             results.append(entry)
             continue
@@ -334,58 +377,49 @@ def analyze_meander_insertion_for_requirements(
             if other_edge == edge_key:
                 continue
             blocked_cells.update(_edge_route_cells(other_edge))
-        router.set_static_cells(sorted(blocked_cells))
+        router.set_static_cells(list(blocked_cells))
 
-        # Sweep box depth for legality, but keep requested length fixed and require
-        # exact compensation (within tiny FP epsilon).
+        # Sweep box depth for legality, but keep requested length fixed.
         min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
         min_seg_um = max(0.5, float(config.min_candidate_straight_length_um))
-        depth_candidates_um = [40.0, 30.0, 24.0, 20.0, 16.0, 12.0, 10.0, 8.0, 6.0, 4.0, 3.0, 2.0]
-        exact_eps_um = 1.0e-6
         best_rr: dict[str, object] | None = None
         last_exc: Exception | None = None
-        for depth_um in depth_candidates_um:
-            try:
-                rr = cast(
-                    dict[str, object],
-                    router.plan_auto_analytic_meander_for_route(
-                        record.route_obj,
-                        requested_extra_length_um=float(requested),
-                        min_bend_radius_um=None,
-                        min_straight_um=min_straight_um,
-                        max_bumps=32,
-                        max_meander_height_um=float(config.max_meander_height_um),
-                        box_depth_um=float(depth_um),
-                        min_segment_length_um=min_seg_um,
-                        clearance_radius_cells=0,
-                        side_policy="both",
-                        opened_cells=None,
-                        planning_mode="fill_box_multi_bump",
-                    ),
-                )
-                inserted_rr = _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
-                if abs(inserted_rr - requested) > exact_eps_um:
-                    continue
-                best_rr = rr
-                break
-            except Exception as exc:
-                last_exc = exc
-                continue
+        try:
+            planner_calls += 1
+            best_rr = cast(
+                dict[str, object],
+                router.plan_auto_analytic_meander_for_route_depth_sweep(
+                    record.route_obj,
+                    requested_extra_length_um=float(requested),
+                    box_depths_um=list(MEANDER_DEPTH_CANDIDATES_UM),
+                    min_bend_radius_um=None,
+                    min_straight_um=min_straight_um,
+                    max_bumps=32,
+                    max_meander_height_um=float(config.max_meander_height_um),
+                    min_segment_length_um=min_seg_um,
+                    clearance_radius_cells=0,
+                    side_policy="both",
+                    opened_cells=None,
+                    planning_mode="fill_box_multi_bump",
+                ),
+            )
+        except Exception as exc:
+            last_exc = exc
 
         if best_rr is None:
             entry["status"] = "no_candidate"
             entry["reason"] = (
                 str(last_exc)
                 if last_exc is not None
-                else f"no exact meander candidate found (|inserted-requested| <= {exact_eps_um} um)"
+                else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
             )
             results.append(entry)
             continue
         rr = best_rr
         inserted = _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
-        if abs(inserted - requested) > exact_eps_um:
+        if abs(inserted - requested) > EXACT_MEANDER_EPS_UM:
             entry["status"] = "no_candidate"
-            entry["reason"] = f"candidate residual {abs(inserted - requested):.6g} um exceeds hard limit {exact_eps_um} um"
+            entry["reason"] = f"candidate residual {abs(inserted - requested):.6g} um exceeds hard limit {EXACT_MEANDER_EPS_UM} um"
             results.append(entry)
             continue
         unmatched = max(0.0, requested - inserted)
@@ -440,7 +474,10 @@ def analyze_meander_insertion_for_requirements(
             "results": results,
             "total_requested_extra_length_um": float(total_requested),
             "total_inserted_extra_length_um": float(total_inserted),
+            "total_disregarded_extra_length_um": float(total_disregarded),
             "unmatched_length_um": float(total_unmatched),
+            "planner_calls": int(planner_calls),
+            "minimum_insertable_extra_length_um": float(min_insertable_extra_um),
             "using_legacy_meander_path": False,
         },
     )

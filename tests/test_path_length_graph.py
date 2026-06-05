@@ -421,7 +421,7 @@ def test_main_meander_report_uses_auto_multi_bump_path():
         route_obj=route_obj,
         total_length_um=30.0,
     )
-    req = MissingLengthRequirement(edge_key=edge, missing_length_um=12.0)
+    req = MissingLengthRequirement(edge_key=edge, missing_length_um=32.0)
 
     updated, report = analyze_meander_insertion_for_requirements(
         [record],
@@ -476,4 +476,8 @@ def test_m2_skeleton_reports_no_candidate_when_too_short():
     )
 
     assert len(report.results) == 1
-    assert report.results[0].status in {"no_candidate", "insufficient_space"}
+    assert report.results[0].status in {
+        "below_minimum_bump",
+        "no_candidate",
+        "insufficient_space",
+    }

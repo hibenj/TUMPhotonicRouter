@@ -15,6 +15,7 @@ use crate::geometry_realization::{
     meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
     plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
+    plan_auto_analytic_meander_for_route_depth_sweep as plan_auto_analytic_meander_for_route_depth_sweep_rs,
     realize_route_polygon_from_auto_plan as realize_route_polygon_from_auto_plan_rs,
     realize_route_polygon_from_primitives as realize_route_polygon_from_primitives_rs,
     realize_route_polygon_with_analytic_meander as realize_route_polygon_with_analytic_meander_rs,
@@ -451,6 +452,95 @@ fn add_bend_radius_debug_metadata(
         (effective_bend_radius_um - primitive_bend_radius_um).abs() <= 1.0e-12,
     )?;
     Ok(())
+}
+
+fn auto_meander_plan_to_py_object(
+    py: Python<'_>,
+    plan: &crate::geometry_realization::AutoRouteAnalyticMeanderPlan,
+    requested_min_bend_radius_um: Option<f64>,
+    effective_bend_radius_um: f64,
+    primitive_bend_radius_cells: i32,
+    primitive_bend_radius_um: f64,
+    planning_mode: MeanderPlanningMode,
+) -> PyResult<PyObject> {
+    let d = PyDict::new_bound(py);
+    d.set_item("selected_segment_index", plan.selected_segment_index)?;
+    d.set_item("selected_run_start_index", plan.selected_run_start_index)?;
+    d.set_item("selected_run_end_index", plan.selected_run_end_index)?;
+    d.set_item("selected_run_length_um", plan.selected_run_length_um)?;
+    d.set_item("box_depth_um", plan.selected_box_depth_um)?;
+    d.set_item("candidate_runs", plan.candidate_runs)?;
+    d.set_item("rejected_box_blocked", plan.rejected_box_blocked)?;
+    d.set_item("rejected_planning_failed", plan.rejected_planning_failed)?;
+    d.set_item("rejected_too_short", plan.rejected_too_short)?;
+    d.set_item(
+        "selected_segment",
+        (
+            (
+                plan.selected_segment.start.x_um,
+                plan.selected_segment.start.y_um,
+            ),
+            (
+                plan.selected_segment.end.x_um,
+                plan.selected_segment.end.y_um,
+            ),
+        ),
+    )?;
+    d.set_item(
+        "selected_box",
+        (
+            plan.selected_box.min_x_um,
+            plan.selected_box.max_x_um,
+            plan.selected_box.min_y_um,
+            plan.selected_box.max_y_um,
+        ),
+    )?;
+    d.set_item(
+        "selected_grid_rect",
+        (
+            plan.selected_grid_rect.min_x,
+            plan.selected_grid_rect.max_x,
+            plan.selected_grid_rect.min_y,
+            plan.selected_grid_rect.max_y,
+        ),
+    )?;
+    let centerline = PyList::empty_bound(py);
+    for p in &plan.plan.centerline {
+        centerline.append((p.x_um, p.y_um))?;
+    }
+    d.set_item("centerline", centerline)?;
+    d.set_item(
+        "inserted_extra_length_um",
+        plan.plan.inserted_extra_length_um,
+    )?;
+    d.set_item("bumps", plan.plan.bumps)?;
+    d.set_item(
+        "side",
+        if plan.plan.side == MeanderSide::Left {
+            "left"
+        } else {
+            "right"
+        },
+    )?;
+    add_bend_radius_debug_metadata(
+        &d,
+        requested_min_bend_radius_um,
+        effective_bend_radius_um,
+        primitive_bend_radius_cells,
+        primitive_bend_radius_um,
+        planning_mode,
+        Some(plan.selected_box_depth_um),
+    )?;
+    let mut max_possible_bumps =
+        (plan.selected_box_depth_um / (2.0 * effective_bend_radius_um)).floor() as i32;
+    if max_possible_bumps % 2 != 0 {
+        max_possible_bumps -= 1;
+    }
+    d.set_item(
+        "max_possible_bumps_from_box_depth",
+        max_possible_bumps.max(0),
+    )?;
+    Ok(d.into())
 }
 
 #[pymethods]
@@ -1089,82 +1179,116 @@ impl PyPhotonicRouter {
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
 
-        let d = PyDict::new_bound(py);
-        d.set_item("selected_segment_index", plan.selected_segment_index)?;
-        d.set_item("selected_run_start_index", plan.selected_run_start_index)?;
-        d.set_item("selected_run_end_index", plan.selected_run_end_index)?;
-        d.set_item("selected_run_length_um", plan.selected_run_length_um)?;
-        d.set_item("candidate_runs", plan.candidate_runs)?;
-        d.set_item("rejected_box_blocked", plan.rejected_box_blocked)?;
-        d.set_item("rejected_planning_failed", plan.rejected_planning_failed)?;
-        d.set_item("rejected_too_short", plan.rejected_too_short)?;
-        d.set_item(
-            "selected_segment",
-            (
-                (
-                    plan.selected_segment.start.x_um,
-                    plan.selected_segment.start.y_um,
-                ),
-                (
-                    plan.selected_segment.end.x_um,
-                    plan.selected_segment.end.y_um,
-                ),
-            ),
-        )?;
-        d.set_item(
-            "selected_box",
-            (
-                plan.selected_box.min_x_um,
-                plan.selected_box.max_x_um,
-                plan.selected_box.min_y_um,
-                plan.selected_box.max_y_um,
-            ),
-        )?;
-        d.set_item(
-            "selected_grid_rect",
-            (
-                plan.selected_grid_rect.min_x,
-                plan.selected_grid_rect.max_x,
-                plan.selected_grid_rect.min_y,
-                plan.selected_grid_rect.max_y,
-            ),
-        )?;
-        let cl = PyList::empty_bound(py);
-        for p in &plan.plan.centerline {
-            cl.append((p.x_um, p.y_um))?;
-        }
-        d.set_item("centerline", cl)?;
-        d.set_item(
-            "inserted_extra_length_um",
-            plan.plan.inserted_extra_length_um,
-        )?;
-        d.set_item("bumps", plan.plan.bumps)?;
-        d.set_item(
-            "side",
-            if plan.plan.side == MeanderSide::Left {
-                "left"
-            } else {
-                "right"
-            },
-        )?;
-        add_bend_radius_debug_metadata(
-            &d,
+        auto_meander_plan_to_py_object(
+            py,
+            &plan,
             min_bend_radius_um,
             effective_radius_um,
             self.primitive_cfg.bend_radius_cells,
             primitive_bend_radius_um,
             mode,
-            Some(box_depth_um),
-        )?;
-        let mut max_possible_bumps = (box_depth_um / (2.0 * effective_radius_um)).floor() as i32;
-        if max_possible_bumps % 2 != 0 {
-            max_possible_bumps -= 1;
+        )
+    }
+
+    #[pyo3(signature=(route,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
+    fn plan_auto_analytic_meander_for_route_depth_sweep(
+        &self,
+        py: Python<'_>,
+        route: &PyRouteResult,
+        requested_extra_length_um: f64,
+        box_depths_um: Vec<f64>,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_bumps: usize,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        opened_cells: Option<Vec<(i32, i32)>>,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        if requested_extra_length_um <= 0.0 {
+            return Err(PyValueError::new_err(
+                "requested_extra_length_um must be > 0",
+            ));
         }
-        d.set_item(
-            "max_possible_bumps_from_box_depth",
-            max_possible_bumps.max(0),
-        )?;
-        Ok(d.into())
+        if box_depths_um.is_empty() {
+            return Err(PyValueError::new_err("box_depths_um must not be empty"));
+        }
+        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(PyValueError::new_err(
+                "box_depths_um values must be finite and > 0",
+            ));
+        }
+        if min_straight_um < 0.0 {
+            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
+        }
+        if max_bumps == 0 {
+            return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        if max_meander_height_um <= 0.0 {
+            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
+        }
+        if min_segment_length_um <= 0.0 {
+            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
+        }
+        if clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
+        }
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            self.primitive_cfg.bend_radius_cells,
+            self.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let cfg = AutoMeanderConfig {
+            requested_extra_length_um,
+            min_bend_radius_um: effective_radius_um,
+            min_straight_um,
+            max_bumps,
+            max_meander_height_um,
+            box_depth_um: box_depths_um[0],
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy: policy,
+            mode,
+        };
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        let opened_owned;
+        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            Some(&opened_owned)
+        } else {
+            Some(&self.port_open_cells)
+        };
+        let plan = plan_auto_analytic_meander_for_route_depth_sweep_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            &self.obstacle_map,
+            opened_ref,
+            &cfg,
+            &box_depths_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        auto_meander_plan_to_py_object(
+            py,
+            &plan,
+            min_bend_radius_um,
+            effective_radius_um,
+            self.primitive_cfg.bend_radius_cells,
+            primitive_bend_radius_um,
+            mode,
+        )
     }
 
     #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]

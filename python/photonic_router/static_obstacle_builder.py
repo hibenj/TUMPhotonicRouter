@@ -212,10 +212,10 @@ def _load_rust_backend() -> Any | None:
     # after every local Rust edit.
     project_root = Path(__file__).resolve().parents[2]
     candidates = [
-        project_root / "target" / "debug" / "deps" / "libphotonic_router.so",
-        project_root / "target" / "debug" / "libphotonic_router.so",
         project_root / "target" / "release" / "deps" / "libphotonic_router.so",
         project_root / "target" / "release" / "libphotonic_router.so",
+        project_root / "target" / "debug" / "deps" / "libphotonic_router.so",
+        project_root / "target" / "debug" / "libphotonic_router.so",
     ]
 
     for candidate in candidates:
