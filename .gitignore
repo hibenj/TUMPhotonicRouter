@@ -1,6 +1,8 @@
 .venv/
+.venv*/
 target/
 build/
+python/photonic_router/_rust*.so
 __pycache__/
 *.py[cod]
 .pytest_cache/

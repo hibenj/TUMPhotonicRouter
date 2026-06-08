@@ -1,5 +1,6 @@
 from routing_flow import RoutingFlowStats, run_routing_flow
 import benchmark_metadata
+from types import SimpleNamespace
 
 
 def test_routing_flow_populates_stats():
@@ -69,3 +70,64 @@ def test_resolve_auto_internal_delay_markers_per_instance(monkeypatch):
 
 def test_component_internal_delay_reads_kfactory_info_attributes():
     assert benchmark_metadata.component_internal_delay_um("straight_heater_metal") == 320.0
+
+
+def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
+    captured = {}
+
+    def fake_load_benchmark(_benchmark_name: str):
+        return SimpleNamespace(
+            netlist=SimpleNamespace(instances={}, routes={}),
+            placements={},
+        )
+
+    def fake_layout_from_schematic(_schematic: object):
+        return SimpleNamespace(
+            name="unrouted_layout",
+            bbox=(0.0, 0.0, 10.0, 10.0),
+        )
+
+    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+        return {
+            "node_types": None,
+            "internal_delays_um": None,
+        }
+
+    def fake_route_match_and_realize(
+        _layout: object,
+        _schematic: object,
+        *,
+        obstacle_config: object | None = None,
+        **_kwargs: object,
+    ):
+        captured["obstacle_config"] = obstacle_config
+        routed_layout = SimpleNamespace(name="routed_layout_rust")
+        routed_layout.write_gds = lambda *_args, **_kwargs: None
+        return SimpleNamespace(
+            routed_layout=routed_layout,
+            debug_artifacts=SimpleNamespace(
+                realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
+                static_blocked_cells=set(),
+            ),
+            path_length_analysis_info=None,
+            meander_requirements_info=None,
+            meander_insertion_report_info=None,
+        )
+
+    import routing_flow
+
+    monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
+    monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
+    monkeypatch.setattr(
+        routing_flow, "load_benchmark_metadata", fake_load_metadata
+    )
+    monkeypatch.setattr(
+        routing_flow, "route_match_and_realize", fake_route_match_and_realize
+    )
+
+    run_routing_flow("MMI8x4", debug_timing=False, show_klayout=False)
+
+    config = captured.get("obstacle_config")
+    assert hasattr(config, "obstacle_mode")
+    assert config.obstacle_mode == "bounding_boxes"
+    assert config.clear_port_open_cells_from_static is False

@@ -62,6 +62,7 @@ class RustRouteDebugArtifacts:
     routed_edge_lengths_um: dict[RoutedEdgeKey, float]
     routed_net_records: list["RoutedNetRecord"] = field(default_factory=list)
     static_blocked_cells: tuple[tuple[int, int], ...] = ()
+    static_obstacle_count: int = 0
     realization_grid_spec: tuple[int, int, float, float, float] | None = None
     realization_allow_45_degree_turns: bool = True
     realization_bend_radius_cells: int = 4
@@ -566,10 +567,21 @@ def route_match_and_realize(
     debug_timing: bool = False,
 ) -> RouteRustPipelineResult:
     """Run Phase A->(optional M1)->B entirely in route_rust."""
+    route_obstacle_config = obstacle_config
+    if debug_dir is None:
+        route_obstacle_config = _with_bbox_cell_materialization(
+            obstacle_config,
+            materialize_bbox_cells=False,
+            populate_obstacle_map=False,
+        )
+
+    t_route_nets_start = 0.0
+    if debug_timing:
+        t_route_nets_start = time.perf_counter()
     routed_layout, debug_artifacts = route_nets_rust(
         unrouted_layout,
         schematic,
-        obstacle_config=obstacle_config,
+        obstacle_config=route_obstacle_config,
         debug_dir=debug_dir,
         debug_prefix=debug_prefix,
         route_width_um=route_width_um,
@@ -579,6 +591,9 @@ def route_match_and_realize(
         debug_timing=debug_timing,
         defer_realization=True,
     )
+    if debug_timing:
+        t_route_nets_end = time.perf_counter()
+        print(f"      - route_nets_rust phase: {t_route_nets_end - t_route_nets_start:.4f} s")
 
     analysis_info = None
     requirements_info = None
@@ -595,6 +610,26 @@ def route_match_and_realize(
         requirements_info = [requirement_to_dict(req) for req in requirements]
         if debug_artifacts.realization_grid_spec is None:
             raise RuntimeError("Missing realization grid spec from routing phase.")
+        resolved_user_obstacle_config = _resolve_obstacle_config(
+            obstacle_config,
+            route_layer=route_layer,
+        )
+        # Meander box legality should use real routed-layer geometry, not
+        # conservative component bboxes. It also needs port openings cleared:
+        # candidate boxes touch the legal access regions around the current
+        # route endpoints, while route search itself stays strict/net-local.
+        meander_obstacle_config = _with_obstacle_mode(
+            resolved_user_obstacle_config,
+            obstacle_mode="rasterized_polygons",
+            clear_port_open_cells_from_static=True,
+            populate_obstacle_map=False,
+        )
+        meander_obstacle_map = build_static_obstacle_map(
+            unrouted_layout,
+            config=meander_obstacle_config,
+        )
+        meander_static_blocked_cells = tuple(sorted(set(meander_obstacle_map.blocked_cells)))
+
         records_for_realization, meander_report_info = analyze_meander_insertion_for_requirements(
             debug_artifacts.routed_net_records,
             requirements,
@@ -602,11 +637,14 @@ def route_match_and_realize(
             realization_grid_spec=debug_artifacts.realization_grid_spec,
             allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
-            static_blocked_cells=debug_artifacts.static_blocked_cells,
+            static_blocked_cells=meander_static_blocked_cells,
         )
 
     if debug_artifacts.realization_grid_spec is None:
         raise RuntimeError("Missing realization grid spec from routing phase.")
+    t_realization_start = 0.0
+    if debug_timing:
+        t_realization_start = time.perf_counter()
     realize_routed_net_records(
         routed_layout,
         records_for_realization,
@@ -616,6 +654,9 @@ def route_match_and_realize(
         allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
         bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
     )
+    if debug_timing:
+        t_realization_end = time.perf_counter()
+        print(f"      - route realization phase: {t_realization_end - t_realization_start:.4f} s")
 
     return RouteRustPipelineResult(
         routed_layout=routed_layout,
@@ -802,6 +843,67 @@ def _resolve_obstacle_config(
     return obstacle_config
 
 
+def _with_bbox_cell_materialization(
+    obstacle_config: object | None,
+    *,
+    materialize_bbox_cells: bool,
+    populate_obstacle_map: bool = True,
+) -> object | None:
+    if obstacle_config is None:
+        return {
+            "materialize_bbox_cells": materialize_bbox_cells,
+            "populate_obstacle_map": populate_obstacle_map,
+        }
+
+    if isinstance(obstacle_config, dict):
+        config_dict = dict(obstacle_config)
+        config_dict["materialize_bbox_cells"] = materialize_bbox_cells
+        config_dict["populate_obstacle_map"] = populate_obstacle_map
+        return config_dict
+
+    if is_dataclass(obstacle_config) and not isinstance(obstacle_config, type):
+        try:
+            return replace(
+                cast(Any, obstacle_config),
+                materialize_bbox_cells=materialize_bbox_cells,
+                populate_obstacle_map=populate_obstacle_map,
+            )
+        except Exception:
+            return obstacle_config
+
+    return obstacle_config
+
+
+def _with_obstacle_mode(
+    obstacle_config: object | None,
+    *,
+    obstacle_mode: str,
+    clear_port_open_cells_from_static: bool | None = None,
+    populate_obstacle_map: bool | None = None,
+) -> object | None:
+    updates: dict[str, object] = {"obstacle_mode": obstacle_mode}
+    if clear_port_open_cells_from_static is not None:
+        updates["clear_port_open_cells_from_static"] = clear_port_open_cells_from_static
+    if populate_obstacle_map is not None:
+        updates["populate_obstacle_map"] = populate_obstacle_map
+
+    if obstacle_config is None:
+        return updates
+
+    if isinstance(obstacle_config, dict):
+        config_dict = dict(obstacle_config)
+        config_dict.update(updates)
+        return config_dict
+
+    if is_dataclass(obstacle_config) and not isinstance(obstacle_config, type):
+        try:
+            return replace(cast(Any, obstacle_config), **updates)
+        except Exception:
+            return obstacle_config
+
+    return obstacle_config
+
+
 def route_nets_rust(
     unrouted_layout: Component,
     schematic: Schematic,
@@ -871,6 +973,7 @@ def route_nets_rust(
     grid = obstacle_map.grid
 
     debug_path = Path(debug_dir) if debug_dir is not None else None
+    diagnostics_enabled = debug_path is not None
     obstacle_svg = None
     route_svgs: list[Path] = []
     routed_edge_lengths_um: dict[RoutedEdgeKey, float] = {}
@@ -1063,6 +1166,14 @@ def route_nets_rust(
             if port2_spec not in port_access_cells_by_spec:
                 port_access_cells_by_spec[port2_spec] = build_port_access_cells(target_port)
 
+    global_port_open_cells = {
+        (int(cell[0]), int(cell[1]))
+        for cell in cast(
+            Iterable[tuple[int, int]],
+            getattr(obstacle_map, "port_open_cells", set()),
+        )
+    }
+
     # Use raw static geometry as the baseline truth for "real component body"
     # checks. `blocked_cells` may exclude port-open carve-outs.
     raw_blocked_obj: object
@@ -1073,13 +1184,39 @@ def route_nets_rust(
     raw_blocked_cells = cast(Iterable[tuple[int, int]], raw_blocked_obj)
     raw_static_cells = {(int(cell[0]), int(cell[1])) for cell in raw_blocked_cells}
     static_blocked_cells_before_port_reservations = raw_static_cells
-    static_cells = set(static_blocked_cells_before_port_reservations)
-    router.set_static_cells(sorted(static_cells))
+    if hasattr(obstacle_map, "blocked_static_rects"):
+        blocked_static_rects: list[tuple[int, int, int, int]] = []
+        raw_blocked_rects = cast(
+            Iterable[tuple[int, int, int, int]], getattr(obstacle_map, "blocked_static_rects")
+        )
+        for rect in raw_blocked_rects:
+            if len(rect) != 4:
+                continue
+            blocked_static_rects.append(
+                (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+            )
+        if blocked_static_rects:
+            if not hasattr(router, "set_static_rects"):
+                raise RuntimeError(
+                    "The loaded photonic_router._rust extension does not expose "
+                    "PyPhotonicRouter.set_static_rects. Rebuild it with "
+                    "`maturin develop --release`; otherwise bounding_boxes mode "
+                    "cannot use compact static rectangles."
+                )
+            router.set_static_rects(blocked_static_rects)
+        else:
+            router.set_static_cells(sorted(static_blocked_cells_before_port_reservations))
+    else:
+        static_cells = set(static_blocked_cells_before_port_reservations)
+        sorted_static_cells = sorted(static_cells)
+        router.set_static_cells(sorted_static_cells)
     committed_dynamic_cells: set[tuple[int, int]] = set()
 
     t_astar_start = 0.0
     if debug_timing:
         t_astar_start = time.perf_counter()
+    total_expanded_states = 0
+    simple_route_count = 0
 
     for net_name, inst1, port1, inst2, port2, source_port, target_port in route_jobs:
         port1_spec = f"{inst1},{port1}"
@@ -1108,17 +1245,28 @@ def route_nets_rust(
         opened_candidate_cells.update(port_access_cells_by_spec.get(port2_spec, set()))
         opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
 
-        opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
-        opened_cells_set = set(opened_candidate_cells)
+        opened_cells_set = {
+            cell
+            for cell in opened_candidate_cells
+            if cell in global_port_open_cells
+        }
+        opened_cells_set.update({source_anchor_cell, target_anchor_cell})
         opened_cells = sorted(opened_cells_set)
 
-        opened_candidate_static_overlap = (
-            opened_candidate_cells & static_blocked_cells_before_port_reservations
-        )
-        opened_static_overlap = (
-            opened_cells_set & static_blocked_cells_before_port_reservations
-        )
-        opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
+        if diagnostics_enabled:
+            opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
+            opened_candidate_static_overlap = (
+                opened_candidate_cells & static_blocked_cells_before_port_reservations
+            )
+            opened_static_overlap = (
+                opened_cells_set & static_blocked_cells_before_port_reservations
+            )
+            opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
+        else:
+            opened_candidate_dynamic_overlap = set()
+            opened_candidate_static_overlap = set()
+            opened_static_overlap = set()
+            opened_dynamic_overlap = set()
 
         route_dir = debug_path / "routes" if debug_path is not None else None
         diag_txt: Path | None = None
@@ -1281,15 +1429,20 @@ def route_nets_rust(
             )
         )
         routed_edge_lengths_um[edge_key] = float(route_obj.total_length_um)
+        expanded_states = int(getattr(route_obj, "expanded_states", 0))
+        total_expanded_states += expanded_states
+        if expanded_states == 0:
+            simple_route_count += 1
 
-        route_cells = {
-            (int(cell[0]), int(cell[1]))
-            for cell in (getattr(route_obj, "cells", None) or [])
-        }
-        _write_diagnostics(status="ok", route_cells=route_cells)
-        committed_dynamic_cells.update(
-            _inflate_cells_square(route_cells, radius_cells=block_radius_cells)
-        )
+        if diagnostics_enabled:
+            route_cells = {
+                (int(cell[0]), int(cell[1]))
+                for cell in (getattr(route_obj, "cells", None) or [])
+            }
+            _write_diagnostics(status="ok", route_cells=route_cells)
+            committed_dynamic_cells.update(
+                _inflate_cells_square(route_cells, radius_cells=block_radius_cells)
+            )
 
         if debug_path is not None:
             assert route_dir is not None
@@ -1302,6 +1455,11 @@ def route_nets_rust(
     if debug_timing:
         t_astar_end = time.perf_counter()
         print(f"      - Astar time: {t_astar_end - t_astar_start:.4f} s")
+        print(
+            "      - Route search stats: "
+            f"simple={simple_route_count}/{len(route_jobs)}, "
+            f"expanded_states={total_expanded_states}"
+        )
 
     realization_grid_spec = (
         int(grid.width),
@@ -1321,6 +1479,13 @@ def route_nets_rust(
             bend_radius_cells=bend_radius_cells,
         )
 
+    build_stats = getattr(obstacle_map, "build_stats", None)
+    static_obstacle_count = len(obstacle_map.blocked_cells)
+    if isinstance(build_stats, dict):
+        raw_count = build_stats.get("blocked_cell_count")
+        if isinstance(raw_count, int):
+            static_obstacle_count = raw_count
+
     return routed_layout, RustRouteDebugArtifacts(
         obstacle_svg=obstacle_svg,
         route_svgs=route_svgs,
@@ -1331,6 +1496,7 @@ def route_nets_rust(
         # `static_cells` above for net-to-net A* ordering, but they should not
         # globally block post-route meander box checks.
         static_blocked_cells=tuple(sorted(set(obstacle_map.blocked_cells))),
+        static_obstacle_count=int(static_obstacle_count),
         realization_grid_spec=realization_grid_spec,
         realization_allow_45_degree_turns=allow_45_degree_turns,
         realization_bend_radius_cells=bend_radius_cells,

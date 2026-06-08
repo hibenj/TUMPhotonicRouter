@@ -12,6 +12,8 @@ def test_resolve_obstacle_config_defaults_to_route_layer_when_missing():
 
     assert isinstance(resolved, StaticObstacleMapConfig)
     assert resolved.obstacle_layers == ((1, 0),)
+    assert resolved.obstacle_mode == "bounding_boxes"
+    assert resolved.clear_port_open_cells_from_static is False
 
 
 def test_resolve_obstacle_config_preserves_existing_layers():
@@ -46,3 +48,27 @@ def test_resolve_obstacle_config_sets_default_layers_for_dict():
     assert isinstance(resolved, StaticObstacleMapConfig)
     assert resolved.grid_size_um == 1.0
     assert resolved.obstacle_layers == ((7, 2),)
+    assert resolved.clear_port_open_cells_from_static is False
+
+
+def test_resolve_obstacle_config_preserves_obstacle_mode():
+    config = StaticObstacleMapConfig(
+        obstacle_mode="bounding_boxes",
+    )
+
+    resolved = _resolve_obstacle_config(config, route_layer=(1, 0))
+
+    assert isinstance(resolved, StaticObstacleMapConfig)
+    assert resolved.obstacle_mode == "bounding_boxes"
+
+
+def test_resolve_obstacle_config_preserves_clear_port_opening_option():
+    config = StaticObstacleMapConfig(
+        clear_port_open_cells_from_static=False,
+        obstacle_mode="rasterized_polygons",
+    )
+
+    resolved = _resolve_obstacle_config(config, route_layer=(1, 0))
+
+    assert isinstance(resolved, StaticObstacleMapConfig)
+    assert resolved.clear_port_open_cells_from_static is False

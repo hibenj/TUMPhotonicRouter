@@ -55,7 +55,8 @@ pub use primitives::{
 pub use static_obstacle_builder::{
     build_static_obstacle_map_from_geometry, compute_bbox, expand_bbox, grid_cell_center,
     make_grid_spec, physical_to_grid, rasterize_polygon, BBox, GridCell, Point, Polygon, PortInput,
-    StaticGridSpec, StaticObstacleBuildConfig, StaticObstacleBuildResult, StaticObstacleBuildStats,
+    StaticGridSpec, StaticObstacleBuildConfig, StaticObstacleBuildMode, StaticObstacleBuildResult,
+    StaticObstacleBuildStats,
 };
 
 pub use static_obstacle_builder::_rust;

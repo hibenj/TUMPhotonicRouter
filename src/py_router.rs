@@ -32,7 +32,7 @@ use crate::meander::{
     bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs, MeanderBox,
     MeanderPlanningMode, MeanderSide, PhysicalPoint,
 };
-use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
+use crate::obstacle_map::{pack_xy, CellKey, GridRect, ObstacleMap};
 use crate::primitives::{
     create_photonic_primitive_library, Primitive, PrimitiveLibrary, PrimitiveLibraryConfig,
 };
@@ -262,6 +262,18 @@ pub struct PyRouteResult {
     pub dense_grid_build_failures: usize,
     #[pyo3(get)]
     pub max_window_area_cells: i64,
+    #[pyo3(get)]
+    pub primitive_footprint_checks: usize,
+    #[pyo3(get)]
+    pub primitive_footprint_cells_tested: usize,
+    #[pyo3(get)]
+    pub primitive_footprint_rect_checks: usize,
+    #[pyo3(get)]
+    pub primitive_footprint_rect_rejects: usize,
+    #[pyo3(get)]
+    pub dense_grid_cells: usize,
+    #[pyo3(get)]
+    pub dense_grid_build_time_us: u64,
 }
 
 #[pyclass(name = "PortAccess")]
@@ -634,6 +646,19 @@ impl PyPhotonicRouter {
         self.clear_static_cells();
         self.add_static_cells(cells);
     }
+    fn set_static_rects(&mut self, rects: Vec<(i32, i32, i32, i32)>) {
+        self.clear_static_cells();
+        let obstacle_rects: Vec<GridRect> = rects
+            .into_iter()
+            .map(|(x_min, y_min, x_max, y_max)| GridRect {
+                x_min,
+                y_min,
+                x_max,
+                y_max,
+            })
+            .collect();
+        self.obstacle_map.set_static_rects(&obstacle_rects);
+    }
     fn add_port_open_cells(&mut self, cells: Vec<(i32, i32)>) {
         self.port_open_cells.extend(pack_cells(&cells));
     }
@@ -731,8 +756,17 @@ impl PyPhotonicRouter {
             simple_route_max_offset_cells: self.astar_cfg.simple_route_max_offset_cells,
             simple_route_min_leg_len_cells: self.astar_cfg.simple_route_min_leg_len_cells,
         };
+        let expanded_obstacle_map;
+        let search_obstacle_map = if block_radius_cells > 0 {
+            expanded_obstacle_map = self
+                .obstacle_map
+                .clone_with_expanded_dynamic_obstacles(block_radius_cells);
+            &expanded_obstacle_map
+        } else {
+            &self.obstacle_map
+        };
         let result = route_single_net_with_config(
-            &self.obstacle_map,
+            search_obstacle_map,
             &self.primitives,
             State::new(source.x, source.y, source.angle),
             State::new(target.x, target.y, target.angle),
@@ -1858,6 +1892,15 @@ fn convert_result(
         footprint_rejects: r.stats.footprint_rejects,
         dense_grid_build_failures: r.stats.dense_grid_build_failures,
         max_window_area_cells: r.stats.max_window_area_cells,
+        primitive_footprint_checks: r.stats.primitive_footprint_checks,
+        primitive_footprint_cells_tested: r.stats.primitive_footprint_cells_tested,
+        primitive_footprint_rect_checks: r.stats.primitive_footprint_rect_checks,
+        primitive_footprint_rect_rejects: r.stats.primitive_footprint_rect_rejects,
+        dense_grid_cells: r.stats.dense_grid_cells,
+        dense_grid_build_time_us: {
+            let clamped = r.stats.dense_grid_build_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
     })
 }
 
@@ -1891,6 +1934,12 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             footprint_rejects: route.footprint_rejects,
             dense_grid_build_failures: route.dense_grid_build_failures,
             max_window_area_cells: route.max_window_area_cells,
+            primitive_footprint_checks: route.primitive_footprint_checks,
+            primitive_footprint_cells_tested: route.primitive_footprint_cells_tested,
+            primitive_footprint_rect_checks: route.primitive_footprint_rect_checks,
+            primitive_footprint_rect_rejects: route.primitive_footprint_rect_rejects,
+            dense_grid_cells: route.dense_grid_cells,
+            dense_grid_build_time_us: u128::from(route.dense_grid_build_time_us),
         },
     }
 }
@@ -1952,6 +2001,12 @@ mod tests {
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
+            primitive_footprint_checks: 0,
+            primitive_footprint_cells_tested: 0,
+            primitive_footprint_rect_checks: 0,
+            primitive_footprint_rect_rejects: 0,
+            dense_grid_cells: 0,
+            dense_grid_build_time_us: 0,
         };
         let err = router
             .realize_route_polygon_with_analytic_meander(
@@ -1997,6 +2052,12 @@ mod tests {
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
+            primitive_footprint_checks: 0,
+            primitive_footprint_cells_tested: 0,
+            primitive_footprint_rect_checks: 0,
+            primitive_footprint_rect_rejects: 0,
+            dense_grid_cells: 0,
+            dense_grid_build_time_us: 0,
         };
 
         let ok_poly = router
@@ -2059,6 +2120,12 @@ mod tests {
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
+            primitive_footprint_checks: 0,
+            primitive_footprint_cells_tested: 0,
+            primitive_footprint_rect_checks: 0,
+            primitive_footprint_rect_rejects: 0,
+            dense_grid_cells: 0,
+            dense_grid_build_time_us: 0,
         };
         Python::with_gil(|py| {
             let obj = router
@@ -2113,6 +2180,12 @@ mod tests {
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
+            primitive_footprint_checks: 0,
+            primitive_footprint_cells_tested: 0,
+            primitive_footprint_rect_checks: 0,
+            primitive_footprint_rect_rejects: 0,
+            dense_grid_cells: 0,
+            dense_grid_build_time_us: 0,
         };
         let err = router
             .realize_route_polygon_with_checked_analytic_meander_box(
@@ -2184,6 +2257,12 @@ mod tests {
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
+            primitive_footprint_checks: 0,
+            primitive_footprint_cells_tested: 0,
+            primitive_footprint_rect_checks: 0,
+            primitive_footprint_rect_rejects: 0,
+            dense_grid_cells: 0,
+            dense_grid_build_time_us: 0,
         };
         Python::with_gil(|py| {
             let obj = router
@@ -2246,6 +2325,12 @@ mod tests {
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
+            primitive_footprint_checks: 0,
+            primitive_footprint_cells_tested: 0,
+            primitive_footprint_rect_checks: 0,
+            primitive_footprint_rect_rejects: 0,
+            dense_grid_cells: 0,
+            dense_grid_build_time_us: 0,
         };
         Python::with_gil(|py| {
             let obj = router
@@ -2297,6 +2382,12 @@ mod tests {
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
+            primitive_footprint_checks: 0,
+            primitive_footprint_cells_tested: 0,
+            primitive_footprint_rect_checks: 0,
+            primitive_footprint_rect_rejects: 0,
+            dense_grid_cells: 0,
+            dense_grid_build_time_us: 0,
         };
         Python::with_gil(|py| {
             let err = router
@@ -2407,6 +2498,12 @@ mod tests {
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
+            primitive_footprint_checks: 0,
+            primitive_footprint_cells_tested: 0,
+            primitive_footprint_rect_checks: 0,
+            primitive_footprint_rect_rejects: 0,
+            dense_grid_cells: 0,
+            dense_grid_build_time_us: 0,
         };
         Python::with_gil(|py| {
             let none_obj = router
@@ -2504,6 +2601,12 @@ mod tests {
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
+            primitive_footprint_checks: 0,
+            primitive_footprint_cells_tested: 0,
+            primitive_footprint_rect_checks: 0,
+            primitive_footprint_rect_rejects: 0,
+            dense_grid_cells: 0,
+            dense_grid_build_time_us: 0,
         };
         Python::with_gil(|py| {
             let auto_obj = router

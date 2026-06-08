@@ -11,7 +11,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rustc_hash::FxHashSet;
 
-use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, ClearanceMetric, ObstacleMap};
+use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, ClearanceMetric, GridRect, ObstacleMap};
 use crate::py_router::register_py_router;
 
 /// Physical point in micrometers.
@@ -35,6 +35,18 @@ pub struct PortInput {
     pub orientation: Option<f64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StaticObstacleBuildMode {
+    RasterizedPolygons,
+    BoundingBoxes,
+}
+
+impl Default for StaticObstacleBuildMode {
+    fn default() -> Self {
+        Self::BoundingBoxes
+    }
+}
+
 impl PortInput {
     pub fn new(name: String, x: f64, y: f64, orientation: Option<f64>) -> Self {
         Self {
@@ -54,6 +66,10 @@ pub struct StaticObstacleBuildConfig {
     pub clearance_um: f64,
     pub clearance_metric: ClearanceMetric,
     pub port_open_radius_um: f64,
+    pub obstacle_mode: StaticObstacleBuildMode,
+    pub clear_port_open_cells_from_static: bool,
+    pub materialize_bbox_cells: bool,
+    pub populate_obstacle_map: bool,
     pub die_bbox: Option<BBox>,
 }
 
@@ -65,6 +81,10 @@ impl Default for StaticObstacleBuildConfig {
             clearance_um: 0.5,
             clearance_metric: ClearanceMetric::Chebyshev,
             port_open_radius_um: 0.5,
+            obstacle_mode: StaticObstacleBuildMode::default(),
+            clear_port_open_cells_from_static: false,
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
             die_bbox: None,
         }
     }
@@ -94,12 +114,18 @@ pub struct StaticObstacleBuildStats {
     pub raw_blocked_cell_count: usize,
     pub blocked_cell_count: usize,
     pub port_open_cell_count: usize,
+    pub static_box_count: usize,
+    pub raw_box_area_cells: usize,
+    pub blocked_cells_after_port_opening: usize,
+    pub clear_port_open_cells_from_static: bool,
 }
 
 /// Static obstacle build result.
 #[derive(Clone, Debug)]
 pub struct StaticObstacleBuildResult {
     pub grid: StaticGridSpec,
+    pub raw_static_rects: Vec<GridRect>,
+    pub blocked_static_rects: Vec<GridRect>,
     pub raw_blocked_cells: Vec<GridCell>,
     pub blocked_cells: Vec<GridCell>,
     pub port_open_cells: Vec<GridCell>,
@@ -119,6 +145,7 @@ pub fn build_static_obstacle_map_from_geometry(
     let mut stats = StaticObstacleBuildStats {
         polygon_count: polygons.len(),
         port_count: ports.len(),
+        clear_port_open_cells_from_static: config.clear_port_open_cells_from_static,
         ..Default::default()
     };
 
@@ -131,56 +158,159 @@ pub fn build_static_obstacle_map_from_geometry(
     stats.bbox_time_s = elapsed_s(bbox_start);
 
     let raster_start = Instant::now();
-    let mut raw_blocked_keys = FxHashSet::default();
-    for polygon in polygons {
-        rasterize_polygon_into(polygon, &grid, &mut raw_blocked_keys);
-    }
-    stats.rasterization_time_s = elapsed_s(raster_start);
-    stats.raw_blocked_cell_count = raw_blocked_keys.len();
-
-    let clearance_start = Instant::now();
-    let clearance_radius = ceil_to_i32(config.clearance_um / config.grid_size_um)?;
-    let mut blocked_keys = inflate_keys(
-        raw_blocked_keys.iter().copied(),
-        grid.width,
-        grid.height,
-        clearance_radius,
-        config.clearance_metric,
-    );
-    stats.clearance_time_s = elapsed_s(clearance_start);
-
-    let port_start = Instant::now();
-    let port_radius = ceil_to_i32(config.port_open_radius_um / config.grid_size_um)?;
-    let port_base_keys = ports
-        .iter()
-        .map(|port| physical_to_grid(port.x, port.y, &grid))
-        .map(|(x, y)| pack_xy(x, y));
-    let port_open_keys = inflate_keys(
-        port_base_keys,
-        grid.width,
-        grid.height,
-        port_radius,
-        ClearanceMetric::Chebyshev,
-    );
-    for key in &port_open_keys {
-        blocked_keys.remove(key);
-    }
-    stats.port_opening_time_s = elapsed_s(port_start);
-    stats.port_open_cell_count = port_open_keys.len();
-    stats.blocked_cell_count = blocked_keys.len();
-
-    let map_start = Instant::now();
-    let blocked_cells = sorted_cells_from_keys(&blocked_keys);
+    let raw_blocked_cells;
+    let blocked_cells;
+    let mut port_open_keys: FxHashSet<CellKey> = FxHashSet::default();
+    let mut raw_static_rects: Vec<GridRect> = Vec::new();
+    let mut blocked_static_rects: Vec<GridRect> = Vec::new();
     let mut obstacle_map = ObstacleMap::new(grid.width, grid.height);
-    obstacle_map.add_static_cells(&blocked_cells);
-    stats.obstacle_map_time_s = elapsed_s(map_start);
 
-    let raw_blocked_cells = sorted_cells_from_keys(&raw_blocked_keys);
+    let clearance_radius = ceil_to_i32(config.clearance_um / config.grid_size_um)?;
+    let port_radius = ceil_to_i32(config.port_open_radius_um / config.grid_size_um)?;
+    let clear_port_open_cells = config.clear_port_open_cells_from_static;
+
+    if let Some(base_port_cells) = port_open_cells_or_empty(ports, &grid, port_radius) {
+        port_open_keys = base_port_cells;
+    }
+
+    match config.obstacle_mode {
+        StaticObstacleBuildMode::RasterizedPolygons => {
+            let mut raw_blocked_keys = FxHashSet::default();
+            for polygon in polygons {
+                rasterize_polygon_into(polygon, &grid, &mut raw_blocked_keys);
+            }
+            stats.rasterization_time_s = elapsed_s(raster_start);
+            stats.raw_blocked_cell_count = raw_blocked_keys.len();
+
+            let clearance_start = Instant::now();
+            let mut blocked_keys = inflate_keys(
+                raw_blocked_keys.iter().copied(),
+                grid.width,
+                grid.height,
+                clearance_radius,
+                config.clearance_metric,
+            );
+            stats.clearance_time_s = elapsed_s(clearance_start);
+
+            let port_start = Instant::now();
+            if clear_port_open_cells {
+                for key in &port_open_keys {
+                    blocked_keys.remove(key);
+                }
+            }
+            stats.port_opening_time_s = elapsed_s(port_start);
+            stats.port_open_cell_count = port_open_keys.len();
+            stats.blocked_cell_count = blocked_keys.len();
+
+            blocked_cells = sorted_cells_from_keys(&blocked_keys);
+            raw_blocked_cells = sorted_cells_from_keys(&raw_blocked_keys);
+
+            let map_start = Instant::now();
+            if config.populate_obstacle_map {
+                obstacle_map.add_static_cells(&blocked_cells);
+            }
+            stats.obstacle_map_time_s = elapsed_s(map_start);
+
+            stats.static_box_count = 0;
+            stats.raw_box_area_cells = 0;
+            stats.blocked_cells_after_port_opening = blocked_cells.len();
+            stats.raw_box_area_cells = raw_blocked_cells.len();
+        }
+        StaticObstacleBuildMode::BoundingBoxes => {
+            let mut raw_boxes = Vec::new();
+            for polygon in polygons {
+                if let Some(bounds) = polygon_to_grid_bbox(polygon, &grid) {
+                    stats.static_box_count += 1;
+                    stats.raw_box_area_cells = stats
+                        .raw_box_area_cells
+                        .saturating_add(grid_rect_area_cells(bounds));
+                    raw_boxes.push(bounds);
+                    raw_static_rects.push(bounds);
+                }
+            }
+            stats.rasterization_time_s = elapsed_s(raster_start);
+
+            let clearance_start = Instant::now();
+            for rect in raw_boxes {
+                let expanded =
+                    expanded_boxes_for_clearance(rect, clearance_radius, config.clearance_metric);
+                blocked_static_rects.extend_from_slice(&expanded);
+            }
+            stats.clearance_time_s = elapsed_s(clearance_start);
+            let map_start = Instant::now();
+            if config.populate_obstacle_map {
+                obstacle_map.set_static_rects(&blocked_static_rects);
+            }
+            stats.obstacle_map_time_s = elapsed_s(map_start);
+            let blocked_cell_count = blocked_static_rects
+                .iter()
+                .map(|rect| grid_rect_area_cells(*rect))
+                .sum();
+            stats.blocked_cells_after_port_opening = blocked_cell_count;
+            stats.port_opening_time_s = 0.0;
+            stats.port_open_cell_count = port_open_keys.len();
+            let blocked_cells_after_port_opening = if clear_port_open_cells {
+                let blocked_cells_with_openings: Vec<GridCell> =
+                    materialize_rects(&blocked_static_rects)
+                        .into_iter()
+                        .filter(|cell| !port_open_keys.contains(&pack_xy(cell.0, cell.1)))
+                        .collect();
+                blocked_cells_with_openings.len()
+            } else {
+                blocked_cell_count
+            };
+            stats.blocked_cells_after_port_opening = blocked_cells_after_port_opening;
+            stats.raw_blocked_cell_count = raw_static_rects
+                .iter()
+                .map(|rect| grid_rect_area_cells(*rect))
+                .sum();
+
+            if config.materialize_bbox_cells {
+                let mut blocked_cells_cells = materialize_rects(&blocked_static_rects);
+                if clear_port_open_cells {
+                    blocked_cells_cells = blocked_cells_cells
+                        .into_iter()
+                        .filter(|(x, y)| !port_open_keys.contains(&pack_xy(*x, *y)))
+                        .collect();
+                }
+                blocked_cells = blocked_cells_cells;
+
+                let mut raw_blocked_cells_rect = materialize_rects(&raw_static_rects);
+                if clear_port_open_cells {
+                    raw_blocked_cells_rect = raw_blocked_cells_rect
+                        .into_iter()
+                        .filter(|(x, y)| !port_open_keys.contains(&pack_xy(*x, *y)))
+                        .collect();
+                }
+                raw_blocked_cells = raw_blocked_cells_rect;
+            } else {
+                blocked_cells = Vec::new();
+                raw_blocked_cells = Vec::new();
+            }
+
+            // Keep raw rectangle stats for debugging and non-routing compatibility.
+            stats.static_box_count = raw_static_rects.len();
+            if config.materialize_bbox_cells {
+                stats.blocked_cell_count = blocked_cells.len();
+            } else {
+                stats.blocked_cell_count = blocked_cell_count;
+            }
+        }
+    }
+
+    let raw_blocked_cells = sorted_cells(raw_blocked_cells);
+    let blocked_cells = sorted_cells(blocked_cells);
     let port_open_cells = sorted_cells_from_keys(&port_open_keys);
     stats.total_time_s = elapsed_s(total_start);
+    if config.obstacle_mode == StaticObstacleBuildMode::RasterizedPolygons {
+        stats.raw_blocked_cell_count = raw_blocked_cells.len();
+        stats.blocked_cell_count = blocked_cells.len();
+    }
 
     Ok(StaticObstacleBuildResult {
         grid,
+        raw_static_rects,
+        blocked_static_rects,
         raw_blocked_cells,
         blocked_cells,
         port_open_cells,
@@ -312,6 +442,146 @@ fn rasterize_polygon_into(
     }
 }
 
+fn polygon_to_grid_bbox(polygon: &Polygon, grid: &StaticGridSpec) -> Option<GridRect> {
+    if polygon.len() < 3 || grid.width <= 0 || grid.height <= 0 {
+        return None;
+    }
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for &(x, y) in polygon {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+
+    if min_x.is_infinite() || max_x.is_infinite() || min_y.is_infinite() || max_y.is_infinite() {
+        return None;
+    }
+
+    let mut gx_min = ((min_x - grid.origin.0) / grid.grid_size_um).floor() as i32;
+    let mut gy_min = ((min_y - grid.origin.1) / grid.grid_size_um).floor() as i32;
+    let mut gx_max = ((max_x - grid.origin.0) / grid.grid_size_um).ceil() as i32 - 1;
+    let mut gy_max = ((max_y - grid.origin.1) / grid.grid_size_um).ceil() as i32 - 1;
+
+    gx_min = gx_min.max(0);
+    gy_min = gy_min.max(0);
+    gx_max = gx_max.min(grid.width - 1);
+    gy_max = gy_max.min(grid.height - 1);
+
+    if gx_min > gx_max || gy_min > gy_max {
+        return None;
+    }
+
+    Some(GridRect {
+        x_min: gx_min,
+        y_min: gy_min,
+        x_max: gx_max,
+        y_max: gy_max,
+    })
+}
+
+fn port_open_cells_or_empty(
+    ports: &[PortInput],
+    grid: &StaticGridSpec,
+    radius: i32,
+) -> Option<FxHashSet<CellKey>> {
+    if ports.is_empty() || grid.width <= 0 || grid.height <= 0 || radius < 0 {
+        return None;
+    }
+
+    let mut open_cells = FxHashSet::default();
+    let radius = radius.max(0);
+    for port in ports {
+        let (gx, gy) = physical_to_grid(port.x, port.y, grid);
+        if !in_bounds(gx, gy, grid.width, grid.height) {
+            continue;
+        }
+
+        for dx in -radius..=radius {
+            for dy in -radius..=radius {
+                if dx.abs().max(dy.abs()) > radius {
+                    continue;
+                }
+
+                let nx = gx + dx;
+                let ny = gy + dy;
+                if in_bounds(nx, ny, grid.width, grid.height) {
+                    open_cells.insert(pack_xy(nx, ny));
+                }
+            }
+        }
+    }
+
+    if open_cells.is_empty() {
+        None
+    } else {
+        Some(open_cells)
+    }
+}
+
+fn materialize_rects(rects: &[GridRect]) -> Vec<GridCell> {
+    let mut cells = Vec::new();
+    for rect in rects {
+        for y in rect.y_min..=rect.y_max {
+            for x in rect.x_min..=rect.x_max {
+                cells.push((x, y));
+            }
+        }
+    }
+    cells
+}
+
+fn grid_rect_area_cells(rect: GridRect) -> usize {
+    let width = (rect.x_max - rect.x_min + 1) as i64;
+    let height = (rect.y_max - rect.y_min + 1) as i64;
+    usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX)
+}
+
+fn expanded_boxes_for_clearance(
+    rect: GridRect,
+    clearance_radius: i32,
+    metric: ClearanceMetric,
+) -> Vec<GridRect> {
+    if clearance_radius <= 0 {
+        return vec![rect];
+    }
+
+    let y_min = rect.y_min.saturating_sub(clearance_radius);
+    let y_max = rect.y_max.saturating_add(clearance_radius);
+
+    match metric {
+        ClearanceMetric::Chebyshev => {
+            vec![GridRect {
+                x_min: rect.x_min.saturating_sub(clearance_radius),
+                y_min,
+                x_max: rect.x_max.saturating_add(clearance_radius),
+                y_max,
+            }]
+        }
+        ClearanceMetric::Manhattan => {
+            let mut rects = Vec::new();
+            for y in y_min..=y_max {
+                let clearance_x =
+                    clearance_radius - (rect.y_min - y).abs().min(rect.y_max - y).abs();
+                let clearance_x = clearance_radius - clearance_x.max(0);
+                let x_min = rect.x_min.saturating_sub(clearance_x);
+                let x_max = rect.x_max.saturating_add(clearance_x);
+                rects.push(GridRect {
+                    x_min,
+                    y_min: y,
+                    x_max,
+                    y_max: y,
+                });
+            }
+            rects
+        }
+    }
+}
+
 /// Return true when `point` is inside or on the boundary of `polygon`.
 pub fn point_in_polygon(point: Point, polygon: &[Point]) -> bool {
     let (x, y) = point;
@@ -390,7 +660,11 @@ where
     clearance_um,
     clearance_metric,
     port_open_radius_um,
-    die_bbox=None
+    die_bbox=None,
+    obstacle_mode="bounding_boxes",
+    clear_port_open_cells_from_static=false,
+    materialize_bbox_cells=true,
+    populate_obstacle_map=true
 ))]
 #[allow(clippy::too_many_arguments)]
 fn build_static_obstacle_map_rs(
@@ -403,8 +677,13 @@ fn build_static_obstacle_map_rs(
     clearance_metric: String,
     port_open_radius_um: f64,
     die_bbox: Option<(f64, f64, f64, f64)>,
+    obstacle_mode: &str,
+    clear_port_open_cells_from_static: bool,
+    materialize_bbox_cells: bool,
+    populate_obstacle_map: bool,
 ) -> PyResult<PyObject> {
     let metric = parse_clearance_metric(&clearance_metric).map_err(pyo3_value_error)?;
+    let mode = parse_obstacle_mode(&obstacle_mode).map_err(pyo3_value_error)?;
     let port_inputs = ports
         .into_iter()
         .map(|(name, x, y, orientation)| PortInput::new(name, x, y, orientation))
@@ -415,6 +694,10 @@ fn build_static_obstacle_map_rs(
         clearance_um,
         clearance_metric: metric,
         port_open_radius_um,
+        obstacle_mode: mode,
+        clear_port_open_cells_from_static,
+        materialize_bbox_cells,
+        populate_obstacle_map,
         die_bbox,
     };
 
@@ -446,6 +729,18 @@ fn build_py_result(py: Python<'_>, result: &StaticObstacleBuildResult) -> PyResu
     dict.set_item("raw_blocked_cells", &result.raw_blocked_cells)?;
     dict.set_item("blocked_cells", &result.blocked_cells)?;
     dict.set_item("port_open_cells", &result.port_open_cells)?;
+    let raw_static_rects: Vec<(i32, i32, i32, i32)> = result
+        .raw_static_rects
+        .iter()
+        .map(|r| (r.x_min, r.y_min, r.x_max, r.y_max))
+        .collect();
+    let blocked_static_rects: Vec<(i32, i32, i32, i32)> = result
+        .blocked_static_rects
+        .iter()
+        .map(|r| (r.x_min, r.y_min, r.x_max, r.y_max))
+        .collect();
+    dict.set_item("raw_static_rects", &raw_static_rects)?;
+    dict.set_item("blocked_static_rects", &blocked_static_rects)?;
 
     let stats = PyDict::new_bound(py);
     stats.set_item("bbox_time_s", result.stats.bbox_time_s)?;
@@ -461,7 +756,17 @@ fn build_py_result(py: Python<'_>, result: &StaticObstacleBuildResult) -> PyResu
         result.stats.raw_blocked_cell_count,
     )?;
     stats.set_item("blocked_cell_count", result.stats.blocked_cell_count)?;
+    stats.set_item("static_box_count", result.stats.static_box_count)?;
+    stats.set_item("raw_box_area_cells", result.stats.raw_box_area_cells)?;
+    stats.set_item(
+        "blocked_cells_after_port_opening",
+        result.stats.blocked_cells_after_port_opening,
+    )?;
     stats.set_item("port_open_cell_count", result.stats.port_open_cell_count)?;
+    stats.set_item(
+        "clear_port_open_cells_from_static",
+        result.stats.clear_port_open_cells_from_static,
+    )?;
     dict.set_item("stats", stats)?;
 
     Ok(dict.into_py(py))
@@ -472,6 +777,14 @@ fn parse_clearance_metric(metric: &str) -> Result<ClearanceMetric, String> {
         "manhattan" => Ok(ClearanceMetric::Manhattan),
         "chebyshev" => Ok(ClearanceMetric::Chebyshev),
         _ => Err("clearance_metric must be 'manhattan' or 'chebyshev'".to_string()),
+    }
+}
+
+fn parse_obstacle_mode(mode: &str) -> Result<StaticObstacleBuildMode, String> {
+    match mode.to_ascii_lowercase().as_str() {
+        "rasterized_polygons" => Ok(StaticObstacleBuildMode::RasterizedPolygons),
+        "bounding_boxes" => Ok(StaticObstacleBuildMode::BoundingBoxes),
+        _ => Err("obstacle_mode must be 'rasterized_polygons' or 'bounding_boxes'".to_string()),
     }
 }
 
@@ -501,6 +814,12 @@ fn ceil_to_i32(value: f64) -> Result<i32, String> {
 fn sorted_cells_from_keys(keys: &FxHashSet<CellKey>) -> Vec<GridCell> {
     let mut cells = keys.iter().copied().map(unpack_xy).collect::<Vec<_>>();
     cells.sort_unstable();
+    cells
+}
+
+fn sorted_cells(mut cells: Vec<GridCell>) -> Vec<GridCell> {
+    cells.sort_unstable();
+    cells.dedup();
     cells
 }
 
@@ -621,7 +940,11 @@ mod tests {
             clearance_um: 0.0,
             clearance_metric: ClearanceMetric::Chebyshev,
             port_open_radius_um: 1.0,
+            obstacle_mode: StaticObstacleBuildMode::RasterizedPolygons,
             die_bbox: Some((0.0, 0.0, 3.0, 3.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
         };
 
         let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
@@ -652,7 +975,11 @@ mod tests {
             clearance_um: 0.0,
             clearance_metric: ClearanceMetric::Chebyshev,
             port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::RasterizedPolygons,
             die_bbox: Some((0.0, 0.0, 3.0, 3.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
         };
 
         let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
@@ -660,6 +987,30 @@ mod tests {
         assert!(result.raw_blocked_cells.contains(&(1, 1)));
         assert!(result.port_open_cells.contains(&(1, 1)));
         assert!(!result.blocked_cells.contains(&(1, 1)));
+    }
+
+    #[test]
+    fn keeps_port_openings_in_static_blocked_when_disabled() {
+        let polygons = vec![vec![(0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)]];
+        let ports = vec![PortInput::new("o1".to_string(), 1.0, 1.0, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::RasterizedPolygons,
+            clear_port_open_cells_from_static: false,
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            die_bbox: Some((0.0, 0.0, 3.0, 3.0)),
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.raw_blocked_cells.contains(&(1, 1)));
+        assert!(result.port_open_cells.contains(&(1, 1)));
+        assert!(result.blocked_cells.contains(&(1, 1)));
     }
 
     #[test]
@@ -672,7 +1023,11 @@ mod tests {
             clearance_um: 0.0,
             clearance_metric: ClearanceMetric::Chebyshev,
             port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::RasterizedPolygons,
             die_bbox: Some((0.0, 0.0, 2.0, 2.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
         };
 
         let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
@@ -685,5 +1040,209 @@ mod tests {
     #[test]
     fn has_test_grid_helper() {
         assert_eq!(test_grid().width, 5);
+    }
+
+    #[test]
+    fn parse_obstacle_mode_strings() {
+        assert!(matches!(
+            parse_obstacle_mode("rasterized_polygons"),
+            Ok(StaticObstacleBuildMode::RasterizedPolygons)
+        ));
+        assert!(matches!(
+            parse_obstacle_mode("bounding_boxes"),
+            Ok(StaticObstacleBuildMode::BoundingBoxes)
+        ));
+        assert!(parse_obstacle_mode("invalid").is_err());
+    }
+
+    #[test]
+    fn builds_bounding_boxes_for_polygons() {
+        let polygons = vec![vec![(0.2, 0.2), (2.7, 0.4), (2.7, 2.7), (0.2, 2.7)]];
+        let ports = Vec::new();
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert_eq!(
+            result.raw_blocked_cells,
+            vec![
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (1, 0),
+                (1, 1),
+                (1, 2),
+                (2, 0),
+                (2, 1),
+                (2, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn clears_overlapping_bounding_box_cells_from_static_map() {
+        let polygons = vec![
+            vec![(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)],
+            vec![(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)],
+        ];
+        let ports = vec![PortInput::new("p1".to_string(), 2.5, 2.5, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 6.0, 6.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(!result.raw_blocked_cells.contains(&(2, 2)));
+        assert!(!result.blocked_cells.contains(&(2, 2)));
+        assert!(result.obstacle_map.is_static_blocked(2, 2));
+    }
+
+    #[test]
+    fn bounding_box_mode_populates_static_map_and_clears_port_openings() {
+        let polygons = vec![vec![(1.1, 1.1), (2.8, 1.1), (2.8, 2.8), (1.1, 2.8)]];
+        let ports = vec![PortInput::new("o1".to_string(), 1.5, 1.5, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.obstacle_map.is_static_blocked(1, 2));
+        assert!(result.obstacle_map.is_static_blocked(2, 1));
+        assert!(result.obstacle_map.is_static_blocked(1, 1));
+        assert!(!result.raw_blocked_cells.contains(&(1, 1)));
+        assert!(!result.blocked_cells.contains(&(1, 1)));
+    }
+
+    #[test]
+    fn bounding_box_mode_keeps_port_openings_in_static_blocked_when_disabled() {
+        let polygons = vec![vec![(1.1, 1.1), (2.8, 1.1), (2.8, 2.8), (1.1, 2.8)]];
+        let ports = vec![PortInput::new("o1".to_string(), 1.5, 1.5, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            clear_port_open_cells_from_static: false,
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.raw_blocked_cells.contains(&(1, 1)));
+        assert!(result.port_open_cells.contains(&(1, 1)));
+        assert!(result.blocked_cells.contains(&(1, 1)));
+        assert!(result.obstacle_map.is_static_blocked(1, 1));
+    }
+
+    #[test]
+    fn bounding_box_mode_can_skip_cell_payload_materialization() {
+        let polygons = vec![vec![(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)]];
+        let ports = Vec::new();
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            clear_port_open_cells_from_static: false,
+            materialize_bbox_cells: false,
+            populate_obstacle_map: true,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(!result.raw_static_rects.is_empty());
+        assert!(!result.blocked_static_rects.is_empty());
+        assert!(result.raw_blocked_cells.is_empty());
+        assert!(result.blocked_cells.is_empty());
+        assert!(result.obstacle_map.is_static_blocked(1, 1));
+    }
+
+    #[test]
+    fn bounding_boxes_are_conservative_for_non_rectangular_polygons() {
+        let polygons = vec![vec![(0.0, 0.0), (3.0, 0.0), (0.0, 3.0)]];
+        let ports = Vec::new();
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.raw_blocked_cells.contains(&(0, 0)));
+        assert!(result.raw_blocked_cells.contains(&(2, 2)));
+        assert!(result.raw_blocked_cells.contains(&(2, 0)));
+        assert!(result.raw_blocked_cells.contains(&(0, 2)));
+    }
+
+    #[test]
+    fn applies_clearance_to_bounding_box_obstacles() {
+        let polygons = vec![vec![(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)]];
+        let ports = Vec::new();
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 1.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 4.0, 4.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.blocked_cells.contains(&(0, 0)));
+        assert!(result.blocked_cells.contains(&(0, 1)));
+        assert!(result.blocked_cells.contains(&(0, 2)));
+        assert!(result.blocked_cells.contains(&(1, 0)));
+        assert!(result.blocked_cells.contains(&(2, 2)));
+        assert!(result.blocked_cells.contains(&(2, 0)));
     }
 }

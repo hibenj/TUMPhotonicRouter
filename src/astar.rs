@@ -5,6 +5,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::time::Instant;
 
 use rustc_hash::FxHashSet;
 
@@ -114,8 +115,108 @@ pub struct RouteSearchStats {
     pub expanded_states: usize,
     pub window_rejects: usize,
     pub footprint_rejects: usize,
+    pub primitive_footprint_checks: usize,
+    pub primitive_footprint_cells_tested: usize,
+    pub primitive_footprint_rect_checks: usize,
+    pub primitive_footprint_rect_rejects: usize,
     pub dense_grid_build_failures: usize,
     pub max_window_area_cells: i64,
+    pub dense_grid_cells: usize,
+    pub dense_grid_build_time_us: u128,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FootprintCollisionProfile {
+    is_full_rect: bool,
+    min_dx: i32,
+    max_dx: i32,
+    min_dy: i32,
+    max_dy: i32,
+    cell_count: usize,
+}
+
+impl FootprintCollisionProfile {
+    #[inline]
+    fn from_footprint(footprint: &[(i32, i32)]) -> Self {
+        let cell_count = footprint.len();
+        if footprint.is_empty() {
+            return Self {
+                is_full_rect: false,
+                min_dx: 0,
+                max_dx: -1,
+                min_dy: 0,
+                max_dy: -1,
+                cell_count,
+            };
+        }
+
+        let mut min_dx = i32::MAX;
+        let mut max_dx = i32::MIN;
+        let mut min_dy = i32::MAX;
+        let mut max_dy = i32::MIN;
+        for &(dx, dy) in footprint {
+            min_dx = min_dx.min(dx);
+            max_dx = max_dx.max(dx);
+            min_dy = min_dy.min(dy);
+            max_dy = max_dy.max(dy);
+        }
+
+        let width = max_dx.checked_sub(min_dx).and_then(|v| v.checked_add(1));
+        let height = max_dy.checked_sub(min_dy).and_then(|v| v.checked_add(1));
+        let (Some(width_usize), Some(height_usize)) = (
+            width.and_then(|v| usize::try_from(v).ok()),
+            height.and_then(|v| usize::try_from(v).ok()),
+        ) else {
+            return Self {
+                is_full_rect: false,
+                min_dx: 0,
+                max_dx: -1,
+                min_dy: 0,
+                max_dy: -1,
+                cell_count,
+            };
+        };
+
+        let area = width_usize.checked_mul(height_usize);
+        if area != Some(cell_count) {
+            return Self {
+                is_full_rect: false,
+                min_dx: 0,
+                max_dx: -1,
+                min_dy: 0,
+                max_dy: -1,
+                cell_count,
+            };
+        }
+
+        let mut sorted_footprint = footprint.to_vec();
+        sorted_footprint.sort_unstable_by(|(a_x, a_y), (b_x, b_y)| a_y.cmp(b_y).then(a_x.cmp(b_x)));
+        let mut idx = 0usize;
+        for y in min_dy..=max_dy {
+            for x in min_dx..=max_dx {
+                if idx >= sorted_footprint.len() || sorted_footprint[idx] != (x, y) {
+                    return Self {
+                        is_full_rect: false,
+                        min_dx: 0,
+                        max_dx: -1,
+                        min_dy: 0,
+                        max_dy: -1,
+                        cell_count,
+                    };
+                }
+                idx += 1;
+            }
+        }
+
+        Self {
+            is_full_rect: true,
+            min_dx,
+            max_dx,
+            min_dy,
+            max_dy,
+            cell_count,
+        }
+    }
 }
 
 const NO_PARENT: u32 = u32::MAX;
@@ -188,6 +289,9 @@ struct DenseRoutingGrid {
     bounds: RoutingBounds,
     width: i32,
     blocked: Vec<u8>,
+    blocked_prefix: Option<Vec<u32>>,
+    blocked_count: usize,
+    build_time_us: u128,
 }
 
 impl DenseRoutingGrid {
@@ -197,6 +301,7 @@ impl DenseRoutingGrid {
         opened_cells: Option<&FxHashSet<CellKey>>,
         max_dense_obstacle_cells: usize,
     ) -> Option<Self> {
+        let start = Instant::now();
         let width = bounds.max_x.checked_sub(bounds.min_x)?.checked_add(1)?;
         let height = bounds.max_y.checked_sub(bounds.min_y)?.checked_add(1)?;
         if width <= 0 || height <= 0 {
@@ -211,6 +316,7 @@ impl DenseRoutingGrid {
         }
 
         let mut blocked = vec![0u8; cell_count];
+        let mut blocked_count = 0usize;
         for local_y in 0..height {
             for local_x in 0..width {
                 let x = bounds.min_x + local_x;
@@ -222,11 +328,31 @@ impl DenseRoutingGrid {
                 let opened = opened_cells
                     .map(|cells| cells.contains(&pack_xy(x, y)))
                     .unwrap_or(false);
-                blocked[idx] = if opened || !obstacle_map.is_blocked(x, y) {
-                    0
-                } else {
-                    1
-                };
+                let is_blocked = obstacle_map.is_dynamic_blocked(x, y)
+                    || (!opened && obstacle_map.is_static_blocked(x, y));
+                if is_blocked {
+                    blocked_count += 1;
+                    blocked[idx] = 1;
+                }
+            }
+        }
+
+        let stride = usize::try_from(width).ok()?.checked_add(1)?;
+        let mut blocked_prefix =
+            vec![0u32; stride.checked_mul(usize::try_from(height).ok()?.checked_add(1)?)?];
+        for local_y in 0..height {
+            let mut row_sum = 0u32;
+            let y_base = usize::try_from(local_y).ok()?;
+            let src_base = y_base.checked_mul(width_usize)?;
+            let prefix_row = (y_base + 1).checked_mul(stride)?;
+            let prefix_above = y_base.checked_mul(stride)?;
+            for local_x in 0..width {
+                let x_idx = usize::try_from(local_x).ok()?;
+                let blocked_idx = src_base.checked_add(x_idx)?;
+                row_sum = row_sum.saturating_add(u32::from(blocked[blocked_idx]));
+                let prefix_idx = prefix_row.checked_add(x_idx + 1)?;
+                let above = blocked_prefix[prefix_above + x_idx + 1];
+                blocked_prefix[prefix_idx] = above.saturating_add(row_sum);
             }
         }
 
@@ -234,6 +360,9 @@ impl DenseRoutingGrid {
             bounds,
             width,
             blocked,
+            blocked_prefix: Some(blocked_prefix),
+            blocked_count,
+            build_time_us: start.elapsed().as_micros(),
         })
     }
 
@@ -251,11 +380,137 @@ impl DenseRoutingGrid {
     }
 
     #[inline]
+    fn blocked_count(&self) -> usize {
+        self.blocked_count
+    }
+
+    #[inline]
+    fn build_time_us(&self) -> u128 {
+        self.build_time_us
+    }
+
+    #[inline]
+    fn blocked_count_in_local_rect(
+        &self,
+        local_min_x: i32,
+        local_max_x: i32,
+        local_min_y: i32,
+        local_max_y: i32,
+    ) -> Option<u32> {
+        let height = self
+            .bounds
+            .max_y
+            .checked_sub(self.bounds.min_y)?
+            .checked_add(1)?;
+        let width = self.width;
+        if local_min_x > local_max_x || local_min_y > local_max_y {
+            return None;
+        }
+        if local_min_x < 0 || local_min_y < 0 || local_max_x >= width || local_max_y >= height {
+            return None;
+        }
+
+        let prefix = self.blocked_prefix.as_ref()?;
+        let width_usize = usize::try_from(width).ok()?;
+        let stride = width_usize.checked_add(1)?;
+        let x1 = usize::try_from(local_min_x).ok()?;
+        let y1 = usize::try_from(local_min_y).ok()?;
+        let x2 = usize::try_from(local_max_x).ok()?;
+        let y2 = usize::try_from(local_max_y).ok()?;
+
+        let a = i64::from(prefix[(y2 + 1).checked_mul(stride)? + (x2 + 1)]);
+        let b = i64::from(prefix[y1.checked_mul(stride)? + (x2 + 1)]);
+        let c = i64::from(prefix[(y2 + 1).checked_mul(stride)? + x1]);
+        let d = i64::from(prefix[y1.checked_mul(stride)? + x1]);
+        let total = a + d - b - c;
+        if total < 0 {
+            Some(0)
+        } else {
+            u32::try_from(total).ok()
+        }
+    }
+
+    #[inline]
+    fn primitive_footprint_free_with_profile(
+        &self,
+        origin_x: i32,
+        origin_y: i32,
+        footprint: &[(i32, i32)],
+        profile: &FootprintCollisionProfile,
+        stats: &mut RouteSearchStats,
+    ) -> bool {
+        if profile.is_full_rect {
+            let rect_min_x = match origin_x.checked_add(profile.min_dx) {
+                Some(x) => x,
+                None => return false,
+            };
+            let rect_max_x = match origin_x.checked_add(profile.max_dx) {
+                Some(x) => x,
+                None => return false,
+            };
+            let rect_min_y = match origin_y.checked_add(profile.min_dy) {
+                Some(y) => y,
+                None => return false,
+            };
+            let rect_max_y = match origin_y.checked_add(profile.max_dy) {
+                Some(y) => y,
+                None => return false,
+            };
+            let local_min_x = match rect_min_x.checked_sub(self.bounds.min_x) {
+                Some(x) => x,
+                None => return false,
+            };
+            let local_max_x = match rect_max_x.checked_sub(self.bounds.min_x) {
+                Some(x) => x,
+                None => return false,
+            };
+            let local_min_y = match rect_min_y.checked_sub(self.bounds.min_y) {
+                Some(y) => y,
+                None => return false,
+            };
+            let local_max_y = match rect_max_y.checked_sub(self.bounds.min_y) {
+                Some(y) => y,
+                None => return false,
+            };
+            stats.primitive_footprint_rect_checks += 1;
+            stats.primitive_footprint_cells_tested += profile.cell_count;
+            match self.blocked_count_in_local_rect(
+                local_min_x,
+                local_max_x,
+                local_min_y,
+                local_max_y,
+            ) {
+                Some(blocked_cells) => blocked_cells == 0,
+                None => false,
+            }
+        } else {
+            let tested_cells = footprint.len();
+            stats.primitive_footprint_cells_tested += tested_cells;
+            for (dx, dy) in footprint.iter().copied() {
+                let x = match origin_x.checked_add(dx) {
+                    Some(x) => x,
+                    None => return false,
+                };
+                let y = match origin_y.checked_add(dy) {
+                    Some(y) => y,
+                    None => return false,
+                };
+                if self.is_blocked(x, y) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+
+    #[cfg(test)]
+    #[inline]
     fn primitive_footprint_free(
         &self,
         origin_x: i32,
         origin_y: i32,
         footprint: &[(i32, i32)],
+        stats: &mut RouteSearchStats,
     ) -> bool {
         for (dx, dy) in footprint.iter().copied() {
             let x = match origin_x.checked_add(dx) {
@@ -270,6 +525,7 @@ impl DenseRoutingGrid {
                 return false;
             }
         }
+        stats.primitive_footprint_cells_tested += footprint.len();
         true
     }
 
@@ -347,7 +603,7 @@ pub fn route_single_net_with_config(
     primitives: &PrimitiveLibrary,
     source: State,
     target: State,
-    _port_open_cells: Option<&FxHashSet<CellKey>>,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
     config: &AStarConfig,
 ) -> Option<RouteResult> {
     if config.target_tolerance_cells < 0 {
@@ -365,6 +621,9 @@ pub fn route_single_net_with_config(
         return None;
     }
     let mut anchor_open_cells = FxHashSet::default();
+    if let Some(port_open_cells) = port_open_cells {
+        anchor_open_cells.extend(port_open_cells.iter().copied());
+    }
     anchor_open_cells.insert(pack_xy(source.x, source.y));
     anchor_open_cells.insert(pack_xy(target.x, target.y));
 
@@ -374,9 +633,7 @@ pub fn route_single_net_with_config(
         let z_config = SimpleZRouteConfig {
             max_offset_cells: config.simple_route_max_offset_cells,
             include_zero_offset: true,
-            min_leg_len_cells: config
-                .simple_route_min_leg_len_cells
-                .max(bend_radius_cells),
+            min_leg_len_cells: config.simple_route_min_leg_len_cells.max(bend_radius_cells),
         };
         if let Some(candidate) = try_straight_l_or_z_candidate_with_config(
             source,
@@ -523,12 +780,8 @@ fn simple_candidate_to_route_result(
 
         if i + 1 < segment_count {
             let delta = turn_delta(headings[i], headings[i + 1])?;
-            let bend_primitive_id = find_bend_primitive_id(
-                current.angle,
-                delta,
-                bend_radius_cells,
-                primitives,
-            )?;
+            let bend_primitive_id =
+                find_bend_primitive_id(current.angle, delta, bend_radius_cells, primitives)?;
             let primitive = find_primitive(primitives, current.angle, bend_primitive_id)?;
             primitive_ids.push(primitive.id);
             total_length_um += primitive.length_um;
@@ -750,7 +1003,6 @@ fn route_single_net_with_bounds(
         }
     };
 
-    let mut open_set = BinaryHeap::new();
     let mut storage = DenseSearchStorage::new(bounds, config.max_dense_states)?;
     let dense_grid = match DenseRoutingGrid::from_obstacle_map(
         obstacle_map,
@@ -764,6 +1016,20 @@ fn route_single_net_with_bounds(
             return None;
         }
     };
+    stats.dense_grid_cells = dense_grid.blocked_count();
+    stats.dense_grid_build_time_us = dense_grid.build_time_us();
+
+    let primitive_footprint_profiles: Vec<Vec<FootprintCollisionProfile>> = (0u8..8u8)
+        .map(|angle| {
+            primitives
+                .get_primitives_for_angle(angle)
+                .iter()
+                .map(|primitive| FootprintCollisionProfile::from_footprint(&primitive.footprint))
+                .collect()
+        })
+        .collect();
+
+    let mut open_set = BinaryHeap::new();
     let mut counter = 0u64;
     let source_idx = storage.state_to_idx(source)?;
 
@@ -803,8 +1069,10 @@ fn route_single_net_with_bounds(
         stats.expanded_states += 1;
 
         let current_g = storage.g_costs[idx];
+        let angle = state.angle as usize;
         let primitive_bucket = primitives.get_primitives_for_angle(state.angle);
-        for primitive in primitive_bucket.iter() {
+        let footprint_profiles = &primitive_footprint_profiles[angle];
+        for (primitive, profile) in primitive_bucket.iter().zip(footprint_profiles.iter()) {
             let next_state = State::new(
                 state.x.checked_add(primitive.dx)?,
                 state.y.checked_add(primitive.dy)?,
@@ -818,9 +1086,19 @@ fn route_single_net_with_bounds(
                 stats.window_rejects += 1;
                 continue;
             }
+            stats.primitive_footprint_checks += 1;
             // TODO: bounds may need primitive-footprint margin to avoid rejecting valid routes near window edges.
-            if !dense_grid.primitive_footprint_free(state.x, state.y, &primitive.footprint) {
+            if !dense_grid.primitive_footprint_free_with_profile(
+                state.x,
+                state.y,
+                &primitive.footprint,
+                profile,
+                stats,
+            ) {
                 stats.footprint_rejects += 1;
+                if profile.is_full_rect {
+                    stats.primitive_footprint_rect_rejects += 1;
+                }
                 continue;
             }
             let Some(next_idx) = storage.state_to_idx(next_state) else {
@@ -1485,7 +1763,7 @@ mod tests {
     }
 
     #[test]
-    fn opened_cells_cannot_unblock_non_anchor_static_cells() {
+    fn opened_cells_can_unblock_explicit_static_cells() {
         let mut map = ObstacleMap::new(7, 1);
         map.add_static_cell(3, 0);
         let mut opened = FxHashSet::default();
@@ -1502,7 +1780,8 @@ mod tests {
                 ..AStarConfig::default()
             },
         );
-        assert!(result.is_none());
+        let route = result.expect("opened cells should allow exact static overlap");
+        assert_eq!(route.stats.expanded_states, 0);
     }
 
     #[test]
@@ -1762,6 +2041,24 @@ mod tests {
     }
 
     #[test]
+    fn dense_grid_opened_cells_do_not_unblock_dynamic_obstacles() {
+        let mut map = ObstacleMap::new(8, 6);
+        assert!(map.commit_route(1, &[(3, 2)]));
+        let mut opened = FxHashSet::default();
+        opened.insert(pack_xy(3, 2));
+        let bounds = RoutingBounds {
+            min_x: 2,
+            max_x: 5,
+            min_y: 1,
+            max_y: 4,
+        };
+
+        let opened_grid =
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000).expect("grid");
+        assert!(opened_grid.is_blocked(3, 2));
+    }
+
+    #[test]
     fn dense_grid_out_of_bounds_is_blocked() {
         let map = ObstacleMap::new(8, 6);
         let grid = DenseRoutingGrid::from_obstacle_map(
@@ -1796,10 +2093,72 @@ mod tests {
             1_000,
         )
         .expect("grid");
+        let mut stats = RouteSearchStats::default();
+        let rect_profile = FootprintCollisionProfile::from_footprint(&[(0, 0), (1, 0)]);
+        let mut footprint_rejects_profile = RouteSearchStats::default();
 
-        assert!(grid.primitive_footprint_free(2, 2, &[(0, 0), (1, 0)]));
-        assert!(!grid.primitive_footprint_free(3, 2, &[(0, 0), (1, 0)]));
-        assert!(!grid.primitive_footprint_free(5, 2, &[(0, 0), (1, 0)]));
+        assert!(grid.primitive_footprint_free(2, 2, &[(0, 0), (1, 0)], &mut stats));
+        assert!(!grid.primitive_footprint_free(3, 2, &[(0, 0), (1, 0)], &mut stats));
+        assert!(!grid.primitive_footprint_free(5, 2, &[(0, 0), (1, 0)], &mut stats));
+        assert!(grid.primitive_footprint_free_with_profile(
+            2,
+            2,
+            &[(0, 0), (1, 0)],
+            &rect_profile,
+            &mut footprint_rejects_profile,
+        ));
+    }
+
+    #[test]
+    fn dense_grid_rect_profile_matches_opening_and_boundaries() {
+        let mut opened = FxHashSet::default();
+        opened.insert(pack_xy(3, 2));
+        let mut map = ObstacleMap::new(8, 6);
+        map.add_static_cell(3, 2);
+
+        let grid = DenseRoutingGrid::from_obstacle_map(
+            &map,
+            RoutingBounds {
+                min_x: 2,
+                max_x: 5,
+                min_y: 1,
+                max_y: 4,
+            },
+            Some(&opened),
+            1_000,
+        )
+        .expect("grid");
+        let footprint = &[(0, 0), (1, 0), (2, 0)];
+        let profile = FootprintCollisionProfile::from_footprint(footprint);
+        let mut stats = RouteSearchStats::default();
+
+        assert!(grid.primitive_footprint_free_with_profile(2, 2, footprint, &profile, &mut stats,));
+        assert!(!grid.primitive_footprint_free_with_profile(1, 2, footprint, &profile, &mut stats,));
+        assert!(!grid.primitive_footprint_free_with_profile(4, 2, footprint, &profile, &mut stats,));
+        assert!(!grid.primitive_footprint_free_with_profile(5, 2, footprint, &profile, &mut stats,));
+    }
+
+    #[test]
+    fn dense_grid_obstacle_profile_counters_increase_during_astar() {
+        let map = ObstacleMap::new(12, 5);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 2, 0),
+            State::new(8, 2, 0),
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("route should exist with direct A* run");
+
+        assert!(result.stats.primitive_footprint_checks > 0);
+        assert!(result.stats.primitive_footprint_rect_checks > 0);
+        assert_eq!(result.stats.dense_grid_cells, 0);
     }
 
     #[test]

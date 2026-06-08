@@ -22,6 +22,7 @@ from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import (
     route_match_and_realize,
 )
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 
 @dataclass
@@ -103,6 +104,7 @@ def run_routing_flow(
     enable_path_length_matching: bool = False,
     allow_45_degree_turns: bool = True,
     max_iterations: int = 500_000,
+    static_obstacle_config: StaticObstacleMapConfig | None = None,
     stats: RoutingFlowStats | None = None,
 ) -> Component:
     """Execute the routing flow for a given benchmark.
@@ -125,6 +127,8 @@ def run_routing_flow(
                       analysis and compute per-edge missing lengths.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
         max_iterations: Maximum A* state expansions per route attempt.
+        static_obstacle_config: Optional obstacle builder config. If omitted,
+            strict bounding-box static obstacles are used.
 
     Returns:
         The routed layout component.
@@ -145,6 +149,11 @@ def run_routing_flow(
 
     if stats is not None:
         stats.benchmark_name = benchmark_name
+
+    route_static_obstacle_config = static_obstacle_config or StaticObstacleMapConfig(
+        obstacle_mode="bounding_boxes",
+        clear_port_open_cells_from_static=False,
+    )
 
     t_flow_start = time.perf_counter()
 
@@ -235,6 +244,7 @@ def run_routing_flow(
             debug_timing=debug_timing,
             allow_45_degree_turns=allow_45_degree_turns,
             max_iterations=max_iterations,
+            obstacle_config=route_static_obstacle_config,
         )
     except Exception:
         print("      ✗ Routing failed.")
@@ -252,8 +262,10 @@ def run_routing_flow(
             width, height, *_ = debug_artifacts.realization_grid_spec
             stats.static_grid_width = int(width)
             stats.static_grid_height = int(height)
-        if debug_artifacts.static_blocked_cells:
-            blocked_count = len(debug_artifacts.static_blocked_cells)
+        blocked_count = len(debug_artifacts.static_blocked_cells)
+        if blocked_count == 0:
+            blocked_count = int(getattr(debug_artifacts, "static_obstacle_count", 0) or 0)
+        if blocked_count > 0:
             stats.blocked_cells = blocked_count
             stats.raw_blocked_cells = blocked_count
             if isinstance(stats.static_grid_width, int) and isinstance(stats.static_grid_height, int):
@@ -374,6 +386,9 @@ def run_routing_flow(
             routed_layout.show()
         except Exception as e:
             print(f"      - Warning: failed to open layout in KLayout: {e}")
+    else:
+        print("      - Write GDS...")
+        routed_layout.write_gds(f"build/routed_{benchmark_name}.gds")
 
     if debug_timing:
         t_end = time.perf_counter()
@@ -392,7 +407,11 @@ if __name__ == "__main__":
     run_routing_flow("mmi_heater_8x4",
                      debug_svgs=False,
                      debug_timing=True,
-                     debug_meanders=False,
-                     show_klayout=True,
+                     debug_meanders=True,
+                     show_klayout=False,
                      allow_45_degree_turns=False,
-                     enable_path_length_matching=True)
+                     enable_path_length_matching=True,
+                     static_obstacle_config=StaticObstacleMapConfig(
+                         obstacle_mode="bounding_boxes",
+                         clear_port_open_cells_from_static=False,  # strict net-local openings
+                     ),)

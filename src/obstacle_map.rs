@@ -32,6 +32,15 @@ pub struct WaveguideFootprint {
     pub blocked_cells: FxHashSet<CellKey>,
 }
 
+/// Inclusive integer-grid rectangle for compact obstacle storage.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GridRect {
+    pub x_min: i32,
+    pub y_min: i32,
+    pub x_max: i32,
+    pub y_max: i32,
+}
+
 /// Pack signed `(x, y)` grid coordinates into a compact `u64` key.
 ///
 /// The operation preserves the full `i32` coordinate range using two's-complement
@@ -60,6 +69,7 @@ pub struct ObstacleMap {
     width: i32,
     height: i32,
     occupancy: Vec<u8>,
+    static_rects: Vec<GridRect>,
     static_obstacles: FxHashMap<CellKey, u16>,
     dynamic_obstacles: FxHashMap<CellKey, u16>,
     net_routes: FxHashMap<NetId, Vec<CellKey>>,
@@ -85,6 +95,7 @@ impl ObstacleMap {
             width,
             height,
             occupancy: vec![0; cell_count],
+            static_rects: Vec::new(),
             static_obstacles: FxHashMap::default(),
             dynamic_obstacles: FxHashMap::default(),
             net_routes: FxHashMap::default(),
@@ -134,6 +145,19 @@ impl ObstacleMap {
         true
     }
 
+    /// Add a compact static rectangle.
+    pub fn add_static_rect(&mut self, rect: GridRect) {
+        if let Some(rect) = normalize_rect(rect) {
+            self.static_rects.push(rect);
+        }
+    }
+
+    /// Add compact static rectangles.
+    pub fn add_static_rects(&mut self, rects: &[GridRect]) {
+        self.static_rects
+            .extend(rects.iter().copied().filter_map(normalize_rect));
+    }
+
     /// Add many static obstacle references. Returns the number of in-bounds cells added.
     pub fn add_static_cells(&mut self, cells: &[(i32, i32)]) -> usize {
         let mut added = 0;
@@ -143,6 +167,26 @@ impl ObstacleMap {
             }
         }
         added
+    }
+
+    /// Remove all compact static rectangles.
+    pub fn clear_static_rects(&mut self) {
+        self.static_rects.clear();
+    }
+
+    /// Replace all compact static rectangles.
+    pub fn set_static_rects(&mut self, rects: &[GridRect]) {
+        self.static_rects.clear();
+        self.add_static_rects(rects);
+    }
+
+    /// Remove every static obstacle entry (compact + cell-based).
+    pub fn clear_static_cells(&mut self) {
+        self.static_obstacles.clear();
+        self.static_rects.clear();
+        for cell in &mut self.occupancy {
+            *cell &= !STATIC_BIT;
+        }
     }
 
     /// Remove one static obstacle reference. Returns true when a reference was removed.
@@ -163,7 +207,7 @@ impl ObstacleMap {
     /// Out-of-bounds cells are not static obstacles, but they are considered
     /// unavailable by [`Self::is_blocked`] and free-space checks.
     pub fn is_static_blocked(&self, x: i32, y: i32) -> bool {
-        self.read_occupancy_bit(x, y, STATIC_BIT)
+        self.read_occupancy_bit(x, y, STATIC_BIT) || self.is_static_rect_blocked(x, y)
     }
 
     /// Return true if a committed route blocks this in-bounds cell.
@@ -178,11 +222,9 @@ impl ObstacleMap {
         if !self.in_bounds(x, y) {
             return true;
         }
-        self.occupancy
-            .get(self.dense_idx(x, y).expect("in-bounds index must exist"))
-            .copied()
-            .unwrap_or(0)
-            != 0
+        self.read_occupancy_bit(x, y, STATIC_BIT)
+            || self.read_occupancy_bit(x, y, DYNAMIC_BIT)
+            || self.is_static_rect_blocked(x, y)
     }
 
     /// Total static plus dynamic reference count for an in-bounds cell.
@@ -214,6 +256,19 @@ impl ObstacleMap {
             let key = pack_xy(x, y);
             if seen.insert(key) {
                 keys.push(key);
+            }
+        }
+
+        let old_route_keys: FxHashSet<CellKey> = self
+            .net_routes
+            .get(&net_id)
+            .map(|route| route.iter().copied().collect())
+            .unwrap_or_default();
+        for &key in &keys {
+            let existing_refs = self.dynamic_obstacles.get(&key).copied().unwrap_or(0);
+            let same_net_refs = u16::from(old_route_keys.contains(&key));
+            if existing_refs > same_net_refs {
+                return false;
             }
         }
 
@@ -259,6 +314,94 @@ impl ObstacleMap {
         self.net_routes.get(&net_id).map(Vec::as_slice)
     }
 
+    /// Return a copy whose dynamic obstacles are expanded by `radius_cells`.
+    ///
+    /// This is intended for route search. Committed routes are already stored
+    /// with their own blockage radius; expanding them by the candidate route's
+    /// radius makes centerline search reject paths whose future committed
+    /// footprint would overlap existing routed footprints.
+    pub fn clone_with_expanded_dynamic_obstacles(&self, radius_cells: i32) -> Self {
+        if radius_cells <= 0 {
+            return self.clone();
+        }
+
+        let mut expanded = self.clone();
+        let source_keys: Vec<CellKey> = self.dynamic_obstacles.keys().copied().collect();
+        for key in source_keys {
+            let (x, y) = unpack_xy(key);
+            for dx in -radius_cells..=radius_cells {
+                for dy in -radius_cells..=radius_cells {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if !expanded.in_bounds(nx, ny) {
+                        continue;
+                    }
+                    let expanded_key = pack_xy(nx, ny);
+                    if Self::increment_ref(&mut expanded.dynamic_obstacles, expanded_key) {
+                        expanded.set_occupancy_bit(nx, ny, DYNAMIC_BIT);
+                    }
+                }
+            }
+        }
+        expanded
+    }
+
+    /// Return true when all cells in `rect` are free for routing.
+    pub fn rect_free(&self, rect: GridRect, opened_cells: Option<&FxHashSet<CellKey>>) -> bool {
+        !self.rect_blocked(rect, opened_cells)
+    }
+
+    /// Return true when any cell in `rect` is blocked for routing.
+    ///
+    /// `opened_cells` allows exact-cell openings for the current net.
+    pub fn rect_blocked(&self, rect: GridRect, opened_cells: Option<&FxHashSet<CellKey>>) -> bool {
+        let Some(rect) = normalize_rect(rect) else {
+            return false;
+        };
+        if !self.in_bounds(rect.x_min, rect.y_min) || !self.in_bounds(rect.x_max, rect.y_max) {
+            return true;
+        }
+        if self.rect_blocked_by_static_rects(&rect, opened_cells) {
+            return true;
+        }
+
+        for y in rect.y_min..=rect.y_max {
+            for x in rect.x_min..=rect.x_max {
+                if !self.check_cell_free(x, y, opened_cells) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Return true when there is a compact-rect static blockage in `rect`.
+    fn rect_blocked_by_static_rects(
+        &self,
+        query: &GridRect,
+        opened_cells: Option<&FxHashSet<CellKey>>,
+    ) -> bool {
+        for static_rect in &self.static_rects {
+            let Some(overlap) = intersect_rects(query, static_rect) else {
+                continue;
+            };
+            let Some(opened_cells) = opened_cells else {
+                return true;
+            };
+            if grid_rect_area_cells(overlap) > opened_cells.len() {
+                return true;
+            }
+            for y in overlap.y_min..=overlap.y_max {
+                for x in overlap.x_min..=overlap.x_max {
+                    if !opened_cells.contains(&pack_xy(x, y)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Add a history/congestion penalty to an in-bounds cell.
     ///
     /// Returns false if the cell is out of bounds. Cost addition saturates at
@@ -288,8 +431,9 @@ impl ObstacleMap {
 
     /// Check whether every listed cell is in bounds and free.
     ///
-    /// `opened_cells` temporarily overrides static and dynamic blocking for
-    /// source/target port cells. It does not make out-of-bounds cells valid.
+    /// `opened_cells` temporarily overrides static blocking for source/target
+    /// port cells. Dynamic routed-net obstacles remain blocked. Out-of-bounds
+    /// cells are always invalid.
     pub fn check_cells_free(
         &self,
         cells: &[(i32, i32)],
@@ -411,13 +555,16 @@ impl ObstacleMap {
         }
 
         let key = pack_xy(x, y);
+        if self.read_occupancy_bit(x, y, DYNAMIC_BIT) {
+            return false;
+        }
         if let Some(opened) = opened_cells {
             if opened.contains(&key) {
                 return true;
             }
         }
 
-        !self.is_blocked(x, y)
+        !self.is_static_blocked(x, y)
     }
 
     #[inline]
@@ -443,6 +590,12 @@ impl ObstacleMap {
         if let Some(idx) = self.dense_idx(x, y) {
             self.occupancy[idx] &= !bit;
         }
+    }
+
+    fn is_static_rect_blocked(&self, x: i32, y: i32) -> bool {
+        self.static_rects
+            .iter()
+            .any(|rect| x >= rect.x_min && x <= rect.x_max && y >= rect.y_min && y <= rect.y_max)
     }
 
     #[inline]
@@ -475,6 +628,44 @@ impl ObstacleMap {
 
         true
     }
+}
+
+#[inline]
+fn intersect_rects(a: &GridRect, b: &GridRect) -> Option<GridRect> {
+    let x_min = a.x_min.max(b.x_min);
+    let y_min = a.y_min.max(b.y_min);
+    let x_max = a.x_max.min(b.x_max);
+    let y_max = a.y_max.min(b.y_max);
+
+    if x_min > x_max || y_min > y_max {
+        None
+    } else {
+        Some(GridRect {
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+        })
+    }
+}
+
+#[inline]
+fn grid_rect_area_cells(rect: GridRect) -> usize {
+    let width = i64::from(rect.x_max - rect.x_min + 1);
+    let height = i64::from(rect.y_max - rect.y_min + 1);
+    usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX)
+}
+
+fn normalize_rect(rect: GridRect) -> Option<GridRect> {
+    if rect.x_min > rect.x_max || rect.y_min > rect.y_max {
+        return None;
+    }
+    if rect.x_min < 0 || rect.y_min < 0 {
+        return None;
+    }
+    // The map-level bounds are validated by callers (`rect_blocked`,
+    // `check_cell_free`, and `check_cell` methods) before use.
+    Some(rect)
 }
 
 const STATIC_BIT: u8 = 1 << 0;
@@ -520,6 +711,60 @@ mod tests {
     }
 
     #[test]
+    fn opened_cells_do_not_unblock_dynamic_obstacles() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route(7, &[(2, 2)]));
+        let mut opened = FxHashSet::default();
+        opened.insert(pack_xy(2, 2));
+
+        assert!(!map.check_cells_free(&[(2, 2)], Some(&opened)));
+        assert!(map.rect_blocked(
+            GridRect {
+                x_min: 2,
+                y_min: 2,
+                x_max: 2,
+                y_max: 2,
+            },
+            Some(&opened),
+        ));
+    }
+
+    #[test]
+    fn commit_route_rejects_other_net_dynamic_overlap() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route(1, &[(2, 2), (3, 2)]));
+
+        assert!(!map.commit_route(2, &[(3, 2), (4, 2)]));
+        assert!(map.is_dynamic_blocked(2, 2));
+        assert!(map.is_dynamic_blocked(3, 2));
+        assert!(!map.is_dynamic_blocked(4, 2));
+        assert!(map.get_net_cells(2).is_none());
+    }
+
+    #[test]
+    fn commit_route_allows_same_net_replacement_overlap() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route(1, &[(2, 2), (3, 2)]));
+
+        assert!(map.commit_route(1, &[(3, 2), (4, 2)]));
+        assert!(!map.is_dynamic_blocked(2, 2));
+        assert!(map.is_dynamic_blocked(3, 2));
+        assert!(map.is_dynamic_blocked(4, 2));
+    }
+
+    #[test]
+    fn clone_with_expanded_dynamic_obstacles_preserves_original_map() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route(1, &[(3, 3)]));
+
+        let expanded = map.clone_with_expanded_dynamic_obstacles(1);
+        assert!(expanded.is_dynamic_blocked(2, 2));
+        assert!(expanded.is_dynamic_blocked(4, 4));
+        assert!(!map.is_dynamic_blocked(2, 2));
+        assert!(!map.is_dynamic_blocked(4, 4));
+    }
+
+    #[test]
     fn static_dynamic_overlap_requires_clearing_both() {
         let mut map = ObstacleMap::new(8, 8);
         assert!(map.add_static_cell(4, 4));
@@ -553,5 +798,88 @@ mod tests {
         assert!(!map.is_dynamic_blocked(3, 0));
         assert!(!map.add_static_cell(3, 0));
         assert!(!map.remove_static_cell(-1, 0));
+    }
+
+    #[test]
+    fn compact_static_rect_blocks_cells() {
+        let mut map = ObstacleMap::new(8, 8);
+        map.add_static_rect(GridRect {
+            x_min: 2,
+            y_min: 1,
+            x_max: 3,
+            y_max: 4,
+        });
+        assert!(map.is_static_blocked(2, 1));
+        assert!(map.is_static_blocked(3, 4));
+        assert!(!map.is_static_blocked(1, 1));
+        assert!(map.is_blocked(2, 4));
+    }
+
+    #[test]
+    fn rectangle_query_rejects_when_not_opened() {
+        let mut map = ObstacleMap::new(8, 8);
+        map.add_static_rect(GridRect {
+            x_min: 1,
+            y_min: 1,
+            x_max: 4,
+            y_max: 2,
+        });
+        assert!(!map.rect_free(
+            GridRect {
+                x_min: 0,
+                y_min: 1,
+                x_max: 5,
+                y_max: 1,
+            },
+            None
+        ));
+    }
+
+    #[test]
+    fn rectangle_query_allows_fully_opened_overlap() {
+        let mut map = ObstacleMap::new(8, 8);
+        map.add_static_rect(GridRect {
+            x_min: 1,
+            y_min: 1,
+            x_max: 3,
+            y_max: 2,
+        });
+        let opened: FxHashSet<CellKey> = [(1, 1), (2, 1), (3, 1), (1, 2), (2, 2), (3, 2)]
+            .into_iter()
+            .map(|(x, y)| pack_xy(x, y))
+            .collect();
+        assert!(map.rect_free(
+            GridRect {
+                x_min: 1,
+                y_min: 1,
+                x_max: 3,
+                y_max: 2,
+            },
+            Some(&opened)
+        ));
+    }
+
+    #[test]
+    fn rectangle_query_rejects_partial_opening_gap() {
+        let mut map = ObstacleMap::new(8, 8);
+        map.add_static_rect(GridRect {
+            x_min: 1,
+            y_min: 1,
+            x_max: 3,
+            y_max: 2,
+        });
+        let opened: FxHashSet<CellKey> = [(1, 1), (2, 1)]
+            .into_iter()
+            .map(|(x, y)| pack_xy(x, y))
+            .collect();
+        assert!(!map.rect_free(
+            GridRect {
+                x_min: 1,
+                y_min: 1,
+                x_max: 3,
+                y_max: 2,
+            },
+            Some(&opened)
+        ));
     }
 }

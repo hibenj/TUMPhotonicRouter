@@ -7,7 +7,7 @@
 use rustc_hash::FxHashSet;
 
 use crate::astar::State;
-use crate::obstacle_map::{CellKey, ObstacleMap};
+use crate::obstacle_map::{CellKey, GridRect, ObstacleMap};
 
 /// Discrete grid point in cell coordinates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -490,8 +490,12 @@ pub fn check_simple_candidate(
     if candidate.has_duplicate_consecutive_points() {
         return false;
     }
-    if !candidate.is_axis_aligned() {
-        return false;
+    if candidate.is_axis_aligned() {
+        if let Some(rects) = candidate_segment_rects(candidate, 0) {
+            return rects
+                .into_iter()
+                .all(|rect| obstacle_map.rect_free(rect, opened_cells));
+        }
     }
 
     for segment in candidate.segments() {
@@ -505,6 +509,43 @@ pub fn check_simple_candidate(
     }
 
     true
+}
+
+fn candidate_segment_rects(
+    candidate: &SimpleRouteCandidate,
+    half_width_cells: i32,
+) -> Option<Vec<GridRect>> {
+    if half_width_cells < 0 {
+        return None;
+    }
+
+    if candidate.points.len() < 2 {
+        return None;
+    }
+
+    let mut rects = Vec::new();
+    for segment in candidate.segments() {
+        if !segment.is_axis_aligned() {
+            return None;
+        }
+
+        let x_min = segment.start.x.min(segment.end.x) - half_width_cells;
+        let x_max = segment.start.x.max(segment.end.x) + half_width_cells;
+        let y_min = segment.start.y.min(segment.end.y) - half_width_cells;
+        let y_max = segment.start.y.max(segment.end.y) + half_width_cells;
+        if x_min > x_max || y_min > y_max {
+            return None;
+        }
+
+        rects.push(GridRect {
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+        });
+    }
+
+    Some(rects)
 }
 
 fn expand_segment_points(segment: Segment) -> Option<Vec<GridPoint>> {
@@ -756,6 +797,26 @@ mod tests {
     }
 
     #[test]
+    fn candidate_validation_matches_cell_checker_for_l_route() {
+        let mut map = ObstacleMap::new(10, 10);
+        assert!(map.add_static_cell(3, 2));
+        let candidate = SimpleRouteCandidate::new(
+            SimpleRouteKind::LShape,
+            vec![
+                GridPoint::new(1, 1),
+                GridPoint::new(5, 1),
+                GridPoint::new(5, 3),
+            ],
+        );
+        let expanded = expand_candidate_to_grid_points(&candidate);
+        let expanded_cells: Vec<(i32, i32)> = expanded.into_iter().map(|p| (p.x, p.y)).collect();
+
+        let expected = map.check_cells_free(&expanded_cells, None);
+        let actual = check_simple_candidate(&candidate, &map, None);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn candidate_validation_opened_cells_allow_blocked_endpoints() {
         let mut map = ObstacleMap::new(10, 10);
         assert!(map.add_static_cell(1, 1));
@@ -773,6 +834,28 @@ mod tests {
         opened.insert(pack_xy(5, 1));
 
         assert!(check_simple_candidate(&candidate, &map, Some(&opened)));
+    }
+
+    #[test]
+    fn candidate_validation_matches_cell_checker_for_z_route() {
+        let mut map = ObstacleMap::new(12, 12);
+        assert!(map.add_static_cell(6, 4));
+        let candidate = SimpleRouteCandidate::new(
+            SimpleRouteKind::ZShape,
+            vec![
+                GridPoint::new(1, 2),
+                GridPoint::new(6, 2),
+                GridPoint::new(6, 5),
+                GridPoint::new(10, 5),
+            ],
+        );
+        let expanded = expand_candidate_to_grid_points(&candidate);
+        let expanded_cells: Vec<(i32, i32)> = expanded.into_iter().map(|p| (p.x, p.y)).collect();
+
+        let expected = map.check_cells_free(&expanded_cells, None);
+        let actual = check_simple_candidate(&candidate, &map, None);
+        assert_eq!(actual, expected);
+        assert!(!actual);
     }
 
     #[test]

@@ -1157,8 +1157,7 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                         continue;
                     }
                 };
-                if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs()
-                    > 1.0e-6
+                if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs() > 1.0e-6
                 {
                     rejected_too_short += 1;
                     continue;
@@ -2058,7 +2057,11 @@ mod tests {
                 .iter()
                 .find(|p| p.id == *primitive_id)
                 .expect("primitive id must exist for current angle");
-            cur = State::new(cur.x + primitive.dx, cur.y + primitive.dy, primitive.end_angle);
+            cur = State::new(
+                cur.x + primitive.dx,
+                cur.y + primitive.dy,
+                primitive.end_angle,
+            );
             out.push(cur);
         }
         out
@@ -2980,13 +2983,7 @@ mod tests {
             matches!(p.geometry, PrimitiveGeometry::Straight { .. }) && p.dx == 4 && p.dy == 0
         });
         let bend_left_from_east = primitive_id_for(&lib, 0, |p| {
-            matches!(
-                p.geometry,
-                PrimitiveGeometry::Bend {
-                    angle_delta: 2,
-                    ..
-                }
-            )
+            matches!(p.geometry, PrimitiveGeometry::Bend { angle_delta: 2, .. })
         });
         let north_long = primitive_id_for(&lib, 2, |p| {
             matches!(p.geometry, PrimitiveGeometry::Straight { .. }) && p.dx == 0 && p.dy == 4
