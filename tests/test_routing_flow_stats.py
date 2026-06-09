@@ -1,4 +1,9 @@
-from routing_flow import RoutingFlowStats, run_routing_flow
+from routing_flow import (
+    RoutingFlowStats,
+    _format_debug_route_indices,
+    _parse_debug_svg_selector,
+    run_routing_flow,
+)
 import benchmark_metadata
 from types import SimpleNamespace
 
@@ -36,6 +41,23 @@ def test_routing_flow_populates_stats():
     stats_dict = stats.as_dict()
     assert stats_dict["benchmark_name"] == "TOY"
     assert stats_dict["total_time_s"] == stats.total_time_s
+
+
+def test_debug_svg_selector_parses_boolean_and_all_modes():
+    assert _parse_debug_svg_selector(False) == (False, None)
+    assert _parse_debug_svg_selector(True) == (True, None)
+    assert _parse_debug_svg_selector("all") == (True, None)
+
+
+def test_debug_svg_selector_parses_1_based_route_indices():
+    assert _parse_debug_svg_selector(5) == (True, {5})
+    assert _parse_debug_svg_selector("5-10") == (True, {5, 6, 7, 8, 9, 10})
+    assert _parse_debug_svg_selector("2,5-7,10") == (True, {2, 5, 6, 7, 10})
+    assert _parse_debug_svg_selector(range(2, 5)) == (True, {2, 3, 4})
+
+
+def test_format_debug_route_indices_collapses_ranges():
+    assert _format_debug_route_indices({2, 5, 6, 7, 10}) == "2,5-7,10"
 
 
 def test_resolve_auto_internal_delay_markers_per_instance(monkeypatch):

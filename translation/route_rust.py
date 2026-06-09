@@ -60,6 +60,24 @@ MEANDER_DEPTH_CANDIDATES_UM = (
 EXACT_MEANDER_EPS_UM = 1.0e-6
 
 
+def _format_route_indices(indices: set[int]) -> str:
+    if not indices:
+        return "<none>"
+    ranges: list[str] = []
+    sorted_indices = sorted(indices)
+    start = sorted_indices[0]
+    previous = start
+    for index in sorted_indices[1:]:
+        if index == previous + 1:
+            previous = index
+            continue
+        ranges.append(f"{start}" if start == previous else f"{start}-{previous}")
+        start = index
+        previous = index
+    ranges.append(f"{start}" if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
+
+
 @dataclass(frozen=True)
 class RustRouteDebugArtifacts:
     obstacle_svg: Path | None
@@ -605,6 +623,7 @@ def route_match_and_realize(
     obstacle_config: object | None = None,
     debug_dir: str | Path | None = None,
     debug_prefix: str = "route",
+    debug_route_indices: set[int] | None = None,
     route_width_um: float = 0.5,
     route_layer: tuple[int, int] = (1, 0),
     allow_45_degree_turns: bool = True,
@@ -630,6 +649,7 @@ def route_match_and_realize(
         obstacle_config=route_obstacle_config,
         debug_dir=debug_dir,
         debug_prefix=debug_prefix,
+        debug_route_indices=debug_route_indices,
         route_width_um=route_width_um,
         route_layer=route_layer,
         allow_45_degree_turns=allow_45_degree_turns,
@@ -1002,6 +1022,7 @@ def route_nets_rust(
     obstacle_config: object | None = None,
     debug_dir: str | Path | None = None,
     debug_prefix: str = "route",
+    debug_route_indices: set[int] | None = None,
     route_width_um: float = 0.5,
     route_layer: tuple[int, int] = (1, 0),
     allow_45_degree_turns: bool = True,
@@ -1024,6 +1045,8 @@ def route_nets_rust(
         obstacle_config: Optional obstacle-map configuration.
         debug_dir: Directory where debug SVGs are written when provided.
         debug_prefix: Prefix used for debug SVG filenames.
+        debug_route_indices: Optional 1-based net indices for per-route SVG
+            export. When omitted, every route SVG is exported.
         route_width_um: Realized waveguide width in micrometers.
         route_layer: Target GDS layer/datatype tuple for route polygons.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
@@ -1079,7 +1102,14 @@ def route_nets_rust(
         obstacle_map.export_debug_svg(obstacle_svg)
 
     nets = schematic.netlist.routes
-    print(f"\nRouting {len(nets)} nets using Rust router...")
+    if debug_route_indices is None:
+        print(f"\nRouting {len(nets)} nets using Rust router...")
+    else:
+        selected = _format_route_indices(debug_route_indices)
+        print(
+            f"\nRouting {len(nets)} nets using Rust router "
+            f"(printing/exporting route SVGs for indices: {selected})..."
+        )
 
     if not hasattr(rust_backend, "PyPhotonicRouter"):
         raise RuntimeError(
@@ -1411,7 +1441,15 @@ def route_nets_rust(
     total_expanded_states = 0
     simple_route_count = 0
 
-    for net_name, inst1, port1, inst2, port2, source_port, target_port in route_jobs:
+    for route_index, (
+        net_name,
+        inst1,
+        port1,
+        inst2,
+        port2,
+        source_port,
+        target_port,
+    ) in enumerate(route_jobs, start=1):
         port1_spec = f"{inst1},{port1}"
         port2_spec = f"{inst2},{port2}"
         source_state = port_to_grid_state(
@@ -1429,7 +1467,19 @@ def route_nets_rust(
             as_target=True,
         )
 
-        print(f"  Routing {net_name}: {port1_spec} -> {port2_spec}...", end=" ")
+        should_print_route = (
+            debug_route_indices is None or route_index in debug_route_indices
+        )
+        should_export_route_debug = (
+            debug_path is not None
+            and (debug_route_indices is None or route_index in debug_route_indices)
+        )
+        route_progress_text = (
+            f"  Routing [{route_index}/{len(route_jobs)}] "
+            f"{net_name}: {port1_spec} -> {port2_spec}..."
+        )
+        if should_print_route:
+            print(route_progress_text, end=" ")
 
         net_id += 1
         source_anchor_cell = (int(source_state.x), int(source_state.y))
@@ -1460,7 +1510,7 @@ def route_nets_rust(
 
         route_dir = debug_path / "routes" if debug_path is not None else None
         diag_txt: Path | None = None
-        if route_dir is not None:
+        if should_export_route_debug and route_dir is not None:
             _ensure_dir(route_dir)
             diag_txt = route_dir / f"{debug_prefix}_{net_name}_diagnostics.txt"
 
@@ -1570,9 +1620,12 @@ def route_nets_rust(
                 opened_cells,
             )
         except RuntimeError as exc:
+            if not should_print_route:
+                print(f"{route_progress_text} failed")
             _write_diagnostics(status="failed", error_text=str(exc))
             if debug_path is not None:
                 assert route_dir is not None
+                _ensure_dir(route_dir)
                 fail_txt = route_dir / f"{debug_prefix}_{net_name}_FAILED.txt"
                 fail_lines = [
                     f"net_name={net_name}",
@@ -1639,13 +1692,14 @@ def route_nets_rust(
                 _inflate_cells_square(route_cells, radius_cells=block_radius_cells)
             )
 
-        if debug_path is not None:
+        if should_export_route_debug:
             assert route_dir is not None
             route_svg = route_dir / f"{debug_prefix}_{net_name}.svg"
             route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
             route_svgs.append(route_svg)
 
-        print("ok")
+        if should_print_route:
+            print("ok")
 
     if debug_timing:
         t_astar_end = time.perf_counter()

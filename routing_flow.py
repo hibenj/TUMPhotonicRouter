@@ -7,6 +7,7 @@ This module orchestrates the photonic routing flow:
 4. [Future] Generate final routed layout
 """
 
+import argparse
 from dataclasses import dataclass, field
 import importlib
 import time
@@ -23,6 +24,22 @@ from translation.route_rust import (
     route_match_and_realize,
 )
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
+DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, ...]
+
+# Edit these values when running `routing_flow.py` directly from an IDE or file.
+# Command-line arguments override these defaults.
+SCRIPT_BENCHMARK = "mmi_heater_8x4"
+SCRIPT_DEBUG_SVGS: DebugSvgSelector = False  # Examples: True, "all", "5-10", "2,5-10"
+SCRIPT_DEBUG_TIMING = True
+SCRIPT_DEBUG_MEANDERS = False
+SCRIPT_SHOW_KLAYOUT = False
+SCRIPT_ALLOW_45_DEGREE_TURNS = False
+SCRIPT_ENABLE_PATH_LENGTH_MATCHING = False
+SCRIPT_MAX_ITERATIONS = 5_000_000
+SCRIPT_INCLUDE_HEATER_OBSTACLES = True
+SCRIPT_OBSTACLE_MODE = "bounding_boxes"
+SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC = False
 
 
 @dataclass
@@ -53,6 +70,207 @@ class RoutingFlowStats:
             "port_open_cells": self.port_open_cells,
             "step_times_s": dict(self.step_times_s),
         }
+
+
+def _parse_debug_svg_selector(debug_svgs: DebugSvgSelector) -> tuple[bool, set[int] | None]:
+    """Parse debug SVG selection.
+
+    Returns:
+        `(enabled, selected_route_indices)`, where `selected_route_indices=None`
+        means all route SVGs. Route indices are 1-based in netlist order.
+    """
+    if isinstance(debug_svgs, bool):
+        return debug_svgs, None
+    if isinstance(debug_svgs, int):
+        if debug_svgs < 1:
+            raise ValueError("debug_svgs integer selectors must be >= 1")
+        return True, {debug_svgs}
+    if isinstance(debug_svgs, range):
+        indices = set(debug_svgs)
+        if any(index < 1 for index in indices):
+            raise ValueError("debug_svgs range selectors must contain only indices >= 1")
+        return True, indices
+    if isinstance(debug_svgs, (set, list, tuple)):
+        indices = {int(index) for index in debug_svgs}
+        if any(index < 1 for index in indices):
+            raise ValueError("debug_svgs sequence selectors must contain only indices >= 1")
+        return bool(indices), indices
+    if isinstance(debug_svgs, str):
+        selector = debug_svgs.strip().lower()
+        if selector in {"", "false", "off", "none", "no"}:
+            return False, None
+        if selector in {"true", "on", "yes", "all", "*"}:
+            return True, None
+
+        indices: set[int] = set()
+        for part in selector.split(","):
+            token = part.strip()
+            if not token:
+                continue
+            if "-" in token:
+                start_text, end_text = token.split("-", 1)
+                start = int(start_text.strip())
+                end = int(end_text.strip())
+                if start < 1 or end < 1:
+                    raise ValueError("debug_svgs range selectors must use indices >= 1")
+                if start > end:
+                    raise ValueError(f"debug_svgs range start must be <= end: {token!r}")
+                indices.update(range(start, end + 1))
+            else:
+                index = int(token)
+                if index < 1:
+                    raise ValueError("debug_svgs route selectors must be >= 1")
+                indices.add(index)
+        if not indices:
+            return False, None
+        return True, indices
+
+    raise TypeError(
+        "debug_svgs must be a bool, int, range, sequence of ints, or selector string"
+    )
+
+
+def _format_debug_route_indices(indices: set[int]) -> str:
+    if not indices:
+        return "<none>"
+
+    ranges: list[str] = []
+    sorted_indices = sorted(indices)
+    start = sorted_indices[0]
+    previous = start
+    for index in sorted_indices[1:]:
+        if index == previous + 1:
+            previous = index
+            continue
+        ranges.append(f"{start}" if start == previous else f"{start}-{previous}")
+        start = index
+        previous = index
+    ranges.append(f"{start}" if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
+
+
+def _parse_bool_flag(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"expected boolean value, got {value!r}")
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the photonic routing flow for a benchmark."
+    )
+    parser.add_argument(
+        "benchmark",
+        nargs="?",
+        default=SCRIPT_BENCHMARK,
+        help=f"Benchmark module name from benchmarks/ (default: {SCRIPT_BENCHMARK}).",
+    )
+    parser.add_argument(
+        "--debug-svgs",
+        nargs="?",
+        const="all",
+        default=SCRIPT_DEBUG_SVGS,
+        metavar="SELECTOR",
+        help=(
+            "Generate debug SVGs. Use without a value or with 'all' for every "
+            "route, or pass 1-based route selectors like '5', '5-10', "
+            "or '2,5-10'."
+        ),
+    )
+    parser.add_argument(
+        "--debug-timing",
+        type=_parse_bool_flag,
+        default=SCRIPT_DEBUG_TIMING,
+        metavar="BOOL",
+        help=f"Print timing details (default: {str(SCRIPT_DEBUG_TIMING).lower()}).",
+    )
+    parser.add_argument(
+        "--debug-meanders",
+        action="store_true",
+        default=SCRIPT_DEBUG_MEANDERS,
+        help="Print verbose path-length and meander details.",
+    )
+    parser.add_argument(
+        "--show-klayout",
+        action="store_true",
+        default=SCRIPT_SHOW_KLAYOUT,
+        help="Open the routed layout in KLayout instead of only writing GDS.",
+    )
+    parser.add_argument(
+        "--allow-45-degree-turns",
+        type=_parse_bool_flag,
+        default=SCRIPT_ALLOW_45_DEGREE_TURNS,
+        metavar="BOOL",
+        help=(
+            "Allow 45-degree routing primitives "
+            f"(default: {str(SCRIPT_ALLOW_45_DEGREE_TURNS).lower()})."
+        ),
+    )
+    parser.add_argument(
+        "--path-length-matching",
+        type=_parse_bool_flag,
+        default=SCRIPT_ENABLE_PATH_LENGTH_MATCHING,
+        metavar="BOOL",
+        help=(
+            "Enable path-length matching analysis and realization "
+            f"(default: {str(SCRIPT_ENABLE_PATH_LENGTH_MATCHING).lower()})."
+        ),
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=SCRIPT_MAX_ITERATIONS,
+        metavar="N",
+        help=f"Maximum A* state expansions per route attempt (default: {SCRIPT_MAX_ITERATIONS}).",
+    )
+    parser.add_argument(
+        "--include-heater-obstacles",
+        type=_parse_bool_flag,
+        default=SCRIPT_INCLUDE_HEATER_OBSTACLES,
+        metavar="BOOL",
+        help=(
+            "Include heater/metal layers as routing obstacles "
+            f"(default: {str(SCRIPT_INCLUDE_HEATER_OBSTACLES).lower()})."
+        ),
+    )
+    parser.add_argument(
+        "--obstacle-mode",
+        default=SCRIPT_OBSTACLE_MODE,
+        help="Static obstacle mode passed to StaticObstacleMapConfig.",
+    )
+    parser.add_argument(
+        "--clear-port-open-cells-from-static",
+        type=_parse_bool_flag,
+        default=SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC,
+        metavar="BOOL",
+        help=(
+            "Clear port-open cells from static obstacles "
+            f"(default: {str(SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC).lower()})."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> Component:
+    args = _build_arg_parser().parse_args(argv)
+    return run_routing_flow(
+        args.benchmark,
+        debug_svgs=args.debug_svgs,
+        debug_timing=args.debug_timing,
+        debug_meanders=args.debug_meanders,
+        show_klayout=args.show_klayout,
+        allow_45_degree_turns=args.allow_45_degree_turns,
+        enable_path_length_matching=args.path_length_matching,
+        max_iterations=args.max_iterations,
+        include_heater_obstacles=args.include_heater_obstacles,
+        static_obstacle_config=StaticObstacleMapConfig(
+            obstacle_mode=args.obstacle_mode,
+            clear_port_open_cells_from_static=args.clear_port_open_cells_from_static,
+        ),
+    )
 
 
 def load_benchmark(benchmark_name: str) -> Schematic:
@@ -93,10 +311,10 @@ def load_benchmark(benchmark_name: str) -> Schematic:
 def run_routing_flow(
     benchmark_name: str,
     *,
-    debug_svgs: bool = False,
+    debug_svgs: DebugSvgSelector = False,
     show_unrouted: bool | None = None,
     show_routed: bool | None = None,
-    show_debug_svgs: bool | None = None,
+    show_debug_svgs: DebugSvgSelector | None = None,
     show_static_obstacles_svg: bool | None = None,
     debug_timing: bool = False,
     debug_meanders: bool = False,
@@ -112,7 +330,11 @@ def run_routing_flow(
 
     Parameters:
         benchmark_name: Name of the benchmark to run (e.g., 'TOY').
-        debug_svgs: If True, generate debug SVGs into the build/ directory.
+        debug_svgs: If True or "all", generate all debug SVGs into build/.
+                    If a selector such as "5-10", "5", or "2,5-10" is
+                    provided, generate only matching per-route SVGs by
+                    1-based net order. Static obstacle SVGs are still
+                    generated when debug SVGs are enabled.
         debug_timing: If True, print timing information for each stage.
         debug_meanders: If True, print verbose path-length and meander
                       insertion details when path-length matching is enabled.
@@ -140,12 +362,13 @@ def run_routing_flow(
     if show_routed is not None:
         show_klayout = bool(show_routed)
     if show_debug_svgs is not None:
-        debug_svgs = bool(show_debug_svgs)
+        debug_svgs = show_debug_svgs
     if show_static_obstacles_svg is not None:
         debug_svgs = bool(show_static_obstacles_svg)
     if show_unrouted is not None:
         # Historical argument kept for compatibility.
         pass
+    debug_svgs_enabled, debug_route_indices = _parse_debug_svg_selector(debug_svgs)
 
     print(f"\n{'='*60}")
     print(f"Routing Flow: {benchmark_name}")
@@ -161,11 +384,12 @@ def run_routing_flow(
 
     t_flow_start = time.perf_counter()
 
-    if debug_svgs:
+    if debug_svgs_enabled:
         prefix = benchmark_name.lower()
         for pattern in (
             f"build/static_obstacles/{prefix}_*.svg",
             f"build/routes/{prefix}_*.svg",
+            f"build/routes/{prefix}_*_diagnostics.txt",
             f"build/routes/{prefix}_*_FAILED.txt",
         ):
             for path in Path(".").glob(pattern):
@@ -175,7 +399,7 @@ def run_routing_flow(
                     pass
 
     def _report_partial_debug_artifacts() -> None:
-        if not debug_svgs:
+        if not debug_svgs_enabled:
             return
         prefix = benchmark_name.lower()
         build_dir = Path("build")
@@ -233,7 +457,7 @@ def run_routing_flow(
     if stats is not None:
         stats.step_times_s["build_static_obstacle_map"] = 0.0
         stats.step_times_s["baseline_gdsfactory_routing"] = 0.0
-    debug_dir = Path("build") if debug_svgs else None
+    debug_dir = Path("build") if debug_svgs_enabled else None
     metadata = load_benchmark_metadata(benchmark_name, schematic=schematic)
     t_route_start = time.perf_counter()
     try:
@@ -245,6 +469,7 @@ def run_routing_flow(
             internal_delays_um=metadata.get("internal_delays_um"),
             debug_dir=debug_dir,
             debug_prefix=benchmark_name.lower(),
+            debug_route_indices=debug_route_indices,
             debug_timing=debug_timing,
             allow_45_degree_turns=allow_45_degree_turns,
             max_iterations=max_iterations,
@@ -365,11 +590,18 @@ def run_routing_flow(
                         f"reserved_cells_count={reserved_cells_count}, reason={reason}"
                     )
 
-    if debug_svgs:
+    if debug_svgs_enabled:
         if debug_artifacts.obstacle_svg is not None:
             print(f"      - Obstacle SVG: {debug_artifacts.obstacle_svg}")
-        if debug_artifacts.route_svgs:
-            print(f"      - Route SVGs: {len(debug_artifacts.route_svgs)} files")
+        if debug_route_indices is None:
+            if debug_artifacts.route_svgs:
+                print(f"      - Route SVGs: {len(debug_artifacts.route_svgs)} files")
+        else:
+            selected = _format_debug_route_indices(debug_route_indices)
+            print(
+                f"      - Route SVGs: {len(debug_artifacts.route_svgs)} "
+                f"selected file(s), route indices: {selected}"
+            )
 
         # Open generated SVGs in the default browser/viewer so the user can inspect them.
         try:
@@ -409,15 +641,4 @@ def run_routing_flow(
 
 
 if __name__ == "__main__":
-    run_routing_flow("mmi_heater_8x4",
-                     debug_svgs=False,
-                     debug_timing=True,
-                     debug_meanders=True,
-                     show_klayout=False,
-                     allow_45_degree_turns=False,
-                     enable_path_length_matching=True,
-                     include_heater_obstacles=True,
-                     static_obstacle_config=StaticObstacleMapConfig(
-                         obstacle_mode="bounding_boxes",
-                         clear_port_open_cells_from_static=False,  # strict net-local openings
-                     ),)
+    main()

@@ -23,9 +23,23 @@ def _node_types() -> dict[str, str]:
         node_types[f"heater_{lane_idx}"] = "gate"
         node_types[f"mmi_b_{lane_idx}"] = "gate"
         node_types[f"heater_post_{lane_idx}"] = "gate"
+        node_types[f"heater_output_{lane_idx}"] = "gate"
+        node_types[f"mmi_output_{lane_idx}"] = "gate"
+        node_types[f"heater_final_{lane_idx}"] = "gate"
+        node_types[f"mmi_final_{lane_idx}"] = "gate"
     node_types["mmi_extra_0"] = "gate"
     node_types["heater_extra_0"] = "gate"
     node_types["mmi_extra_1"] = "gate"
+    node_types["mmi_extra_2"] = "gate"
+    node_types["heater_extra_1"] = "gate"
+    node_types["mmi_extra_3"] = "gate"
+    node_types["mmi_extra_4"] = "gate"
+    node_types["heater_extra_2"] = "gate"
+    node_types["mmi_extra_5"] = "gate"
+    node_types["mmi_extra_6"] = "gate"
+    node_types["heater_extra_3"] = "gate"
+    node_types["mmi_extra_7"] = "gate"
+    node_types["mmi_extra_8"] = "gate"
     return node_types
 
 
@@ -64,11 +78,32 @@ def build_schematic() -> Schematic:
     extra_mmi0_x = 1340
     extra_heater_x = 1480
     extra_mmi1_x = 1900
-    extra_output_gc_x = 2080
+    extra_mmi2_x = 2200
+    extra_heater1_x = 2340
+    extra_mmi3_x = 2760
+    extra_mmi4_x = 2860
+    extra_heater2_x = 3000
+    extra_mmi5_x = 3420
+    extra_mmi6_x = 3740
+    extra_heater3_x = 3880
+    extra_mmi7_x = 4300
+    extra_mmi8_x = 4780
+    output_heater_x = 5180
+    output_mmi_x = 5600
+    final_heater_x = 5740
+    final_mmi_x = 6160
+    extra_output_gc_x = 6380
     input_gc_x = 0
     path_offset_y = 40
     lane_centers_y = [240, 80, -80, -240]
     extra_center_y = 140
+    extra_mmi2_center_y = 80
+    extra_heater1_y = extra_mmi2_center_y - path_offset_y
+    extra_mmi4_center_y = 0
+    extra_heater2_y = extra_mmi4_center_y + path_offset_y
+    extra_mmi6_center_y = extra_mmi4_center_y - 80
+    extra_heater3_y = extra_mmi6_center_y - path_offset_y
+    extra_mmi8_center_y = extra_mmi6_center_y - 80
 
     schematic.add_instance(
         "mmi_extra_0",
@@ -85,6 +120,85 @@ def build_schematic() -> Schematic:
         mmi_instance,
         Placement(x=extra_mmi1_x, y=extra_center_y, rotation=0),
     )
+    schematic.add_instance(
+        "mmi_extra_2",
+        mmi_instance,
+        Placement(x=extra_mmi2_x, y=extra_mmi2_center_y, rotation=0),
+    )
+    schematic.add_instance(
+        "heater_extra_1",
+        heater_instance,
+        Placement(x=extra_heater1_x, y=extra_heater1_y, rotation=0),
+    )
+    schematic.add_instance(
+        "mmi_extra_3",
+        mmi_instance,
+        Placement(x=extra_mmi3_x, y=extra_mmi2_center_y, rotation=0),
+    )
+    schematic.add_instance(
+        "mmi_extra_4",
+        mmi_instance,
+        Placement(x=extra_mmi4_x, y=extra_mmi4_center_y, rotation=0),
+    )
+    schematic.add_instance(
+        "heater_extra_2",
+        heater_instance,
+        Placement(x=extra_heater2_x, y=extra_heater2_y, rotation=0),
+    )
+    schematic.add_instance(
+        "mmi_extra_5",
+        mmi_instance,
+        Placement(x=extra_mmi5_x, y=extra_mmi4_center_y, rotation=0),
+    )
+    schematic.add_instance(
+        "mmi_extra_6",
+        mmi_instance,
+        Placement(x=extra_mmi6_x, y=extra_mmi6_center_y, rotation=0),
+    )
+    schematic.add_instance(
+        "heater_extra_3",
+        heater_instance,
+        Placement(x=extra_heater3_x, y=extra_heater3_y, rotation=0),
+    )
+    schematic.add_instance(
+        "mmi_extra_7",
+        mmi_instance,
+        Placement(x=extra_mmi7_x, y=extra_mmi6_center_y, rotation=0),
+    )
+    schematic.add_instance(
+        "mmi_extra_8",
+        mmi_instance,
+        Placement(x=extra_mmi8_x, y=extra_mmi8_center_y, rotation=0),
+    )
+    for output_pair_idx, output_center_y in enumerate(lane_centers_y):
+        schematic.add_instance(
+            f"heater_output_{output_pair_idx}",
+            heater_instance,
+            Placement(
+                x=output_heater_x,
+                y=output_center_y + path_offset_y,
+                rotation=0,
+            ),
+        )
+        schematic.add_instance(
+            f"mmi_output_{output_pair_idx}",
+            mmi_instance,
+            Placement(x=output_mmi_x, y=output_center_y, rotation=0),
+        )
+        schematic.add_instance(
+            f"heater_final_{output_pair_idx}",
+            heater_instance,
+            Placement(
+                x=final_heater_x,
+                y=output_center_y + path_offset_y,
+                rotation=0,
+            ),
+        )
+        schematic.add_instance(
+            f"mmi_final_{output_pair_idx}",
+            mmi_instance,
+            Placement(x=final_mmi_x, y=output_center_y, rotation=0),
+        )
 
     for lane_idx, center_y in enumerate(lane_centers_y):
         upper_idx = 2 * lane_idx
@@ -120,8 +234,8 @@ def build_schematic() -> Schematic:
             heater_instance,
             Placement(x=post_heater_x, y=center_y + path_offset_y, rotation=0),
         )
-        upper_output_x = extra_output_gc_x if upper_idx == 2 else output_gc_x
-        lower_output_x = extra_output_gc_x if lower_idx == 1 else output_gc_x
+        upper_output_x = extra_output_gc_x
+        lower_output_x = extra_output_gc_x
         schematic.add_instance(
             f"gc_out_{upper_idx}",
             gc_instance,
@@ -165,12 +279,36 @@ def build_schematic() -> Schematic:
                 name=f"mmi_b_{lane_idx}_upper_to_heater_post_{lane_idx}",
             ),
         ]
-        if upper_idx == 2:
+        if upper_idx == 0:
+            nets.append(
+                Net(
+                    p1=f"heater_post_{lane_idx},o2",
+                    p2="heater_output_0,o1",
+                    name="heater_post_0_to_heater_output_0",
+                )
+            )
+        elif upper_idx == 2:
             nets.append(
                 Net(
                     p1=f"heater_post_{lane_idx},o2",
                     p2="mmi_extra_0,o1",
                     name="heater_post_1_to_mmi_extra_0_lower_in",
+                )
+            )
+        elif upper_idx == 4:
+            nets.append(
+                Net(
+                    p1=f"heater_post_{lane_idx},o2",
+                    p2="mmi_extra_4,o1",
+                    name="heater_post_2_to_mmi_extra_4_lower_in",
+                )
+            )
+        elif upper_idx == 6:
+            nets.append(
+                Net(
+                    p1=f"heater_post_{lane_idx},o2",
+                    p2="mmi_extra_8,o1",
+                    name="heater_post_3_to_mmi_extra_8_lower_in",
                 )
             )
         else:
@@ -187,6 +325,30 @@ def build_schematic() -> Schematic:
                     p1=f"mmi_b_{lane_idx},o4",
                     p2="mmi_extra_0,o2",
                     name="mmi_b_0_lower_to_mmi_extra_0_upper_in",
+                )
+            )
+        elif lower_idx == 3:
+            nets.append(
+                Net(
+                    p1=f"mmi_b_{lane_idx},o4",
+                    p2="mmi_extra_2,o1",
+                    name="mmi_b_1_lower_to_mmi_extra_2_lower_in",
+                )
+            )
+        elif lower_idx == 5:
+            nets.append(
+                Net(
+                    p1=f"mmi_b_{lane_idx},o4",
+                    p2="mmi_extra_6,o1",
+                    name="mmi_b_2_lower_to_mmi_extra_6_lower_in",
+                )
+            )
+        elif lower_idx == 7:
+            nets.append(
+                Net(
+                    p1=f"mmi_b_{lane_idx},o4",
+                    p2="mmi_output_3,o1",
+                    name="mmi_b_3_lower_to_mmi_output_3_lower_in",
                 )
             )
         else:
@@ -218,13 +380,218 @@ def build_schematic() -> Schematic:
         ),
         Net(
             p1="mmi_extra_1,o3",
+            p2="mmi_output_0,o1",
+            name="mmi_extra_1_upper_to_mmi_output_0_lower_in",
+        ),
+        Net(
+            p1="heater_output_0,o2",
+            p2="mmi_output_0,o2",
+            name="heater_output_0_to_mmi_output_0_upper_in",
+        ),
+        Net(
+            p1="mmi_output_0,o3",
+            p2="heater_final_0,o1",
+            name="mmi_output_0_upper_to_heater_final_0",
+        ),
+        Net(
+            p1="mmi_output_0,o4",
+            p2="mmi_final_0,o1",
+            name="mmi_output_0_lower_to_mmi_final_0_lower_in",
+        ),
+        Net(
+            p1="heater_final_0,o2",
+            p2="mmi_final_0,o2",
+            name="heater_final_0_to_mmi_final_0_upper_in",
+        ),
+        Net(
+            p1="mmi_final_0,o3",
+            p2="gc_out_0,o1",
+            name="mmi_final_0_upper_to_gc_out_0",
+        ),
+        Net(
+            p1="mmi_final_0,o4",
             p2="gc_out_1,o1",
-            name="mmi_extra_1_upper_to_gc_out_1",
+            name="mmi_final_0_lower_to_gc_out_1",
         ),
         Net(
             p1="mmi_extra_1,o4",
+            p2="mmi_extra_2,o2",
+            name="mmi_extra_1_lower_to_mmi_extra_2_upper_in",
+        ),
+        Net(
+            p1="mmi_extra_2,o3",
+            p2="mmi_extra_3,o2",
+            name="mmi_extra_2_upper_to_mmi_extra_3_upper_in",
+        ),
+        Net(
+            p1="mmi_extra_2,o4",
+            p2="heater_extra_1,o1",
+            name="mmi_extra_2_lower_to_heater_extra_1",
+        ),
+        Net(
+            p1="heater_extra_1,o2",
+            p2="mmi_extra_3,o1",
+            name="heater_extra_1_to_mmi_extra_3_lower_in",
+        ),
+        Net(
+            p1="mmi_extra_3,o3",
+            p2="heater_output_1,o1",
+            name="mmi_extra_3_upper_to_heater_output_1",
+        ),
+        Net(
+            p1="mmi_extra_3,o4",
+            p2="mmi_extra_4,o2",
+            name="mmi_extra_3_lower_to_mmi_extra_4_upper_in",
+        ),
+        Net(
+            p1="mmi_extra_4,o3",
+            p2="heater_extra_2,o1",
+            name="mmi_extra_4_upper_to_heater_extra_2",
+        ),
+        Net(
+            p1="heater_extra_2,o2",
+            p2="mmi_extra_5,o2",
+            name="heater_extra_2_to_mmi_extra_5_upper_in",
+        ),
+        Net(
+            p1="mmi_extra_4,o4",
+            p2="mmi_extra_5,o1",
+            name="mmi_extra_4_lower_to_mmi_extra_5_lower_in",
+        ),
+        Net(
+            p1="mmi_extra_5,o3",
+            p2="mmi_output_1,o1",
+            name="mmi_extra_5_upper_to_mmi_output_1_lower_in",
+        ),
+        Net(
+            p1="heater_output_1,o2",
+            p2="mmi_output_1,o2",
+            name="heater_output_1_to_mmi_output_1_upper_in",
+        ),
+        Net(
+            p1="mmi_output_1,o3",
+            p2="heater_final_1,o1",
+            name="mmi_output_1_upper_to_heater_final_1",
+        ),
+        Net(
+            p1="mmi_output_1,o4",
+            p2="mmi_final_1,o1",
+            name="mmi_output_1_lower_to_mmi_final_1_lower_in",
+        ),
+        Net(
+            p1="heater_final_1,o2",
+            p2="mmi_final_1,o2",
+            name="heater_final_1_to_mmi_final_1_upper_in",
+        ),
+        Net(
+            p1="mmi_final_1,o3",
             p2="gc_out_2,o1",
-            name="mmi_extra_1_lower_to_gc_out_2",
+            name="mmi_final_1_upper_to_gc_out_2",
+        ),
+        Net(
+            p1="mmi_final_1,o4",
+            p2="gc_out_3,o1",
+            name="mmi_final_1_lower_to_gc_out_3",
+        ),
+        Net(
+            p1="mmi_extra_5,o4",
+            p2="mmi_extra_6,o2",
+            name="mmi_extra_5_lower_to_mmi_extra_6_upper_in",
+        ),
+        Net(
+            p1="mmi_extra_6,o3",
+            p2="mmi_extra_7,o2",
+            name="mmi_extra_6_upper_to_mmi_extra_7_upper_in",
+        ),
+        Net(
+            p1="mmi_extra_6,o4",
+            p2="heater_extra_3,o1",
+            name="mmi_extra_6_lower_to_heater_extra_3",
+        ),
+        Net(
+            p1="heater_extra_3,o2",
+            p2="mmi_extra_7,o1",
+            name="heater_extra_3_to_mmi_extra_7_lower_in",
+        ),
+        Net(
+            p1="mmi_extra_7,o3",
+            p2="heater_output_2,o1",
+            name="mmi_extra_7_upper_to_heater_output_2",
+        ),
+        Net(
+            p1="mmi_extra_7,o4",
+            p2="mmi_extra_8,o2",
+            name="mmi_extra_7_lower_to_mmi_extra_8_upper_in",
+        ),
+        Net(
+            p1="mmi_extra_8,o3",
+            p2="mmi_output_2,o1",
+            name="mmi_extra_8_upper_to_mmi_output_2_lower_in",
+        ),
+        Net(
+            p1="heater_output_2,o2",
+            p2="mmi_output_2,o2",
+            name="heater_output_2_to_mmi_output_2_upper_in",
+        ),
+        Net(
+            p1="mmi_output_2,o3",
+            p2="heater_final_2,o1",
+            name="mmi_output_2_upper_to_heater_final_2",
+        ),
+        Net(
+            p1="mmi_output_2,o4",
+            p2="mmi_final_2,o1",
+            name="mmi_output_2_lower_to_mmi_final_2_lower_in",
+        ),
+        Net(
+            p1="heater_final_2,o2",
+            p2="mmi_final_2,o2",
+            name="heater_final_2_to_mmi_final_2_upper_in",
+        ),
+        Net(
+            p1="mmi_final_2,o3",
+            p2="gc_out_4,o1",
+            name="mmi_final_2_upper_to_gc_out_4",
+        ),
+        Net(
+            p1="mmi_final_2,o4",
+            p2="gc_out_5,o1",
+            name="mmi_final_2_lower_to_gc_out_5",
+        ),
+        Net(
+            p1="mmi_extra_8,o4",
+            p2="heater_output_3,o1",
+            name="mmi_extra_8_lower_to_heater_output_3",
+        ),
+        Net(
+            p1="heater_output_3,o2",
+            p2="mmi_output_3,o2",
+            name="heater_output_3_to_mmi_output_3_upper_in",
+        ),
+        Net(
+            p1="mmi_output_3,o3",
+            p2="heater_final_3,o1",
+            name="mmi_output_3_upper_to_heater_final_3",
+        ),
+        Net(
+            p1="mmi_output_3,o4",
+            p2="mmi_final_3,o1",
+            name="mmi_output_3_lower_to_mmi_final_3_lower_in",
+        ),
+        Net(
+            p1="heater_final_3,o2",
+            p2="mmi_final_3,o2",
+            name="heater_final_3_to_mmi_final_3_upper_in",
+        ),
+        Net(
+            p1="mmi_final_3,o3",
+            p2="gc_out_6,o1",
+            name="mmi_final_3_upper_to_gc_out_6",
+        ),
+        Net(
+            p1="mmi_final_3,o4",
+            p2="gc_out_7,o1",
+            name="mmi_final_3_lower_to_gc_out_7",
         ),
     ]
     for net in extra_nets:
