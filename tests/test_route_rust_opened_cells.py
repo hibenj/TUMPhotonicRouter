@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import ast
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -28,6 +29,7 @@ class _DummyBundle:
 @dataclass
 class _DummyNetlist:
     routes: dict[str, _DummyBundle]
+    instances: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -41,13 +43,15 @@ class _DummyObstacleData:
         blocked_cells: set[tuple[int, int]],
         raw_blocked_cells: set[tuple[int, int]] | None = None,
         port_open_cells: set[tuple[int, int]] | None = None,
+        width: int = 30,
+        height: int = 20,
     ) -> None:
         self.grid = GridSpec(
-            width=30,
-            height=20,
+            width=width,
+            height=height,
             grid_size_um=1.0,
             origin=(0.0, 0.0),
-            die_bbox=(0.0, 0.0, 30.0, 20.0),
+            die_bbox=(0.0, 0.0, float(width), float(height)),
         )
         self.blocked_cells = blocked_cells
         if raw_blocked_cells is not None:
@@ -61,6 +65,18 @@ class _DummyObstacleData:
 
 def _make_dummy_layout() -> Component:
     return Component(f"dummy_layout_{uuid4().hex}")
+
+
+def _diagnostic_value(text: str, key: str) -> str:
+    prefix = f"{key}="
+    return next(line[len(prefix):] for line in text.splitlines() if line.startswith(prefix))
+
+
+def _diagnostic_opened_cells(text: str) -> set[tuple[int, int]]:
+    return {
+        (int(x), int(y))
+        for x, y in ast.literal_eval(_diagnostic_value(text, "opened_cells"))
+    }
 
 
 def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
@@ -128,6 +144,146 @@ def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
     )
     route_opened_static_count = int(route_opened_static_line.split("=", 1)[1])
     assert route_opened_static_count == 0
+
+
+def test_route_nets_rust_applies_heater_opening_only_to_connected_endpoint(
+    monkeypatch,
+    tmp_path,
+):
+    def fake_build_static_obstacle_map(_component, config=None):
+        return _DummyObstacleData(blocked_cells=set(), width=80, height=40)
+
+    ports = {
+        ("heater", "o2"): SimpleNamespace(
+            center=(20.0, 10.0),
+            orientation=0.0,
+            port_type="optical",
+        ),
+        ("sink", "o1"): SimpleNamespace(
+            center=(55.0, 10.0),
+            orientation=180.0,
+            port_type="optical",
+        ),
+        ("left", "o1"): SimpleNamespace(
+            center=(2.0, 30.0),
+            orientation=0.0,
+            port_type="optical",
+        ),
+        ("right", "o1"): SimpleNamespace(
+            center=(60.0, 30.0),
+            orientation=180.0,
+            port_type="optical",
+        ),
+    }
+
+    def fake_get_port_from_instance(_layout, inst, port):
+        return ports[(inst, port)]
+
+    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
+    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+
+    schematic = _DummySchematic(
+        netlist=_DummyNetlist(
+            routes={
+                "heater_net": _DummyBundle(links={"heater,o2": "sink,o1"}),
+                "unrelated_net": _DummyBundle(links={"left,o1": "right,o1"}),
+            },
+            instances={
+                "heater": SimpleNamespace(component="straight_heater_metal"),
+                "sink": SimpleNamespace(component="straight"),
+                "left": SimpleNamespace(component="straight"),
+                "right": SimpleNamespace(component="straight"),
+            },
+        )
+    )
+
+    _routed_layout, debug_artifacts = route_rust.route_nets_rust(
+        _make_dummy_layout(),
+        schematic,  # type: ignore[arg-type]
+        debug_dir=tmp_path,
+        debug_prefix="heater_keyed_openings",
+        route_width_um=0.5,
+        allow_45_degree_turns=False,
+        include_heater_obstacles=True,
+        max_iterations=100_000,
+        defer_realization=True,
+    )
+
+    heater_diag = (
+        tmp_path / "routes" / "heater_keyed_openings_heater_net_diagnostics.txt"
+    ).read_text(encoding="utf-8")
+    unrelated_diag = (
+        tmp_path / "routes" / "heater_keyed_openings_unrelated_net_diagnostics.txt"
+    ).read_text(encoding="utf-8")
+
+    assert _diagnostic_value(heater_diag, "source_access_rule") == "straight_heater_metal*"
+    assert (35, 10) in _diagnostic_opened_cells(heater_diag)
+    assert _diagnostic_value(unrelated_diag, "source_access_rule") == "None"
+    assert _diagnostic_value(unrelated_diag, "target_access_rule") == "None"
+    assert (35, 10) not in _diagnostic_opened_cells(unrelated_diag)
+    records_by_net = {record.net_name: record for record in debug_artifacts.routed_net_records}
+    assert (35, 10) in records_by_net["heater_net"].opened_cells
+    assert (35, 10) not in records_by_net["unrelated_net"].opened_cells
+
+
+def test_route_nets_rust_does_not_apply_heater_rule_to_electrical_port(
+    monkeypatch,
+    tmp_path,
+):
+    def fake_build_static_obstacle_map(_component, config=None):
+        return _DummyObstacleData(blocked_cells=set(), width=80, height=40)
+
+    ports = {
+        ("heater", "l_e1"): SimpleNamespace(
+            center=(20.0, 10.0),
+            orientation=0.0,
+            port_type="electrical",
+        ),
+        ("sink", "o1"): SimpleNamespace(
+            center=(55.0, 10.0),
+            orientation=180.0,
+            port_type="optical",
+        ),
+    }
+
+    def fake_get_port_from_instance(_layout, inst, port):
+        return ports[(inst, port)]
+
+    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
+    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+
+    schematic = _DummySchematic(
+        netlist=_DummyNetlist(
+            routes={
+                "electrical_endpoint_net": _DummyBundle(links={"heater,l_e1": "sink,o1"}),
+            },
+            instances={
+                "heater": SimpleNamespace(component="straight_heater_metal"),
+                "sink": SimpleNamespace(component="straight"),
+            },
+        )
+    )
+
+    route_rust.route_nets_rust(
+        _make_dummy_layout(),
+        schematic,  # type: ignore[arg-type]
+        debug_dir=tmp_path,
+        debug_prefix="heater_electrical_opening",
+        route_width_um=0.5,
+        allow_45_degree_turns=False,
+        include_heater_obstacles=True,
+        max_iterations=100_000,
+        defer_realization=True,
+    )
+
+    diag_text = (
+        tmp_path
+        / "routes"
+        / "heater_electrical_opening_electrical_endpoint_net_diagnostics.txt"
+    ).read_text(encoding="utf-8")
+
+    assert _diagnostic_value(diag_text, "source_access_rule") == "None"
+    assert (35, 10) not in _diagnostic_opened_cells(diag_text)
 
 
 def test_route_nets_rust_defaults_to_strict_bounding_box_mode(monkeypatch, tmp_path):

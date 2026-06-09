@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+from photonic_router.routing_layers import get_routing_obstacle_layers
 from translation.route_rust import _resolve_obstacle_config
 
 
@@ -14,6 +15,28 @@ def test_resolve_obstacle_config_defaults_to_route_layer_when_missing():
     assert resolved.obstacle_layers == ((1, 0),)
     assert resolved.obstacle_mode == "bounding_boxes"
     assert resolved.clear_port_open_cells_from_static is False
+
+
+def test_resolve_obstacle_config_can_include_heater_layers():
+    resolved = _resolve_obstacle_config(
+        None,
+        route_layer=(1, 0),
+        include_heater_obstacles=True,
+    )
+
+    assert isinstance(resolved, StaticObstacleMapConfig)
+    assert resolved.obstacle_layers == get_routing_obstacle_layers(include_heaters=True)
+
+
+def test_resolve_obstacle_config_keeps_optical_only_when_heaters_disabled():
+    resolved = _resolve_obstacle_config(
+        None,
+        route_layer=(1, 0),
+        include_heater_obstacles=False,
+    )
+
+    assert isinstance(resolved, StaticObstacleMapConfig)
+    assert resolved.obstacle_layers == get_routing_obstacle_layers(include_heaters=False)
 
 
 def test_resolve_obstacle_config_preserves_existing_layers():

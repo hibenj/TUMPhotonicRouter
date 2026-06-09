@@ -31,6 +31,10 @@ from photonic_router.path_length_graph import (
     build_graph_from_schematic,
     list_edges_requiring_meander,
 )
+from photonic_router.routing_layers import (
+    find_component_port_access_rule,
+    get_routing_obstacle_layers,
+)
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 GridSpec = _sob.GridSpec
@@ -76,6 +80,7 @@ class RoutedNetRecord:
     route_obj: object
     total_length_um: float
     meander_auto_plan: dict[str, object] | None = None
+    opened_cells: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,7 @@ class MeanderInsertionConfig:
     max_extra_length_per_region_um: float = 200.0
     conservative_legal_check: bool = True
     max_meander_height_um: float = 20.0
+    auto_meander_endpoint_inset_um: float | None = None
 
 
 @dataclass(frozen=True)
@@ -383,6 +389,20 @@ def analyze_meander_insertion_for_requirements(
         # Sweep box depth for legality, but keep requested length fixed.
         min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
         min_seg_um = max(0.5, float(config.min_candidate_straight_length_um))
+        max_height_um = max(0.0, float(config.max_meander_height_um))
+        box_depths_um = [
+            depth
+            for depth in MEANDER_DEPTH_CANDIDATES_UM
+            if depth <= max_height_um + 1.0e-9
+        ]
+        if not box_depths_um:
+            box_depths_um = [max_height_um]
+        bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
+        endpoint_inset_um = (
+            max(2.0 * bend_radius_um, min_seg_um)
+            if config.auto_meander_endpoint_inset_um is None
+            else max(0.0, float(config.auto_meander_endpoint_inset_um))
+        )
         best_rr: dict[str, object] | None = None
         last_exc: Exception | None = None
         try:
@@ -392,15 +412,18 @@ def analyze_meander_insertion_for_requirements(
                 router.plan_auto_analytic_meander_for_route_depth_sweep(
                     record.route_obj,
                     requested_extra_length_um=float(requested),
-                    box_depths_um=list(MEANDER_DEPTH_CANDIDATES_UM),
+                    box_depths_um=box_depths_um,
                     min_bend_radius_um=None,
                     min_straight_um=min_straight_um,
                     max_bumps=32,
-                    max_meander_height_um=float(config.max_meander_height_um),
+                    max_meander_height_um=max_height_um,
                     min_segment_length_um=min_seg_um,
+                    endpoint_inset_um=endpoint_inset_um,
                     clearance_radius_cells=0,
                     side_policy="both",
-                    opened_cells=None,
+                    # Meander boxes must not consume source/target access
+                    # openings. Those openings are only for route entry/exit.
+                    opened_cells=[],
                     planning_mode="fill_box_multi_bump",
                 ),
             )
@@ -435,6 +458,14 @@ def analyze_meander_insertion_for_requirements(
         entry["bumps"] = rr.get("bumps")
         entry["side"] = rr.get("side")
         entry["planning_mode"] = rr.get("planning_mode", "fill_box_multi_bump")
+        entry["candidate_runs"] = rr.get("candidate_runs")
+        entry["candidate_intervals"] = rr.get("candidate_intervals")
+        entry["rejected_box_blocked"] = rr.get("rejected_box_blocked")
+        entry["rejected_planning_failed"] = rr.get("rejected_planning_failed")
+        entry["rejected_exact_length_mismatch"] = rr.get("rejected_exact_length_mismatch")
+        entry["rejected_too_short"] = rr.get("rejected_too_short")
+        entry["selected_interval_length_um"] = rr.get("selected_interval_length_um")
+        entry["endpoint_inset_um"] = endpoint_inset_um
         entry["requested_probe_length_um"] = requested
         if unmatched > 1.0e-9:
             entry["status"] = "planned_partial"
@@ -452,9 +483,10 @@ def analyze_meander_insertion_for_requirements(
                 "min_bend_radius_um": None,
                 "min_straight_um": min_straight_um,
                 "max_bumps": 32,
-                "max_meander_height_um": float(config.max_meander_height_um),
+                "max_meander_height_um": max_height_um,
                 "box_depth_um": _as_float(rr.get("box_depth_um", 20.0), 20.0),
                 "min_segment_length_um": min_seg_um,
+                "endpoint_inset_um": endpoint_inset_um,
                 "clearance_radius_cells": 0,
                 "side_policy": "both",
                 "selected_side": rr.get("side"),
@@ -465,6 +497,7 @@ def analyze_meander_insertion_for_requirements(
                 "selected_meander_centerline": rr.get("centerline"),
                 "planning_mode": "fill_box_multi_bump",
             },
+            opened_cells=record.opened_cells,
         )
         results.append(entry)
 
@@ -565,6 +598,7 @@ def route_match_and_realize(
     allow_45_degree_turns: bool = True,
     max_iterations: int = 500_000,
     debug_timing: bool = False,
+    include_heater_obstacles: bool = False,
 ) -> RouteRustPipelineResult:
     """Run Phase A->(optional M1)->B entirely in route_rust."""
     route_obstacle_config = obstacle_config
@@ -589,6 +623,7 @@ def route_match_and_realize(
         allow_45_degree_turns=allow_45_degree_turns,
         max_iterations=max_iterations,
         debug_timing=debug_timing,
+        include_heater_obstacles=include_heater_obstacles,
         defer_realization=True,
     )
     if debug_timing:
@@ -613,15 +648,16 @@ def route_match_and_realize(
         resolved_user_obstacle_config = _resolve_obstacle_config(
             obstacle_config,
             route_layer=route_layer,
+            include_heater_obstacles=include_heater_obstacles,
         )
         # Meander box legality should use real routed-layer geometry, not
-        # conservative component bboxes. It also needs port openings cleared:
-        # candidate boxes touch the legal access regions around the current
-        # route endpoints, while route search itself stays strict/net-local.
+        # conservative component bboxes. Keep static obstacles strict: source
+        # and target access openings are valid for route entry/exit only, not
+        # for placing meander boxes.
         meander_obstacle_config = _with_obstacle_mode(
             resolved_user_obstacle_config,
             obstacle_mode="rasterized_polygons",
-            clear_port_open_cells_from_static=True,
+            clear_port_open_cells_from_static=False,
             populate_obstacle_map=False,
         )
         meander_obstacle_map = build_static_obstacle_map(
@@ -768,7 +804,7 @@ def realize_routed_net_records(
                     min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
                     clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),
                     side_policy=str(plan["side_policy"]),
-                    opened_cells=None,
+                    opened_cells=[],
                     planning_mode=str(plan["planning_mode"]),
                 )
             routed_layout.add_polygon(polygon, layer=route_layer)
@@ -809,7 +845,13 @@ def _grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
     )
 
 
-def _default_obstacle_layers(route_layer: tuple[int, int]) -> tuple[tuple[int, int], ...]:
+def _default_obstacle_layers(
+    route_layer: tuple[int, int],
+    *,
+    include_heater_obstacles: bool = False,
+) -> tuple[tuple[int, int], ...]:
+    if route_layer == (1, 0):
+        return get_routing_obstacle_layers(include_heaters=include_heater_obstacles)
     return ((int(route_layer[0]), int(route_layer[1])),)
 
 
@@ -817,10 +859,14 @@ def _resolve_obstacle_config(
     obstacle_config: object | None,
     *,
     route_layer: tuple[int, int],
+    include_heater_obstacles: bool = False,
 ) -> object:
     """Default obstacle extraction to the photonic routing layer."""
 
-    default_layers = _default_obstacle_layers(route_layer)
+    default_layers = _default_obstacle_layers(
+        route_layer,
+        include_heater_obstacles=include_heater_obstacles,
+    )
     if obstacle_config is None:
         return StaticObstacleMapConfig(obstacle_layers=default_layers)
 
@@ -904,6 +950,39 @@ def _with_obstacle_mode(
     return obstacle_config
 
 
+def _coerce_component_name(instance: object) -> str | None:
+    component_obj = getattr(instance, "component", None)
+    if component_obj is None:
+        return None
+    if isinstance(component_obj, str):
+        return component_obj
+    name = getattr(component_obj, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    return None
+
+
+def _schematic_instance_component_name(
+    schematic: object,
+    instance_name: str,
+) -> str | None:
+    netlist = getattr(schematic, "netlist", None)
+    instances = getattr(netlist, "instances", None)
+    if not isinstance(instances, dict):
+        return None
+    instance = instances.get(instance_name)
+    if instance is None:
+        return None
+    return _coerce_component_name(instance)
+
+
+def _port_type_name(port: object) -> str | None:
+    port_type = getattr(port, "port_type", None)
+    if port_type is None:
+        return None
+    return str(port_type)
+
+
 def route_nets_rust(
     unrouted_layout: Component,
     schematic: Schematic,
@@ -916,6 +995,7 @@ def route_nets_rust(
     allow_45_degree_turns: bool = True,
     max_iterations: int = 500_000,
     debug_timing: bool = False,
+    include_heater_obstacles: bool = False,
     defer_realization: bool = False,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
     """Route schematic nets using Rust A* and add one polygon per routed net.
@@ -965,6 +1045,7 @@ def route_nets_rust(
     resolved_obstacle_config = _resolve_obstacle_config(
         obstacle_config,
         route_layer=route_layer,
+        include_heater_obstacles=include_heater_obstacles,
     )
     obstacle_map = build_static_obstacle_map(unrouted_layout, config=resolved_obstacle_config)
     if debug_timing:
@@ -1102,7 +1183,21 @@ def route_nets_rust(
                         cells.add((nx, ny))
         return cells
 
-    def build_port_access_cells(port: Port) -> set[tuple[int, int]]:
+    port_open_radius_um = _as_float(
+        getattr(resolved_obstacle_config, "port_open_radius_um", 0.5),
+        0.5,
+    )
+    port_open_radius_cells = max(
+        0,
+        math.ceil(port_open_radius_um / float(grid.grid_size_um)),
+    )
+
+    def build_port_access_cells(
+        port: Port,
+        *,
+        access_length_um: float | None = None,
+        access_width_um: float | None = None,
+    ) -> set[tuple[int, int]]:
         state = port_to_grid_state(
             port,
             origin_x_um,
@@ -1114,6 +1209,35 @@ def route_nets_rust(
         sx, sy = _angle_to_step(port_angle)
         base_x = int(state.x)
         base_y = int(state.y)
+        if access_length_um is not None or access_width_um is not None:
+            length_cells = max(
+                1,
+                math.ceil(
+                    max(0.0, _as_float(access_length_um, 0.0))
+                    / float(grid.grid_size_um)
+                ),
+            )
+            half_width_cells = max(
+                0,
+                math.ceil(
+                    (
+                        max(0.0, _as_float(access_width_um, 0.0))
+                        / 2.0
+                    )
+                    / float(grid.grid_size_um)
+                ),
+            )
+            cells = _collect_inflated_step_cells(
+                base_x,
+                base_y,
+                step_x=sx,
+                step_y=sy,
+                length_cells=length_cells,
+                half_width_cells=half_width_cells,
+            )
+            cells.add((int(state.x), int(state.y)))
+            return cells
+
         entry_zone = _collect_inflated_step_cells(
             base_x,
             base_y,
@@ -1134,6 +1258,55 @@ def route_nets_rust(
         cells.add((int(state.x), int(state.y)))
         return cells
 
+    def build_base_port_open_cells(port: Port) -> set[tuple[int, int]]:
+        center = getattr(port, "center", None)
+        if center is None:
+            center = getattr(port, "dcenter", None)
+        if center is None:
+            return set()
+        base_x = int((float(center[0]) - origin_x_um) // float(grid.grid_size_um))
+        base_y = int((float(center[1]) - origin_y_um) // float(grid.grid_size_um))
+        return _collect_inflated_step_cells(
+            base_x,
+            base_y,
+            step_x=0,
+            step_y=0,
+            length_cells=1,
+            half_width_cells=port_open_radius_cells,
+        )
+
+    def build_keyed_port_access_cells(
+        *,
+        instance_name: str,
+        port_name: str,
+        port: Port,
+    ) -> tuple[set[tuple[int, int]], set[tuple[int, int]], str | None]:
+        port_type = _port_type_name(port)
+        component_name = _schematic_instance_component_name(schematic, instance_name)
+        rule = (
+            find_component_port_access_rule(
+                component_name=component_name,
+                port_name=port_name,
+                port_type=port_type,
+            )
+            if include_heater_obstacles
+            else None
+        )
+        if rule is not None:
+            cells = build_port_access_cells(
+                port,
+                access_length_um=rule.access_length_um,
+                access_width_um=rule.access_width_um,
+            )
+            return cells, cells, rule.component_name_pattern
+
+        if port_type is not None and port_type != "optical":
+            return set(), set(), None
+
+        candidate_cells = build_port_access_cells(port)
+        effective_cells = candidate_cells & build_base_port_open_cells(port)
+        return effective_cells, candidate_cells, None
+
     def _inflate_cells_square(
         cells: set[tuple[int, int]],
         *,
@@ -1153,6 +1326,8 @@ def route_nets_rust(
 
     route_jobs: list[tuple[str, str, str, str, str, Port, Port]] = []
     port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
+    port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
+    port_access_rule_by_spec: dict[str, str | None] = {}
     for net_name, bundle in nets.items():
         links = bundle.links
         for port1_spec, port2_spec in links.items():
@@ -1162,17 +1337,23 @@ def route_nets_rust(
             target_port = get_port_from_instance(routed_layout, inst2, port2)
             route_jobs.append((net_name, inst1, port1, inst2, port2, source_port, target_port))
             if port1_spec not in port_access_cells_by_spec:
-                port_access_cells_by_spec[port1_spec] = build_port_access_cells(source_port)
+                cells, candidate_cells, rule_name = build_keyed_port_access_cells(
+                    instance_name=inst1,
+                    port_name=port1,
+                    port=source_port,
+                )
+                port_access_cells_by_spec[port1_spec] = cells
+                port_access_candidate_cells_by_spec[port1_spec] = candidate_cells
+                port_access_rule_by_spec[port1_spec] = rule_name
             if port2_spec not in port_access_cells_by_spec:
-                port_access_cells_by_spec[port2_spec] = build_port_access_cells(target_port)
-
-    global_port_open_cells = {
-        (int(cell[0]), int(cell[1]))
-        for cell in cast(
-            Iterable[tuple[int, int]],
-            getattr(obstacle_map, "port_open_cells", set()),
-        )
-    }
+                cells, candidate_cells, rule_name = build_keyed_port_access_cells(
+                    instance_name=inst2,
+                    port_name=port2,
+                    port=target_port,
+                )
+                port_access_cells_by_spec[port2_spec] = cells
+                port_access_candidate_cells_by_spec[port2_spec] = candidate_cells
+                port_access_rule_by_spec[port2_spec] = rule_name
 
     # Use raw static geometry as the baseline truth for "real component body"
     # checks. `blocked_cells` may exclude port-open carve-outs.
@@ -1241,15 +1422,12 @@ def route_nets_rust(
         net_id += 1
         source_anchor_cell = (int(source_state.x), int(source_state.y))
         target_anchor_cell = (int(target_state.x), int(target_state.y))
-        opened_candidate_cells = set(port_access_cells_by_spec.get(port1_spec, set()))
-        opened_candidate_cells.update(port_access_cells_by_spec.get(port2_spec, set()))
+        opened_candidate_cells = set(port_access_candidate_cells_by_spec.get(port1_spec, set()))
+        opened_candidate_cells.update(port_access_candidate_cells_by_spec.get(port2_spec, set()))
         opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
 
-        opened_cells_set = {
-            cell
-            for cell in opened_candidate_cells
-            if cell in global_port_open_cells
-        }
+        opened_cells_set = set(port_access_cells_by_spec.get(port1_spec, set()))
+        opened_cells_set.update(port_access_cells_by_spec.get(port2_spec, set()))
         opened_cells_set.update({source_anchor_cell, target_anchor_cell})
         opened_cells = sorted(opened_cells_set)
 
@@ -1304,6 +1482,10 @@ def route_nets_rust(
                 f"status={status}",
                 f"source_spec={port1_spec}",
                 f"target_spec={port2_spec}",
+                f"source_component={_schematic_instance_component_name(schematic, inst1)}",
+                f"target_component={_schematic_instance_component_name(schematic, inst2)}",
+                f"source_access_rule={port_access_rule_by_spec.get(port1_spec)}",
+                f"target_access_rule={port_access_rule_by_spec.get(port2_spec)}",
                 f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
                 f"target_state=({target_anchor_cell[0]}, {target_anchor_cell[1]}, {int(target_state.angle)})",
                 f"opened_candidate_cells_count={len(opened_candidate_cells)}",
@@ -1426,6 +1608,7 @@ def route_nets_rust(
                 target=edge_key.target,
                 route_obj=route_obj,
                 total_length_um=float(route_obj.total_length_um),
+                opened_cells=tuple(opened_cells),
             )
         )
         routed_edge_lengths_um[edge_key] = float(route_obj.total_length_um)

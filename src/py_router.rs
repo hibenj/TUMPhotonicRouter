@@ -480,10 +480,19 @@ fn auto_meander_plan_to_py_object(
     d.set_item("selected_run_start_index", plan.selected_run_start_index)?;
     d.set_item("selected_run_end_index", plan.selected_run_end_index)?;
     d.set_item("selected_run_length_um", plan.selected_run_length_um)?;
+    d.set_item(
+        "selected_interval_length_um",
+        plan.selected_interval_length_um,
+    )?;
     d.set_item("box_depth_um", plan.selected_box_depth_um)?;
     d.set_item("candidate_runs", plan.candidate_runs)?;
+    d.set_item("candidate_intervals", plan.candidate_intervals)?;
     d.set_item("rejected_box_blocked", plan.rejected_box_blocked)?;
     d.set_item("rejected_planning_failed", plan.rejected_planning_failed)?;
+    d.set_item(
+        "rejected_exact_length_mismatch",
+        plan.rejected_exact_length_mismatch,
+    )?;
     d.set_item("rejected_too_short", plan.rejected_too_short)?;
     d.set_item(
         "selected_segment",
@@ -517,7 +526,7 @@ fn auto_meander_plan_to_py_object(
         ),
     )?;
     let centerline = PyList::empty_bound(py);
-    for p in &plan.plan.centerline {
+    for p in &plan.replacement_centerline {
         centerline.append((p.x_um, p.y_um))?;
     }
     d.set_item("centerline", centerline)?;
@@ -1185,6 +1194,7 @@ impl PyPhotonicRouter {
             max_meander_height_um,
             box_depth_um,
             min_segment_length_um,
+            endpoint_inset_um: 0.0,
             clearance_radius_cells,
             side_policy: policy,
             mode,
@@ -1224,7 +1234,7 @@ impl PyPhotonicRouter {
         )
     }
 
-    #[pyo3(signature=(route,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
+    #[pyo3(signature=(route,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
     fn plan_auto_analytic_meander_for_route_depth_sweep(
         &self,
         py: Python<'_>,
@@ -1236,6 +1246,7 @@ impl PyPhotonicRouter {
         max_bumps: usize,
         max_meander_height_um: f64,
         min_segment_length_um: f64,
+        endpoint_inset_um: f64,
         clearance_radius_cells: i32,
         side_policy: &str,
         opened_cells: Option<Vec<(i32, i32)>>,
@@ -1266,6 +1277,9 @@ impl PyPhotonicRouter {
         if min_segment_length_um <= 0.0 {
             return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
         }
+        if endpoint_inset_um < 0.0 {
+            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
+        }
         if clearance_radius_cells < 0 {
             return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
         }
@@ -1285,6 +1299,7 @@ impl PyPhotonicRouter {
             max_meander_height_um,
             box_depth_um: box_depths_um[0],
             min_segment_length_um,
+            endpoint_inset_um,
             clearance_radius_cells,
             side_policy: policy,
             mode,
@@ -1356,6 +1371,7 @@ impl PyPhotonicRouter {
             max_meander_height_um,
             box_depth_um,
             min_segment_length_um,
+            endpoint_inset_um: 0.0,
             clearance_radius_cells,
             side_policy: policy,
             mode,
@@ -1452,6 +1468,7 @@ impl PyPhotonicRouter {
             max_meander_height_um,
             box_depth_um,
             min_segment_length_um,
+            endpoint_inset_um: 0.0,
             clearance_radius_cells,
             side_policy: policy,
             mode,
@@ -1596,6 +1613,7 @@ impl PyPhotonicRouter {
             max_meander_height_um,
             box_depth_um,
             min_segment_length_um,
+            endpoint_inset_um: 0.0,
             clearance_radius_cells: meander_clearance_radius_cells,
             side_policy: policy,
             mode,

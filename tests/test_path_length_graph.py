@@ -19,6 +19,7 @@ from translation.route_rust import (
     analyze_path_length_matching,
     insert_meanders_for_requirements,
 )
+import translation.route_rust as route_rust
 import routing_flow
 
 
@@ -426,7 +427,12 @@ def test_main_meander_report_uses_auto_multi_bump_path():
     updated, report = analyze_meander_insertion_for_requirements(
         [record],
         [req],
-        config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=5.0),
+        config=MeanderInsertionConfig(
+            enabled=True,
+            min_candidate_straight_length_um=5.0,
+            max_meander_height_um=40.0,
+            auto_meander_endpoint_inset_um=0.0,
+        ),
         realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
         allow_45_degree_turns=True,
         bend_radius_cells=4,
@@ -448,6 +454,78 @@ def test_main_meander_report_uses_auto_multi_bump_path():
         == entry.get("primitive_bend_radius_um")
     )
     assert entry.get("effective_bend_radius_um") is not None
+
+
+def test_meander_planning_does_not_use_record_opened_cells(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _FakeRouter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_static_cells(self, cells: object) -> None:
+            captured["static_cells"] = cells
+
+        def plan_auto_analytic_meander_for_route_depth_sweep(
+            self,
+            _route_obj: object,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            captured["opened_cells"] = kwargs.get("opened_cells")
+            return {
+                "inserted_extra_length_um": kwargs["requested_extra_length_um"],
+                "effective_bend_radius_um": 4.0,
+                "primitive_bend_radius_um": 4.0,
+                "selected_box": (0.0, 10.0, 0.0, 10.0),
+                "selected_grid_rect": (1, 2, 3, 4),
+                "bumps": 1,
+                "side": "left",
+                "box_depth_um": 10.0,
+                "selected_run_start_index": 0,
+                "selected_run_end_index": 1,
+                "centerline": [(0.0, 0.0), (1.0, 0.0)],
+                "planning_mode": "fill_box_multi_bump",
+            }
+
+    class _FakeBackend:
+        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
+        PrimitiveLibraryConfig = staticmethod(
+            lambda *args, **kwargs: ("primitive", args, kwargs)
+        )
+        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
+        PyPhotonicRouter = _FakeRouter
+
+    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: _FakeBackend)
+
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="gate0", port="i0"),
+    )
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=object(),
+        total_length_um=30.0,
+        opened_cells=((7, 8), (9, 10)),
+    )
+    req = MissingLengthRequirement(edge_key=edge, missing_length_um=32.0)
+
+    updated, report = analyze_meander_insertion_for_requirements(
+        [record],
+        [req],
+        config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=5.0),
+        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=True,
+        bend_radius_cells=4,
+        static_blocked_cells=[(1, 1)],
+    )
+
+    assert captured["opened_cells"] == []
+    assert updated[0].opened_cells == record.opened_cells
+    results = cast(list[dict[str, object]], report["results"])
+    assert results[0]["status"] == "planned"
 
 
 def test_m2_skeleton_reports_no_candidate_when_too_short():

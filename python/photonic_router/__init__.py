@@ -7,6 +7,14 @@ from photonic_router.static_obstacle_builder import (
     StaticObstacleMapConfig,
     build_static_obstacle_map,
 )
+from photonic_router.routing_layers import (
+    ComponentPortAccessRule,
+    HEATER_METAL_OBSTACLE_LAYERS,
+    HEATER_OPTICAL_PORT_ACCESS_RULES,
+    OPTICAL_OBSTACLE_LAYERS,
+    find_component_port_access_rule,
+    get_routing_obstacle_layers,
+)
 from photonic_router.path_length_graph import (
     GraphEdge,
     GraphNode,
@@ -35,11 +43,17 @@ __all__ = [
     "PhotonicRoutingGraph",
     "PathLengthAnalysisResult",
     "MissingLengthRequirement",
+    "ComponentPortAccessRule",
     "StaticObstacleMapConfig",
     "StaticObstacleMapData",
+    "HEATER_METAL_OBSTACLE_LAYERS",
+    "HEATER_OPTICAL_PORT_ACCESS_RULES",
+    "OPTICAL_OBSTACLE_LAYERS",
     "annotate_edge_lengths",
     "build_graph_from_schematic",
     "build_static_obstacle_map",
     "extract_benchmark",
+    "find_component_port_access_rule",
+    "get_routing_obstacle_layers",
     "list_edges_requiring_meander",
 ]

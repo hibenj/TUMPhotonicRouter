@@ -104,6 +104,7 @@ def run_routing_flow(
     enable_path_length_matching: bool = False,
     allow_45_degree_turns: bool = True,
     max_iterations: int = 500_000,
+    include_heater_obstacles: bool = False,
     static_obstacle_config: StaticObstacleMapConfig | None = None,
     stats: RoutingFlowStats | None = None,
 ) -> Component:
@@ -127,6 +128,9 @@ def run_routing_flow(
                       analysis and compute per-edge missing lengths.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
         max_iterations: Maximum A* state expansions per route attempt.
+        include_heater_obstacles: If True, include configured heater/metal
+                      layers as static optical-routing obstacles and enable
+                      component-specific heater optical port openings.
         static_obstacle_config: Optional obstacle builder config. If omitted,
             strict bounding-box static obstacles are used.
 
@@ -244,6 +248,7 @@ def run_routing_flow(
             debug_timing=debug_timing,
             allow_45_degree_turns=allow_45_degree_turns,
             max_iterations=max_iterations,
+            include_heater_obstacles=include_heater_obstacles,
             obstacle_config=route_static_obstacle_config,
         )
     except Exception:
@@ -411,6 +416,7 @@ if __name__ == "__main__":
                      show_klayout=False,
                      allow_45_degree_turns=False,
                      enable_path_length_matching=True,
+                     include_heater_obstacles=True,
                      static_obstacle_config=StaticObstacleMapConfig(
                          obstacle_mode="bounding_boxes",
                          clear_port_open_cells_from_static=False,  # strict net-local openings
