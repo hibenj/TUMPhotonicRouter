@@ -456,7 +456,7 @@ def test_main_meander_report_uses_auto_multi_bump_path():
     assert entry.get("effective_bend_radius_um") is not None
 
 
-def test_meander_planning_does_not_use_record_opened_cells(monkeypatch):
+def test_meander_planning_does_not_open_port_or_static_cells(monkeypatch):
     captured: dict[str, object] = {}
 
     class _FakeRouter:
@@ -465,6 +465,9 @@ def test_meander_planning_does_not_use_record_opened_cells(monkeypatch):
 
         def set_static_cells(self, cells: object) -> None:
             captured["static_cells"] = cells
+
+        def add_static_cells(self, cells: object) -> None:
+            captured["added_static_cells"] = cells
 
         def plan_auto_analytic_meander_for_route_depth_sweep(
             self,
@@ -497,6 +500,9 @@ def test_meander_planning_does_not_use_record_opened_cells(monkeypatch):
 
     monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: _FakeBackend)
 
+    class _RouteObj:
+        cells = [(1, 1), (2, 2), (3, 3)]
+
     edge = RoutedEdgeKey(
         net_name="n0",
         source=PortRef(instance="src0", port="o1"),
@@ -506,7 +512,7 @@ def test_meander_planning_does_not_use_record_opened_cells(monkeypatch):
         net_name=edge.net_name,
         source=edge.source,
         target=edge.target,
-        route_obj=object(),
+        route_obj=_RouteObj(),
         total_length_um=30.0,
         opened_cells=((7, 8), (9, 10)),
     )
@@ -522,7 +528,17 @@ def test_meander_planning_does_not_use_record_opened_cells(monkeypatch):
         static_blocked_cells=[(1, 1)],
     )
 
-    assert captured["opened_cells"] == []
+    opened_cells = cast(list[tuple[int, int]], captured["opened_cells"])
+    static_cells = set(cast(list[tuple[int, int]], captured["static_cells"]))
+    assert set(opened_cells) == {(2, 2), (3, 3)}
+    assert (1, 1) not in opened_cells
+    assert (7, 8) not in opened_cells
+    assert (9, 10) not in opened_cells
+    assert (1, 1) in static_cells
+    assert (2, 2) in static_cells
+    assert (3, 3) in static_cells
+    assert (7, 8) not in static_cells
+    assert (9, 10) not in static_cells
     assert updated[0].opened_cells == record.opened_cells
     results = cast(list[dict[str, object]], report["results"])
     assert results[0]["status"] == "planned"

@@ -55,6 +55,14 @@ pub struct AnalyticMeanderPlan {
     pub side: MeanderSide,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnalyticMeanderFootprint {
+    pub insertion_width_um: f64,
+    pub amplitude_um: f64,
+    pub inserted_extra_length_um: f64,
+    pub bumps: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum MeanderPlanningError {
     NonFiniteInput,
@@ -65,6 +73,60 @@ pub enum MeanderPlanningError {
     AvailableBoxTooSmall,
     RequestedExtraLengthDoesNotFit,
     MaxBumpsTooSmall,
+}
+
+pub fn plan_fill_box_multi_bump_footprint(
+    requested_extra_length_um: f64,
+    min_bend_radius_um: f64,
+    min_straight_um: f64,
+    max_bumps: usize,
+    max_meander_height_um: f64,
+) -> Result<AnalyticMeanderFootprint, MeanderPlanningError> {
+    if !requested_extra_length_um.is_finite()
+        || !min_bend_radius_um.is_finite()
+        || !min_straight_um.is_finite()
+        || !max_meander_height_um.is_finite()
+    {
+        return Err(MeanderPlanningError::NonFiniteInput);
+    }
+    if min_bend_radius_um <= 0.0 {
+        return Err(MeanderPlanningError::NonPositiveBendRadius);
+    }
+    if requested_extra_length_um <= 0.0 {
+        return Err(MeanderPlanningError::NonPositiveRequestedExtraLength);
+    }
+    if max_bumps == 0 {
+        return Err(MeanderPlanningError::MaxBumpsTooSmall);
+    }
+    let r = min_bend_radius_um;
+    let min_height = 2.0 * r + min_straight_um.max(0.0);
+    if max_meander_height_um + EPS < min_height {
+        return Err(MeanderPlanningError::AvailableBoxTooSmall);
+    }
+
+    for bumps in (1..=max_bumps).filter(|b| b % 2 == 1) {
+        let n = bumps as f64;
+        let amplitude = (requested_extra_length_um
+            - r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0)))
+            / n;
+        if amplitude + EPS < min_height || amplitude - EPS > max_meander_height_um {
+            continue;
+        }
+        let amplitude = amplitude.clamp(min_height, max_meander_height_um);
+        let inserted_extra =
+            n * amplitude + r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0));
+        if (inserted_extra - requested_extra_length_um).abs() > 1.0e-6 {
+            return Err(MeanderPlanningError::RequestedExtraLengthDoesNotFit);
+        }
+        return Ok(AnalyticMeanderFootprint {
+            insertion_width_um: r * (2.0 * n + 3.0),
+            amplitude_um: amplitude,
+            inserted_extra_length_um: inserted_extra,
+            bumps,
+        });
+    }
+
+    Err(MeanderPlanningError::RequestedExtraLengthDoesNotFit)
 }
 
 pub fn bend_radius_cells_from_min_radius(
@@ -272,24 +334,16 @@ pub fn plan_fill_box_multi_bump_meander(
     if max_feasible_bumps == 0 {
         return Err(MeanderPlanningError::MaxBumpsTooSmall);
     }
-    let min_height = 2.0 * r + min_straight;
-    // With `n` internal U-turns (odd), extra length is:
-    //   extra = n*H + r * ((n+1)*pi - (4*n + 3))
-    let mut chosen: Option<(usize, f64)> = None;
-    for bumps in (1..=max_feasible_bumps).filter(|b| b % 2 == 1) {
-        let n = bumps as f64;
-        let h = (config.requested_extra_length_um
-            - r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0)))
-            / n;
-        if h + EPS < min_height || h - EPS > depth {
-            continue;
-        }
-        chosen = Some((bumps, h.clamp(min_height, depth)));
-        break;
-    }
-    let (num_meanders, amplitude) =
-        chosen.ok_or(MeanderPlanningError::RequestedExtraLengthDoesNotFit)?;
-    let insertion_width_um = r * (2.0 * (num_meanders as f64) + 3.0);
+    let footprint = plan_fill_box_multi_bump_footprint(
+        config.requested_extra_length_um,
+        config.min_bend_radius_um,
+        config.min_straight_um,
+        max_feasible_bumps,
+        depth,
+    )?;
+    let num_meanders = footprint.bumps;
+    let amplitude = footprint.amplitude_um;
+    let insertion_width_um = footprint.insertion_width_um;
     if insertion_width_um - EPS > segment_length_um {
         return Err(MeanderPlanningError::AvailableBoxTooSmall);
     }
@@ -411,8 +465,7 @@ pub fn plan_fill_box_multi_bump_meander(
             return Err(MeanderPlanningError::AvailableBoxTooSmall);
         }
     }
-    let n = num_meanders as f64;
-    let inserted_extra = n * amplitude + r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0));
+    let inserted_extra = footprint.inserted_extra_length_um;
     if (inserted_extra - config.requested_extra_length_um).abs() > 1.0e-6 {
         return Err(MeanderPlanningError::RequestedExtraLengthDoesNotFit);
     }

@@ -6,6 +6,7 @@ import importlib
 import math
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, field, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, cast
@@ -304,10 +305,7 @@ def analyze_meander_insertion_for_requirements(
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
     base_static_cells: set[tuple[int, int]] = set(static_blocked_cells or [])
 
-    def _edge_route_cells(edge: RoutedEdgeKey) -> set[tuple[int, int]]:
-        record = updated.get(edge) or by_edge.get(edge)
-        if record is None:
-            return set()
+    def _record_route_cells(record: RoutedNetRecord) -> set[tuple[int, int]]:
         cells = getattr(record.route_obj, "cells", None) or []
         return {(int(x), int(y)) for x, y in cells}
 
@@ -333,6 +331,16 @@ def analyze_meander_insertion_for_requirements(
 
     by_edge = {_record_edge_key(r): r for r in routed_net_records}
     updated = dict(by_edge)
+    route_cells_by_edge = {
+        edge: _record_route_cells(record)
+        for edge, record in by_edge.items()
+    }
+    route_cell_refcounts: Counter[tuple[int, int]] = Counter()
+    for cells in route_cells_by_edge.values():
+        route_cell_refcounts.update(cells)
+    base_static_and_route_cells = set(base_static_cells)
+    base_static_and_route_cells.update(route_cell_refcounts.keys())
+    router.set_static_cells(list(base_static_and_route_cells))
     results: list[dict[str, object]] = []
     total_requested = 0.0
     total_inserted = 0.0
@@ -378,13 +386,13 @@ def analyze_meander_insertion_for_requirements(
         if record is None:
             results.append(entry)
             continue
-        blocked_cells = set(base_static_cells)
-        blocked_cells.update(reserved_meander_cells)
-        for other_edge in by_edge.keys():
-            if other_edge == edge_key:
-                continue
-            blocked_cells.update(_edge_route_cells(other_edge))
-        router.set_static_cells(list(blocked_cells))
+        current_route_open_cells = {
+            cell
+            for cell in route_cells_by_edge.get(edge_key, set())
+            if route_cell_refcounts.get(cell, 0) == 1
+            and cell not in base_static_cells
+            and cell not in reserved_meander_cells
+        }
 
         # Sweep box depth for legality, but keep requested length fixed.
         min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
@@ -421,9 +429,10 @@ def analyze_meander_insertion_for_requirements(
                     endpoint_inset_um=endpoint_inset_um,
                     clearance_radius_cells=0,
                     side_policy="both",
-                    # Meander boxes must not consume source/target access
-                    # openings. Those openings are only for route entry/exit.
-                    opened_cells=[],
+                    # Only open this route's own non-static cells while
+                    # planning its replacement. Port-access and fixed
+                    # component/heater cells remain blocked.
+                    opened_cells=sorted(current_route_open_cells),
                     planning_mode="fill_box_multi_bump",
                 ),
             )
@@ -471,7 +480,10 @@ def analyze_meander_insertion_for_requirements(
             entry["status"] = "planned_partial"
         total_inserted += inserted
         selected_grid_rect = rr.get("selected_grid_rect")
-        reserved_meander_cells.update(_grid_rect_cells(selected_grid_rect))
+        new_reserved_cells = _grid_rect_cells(selected_grid_rect)
+        if new_reserved_cells:
+            reserved_meander_cells.update(new_reserved_cells)
+            router.add_static_cells(list(new_reserved_cells))
         updated[edge_key] = RoutedNetRecord(
             net_name=record.net_name,
             source=record.source,
