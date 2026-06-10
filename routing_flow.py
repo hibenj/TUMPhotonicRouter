@@ -21,6 +21,7 @@ from gdsfactory.schematic import Schematic
 
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import (
+    RipupRerouteConfig,
     route_match_and_realize,
 )
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
@@ -35,11 +36,20 @@ SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
 SCRIPT_SHOW_KLAYOUT = False
 SCRIPT_ALLOW_45_DEGREE_TURNS = False
-SCRIPT_ENABLE_PATH_LENGTH_MATCHING = False
+SCRIPT_ENABLE_PATH_LENGTH_MATCHING = True
+SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = 20.0
 SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
 SCRIPT_OBSTACLE_MODE = "bounding_boxes"
+SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.5
+SCRIPT_HEATER_CLEARANCE_UM = 5.0
+SCRIPT_OBSTACLE_CLEARANCE_UM = SCRIPT_WAVEGUIDE_CLEARANCE_UM
 SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC = False
+SCRIPT_ENABLE_RIPUP_REROUTE = True
+SCRIPT_RIPUP_MAX_ROUNDS = 4
+SCRIPT_RIPUP_MAX_VICTIMS = 8
+SCRIPT_RIPUP_HISTORY_WEIGHT = 2.0
+SCRIPT_RIPUP_HISTORY_INCREMENT = 1
 
 
 @dataclass
@@ -220,6 +230,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--path-length-meander-height-um",
+        type=float,
+        default=SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
+        metavar="UM",
+        help=(
+            "Maximum meander height used for path-length matching "
+            f"(default: {SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM})."
+        ),
+    )
+    parser.add_argument(
         "--max-iterations",
         type=int,
         default=SCRIPT_MAX_ITERATIONS,
@@ -242,6 +262,35 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Static obstacle mode passed to StaticObstacleMapConfig.",
     )
     parser.add_argument(
+        "--waveguide-clearance-um",
+        type=float,
+        default=SCRIPT_WAVEGUIDE_CLEARANCE_UM,
+        metavar="UM",
+        help=(
+            "Clearance in micrometers for existing optical/waveguide obstacles "
+            f"(default: {SCRIPT_WAVEGUIDE_CLEARANCE_UM})."
+        ),
+    )
+    parser.add_argument(
+        "--obstacle-clearance-um",
+        dest="waveguide_clearance_um",
+        type=float,
+        default=argparse.SUPPRESS,
+        metavar="UM",
+        help="Deprecated alias for --waveguide-clearance-um.",
+    )
+    parser.add_argument(
+        "--heater-clearance-um",
+        type=float,
+        default=SCRIPT_HEATER_CLEARANCE_UM,
+        metavar="UM",
+        help=(
+            "Clearance in micrometers for heater/metal obstacles when "
+            "--include-heater-obstacles is true "
+            f"(default: {SCRIPT_HEATER_CLEARANCE_UM})."
+        ),
+    )
+    parser.add_argument(
         "--clear-port-open-cells-from-static",
         type=_parse_bool_flag,
         default=SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC,
@@ -249,6 +298,50 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Clear port-open cells from static obstacles "
             f"(default: {str(SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC).lower()})."
+        ),
+    )
+    parser.add_argument(
+        "--ripup-reroute",
+        type=_parse_bool_flag,
+        default=SCRIPT_ENABLE_RIPUP_REROUTE,
+        metavar="BOOL",
+        help=(
+            "Enable conflict-probe rip-up and reroute "
+            f"(default: {str(SCRIPT_ENABLE_RIPUP_REROUTE).lower()})."
+        ),
+    )
+    parser.add_argument(
+        "--ripup-max-rounds",
+        type=int,
+        default=SCRIPT_RIPUP_MAX_ROUNDS,
+        metavar="N",
+        help=f"Maximum repair rounds per failed net (default: {SCRIPT_RIPUP_MAX_ROUNDS}).",
+    )
+    parser.add_argument(
+        "--ripup-max-victims",
+        type=int,
+        default=SCRIPT_RIPUP_MAX_VICTIMS,
+        metavar="N",
+        help=(
+            "Maximum blocker routes to rip up per repair round "
+            f"(default: {SCRIPT_RIPUP_MAX_VICTIMS})."
+        ),
+    )
+    parser.add_argument(
+        "--ripup-history-weight",
+        type=float,
+        default=SCRIPT_RIPUP_HISTORY_WEIGHT,
+        metavar="W",
+        help=f"A* history penalty weight during repair (default: {SCRIPT_RIPUP_HISTORY_WEIGHT}).",
+    )
+    parser.add_argument(
+        "--ripup-history-increment",
+        type=int,
+        default=SCRIPT_RIPUP_HISTORY_INCREMENT,
+        metavar="N",
+        help=(
+            "History penalty increment for probed/ripped route cells "
+            f"(default: {SCRIPT_RIPUP_HISTORY_INCREMENT})."
         ),
     )
     return parser
@@ -264,10 +357,20 @@ def main(argv: list[str] | None = None) -> Component:
         show_klayout=args.show_klayout,
         allow_45_degree_turns=args.allow_45_degree_turns,
         enable_path_length_matching=args.path_length_matching,
+        path_length_meander_height_um=args.path_length_meander_height_um,
         max_iterations=args.max_iterations,
         include_heater_obstacles=args.include_heater_obstacles,
+        ripup_reroute_config=RipupRerouteConfig(
+            enabled=args.ripup_reroute,
+            max_rounds=args.ripup_max_rounds,
+            max_victims_per_failure=args.ripup_max_victims,
+            history_weight=args.ripup_history_weight,
+            history_increment=args.ripup_history_increment,
+        ),
         static_obstacle_config=StaticObstacleMapConfig(
             obstacle_mode=args.obstacle_mode,
+            clearance_um=args.waveguide_clearance_um,
+            heater_clearance_um=args.heater_clearance_um,
             clear_port_open_cells_from_static=args.clear_port_open_cells_from_static,
         ),
     )
@@ -320,9 +423,14 @@ def run_routing_flow(
     debug_meanders: bool = False,
     show_klayout: bool = False,
     enable_path_length_matching: bool = False,
+    path_length_meander_height_um: float = 20.0,
     allow_45_degree_turns: bool = True,
     max_iterations: int = 500_000,
     include_heater_obstacles: bool = False,
+    waveguide_clearance_um: float | None = None,
+    heater_clearance_um: float | None = None,
+    obstacle_clearance_um: float | None = None,
+    ripup_reroute_config: RipupRerouteConfig | None = None,
     static_obstacle_config: StaticObstacleMapConfig | None = None,
     stats: RoutingFlowStats | None = None,
 ) -> Component:
@@ -348,11 +456,18 @@ def run_routing_flow(
                populated in-place.
         enable_path_length_matching: If True, run post-route path-length
                       analysis and compute per-edge missing lengths.
+        path_length_meander_height_um: Maximum meander height used when
+                      inserting path-length matching meanders.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
         max_iterations: Maximum A* state expansions per route attempt.
         include_heater_obstacles: If True, include configured heater/metal
                       layers as static optical-routing obstacles and enable
                       component-specific heater optical port openings.
+        waveguide_clearance_um: Static clearance in micrometers for existing
+                      optical/waveguide obstacles.
+        heater_clearance_um: Static clearance in micrometers for heater/metal
+                      obstacles. Defaults to the waveguide clearance.
+        obstacle_clearance_um: Deprecated alias for waveguide_clearance_um.
         static_obstacle_config: Optional obstacle builder config. If omitted,
             strict bounding-box static obstacles are used.
 
@@ -377,8 +492,19 @@ def run_routing_flow(
     if stats is not None:
         stats.benchmark_name = benchmark_name
 
+    if waveguide_clearance_um is None:
+        waveguide_clearance_um = (
+            float(obstacle_clearance_um)
+            if obstacle_clearance_um is not None
+            else SCRIPT_WAVEGUIDE_CLEARANCE_UM
+        )
+    if heater_clearance_um is None:
+        heater_clearance_um = float(waveguide_clearance_um)
+
     route_static_obstacle_config = static_obstacle_config or StaticObstacleMapConfig(
         obstacle_mode="bounding_boxes",
+        clearance_um=float(waveguide_clearance_um),
+        heater_clearance_um=float(heater_clearance_um),
         clear_port_open_cells_from_static=False,
     )
 
@@ -474,6 +600,8 @@ def run_routing_flow(
             allow_45_degree_turns=allow_45_degree_turns,
             max_iterations=max_iterations,
             include_heater_obstacles=include_heater_obstacles,
+            ripup_reroute_config=ripup_reroute_config,
+            path_length_meander_height_um=path_length_meander_height_um,
             obstacle_config=route_static_obstacle_config,
         )
     except Exception:

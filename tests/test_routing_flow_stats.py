@@ -1,4 +1,5 @@
 from routing_flow import (
+    RipupRerouteConfig,
     RoutingFlowStats,
     _format_debug_route_indices,
     _parse_debug_svg_selector,
@@ -120,9 +121,11 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
         _schematic: object,
         *,
         obstacle_config: object | None = None,
+        ripup_reroute_config: object | None = None,
         **_kwargs: object,
     ):
         captured["obstacle_config"] = obstacle_config
+        captured["ripup_reroute_config"] = ripup_reroute_config
         routed_layout = SimpleNamespace(name="routed_layout_rust")
         routed_layout.write_gds = lambda *_args, **_kwargs: None
         return SimpleNamespace(
@@ -147,9 +150,16 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
         routing_flow, "route_match_and_realize", fake_route_match_and_realize
     )
 
-    run_routing_flow("MMI8x4", debug_timing=False, show_klayout=False)
+    ripup_config = RipupRerouteConfig(enabled=True, max_rounds=2)
+    run_routing_flow(
+        "MMI8x4",
+        debug_timing=False,
+        show_klayout=False,
+        ripup_reroute_config=ripup_config,
+    )
 
     config = captured.get("obstacle_config")
     assert hasattr(config, "obstacle_mode")
     assert config.obstacle_mode == "bounding_boxes"
     assert config.clear_port_open_cells_from_static is False
+    assert captured.get("ripup_reroute_config") is ripup_config

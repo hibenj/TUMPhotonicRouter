@@ -54,6 +54,8 @@ pub struct AStarConfig {
     pub enable_simple_routes: bool,
     pub simple_route_max_offset_cells: i32,
     pub simple_route_min_leg_len_cells: i32,
+    pub ignore_dynamic_obstacles: bool,
+    pub history_weight: f64,
 }
 
 impl Default for AStarConfig {
@@ -73,8 +75,10 @@ impl Default for AStarConfig {
             max_dense_states: 20_000_000,
             max_dense_obstacle_cells: 10_000_000,
             enable_simple_routes: true,
-            simple_route_max_offset_cells: 16,
+            simple_route_max_offset_cells: 96,
             simple_route_min_leg_len_cells: 1,
+            ignore_dynamic_obstacles: false,
+            history_weight: 0.0,
         }
     }
 }
@@ -290,6 +294,8 @@ struct DenseRoutingGrid {
     width: i32,
     blocked: Vec<u8>,
     blocked_prefix: Option<Vec<u32>>,
+    history: Option<Vec<u32>>,
+    history_prefix: Option<Vec<u64>>,
     blocked_count: usize,
     build_time_us: u128,
 }
@@ -300,6 +306,8 @@ impl DenseRoutingGrid {
         bounds: RoutingBounds,
         opened_cells: Option<&FxHashSet<CellKey>>,
         max_dense_obstacle_cells: usize,
+        ignore_dynamic_obstacles: bool,
+        build_history: bool,
     ) -> Option<Self> {
         let start = Instant::now();
         let width = bounds.max_x.checked_sub(bounds.min_x)?.checked_add(1)?;
@@ -316,6 +324,11 @@ impl DenseRoutingGrid {
         }
 
         let mut blocked = vec![0u8; cell_count];
+        let mut history = if build_history {
+            Some(vec![0u32; cell_count])
+        } else {
+            None
+        };
         let mut blocked_count = 0usize;
         for local_y in 0..height {
             for local_x in 0..width {
@@ -328,11 +341,15 @@ impl DenseRoutingGrid {
                 let opened = opened_cells
                     .map(|cells| cells.contains(&pack_xy(x, y)))
                     .unwrap_or(false);
-                let is_blocked = obstacle_map.is_dynamic_blocked(x, y)
+                let is_blocked = (!ignore_dynamic_obstacles
+                    && obstacle_map.is_dynamic_blocked(x, y))
                     || (!opened && obstacle_map.is_static_blocked(x, y));
                 if is_blocked {
                     blocked_count += 1;
                     blocked[idx] = 1;
+                }
+                if let Some(history) = history.as_mut() {
+                    history[idx] = obstacle_map.get_history_cost(x, y);
                 }
             }
         }
@@ -340,8 +357,19 @@ impl DenseRoutingGrid {
         let stride = usize::try_from(width).ok()?.checked_add(1)?;
         let mut blocked_prefix =
             vec![0u32; stride.checked_mul(usize::try_from(height).ok()?.checked_add(1)?)?];
+        let mut history_prefix = if build_history {
+            Some(vec![
+                0u64;
+                stride.checked_mul(
+                    usize::try_from(height).ok()?.checked_add(1)?
+                )?
+            ])
+        } else {
+            None
+        };
         for local_y in 0..height {
             let mut row_sum = 0u32;
+            let mut history_row_sum = 0u64;
             let y_base = usize::try_from(local_y).ok()?;
             let src_base = y_base.checked_mul(width_usize)?;
             let prefix_row = (y_base + 1).checked_mul(stride)?;
@@ -350,9 +378,17 @@ impl DenseRoutingGrid {
                 let x_idx = usize::try_from(local_x).ok()?;
                 let blocked_idx = src_base.checked_add(x_idx)?;
                 row_sum = row_sum.saturating_add(u32::from(blocked[blocked_idx]));
+                if let Some(history) = history.as_ref() {
+                    history_row_sum =
+                        history_row_sum.saturating_add(u64::from(history[blocked_idx]));
+                }
                 let prefix_idx = prefix_row.checked_add(x_idx + 1)?;
                 let above = blocked_prefix[prefix_above + x_idx + 1];
                 blocked_prefix[prefix_idx] = above.saturating_add(row_sum);
+                if let Some(history_prefix) = history_prefix.as_mut() {
+                    let history_above = history_prefix[prefix_above + x_idx + 1];
+                    history_prefix[prefix_idx] = history_above.saturating_add(history_row_sum);
+                }
             }
         }
 
@@ -361,6 +397,8 @@ impl DenseRoutingGrid {
             width,
             blocked,
             blocked_prefix: Some(blocked_prefix),
+            history,
+            history_prefix,
             blocked_count,
             build_time_us: start.elapsed().as_micros(),
         })
@@ -428,6 +466,42 @@ impl DenseRoutingGrid {
         } else {
             u32::try_from(total).ok()
         }
+    }
+
+    #[inline]
+    fn history_cost_in_local_rect(
+        &self,
+        local_min_x: i32,
+        local_max_x: i32,
+        local_min_y: i32,
+        local_max_y: i32,
+    ) -> Option<u64> {
+        let height = self
+            .bounds
+            .max_y
+            .checked_sub(self.bounds.min_y)?
+            .checked_add(1)?;
+        let width = self.width;
+        if local_min_x > local_max_x || local_min_y > local_max_y {
+            return None;
+        }
+        if local_min_x < 0 || local_min_y < 0 || local_max_x >= width || local_max_y >= height {
+            return None;
+        }
+
+        let prefix = self.history_prefix.as_ref()?;
+        let width_usize = usize::try_from(width).ok()?;
+        let stride = width_usize.checked_add(1)?;
+        let x1 = usize::try_from(local_min_x).ok()?;
+        let y1 = usize::try_from(local_min_y).ok()?;
+        let x2 = usize::try_from(local_max_x).ok()?;
+        let y2 = usize::try_from(local_max_y).ok()?;
+
+        let a = prefix[(y2 + 1).checked_mul(stride)? + (x2 + 1)];
+        let b = prefix[y1.checked_mul(stride)? + (x2 + 1)];
+        let c = prefix[(y2 + 1).checked_mul(stride)? + x1];
+        let d = prefix[y1.checked_mul(stride)? + x1];
+        Some(a.saturating_add(d).saturating_sub(b).saturating_sub(c))
     }
 
     #[inline]
@@ -501,6 +575,63 @@ impl DenseRoutingGrid {
             }
             true
         }
+    }
+
+    #[inline]
+    fn primitive_footprint_history_with_profile(
+        &self,
+        origin_x: i32,
+        origin_y: i32,
+        footprint: &[(i32, i32)],
+        profile: &FootprintCollisionProfile,
+    ) -> u64 {
+        if profile.is_full_rect {
+            let Some(rect_min_x) = origin_x.checked_add(profile.min_dx) else {
+                return u64::MAX;
+            };
+            let Some(rect_max_x) = origin_x.checked_add(profile.max_dx) else {
+                return u64::MAX;
+            };
+            let Some(rect_min_y) = origin_y.checked_add(profile.min_dy) else {
+                return u64::MAX;
+            };
+            let Some(rect_max_y) = origin_y.checked_add(profile.max_dy) else {
+                return u64::MAX;
+            };
+            let Some(local_min_x) = rect_min_x.checked_sub(self.bounds.min_x) else {
+                return u64::MAX;
+            };
+            let Some(local_max_x) = rect_max_x.checked_sub(self.bounds.min_x) else {
+                return u64::MAX;
+            };
+            let Some(local_min_y) = rect_min_y.checked_sub(self.bounds.min_y) else {
+                return u64::MAX;
+            };
+            let Some(local_max_y) = rect_max_y.checked_sub(self.bounds.min_y) else {
+                return u64::MAX;
+            };
+            return self
+                .history_cost_in_local_rect(local_min_x, local_max_x, local_min_y, local_max_y)
+                .unwrap_or(u64::MAX);
+        }
+
+        let mut total = 0u64;
+        let Some(history) = self.history.as_ref() else {
+            return 0;
+        };
+        for (dx, dy) in footprint.iter().copied() {
+            let Some(x) = origin_x.checked_add(dx) else {
+                return u64::MAX;
+            };
+            let Some(y) = origin_y.checked_add(dy) else {
+                return u64::MAX;
+            };
+            let Some(idx) = self.idx_of(x, y) else {
+                return u64::MAX;
+            };
+            total = total.saturating_add(u64::from(history[idx]));
+        }
+        total
     }
 
     #[cfg(test)]
@@ -598,6 +729,62 @@ pub fn route_single_net(
 }
 
 /// Route a single net with explicit A* settings.
+pub fn try_simple_route_with_config(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+) -> Option<RouteResult> {
+    if !config.enable_simple_routes {
+        return None;
+    }
+    if config.target_tolerance_cells < 0 {
+        return None;
+    }
+    if let Some(mask) = config.allowed_target_angles_mask {
+        if mask == 0 {
+            return None;
+        }
+    }
+    if target.angle > 7 {
+        return None;
+    }
+    if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
+        return None;
+    }
+
+    let mut anchor_open_cells = FxHashSet::default();
+    if let Some(port_open_cells) = port_open_cells {
+        anchor_open_cells.extend(port_open_cells.iter().copied());
+    }
+    anchor_open_cells.insert(pack_xy(source.x, source.y));
+    anchor_open_cells.insert(pack_xy(target.x, target.y));
+
+    let bend_radius_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
+    let z_config = SimpleZRouteConfig {
+        max_offset_cells: config.simple_route_max_offset_cells,
+        include_zero_offset: true,
+        min_leg_len_cells: config.simple_route_min_leg_len_cells.max(bend_radius_cells),
+    };
+    let candidate = try_straight_l_or_z_candidate_with_config(
+        source,
+        target,
+        obstacle_map,
+        Some(&anchor_open_cells),
+        &z_config,
+    )?;
+    simple_candidate_to_route_result(
+        &candidate,
+        source,
+        target,
+        primitives,
+        RouteSearchStats::default(),
+    )
+}
+
+/// Route a single net with explicit A* settings.
 pub fn route_single_net_with_config(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
@@ -628,30 +815,15 @@ pub fn route_single_net_with_config(
     anchor_open_cells.insert(pack_xy(target.x, target.y));
 
     let mut stats = RouteSearchStats::default();
-    if config.enable_simple_routes {
-        let bend_radius_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
-        let z_config = SimpleZRouteConfig {
-            max_offset_cells: config.simple_route_max_offset_cells,
-            include_zero_offset: true,
-            min_leg_len_cells: config.simple_route_min_leg_len_cells.max(bend_radius_cells),
-        };
-        if let Some(candidate) = try_straight_l_or_z_candidate_with_config(
-            source,
-            target,
-            obstacle_map,
-            Some(&anchor_open_cells),
-            &z_config,
-        ) {
-            if let Some(simple_route) = simple_candidate_to_route_result(
-                &candidate,
-                source,
-                target,
-                primitives,
-                stats.clone(),
-            ) {
-                return Some(simple_route);
-            }
-        }
+    if let Some(simple_route) = try_simple_route_with_config(
+        obstacle_map,
+        primitives,
+        source,
+        target,
+        port_open_cells,
+        config,
+    ) {
+        return Some(simple_route);
     }
 
     if !config.use_routing_window {
@@ -1009,6 +1181,8 @@ fn route_single_net_with_bounds(
         bounds,
         port_open_cells,
         config.max_dense_obstacle_cells,
+        config.ignore_dynamic_obstacles,
+        config.history_weight > 0.0,
     ) {
         Some(grid) => grid,
         None => {
@@ -1108,7 +1282,19 @@ fn route_single_net_with_bounds(
                 continue;
             }
 
-            let step_cost = primitive.length_um + config.bend_weight * primitive.bend_cost;
+            let history_cost = if config.history_weight > 0.0 {
+                dense_grid.primitive_footprint_history_with_profile(
+                    state.x,
+                    state.y,
+                    &primitive.footprint,
+                    profile,
+                ) as f64
+                    * config.history_weight
+            } else {
+                0.0
+            };
+            let step_cost =
+                primitive.length_um + config.bend_weight * primitive.bend_cost + history_cost;
             let tentative_g = current_g + step_cost;
             if tentative_g >= storage.g_costs[next_idx] {
                 continue;
@@ -2032,11 +2218,13 @@ mod tests {
         };
 
         let closed_grid =
-            DenseRoutingGrid::from_obstacle_map(&map, bounds, None, 1_000).expect("grid");
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, None, 1_000, false, false)
+                .expect("grid");
         assert!(closed_grid.is_blocked(3, 2));
 
         let opened_grid =
-            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000).expect("grid");
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000, false, false)
+                .expect("grid");
         assert!(!opened_grid.is_blocked(3, 2));
     }
 
@@ -2054,8 +2242,44 @@ mod tests {
         };
 
         let opened_grid =
-            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000).expect("grid");
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000, false, false)
+                .expect("grid");
         assert!(opened_grid.is_blocked(3, 2));
+    }
+
+    #[test]
+    fn route_can_probe_while_ignoring_dynamic_obstacles() {
+        let mut map = ObstacleMap::new(10, 5);
+        assert!(map.commit_route(1, &[(4, 0), (4, 1), (4, 2), (4, 3), (4, 4)]));
+        let library = primitive_library();
+        let blocked = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 2, 0),
+            State::new(8, 2, 0),
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                ..AStarConfig::default()
+            },
+        );
+        assert!(blocked.is_none());
+
+        let probe = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 2, 0),
+            State::new(8, 2, 0),
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                ignore_dynamic_obstacles: true,
+                ..AStarConfig::default()
+            },
+        );
+        assert!(probe.is_some());
     }
 
     #[test]
@@ -2071,6 +2295,8 @@ mod tests {
             },
             None,
             1_000,
+            false,
+            false,
         )
         .expect("grid");
         assert!(grid.is_blocked(1, 1));
@@ -2091,6 +2317,8 @@ mod tests {
             },
             None,
             1_000,
+            false,
+            false,
         )
         .expect("grid");
         let mut stats = RouteSearchStats::default();
@@ -2126,6 +2354,8 @@ mod tests {
             },
             Some(&opened),
             1_000,
+            false,
+            false,
         )
         .expect("grid");
         let footprint = &[(0, 0), (1, 0), (2, 0)];

@@ -73,19 +73,16 @@ fn rips_up_committed_route() {
 }
 
 #[test]
-fn reference_counts_overlapping_routes() {
+fn overlapping_routes_are_rejected() {
     let mut map = ObstacleMap::new(10, 10);
-    map.commit_route(1, &[(1, 1), (2, 1), (3, 1)]);
-    map.commit_route(2, &[(2, 1), (2, 2)]);
+    assert!(map.commit_route(1, &[(1, 1), (2, 1), (3, 1)]));
+    assert!(!map.commit_route(2, &[(2, 1), (2, 2)]));
 
-    assert_eq!(map.ref_count(2, 1), 2);
-    assert!(map.is_dynamic_blocked(2, 1));
-
-    assert!(map.ripup_route(1));
     assert_eq!(map.ref_count(2, 1), 1);
     assert!(map.is_dynamic_blocked(2, 1));
+    assert!(map.get_net_cells(2).is_none());
 
-    assert!(map.ripup_route(2));
+    assert!(map.ripup_route(1));
     assert_eq!(map.ref_count(2, 1), 0);
     assert!(!map.is_dynamic_blocked(2, 1));
 }
@@ -148,9 +145,8 @@ fn opened_cells_override_blocked_cells_during_query() {
 
     let mut opened = FxHashSet::default();
     opened.insert(ObstacleMap::pack_xy(1, 1));
-    opened.insert(ObstacleMap::pack_xy(2, 2));
-
-    assert!(map.check_cells_free(&[(1, 1), (2, 2)], Some(&opened)));
+    assert!(!map.check_cells_free(&[(1, 1), (2, 2)], Some(&opened)));
+    assert!(map.check_cells_free(&[(1, 1)], Some(&opened)));
     assert!(!map.check_cells_free(&[(1, 1), (6, 6)], Some(&opened)));
 }
 

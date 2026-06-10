@@ -304,6 +304,43 @@ def test_build_static_obstacle_map_bounding_box_mode_clearance_expands_bbox():
     assert (3, 0) not in data.blocked_cells
 
 
+def test_static_obstacle_map_can_use_separate_heater_clearance():
+    component = gf.Component("split_heater_clearance")
+    component.add_polygon(
+        [(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)],
+        layer=(1, 0),
+    )
+    component.add_polygon(
+        [(5.0, 1.0), (9.0, 1.0), (9.0, 3.0), (5.0, 3.0)],
+        layer=(47, 0),
+    )
+
+    data = build_static_obstacle_map(
+        component,
+        StaticObstacleMapConfig(
+            grid_size_um=1.0,
+            security_margin_um=0.0,
+            clearance_um=0.0,
+            heater_clearance_um=1.0,
+            port_open_radius_um=0.0,
+            obstacle_mode="bounding_boxes",
+            die_bbox=(0.0, 0.0, 10.0, 4.0),
+            obstacle_layers=((1, 0), (47, 0)),
+            heater_obstacle_layers=((47, 0),),
+        ),
+    )
+
+    assert (1, 1) in data.blocked_cells
+    assert (0, 1) not in data.blocked_cells
+    assert (5, 1) in data.blocked_cells
+    assert (4, 1) not in data.blocked_cells
+    assert (5, 0) in data.blocked_cells
+    assert (5, 3) in data.blocked_cells
+    assert (4, 1, 9, 3) not in data.blocked_static_rects
+    assert (5, 0, 8, 3) in data.blocked_static_rects
+    assert data.backend.endswith("-split")
+
+
 def test_bounding_box_mode_preserves_port_opening_behavior():
     component = gf.Component("bbox_port_opening_test")
     component.add_polygon(

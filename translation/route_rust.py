@@ -103,6 +103,95 @@ class RoutedNetRecord:
 
 
 @dataclass(frozen=True)
+class RouteJob:
+    net_id: int
+    route_index: int
+    net_name: str
+    inst1: str
+    port1: str
+    inst2: str
+    port2: str
+    source_port: Port
+    target_port: Port
+
+
+@dataclass(frozen=True)
+class RipupRerouteConfig:
+    enabled: bool = True
+    max_rounds: int = 4
+    max_victims_per_failure: int = 8
+    history_weight: float = 2.0
+    history_increment: int = 1
+
+
+@dataclass
+class RouteTimingBucket:
+    calls: int = 0
+    failures: int = 0
+    elapsed_s: float = 0.0
+    expanded_states: int = 0
+    window_attempts: int = 0
+    window_rejects: int = 0
+    footprint_rejects: int = 0
+    footprint_checks: int = 0
+    footprint_cells_tested: int = 0
+    footprint_rect_checks: int = 0
+    footprint_rect_rejects: int = 0
+    dense_grid_build_failures: int = 0
+    dense_grid_cells: int = 0
+    dense_grid_build_time_us: int = 0
+    max_window_area_cells: int = 0
+    full_grid_fallbacks: int = 0
+
+    @property
+    def successes(self) -> int:
+        return self.calls - self.failures
+
+    def record_elapsed(self, elapsed_s: float, *, failed: bool = False) -> None:
+        self.calls += 1
+        if failed:
+            self.failures += 1
+        self.elapsed_s += elapsed_s
+
+    def record_route(self, elapsed_s: float, route_obj: object, *, failed: bool = False) -> None:
+        self.record_elapsed(elapsed_s, failed=failed)
+        if failed:
+            return
+        self.expanded_states += _get_route_int_stat(route_obj, "expanded_states")
+        self.window_attempts += _get_route_int_stat(route_obj, "window_attempts")
+        self.window_rejects += _get_route_int_stat(route_obj, "window_rejects")
+        self.footprint_rejects += _get_route_int_stat(route_obj, "footprint_rejects")
+        self.footprint_checks += _get_route_int_stat(route_obj, "primitive_footprint_checks")
+        self.footprint_cells_tested += _get_route_int_stat(
+            route_obj,
+            "primitive_footprint_cells_tested",
+        )
+        self.footprint_rect_checks += _get_route_int_stat(
+            route_obj,
+            "primitive_footprint_rect_checks",
+        )
+        self.footprint_rect_rejects += _get_route_int_stat(
+            route_obj,
+            "primitive_footprint_rect_rejects",
+        )
+        self.dense_grid_build_failures += _get_route_int_stat(
+            route_obj,
+            "dense_grid_build_failures",
+        )
+        self.dense_grid_cells += _get_route_int_stat(route_obj, "dense_grid_cells")
+        self.dense_grid_build_time_us += _get_route_int_stat(
+            route_obj,
+            "dense_grid_build_time_us",
+        )
+        self.max_window_area_cells = max(
+            self.max_window_area_cells,
+            _get_route_int_stat(route_obj, "max_window_area_cells"),
+        )
+        if bool(getattr(route_obj, "used_full_grid_fallback", False)):
+            self.full_grid_fallbacks += 1
+
+
+@dataclass(frozen=True)
 class MeanderInsertionConfig:
     enabled: bool = True
     min_candidate_straight_length_um: float = 2.0
@@ -282,6 +371,10 @@ def _as_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _get_route_int_stat(route_obj: object, attr: str) -> int:
+    return max(0, _as_int(getattr(route_obj, attr, 0), 0))
+
+
 def _minimum_four_bend_extra_length_um(
     *,
     grid_size_um: float,
@@ -290,6 +383,51 @@ def _minimum_four_bend_extra_length_um(
     """Minimum practical matching request: one bump needs four 90-degree bends."""
     bend_radius_um = max(0.0, float(grid_size_um) * float(bend_radius_cells))
     return 2.0 * math.pi * bend_radius_um
+
+
+def _route_geometry_max_meander_bumps(
+    *,
+    route_obj: object,
+    grid_size_um: float,
+    bend_radius_um: float,
+) -> int:
+    """Derive the odd internal bump cap from visible lobe width.
+
+    One visible lobe consumes four 90-degree bend radii along the selected
+    straight run. Rust's comb planner reports odd internal bump counts where
+    visible_lobes = (bumps + 1) / 2.
+    """
+    radius = float(bend_radius_um)
+    grid_size = float(grid_size_um)
+    if (
+        not math.isfinite(radius)
+        or radius <= 0.0
+        or not math.isfinite(grid_size)
+        or grid_size <= 0.0
+    ):
+        return 1
+
+    waypoints = getattr(route_obj, "compressed_waypoints", None) or []
+    longest_straight_um = 0.0
+    for p0, p1 in zip(waypoints, waypoints[1:]):
+        if (
+            not isinstance(p0, (tuple, list))
+            or not isinstance(p1, (tuple, list))
+            or len(p0) != 2
+            or len(p1) != 2
+        ):
+            continue
+        x0 = _as_int(p0[0], 0)
+        y0 = _as_int(p0[1], 0)
+        x1 = _as_int(p1[0], 0)
+        y1 = _as_int(p1[1], 0)
+        if x0 == x1:
+            longest_straight_um = max(longest_straight_um, abs(y1 - y0) * grid_size)
+        elif y0 == y1:
+            longest_straight_um = max(longest_straight_um, abs(x1 - x0) * grid_size)
+
+    visible_lobes = int(math.floor(longest_straight_um / (4.0 * radius)))
+    return max(1, 2 * visible_lobes - 1)
 
 
 def analyze_meander_insertion_for_requirements(
@@ -429,6 +567,12 @@ def analyze_meander_insertion_for_requirements(
             if config.auto_meander_endpoint_inset_um is None
             else max(0.0, float(config.auto_meander_endpoint_inset_um))
         )
+        max_bumps = _route_geometry_max_meander_bumps(
+            route_obj=record.route_obj,
+            grid_size_um=float(grid_size_um_cfg),
+            bend_radius_um=bend_radius_um,
+        )
+        entry["max_bumps"] = max_bumps
         best_rr: dict[str, object] | None = None
         last_exc: Exception | None = None
         try:
@@ -441,7 +585,7 @@ def analyze_meander_insertion_for_requirements(
                     box_depths_um=box_depths_um,
                     min_bend_radius_um=None,
                     min_straight_um=min_straight_um,
-                    max_bumps=32,
+                    max_bumps=max_bumps,
                     max_meander_height_um=max_height_um,
                     min_segment_length_um=min_seg_um,
                     endpoint_inset_um=endpoint_inset_um,
@@ -512,7 +656,7 @@ def analyze_meander_insertion_for_requirements(
                 "requested_extra_length_um": requested,
                 "min_bend_radius_um": None,
                 "min_straight_um": min_straight_um,
-                "max_bumps": 32,
+                "max_bumps": max_bumps,
                 "max_meander_height_um": max_height_um,
                 "box_depth_um": _as_float(rr.get("box_depth_um", 20.0), 20.0),
                 "min_segment_length_um": min_seg_um,
@@ -630,6 +774,8 @@ def route_match_and_realize(
     max_iterations: int = 500_000,
     debug_timing: bool = False,
     include_heater_obstacles: bool = False,
+    ripup_reroute_config: RipupRerouteConfig | None = None,
+    path_length_meander_height_um: float = 20.0,
 ) -> RouteRustPipelineResult:
     """Run Phase A->(optional M1)->B entirely in route_rust."""
     route_obstacle_config = obstacle_config
@@ -656,6 +802,7 @@ def route_match_and_realize(
         max_iterations=max_iterations,
         debug_timing=debug_timing,
         include_heater_obstacles=include_heater_obstacles,
+        ripup_reroute_config=ripup_reroute_config,
         defer_realization=True,
     )
     if debug_timing:
@@ -701,7 +848,10 @@ def route_match_and_realize(
         records_for_realization, meander_report_info = analyze_meander_insertion_for_requirements(
             debug_artifacts.routed_net_records,
             requirements,
-            config=MeanderInsertionConfig(enabled=True),
+            config=MeanderInsertionConfig(
+                enabled=True,
+                max_meander_height_um=float(path_length_meander_height_um),
+            ),
             realization_grid_spec=debug_artifacts.realization_grid_spec,
             allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
@@ -1029,6 +1179,7 @@ def route_nets_rust(
     max_iterations: int = 500_000,
     debug_timing: bool = False,
     include_heater_obstacles: bool = False,
+    ripup_reroute_config: RipupRerouteConfig | None = None,
     defer_realization: bool = False,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
     """Route schematic nets using Rust A* and add one polygon per routed net.
@@ -1141,8 +1292,6 @@ def route_nets_rust(
     port_entry_half_width_cells = max(1, bend_radius_cells + block_radius_cells + 1)
     port_lane_length_cells = max(3, 2 * bend_radius_cells + 2)
     port_lane_half_width_cells = max(1, block_radius_cells + 1)
-    net_id = 0
-
     def _orientation_to_angle(orientation: float | None, *, flip: bool = False) -> int:
         if orientation is None:
             angle = 0
@@ -1349,27 +1498,11 @@ def route_nets_rust(
         effective_cells = candidate_cells & build_base_port_open_cells(port)
         return effective_cells, candidate_cells, None
 
-    def _inflate_cells_square(
-        cells: set[tuple[int, int]],
-        *,
-        radius_cells: int,
-    ) -> set[tuple[int, int]]:
-        if radius_cells <= 0:
-            return {(x, y) for (x, y) in cells if _in_bounds(x, y)}
-        inflated: set[tuple[int, int]] = set()
-        for x, y in cells:
-            for dx in range(-radius_cells, radius_cells + 1):
-                for dy in range(-radius_cells, radius_cells + 1):
-                    nx = x + dx
-                    ny = y + dy
-                    if _in_bounds(nx, ny):
-                        inflated.add((nx, ny))
-        return inflated
-
-    route_jobs: list[tuple[str, str, str, str, str, Port, Port]] = []
+    route_jobs: list[RouteJob] = []
     port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_access_rule_by_spec: dict[str, str | None] = {}
+    next_net_id = 1
     for net_name, bundle in nets.items():
         links = bundle.links
         for port1_spec, port2_spec in links.items():
@@ -1377,7 +1510,20 @@ def route_nets_rust(
             inst2, port2 = port2_spec.split(",")
             source_port = get_port_from_instance(routed_layout, inst1, port1)
             target_port = get_port_from_instance(routed_layout, inst2, port2)
-            route_jobs.append((net_name, inst1, port1, inst2, port2, source_port, target_port))
+            route_jobs.append(
+                RouteJob(
+                    net_id=next_net_id,
+                    route_index=next_net_id,
+                    net_name=net_name,
+                    inst1=inst1,
+                    port1=port1,
+                    inst2=inst2,
+                    port2=port2,
+                    source_port=source_port,
+                    target_port=target_port,
+                )
+            )
+            next_net_id += 1
             if port1_spec not in port_access_cells_by_spec:
                 cells, candidate_cells, rule_name = build_keyed_port_access_cells(
                     instance_name=inst1,
@@ -1433,55 +1579,101 @@ def route_nets_rust(
         static_cells = set(static_blocked_cells_before_port_reservations)
         sorted_static_cells = sorted(static_cells)
         router.set_static_cells(sorted_static_cells)
-    committed_dynamic_cells: set[tuple[int, int]] = set()
+    repair_config = ripup_reroute_config or RipupRerouteConfig()
+    route_jobs_by_id = {job.net_id: job for job in route_jobs}
+    route_order = [job.net_id for job in route_jobs]
+    routed_net_records_by_id: dict[int, RoutedNetRecord] = {}
+    routed_edge_lengths_by_id: dict[int, float] = {}
+    committed_dynamic_cells_by_id: dict[int, set[tuple[int, int]]] = {}
 
     t_astar_start = 0.0
     if debug_timing:
         t_astar_start = time.perf_counter()
     total_expanded_states = 0
     simple_route_count = 0
+    repair_count = 0
+    route_timing_buckets: dict[str, RouteTimingBucket] = {
+        name: RouteTimingBucket()
+        for name in (
+            "normal_route",
+            "probe_route",
+            "repair_failed_net",
+            "reroute_victims",
+            "snapshot_cells",
+            "history_update",
+            "owner_lookup",
+            "ripup",
+            "rollback",
+        )
+    }
 
-    for route_index, (
-        net_name,
-        inst1,
-        port1,
-        inst2,
-        port2,
-        source_port,
-        target_port,
-    ) in enumerate(route_jobs, start=1):
-        port1_spec = f"{inst1},{port1}"
-        port2_spec = f"{inst2},{port2}"
+    def _timing_start() -> float:
+        return time.perf_counter() if debug_timing else 0.0
+
+    def _record_elapsed(bucket_name: str, start_s: float, *, failed: bool = False) -> None:
+        if not debug_timing:
+            return
+        route_timing_buckets[bucket_name].record_elapsed(
+            time.perf_counter() - start_s,
+            failed=failed,
+        )
+
+    def _record_route_timing(
+        bucket_name: str,
+        start_s: float,
+        route_obj: object | None = None,
+        *,
+        failed: bool = False,
+    ) -> None:
+        if not debug_timing:
+            return
+        if route_obj is None:
+            route_timing_buckets[bucket_name].record_elapsed(
+                time.perf_counter() - start_s,
+                failed=failed,
+            )
+            return
+        route_timing_buckets[bucket_name].record_route(
+            time.perf_counter() - start_s,
+            route_obj,
+            failed=failed,
+        )
+
+    def _committed_dynamic_cells(*, exclude_net_id: int | None = None) -> set[tuple[int, int]]:
+        if not diagnostics_enabled:
+            return set()
+        merged: set[tuple[int, int]] = set()
+        for net_id, cells in committed_dynamic_cells_by_id.items():
+            if exclude_net_id is not None and int(net_id) == int(exclude_net_id):
+                continue
+            merged.update(cells)
+        return merged
+
+    def _route_cells_from_router(net_id: int) -> set[tuple[int, int]]:
+        return {
+            (int(cell[0]), int(cell[1]))
+            for cell in router.get_net_cells(int(net_id))
+        }
+
+    def _states_and_openings(
+        job: RouteJob,
+    ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
         source_state = port_to_grid_state(
-            source_port,
+            job.source_port,
             origin_x_um,
             origin_y_um,
             float(grid.grid_size_um),
             as_target=False,
         )
         target_state = port_to_grid_state(
-            target_port,
+            job.target_port,
             origin_x_um,
             origin_y_um,
             float(grid.grid_size_um),
             as_target=True,
         )
-
-        should_print_route = (
-            debug_route_indices is None or route_index in debug_route_indices
-        )
-        should_export_route_debug = (
-            debug_path is not None
-            and (debug_route_indices is None or route_index in debug_route_indices)
-        )
-        route_progress_text = (
-            f"  Routing [{route_index}/{len(route_jobs)}] "
-            f"{net_name}: {port1_spec} -> {port2_spec}..."
-        )
-        if should_print_route:
-            print(route_progress_text, end=" ")
-
-        net_id += 1
+        port1_spec = f"{job.inst1},{job.port1}"
+        port2_spec = f"{job.inst2},{job.port2}"
         source_anchor_cell = (int(source_state.x), int(source_state.y))
         target_anchor_cell = (int(target_state.x), int(target_state.y))
         opened_candidate_cells = set(port_access_candidate_cells_by_spec.get(port1_spec, set()))
@@ -1491,8 +1683,34 @@ def route_nets_rust(
         opened_cells_set = set(port_access_cells_by_spec.get(port1_spec, set()))
         opened_cells_set.update(port_access_cells_by_spec.get(port2_spec, set()))
         opened_cells_set.update({source_anchor_cell, target_anchor_cell})
-        opened_cells = sorted(opened_cells_set)
+        return (
+            source_state,
+            target_state,
+            opened_candidate_cells,
+            opened_cells_set,
+            sorted(opened_cells_set),
+        )
 
+    def _write_route_diagnostics(
+        *,
+        job: RouteJob,
+        source_state: Any,
+        target_state: Any,
+        opened_candidate_cells: set[tuple[int, int]],
+        opened_cells_set: set[tuple[int, int]],
+        diag_txt: Path | None,
+        status: str,
+        error_text: str | None = None,
+        route_cells: set[tuple[int, int]] | None = None,
+        repair_note: str | None = None,
+    ) -> None:
+        if diag_txt is None:
+            return
+        port1_spec = f"{job.inst1},{job.port1}"
+        port2_spec = f"{job.inst2},{job.port2}"
+        source_anchor_cell = (int(source_state.x), int(source_state.y))
+        target_anchor_cell = (int(target_state.x), int(target_state.y))
+        committed_dynamic_cells = _committed_dynamic_cells(exclude_net_id=job.net_id)
         if diagnostics_enabled:
             opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
             opened_candidate_static_overlap = (
@@ -1508,175 +1726,381 @@ def route_nets_rust(
             opened_static_overlap = set()
             opened_dynamic_overlap = set()
 
-        route_dir = debug_path / "routes" if debug_path is not None else None
-        diag_txt: Path | None = None
-        if should_export_route_debug and route_dir is not None:
-            _ensure_dir(route_dir)
-            diag_txt = route_dir / f"{debug_prefix}_{net_name}_diagnostics.txt"
+        route_cells = route_cells or set()
+        route_static_overlap = route_cells & static_blocked_cells_before_port_reservations
+        route_overlap_with_candidate_opened_static = (
+            route_cells & opened_candidate_static_overlap
+        )
+        route_overlap_with_effective_opened_static = route_cells & opened_static_overlap
+        route_dynamic_overlap = route_cells & committed_dynamic_cells
+        route_overlap_with_candidate_opened_dynamic = (
+            route_cells & opened_candidate_dynamic_overlap
+        )
+        route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
+        lines = [
+            f"net_name={job.net_name}",
+            f"status={status}",
+            f"source_spec={port1_spec}",
+            f"target_spec={port2_spec}",
+            f"source_component={_schematic_instance_component_name(schematic, job.inst1)}",
+            f"target_component={_schematic_instance_component_name(schematic, job.inst2)}",
+            f"source_access_rule={port_access_rule_by_spec.get(port1_spec)}",
+            f"target_access_rule={port_access_rule_by_spec.get(port2_spec)}",
+            f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
+            f"target_state=({target_anchor_cell[0]}, {target_anchor_cell[1]}, {int(target_state.angle)})",
+            f"opened_candidate_cells_count={len(opened_candidate_cells)}",
+            f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
+            f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
+            f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
+            f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
+            f"opened_cells_count={len(opened_cells_set)}",
+            f"opened_cells={sorted(opened_cells_set)}",
+            f"opened_static_overlap_count={len(opened_static_overlap)}",
+            f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
+            f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
+            f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
+            f"route_cells_count={len(route_cells)}",
+            f"route_static_blocked_overlap_count={len(route_static_overlap)}",
+            f"route_static_blocked_overlap_bbox={_cells_bbox(route_static_overlap)}",
+            f"route_dynamic_overlap_count={len(route_dynamic_overlap)}",
+            f"route_dynamic_overlap_bbox={_cells_bbox(route_dynamic_overlap)}",
+            f"route_overlap_candidate_opened_static_count={len(route_overlap_with_candidate_opened_static)}",
+            f"route_overlap_effective_opened_static_count={len(route_overlap_with_effective_opened_static)}",
+            f"route_overlap_candidate_opened_dynamic_count={len(route_overlap_with_candidate_opened_dynamic)}",
+            f"route_overlap_effective_opened_dynamic_count={len(route_overlap_with_effective_opened_dynamic)}",
+        ]
+        if repair_note is not None:
+            lines.append(f"repair={repair_note}")
+        if error_text is not None:
+            lines.append(f"error={error_text}")
+        diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-        def _write_diagnostics(
-            *,
-            status: str,
-            error_text: str | None = None,
-            route_cells: set[tuple[int, int]] | None = None,
-        ) -> None:
-            if diag_txt is None:
-                return
-            route_cells = route_cells or set()
-            route_static_overlap = (
-                route_cells & static_blocked_cells_before_port_reservations
-            )
-            route_overlap_with_candidate_opened_static = (
-                route_cells & opened_candidate_static_overlap
-            )
-            route_overlap_with_effective_opened_static = (
-                route_cells & opened_static_overlap
-            )
-            route_dynamic_overlap = route_cells & committed_dynamic_cells
-            route_overlap_with_candidate_opened_dynamic = (
-                route_cells & opened_candidate_dynamic_overlap
-            )
-            route_overlap_with_effective_opened_dynamic = (
-                route_cells & opened_dynamic_overlap
-            )
-            lines = [
-                f"net_name={net_name}",
-                f"status={status}",
-                f"source_spec={port1_spec}",
-                f"target_spec={port2_spec}",
-                f"source_component={_schematic_instance_component_name(schematic, inst1)}",
-                f"target_component={_schematic_instance_component_name(schematic, inst2)}",
-                f"source_access_rule={port_access_rule_by_spec.get(port1_spec)}",
-                f"target_access_rule={port_access_rule_by_spec.get(port2_spec)}",
-                f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
-                f"target_state=({target_anchor_cell[0]}, {target_anchor_cell[1]}, {int(target_state.angle)})",
-                f"opened_candidate_cells_count={len(opened_candidate_cells)}",
-                f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
-                f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
-                f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
-                f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
-                (
-                    "opened_candidate_static_overlap_cells="
-                    f"{_format_cells_preview(opened_candidate_static_overlap)}"
-                ),
-                f"opened_cells_count={len(opened_cells_set)}",
-                f"opened_cells={sorted(opened_cells_set)}",
-                f"opened_static_overlap_count={len(opened_static_overlap)}",
-                f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
-                f"opened_static_overlap_cells={_format_cells_preview(opened_static_overlap)}",
-                f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
-                f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
-                f"opened_dynamic_overlap_cells={_format_cells_preview(opened_dynamic_overlap)}",
-                f"route_cells_count={len(route_cells)}",
-                f"route_static_blocked_overlap_count={len(route_static_overlap)}",
-                f"route_static_blocked_overlap_bbox={_cells_bbox(route_static_overlap)}",
-                f"route_static_blocked_overlap_cells={_format_cells_preview(route_static_overlap)}",
-                f"route_dynamic_overlap_count={len(route_dynamic_overlap)}",
-                f"route_dynamic_overlap_bbox={_cells_bbox(route_dynamic_overlap)}",
-                f"route_dynamic_overlap_cells={_format_cells_preview(route_dynamic_overlap)}",
-                (
-                    "route_overlap_candidate_opened_static_count="
-                    f"{len(route_overlap_with_candidate_opened_static)}"
-                ),
-                (
-                    "route_overlap_candidate_opened_static_bbox="
-                    f"{_cells_bbox(route_overlap_with_candidate_opened_static)}"
-                ),
-                (
-                    "route_overlap_effective_opened_static_count="
-                    f"{len(route_overlap_with_effective_opened_static)}"
-                ),
-                (
-                    "route_overlap_effective_opened_static_bbox="
-                    f"{_cells_bbox(route_overlap_with_effective_opened_static)}"
-                ),
-                (
-                    "route_overlap_candidate_opened_dynamic_count="
-                    f"{len(route_overlap_with_candidate_opened_dynamic)}"
-                ),
-                (
-                    "route_overlap_candidate_opened_dynamic_bbox="
-                    f"{_cells_bbox(route_overlap_with_candidate_opened_dynamic)}"
-                ),
-                (
-                    "route_overlap_effective_opened_dynamic_count="
-                    f"{len(route_overlap_with_effective_opened_dynamic)}"
-                ),
-                (
-                    "route_overlap_effective_opened_dynamic_bbox="
-                    f"{_cells_bbox(route_overlap_with_effective_opened_dynamic)}"
-                ),
-            ]
-            if error_text is not None:
-                lines.append(f"error={error_text}")
-            diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    def _record_route(job: RouteJob, route_obj: Any, opened_cells: list[tuple[int, int]]) -> None:
+        edge_key = RoutedEdgeKey(
+            net_name=job.net_name,
+            source=PortRef(instance=job.inst1, port=job.port1),
+            target=PortRef(instance=job.inst2, port=job.port2),
+        )
+        routed_net_records_by_id[job.net_id] = RoutedNetRecord(
+            net_name=job.net_name,
+            source=edge_key.source,
+            target=edge_key.target,
+            route_obj=route_obj,
+            total_length_um=float(route_obj.total_length_um),
+            opened_cells=tuple(opened_cells),
+        )
+        routed_edge_lengths_by_id[job.net_id] = float(route_obj.total_length_um)
+        if diagnostics_enabled:
+            committed_dynamic_cells_by_id[job.net_id] = _route_cells_from_router(job.net_id)
+        else:
+            committed_dynamic_cells_by_id.pop(job.net_id, None)
 
+    def _route_and_commit(
+        job: RouteJob,
+        *,
+        repair: bool,
+        timing_bucket: str,
+    ) -> tuple[Any, list[tuple[int, int]]]:
+        source_state, target_state, _, _, opened_cells = _states_and_openings(job)
+        route_start = _timing_start()
+        if repair:
+            try:
+                route_obj = router.route_single_net_and_commit_repair(
+                    job.net_id,
+                    source_state,
+                    target_state,
+                    block_radius_cells,
+                    opened_cells,
+                    float(repair_config.history_weight),
+                )
+            except RuntimeError:
+                _record_route_timing(timing_bucket, route_start, failed=True)
+                raise
+        else:
+            try:
+                route_obj = router.route_single_net_and_commit(
+                    job.net_id,
+                    source_state,
+                    target_state,
+                    block_radius_cells,
+                    opened_cells,
+                )
+            except RuntimeError:
+                _record_route_timing(timing_bucket, route_start, failed=True)
+                raise
+        _record_route_timing(timing_bucket, route_start, route_obj)
+        _record_route(job, route_obj, opened_cells)
+        return route_obj, opened_cells
+
+    def _export_route_svg(job: RouteJob, route_obj: Any, *, suffix: str = "") -> None:
+        should_export = (
+            debug_path is not None
+            and (debug_route_indices is None or job.route_index in debug_route_indices)
+        )
+        if not should_export:
+            return
+        route_dir = debug_path / "routes"
+        _ensure_dir(route_dir)
+        route_svg = route_dir / f"{debug_prefix}_{job.net_name}{suffix}.svg"
+        route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
+        route_svgs.append(route_svg)
+
+    def _write_failed_log(
+        job: RouteJob,
+        source_state: Any,
+        target_state: Any,
+        opened_candidate_cells: set[tuple[int, int]],
+        opened_cells: list[tuple[int, int]],
+        error_text: str,
+    ) -> None:
+        if debug_path is None:
+            return
+        route_dir = debug_path / "routes"
+        _ensure_dir(route_dir)
+        port1_spec = f"{job.inst1},{job.port1}"
+        port2_spec = f"{job.inst2},{job.port2}"
+        fail_txt = route_dir / f"{debug_prefix}_{job.net_name}_FAILED.txt"
+        committed_dynamic_cells = _committed_dynamic_cells()
+        opened_candidate_static_overlap = (
+            opened_candidate_cells & static_blocked_cells_before_port_reservations
+        )
+        opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
+        opened_cells_set = set(opened_cells)
+        opened_static_overlap = opened_cells_set & static_blocked_cells_before_port_reservations
+        opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
+        fail_lines = [
+            f"net_name={job.net_name}",
+            f"source_spec={port1_spec}",
+            f"target_spec={port2_spec}",
+            f"source_state=({int(source_state.x)}, {int(source_state.y)}, {int(source_state.angle)})",
+            f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
+            f"allow_45_degree_turns={allow_45_degree_turns}",
+            f"block_radius_cells={block_radius_cells}",
+            f"bend_radius_cells={bend_radius_cells}",
+            f"port_entry_length_cells={port_entry_length_cells}",
+            f"port_entry_half_width_cells={port_entry_half_width_cells}",
+            f"port_lane_length_cells={port_lane_length_cells}",
+            f"port_lane_half_width_cells={port_lane_half_width_cells}",
+            f"opened_candidate_cells_count={len(opened_candidate_cells)}",
+            f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
+            f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
+            f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
+            f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
+            f"opened_cells_count={len(opened_cells)}",
+            f"opened_static_overlap_count={len(opened_static_overlap)}",
+            f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
+            f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
+            f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
+            f"error={error_text}",
+        ]
+        fail_txt.write_text("\n".join(fail_lines) + "\n", encoding="utf-8")
+
+    def _restore_snapshot(
+        snapshot_records: dict[int, RoutedNetRecord],
+        snapshot_lengths: dict[int, float],
+        snapshot_cells: dict[int, set[tuple[int, int]]],
+        touched_ids: set[int],
+    ) -> None:
+        for net_id_to_clear in touched_ids:
+            router.ripup_route(net_id_to_clear)
+            routed_net_records_by_id.pop(net_id_to_clear, None)
+            routed_edge_lengths_by_id.pop(net_id_to_clear, None)
+            committed_dynamic_cells_by_id.pop(net_id_to_clear, None)
+        for old_id, cells in snapshot_cells.items():
+            if not router.commit_route_cells(old_id, sorted(cells)):
+                raise RuntimeError(f"Failed to rollback route cells for net id {old_id}")
+            if diagnostics_enabled:
+                committed_dynamic_cells_by_id[old_id] = set(cells)
+            else:
+                committed_dynamic_cells_by_id.pop(old_id, None)
+        routed_net_records_by_id.update(snapshot_records)
+        routed_edge_lengths_by_id.update(snapshot_lengths)
+
+    def _attempt_repair(job: RouteJob, failed_error: Exception) -> bool:
+        nonlocal repair_count, total_expanded_states, simple_route_count
+        if not repair_config.enabled:
+            return False
+        source_state, target_state, _, _, opened_cells = _states_and_openings(job)
+        probe_start = _timing_start()
         try:
-            route_obj = router.route_single_net_and_commit(
-                net_id,
+            probe_route = router.route_single_net_ignore_dynamic(
                 source_state,
                 target_state,
                 block_radius_cells,
                 opened_cells,
             )
+        except RuntimeError:
+            _record_route_timing("probe_route", probe_start, failed=True)
+            return False
+        _record_route_timing("probe_route", probe_start, probe_route)
+
+        history_start = _timing_start()
+        router.add_history_for_route(
+            probe_route,
+            block_radius_cells,
+            int(repair_config.history_increment),
+        )
+        _record_elapsed("history_update", history_start)
+        owner_lookup_start = _timing_start()
+        candidate_blockers = [
+            int(owner)
+            for owner in router.dynamic_owners_for_route(probe_route, block_radius_cells)
+            if int(owner) != job.net_id and int(owner) in routed_net_records_by_id
+        ]
+        _record_elapsed("owner_lookup", owner_lookup_start)
+        if not candidate_blockers:
+            return False
+
+        candidate_blockers = sorted(
+            dict.fromkeys(candidate_blockers),
+            key=lambda owner: route_jobs_by_id[owner].route_index,
+        )
+        max_victims = max(1, int(repair_config.max_victims_per_failure))
+        max_rounds = max(1, int(repair_config.max_rounds))
+
+        for round_idx in range(1, max_rounds + 1):
+            ripup_ids = candidate_blockers[: min(len(candidate_blockers), max_victims * round_idx)]
+            if not ripup_ids:
+                return False
+            snapshot_records = {
+                old_id: routed_net_records_by_id[old_id]
+                for old_id in ripup_ids
+                if old_id in routed_net_records_by_id
+            }
+            snapshot_lengths = {
+                old_id: routed_edge_lengths_by_id[old_id]
+                for old_id in ripup_ids
+                if old_id in routed_edge_lengths_by_id
+            }
+            snapshot_start = _timing_start()
+            snapshot_cells = {
+                old_id: _route_cells_from_router(old_id)
+                for old_id in ripup_ids
+            }
+            _record_elapsed("snapshot_cells", snapshot_start)
+            touched_ids = set(ripup_ids)
+            touched_ids.add(job.net_id)
+            try:
+                for old_id in ripup_ids:
+                    record = routed_net_records_by_id.get(old_id)
+                    if record is not None:
+                        history_start = _timing_start()
+                        router.add_history_for_route(
+                            record.route_obj,
+                            block_radius_cells,
+                            int(repair_config.history_increment),
+                        )
+                        _record_elapsed("history_update", history_start)
+                    ripup_start = _timing_start()
+                    router.ripup_route(old_id)
+                    _record_elapsed("ripup", ripup_start)
+                    committed_dynamic_cells_by_id.pop(old_id, None)
+
+                repaired_route, _ = _route_and_commit(
+                    job,
+                    # Route the originally failed net first with simple L/Z
+                    # candidates enabled. The blocker victims below still use
+                    # repair A* with history so they avoid recreating the
+                    # conflict that caused this rip-up.
+                    repair=False,
+                    timing_bucket="repair_failed_net",
+                )
+                total_expanded_states += int(getattr(repaired_route, "expanded_states", 0))
+                if int(getattr(repaired_route, "expanded_states", 0)) == 0:
+                    simple_route_count += 1
+
+                for old_id in ripup_ids:
+                    reroute_job = route_jobs_by_id[old_id]
+                    rerouted_obj, _ = _route_and_commit(
+                        reroute_job,
+                        repair=True,
+                        timing_bucket="reroute_victims",
+                    )
+                    total_expanded_states += int(getattr(rerouted_obj, "expanded_states", 0))
+                    if int(getattr(rerouted_obj, "expanded_states", 0)) == 0:
+                        simple_route_count += 1
+                    _export_route_svg(
+                        reroute_job,
+                        rerouted_obj,
+                        suffix=f"_repair{round_idx}",
+                    )
+
+                _export_route_svg(job, repaired_route, suffix=f"_repair{round_idx}")
+                repair_count += 1
+                return True
+            except RuntimeError:
+                rollback_start = _timing_start()
+                _restore_snapshot(snapshot_records, snapshot_lengths, snapshot_cells, touched_ids)
+                _record_elapsed("rollback", rollback_start)
+                continue
+
+        _ = failed_error
+        return False
+
+    for job in route_jobs:
+        port1_spec = f"{job.inst1},{job.port1}"
+        port2_spec = f"{job.inst2},{job.port2}"
+        source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
+            _states_and_openings(job)
+        )
+        should_print_route = (
+            debug_route_indices is None or job.route_index in debug_route_indices
+        )
+        should_export_route_debug = (
+            debug_path is not None
+            and (debug_route_indices is None or job.route_index in debug_route_indices)
+        )
+        route_progress_text = (
+            f"  Routing [{job.route_index}/{len(route_jobs)}] "
+            f"{job.net_name}: {port1_spec} -> {port2_spec}..."
+        )
+        if should_print_route:
+            print(route_progress_text, end=" ")
+
+        route_dir = debug_path / "routes" if debug_path is not None else None
+        diag_txt: Path | None = None
+        if should_export_route_debug and route_dir is not None:
+            _ensure_dir(route_dir)
+            diag_txt = route_dir / f"{debug_prefix}_{job.net_name}_diagnostics.txt"
+
+        try:
+            route_obj, opened_cells = _route_and_commit(
+                job,
+                repair=False,
+                timing_bucket="normal_route",
+            )
         except RuntimeError as exc:
+            if _attempt_repair(job, exc):
+                if should_print_route:
+                    print("repaired")
+                continue
             if not should_print_route:
                 print(f"{route_progress_text} failed")
-            _write_diagnostics(status="failed", error_text=str(exc))
-            if debug_path is not None:
-                assert route_dir is not None
-                _ensure_dir(route_dir)
-                fail_txt = route_dir / f"{debug_prefix}_{net_name}_FAILED.txt"
-                fail_lines = [
-                    f"net_name={net_name}",
-                    f"source_spec={port1_spec}",
-                    f"target_spec={port2_spec}",
-                    f"source_state=({int(source_state.x)}, {int(source_state.y)}, {int(source_state.angle)})",
-                    f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
-                    f"allow_45_degree_turns={allow_45_degree_turns}",
-                    f"block_radius_cells={block_radius_cells}",
-                    f"bend_radius_cells={bend_radius_cells}",
-                    f"port_entry_length_cells={port_entry_length_cells}",
-                    f"port_entry_half_width_cells={port_entry_half_width_cells}",
-                    f"port_lane_length_cells={port_lane_length_cells}",
-                    f"port_lane_half_width_cells={port_lane_half_width_cells}",
-                    f"opened_candidate_cells_count={len(opened_candidate_cells)}",
-                    f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
-                    f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
-                    f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
-                    f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
-                    f"opened_cells_count={len(opened_cells)}",
-                    f"opened_cells={opened_cells}",
-                    f"opened_static_overlap_count={len(opened_static_overlap)}",
-                    f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
-                    f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
-                    f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
-                    f"error={exc}",
-                ]
-                fail_txt.write_text("\n".join(fail_lines) + "\n", encoding="utf-8")
+            _write_route_diagnostics(
+                job=job,
+                source_state=source_state,
+                target_state=target_state,
+                opened_candidate_cells=opened_candidate_cells,
+                opened_cells_set=opened_cells_set,
+                diag_txt=diag_txt,
+                status="failed",
+                error_text=str(exc),
+            )
+            _write_failed_log(
+                job,
+                source_state,
+                target_state,
+                opened_candidate_cells,
+                opened_cells,
+                str(exc),
+            )
             raise RuntimeError(
-                f"No route found for {net_name}: {port1_spec} -> {port2_spec}. "
+                f"No route found for {job.net_name}: {port1_spec} -> {port2_spec}. "
                 f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
                 f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
                 f"allow_45_degree_turns={allow_45_degree_turns}"
             ) from exc
 
-        edge_key = RoutedEdgeKey(
-            net_name=net_name,
-            source=PortRef(instance=inst1, port=port1),
-            target=PortRef(instance=inst2, port=port2),
-        )
-        routed_net_records.append(
-            RoutedNetRecord(
-                net_name=net_name,
-                source=edge_key.source,
-                target=edge_key.target,
-                route_obj=route_obj,
-                total_length_um=float(route_obj.total_length_um),
-                opened_cells=tuple(opened_cells),
-            )
-        )
-        routed_edge_lengths_um[edge_key] = float(route_obj.total_length_um)
         expanded_states = int(getattr(route_obj, "expanded_states", 0))
         total_expanded_states += expanded_states
         if expanded_states == 0:
@@ -1687,19 +2111,35 @@ def route_nets_rust(
                 (int(cell[0]), int(cell[1]))
                 for cell in (getattr(route_obj, "cells", None) or [])
             }
-            _write_diagnostics(status="ok", route_cells=route_cells)
-            committed_dynamic_cells.update(
-                _inflate_cells_square(route_cells, radius_cells=block_radius_cells)
+            _write_route_diagnostics(
+                job=job,
+                source_state=source_state,
+                target_state=target_state,
+                opened_candidate_cells=opened_candidate_cells,
+                opened_cells_set=opened_cells_set,
+                diag_txt=diag_txt,
+                status="ok",
+                route_cells=route_cells,
             )
 
-        if should_export_route_debug:
-            assert route_dir is not None
-            route_svg = route_dir / f"{debug_prefix}_{net_name}.svg"
-            route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
-            route_svgs.append(route_svg)
+        _export_route_svg(job, route_obj)
 
         if should_print_route:
             print("ok")
+
+    routed_net_records = [
+        routed_net_records_by_id[net_id]
+        for net_id in route_order
+        if net_id in routed_net_records_by_id
+    ]
+    routed_edge_lengths_um = {
+        RoutedEdgeKey(
+            net_name=record.net_name,
+            source=record.source,
+            target=record.target,
+        ): float(record.total_length_um)
+        for record in routed_net_records
+    }
 
     if debug_timing:
         t_astar_end = time.perf_counter()
@@ -1707,8 +2147,49 @@ def route_nets_rust(
         print(
             "      - Route search stats: "
             f"simple={simple_route_count}/{len(route_jobs)}, "
-            f"expanded_states={total_expanded_states}"
+            f"expanded_states={total_expanded_states}, "
+            f"repairs={repair_count}"
         )
+        print("      - Route timing breakdown:")
+        for bucket_name in (
+            "normal_route",
+            "probe_route",
+            "repair_failed_net",
+            "reroute_victims",
+            "snapshot_cells",
+            "history_update",
+            "owner_lookup",
+            "ripup",
+            "rollback",
+        ):
+            bucket = route_timing_buckets[bucket_name]
+            if bucket.calls == 0:
+                continue
+            line = (
+                f"        {bucket_name}: calls={bucket.calls}, "
+                f"ok={bucket.successes}, fail={bucket.failures}, "
+                f"time={bucket.elapsed_s:.4f}s"
+            )
+            has_route_stats = (
+                bucket.expanded_states
+                or bucket.window_attempts
+                or bucket.footprint_checks
+                or bucket.dense_grid_build_time_us
+                or bucket.max_window_area_cells
+                or bucket.full_grid_fallbacks
+            )
+            if has_route_stats:
+                line += (
+                    f", expanded={bucket.expanded_states}, "
+                    f"windows={bucket.window_attempts}, "
+                    f"max_window={bucket.max_window_area_cells}, "
+                    f"footprint_checks={bucket.footprint_checks}, "
+                    f"rect_checks={bucket.footprint_rect_checks}, "
+                    f"dense_cells={bucket.dense_grid_cells}, "
+                    f"dense_build={bucket.dense_grid_build_time_us / 1_000_000.0:.4f}s, "
+                    f"full_grid_fallbacks={bucket.full_grid_fallbacks}"
+                )
+            print(line)
 
     realization_grid_spec = (
         int(grid.width),

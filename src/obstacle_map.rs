@@ -72,6 +72,7 @@ pub struct ObstacleMap {
     static_rects: Vec<GridRect>,
     static_obstacles: FxHashMap<CellKey, u16>,
     dynamic_obstacles: FxHashMap<CellKey, u16>,
+    dynamic_cell_owner: FxHashMap<CellKey, NetId>,
     net_routes: FxHashMap<NetId, Vec<CellKey>>,
     history_cost: FxHashMap<CellKey, u32>,
 }
@@ -98,6 +99,7 @@ impl ObstacleMap {
             static_rects: Vec::new(),
             static_obstacles: FxHashMap::default(),
             dynamic_obstacles: FxHashMap::default(),
+            dynamic_cell_owner: FxHashMap::default(),
             net_routes: FxHashMap::default(),
             history_cost: FxHashMap::default(),
         }
@@ -303,6 +305,7 @@ impl ObstacleMap {
     /// Clear every dynamic route and routed-net owner entry.
     pub fn clear_dynamic(&mut self) {
         self.dynamic_obstacles.clear();
+        self.dynamic_cell_owner.clear();
         self.net_routes.clear();
         for cell in &mut self.occupancy {
             *cell &= !DYNAMIC_BIT;
@@ -312,6 +315,38 @@ impl ObstacleMap {
     /// Return the packed cells owned by `net_id`, if that net has a committed route.
     pub fn get_net_cells(&self, net_id: NetId) -> Option<&[CellKey]> {
         self.net_routes.get(&net_id).map(Vec::as_slice)
+    }
+
+    /// Return the committed dynamic-route owner of a cell, if any.
+    pub fn dynamic_owner_at(&self, x: i32, y: i32) -> Option<NetId> {
+        if !self.in_bounds(x, y) {
+            return None;
+        }
+        let key = pack_xy(x, y);
+        if let Some(owner) = self.dynamic_cell_owner.get(&key) {
+            return Some(*owner);
+        }
+        self.net_routes
+            .iter()
+            .find_map(|(&net_id, cells)| cells.contains(&key).then_some(net_id))
+    }
+
+    /// Return all dynamic-route owners intersecting the provided cells.
+    pub fn dynamic_owners_for_cells(&self, cells: &[(i32, i32)]) -> FxHashSet<NetId> {
+        let query: FxHashSet<CellKey> = cells
+            .iter()
+            .filter_map(|&(x, y)| self.in_bounds(x, y).then_some(pack_xy(x, y)))
+            .collect();
+        let mut owners = FxHashSet::default();
+        if query.is_empty() {
+            return owners;
+        }
+        for (&net_id, route_cells) in &self.net_routes {
+            if route_cells.iter().any(|cell| query.contains(cell)) {
+                owners.insert(net_id);
+            }
+        }
+        owners
     }
 
     /// Return a copy whose dynamic obstacles are expanded by `radius_cells`.
@@ -325,7 +360,20 @@ impl ObstacleMap {
             return self.clone();
         }
 
-        let mut expanded = self.clone();
+        let mut expanded = Self {
+            width: self.width,
+            height: self.height,
+            occupancy: self.occupancy.clone(),
+            static_rects: self.static_rects.clone(),
+            static_obstacles: self.static_obstacles.clone(),
+            dynamic_obstacles: self.dynamic_obstacles.clone(),
+            // Expanded search maps only need dynamic occupancy, not ownership
+            // or per-net route records. Keeping these empty avoids copying and
+            // updating large owner maps on every normal route.
+            dynamic_cell_owner: FxHashMap::default(),
+            net_routes: FxHashMap::default(),
+            history_cost: self.history_cost.clone(),
+        };
         let source_keys: Vec<CellKey> = self.dynamic_obstacles.keys().copied().collect();
         for key in source_keys {
             let (x, y) = unpack_xy(key);
@@ -750,6 +798,24 @@ mod tests {
         assert!(!map.is_dynamic_blocked(2, 2));
         assert!(map.is_dynamic_blocked(3, 2));
         assert!(map.is_dynamic_blocked(4, 2));
+    }
+
+    #[test]
+    fn dynamic_owner_index_tracks_commit_replace_and_ripup() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route(11, &[(2, 2), (3, 2)]));
+        assert_eq!(map.dynamic_owner_at(2, 2), Some(11));
+        assert_eq!(map.dynamic_owner_at(3, 2), Some(11));
+
+        let owners = map.dynamic_owners_for_cells(&[(1, 1), (2, 2), (3, 2)]);
+        assert_eq!(owners.len(), 1);
+        assert!(owners.contains(&11));
+
+        assert!(map.commit_route(11, &[(4, 2)]));
+        assert_eq!(map.dynamic_owner_at(2, 2), None);
+        assert_eq!(map.dynamic_owner_at(4, 2), Some(11));
+        assert!(map.ripup_route(11));
+        assert_eq!(map.dynamic_owner_at(4, 2), None);
     }
 
     #[test]

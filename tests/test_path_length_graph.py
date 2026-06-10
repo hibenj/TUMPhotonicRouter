@@ -453,6 +453,61 @@ def test_main_meander_report_uses_auto_multi_bump_path():
         entry.get("effective_bend_radius_um")
         == entry.get("primitive_bend_radius_um")
     )
+
+
+def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for adaptive meander test.")
+
+    grid = rust_backend.GridSpec(1200, 100, 1.0, 0.0, 0.0)
+    primitive = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=2,
+        allow_45_degree_turns=False,
+    )
+    astar = rust_backend.AStarConfig(max_iterations=200_000)
+    router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
+    route_obj = router.route_single_net(
+        rust_backend.State(10, 10, 0),
+        rust_backend.State(1051, 10, 0),
+    )
+
+    edge = RoutedEdgeKey(
+        net_name="long_match",
+        source=PortRef(instance="src", port="o1"),
+        target=PortRef(instance="dst", port="o1"),
+    )
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=route_obj,
+        total_length_um=float(route_obj.total_length_um),
+    )
+    req = MissingLengthRequirement(edge_key=edge, missing_length_um=1459.0)
+
+    _, report = analyze_meander_insertion_for_requirements(
+        [record],
+        [req],
+        config=MeanderInsertionConfig(
+            enabled=True,
+            min_candidate_straight_length_um=2.0,
+            max_meander_height_um=20.0,
+        ),
+        realization_grid_spec=(1200, 100, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=False,
+        bend_radius_cells=2,
+    )
+
+    results = cast(list[dict[str, object]], report["results"])
+    assert len(results) == 1
+    entry = results[0]
+    assert entry["status"] == "planned"
+    assert entry["inserted_extra_length_um"] == pytest.approx(1459.0)
+    assert entry["unmatched_length_um"] == pytest.approx(0.0)
+    assert int(cast(int, entry["max_bumps"])) == 259
+    assert int(cast(int, entry["bumps"])) == 81
     assert entry.get("effective_bend_radius_um") is not None
 
 

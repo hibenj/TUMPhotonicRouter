@@ -6,11 +6,12 @@ import math
 import sys
 from importlib import machinery, util
 from importlib import import_module
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple
 
 from photonic_router.benchmark_extractor import BBox, ExtractedBenchmark, Point, Polygon, extract_benchmark
+from photonic_router.routing_layers import HEATER_METAL_OBSTACLE_LAYERS
 
 GridCell = Tuple[int, int]
 GridRect = Tuple[int, int, int, int]
@@ -23,6 +24,7 @@ class StaticObstacleMapConfig:
     grid_size_um: float = 0.5
     security_margin_um: float = 20.0
     clearance_um: float = 0.5
+    heater_clearance_um: Optional[float] = None
     clearance_metric: str = "chebyshev"
     port_open_radius_um: float = 0.5
     obstacle_mode: str = "bounding_boxes"
@@ -31,6 +33,9 @@ class StaticObstacleMapConfig:
     populate_obstacle_map: bool = True
     die_bbox: Optional[BBox] = None
     obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = None
+    heater_obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = (
+        HEATER_METAL_OBSTACLE_LAYERS
+    )
 
 
 @dataclass(frozen=True)
@@ -101,6 +106,14 @@ def build_static_obstacle_map(
     """
 
     config = config or StaticObstacleMapConfig()
+    split_layers = _split_obstacle_layers_for_heater_clearance(config)
+    if split_layers is not None:
+        return _build_static_obstacle_map_split_by_heater_clearance(
+            component,
+            config,
+            split_layers=split_layers,
+        )
+
     benchmark = extract_benchmark(component, layers=config.obstacle_layers)
 
     rust_backend = _load_rust_backend()
@@ -108,6 +121,223 @@ def build_static_obstacle_map(
         return _build_static_obstacle_map_rust(benchmark, config, rust_backend)
 
     return build_static_obstacle_map_python_from_extracted(benchmark, config)
+
+
+def _split_obstacle_layers_for_heater_clearance(
+    config: StaticObstacleMapConfig,
+) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]] | None:
+    if config.heater_clearance_um is None:
+        return None
+    if config.obstacle_layers is None or config.heater_obstacle_layers is None:
+        return None
+
+    obstacle_layers = _normalize_layers(config.obstacle_layers)
+    heater_layers = _normalize_layers(config.heater_obstacle_layers)
+    selected_heater_layers = tuple(layer for layer in obstacle_layers if layer in heater_layers)
+    if not selected_heater_layers:
+        return None
+
+    waveguide_layers = tuple(layer for layer in obstacle_layers if layer not in heater_layers)
+    return waveguide_layers, selected_heater_layers
+
+
+def _build_static_obstacle_map_split_by_heater_clearance(
+    component: object,
+    config: StaticObstacleMapConfig,
+    *,
+    split_layers: tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]],
+) -> StaticObstacleMapData:
+    waveguide_layers, heater_layers = split_layers
+    heater_clearance_um = config.heater_clearance_um
+    if heater_clearance_um is None:
+        raise ValueError("heater_clearance_um is required when splitting heater obstacles")
+
+    all_benchmark = extract_benchmark(component, layers=config.obstacle_layers)
+    shared_die_bbox = config.die_bbox
+    if shared_die_bbox is None:
+        shared_die_bbox = make_grid_spec(
+            all_benchmark,
+            grid_size_um=config.grid_size_um,
+            security_margin_um=config.security_margin_um,
+            die_bbox=None,
+        ).die_bbox
+
+    rust_backend = _load_rust_backend()
+    waveguide_data = _build_layer_group_static_obstacles(
+        component,
+        all_benchmark,
+        replace(
+            config,
+            clearance_um=float(config.clearance_um),
+            heater_clearance_um=None,
+            obstacle_layers=waveguide_layers,
+            die_bbox=shared_die_bbox,
+        ),
+        rust_backend,
+    )
+    heater_data = _build_layer_group_static_obstacles(
+        component,
+        all_benchmark,
+        replace(
+            config,
+            clearance_um=0.0,
+            heater_clearance_um=None,
+            obstacle_layers=heater_layers,
+            die_bbox=shared_die_bbox,
+        ),
+        rust_backend,
+    )
+    heater_data = _apply_perpendicular_heater_clearance(
+        heater_data,
+        clearance_um=float(heater_clearance_um),
+    )
+    return _merge_static_obstacle_data(
+        all_benchmark,
+        waveguide_data,
+        heater_data,
+        backend="rust-split" if rust_backend is not None else "python-split",
+    )
+
+
+def _build_layer_group_static_obstacles(
+    component: object,
+    all_benchmark: ExtractedBenchmark,
+    config: StaticObstacleMapConfig,
+    rust_backend: Any | None,
+) -> StaticObstacleMapData:
+    if config.obstacle_layers:
+        benchmark = extract_benchmark(component, layers=config.obstacle_layers)
+    else:
+        benchmark = ExtractedBenchmark(
+            polygons=[],
+            ports=all_benchmark.ports,
+            bbox=all_benchmark.bbox,
+        )
+
+    if not benchmark.polygons:
+        return build_static_obstacle_map_python_from_extracted(benchmark, config)
+
+    if rust_backend is not None:
+        return _build_static_obstacle_map_rust(benchmark, config, rust_backend)
+    return build_static_obstacle_map_python_from_extracted(benchmark, config)
+
+
+def _apply_perpendicular_heater_clearance(
+    data: StaticObstacleMapData,
+    *,
+    clearance_um: float,
+) -> StaticObstacleMapData:
+    radius = math.ceil(max(0.0, clearance_um) / data.grid.grid_size_um)
+    raw_rects = data.raw_static_rects or tuple(
+        rect
+        for polygon in data.benchmark.polygons
+        if (rect := polygon_to_grid_rect(polygon, data.grid)) is not None
+    )
+    if radius <= 0 or not raw_rects:
+        return StaticObstacleMapData(
+            grid=data.grid,
+            raw_blocked_cells=data.raw_blocked_cells,
+            blocked_cells=data.blocked_cells,
+            port_open_cells=data.port_open_cells,
+            raw_static_rects=raw_rects,
+            blocked_static_rects=data.blocked_static_rects or raw_rects,
+            benchmark=data.benchmark,
+            backend=data.backend,
+            build_stats=data.build_stats,
+        )
+
+    blocked_rects = tuple(
+        _expand_rect_perpendicular_to_long_axis(rect, radius)
+        for rect in raw_rects
+    )
+    blocked_cells = (
+        set(_materialize_grid_rects(blocked_rects, data.grid))
+        if data.blocked_cells
+        else set()
+    )
+    return StaticObstacleMapData(
+        grid=data.grid,
+        raw_blocked_cells=data.raw_blocked_cells,
+        blocked_cells=blocked_cells,
+        port_open_cells=data.port_open_cells,
+        raw_static_rects=raw_rects,
+        blocked_static_rects=blocked_rects,
+        benchmark=data.benchmark,
+        backend=data.backend,
+        build_stats=data.build_stats,
+    )
+
+
+def _expand_rect_perpendicular_to_long_axis(rect: GridRect, radius: int) -> GridRect:
+    x_min, y_min, x_max, y_max = rect
+    width = x_max - x_min + 1
+    height = y_max - y_min + 1
+    if width >= height:
+        return (x_min, y_min - radius, x_max, y_max + radius)
+    return (x_min - radius, y_min, x_max + radius, y_max)
+
+
+def _materialize_grid_rects(rects: Iterable[GridRect], grid: GridSpec) -> Iterable[GridCell]:
+    for x_min, y_min, x_max, y_max in rects:
+        for y in range(max(0, y_min), min(grid.height - 1, y_max) + 1):
+            for x in range(max(0, x_min), min(grid.width - 1, x_max) + 1):
+                yield (x, y)
+
+
+def _merge_static_obstacle_data(
+    benchmark: ExtractedBenchmark,
+    *data_items: StaticObstacleMapData,
+    backend: str,
+) -> StaticObstacleMapData:
+    if not data_items:
+        raise ValueError("at least one static obstacle map is required")
+
+    grid = data_items[0].grid
+    for data in data_items[1:]:
+        if data.grid != grid:
+            raise ValueError("split static obstacle maps produced different grids")
+
+    build_stats = _merge_build_stats(data_items)
+    return StaticObstacleMapData(
+        grid=grid,
+        raw_blocked_cells=set().union(*(data.raw_blocked_cells for data in data_items)),
+        blocked_cells=set().union(*(data.blocked_cells for data in data_items)),
+        port_open_cells=set().union(*(data.port_open_cells for data in data_items)),
+        raw_static_rects=tuple(
+            rect for data in data_items for rect in data.raw_static_rects
+        ),
+        blocked_static_rects=tuple(
+            rect for data in data_items for rect in data.blocked_static_rects
+        ),
+        benchmark=benchmark,
+        backend=backend,
+        build_stats=build_stats,
+    )
+
+
+def _merge_build_stats(data_items: Iterable[StaticObstacleMapData]) -> dict[str, Any] | None:
+    merged: dict[str, Any] = {}
+    saw_stats = False
+    for data in data_items:
+        stats = data.build_stats
+        if not stats:
+            continue
+        saw_stats = True
+        for key, value in stats.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                merged[key] = merged.get(key, 0) + value
+            elif key not in merged:
+                merged[key] = value
+    return merged if saw_stats else None
+
+
+def _normalize_layers(layers: Iterable[Any]) -> tuple[tuple[int, int], ...]:
+    normalized: list[tuple[int, int]] = []
+    for layer in layers:
+        if not isinstance(layer, tuple) or len(layer) < 2:
+            raise ValueError(f"layer must be a (layer, datatype) tuple, got {layer!r}")
+        normalized.append((int(layer[0]), int(layer[1])))
+    return tuple(normalized)
 
 
 def build_static_obstacle_map_python_from_extracted(
@@ -501,8 +731,22 @@ def rasterize_polygon(polygon: Polygon, grid: GridSpec) -> Set[GridCell]:
 def polygon_to_bbox_cells(polygon: Polygon, grid: GridSpec) -> Set[GridCell]:
     """Conservatively mark polygon bounding-box cell range."""
 
-    if len(polygon) < 3:
+    rect = polygon_to_grid_rect(polygon, grid)
+    if rect is None:
         return set()
+    gx_min, gy_min, gx_max, gy_max = rect
+    return {
+        (gx, gy)
+        for gx in range(gx_min, gx_max + 1)
+        for gy in range(gy_min, gy_max + 1)
+    }
+
+
+def polygon_to_grid_rect(polygon: Polygon, grid: GridSpec) -> GridRect | None:
+    """Conservatively map a polygon bbox to an inclusive grid rectangle."""
+
+    if len(polygon) < 3:
+        return None
 
     min_x = min(point[0] for point in polygon)
     max_x = max(point[0] for point in polygon)
@@ -520,13 +764,9 @@ def polygon_to_bbox_cells(polygon: Polygon, grid: GridSpec) -> Set[GridCell]:
     gy_max = min(gy_max, grid.height - 1)
 
     if gx_min > gx_max or gy_min > gy_max:
-        return set()
+        return None
 
-    return {
-        (gx, gy)
-        for gx in range(gx_min, gx_max + 1)
-        for gy in range(gy_min, gy_max + 1)
-    }
+    return gx_min, gy_min, gx_max, gy_max
 
 
 def point_in_polygon(point: Point, polygon: Sequence[Point]) -> bool:
