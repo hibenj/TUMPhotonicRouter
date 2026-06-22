@@ -74,6 +74,7 @@ class RustBackend(Protocol):
         require_target_angle: bool,
         use_routing_window: bool,
         routing_window_fallback_full_grid: bool,
+        collect_detailed_timing: bool,
     ) -> Any: ...
 
     def PyPhotonicRouter(self, grid: object, primitive: object, astar: Any) -> Any: ...
@@ -279,6 +280,7 @@ def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
         require_target_angle=scenario.require_target_angle,
         use_routing_window=scenario.use_routing_window,
         routing_window_fallback_full_grid=scenario.routing_window_fallback_full_grid,
+        collect_detailed_timing=True,
     )
     astar.enable_simple_routes = scenario.enable_simple_routes
     router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
@@ -364,6 +366,11 @@ def run_scenario(
         "min_s": min(elapsed_values),
         "p95_s": _quantile(elapsed_values, 0.95),
         "expanded_states": _route_stat(last_route, "expanded_states"),
+        "generated_neighbors": _route_stat(last_route, "generated_neighbors"),
+        "heap_pushes": _route_stat(last_route, "heap_pushes"),
+        "heap_pops": _route_stat(last_route, "heap_pops"),
+        "duplicate_heap_skips": _route_stat(last_route, "skipped_duplicate_heap_entries"),
+        "obstacle_clearance_checks": _route_stat(last_route, "obstacle_clearance_checks"),
         "window_attempts": _route_stat(last_route, "window_attempts"),
         "window_rejects": _route_stat(last_route, "window_rejects"),
         "footprint_checks": _route_stat(last_route, "primitive_footprint_checks"),
@@ -372,6 +379,10 @@ def run_scenario(
         "rect_rejects": _route_stat(last_route, "primitive_footprint_rect_rejects"),
         "dense_cells": _route_stat(last_route, "dense_grid_cells"),
         "dense_build_s": float(_route_stat(last_route, "dense_grid_build_time_us")) / 1_000_000.0,
+        "neighbor_generation_s": float(_route_stat(last_route, "neighbor_generation_time_us")) / 1_000_000.0,
+        "heap_operation_s": float(_route_stat(last_route, "heap_operation_time_us")) / 1_000_000.0,
+        "legality_check_s": float(_route_stat(last_route, "legality_check_time_us")) / 1_000_000.0,
+        "reconstruction_s": float(_route_stat(last_route, "reconstruction_time_us")) / 1_000_000.0,
         "full_grid_fallback": bool(_route_stat(last_route, "used_full_grid_fallback")),
         "route_cells": len(getattr(last_route, "cells", [])),
         "route_length_um": float(getattr(last_route, "total_length_um", 0.0)),
@@ -454,21 +465,29 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Iterations: `{args.iterations}`",
         f"- Warmup: `{args.warmup}`",
         "",
-        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Windows | Footprint checks | Dense build s | Full grid | Target ok | Route cells | Length um |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: |",
+        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Heap push/pop | Dup skips | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | Full grid | Target ok | Route cells | Length um |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {window_attempts} | {footprint_checks} | {dense_build_s} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
+            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
                 scenario=row["scenario"],
                 grid=row["grid"],
                 static_cells=row["static_cells"],
                 median_s=_format_seconds(_object_to_float(row["median_s"])),
                 p95_s=_format_seconds(_object_to_float(row["p95_s"])),
                 expanded_states=row["expanded_states"],
-                window_attempts=row["window_attempts"],
+                generated_neighbors=row["generated_neighbors"],
+                heap_pushes=row["heap_pushes"],
+                heap_pops=row["heap_pops"],
+                duplicate_heap_skips=row["duplicate_heap_skips"],
+                obstacle_clearance_checks=row["obstacle_clearance_checks"],
                 footprint_checks=row["footprint_checks"],
                 dense_build_s=_format_seconds(_object_to_float(row["dense_build_s"])),
+                neighbor_generation_s=_format_seconds(_object_to_float(row["neighbor_generation_s"])),
+                heap_operation_s=_format_seconds(_object_to_float(row["heap_operation_s"])),
+                legality_check_s=_format_seconds(_object_to_float(row["legality_check_s"])),
+                reconstruction_s=_format_seconds(_object_to_float(row["reconstruction_s"])),
                 full_grid_fallback=row["full_grid_fallback"],
                 target_state_ok=row.get("target_state_ok", ""),
                 route_cells=row["route_cells"],

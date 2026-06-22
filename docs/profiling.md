@@ -37,8 +37,15 @@ Useful variants:
 ```
 
 The A* profile reports median and p95 wall time plus Rust route counters such as
-expanded states, routing-window attempts, footprint checks, dense-grid build
-time, full-grid fallback use, target-state match, route cells, and route length.
+expanded states, generated neighbors, heap pushes/pops, skipped duplicate heap
+entries, obstacle/clearance checks, footprint checks, dense-grid build time,
+neighbor-generation time, heap-operation time, legality-check time,
+reconstruction time, full-grid fallback use, target-state match, route cells,
+and route length.
+
+The isolated profiler enables detailed Rust timing buckets explicitly. Normal
+routing keeps detailed timing disabled by default so production runs still
+collect counters without paying per-operation timing overhead.
 
 The baseline check compares the current route length and reached target state
 against `docs/astar_quality_baseline.json`. Use it before and after heuristic

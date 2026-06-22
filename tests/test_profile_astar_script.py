@@ -60,9 +60,18 @@ def test_markdown_report_contains_route_stats_columns():
                 "median_s": 0.001,
                 "p95_s": 0.002,
                 "expanded_states": 3,
+                "generated_neighbors": 8,
+                "heap_pushes": 6,
+                "heap_pops": 5,
+                "duplicate_heap_skips": 1,
+                "obstacle_clearance_checks": 4,
                 "window_attempts": 1,
                 "footprint_checks": 4,
                 "dense_build_s": 0.0,
+                "neighbor_generation_s": 0.0001,
+                "heap_operation_s": 0.0002,
+                "legality_check_s": 0.0003,
+                "reconstruction_s": 0.0004,
                 "full_grid_fallback": False,
                 "target_state_ok": True,
                 "route_cells": 5,
@@ -74,6 +83,8 @@ def test_markdown_report_contains_route_stats_columns():
 
     assert "Isolated Rust A* Profile" in report
     assert "Footprint checks" in report
+    assert "Heap push/pop" in report
+    assert "Legality checks" in report
     assert "| case | 10x10 | 2 |" in report
 
 

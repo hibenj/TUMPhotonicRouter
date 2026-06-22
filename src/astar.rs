@@ -56,6 +56,7 @@ pub struct AStarConfig {
     pub simple_route_min_leg_len_cells: i32,
     pub ignore_dynamic_obstacles: bool,
     pub history_weight: f64,
+    pub collect_detailed_timing: bool,
 }
 
 impl Default for AStarConfig {
@@ -79,6 +80,7 @@ impl Default for AStarConfig {
             simple_route_min_leg_len_cells: 1,
             ignore_dynamic_obstacles: false,
             history_weight: 0.0,
+            collect_detailed_timing: false,
         }
     }
 }
@@ -117,6 +119,11 @@ pub struct RouteSearchStats {
     pub window_attempts: u32,
     pub used_full_grid_fallback: bool,
     pub expanded_states: usize,
+    pub generated_neighbors: usize,
+    pub heap_pushes: usize,
+    pub heap_pops: usize,
+    pub skipped_duplicate_heap_entries: usize,
+    pub obstacle_clearance_checks: usize,
     pub window_rejects: usize,
     pub footprint_rejects: usize,
     pub primitive_footprint_checks: usize,
@@ -127,6 +134,10 @@ pub struct RouteSearchStats {
     pub max_window_area_cells: i64,
     pub dense_grid_cells: usize,
     pub dense_grid_build_time_us: u128,
+    pub neighbor_generation_time_us: u128,
+    pub heap_operation_time_us: u128,
+    pub legality_check_time_us: u128,
+    pub reconstruction_time_us: u128,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -224,6 +235,7 @@ impl FootprintCollisionProfile {
 }
 
 const NO_PARENT: u32 = u32::MAX;
+const BITSET_WORD_BITS: usize = u64::BITS as usize;
 
 struct DenseSearchStorage {
     bounds: RoutingBounds,
@@ -289,10 +301,45 @@ impl DenseSearchStorage {
     }
 }
 
+struct DenseBlockedBitset {
+    bits: Vec<u64>,
+}
+
+impl DenseBlockedBitset {
+    fn new(cell_count: usize) -> Option<Self> {
+        let words = cell_count
+            .checked_add(BITSET_WORD_BITS - 1)?
+            .checked_div(BITSET_WORD_BITS)?;
+        Some(Self {
+            bits: vec![0; words],
+        })
+    }
+
+    #[inline]
+    fn set(&mut self, idx: usize) -> Option<()> {
+        let word_idx = idx.checked_div(BITSET_WORD_BITS)?;
+        let bit_idx = idx.checked_rem(BITSET_WORD_BITS)?;
+        let word = self.bits.get_mut(word_idx)?;
+        *word |= 1u64 << bit_idx;
+        Some(())
+    }
+
+    #[inline]
+    fn get(&self, idx: usize) -> bool {
+        let word_idx = idx / BITSET_WORD_BITS;
+        let bit_idx = idx % BITSET_WORD_BITS;
+        self.bits
+            .get(word_idx)
+            .map(|word| (word & (1u64 << bit_idx)) != 0)
+            .unwrap_or(true)
+    }
+}
+
 struct DenseRoutingGrid {
     bounds: RoutingBounds,
     width: i32,
-    blocked: Vec<u8>,
+    height: i32,
+    blocked_bits: DenseBlockedBitset,
     blocked_prefix: Option<Vec<u32>>,
     history: Option<Vec<u32>>,
     history_prefix: Option<Vec<u64>>,
@@ -323,7 +370,8 @@ impl DenseRoutingGrid {
             return None;
         }
 
-        let mut blocked = vec![0u8; cell_count];
+        let mut blocked_cells = vec![0u8; cell_count];
+        let mut blocked_bits = DenseBlockedBitset::new(cell_count)?;
         let mut history = if build_history {
             Some(vec![0u32; cell_count])
         } else {
@@ -346,7 +394,8 @@ impl DenseRoutingGrid {
                     || (!opened && obstacle_map.is_static_blocked(x, y));
                 if is_blocked {
                     blocked_count += 1;
-                    blocked[idx] = 1;
+                    blocked_cells[idx] = 1;
+                    blocked_bits.set(idx)?;
                 }
                 if let Some(history) = history.as_mut() {
                     history[idx] = obstacle_map.get_history_cost(x, y);
@@ -377,7 +426,7 @@ impl DenseRoutingGrid {
             for local_x in 0..width {
                 let x_idx = usize::try_from(local_x).ok()?;
                 let blocked_idx = src_base.checked_add(x_idx)?;
-                row_sum = row_sum.saturating_add(u32::from(blocked[blocked_idx]));
+                row_sum = row_sum.saturating_add(u32::from(blocked_cells[blocked_idx]));
                 if let Some(history) = history.as_ref() {
                     history_row_sum =
                         history_row_sum.saturating_add(u64::from(history[blocked_idx]));
@@ -395,7 +444,8 @@ impl DenseRoutingGrid {
         Some(Self {
             bounds,
             width,
-            blocked,
+            height,
+            blocked_bits,
             blocked_prefix: Some(blocked_prefix),
             history,
             history_prefix,
@@ -412,7 +462,7 @@ impl DenseRoutingGrid {
     #[inline]
     fn is_blocked(&self, x: i32, y: i32) -> bool {
         match self.idx_of(x, y) {
-            Some(idx) => self.blocked[idx] != 0,
+            Some(idx) => self.blocked_bits.get(idx),
             None => true,
         }
     }
@@ -444,6 +494,7 @@ impl DenseRoutingGrid {
         if local_min_x > local_max_x || local_min_y > local_max_y {
             return None;
         }
+        debug_assert_eq!(height, self.height);
         if local_min_x < 0 || local_min_y < 0 || local_max_x >= width || local_max_y >= height {
             return None;
         }
@@ -466,6 +517,37 @@ impl DenseRoutingGrid {
         } else {
             u32::try_from(total).ok()
         }
+    }
+
+    #[inline]
+    fn blocked_count_in_rect(&self, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> Option<u32> {
+        let local_min_x = min_x.checked_sub(self.bounds.min_x)?;
+        let local_max_x = max_x.checked_sub(self.bounds.min_x)?;
+        let local_min_y = min_y.checked_sub(self.bounds.min_y)?;
+        let local_max_y = max_y.checked_sub(self.bounds.min_y)?;
+        self.blocked_count_in_local_rect(local_min_x, local_max_x, local_min_y, local_max_y)
+    }
+
+    #[inline]
+    fn rect_free(&self, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> bool {
+        matches!(
+            self.blocked_count_in_rect(min_x, max_x, min_y, max_y),
+            Some(0)
+        )
+    }
+
+    #[inline]
+    fn horizontal_segment_free(&self, y: i32, x0: i32, x1: i32) -> bool {
+        let min_x = x0.min(x1);
+        let max_x = x0.max(x1);
+        self.rect_free(min_x, max_x, y, y)
+    }
+
+    #[inline]
+    fn vertical_segment_free(&self, x: i32, y0: i32, y1: i32) -> bool {
+        let min_y = y0.min(y1);
+        let max_y = y0.max(y1);
+        self.rect_free(x, x, min_y, max_y)
     }
 
     #[inline]
@@ -530,32 +612,14 @@ impl DenseRoutingGrid {
                 Some(y) => y,
                 None => return false,
             };
-            let local_min_x = match rect_min_x.checked_sub(self.bounds.min_x) {
-                Some(x) => x,
-                None => return false,
-            };
-            let local_max_x = match rect_max_x.checked_sub(self.bounds.min_x) {
-                Some(x) => x,
-                None => return false,
-            };
-            let local_min_y = match rect_min_y.checked_sub(self.bounds.min_y) {
-                Some(y) => y,
-                None => return false,
-            };
-            let local_max_y = match rect_max_y.checked_sub(self.bounds.min_y) {
-                Some(y) => y,
-                None => return false,
-            };
             stats.primitive_footprint_rect_checks += 1;
             stats.primitive_footprint_cells_tested += profile.cell_count;
-            match self.blocked_count_in_local_rect(
-                local_min_x,
-                local_max_x,
-                local_min_y,
-                local_max_y,
-            ) {
-                Some(blocked_cells) => blocked_cells == 0,
-                None => false,
+            if rect_min_y == rect_max_y {
+                self.horizontal_segment_free(rect_min_y, rect_min_x, rect_max_x)
+            } else if rect_min_x == rect_max_x {
+                self.vertical_segment_free(rect_min_x, rect_min_y, rect_max_y)
+            } else {
+                self.rect_free(rect_min_x, rect_max_x, rect_min_y, rect_max_y)
             }
         } else {
             let tested_cells = footprint.len();
@@ -1210,19 +1274,40 @@ fn route_single_net_with_bounds(
 
     let mut open_set = BinaryHeap::new();
     let mut counter = 0u64;
+    let collect_detailed_timing = config.collect_detailed_timing;
     let source_idx = storage.state_to_idx(source)?;
 
     storage.g_costs[source_idx] = 0.0;
-    open_set.push(OpenEntry {
+    let source_entry = OpenEntry {
         f_score: heuristic(source, target, primitives.grid_size_um()),
         g_score: 0.0,
         counter,
         idx: source_idx,
-    });
+    };
+    if collect_detailed_timing {
+        let heap_start = Instant::now();
+        open_set.push(source_entry);
+        stats.heap_operation_time_us += heap_start.elapsed().as_micros();
+    } else {
+        open_set.push(source_entry);
+    }
+    stats.heap_pushes += 1;
     counter += 1;
 
     let mut iterations = 0usize;
-    while let Some(entry) = open_set.pop() {
+    loop {
+        let entry = if collect_detailed_timing {
+            let heap_start = Instant::now();
+            let entry = open_set.pop();
+            stats.heap_operation_time_us += heap_start.elapsed().as_micros();
+            entry
+        } else {
+            open_set.pop()
+        };
+        let Some(entry) = entry else {
+            break;
+        };
+        stats.heap_pops += 1;
         iterations += 1;
         if iterations > config.max_iterations {
             return None;
@@ -1230,10 +1315,25 @@ fn route_single_net_with_bounds(
 
         let idx = entry.idx;
         if storage.closed[idx] {
+            stats.skipped_duplicate_heap_entries += 1;
             continue;
         }
         let state = storage.idx_to_state(idx);
         if target_reached(state, target, config) {
+            if collect_detailed_timing {
+                let reconstruction_start = Instant::now();
+                let mut route = reconstruct_route_dense(
+                    source_idx,
+                    idx,
+                    target,
+                    primitives,
+                    entry.g_score,
+                    stats.clone(),
+                    &storage,
+                )?;
+                route.stats.reconstruction_time_us += reconstruction_start.elapsed().as_micros();
+                return Some(route);
+            }
             return reconstruct_route_dense(
                 source_idx,
                 idx,
@@ -1251,7 +1351,15 @@ fn route_single_net_with_bounds(
         let angle = state.angle as usize;
         let primitive_bucket = primitives.get_primitives_for_angle(state.angle);
         let footprint_profiles = &primitive_footprint_profiles[angle];
+        let neighbor_loop_start = if collect_detailed_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let mut neighbor_loop_heap_time_us = 0u128;
+        let mut neighbor_loop_legality_time_us = 0u128;
         for (primitive, profile) in primitive_bucket.iter().zip(footprint_profiles.iter()) {
+            stats.generated_neighbors += 1;
             let next_state = State::new(
                 state.x.checked_add(primitive.dx)?,
                 state.y.checked_add(primitive.dy)?,
@@ -1279,14 +1387,31 @@ fn route_single_net_with_bounds(
             }
 
             stats.primitive_footprint_checks += 1;
+            stats.obstacle_clearance_checks += 1;
             // TODO: bounds may need primitive-footprint margin to avoid rejecting valid routes near window edges.
-            if !dense_grid.primitive_footprint_free_with_profile(
-                state.x,
-                state.y,
-                &primitive.footprint,
-                profile,
-                stats,
-            ) {
+            let footprint_free = if collect_detailed_timing {
+                let legality_start = Instant::now();
+                let footprint_free = dense_grid.primitive_footprint_free_with_profile(
+                    state.x,
+                    state.y,
+                    &primitive.footprint,
+                    profile,
+                    stats,
+                );
+                let legality_elapsed_us = legality_start.elapsed().as_micros();
+                stats.legality_check_time_us += legality_elapsed_us;
+                neighbor_loop_legality_time_us += legality_elapsed_us;
+                footprint_free
+            } else {
+                dense_grid.primitive_footprint_free_with_profile(
+                    state.x,
+                    state.y,
+                    &primitive.footprint,
+                    profile,
+                    stats,
+                )
+            };
+            if !footprint_free {
                 stats.footprint_rejects += 1;
                 if profile.is_full_rect {
                     stats.primitive_footprint_rect_rejects += 1;
@@ -1314,13 +1439,29 @@ fn route_single_net_with_bounds(
             storage.parent_idx[next_idx] = idx as u32;
             storage.parent_primitive[next_idx] = primitive.id;
             storage.g_costs[next_idx] = tentative_g;
-            open_set.push(OpenEntry {
+            let next_entry = OpenEntry {
                 f_score: tentative_g + heuristic(next_state, target, primitives.grid_size_um()),
                 g_score: tentative_g,
                 counter,
                 idx: next_idx,
-            });
+            };
+            if collect_detailed_timing {
+                let heap_start = Instant::now();
+                open_set.push(next_entry);
+                let heap_elapsed_us = heap_start.elapsed().as_micros();
+                stats.heap_operation_time_us += heap_elapsed_us;
+                neighbor_loop_heap_time_us += heap_elapsed_us;
+            } else {
+                open_set.push(next_entry);
+            }
+            stats.heap_pushes += 1;
             counter += 1;
+        }
+        if let Some(neighbor_loop_start) = neighbor_loop_start {
+            let neighbor_loop_elapsed_us = neighbor_loop_start.elapsed().as_micros();
+            stats.neighbor_generation_time_us += neighbor_loop_elapsed_us
+                .saturating_sub(neighbor_loop_heap_time_us)
+                .saturating_sub(neighbor_loop_legality_time_us);
         }
     }
 
@@ -2341,6 +2482,67 @@ mod tests {
     }
 
     #[test]
+    fn dense_grid_bitset_and_prefix_queries_preserve_opening_semantics() {
+        let mut map = ObstacleMap::new(10, 8);
+        map.add_static_cell(4, 3);
+        map.add_static_cell(6, 3);
+        assert!(map.commit_route(7, &[(5, 5)]));
+        let mut opened = FxHashSet::default();
+        opened.insert(pack_xy(4, 3));
+
+        let grid = DenseRoutingGrid::from_obstacle_map(
+            &map,
+            RoutingBounds {
+                min_x: 2,
+                max_x: 8,
+                min_y: 1,
+                max_y: 6,
+            },
+            Some(&opened),
+            1_000,
+            false,
+            false,
+        )
+        .expect("grid");
+
+        assert!(!grid.is_blocked(4, 3));
+        assert!(grid.is_blocked(6, 3));
+        assert!(grid.is_blocked(5, 5));
+        assert_eq!(grid.blocked_count_in_rect(2, 8, 1, 6), Some(2));
+        assert_eq!(grid.blocked_count_in_rect(4, 4, 3, 3), Some(0));
+        assert_eq!(grid.blocked_count_in_rect(6, 6, 3, 3), Some(1));
+        assert_eq!(grid.blocked_count_in_rect(1, 8, 1, 6), None);
+    }
+
+    #[test]
+    fn dense_grid_segment_queries_are_exact_and_bounds_checked() {
+        let mut map = ObstacleMap::new(10, 8);
+        map.add_static_cell(5, 3);
+        map.add_static_cell(7, 5);
+        let grid = DenseRoutingGrid::from_obstacle_map(
+            &map,
+            RoutingBounds {
+                min_x: 2,
+                max_x: 8,
+                min_y: 1,
+                max_y: 6,
+            },
+            None,
+            1_000,
+            false,
+            false,
+        )
+        .expect("grid");
+
+        assert!(grid.horizontal_segment_free(3, 2, 4));
+        assert!(!grid.horizontal_segment_free(3, 2, 5));
+        assert!(!grid.horizontal_segment_free(3, 8, 1));
+        assert!(grid.vertical_segment_free(7, 1, 4));
+        assert!(!grid.vertical_segment_free(7, 1, 5));
+        assert!(!grid.vertical_segment_free(9, 1, 5));
+    }
+
+    #[test]
     fn dense_grid_primitive_footprint_checks() {
         let mut map = ObstacleMap::new(8, 6);
         map.add_static_cell(4, 2);
@@ -2372,6 +2574,36 @@ mod tests {
             &rect_profile,
             &mut footprint_rejects_profile,
         ));
+        assert_eq!(footprint_rejects_profile.primitive_footprint_rect_checks, 1);
+    }
+
+    #[test]
+    fn dense_grid_non_rect_footprint_uses_bitset_point_checks() {
+        let mut map = ObstacleMap::new(8, 6);
+        map.add_static_cell(4, 3);
+        let grid = DenseRoutingGrid::from_obstacle_map(
+            &map,
+            RoutingBounds {
+                min_x: 2,
+                max_x: 5,
+                min_y: 1,
+                max_y: 4,
+            },
+            None,
+            1_000,
+            false,
+            false,
+        )
+        .expect("grid");
+        let footprint = &[(0, 0), (1, 0), (1, 1)];
+        let profile = FootprintCollisionProfile::from_footprint(footprint);
+        let mut stats = RouteSearchStats::default();
+
+        assert!(!profile.is_full_rect);
+        assert!(grid.primitive_footprint_free_with_profile(2, 2, footprint, &profile, &mut stats,));
+        assert!(!grid.primitive_footprint_free_with_profile(3, 2, footprint, &profile, &mut stats,));
+        assert!(!grid.primitive_footprint_free_with_profile(5, 2, footprint, &profile, &mut stats,));
+        assert_eq!(stats.primitive_footprint_rect_checks, 0);
     }
 
     #[test]
@@ -2424,8 +2656,49 @@ mod tests {
         .expect("route should exist with direct A* run");
 
         assert!(result.stats.primitive_footprint_checks > 0);
+        assert!(result.stats.generated_neighbors > 0);
+        assert!(result.stats.heap_pushes > 0);
+        assert!(result.stats.heap_pops > 0);
+        assert_eq!(
+            result.stats.obstacle_clearance_checks,
+            result.stats.primitive_footprint_checks
+        );
+        assert_eq!(result.stats.neighbor_generation_time_us, 0);
+        assert_eq!(result.stats.heap_operation_time_us, 0);
+        assert_eq!(result.stats.legality_check_time_us, 0);
+        assert_eq!(result.stats.reconstruction_time_us, 0);
         assert!(result.stats.primitive_footprint_rect_checks > 0);
         assert_eq!(result.stats.dense_grid_cells, 0);
+    }
+
+    #[test]
+    fn detailed_timing_is_opt_in() {
+        let map = ObstacleMap::new(12, 5);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 2, 0),
+            State::new(8, 2, 0),
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                collect_detailed_timing: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("route should exist with direct A* run");
+
+        assert!(result.stats.heap_pushes > 0);
+        assert!(result.stats.heap_pops > 0);
+        assert!(
+            result.stats.neighbor_generation_time_us
+                + result.stats.heap_operation_time_us
+                + result.stats.legality_check_time_us
+                + result.stats.reconstruction_time_us
+                > 0
+        );
     }
 
     #[test]

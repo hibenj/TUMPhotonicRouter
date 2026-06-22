@@ -171,11 +171,13 @@ pub struct PyAStarConfig {
     pub ignore_dynamic_obstacles: bool,
     #[pyo3(get, set)]
     pub history_weight: f64,
+    #[pyo3(get, set)]
+    pub collect_detailed_timing: bool,
 }
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0))]
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false))]
     fn new(
         max_iterations: usize,
         bend_weight: f64,
@@ -191,6 +193,7 @@ impl PyAStarConfig {
         max_dense_obstacle_cells: usize,
         ignore_dynamic_obstacles: bool,
         history_weight: f64,
+        collect_detailed_timing: bool,
     ) -> Self {
         Self {
             max_iterations,
@@ -210,6 +213,7 @@ impl PyAStarConfig {
             simple_route_min_leg_len_cells: 1,
             ignore_dynamic_obstacles,
             history_weight,
+            collect_detailed_timing,
         }
     }
 }
@@ -263,6 +267,16 @@ pub struct PyRouteResult {
     #[pyo3(get)]
     pub expanded_states: usize,
     #[pyo3(get)]
+    pub generated_neighbors: usize,
+    #[pyo3(get)]
+    pub heap_pushes: usize,
+    #[pyo3(get)]
+    pub heap_pops: usize,
+    #[pyo3(get)]
+    pub skipped_duplicate_heap_entries: usize,
+    #[pyo3(get)]
+    pub obstacle_clearance_checks: usize,
+    #[pyo3(get)]
     pub window_rejects: usize,
     #[pyo3(get)]
     pub footprint_rejects: usize,
@@ -282,6 +296,14 @@ pub struct PyRouteResult {
     pub dense_grid_cells: usize,
     #[pyo3(get)]
     pub dense_grid_build_time_us: u64,
+    #[pyo3(get)]
+    pub neighbor_generation_time_us: u64,
+    #[pyo3(get)]
+    pub heap_operation_time_us: u64,
+    #[pyo3(get)]
+    pub legality_check_time_us: u64,
+    #[pyo3(get)]
+    pub reconstruction_time_us: u64,
 }
 
 #[pyclass(name = "PortAccess")]
@@ -442,6 +464,7 @@ fn astar_config_from_py(
         ignore_dynamic_obstacles: ignore_dynamic_obstacles
             .unwrap_or(astar_cfg.ignore_dynamic_obstacles),
         history_weight: history_weight.unwrap_or(astar_cfg.history_weight),
+        collect_detailed_timing: astar_cfg.collect_detailed_timing,
     })
 }
 
@@ -2091,6 +2114,11 @@ fn convert_result(
         window_attempts: r.stats.window_attempts,
         used_full_grid_fallback: r.stats.used_full_grid_fallback,
         expanded_states: r.stats.expanded_states,
+        generated_neighbors: r.stats.generated_neighbors,
+        heap_pushes: r.stats.heap_pushes,
+        heap_pops: r.stats.heap_pops,
+        skipped_duplicate_heap_entries: r.stats.skipped_duplicate_heap_entries,
+        obstacle_clearance_checks: r.stats.obstacle_clearance_checks,
         window_rejects: r.stats.window_rejects,
         footprint_rejects: r.stats.footprint_rejects,
         dense_grid_build_failures: r.stats.dense_grid_build_failures,
@@ -2102,6 +2130,22 @@ fn convert_result(
         dense_grid_cells: r.stats.dense_grid_cells,
         dense_grid_build_time_us: {
             let clamped = r.stats.dense_grid_build_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
+        neighbor_generation_time_us: {
+            let clamped = r.stats.neighbor_generation_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
+        heap_operation_time_us: {
+            let clamped = r.stats.heap_operation_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
+        legality_check_time_us: {
+            let clamped = r.stats.legality_check_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
+        reconstruction_time_us: {
+            let clamped = r.stats.reconstruction_time_us.min(u64::MAX as u128);
             clamped as u64
         },
     })
@@ -2133,6 +2177,11 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             window_attempts: route.window_attempts,
             used_full_grid_fallback: route.used_full_grid_fallback,
             expanded_states: route.expanded_states,
+            generated_neighbors: route.generated_neighbors,
+            heap_pushes: route.heap_pushes,
+            heap_pops: route.heap_pops,
+            skipped_duplicate_heap_entries: route.skipped_duplicate_heap_entries,
+            obstacle_clearance_checks: route.obstacle_clearance_checks,
             window_rejects: route.window_rejects,
             footprint_rejects: route.footprint_rejects,
             dense_grid_build_failures: route.dense_grid_build_failures,
@@ -2143,6 +2192,10 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             primitive_footprint_rect_rejects: route.primitive_footprint_rect_rejects,
             dense_grid_cells: route.dense_grid_cells,
             dense_grid_build_time_us: u128::from(route.dense_grid_build_time_us),
+            neighbor_generation_time_us: u128::from(route.neighbor_generation_time_us),
+            heap_operation_time_us: u128::from(route.heap_operation_time_us),
+            legality_check_time_us: u128::from(route.legality_check_time_us),
+            reconstruction_time_us: u128::from(route.reconstruction_time_us),
         },
     }
 }
@@ -2164,6 +2217,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
@@ -2185,6 +2239,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let route = PyRouteResult {
@@ -2200,6 +2255,11 @@ mod tests {
             window_attempts: 0,
             used_full_grid_fallback: false,
             expanded_states: 0,
+            generated_neighbors: 0,
+            heap_pushes: 0,
+            heap_pops: 0,
+            skipped_duplicate_heap_entries: 0,
+            obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
@@ -2210,6 +2270,10 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            neighbor_generation_time_us: 0,
+            heap_operation_time_us: 0,
+            legality_check_time_us: 0,
+            reconstruction_time_us: 0,
         };
         let err = router
             .realize_route_polygon_with_analytic_meander(
@@ -2236,6 +2300,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let route = PyRouteResult {
@@ -2251,6 +2316,11 @@ mod tests {
             window_attempts: 0,
             used_full_grid_fallback: false,
             expanded_states: 0,
+            generated_neighbors: 0,
+            heap_pushes: 0,
+            heap_pops: 0,
+            skipped_duplicate_heap_entries: 0,
+            obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
@@ -2261,6 +2331,10 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            neighbor_generation_time_us: 0,
+            heap_operation_time_us: 0,
+            legality_check_time_us: 0,
+            reconstruction_time_us: 0,
         };
 
         let ok_poly = router
@@ -2304,6 +2378,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 12, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let route = PyRouteResult {
@@ -2319,6 +2394,11 @@ mod tests {
             window_attempts: 0,
             used_full_grid_fallback: false,
             expanded_states: 0,
+            generated_neighbors: 0,
+            heap_pushes: 0,
+            heap_pops: 0,
+            skipped_duplicate_heap_entries: 0,
+            obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
@@ -2329,6 +2409,10 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            neighbor_generation_time_us: 0,
+            heap_operation_time_us: 0,
+            legality_check_time_us: 0,
+            reconstruction_time_us: 0,
         };
         Python::with_gil(|py| {
             let obj = router
@@ -2363,6 +2447,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -2379,6 +2464,11 @@ mod tests {
             window_attempts: 0,
             used_full_grid_fallback: false,
             expanded_states: 0,
+            generated_neighbors: 0,
+            heap_pushes: 0,
+            heap_pops: 0,
+            skipped_duplicate_heap_entries: 0,
+            obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
@@ -2389,6 +2479,10 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            neighbor_generation_time_us: 0,
+            heap_operation_time_us: 0,
+            legality_check_time_us: 0,
+            reconstruction_time_us: 0,
         };
         let err = router
             .realize_route_polygon_with_checked_analytic_meander_box(
@@ -2417,6 +2511,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -2441,6 +2536,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 12, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let route = PyRouteResult {
@@ -2456,6 +2552,11 @@ mod tests {
             window_attempts: 0,
             used_full_grid_fallback: false,
             expanded_states: 0,
+            generated_neighbors: 0,
+            heap_pushes: 0,
+            heap_pops: 0,
+            skipped_duplicate_heap_entries: 0,
+            obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
@@ -2466,6 +2567,10 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            neighbor_generation_time_us: 0,
+            heap_operation_time_us: 0,
+            legality_check_time_us: 0,
+            reconstruction_time_us: 0,
         };
         Python::with_gil(|py| {
             let obj = router
@@ -2509,6 +2614,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let route = PyRouteResult {
@@ -2524,6 +2630,11 @@ mod tests {
             window_attempts: 0,
             used_full_grid_fallback: false,
             expanded_states: 0,
+            generated_neighbors: 0,
+            heap_pushes: 0,
+            heap_pops: 0,
+            skipped_duplicate_heap_entries: 0,
+            obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
@@ -2534,6 +2645,10 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            neighbor_generation_time_us: 0,
+            heap_operation_time_us: 0,
+            legality_check_time_us: 0,
+            reconstruction_time_us: 0,
         };
         Python::with_gil(|py| {
             let obj = router
@@ -2566,6 +2681,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let route = PyRouteResult {
@@ -2581,6 +2697,11 @@ mod tests {
             window_attempts: 0,
             used_full_grid_fallback: false,
             expanded_states: 0,
+            generated_neighbors: 0,
+            heap_pushes: 0,
+            heap_pops: 0,
+            skipped_duplicate_heap_entries: 0,
+            obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
@@ -2591,6 +2712,10 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            neighbor_generation_time_us: 0,
+            heap_operation_time_us: 0,
+            legality_check_time_us: 0,
+            reconstruction_time_us: 0,
         };
         Python::with_gil(|py| {
             let err = router
@@ -2622,6 +2747,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let eff = router.effective_bend_radius_um(None).unwrap();
@@ -2636,6 +2762,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let eff = router.effective_bend_radius_um(Some(1.1)).unwrap();
@@ -2651,6 +2778,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         Python::with_gil(|py| {
@@ -2682,6 +2810,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let route = PyRouteResult {
@@ -2697,6 +2826,11 @@ mod tests {
             window_attempts: 0,
             used_full_grid_fallback: false,
             expanded_states: 0,
+            generated_neighbors: 0,
+            heap_pushes: 0,
+            heap_pops: 0,
+            skipped_duplicate_heap_entries: 0,
+            obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
@@ -2707,6 +2841,10 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            neighbor_generation_time_us: 0,
+            heap_operation_time_us: 0,
+            legality_check_time_us: 0,
+            reconstruction_time_us: 0,
         };
         Python::with_gil(|py| {
             let none_obj = router
@@ -2785,6 +2923,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let route = PyRouteResult {
@@ -2800,6 +2939,11 @@ mod tests {
             window_attempts: 0,
             used_full_grid_fallback: false,
             expanded_states: 0,
+            generated_neighbors: 0,
+            heap_pushes: 0,
+            heap_pops: 0,
+            skipped_duplicate_heap_entries: 0,
+            obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
             dense_grid_build_failures: 0,
@@ -2810,6 +2954,10 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            neighbor_generation_time_us: 0,
+            heap_operation_time_us: 0,
+            legality_check_time_us: 0,
+            reconstruction_time_us: 0,
         };
         Python::with_gil(|py| {
             let auto_obj = router
@@ -2869,6 +3017,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 26, 26, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         Python::with_gil(|py| {
@@ -2924,6 +3073,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 26, 26, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let err = Python::with_gil(|py| {
@@ -2962,6 +3112,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 26, 26, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
+                false,
             ),
         );
         let reserved_cells: Vec<(i32, i32)> = Python::with_gil(|py| {

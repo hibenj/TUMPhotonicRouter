@@ -1342,6 +1342,9 @@ def route_nets_rust(
             )
             has_route_stats = (
                 bucket.expanded_states
+                or bucket.generated_neighbors
+                or bucket.heap_pushes
+                or bucket.heap_pops
                 or bucket.window_attempts
                 or bucket.footprint_checks
                 or bucket.dense_grid_build_time_us
@@ -1351,12 +1354,21 @@ def route_nets_rust(
             if has_route_stats:
                 line += (
                     f", expanded={bucket.expanded_states}, "
+                    f"generated={bucket.generated_neighbors}, "
+                    f"heap_pushes={bucket.heap_pushes}, "
+                    f"heap_pops={bucket.heap_pops}, "
+                    f"duplicate_skips={bucket.skipped_duplicate_heap_entries}, "
                     f"windows={bucket.window_attempts}, "
                     f"max_window={bucket.max_window_area_cells}, "
+                    f"legality_checks={bucket.obstacle_clearance_checks}, "
                     f"footprint_checks={bucket.footprint_checks}, "
                     f"rect_checks={bucket.footprint_rect_checks}, "
                     f"dense_cells={bucket.dense_grid_cells}, "
                     f"dense_build={bucket.dense_grid_build_time_us / 1_000_000.0:.4f}s, "
+                    f"neighbor_time={bucket.neighbor_generation_time_us / 1_000_000.0:.4f}s, "
+                    f"heap_time={bucket.heap_operation_time_us / 1_000_000.0:.4f}s, "
+                    f"legality_time={bucket.legality_check_time_us / 1_000_000.0:.4f}s, "
+                    f"reconstruction_time={bucket.reconstruction_time_us / 1_000_000.0:.4f}s, "
                     f"full_grid_fallbacks={bucket.full_grid_fallbacks}"
                 )
             print(line)

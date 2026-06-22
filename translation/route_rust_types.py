@@ -87,6 +87,11 @@ class RouteTimingBucket:
     failures: int = 0
     elapsed_s: float = 0.0
     expanded_states: int = 0
+    generated_neighbors: int = 0
+    heap_pushes: int = 0
+    heap_pops: int = 0
+    skipped_duplicate_heap_entries: int = 0
+    obstacle_clearance_checks: int = 0
     window_attempts: int = 0
     window_rejects: int = 0
     footprint_rejects: int = 0
@@ -97,6 +102,10 @@ class RouteTimingBucket:
     dense_grid_build_failures: int = 0
     dense_grid_cells: int = 0
     dense_grid_build_time_us: int = 0
+    neighbor_generation_time_us: int = 0
+    heap_operation_time_us: int = 0
+    legality_check_time_us: int = 0
+    reconstruction_time_us: int = 0
     max_window_area_cells: int = 0
     full_grid_fallbacks: int = 0
 
@@ -115,6 +124,17 @@ class RouteTimingBucket:
         if failed:
             return
         self.expanded_states += _get_route_int_stat(route_obj, "expanded_states")
+        self.generated_neighbors += _get_route_int_stat(route_obj, "generated_neighbors")
+        self.heap_pushes += _get_route_int_stat(route_obj, "heap_pushes")
+        self.heap_pops += _get_route_int_stat(route_obj, "heap_pops")
+        self.skipped_duplicate_heap_entries += _get_route_int_stat(
+            route_obj,
+            "skipped_duplicate_heap_entries",
+        )
+        self.obstacle_clearance_checks += _get_route_int_stat(
+            route_obj,
+            "obstacle_clearance_checks",
+        )
         self.window_attempts += _get_route_int_stat(route_obj, "window_attempts")
         self.window_rejects += _get_route_int_stat(route_obj, "window_rejects")
         self.footprint_rejects += _get_route_int_stat(route_obj, "footprint_rejects")
@@ -139,6 +159,22 @@ class RouteTimingBucket:
         self.dense_grid_build_time_us += _get_route_int_stat(
             route_obj,
             "dense_grid_build_time_us",
+        )
+        self.neighbor_generation_time_us += _get_route_int_stat(
+            route_obj,
+            "neighbor_generation_time_us",
+        )
+        self.heap_operation_time_us += _get_route_int_stat(
+            route_obj,
+            "heap_operation_time_us",
+        )
+        self.legality_check_time_us += _get_route_int_stat(
+            route_obj,
+            "legality_check_time_us",
+        )
+        self.reconstruction_time_us += _get_route_int_stat(
+            route_obj,
+            "reconstruction_time_us",
         )
         self.max_window_area_cells = max(
             self.max_window_area_cells,
