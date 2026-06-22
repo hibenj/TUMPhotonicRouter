@@ -65,6 +65,14 @@ tries long straight transitions before short straight transitions, and
 heuristic. These modes should preserve route success and route cost; benchmark
 them before considering any default change.
 
+Pass 8F result: keep `library` primitive ordering as the default. On
+`mmi_heater_8x4_ripup_reroute`, all three orderings produced identical search
+counters and successful routing, but `library` was fastest in the release-build
+benchmark: about 0.79 s A* time versus about 0.81 s for
+`long_straight_first` and about 0.84 s for `target_biased`. Synthetic A*
+profiles showed the same no-expansion-change pattern, with alternative ordering
+overhead making both experiments slower.
+
 The default heuristic mode is `heading_aware`, which adds a conservative
 minimum-bend lower bound to the distance heuristic. Use
 `--heuristic-mode distance` for baseline comparisons or regression checks.
