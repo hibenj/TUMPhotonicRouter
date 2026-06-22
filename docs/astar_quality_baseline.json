@@ -1,0 +1,131 @@
+{
+  "length_tolerance_um": 0.001,
+  "scenarios": {
+    "straight_simple": {
+      "route_length_um": 130.0,
+      "target": [140, 24, 0],
+      "reached_target": [140, 24, 0],
+      "target_state_ok": true
+    },
+    "straight_astar": {
+      "route_length_um": 130.0,
+      "target": [140, 24, 0],
+      "reached_target": [140, 24, 0],
+      "target_state_ok": true
+    },
+    "wall_gap_astar": {
+      "route_length_um": 182.0,
+      "target": [160, 20, 0],
+      "reached_target": [160, 20, 2],
+      "target_state_ok": false
+    },
+    "slalom_astar": {
+      "route_length_um": 217.0,
+      "target": [165, 36, 0],
+      "reached_target": [165, 36, 6],
+      "target_state_ok": false
+    },
+    "full_grid_fallback": {
+      "route_length_um": 283.0,
+      "target": [205, 102, 0],
+      "reached_target": [205, 102, 6],
+      "target_state_ok": false
+    },
+    "object_ports_n_n": {
+      "route_length_um": 52.0,
+      "target": [84, 52, 6],
+      "reached_target": [84, 52, 6],
+      "target_state_ok": true
+    },
+    "object_ports_n_e": {
+      "route_length_um": 78.0,
+      "target": [94, 40, 4],
+      "reached_target": [94, 40, 4],
+      "target_state_ok": true
+    },
+    "object_ports_n_s": {
+      "route_length_um": 80.0,
+      "target": [84, 28, 2],
+      "reached_target": [84, 28, 2],
+      "target_state_ok": true
+    },
+    "object_ports_n_w": {
+      "route_length_um": 54.0,
+      "target": [74, 40, 0],
+      "reached_target": [74, 40, 0],
+      "target_state_ok": true
+    },
+    "object_ports_e_n": {
+      "route_length_um": 54.0,
+      "target": [84, 52, 6],
+      "reached_target": [84, 52, 6],
+      "target_state_ok": true
+    },
+    "object_ports_e_e": {
+      "route_length_um": 74.0,
+      "target": [94, 40, 4],
+      "reached_target": [94, 40, 4],
+      "target_state_ok": true
+    },
+    "object_ports_e_s": {
+      "route_length_um": 54.0,
+      "target": [84, 28, 2],
+      "reached_target": [84, 28, 2],
+      "target_state_ok": true
+    },
+    "object_ports_e_w": {
+      "route_length_um": 28.0,
+      "target": [74, 40, 0],
+      "reached_target": [74, 40, 0],
+      "target_state_ok": true
+    },
+    "object_ports_s_n": {
+      "route_length_um": 80.0,
+      "target": [84, 52, 6],
+      "reached_target": [84, 52, 6],
+      "target_state_ok": true
+    },
+    "object_ports_s_e": {
+      "route_length_um": 78.0,
+      "target": [94, 40, 4],
+      "reached_target": [94, 40, 4],
+      "target_state_ok": true
+    },
+    "object_ports_s_s": {
+      "route_length_um": 52.0,
+      "target": [84, 28, 2],
+      "reached_target": [84, 28, 2],
+      "target_state_ok": true
+    },
+    "object_ports_s_w": {
+      "route_length_um": 54.0,
+      "target": [74, 40, 0],
+      "reached_target": [74, 40, 0],
+      "target_state_ok": true
+    },
+    "object_ports_w_n": {
+      "route_length_um": 78.0,
+      "target": [84, 52, 6],
+      "reached_target": [84, 52, 6],
+      "target_state_ok": true
+    },
+    "object_ports_w_e": {
+      "route_length_um": 98.0,
+      "target": [94, 40, 4],
+      "reached_target": [94, 40, 4],
+      "target_state_ok": true
+    },
+    "object_ports_w_s": {
+      "route_length_um": 78.0,
+      "target": [84, 28, 2],
+      "reached_target": [84, 28, 2],
+      "target_state_ok": true
+    },
+    "object_ports_w_w": {
+      "route_length_um": 74.0,
+      "target": [74, 40, 0],
+      "reached_target": [74, 40, 0],
+      "target_state_ok": true
+    }
+  }
+}

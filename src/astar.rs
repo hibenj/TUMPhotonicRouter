@@ -83,7 +83,7 @@ impl Default for AStarConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RoutingBounds {
     min_x: i32,
     max_x: i32,
@@ -839,8 +839,13 @@ pub fn route_single_net_with_config(
         );
     }
 
+    let mut last_bounds: Option<RoutingBounds> = None;
     for expansion_idx in 0..=config.routing_window_max_expansions {
         let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
+        if last_bounds == Some(bounds) {
+            continue;
+        }
+        last_bounds = Some(bounds);
         stats.window_attempts += 1;
         stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(bounds));
 
@@ -1260,6 +1265,19 @@ fn route_single_net_with_bounds(
                 stats.window_rejects += 1;
                 continue;
             }
+            let Some(next_idx) = storage.state_to_idx(next_state) else {
+                continue;
+            };
+            if storage.closed[next_idx] {
+                continue;
+            }
+
+            let base_step_cost = primitive.length_um + config.bend_weight * primitive.bend_cost;
+            let tentative_g_lower_bound = current_g + base_step_cost;
+            if tentative_g_lower_bound >= storage.g_costs[next_idx] {
+                continue;
+            }
+
             stats.primitive_footprint_checks += 1;
             // TODO: bounds may need primitive-footprint margin to avoid rejecting valid routes near window edges.
             if !dense_grid.primitive_footprint_free_with_profile(
@@ -1275,12 +1293,6 @@ fn route_single_net_with_bounds(
                 }
                 continue;
             }
-            let Some(next_idx) = storage.state_to_idx(next_state) else {
-                continue;
-            };
-            if storage.closed[next_idx] {
-                continue;
-            }
 
             let history_cost = if config.history_weight > 0.0 {
                 dense_grid.primitive_footprint_history_with_profile(
@@ -1293,8 +1305,7 @@ fn route_single_net_with_bounds(
             } else {
                 0.0
             };
-            let step_cost =
-                primitive.length_um + config.bend_weight * primitive.bend_cost + history_cost;
+            let step_cost = base_step_cost + history_cost;
             let tentative_g = current_g + step_cost;
             if tentative_g >= storage.g_costs[next_idx] {
                 continue;
@@ -2182,6 +2193,32 @@ mod tests {
         .expect("full-grid fallback should find a detour");
         assert_eq!(result.states.last().copied(), Some(State::new(7, 1, 0)));
         assert!(result.stats.used_full_grid_fallback);
+    }
+
+    #[test]
+    fn duplicate_routing_window_expansions_are_skipped() {
+        let mut map = ObstacleMap::new(12, 8);
+        map.add_static_cell(3, 1);
+        map.add_static_cell(4, 1);
+        map.add_static_cell(5, 1);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(7, 1, 0),
+            None,
+            &AStarConfig {
+                routing_window_min_margin_cells: 0,
+                routing_window_scale: 0.0,
+                routing_window_max_expansions: 3,
+                routing_window_fallback_full_grid: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("full-grid fallback should find a detour");
+        assert!(result.stats.used_full_grid_fallback);
+        assert_eq!(result.stats.window_attempts, 2);
     }
 
     #[test]

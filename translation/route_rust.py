@@ -6,8 +6,7 @@ import importlib
 import math
 import sys
 import time
-from collections import Counter
-from dataclasses import dataclass, field, is_dataclass, replace
+from dataclasses import is_dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, cast
 
@@ -21,20 +20,30 @@ from gdsfactory.schematic import Schematic
 from gdsfactory.typings import Port
 
 from translation.route_gds import get_port_from_instance
-from photonic_router.path_length_graph import (
-    MissingLengthRequirement,
-    PathLengthAnalysisResult,
-    NodeTiming,
-    PortRef,
-    RoutedEdgeKey,
-    SchematicLike,
-    annotate_edge_lengths,
-    build_graph_from_schematic,
-    list_edges_requiring_meander,
-)
 from photonic_router.routing_layers import (
     find_component_port_access_rule,
     get_routing_obstacle_layers,
+)
+from translation.route_rust_analysis import (
+    analysis_to_info_dict,
+    analyze_path_length_matching,
+    requirement_to_dict,
+)
+from translation import route_rust_meanders as _meander_impl
+from translation.route_rust_realization import realize_routed_net_records
+from translation.route_rust_records import (
+    RouteBookkeeping,
+    build_route_debug_artifacts,
+)
+from translation.route_rust_types import (
+    MeanderInsertionConfig,
+    RipupRerouteConfig,
+    RouteJob,
+    RouteRustPipelineResult,
+    RouteTimingBucket,
+    RoutedNetRecord,
+    RustRouteDebugArtifacts,
+    _as_float,
 )
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
@@ -42,22 +51,6 @@ GridSpec = _sob.GridSpec
 StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
 build_static_obstacle_map = _sob.build_static_obstacle_map
 _load_rust_backend = _sob._load_rust_backend
-
-MEANDER_DEPTH_CANDIDATES_UM = (
-    40.0,
-    30.0,
-    24.0,
-    20.0,
-    16.0,
-    12.0,
-    10.0,
-    8.0,
-    6.0,
-    4.0,
-    3.0,
-    2.0,
-)
-EXACT_MEANDER_EPS_UM = 1.0e-6
 
 
 def _format_route_indices(indices: set[int]) -> str:
@@ -78,683 +71,14 @@ def _format_route_indices(indices: set[int]) -> str:
     return ",".join(ranges)
 
 
-@dataclass(frozen=True)
-class RustRouteDebugArtifacts:
-    obstacle_svg: Path | None
-    route_svgs: list[Path]
-    routed_edge_lengths_um: dict[RoutedEdgeKey, float]
-    routed_net_records: list["RoutedNetRecord"] = field(default_factory=list)
-    static_blocked_cells: tuple[tuple[int, int], ...] = ()
-    static_obstacle_count: int = 0
-    realization_grid_spec: tuple[int, int, float, float, float] | None = None
-    realization_allow_45_degree_turns: bool = True
-    realization_bend_radius_cells: int = 4
+def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
+    _meander_impl._load_rust_backend = _load_rust_backend
+    return _meander_impl.analyze_meander_insertion_for_requirements(*args, **kwargs)
 
 
-@dataclass(frozen=True)
-class RoutedNetRecord:
-    net_name: str
-    source: PortRef
-    target: PortRef
-    route_obj: object
-    total_length_um: float
-    meander_auto_plan: dict[str, object] | None = None
-    opened_cells: tuple[tuple[int, int], ...] = ()
-
-
-@dataclass(frozen=True)
-class RouteJob:
-    net_id: int
-    route_index: int
-    net_name: str
-    inst1: str
-    port1: str
-    inst2: str
-    port2: str
-    source_port: Port
-    target_port: Port
-
-
-@dataclass(frozen=True)
-class RipupRerouteConfig:
-    enabled: bool = True
-    max_rounds: int = 4
-    max_victims_per_failure: int = 8
-    history_weight: float = 2.0
-    history_increment: int = 1
-
-
-@dataclass
-class RouteTimingBucket:
-    calls: int = 0
-    failures: int = 0
-    elapsed_s: float = 0.0
-    expanded_states: int = 0
-    window_attempts: int = 0
-    window_rejects: int = 0
-    footprint_rejects: int = 0
-    footprint_checks: int = 0
-    footprint_cells_tested: int = 0
-    footprint_rect_checks: int = 0
-    footprint_rect_rejects: int = 0
-    dense_grid_build_failures: int = 0
-    dense_grid_cells: int = 0
-    dense_grid_build_time_us: int = 0
-    max_window_area_cells: int = 0
-    full_grid_fallbacks: int = 0
-
-    @property
-    def successes(self) -> int:
-        return self.calls - self.failures
-
-    def record_elapsed(self, elapsed_s: float, *, failed: bool = False) -> None:
-        self.calls += 1
-        if failed:
-            self.failures += 1
-        self.elapsed_s += elapsed_s
-
-    def record_route(self, elapsed_s: float, route_obj: object, *, failed: bool = False) -> None:
-        self.record_elapsed(elapsed_s, failed=failed)
-        if failed:
-            return
-        self.expanded_states += _get_route_int_stat(route_obj, "expanded_states")
-        self.window_attempts += _get_route_int_stat(route_obj, "window_attempts")
-        self.window_rejects += _get_route_int_stat(route_obj, "window_rejects")
-        self.footprint_rejects += _get_route_int_stat(route_obj, "footprint_rejects")
-        self.footprint_checks += _get_route_int_stat(route_obj, "primitive_footprint_checks")
-        self.footprint_cells_tested += _get_route_int_stat(
-            route_obj,
-            "primitive_footprint_cells_tested",
-        )
-        self.footprint_rect_checks += _get_route_int_stat(
-            route_obj,
-            "primitive_footprint_rect_checks",
-        )
-        self.footprint_rect_rejects += _get_route_int_stat(
-            route_obj,
-            "primitive_footprint_rect_rejects",
-        )
-        self.dense_grid_build_failures += _get_route_int_stat(
-            route_obj,
-            "dense_grid_build_failures",
-        )
-        self.dense_grid_cells += _get_route_int_stat(route_obj, "dense_grid_cells")
-        self.dense_grid_build_time_us += _get_route_int_stat(
-            route_obj,
-            "dense_grid_build_time_us",
-        )
-        self.max_window_area_cells = max(
-            self.max_window_area_cells,
-            _get_route_int_stat(route_obj, "max_window_area_cells"),
-        )
-        if bool(getattr(route_obj, "used_full_grid_fallback", False)):
-            self.full_grid_fallbacks += 1
-
-
-@dataclass(frozen=True)
-class MeanderInsertionConfig:
-    enabled: bool = True
-    min_candidate_straight_length_um: float = 2.0
-    max_extra_length_per_region_um: float = 200.0
-    conservative_legal_check: bool = True
-    max_meander_height_um: float = 20.0
-    auto_meander_endpoint_inset_um: float | None = None
-
-
-@dataclass(frozen=True)
-class MeanderInsertionResult:
-    edge: RoutedEdgeKey
-    requested_extra_length_um: float
-    inserted_extra_length_um: float
-    status: str
-    reason: str
-
-
-@dataclass(frozen=True)
-class MeanderInsertionReport:
-    results: list[MeanderInsertionResult]
-    total_requested_extra_length_um: float
-    total_inserted_extra_length_um: float
-    unmatched_length_um: float
-
-
-@dataclass(frozen=True)
-class RouteRustPipelineResult:
-    routed_layout: Component
-    debug_artifacts: RustRouteDebugArtifacts
-    path_length_analysis_info: dict[str, object] | None = None
-    meander_requirements_info: list[dict[str, object]] | None = None
-    meander_insertion_report_info: dict[str, object] | None = None
-
-
-def routed_net_records_to_edge_lengths(
-    records: list[RoutedNetRecord],
-) -> dict[RoutedEdgeKey, float]:
-    """Convert routed net records into edge-length annotations."""
-    return {
-        RoutedEdgeKey(
-            net_name=record.net_name,
-            source=record.source,
-            target=record.target,
-        ): float(record.total_length_um)
-        for record in records
-    }
-
-
-def analyze_path_length_matching(
-    schematic: SchematicLike,
-    *,
-    routed_net_records: list[RoutedNetRecord],
-    node_types: dict[str, str] | None = None,
-    internal_delays_um: dict[str, float] | None = None,
-) -> tuple[PathLengthAnalysisResult, list]:
-    """Phase M1: compute per-edge missing lengths before polygon realization."""
-    graph = build_graph_from_schematic(
-        schematic,
-        node_types=node_types,
-        internal_delays_um=internal_delays_um,
-    )
-    annotate_edge_lengths(graph, routed_net_records_to_edge_lengths(routed_net_records))
-    analysis = graph.analyze_missing_lengths()
-    return analysis, list(list_edges_requiring_meander(analysis))
-
-
-def edge_key_to_dict(edge_key: RoutedEdgeKey) -> dict[str, object]:
-    return {
-        "net_name": edge_key.net_name,
-        "source": {"instance": edge_key.source.instance, "port": edge_key.source.port},
-        "target": {"instance": edge_key.target.instance, "port": edge_key.target.port},
-    }
-
-
-def requirement_to_dict(req: MissingLengthRequirement) -> dict[str, object]:
-    return {
-        "edge": edge_key_to_dict(req.edge_key),
-        "missing_length_um": float(req.missing_length_um),
-    }
-
-
-def node_timing_to_dict(timing: NodeTiming) -> dict[str, object]:
-    return {
-        "node_name": timing.node_name,
-        "node_type": timing.node_type.value,
-        "internal_delay_um": float(timing.internal_delay_um),
-        "input_arrival_um": float(timing.input_arrival_um),
-        "output_arrival_um": float(timing.output_arrival_um),
-        "incoming_edges": [
-            {
-                "edge": edge_key_to_dict(edge_timing.edge_key),
-                "routed_length_um": float(edge_timing.routed_length_um),
-                "edge_arrival_um": float(edge_timing.edge_arrival_um),
-                "missing_length_um": float(edge_timing.missing_length_um),
-            }
-            for edge_timing in timing.incoming_edges
-        ],
-    }
-
-
-def analysis_to_info_dict(analysis: PathLengthAnalysisResult) -> dict[str, object]:
-    return {
-        "topological_order": list(analysis.topological_order),
-        "node_arrival_um": {
-            str(node): float(arrival)
-            for node, arrival in analysis.node_arrival_um.items()
-        },
-        "node_arrival_input_um": {
-            str(node): float(arrival)
-            for node, arrival in analysis.node_arrival_input_um.items()
-        },
-        "node_arrival_output_um": {
-            str(node): float(arrival)
-            for node, arrival in analysis.node_arrival_output_um.items()
-        },
-        "node_timings_um": {
-            str(node): node_timing_to_dict(timing)
-            for node, timing in analysis.node_timings.items()
-        },
-        "edge_missing_lengths_um": [
-            {
-                "edge": edge_key_to_dict(edge_key),
-                "missing_length_um": float(missing),
-            }
-            for edge_key, missing in analysis.edge_missing_lengths_um.items()
-        ],
-        "requirements": [requirement_to_dict(req) for req in analysis.requirements],
-    }
-
-
-def _record_edge_key(record: RoutedNetRecord) -> RoutedEdgeKey:
-    return RoutedEdgeKey(
-        net_name=record.net_name,
-        source=record.source,
-        target=record.target,
-    )
-
-
-def _state_xy(state: object) -> tuple[int, int]:
-    if hasattr(state, "x") and hasattr(state, "y"):
-        return int(getattr(state, "x")), int(getattr(state, "y"))
-    if isinstance(state, (tuple, list)) and len(state) >= 2:
-        return int(state[0]), int(state[1])
-    raise TypeError(f"Unsupported state representation: {type(state)}")
-
-
-def _grid_to_um(
-    x: int,
-    y: int,
-    realization_grid_spec: tuple[int, int, float, float, float],
-) -> tuple[float, float]:
-    _, _, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
-    return (
-        float(origin_x_um) + (float(x) + 0.5) * float(grid_size_um),
-        float(origin_y_um) + (float(y) + 0.5) * float(grid_size_um),
-    )
-
-
-def _as_float(value: object, default: float = 0.0) -> float:
-    try:
-        if isinstance(value, (int, float, str, bytes, bytearray)):
-            return float(value)
-        return default
-    except (TypeError, ValueError):
-        return default
-
-
-def _as_int(value: object, default: int = 0) -> int:
-    try:
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, (int, float, str, bytes, bytearray)):
-            return int(value)
-        return default
-    except (TypeError, ValueError):
-        return default
-
-
-def _get_route_int_stat(route_obj: object, attr: str) -> int:
-    return max(0, _as_int(getattr(route_obj, attr, 0), 0))
-
-
-def _minimum_four_bend_extra_length_um(
-    *,
-    grid_size_um: float,
-    bend_radius_cells: int,
-) -> float:
-    """Minimum practical matching request: one bump needs four 90-degree bends."""
-    bend_radius_um = max(0.0, float(grid_size_um) * float(bend_radius_cells))
-    return 2.0 * math.pi * bend_radius_um
-
-
-def _route_geometry_max_meander_bumps(
-    *,
-    route_obj: object,
-    grid_size_um: float,
-    bend_radius_um: float,
-) -> int:
-    """Derive the odd internal bump cap from visible lobe width.
-
-    One visible lobe consumes four 90-degree bend radii along the selected
-    straight run. Rust's comb planner reports odd internal bump counts where
-    visible_lobes = (bumps + 1) / 2.
-    """
-    radius = float(bend_radius_um)
-    grid_size = float(grid_size_um)
-    if (
-        not math.isfinite(radius)
-        or radius <= 0.0
-        or not math.isfinite(grid_size)
-        or grid_size <= 0.0
-    ):
-        return 1
-
-    waypoints = getattr(route_obj, "compressed_waypoints", None) or []
-    longest_straight_um = 0.0
-    for p0, p1 in zip(waypoints, waypoints[1:]):
-        if (
-            not isinstance(p0, (tuple, list))
-            or not isinstance(p1, (tuple, list))
-            or len(p0) != 2
-            or len(p1) != 2
-        ):
-            continue
-        x0 = _as_int(p0[0], 0)
-        y0 = _as_int(p0[1], 0)
-        x1 = _as_int(p1[0], 0)
-        y1 = _as_int(p1[1], 0)
-        if x0 == x1:
-            longest_straight_um = max(longest_straight_um, abs(y1 - y0) * grid_size)
-        elif y0 == y1:
-            longest_straight_um = max(longest_straight_um, abs(x1 - x0) * grid_size)
-
-    visible_lobes = int(math.floor(longest_straight_um / (4.0 * radius)))
-    return max(1, 2 * visible_lobes - 1)
-
-
-def analyze_meander_insertion_for_requirements(
-    routed_net_records: list[RoutedNetRecord],
-    requirements: list[MissingLengthRequirement],
-    *,
-    config: MeanderInsertionConfig,
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool,
-    bend_radius_cells: int,
-    static_blocked_cells: list[tuple[int, int]] | tuple[tuple[int, int], ...] | None = None,
-) -> tuple[list[RoutedNetRecord], dict[str, object]]:
-    """Plan meander insertion using auto analytic multi-bump planning."""
-    rust_backend = _load_rust_backend()
-    if rust_backend is None:
-        raise RuntimeError("Rust router backend unavailable for meander analysis.")
-    width, height, grid_size_um_cfg, origin_x_um, origin_y_um = realization_grid_spec
-    grid_spec = rust_backend.GridSpec(
-        int(width),
-        int(height),
-        float(grid_size_um_cfg),
-        float(origin_x_um),
-        float(origin_y_um),
-    )
-    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
-        grid_size_um=float(grid_size_um_cfg),
-        bend_radius_cells=int(bend_radius_cells),
-        allow_45_degree_turns=allow_45_degree_turns,
-    )
-    astar_cfg = rust_backend.AStarConfig(max_iterations=1)
-    router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
-    base_static_cells: set[tuple[int, int]] = set(static_blocked_cells or [])
-
-    def _record_route_cells(record: RoutedNetRecord) -> set[tuple[int, int]]:
-        cells = getattr(record.route_obj, "cells", None) or []
-        return {(int(x), int(y)) for x, y in cells}
-
-    def _grid_rect_cells(grid_rect: object) -> set[tuple[int, int]]:
-        if (
-            not isinstance(grid_rect, (tuple, list))
-            or len(grid_rect) != 4
-        ):
-            return set()
-        min_x = _as_int(grid_rect[0], 0)
-        max_x = _as_int(grid_rect[1], -1)
-        min_y = _as_int(grid_rect[2], 0)
-        max_y = _as_int(grid_rect[3], -1)
-        if max_x < min_x or max_y < min_y:
-            return set()
-        return {
-            (x, y)
-            for x in range(min_x, max_x + 1)
-            for y in range(min_y, max_y + 1)
-        }
-
-    reserved_meander_cells: set[tuple[int, int]] = set()
-
-    by_edge = {_record_edge_key(r): r for r in routed_net_records}
-    updated = dict(by_edge)
-    route_cells_by_edge = {
-        edge: _record_route_cells(record)
-        for edge, record in by_edge.items()
-    }
-    route_cell_refcounts: Counter[tuple[int, int]] = Counter()
-    for cells in route_cells_by_edge.values():
-        route_cell_refcounts.update(cells)
-    base_static_and_route_cells = set(base_static_cells)
-    base_static_and_route_cells.update(route_cell_refcounts.keys())
-    router.set_static_cells(list(base_static_and_route_cells))
-    results: list[dict[str, object]] = []
-    total_requested = 0.0
-    total_inserted = 0.0
-    total_disregarded = 0.0
-    planner_calls = 0
-    min_insertable_extra_um = _minimum_four_bend_extra_length_um(
-        grid_size_um=float(grid_size_um_cfg),
-        bend_radius_cells=int(bend_radius_cells),
-    )
-
-    for req in requirements:
-        requested = float(req.missing_length_um)
-        edge_key = req.edge_key
-        record = by_edge.get(edge_key)
-        entry = {
-            "edge": edge_key_to_dict(edge_key),
-            "requested_extra_length_um": requested,
-            "status": "no_candidate",
-            "reason": "no_matching_routed_record",
-            "planning_mode": "fill_box_multi_bump",
-            "inserted_extra_length_um": 0.0,
-            "unmatched_length_um": requested,
-            "effective_bend_radius_um": None,
-            "primitive_bend_radius_um": None,
-            "selected_box": None,
-            "selected_grid_rect": None,
-            "bumps": 0,
-            "side": None,
-            "using_legacy_meander_path": False,
-            "minimum_insertable_extra_length_um": min_insertable_extra_um,
-        }
-        if requested < min_insertable_extra_um:
-            total_disregarded += requested
-            entry["status"] = "below_minimum_bump"
-            entry["reason"] = (
-                "requested extra length is below the four-90-degree-bend "
-                f"minimum ({min_insertable_extra_um:.6g} um)"
-            )
-            entry["unmatched_length_um"] = 0.0
-            results.append(entry)
-            continue
-        total_requested += requested
-        if record is None:
-            results.append(entry)
-            continue
-        current_route_open_cells = {
-            cell
-            for cell in route_cells_by_edge.get(edge_key, set())
-            if route_cell_refcounts.get(cell, 0) == 1
-            and cell not in base_static_cells
-            and cell not in reserved_meander_cells
-        }
-
-        # Sweep box depth for legality, but keep requested length fixed.
-        min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
-        min_seg_um = max(0.5, float(config.min_candidate_straight_length_um))
-        max_height_um = max(0.0, float(config.max_meander_height_um))
-        box_depths_um = [
-            depth
-            for depth in MEANDER_DEPTH_CANDIDATES_UM
-            if depth <= max_height_um + 1.0e-9
-        ]
-        if not box_depths_um:
-            box_depths_um = [max_height_um]
-        bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
-        endpoint_inset_um = (
-            max(2.0 * bend_radius_um, min_seg_um)
-            if config.auto_meander_endpoint_inset_um is None
-            else max(0.0, float(config.auto_meander_endpoint_inset_um))
-        )
-        max_bumps = _route_geometry_max_meander_bumps(
-            route_obj=record.route_obj,
-            grid_size_um=float(grid_size_um_cfg),
-            bend_radius_um=bend_radius_um,
-        )
-        entry["max_bumps"] = max_bumps
-        best_rr: dict[str, object] | None = None
-        last_exc: Exception | None = None
-        try:
-            planner_calls += 1
-            best_rr = cast(
-                dict[str, object],
-                router.plan_auto_analytic_meander_for_route_depth_sweep(
-                    record.route_obj,
-                    requested_extra_length_um=float(requested),
-                    box_depths_um=box_depths_um,
-                    min_bend_radius_um=None,
-                    min_straight_um=min_straight_um,
-                    max_bumps=max_bumps,
-                    max_meander_height_um=max_height_um,
-                    min_segment_length_um=min_seg_um,
-                    endpoint_inset_um=endpoint_inset_um,
-                    clearance_radius_cells=0,
-                    side_policy="both",
-                    # Only open this route's own non-static cells while
-                    # planning its replacement. Port-access and fixed
-                    # component/heater cells remain blocked.
-                    opened_cells=sorted(current_route_open_cells),
-                    planning_mode="fill_box_multi_bump",
-                ),
-            )
-        except Exception as exc:
-            last_exc = exc
-
-        if best_rr is None:
-            entry["status"] = "no_candidate"
-            entry["reason"] = (
-                str(last_exc)
-                if last_exc is not None
-                else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
-            )
-            results.append(entry)
-            continue
-        rr = best_rr
-        inserted = _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
-        if abs(inserted - requested) > EXACT_MEANDER_EPS_UM:
-            entry["status"] = "no_candidate"
-            entry["reason"] = f"candidate residual {abs(inserted - requested):.6g} um exceeds hard limit {EXACT_MEANDER_EPS_UM} um"
-            results.append(entry)
-            continue
-        unmatched = max(0.0, requested - inserted)
-        entry["status"] = "planned"
-        entry["reason"] = ""
-        entry["inserted_extra_length_um"] = inserted
-        entry["unmatched_length_um"] = unmatched
-        entry["effective_bend_radius_um"] = rr.get("effective_bend_radius_um")
-        entry["primitive_bend_radius_um"] = rr.get("primitive_bend_radius_um")
-        entry["selected_box"] = rr.get("selected_box")
-        entry["selected_grid_rect"] = rr.get("selected_grid_rect")
-        entry["bumps"] = rr.get("bumps")
-        entry["side"] = rr.get("side")
-        entry["planning_mode"] = rr.get("planning_mode", "fill_box_multi_bump")
-        entry["candidate_runs"] = rr.get("candidate_runs")
-        entry["candidate_intervals"] = rr.get("candidate_intervals")
-        entry["rejected_box_blocked"] = rr.get("rejected_box_blocked")
-        entry["rejected_planning_failed"] = rr.get("rejected_planning_failed")
-        entry["rejected_exact_length_mismatch"] = rr.get("rejected_exact_length_mismatch")
-        entry["rejected_too_short"] = rr.get("rejected_too_short")
-        entry["selected_interval_length_um"] = rr.get("selected_interval_length_um")
-        entry["endpoint_inset_um"] = endpoint_inset_um
-        entry["requested_probe_length_um"] = requested
-        if unmatched > 1.0e-9:
-            entry["status"] = "planned_partial"
-        total_inserted += inserted
-        selected_grid_rect = rr.get("selected_grid_rect")
-        new_reserved_cells = _grid_rect_cells(selected_grid_rect)
-        if new_reserved_cells:
-            reserved_meander_cells.update(new_reserved_cells)
-            router.add_static_cells(list(new_reserved_cells))
-        updated[edge_key] = RoutedNetRecord(
-            net_name=record.net_name,
-            source=record.source,
-            target=record.target,
-            route_obj=record.route_obj,
-            total_length_um=record.total_length_um,
-            meander_auto_plan={
-                "requested_extra_length_um": requested,
-                "min_bend_radius_um": None,
-                "min_straight_um": min_straight_um,
-                "max_bumps": max_bumps,
-                "max_meander_height_um": max_height_um,
-                "box_depth_um": _as_float(rr.get("box_depth_um", 20.0), 20.0),
-                "min_segment_length_um": min_seg_um,
-                "endpoint_inset_um": endpoint_inset_um,
-                "clearance_radius_cells": 0,
-                "side_policy": "both",
-                "selected_side": rr.get("side"),
-                "selected_box": rr.get("selected_box"),
-                "selected_grid_rect": rr.get("selected_grid_rect"),
-                "selected_run_start_index": rr.get("selected_run_start_index"),
-                "selected_run_end_index": rr.get("selected_run_end_index"),
-                "selected_meander_centerline": rr.get("centerline"),
-                "planning_mode": "fill_box_multi_bump",
-            },
-            opened_cells=record.opened_cells,
-        )
-        results.append(entry)
-
-    total_unmatched = max(0.0, total_requested - total_inserted)
-    return (
-        [updated.get(_record_edge_key(r), r) for r in routed_net_records],
-        {
-            "results": results,
-            "total_requested_extra_length_um": float(total_requested),
-            "total_inserted_extra_length_um": float(total_inserted),
-            "total_disregarded_extra_length_um": float(total_disregarded),
-            "unmatched_length_um": float(total_unmatched),
-            "planner_calls": int(planner_calls),
-            "minimum_insertable_extra_length_um": float(min_insertable_extra_um),
-            "using_legacy_meander_path": False,
-        },
-    )
-
-
-def insert_meanders_for_requirements(
-    routed_net_records: list[RoutedNetRecord],
-    requirements: list[MissingLengthRequirement],
-    *,
-    config: MeanderInsertionConfig,
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool,
-    bend_radius_cells: int,
-) -> tuple[list[RoutedNetRecord], MeanderInsertionReport]:
-    """Compatibility API used by tests for M2 skeleton behavior."""
-    if not config.enabled:
-        return (
-            routed_net_records,
-            MeanderInsertionReport(
-                results=[],
-                total_requested_extra_length_um=0.0,
-                total_inserted_extra_length_um=0.0,
-                unmatched_length_um=0.0,
-            ),
-        )
-
-    updated, raw_report = analyze_meander_insertion_for_requirements(
-        routed_net_records,
-        requirements,
-        config=config,
-        realization_grid_spec=realization_grid_spec,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_cells=bend_radius_cells,
-    )
-    results: list[MeanderInsertionResult] = []
-    raw_results = cast(list[dict[str, object]], raw_report.get("results", []))
-    for item in raw_results:
-        edge_info = item.get("edge", {})
-        if not isinstance(edge_info, dict):
-            edge_info = {}
-        source = edge_info.get("source", {})
-        if not isinstance(source, dict):
-            source = {}
-        target = edge_info.get("target", {})
-        if not isinstance(target, dict):
-            target = {}
-        edge = RoutedEdgeKey(
-            net_name=str(edge_info.get("net_name", "")),
-            source=PortRef(instance=str(source.get("instance", "")), port=str(source.get("port", ""))),
-            target=PortRef(instance=str(target.get("instance", "")), port=str(target.get("port", ""))),
-        )
-        status = str(item.get("status", "unknown"))
-        reason = str(item.get("reason", ""))
-        results.append(
-            MeanderInsertionResult(
-                edge=edge,
-                requested_extra_length_um=_as_float(item.get("requested_extra_length_um", 0.0), 0.0),
-                inserted_extra_length_um=_as_float(item.get("inserted_extra_length_um", 0.0), 0.0),
-                status=status,
-                reason=reason,
-            )
-        )
-    report = MeanderInsertionReport(
-        results=results,
-        total_requested_extra_length_um=float(cast(float, raw_report.get("total_requested_extra_length_um", 0.0))),
-        total_inserted_extra_length_um=float(cast(float, raw_report.get("total_inserted_extra_length_um", 0.0))),
-        unmatched_length_um=float(cast(float, raw_report.get("unmatched_length_um", 0.0))),
-    )
-    return updated, report
+def insert_meanders_for_requirements(*args: Any, **kwargs: Any):
+    _meander_impl._load_rust_backend = _load_rust_backend
+    return _meander_impl.insert_meanders_for_requirements(*args, **kwargs)
 
 
 def route_match_and_realize(
@@ -883,116 +207,6 @@ def route_match_and_realize(
         meander_requirements_info=requirements_info,
         meander_insertion_report_info=meander_report_info,
     )
-
-
-def realize_routed_net_records(
-    routed_layout: Component,
-    routed_net_records: list[RoutedNetRecord],
-    *,
-    route_width_um: float = 0.5,
-    route_layer: tuple[int, int] = (1, 0),
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool = True,
-    bend_radius_cells: int = 4,
-) -> None:
-    """Phase B: realize routed records into polygons on the target layout."""
-    if route_width_um <= 0:
-        raise ValueError("route_width_um must be > 0")
-
-    rust_backend = _load_rust_backend()
-    if rust_backend is None:
-        raise RuntimeError(
-            "Rust router backend is not available. Build it with `cargo build` "
-            "or `maturin develop` so photonic_router._rust can be imported."
-        )
-
-    width, height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
-    grid_spec = rust_backend.GridSpec(
-        int(width),
-        int(height),
-        float(grid_size_um),
-        float(origin_x_um),
-        float(origin_y_um),
-    )
-    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
-        grid_size_um=float(grid_size_um),
-        bend_radius_cells=int(bend_radius_cells),
-        allow_45_degree_turns=allow_45_degree_turns,
-    )
-    astar_cfg = rust_backend.AStarConfig(max_iterations=1)
-    router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
-
-    for record in routed_net_records:
-        if record.meander_auto_plan is not None:
-            plan = record.meander_auto_plan
-            selected_side = plan.get("selected_side")
-            selected_box = plan.get("selected_box")
-            selected_run_start_index = plan.get("selected_run_start_index")
-            selected_run_end_index = plan.get("selected_run_end_index")
-            selected_meander_centerline = plan.get("selected_meander_centerline")
-            if (
-                isinstance(selected_run_start_index, (int, float))
-                and isinstance(selected_run_end_index, (int, float))
-                and isinstance(selected_meander_centerline, list)
-                and len(selected_meander_centerline) >= 2
-            ):
-                meander_centerline = [
-                    (_as_float(p[0], 0.0), _as_float(p[1], 0.0))
-                    for p in selected_meander_centerline
-                    if isinstance(p, (tuple, list)) and len(p) == 2
-                ]
-                polygon = router.realize_route_polygon_from_planned_auto_meander(
-                    record.route_obj,
-                    float(route_width_um),
-                    selected_run_start_index=_as_int(selected_run_start_index, 0),
-                    selected_run_end_index=_as_int(selected_run_end_index, 0),
-                    meander_centerline=meander_centerline,
-                )
-            elif (
-                isinstance(selected_side, str)
-                and selected_side in {"left", "right"}
-                and isinstance(selected_box, (tuple, list))
-                and len(selected_box) == 4
-            ):
-                box_tuple = (
-                    _as_float(selected_box[0], 0.0),
-                    _as_float(selected_box[1], 0.0),
-                    _as_float(selected_box[2], 0.0),
-                    _as_float(selected_box[3], 0.0),
-                )
-                polygon = router.realize_route_polygon_with_analytic_meander(
-                    record.route_obj,
-                    float(route_width_um),
-                    requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
-                    min_bend_radius_um=plan["min_bend_radius_um"],
-                    min_straight_um=_as_float(plan["min_straight_um"], 0.0),
-                    max_bumps=_as_int(plan["max_bumps"], 8),
-                    side=selected_side,
-                    available_box=box_tuple,
-                    planning_mode=str(plan["planning_mode"]),
-                )
-            else:
-                # Backward-compatibility fallback for records created before
-                # selected_side/selected_box were persisted.
-                polygon = router.realize_route_polygon_with_auto_checked_analytic_meander(
-                    record.route_obj,
-                    float(route_width_um),
-                    requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
-                    min_bend_radius_um=plan["min_bend_radius_um"],
-                    min_straight_um=_as_float(plan["min_straight_um"], 0.0),
-                    max_bumps=_as_int(plan["max_bumps"], 8),
-                    max_meander_height_um=_as_float(plan.get("max_meander_height_um", 20.0), 20.0),
-                    box_depth_um=_as_float(plan["box_depth_um"], 20.0),
-                    min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
-                    clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),
-                    side_policy=str(plan["side_policy"]),
-                    opened_cells=[],
-                    planning_mode=str(plan["planning_mode"]),
-                )
-            routed_layout.add_polygon(polygon, layer=route_layer)
-            continue
-        polygon = router.realize_route_polygon(record.route_obj, float(route_width_um))
-        routed_layout.add_polygon(polygon, layer=route_layer)
 
 
 def _ensure_dir(path: Path) -> None:
@@ -1243,8 +457,6 @@ def route_nets_rust(
     diagnostics_enabled = debug_path is not None
     obstacle_svg = None
     route_svgs: list[Path] = []
-    routed_edge_lengths_um: dict[RoutedEdgeKey, float] = {}
-    routed_net_records: list[RoutedNetRecord] = []
 
     if debug_path is not None:
         obstacle_dir = debug_path / "static_obstacles"
@@ -1306,30 +518,28 @@ def route_nets_rust(
 
     def _angle_to_step(angle: int) -> tuple[int, int]:
         steps = [
-            (1, 0),    # 0 east
-            (1, 1),    # 1 northeast
-            (0, 1),    # 2 north
-            (-1, 1),   # 3 northwest
-            (-1, 0),   # 4 west
+            (1, 0),  # 0 east
+            (1, 1),  # 1 northeast
+            (0, 1),  # 2 north
+            (-1, 1),  # 3 northwest
+            (-1, 0),  # 4 west
             (-1, -1),  # 5 southwest
-            (0, -1),   # 6 south
-            (1, -1),   # 7 southeast
+            (0, -1),  # 6 south
+            (1, -1),  # 7 southeast
         ]
         return steps[angle % 8]
-
 
     def _in_bounds(gx: int, gy: int) -> bool:
         return 0 <= gx < int(grid.width) and 0 <= gy < int(grid.height)
 
-
     def port_to_grid_state(
-            port: Port,
-            grid_origin_x_um: float,
-            grid_origin_y_um: float,
-            grid_size_um: float,
-            *,
-            as_target: bool = False,
-            outward_cells: int = 1,
+        port: Port,
+        grid_origin_x_um: float,
+        grid_origin_y_um: float,
+        grid_size_um: float,
+        *,
+        as_target: bool = False,
+        outward_cells: int = 1,
     ):
         port_angle = _orientation_to_angle(port.orientation, flip=False)
 
@@ -1349,7 +559,6 @@ def route_nets_rust(
         route_angle = _orientation_to_angle(port.orientation, flip=as_target)
 
         return rust_backend.State(gx, gy, route_angle)
-
 
     def _collect_inflated_step_cells(
         base_x: int,
@@ -1405,17 +614,14 @@ def route_nets_rust(
                 1,
                 math.ceil(
                     max(0.0, _as_float(access_length_um, 0.0))
-                    / float(grid.grid_size_um)
+                    / float(grid.grid_size_um),
                 ),
             )
             half_width_cells = max(
                 0,
                 math.ceil(
-                    (
-                        max(0.0, _as_float(access_width_um, 0.0))
-                        / 2.0
-                    )
-                    / float(grid.grid_size_um)
+                    (max(0.0, _as_float(access_width_um, 0.0)) / 2.0)
+                    / float(grid.grid_size_um),
                 ),
             )
             cells = _collect_inflated_step_cells(
@@ -1582,9 +788,10 @@ def route_nets_rust(
     repair_config = ripup_reroute_config or RipupRerouteConfig()
     route_jobs_by_id = {job.net_id: job for job in route_jobs}
     route_order = [job.net_id for job in route_jobs]
-    routed_net_records_by_id: dict[int, RoutedNetRecord] = {}
-    routed_edge_lengths_by_id: dict[int, float] = {}
-    committed_dynamic_cells_by_id: dict[int, set[tuple[int, int]]] = {}
+    route_bookkeeping = RouteBookkeeping(
+        route_order=route_order,
+        diagnostics_enabled=diagnostics_enabled,
+    )
 
     t_astar_start = 0.0
     if debug_timing:
@@ -1640,14 +847,7 @@ def route_nets_rust(
         )
 
     def _committed_dynamic_cells(*, exclude_net_id: int | None = None) -> set[tuple[int, int]]:
-        if not diagnostics_enabled:
-            return set()
-        merged: set[tuple[int, int]] = set()
-        for net_id, cells in committed_dynamic_cells_by_id.items():
-            if exclude_net_id is not None and int(net_id) == int(exclude_net_id):
-                continue
-            merged.update(cells)
-        return merged
+        return route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
 
     def _route_cells_from_router(net_id: int) -> set[tuple[int, int]]:
         return {
@@ -1776,24 +976,12 @@ def route_nets_rust(
         diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _record_route(job: RouteJob, route_obj: Any, opened_cells: list[tuple[int, int]]) -> None:
-        edge_key = RoutedEdgeKey(
-            net_name=job.net_name,
-            source=PortRef(instance=job.inst1, port=job.port1),
-            target=PortRef(instance=job.inst2, port=job.port2),
+        route_bookkeeping.record_route(
+            job,
+            route_obj,
+            opened_cells,
+            route_cells=_route_cells_from_router(job.net_id) if diagnostics_enabled else None,
         )
-        routed_net_records_by_id[job.net_id] = RoutedNetRecord(
-            net_name=job.net_name,
-            source=edge_key.source,
-            target=edge_key.target,
-            route_obj=route_obj,
-            total_length_um=float(route_obj.total_length_um),
-            opened_cells=tuple(opened_cells),
-        )
-        routed_edge_lengths_by_id[job.net_id] = float(route_obj.total_length_um)
-        if diagnostics_enabled:
-            committed_dynamic_cells_by_id[job.net_id] = _route_cells_from_router(job.net_id)
-        else:
-            committed_dynamic_cells_by_id.pop(job.net_id, None)
 
     def _route_and_commit(
         job: RouteJob,
@@ -1903,18 +1091,12 @@ def route_nets_rust(
     ) -> None:
         for net_id_to_clear in touched_ids:
             router.ripup_route(net_id_to_clear)
-            routed_net_records_by_id.pop(net_id_to_clear, None)
-            routed_edge_lengths_by_id.pop(net_id_to_clear, None)
-            committed_dynamic_cells_by_id.pop(net_id_to_clear, None)
+            route_bookkeeping.clear_route(net_id_to_clear)
         for old_id, cells in snapshot_cells.items():
             if not router.commit_route_cells(old_id, sorted(cells)):
                 raise RuntimeError(f"Failed to rollback route cells for net id {old_id}")
-            if diagnostics_enabled:
-                committed_dynamic_cells_by_id[old_id] = set(cells)
-            else:
-                committed_dynamic_cells_by_id.pop(old_id, None)
-        routed_net_records_by_id.update(snapshot_records)
-        routed_edge_lengths_by_id.update(snapshot_lengths)
+            route_bookkeeping.set_committed_cells(old_id, cells)
+        route_bookkeeping.restore_records(snapshot_records, snapshot_lengths)
 
     def _attempt_repair(job: RouteJob, failed_error: Exception) -> bool:
         nonlocal repair_count, total_expanded_states, simple_route_count
@@ -1945,7 +1127,7 @@ def route_nets_rust(
         candidate_blockers = [
             int(owner)
             for owner in router.dynamic_owners_for_route(probe_route, block_radius_cells)
-            if int(owner) != job.net_id and int(owner) in routed_net_records_by_id
+            if int(owner) != job.net_id and int(owner) in route_bookkeeping.records_by_id
         ]
         _record_elapsed("owner_lookup", owner_lookup_start)
         if not candidate_blockers:
@@ -1963,14 +1145,14 @@ def route_nets_rust(
             if not ripup_ids:
                 return False
             snapshot_records = {
-                old_id: routed_net_records_by_id[old_id]
+                old_id: route_bookkeeping.records_by_id[old_id]
                 for old_id in ripup_ids
-                if old_id in routed_net_records_by_id
+                if old_id in route_bookkeeping.records_by_id
             }
             snapshot_lengths = {
-                old_id: routed_edge_lengths_by_id[old_id]
+                old_id: route_bookkeeping.lengths_by_id[old_id]
                 for old_id in ripup_ids
-                if old_id in routed_edge_lengths_by_id
+                if old_id in route_bookkeeping.lengths_by_id
             }
             snapshot_start = _timing_start()
             snapshot_cells = {
@@ -1982,7 +1164,7 @@ def route_nets_rust(
             touched_ids.add(job.net_id)
             try:
                 for old_id in ripup_ids:
-                    record = routed_net_records_by_id.get(old_id)
+                    record = route_bookkeeping.records_by_id.get(old_id)
                     if record is not None:
                         history_start = _timing_start()
                         router.add_history_for_route(
@@ -1994,7 +1176,7 @@ def route_nets_rust(
                     ripup_start = _timing_start()
                     router.ripup_route(old_id)
                     _record_elapsed("ripup", ripup_start)
-                    committed_dynamic_cells_by_id.pop(old_id, None)
+                    route_bookkeeping.clear_route(old_id)
 
                 repaired_route, _ = _route_and_commit(
                     job,
@@ -2127,19 +1309,7 @@ def route_nets_rust(
         if should_print_route:
             print("ok")
 
-    routed_net_records = [
-        routed_net_records_by_id[net_id]
-        for net_id in route_order
-        if net_id in routed_net_records_by_id
-    ]
-    routed_edge_lengths_um = {
-        RoutedEdgeKey(
-            net_name=record.net_name,
-            source=record.source,
-            target=record.target,
-        ): float(record.total_length_um)
-        for record in routed_net_records
-    }
+    routed_net_records = route_bookkeeping.ordered_records()
 
     if debug_timing:
         t_astar_end = time.perf_counter()
@@ -2209,25 +1379,12 @@ def route_nets_rust(
             bend_radius_cells=bend_radius_cells,
         )
 
-    build_stats = getattr(obstacle_map, "build_stats", None)
-    static_obstacle_count = len(obstacle_map.blocked_cells)
-    if isinstance(build_stats, dict):
-        raw_count = build_stats.get("blocked_cell_count")
-        if isinstance(raw_count, int):
-            static_obstacle_count = raw_count
-
-    return routed_layout, RustRouteDebugArtifacts(
+    return routed_layout, build_route_debug_artifacts(
         obstacle_svg=obstacle_svg,
         route_svgs=route_svgs,
-        routed_edge_lengths_um=routed_edge_lengths_um,
+        obstacle_map=obstacle_map,
         routed_net_records=routed_net_records,
-        # Keep meander planning base obstacles limited to layout-static geometry.
-        # Port-access reservation lanes are routing-time guards and are added to
-        # `static_cells` above for net-to-net A* ordering, but they should not
-        # globally block post-route meander box checks.
-        static_blocked_cells=tuple(sorted(set(obstacle_map.blocked_cells))),
-        static_obstacle_count=int(static_obstacle_count),
         realization_grid_spec=realization_grid_spec,
-        realization_allow_45_degree_turns=allow_45_degree_turns,
-        realization_bend_radius_cells=bend_radius_cells,
+        allow_45_degree_turns=allow_45_degree_turns,
+        bend_radius_cells=bend_radius_cells,
     )
