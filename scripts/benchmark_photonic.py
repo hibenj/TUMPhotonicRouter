@@ -183,6 +183,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         show_klayout=False,
         enable_path_length_matching=args.path_length_matching,
         allow_45_degree_turns=args.allow_45_degree_turns,
+        use_indexed_heap=args.use_indexed_heap,
         max_iterations=args.max_iterations,
         routing_window_scale=args.routing_window_scale,
         include_heater_obstacles=args.include_heater_obstacles,
@@ -254,6 +255,8 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         "--heater-clearance-um",
         str(args.heater_clearance_um),
     ]
+    if args.use_indexed_heap:
+        command.append("--use-indexed-heap")
     if args.path_length_matching:
         command.append("--path-length-matching")
     if args.allow_45_degree_turns:
@@ -304,6 +307,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Obstacle mode: `{args.obstacle_mode}`",
         f"- Max iterations: `{args.max_iterations}`",
         f"- Routing window scale: `{args.routing_window_scale}`",
+        f"- Indexed heap: `{args.use_indexed_heap}`",
         "",
         "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Obstacle checks | Footprint rect checks | Full fallback |",
         "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -409,6 +413,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--routing-window-scale", type=float, default=0.05)
     parser.add_argument("--include-heater-obstacles", action="store_true")
     parser.add_argument("--ripup-reroute", action="store_true")
+    parser.add_argument(
+        "--use-indexed-heap",
+        action="store_true",
+        help="Use the experimental decrease-key indexed heap for dense A*.",
+    )
     parser.add_argument("--obstacle-mode", default="bounding_boxes")
     parser.add_argument("--waveguide-clearance-um", type=float, default=0.5)
     parser.add_argument("--heater-clearance-um", type=float, default=5.0)

@@ -415,6 +415,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "(default: false). Pass 3A still falls back to baseline A*."
         ),
     )
+    parser.add_argument(
+        "--use-indexed-heap",
+        type=_parse_bool_flag,
+        default=False,
+        metavar="BOOL",
+        help=(
+            "Use the experimental decrease-key indexed heap for dense A* "
+            "instead of duplicate-entry BinaryHeap queueing (default: false)."
+        ),
+    )
     return parser
 
 
@@ -428,6 +438,7 @@ def main(argv: list[str] | None = None) -> Component:
         show_klayout=args.show_klayout,
         allow_45_degree_turns=args.allow_45_degree_turns,
         enable_jps4=args.enable_jps4,
+        use_indexed_heap=args.use_indexed_heap,
         enable_path_length_matching=args.path_length_matching,
         path_length_meander_height_um=args.path_length_meander_height_um,
         max_iterations=args.max_iterations,
@@ -499,6 +510,7 @@ def run_routing_flow(
     path_length_meander_height_um: float = 20.0,
     allow_45_degree_turns: bool = True,
     enable_jps4: bool = False,
+    use_indexed_heap: bool = False,
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     include_heater_obstacles: bool = False,
@@ -535,6 +547,8 @@ def run_routing_flow(
         path_length_meander_height_um: Maximum meander height used when
                       inserting path-length matching meanders.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
+        use_indexed_heap: If True, use the experimental decrease-key indexed
+                      heap for dense A* queueing.
         max_iterations: Maximum A* state expansions per route attempt.
         routing_window_scale: Optional A* routing-window margin scale. If None,
                       the Rust AStarConfig default is used.
@@ -680,6 +694,7 @@ def run_routing_flow(
             debug_timing=debug_timing,
             allow_45_degree_turns=allow_45_degree_turns,
             enable_jps4=enable_jps4,
+            use_indexed_heap=use_indexed_heap,
             max_iterations=max_iterations,
             routing_window_scale=routing_window_scale,
             collect_route_stats=collect_route_stats or stats is not None,

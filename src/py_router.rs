@@ -182,11 +182,13 @@ pub struct PyAStarConfig {
     pub collect_detailed_timing: bool,
     #[pyo3(get, set)]
     pub enable_jps4: bool,
+    #[pyo3(get, set)]
+    pub use_indexed_heap: bool,
 }
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false))]
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false))]
     fn new(
         max_iterations: usize,
         bend_weight: f64,
@@ -203,6 +205,7 @@ impl PyAStarConfig {
         ignore_dynamic_obstacles: bool,
         history_weight: f64,
         collect_detailed_timing: bool,
+        use_indexed_heap: bool,
     ) -> Self {
         Self {
             max_iterations,
@@ -224,6 +227,7 @@ impl PyAStarConfig {
             history_weight,
             collect_detailed_timing,
             enable_jps4: false,
+            use_indexed_heap,
         }
     }
 }
@@ -508,6 +512,7 @@ fn astar_config_from_py(
         history_weight: history_weight.unwrap_or(astar_cfg.history_weight),
         collect_detailed_timing: astar_cfg.collect_detailed_timing,
         enable_jps4: astar_cfg.enable_jps4,
+        use_indexed_heap: astar_cfg.use_indexed_heap,
     })
 }
 
@@ -2298,7 +2303,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
@@ -2320,7 +2325,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let route = PyRouteResult {
@@ -2397,7 +2402,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let route = PyRouteResult {
@@ -2491,7 +2496,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 12, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let route = PyRouteResult {
@@ -2576,7 +2581,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -2656,7 +2661,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -2681,7 +2686,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 12, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let route = PyRouteResult {
@@ -2775,7 +2780,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let route = PyRouteResult {
@@ -2858,7 +2863,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let route = PyRouteResult {
@@ -2940,7 +2945,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let eff = router.effective_bend_radius_um(None).unwrap();
@@ -2955,7 +2960,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let eff = router.effective_bend_radius_um(Some(1.1)).unwrap();
@@ -2971,7 +2976,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         Python::with_gil(|py| {
@@ -3003,7 +3008,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let route = PyRouteResult {
@@ -3132,7 +3137,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let route = PyRouteResult {
@@ -3242,7 +3247,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 26, 26, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         Python::with_gil(|py| {
@@ -3298,7 +3303,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 26, 26, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let err = Python::with_gil(|py| {
@@ -3337,7 +3342,7 @@ mod tests {
             PyPrimitiveLibraryConfig::new(1.0, 26, 26, 1, 1.0, true),
             PyAStarConfig::new(
                 10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false,
+                false, false,
             ),
         );
         let reserved_cells: Vec<(i32, i32)> = Python::with_gil(|py| {

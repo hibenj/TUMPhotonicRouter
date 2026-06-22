@@ -98,6 +98,7 @@ def route_match_and_realize(
     route_layer: tuple[int, int] = (1, 0),
     allow_45_degree_turns: bool = True,
     enable_jps4: bool = False,
+    use_indexed_heap: bool = False,
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
@@ -131,6 +132,7 @@ def route_match_and_realize(
         route_layer=route_layer,
         allow_45_degree_turns=allow_45_degree_turns,
         enable_jps4=enable_jps4,
+        use_indexed_heap=use_indexed_heap,
         max_iterations=max_iterations,
         routing_window_scale=routing_window_scale,
         debug_timing=debug_timing,
@@ -401,6 +403,7 @@ def route_nets_rust(
     route_layer: tuple[int, int] = (1, 0),
     allow_45_degree_turns: bool = True,
     enable_jps4: bool = False,
+    use_indexed_heap: bool = False,
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
@@ -428,6 +431,8 @@ def route_nets_rust(
         route_width_um: Realized waveguide width in micrometers.
         route_layer: Target GDS layer/datatype tuple for route polygons.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
+        use_indexed_heap: If True, use decrease-key indexed heap queueing
+            instead of duplicate-entry BinaryHeap queueing for dense A*.
         max_iterations: Maximum A* state expansions per route attempt.
         defer_realization: If True, keep routed RouteResult objects but skip
             polygon realization. This is used for pre-realization transforms
@@ -509,6 +514,7 @@ def route_nets_rust(
     bend_radius_cells = int(primitive_cfg.bend_radius_cells)
     astar_cfg = rust_backend.AStarConfig(max_iterations=int(max_iterations))
     astar_cfg.enable_jps4 = bool(enable_jps4)
+    astar_cfg.use_indexed_heap = bool(use_indexed_heap)
     if routing_window_scale is not None:
         astar_cfg.routing_window_scale = float(routing_window_scale)
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)

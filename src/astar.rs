@@ -58,6 +58,7 @@ pub struct AStarConfig {
     pub history_weight: f64,
     pub collect_detailed_timing: bool,
     pub enable_jps4: bool,
+    pub use_indexed_heap: bool,
 }
 
 impl Default for AStarConfig {
@@ -83,6 +84,7 @@ impl Default for AStarConfig {
             history_weight: 0.0,
             collect_detailed_timing: false,
             enable_jps4: false,
+            use_indexed_heap: false,
         }
     }
 }
@@ -873,6 +875,142 @@ impl Ord for OpenEntry {
 impl PartialOrd for OpenEntry {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+const NO_HEAP_POSITION: usize = usize::MAX;
+
+struct IndexedOpenSet {
+    heap: Vec<OpenEntry>,
+    positions: Vec<usize>,
+}
+
+impl IndexedOpenSet {
+    fn new(state_count: usize) -> Self {
+        Self {
+            heap: Vec::new(),
+            positions: vec![NO_HEAP_POSITION; state_count],
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.heap.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.heap.is_empty()
+    }
+
+    fn push_or_decrease(&mut self, entry: OpenEntry) -> bool {
+        let Some(position) = self.positions.get(entry.idx).copied() else {
+            return false;
+        };
+        if position == NO_HEAP_POSITION {
+            self.heap.push(entry);
+            let new_position = self.heap.len() - 1;
+            self.positions[entry.idx] = new_position;
+            self.sift_up(new_position);
+            return true;
+        }
+
+        if !entry_is_better(&entry, &self.heap[position]) {
+            return false;
+        }
+        self.heap[position] = entry;
+        self.sift_up(position);
+        true
+    }
+
+    fn pop(&mut self) -> Option<OpenEntry> {
+        if self.is_empty() {
+            return None;
+        }
+        let popped = self.heap.swap_remove(0);
+        self.positions[popped.idx] = NO_HEAP_POSITION;
+        if !self.heap.is_empty() {
+            self.positions[self.heap[0].idx] = 0;
+            self.sift_down(0);
+        }
+        Some(popped)
+    }
+
+    fn sift_up(&mut self, mut position: usize) {
+        while position > 0 {
+            let parent = (position - 1) / 2;
+            if !entry_is_better(&self.heap[position], &self.heap[parent]) {
+                break;
+            }
+            self.swap_positions(position, parent);
+            position = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut position: usize) {
+        loop {
+            let left = position * 2 + 1;
+            let right = left + 1;
+            let mut best = position;
+            if left < self.heap.len() && entry_is_better(&self.heap[left], &self.heap[best]) {
+                best = left;
+            }
+            if right < self.heap.len() && entry_is_better(&self.heap[right], &self.heap[best]) {
+                best = right;
+            }
+            if best == position {
+                break;
+            }
+            self.swap_positions(position, best);
+            position = best;
+        }
+    }
+
+    fn swap_positions(&mut self, a: usize, b: usize) {
+        self.heap.swap(a, b);
+        self.positions[self.heap[a].idx] = a;
+        self.positions[self.heap[b].idx] = b;
+    }
+}
+
+fn entry_is_better(candidate: &OpenEntry, current: &OpenEntry) -> bool {
+    candidate.cmp(current) == Ordering::Greater
+}
+
+enum OpenSet {
+    Duplicate(BinaryHeap<OpenEntry>),
+    Indexed(IndexedOpenSet),
+}
+
+impl OpenSet {
+    fn new(use_indexed_heap: bool, state_count: usize) -> Self {
+        if use_indexed_heap {
+            Self::Indexed(IndexedOpenSet::new(state_count))
+        } else {
+            Self::Duplicate(BinaryHeap::new())
+        }
+    }
+
+    fn push(&mut self, entry: OpenEntry) -> bool {
+        match self {
+            Self::Duplicate(heap) => {
+                heap.push(entry);
+                true
+            }
+            Self::Indexed(heap) => heap.push_or_decrease(entry),
+        }
+    }
+
+    fn pop(&mut self) -> Option<OpenEntry> {
+        match self {
+            Self::Duplicate(heap) => heap.pop(),
+            Self::Indexed(heap) => heap.pop(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Duplicate(heap) => heap.len(),
+            Self::Indexed(heap) => heap.len(),
+        }
     }
 }
 
@@ -1799,7 +1937,7 @@ fn route_single_net_with_bounds(
         })
         .collect();
 
-    let mut open_set = BinaryHeap::new();
+    let mut open_set = OpenSet::new(config.use_indexed_heap, storage.state_count());
     let mut counter = 0u64;
     let collect_detailed_timing = config.collect_detailed_timing;
     let source_idx = storage.state_to_idx(source)?;
@@ -1816,13 +1954,19 @@ fn route_single_net_with_bounds(
     };
     if collect_detailed_timing {
         let heap_start = Instant::now();
-        open_set.push(source_entry);
+        let queued = open_set.push(source_entry);
         stats.heap_operation_time_us += heap_start.elapsed().as_micros();
+        if queued {
+            stats.heap_pushes += 1;
+            stats.max_heap_size = stats.max_heap_size.max(open_set.len());
+        }
     } else {
-        open_set.push(source_entry);
+        let queued = open_set.push(source_entry);
+        if queued {
+            stats.heap_pushes += 1;
+            stats.max_heap_size = stats.max_heap_size.max(open_set.len());
+        }
     }
-    stats.heap_pushes += 1;
-    stats.max_heap_size = stats.max_heap_size.max(open_set.len());
     counter += 1;
 
     let mut iterations = 0usize;
@@ -1988,15 +2132,21 @@ fn route_single_net_with_bounds(
             };
             if collect_detailed_timing {
                 let heap_start = Instant::now();
-                open_set.push(next_entry);
+                let queued = open_set.push(next_entry);
                 let heap_elapsed_us = heap_start.elapsed().as_micros();
                 stats.heap_operation_time_us += heap_elapsed_us;
                 neighbor_loop_heap_time_us += heap_elapsed_us;
+                if queued {
+                    stats.heap_pushes += 1;
+                    stats.max_heap_size = stats.max_heap_size.max(open_set.len());
+                }
             } else {
-                open_set.push(next_entry);
+                let queued = open_set.push(next_entry);
+                if queued {
+                    stats.heap_pushes += 1;
+                    stats.max_heap_size = stats.max_heap_size.max(open_set.len());
+                }
             }
-            stats.heap_pushes += 1;
-            stats.max_heap_size = stats.max_heap_size.max(open_set.len());
             counter += 1;
         }
         if let Some(neighbor_loop_start) = neighbor_loop_start {
@@ -2263,6 +2413,16 @@ mod tests {
             straight_long_cells: 4,
             bend_radius_cells: 1,
             allow_45_degree_turns: true,
+        })
+    }
+
+    fn primitive_library_no45_bend2() -> PrimitiveLibrary {
+        create_photonic_primitive_library(PrimitiveLibraryConfig {
+            grid_size_um: 1.0,
+            straight_short_cells: 1,
+            straight_long_cells: 4,
+            bend_radius_cells: 2,
+            allow_45_degree_turns: false,
         })
     }
 
@@ -2794,6 +2954,49 @@ mod tests {
         )
         .expect("A* route should exist with simple routes disabled");
         assert!(result.stats.expanded_states > 0);
+    }
+
+    #[test]
+    fn indexed_heap_matches_duplicate_heap_on_forced_detour() {
+        let mut map = ObstacleMap::new(180, 80);
+        for y in 4..=72 {
+            if !(42..=50).contains(&y) {
+                map.add_static_cell(85, y);
+            }
+        }
+        let library = primitive_library_no45_bend2();
+        let source = State::new(12, 20, 0);
+        let target = State::new(160, 20, 0);
+        let base_config = AStarConfig {
+            max_iterations: 500_000,
+            require_target_angle: false,
+            enable_simple_routes: false,
+            routing_window_fallback_full_grid: true,
+            ..AStarConfig::default()
+        };
+
+        let duplicate_route =
+            route_single_net_with_config(&map, &library, source, target, None, &base_config)
+                .expect("duplicate-entry heap route should exist");
+        let indexed_route = route_single_net_with_config(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &AStarConfig {
+                use_indexed_heap: true,
+                ..base_config
+            },
+        )
+        .expect("indexed heap route should exist");
+
+        assert_eq!(indexed_route.reached_target, duplicate_route.reached_target);
+        assert!((indexed_route.total_cost - duplicate_route.total_cost).abs() < 1.0e-9);
+        assert_eq!(indexed_route.stats.skipped_duplicate_heap_entries, 0);
+        assert_eq!(indexed_route.stats.stale_generation_heap_entries, 0);
+        assert!(duplicate_route.stats.stale_generation_heap_entries > 0);
+        assert!(indexed_route.stats.max_heap_size <= duplicate_route.stats.max_heap_size);
     }
 
     #[test]

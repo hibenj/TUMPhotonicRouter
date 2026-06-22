@@ -17,6 +17,7 @@ Useful variants:
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --path-length-matching --include-heater-obstacles --ripup-reroute
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --attempt-output build/profiles/photonic_attempts.csv
+.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --use-indexed-heap
 .venv/bin/python scripts/benchmark_photonic.py --output docs/photonic_baseline.md --include-heater-obstacles --ripup-reroute
 ```
 
@@ -42,6 +43,12 @@ window-diagnostic pass. On `mmi_heater_8x4_ripup_reroute`, this reduced route
 the same repair count and successful route. Use `--routing-window-scale 0.35`
 to reproduce the older, wider-window behavior.
 
+Use `--use-indexed-heap` to benchmark the experimental decrease-key indexed
+heap for dense A*. This mode keeps a single heap entry per state instead of
+pushing duplicate entries for every improved cost. A successful queue
+optimization run should reduce stale-generation heap skips and maximum heap
+size while preserving route success and route cost.
+
 ## Isolated Rust A*
 
 Use this when measuring only synthetic Rust A* routing scenarios through the PyO3
@@ -57,6 +64,7 @@ Useful variants:
 .venv/bin/python scripts/profile_astar.py straight_astar wall_gap_astar --iterations 100 --warmup 10
 .venv/bin/python scripts/profile_astar.py --output build/profiles/astar.md --json-output build/profiles/astar.json
 .venv/bin/python scripts/profile_astar.py --iterations 5 --warmup 1 --check-baseline
+.venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --use-indexed-heap --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py --paired-comparison --iterations 25 --warmup 3
 ```
 
