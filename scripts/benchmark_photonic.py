@@ -498,8 +498,8 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     "",
                     "## Dominant Route Diagnostics",
                     "",
-                    "| Benchmark | Attempt | Bucket | Route | Net | Span | Window | Window/span | Static dens | Dynamic dens | Dynamic before | Blockers | Victims |",
-                    "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+                    "| Benchmark | Attempt | Bucket | Route | Net | Span | Window | Route bbox | Window/span | Route/window | LB/cost | Static dens | Dynamic dens | Dynamic before | Blockers | Victims |",
+                    "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
                 ]
             )
         for record in diagnostic_attempts[:6]:
@@ -512,8 +512,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 f"{_format_int(diagnostics.get('window_width_cells'))}x"
                 f"{_format_int(diagnostics.get('window_height_cells'))}"
             )
+            route_bbox = (
+                f"{_format_int(diagnostics.get('route_bbox_width_cells'))}x"
+                f"{_format_int(diagnostics.get('route_bbox_height_cells'))}"
+            )
             lines.append(
-                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {span} | {window} | {window_span} | {static_density} | {dynamic_density} | {dynamic_before} | {blockers} | {victims} |".format(
+                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {span} | {window} | {route_bbox} | {window_span} | {route_window} | {lower_bound_cost} | {static_density} | {dynamic_density} | {dynamic_before} | {blockers} | {victims} |".format(
                     benchmark=record.get("benchmark", ""),
                     attempt=record.get("attempt_index", ""),
                     bucket=record.get("bucket_name", ""),
@@ -521,10 +525,23 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     net=record.get("net_name", ""),
                     span=span,
                     window=window,
+                    route_bbox=route_bbox,
                     window_span=_format_ratio(
                         _diagnostic_float(
                             diagnostics,
                             "window_to_span_bbox_area",
+                        )
+                    ),
+                    route_window=_format_ratio(
+                        _diagnostic_float(
+                            diagnostics,
+                            "route_bbox_to_window_area",
+                        )
+                    ),
+                    lower_bound_cost=_format_percent(
+                        _diagnostic_float(
+                            diagnostics,
+                            "heading_lower_bound_to_cost",
                         )
                     ),
                     static_density=_format_percent(

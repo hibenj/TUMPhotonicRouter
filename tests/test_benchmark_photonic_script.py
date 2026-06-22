@@ -150,7 +150,11 @@ def test_markdown_report_includes_diagnostics_when_available():
         "span_y_cells": 3,
         "window_width_cells": 20,
         "window_height_cells": 8,
+        "route_bbox_width_cells": 10,
+        "route_bbox_height_cells": 4,
         "window_to_span_bbox_area": 3.333,
+        "route_bbox_to_window_area": 0.25,
+        "heading_lower_bound_to_cost": 0.875,
         "window_static_density": 0.125,
         "window_dynamic_density": 0.25,
         "committed_dynamic_cells_before": 42,
@@ -163,6 +167,8 @@ def test_markdown_report_includes_diagnostics_when_available():
     assert "Dominant Route Diagnostics" in report
     assert "12x3" in report
     assert "20x8" in report
+    assert "10x4" in report
+    assert "87.50%" in report
     assert "12.50%" in report
     assert "25.00%" in report
 

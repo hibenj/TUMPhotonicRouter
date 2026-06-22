@@ -274,6 +274,15 @@ def _rect_overlap_cell_count(
     )
 
 
+def _route_cells_bbox(cells: Iterable[tuple[int, int]]) -> tuple[int, int, int, int] | None:
+    normalized = [(int(cell[0]), int(cell[1])) for cell in cells]
+    if not normalized:
+        return None
+    xs = [cell[0] for cell in normalized]
+    ys = [cell[1] for cell in normalized]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
 def _format_cells_preview(cells: set[tuple[int, int]], *, limit: int = 120) -> str:
     if not cells:
         return "[]"
@@ -604,6 +613,66 @@ def route_nets_rust(
             (1, -1),  # 7 southeast
         ]
         return steps[angle % 8]
+
+    def _direction_reaches_target_ray(
+        *,
+        source_x: int,
+        source_y: int,
+        source_angle: int,
+        target_x: int,
+        target_y: int,
+        tolerance: int,
+    ) -> bool:
+        dx = target_x - source_x
+        dy = target_y - source_y
+        if abs(dx) <= tolerance and abs(dy) <= tolerance:
+            return True
+        dir_x, dir_y = _angle_to_step(source_angle)
+        if dir_x == 0 and dir_y == 0:
+            return False
+        if dir_x == 0:
+            return abs(dx) <= tolerance and (dy > 0) == (dir_y > 0)
+        if dir_y == 0:
+            return abs(dy) <= tolerance and (dx > 0) == (dir_x > 0)
+        return (
+            (dx > 0) == (dir_x > 0)
+            and (dy > 0) == (dir_y > 0)
+            and abs(abs(dx) - abs(dy)) <= tolerance
+        )
+
+    def _source_lower_bounds(
+        *,
+        source_x: int,
+        source_y: int,
+        source_angle: int,
+        target_x: int,
+        target_y: int,
+        target_angle: int,
+    ) -> tuple[float, float]:
+        grid_size_um = float(grid.grid_size_um)
+        dx = target_x - source_x
+        dy = target_y - source_y
+        distance = math.hypot(float(dx), float(dy)) * grid_size_um
+        heading_lower_bound = distance
+        if str(heuristic_mode) == "heading_aware":
+            target_angle_ok = not bool(getattr(astar_cfg, "require_target_angle", True)) or (
+                source_angle % 8 == target_angle % 8
+            )
+            reaches_target_ray = _direction_reaches_target_ray(
+                source_x=source_x,
+                source_y=source_y,
+                source_angle=source_angle,
+                target_x=target_x,
+                target_y=target_y,
+                tolerance=max(0, int(getattr(astar_cfg, "target_tolerance_cells", 0))),
+            )
+            if not target_angle_ok or not reaches_target_ray:
+                minimum_bend_units = 1.0 if allow_45_degree_turns else 2.0
+                bend_weight = float(getattr(astar_cfg, "bend_weight", 1.0)) * float(
+                    getattr(primitive_cfg, "bend_weight", 1.0)
+                )
+                heading_lower_bound += minimum_bend_units * bend_weight
+        return distance, heading_lower_bound
 
     def _in_bounds(gx: int, gy: int) -> bool:
         return 0 <= gx < int(grid.width) and 0 <= gy < int(grid.height)
@@ -1121,6 +1190,34 @@ def route_nets_rust(
             min_y=span_bbox_min_y,
             max_y=span_bbox_max_y,
         )
+        route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
+        route_bbox = _route_cells_bbox(route_cells or ())
+        if route_bbox is None:
+            route_bbox_min_x = 0
+            route_bbox_max_x = -1
+            route_bbox_min_y = 0
+            route_bbox_max_y = -1
+        else:
+            route_bbox_min_x, route_bbox_max_x, route_bbox_min_y, route_bbox_max_y = route_bbox
+        route_bbox_area = _rect_cell_count(
+            min_x=route_bbox_min_x,
+            max_x=route_bbox_max_x,
+            min_y=route_bbox_min_y,
+            max_y=route_bbox_max_y,
+        )
+        total_cost = (
+            float(getattr(route_obj, "total_cost", 0.0))
+            if route_obj is not None
+            else None
+        )
+        euclidean_lower_bound, heading_lower_bound = _source_lower_bounds(
+            source_x=source_x,
+            source_y=source_y,
+            source_angle=source_angle,
+            target_x=target_x,
+            target_y=target_y,
+            target_angle=target_angle,
+        )
         blocker_ids = list(candidate_blockers or [])
         victim_ids = list(ripup_ids or [])
         return {
@@ -1132,6 +1229,18 @@ def route_nets_rust(
             "span_bbox_area_cells": span_bbox_area,
             "span_static_cells": span_static_cells,
             "span_dynamic_cells": span_dynamic_cells,
+            "route_bbox_min_x": route_bbox_min_x,
+            "route_bbox_max_x": route_bbox_max_x,
+            "route_bbox_min_y": route_bbox_min_y,
+            "route_bbox_max_y": route_bbox_max_y,
+            "route_bbox_width_cells": max(0, route_bbox_max_x - route_bbox_min_x + 1),
+            "route_bbox_height_cells": max(0, route_bbox_max_y - route_bbox_min_y + 1),
+            "route_bbox_area_cells": route_bbox_area,
+            "route_bbox_to_span_bbox_area": (
+                float(route_bbox_area) / float(span_bbox_area)
+                if span_bbox_area > 0 and route_bbox_area > 0
+                else None
+            ),
             "opened_cells_count": len(opened_cells),
             "block_radius_cells": block_radius_cells,
             "bend_radius_cells": bend_radius_cells,
@@ -1141,6 +1250,11 @@ def route_nets_rust(
             "window_to_span_bbox_area": (
                 float(window_area) / float(span_bbox_area)
                 if span_bbox_area > 0 and window_area > 0
+                else None
+            ),
+            "route_bbox_to_window_area": (
+                float(route_bbox_area) / float(window_area)
+                if window_area > 0 and route_bbox_area > 0
                 else None
             ),
             "window_static_cells": window_static_cells,
@@ -1153,6 +1267,24 @@ def route_nets_rust(
             "window_dynamic_density": (
                 float(window_dynamic_cells) / float(window_area)
                 if window_area > 0
+                else None
+            ),
+            "total_cost": total_cost,
+            "euclidean_lower_bound_cost": euclidean_lower_bound,
+            "heading_lower_bound_cost": heading_lower_bound,
+            "euclidean_lower_bound_to_cost": (
+                euclidean_lower_bound / total_cost
+                if total_cost is not None and total_cost > 0.0
+                else None
+            ),
+            "heading_lower_bound_to_cost": (
+                heading_lower_bound / total_cost
+                if total_cost is not None and total_cost > 0.0
+                else None
+            ),
+            "heading_lower_bound_gap_cost": (
+                total_cost - heading_lower_bound
+                if total_cost is not None
                 else None
             ),
             "committed_dynamic_cells_before": len(dynamic_cells_before),
