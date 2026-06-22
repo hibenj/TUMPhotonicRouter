@@ -6,6 +6,7 @@ import importlib
 import math
 import time
 from collections import Counter
+from collections.abc import Iterable
 from typing import cast
 
 from photonic_router.path_length_graph import (
@@ -115,7 +116,7 @@ def analyze_meander_insertion_for_requirements(
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool,
     bend_radius_cells: int,
-    static_blocked_cells: list[tuple[int, int]] | tuple[tuple[int, int], ...] | None = None,
+    static_blocked_cells: Iterable[tuple[int, int]] | None = None,
 ) -> tuple[list[RoutedNetRecord], dict[str, object]]:
     """Plan meander insertion using auto analytic multi-bump planning."""
     rust_backend = _load_rust_backend()
@@ -136,7 +137,13 @@ def analyze_meander_insertion_for_requirements(
     )
     astar_cfg = rust_backend.AStarConfig(max_iterations=1)
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
-    base_static_cells: set[tuple[int, int]] = set(static_blocked_cells or [])
+    if isinstance(static_blocked_cells, set):
+        base_static_cells = static_blocked_cells
+    else:
+        base_static_cells = {
+            (int(x), int(y))
+            for x, y in (static_blocked_cells or ())
+        }
 
     def _record_route_cells(record: RoutedNetRecord) -> set[tuple[int, int]]:
         cells = getattr(record.route_obj, "cells", None) or []
@@ -168,9 +175,9 @@ def analyze_meander_insertion_for_requirements(
     route_cell_refcounts: Counter[tuple[int, int]] = Counter()
     for cells in route_cells_by_edge.values():
         route_cell_refcounts.update(cells)
-    base_static_and_route_cells = set(base_static_cells)
-    base_static_and_route_cells.update(route_cell_refcounts.keys())
-    router.set_static_cells(list(base_static_and_route_cells))
+    router.set_static_cells(list(base_static_cells))
+    if route_cell_refcounts:
+        router.add_static_cells(list(route_cell_refcounts.keys()))
     results: list[dict[str, object]] = []
     total_requested = 0.0
     total_inserted = 0.0

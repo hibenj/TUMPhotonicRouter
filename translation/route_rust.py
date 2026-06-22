@@ -188,7 +188,7 @@ def route_match_and_realize(
             unrouted_layout,
             config=meander_obstacle_config,
         )
-        meander_static_blocked_cells = tuple(sorted(set(meander_obstacle_map.blocked_cells)))
+        meander_static_blocked_cells = meander_obstacle_map.blocked_cells
         pipeline_timings_s["meander_obstacle_map"] = (
             time.perf_counter() - t_meander_obstacle_start
         )

@@ -14,6 +14,8 @@ use rustc_hash::FxHashSet;
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, ClearanceMetric, GridRect, ObstacleMap};
 use crate::py_router::register_py_router;
 
+const EPS: f64 = 1.0e-9;
+
 /// Physical point in micrometers.
 pub type Point = (f64, f64);
 
@@ -412,6 +414,10 @@ fn rasterize_polygon_into(
     if polygon.len() < 3 || grid.width <= 0 || grid.height <= 0 {
         return;
     }
+    if let Some(bounds) = axis_aligned_rectangle_bounds(polygon) {
+        rasterize_axis_aligned_rectangle_into(bounds, grid, cells);
+        return;
+    }
 
     let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
     let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -440,6 +446,94 @@ fn rasterize_polygon_into(
             }
         }
     }
+}
+
+fn axis_aligned_rectangle_bounds(polygon: &Polygon) -> Option<BBox> {
+    if polygon.len() < 4 {
+        return None;
+    }
+
+    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in polygon {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    if min_x + EPS >= max_x || min_y + EPS >= max_y {
+        return None;
+    }
+
+    let mut has_min_min = false;
+    let mut has_min_max = false;
+    let mut has_max_min = false;
+    let mut has_max_max = false;
+    for &(x, y) in polygon {
+        let on_min_x = approx_eq(x, min_x);
+        let on_max_x = approx_eq(x, max_x);
+        let on_min_y = approx_eq(y, min_y);
+        let on_max_y = approx_eq(y, max_y);
+        if !(on_min_x || on_max_x || on_min_y || on_max_y) {
+            return None;
+        }
+        has_min_min |= on_min_x && on_min_y;
+        has_min_max |= on_min_x && on_max_y;
+        has_max_min |= on_max_x && on_min_y;
+        has_max_max |= on_max_x && on_max_y;
+    }
+    if !(has_min_min && has_min_max && has_max_min && has_max_max) {
+        return None;
+    }
+
+    for index in 0..polygon.len() {
+        let (x0, y0) = polygon[index];
+        let (x1, y1) = polygon[(index + 1) % polygon.len()];
+        if approx_eq(x0, x1) || approx_eq(y0, y1) {
+            continue;
+        }
+        return None;
+    }
+
+    Some((min_x, min_y, max_x, max_y))
+}
+
+fn rasterize_axis_aligned_rectangle_into(
+    bounds: BBox,
+    grid: &StaticGridSpec,
+    cells: &mut FxHashSet<CellKey>,
+) {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let gx_min = first_cell_center_at_or_after(min_x, grid.origin.0, grid.grid_size_um).max(0);
+    let gy_min = first_cell_center_at_or_after(min_y, grid.origin.1, grid.grid_size_um).max(0);
+    let gx_max =
+        last_cell_center_at_or_before(max_x, grid.origin.0, grid.grid_size_um).min(grid.width - 1);
+    let gy_max =
+        last_cell_center_at_or_before(max_y, grid.origin.1, grid.grid_size_um).min(grid.height - 1);
+
+    if gx_min > gx_max || gy_min > gy_max {
+        return;
+    }
+    for gx in gx_min..=gx_max {
+        for gy in gy_min..=gy_max {
+            cells.insert(pack_xy(gx, gy));
+        }
+    }
+}
+
+fn first_cell_center_at_or_after(coord: f64, origin: f64, grid_size_um: f64) -> i32 {
+    ((coord - origin) / grid_size_um - 0.5 - EPS).ceil() as i32
+}
+
+fn last_cell_center_at_or_before(coord: f64, origin: f64, grid_size_um: f64) -> i32 {
+    ((coord - origin) / grid_size_um - 0.5 + EPS).floor() as i32
+}
+
+fn approx_eq(a: f64, b: f64) -> bool {
+    (a - b).abs() <= EPS
 }
 
 fn polygon_to_grid_bbox(polygon: &Polygon, grid: &StaticGridSpec) -> Option<GridRect> {
@@ -899,6 +993,31 @@ mod tests {
         let cells = sorted_cells_from_keys(&rasterize_polygon(&polygon, &grid));
 
         assert_eq!(cells, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn rasterizes_offset_axis_aligned_rectangle_by_cell_centers() {
+        let grid = StaticGridSpec {
+            width: 12,
+            height: 8,
+            grid_size_um: 1.0,
+            origin: (0.0, 0.0),
+            die_bbox: (0.0, 0.0, 12.0, 8.0),
+        };
+        let polygon = vec![(0.2, 1.2), (10.2, 1.2), (10.2, 3.2), (0.2, 3.2)];
+        let cells = sorted_cells_from_keys(&rasterize_polygon(&polygon, &grid));
+
+        assert!(!cells.contains(&(10, 1)));
+        assert_eq!(cells.len(), 20);
+        assert_eq!(cells.first(), Some(&(0, 1)));
+        assert_eq!(cells.last(), Some(&(9, 2)));
+    }
+
+    #[test]
+    fn chamfered_polygon_does_not_match_rectangle_fast_path() {
+        let polygon = vec![(0.0, 0.5), (0.5, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)];
+
+        assert!(axis_aligned_rectangle_bounds(&polygon).is_none());
     }
 
     #[test]
