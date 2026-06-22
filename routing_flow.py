@@ -849,6 +849,30 @@ def run_routing_flow(
             "      - Path-length matching: "
             f"{len(routed_layout.info['meander_requirements'])} edge(s) require extra length"
         )
+        group_diagnostics = route_result.path_length_analysis_info.get(
+            "matching_group_diagnostics",
+            route_result.path_length_analysis_info.get("matching_groups", []),
+        )
+        if isinstance(group_diagnostics, list):
+            groups_over_tolerance = sum(
+                1
+                for group in group_diagnostics
+                if isinstance(group, dict) and group.get("within_tolerance") is False
+            )
+            max_residual = max(
+                (
+                    float(group.get("max_accepted_unmatched_um", 0.0))
+                    for group in group_diagnostics
+                    if isinstance(group, dict)
+                ),
+                default=0.0,
+            )
+            print(
+                "      - Path-length groups: "
+                f"{len(group_diagnostics)} group(s), "
+                f"over_tolerance={groups_over_tolerance}, "
+                f"max_residual={max_residual:.6f}um"
+            )
         if debug_meanders and route_result.path_length_analysis_info is not None:
             node_timings = route_result.path_length_analysis_info.get("node_timings_um", {})
             if isinstance(node_timings, dict):

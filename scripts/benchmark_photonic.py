@@ -284,6 +284,44 @@ def _slowest_meander_result(results: Iterable[object]) -> dict[str, object]:
     return slowest
 
 
+def _path_length_group_diagnostics(layout_info: object) -> list[Mapping[str, object]]:
+    if not hasattr(layout_info, "get"):
+        return []
+    analysis = layout_info.get("path_length_analysis", {})
+    if not isinstance(analysis, Mapping):
+        return []
+    groups = analysis.get("matching_group_diagnostics")
+    if not isinstance(groups, list):
+        groups = analysis.get("matching_groups")
+    if not isinstance(groups, list):
+        return []
+    return [group for group in groups if isinstance(group, Mapping)]
+
+
+def _max_group_float(groups: Iterable[Mapping[str, object]], key: str) -> float:
+    maximum = 0.0
+    for group in groups:
+        maximum = max(maximum, _numeric_float(group.get(key)))
+    return maximum
+
+
+def _count_groups_with_requirements(groups: Iterable[Mapping[str, object]]) -> int:
+    count = 0
+    for group in groups:
+        if _numeric_int(group.get("edges_requiring_meander")) > 0:
+            count += 1
+    return count
+
+
+def _count_groups_over_tolerance(groups: Iterable[Mapping[str, object]]) -> int:
+    count = 0
+    for group in groups:
+        within = group.get("within_tolerance")
+        if within is False:
+            count += 1
+    return count
+
+
 def _flatten_attempt_records(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     flattened: list[dict[str, object]] = []
     for row in rows:
@@ -338,7 +376,10 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         ),
         stats=stats,
     )
-    meander_report = getattr(routed_layout, "info", {}).get("meander_insertion_report", {})
+    layout_info = getattr(routed_layout, "info", {})
+    if not hasattr(layout_info, "get"):
+        layout_info = {}
+    meander_report = layout_info.get("meander_insertion_report", {})
     if not isinstance(meander_report, Mapping):
         meander_report = {}
     meander_results = meander_report.get("results", [])
@@ -351,6 +392,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         status = str(result.get("status", "unknown"))
         meander_status_counts[status] = meander_status_counts.get(status, 0) + 1
     slowest_meander = _slowest_meander_result(meander_results)
+    matching_group_diagnostics = _path_length_group_diagnostics(layout_info)
     return {
         "benchmark": benchmark,
         "instances": stats.instance_count,
@@ -372,9 +414,28 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "route_realization_s": stats.step_times_s.get("route_realization"),
         "astar_s": stats.astar_time_s,
         "meander_requirements": len(
-            getattr(routed_layout, "info", {}).get("meander_requirements", [])
-            if isinstance(getattr(routed_layout, "info", {}).get("meander_requirements", []), list)
+            layout_info.get("meander_requirements", [])
+            if isinstance(layout_info.get("meander_requirements", []), list)
             else []
+        ),
+        "path_length_group_count": len(matching_group_diagnostics),
+        "path_length_groups_with_requirements": _count_groups_with_requirements(
+            matching_group_diagnostics
+        ),
+        "path_length_groups_over_tolerance": _count_groups_over_tolerance(
+            matching_group_diagnostics
+        ),
+        "path_length_max_accepted_unmatched_um": _max_group_float(
+            matching_group_diagnostics,
+            "max_accepted_unmatched_um",
+        ),
+        "path_length_max_physical_residual_um": _max_group_float(
+            matching_group_diagnostics,
+            "max_physical_residual_um",
+        ),
+        "path_length_max_disregarded_residual_um": _max_group_float(
+            matching_group_diagnostics,
+            "max_disregarded_residual_um",
         ),
         "meander_planner_calls": meander_report.get("planner_calls"),
         "meander_requested_um": meander_report.get("total_requested_extra_length_um"),
@@ -585,14 +646,28 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 "",
                 "## Path-Length Matching",
                 "",
-                "| Benchmark | Requirements | Planner calls | Requested um | Inserted um | Disregarded um | Unmatched um | Analysis s | Obstacle s | Planning s | Realization s | Statuses |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| Benchmark | Groups | Groups needing PLM | Groups over tol | Max accepted residual um | Max physical residual um | Max disregarded residual um | Requirements | Planner calls | Requested um | Inserted um | Disregarded um | Unmatched um | Analysis s | Obstacle s | Planning s | Realization s | Statuses |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for row in plm_rows:
             lines.append(
-                "| {benchmark} | {requirements} | {planner_calls} | {requested} | {inserted} | {disregarded} | {unmatched} | {analysis_s} | {obstacle_s} | {planning_s} | {realization_s} | {statuses} |".format(
+                "| {benchmark} | {groups} | {groups_needing} | {groups_over} | {max_accepted} | {max_physical} | {max_disregarded} | {requirements} | {planner_calls} | {requested} | {inserted} | {disregarded} | {unmatched} | {analysis_s} | {obstacle_s} | {planning_s} | {realization_s} | {statuses} |".format(
                     benchmark=row["benchmark"],
+                    groups=_format_int(row.get("path_length_group_count")),
+                    groups_needing=_format_int(
+                        row.get("path_length_groups_with_requirements")
+                    ),
+                    groups_over=_format_int(row.get("path_length_groups_over_tolerance")),
+                    max_accepted=_format_seconds(
+                        _record_seconds(row, "path_length_max_accepted_unmatched_um")
+                    ),
+                    max_physical=_format_seconds(
+                        _record_seconds(row, "path_length_max_physical_residual_um")
+                    ),
+                    max_disregarded=_format_seconds(
+                        _record_seconds(row, "path_length_max_disregarded_residual_um")
+                    ),
                     requirements=_format_int(row.get("meander_requirements")),
                     planner_calls=_format_int(row.get("meander_planner_calls")),
                     requested=_format_seconds(

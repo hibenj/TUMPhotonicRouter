@@ -27,6 +27,7 @@ from photonic_router.routing_layers import (
 from translation.route_rust_analysis import (
     analysis_to_info_dict,
     analyze_path_length_matching,
+    matching_group_diagnostics_to_info,
     requirement_to_dict,
 )
 from translation import route_rust_meanders as _meander_impl
@@ -209,6 +210,10 @@ def route_match_and_realize(
         pipeline_timings_s["meander_planning"] = (
             time.perf_counter() - t_meander_planning_start
         )
+        if analysis_info is not None:
+            analysis_info["matching_group_diagnostics"] = (
+                matching_group_diagnostics_to_info(analysis, meander_report_info)
+            )
 
     if debug_artifacts.realization_grid_spec is None:
         raise RuntimeError("Missing realization grid spec from routing phase.")
