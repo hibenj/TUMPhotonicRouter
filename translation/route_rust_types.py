@@ -753,3 +753,4 @@ class RouteRustPipelineResult:
     path_length_analysis_info: dict[str, object] | None = None
     meander_requirements_info: list[dict[str, object]] | None = None
     meander_insertion_report_info: dict[str, object] | None = None
+    pipeline_timings_s: dict[str, float] = field(default_factory=dict)

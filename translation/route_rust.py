@@ -120,11 +120,7 @@ def route_match_and_realize(
             populate_obstacle_map=False,
         )
 
-    t_route_nets_start = 0.0
-    collect_timing = debug_timing or collect_route_stats or collect_attempt_diagnostics
-
-    if collect_timing:
-        t_route_nets_start = time.perf_counter()
+    t_route_nets_start = time.perf_counter()
     routed_layout, debug_artifacts = route_nets_rust(
         unrouted_layout,
         schematic,
@@ -149,25 +145,30 @@ def route_match_and_realize(
         ripup_reroute_config=ripup_reroute_config,
         defer_realization=True,
     )
+    pipeline_timings_s: dict[str, float] = {
+        "route_nets": time.perf_counter() - t_route_nets_start,
+    }
     if debug_timing:
-        t_route_nets_end = time.perf_counter()
-        print(f"      - route_nets_rust phase: {t_route_nets_end - t_route_nets_start:.4f} s")
+        print(f"      - route_nets_rust phase: {pipeline_timings_s['route_nets']:.4f} s")
 
     analysis_info = None
     requirements_info = None
     meander_report_info = None
     records_for_realization = debug_artifacts.routed_net_records
     if enable_path_length_matching:
+        t_analysis_start = time.perf_counter()
         analysis, requirements = analyze_path_length_matching(
             schematic,
             routed_net_records=debug_artifacts.routed_net_records,
             node_types=node_types,
             internal_delays_um=internal_delays_um,
         )
+        pipeline_timings_s["path_length_analysis"] = time.perf_counter() - t_analysis_start
         analysis_info = analysis_to_info_dict(analysis)
         requirements_info = [requirement_to_dict(req) for req in requirements]
         if debug_artifacts.realization_grid_spec is None:
             raise RuntimeError("Missing realization grid spec from routing phase.")
+        t_meander_obstacle_start = time.perf_counter()
         resolved_user_obstacle_config = _resolve_obstacle_config(
             obstacle_config,
             route_layer=route_layer,
@@ -188,7 +189,11 @@ def route_match_and_realize(
             config=meander_obstacle_config,
         )
         meander_static_blocked_cells = tuple(sorted(set(meander_obstacle_map.blocked_cells)))
+        pipeline_timings_s["meander_obstacle_map"] = (
+            time.perf_counter() - t_meander_obstacle_start
+        )
 
+        t_meander_planning_start = time.perf_counter()
         records_for_realization, meander_report_info = analyze_meander_insertion_for_requirements(
             debug_artifacts.routed_net_records,
             requirements,
@@ -201,12 +206,13 @@ def route_match_and_realize(
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
             static_blocked_cells=meander_static_blocked_cells,
         )
+        pipeline_timings_s["meander_planning"] = (
+            time.perf_counter() - t_meander_planning_start
+        )
 
     if debug_artifacts.realization_grid_spec is None:
         raise RuntimeError("Missing realization grid spec from routing phase.")
-    t_realization_start = 0.0
-    if debug_timing:
-        t_realization_start = time.perf_counter()
+    t_realization_start = time.perf_counter()
     realize_routed_net_records(
         routed_layout,
         records_for_realization,
@@ -216,9 +222,10 @@ def route_match_and_realize(
         allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
         bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
     )
+    t_realization_end = time.perf_counter()
+    pipeline_timings_s["route_realization"] = t_realization_end - t_realization_start
     if debug_timing:
-        t_realization_end = time.perf_counter()
-        print(f"      - route realization phase: {t_realization_end - t_realization_start:.4f} s")
+        print(f"      - route realization phase: {pipeline_timings_s['route_realization']:.4f} s")
 
     return RouteRustPipelineResult(
         routed_layout=routed_layout,
@@ -226,6 +233,7 @@ def route_match_and_realize(
         path_length_analysis_info=analysis_info,
         meander_requirements_info=requirements_info,
         meander_insertion_report_info=meander_report_info,
+        pipeline_timings_s=pipeline_timings_s,
     )
 
 

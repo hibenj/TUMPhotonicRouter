@@ -769,6 +769,8 @@ def run_routing_flow(
         stats.step_times_s["baseline_gdsfactory_routing"] = route_time
         if "build_static_obstacle_map" not in stats.step_times_s:
             stats.step_times_s["build_static_obstacle_map"] = 0.0
+        for name, elapsed_s in getattr(route_result, "pipeline_timings_s", {}).items():
+            stats.step_times_s[str(name)] = float(elapsed_s)
         if debug_artifacts.realization_grid_spec is not None:
             width, height, *_ = debug_artifacts.realization_grid_spec
             stats.static_grid_width = int(width)
@@ -889,6 +891,15 @@ def run_routing_flow(
                 f"inserted={total_inserted:.3f}um, "
                 f"unmatched={unmatched:.3f}um"
             )
+            if debug_timing:
+                timings = getattr(route_result, "pipeline_timings_s", {})
+                if timings:
+                    print(
+                        "      - Path-length timing: "
+                        f"analysis={float(timings.get('path_length_analysis', 0.0)):.4f}s, "
+                        f"obstacles={float(timings.get('meander_obstacle_map', 0.0)):.4f}s, "
+                        f"planning={float(timings.get('meander_planning', 0.0)):.4f}s"
+                    )
             if debug_meanders:
                 for entry in report.get("results", []):
                     edge = entry.get("edge", {})

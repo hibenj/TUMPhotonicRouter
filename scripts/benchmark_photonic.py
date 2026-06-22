@@ -216,6 +216,17 @@ def _format_percent(value: float | None) -> str:
     return f"{100.0 * value:.2f}%"
 
 
+def _format_status_counts(value: object) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    parts = []
+    for key in sorted(value):
+        count = value.get(key, 0)
+        if isinstance(count, (str, bytes, bytearray, int, float)):
+            parts.append(f"{key}:{int(count):,}")
+    return " ".join(parts)
+
+
 def _flatten_attempt_records(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     flattened: list[dict[str, object]] = []
     for row in rows:
@@ -246,7 +257,7 @@ def _write_attempt_output(rows: Iterable[dict[str, object]], output_path: Path) 
 
 def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str, object]:
     stats = RoutingFlowStats()
-    run_routing_flow(
+    routed_layout = run_routing_flow(
         benchmark,
         debug_svgs=False,
         debug_timing=False,
@@ -270,6 +281,18 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         ),
         stats=stats,
     )
+    meander_report = getattr(routed_layout, "info", {}).get("meander_insertion_report", {})
+    if not isinstance(meander_report, Mapping):
+        meander_report = {}
+    meander_results = meander_report.get("results", [])
+    if not isinstance(meander_results, list):
+        meander_results = []
+    meander_status_counts: dict[str, int] = {}
+    for result in meander_results:
+        if not isinstance(result, Mapping):
+            continue
+        status = str(result.get("status", "unknown"))
+        meander_status_counts[status] = meander_status_counts.get(status, 0) + 1
     return {
         "benchmark": benchmark,
         "instances": stats.instance_count,
@@ -284,7 +307,23 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "load_s": stats.step_times_s.get("load_benchmark"),
         "layout_s": stats.step_times_s.get("layout_from_schematic"),
         "route_s": stats.step_times_s.get("baseline_gdsfactory_routing"),
+        "route_nets_s": stats.step_times_s.get("route_nets"),
+        "path_length_analysis_s": stats.step_times_s.get("path_length_analysis"),
+        "meander_obstacle_map_s": stats.step_times_s.get("meander_obstacle_map"),
+        "meander_planning_s": stats.step_times_s.get("meander_planning"),
+        "route_realization_s": stats.step_times_s.get("route_realization"),
         "astar_s": stats.astar_time_s,
+        "meander_requirements": len(
+            getattr(routed_layout, "info", {}).get("meander_requirements", [])
+            if isinstance(getattr(routed_layout, "info", {}).get("meander_requirements", []), list)
+            else []
+        ),
+        "meander_planner_calls": meander_report.get("planner_calls"),
+        "meander_requested_um": meander_report.get("total_requested_extra_length_um"),
+        "meander_inserted_um": meander_report.get("total_inserted_extra_length_um"),
+        "meander_disregarded_um": meander_report.get("total_disregarded_extra_length_um"),
+        "meander_unmatched_um": meander_report.get("unmatched_length_um"),
+        "meander_status_counts": meander_status_counts,
         "route_attempts": stats.route_attempts,
         "route_failures": stats.route_failures,
         "simple_routes": stats.simple_route_count,
@@ -430,6 +469,56 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 fallbacks=_format_int(row["full_grid_fallbacks"]),
             )
         )
+    plm_rows = [
+        row
+        for row in rows
+        if bool(args.path_length_matching)
+        or row.get("path_length_analysis_s") is not None
+        or row.get("meander_requirements") not in (None, 0)
+    ]
+    if plm_rows:
+        lines.extend(
+            [
+                "",
+                "## Path-Length Matching",
+                "",
+                "| Benchmark | Requirements | Planner calls | Requested um | Inserted um | Disregarded um | Unmatched um | Analysis s | Obstacle s | Planning s | Realization s | Statuses |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for row in plm_rows:
+            lines.append(
+                "| {benchmark} | {requirements} | {planner_calls} | {requested} | {inserted} | {disregarded} | {unmatched} | {analysis_s} | {obstacle_s} | {planning_s} | {realization_s} | {statuses} |".format(
+                    benchmark=row["benchmark"],
+                    requirements=_format_int(row.get("meander_requirements")),
+                    planner_calls=_format_int(row.get("meander_planner_calls")),
+                    requested=_format_seconds(
+                        _record_seconds(row, "meander_requested_um")
+                    ),
+                    inserted=_format_seconds(
+                        _record_seconds(row, "meander_inserted_um")
+                    ),
+                    disregarded=_format_seconds(
+                        _record_seconds(row, "meander_disregarded_um")
+                    ),
+                    unmatched=_format_seconds(
+                        _record_seconds(row, "meander_unmatched_um")
+                    ),
+                    analysis_s=_format_seconds(
+                        _record_seconds(row, "path_length_analysis_s")
+                    ),
+                    obstacle_s=_format_seconds(
+                        _record_seconds(row, "meander_obstacle_map_s")
+                    ),
+                    planning_s=_format_seconds(
+                        _record_seconds(row, "meander_planning_s")
+                    ),
+                    realization_s=_format_seconds(
+                        _record_seconds(row, "route_realization_s")
+                    ),
+                    statuses=_format_status_counts(row.get("meander_status_counts")),
+                )
+            )
     all_attempts = _flatten_attempt_records(rows)
     slow_attempts = sorted(
         (

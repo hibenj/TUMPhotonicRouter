@@ -24,7 +24,19 @@ def _row_with_attempts() -> dict[str, object]:
         "grid": "10x10",
         "total_s": 1.0,
         "route_s": 0.9,
+        "route_nets_s": 0.7,
+        "path_length_analysis_s": None,
+        "meander_obstacle_map_s": None,
+        "meander_planning_s": None,
+        "route_realization_s": 0.2,
         "astar_s": 0.8,
+        "meander_requirements": 0,
+        "meander_planner_calls": None,
+        "meander_requested_um": None,
+        "meander_inserted_um": None,
+        "meander_disregarded_um": None,
+        "meander_unmatched_um": None,
+        "meander_status_counts": {},
         "route_attempts": 2,
         "simple_routes": 1,
         "repairs": 1,
@@ -171,6 +183,44 @@ def test_markdown_report_includes_diagnostics_when_available():
     assert "87.50%" in report
     assert "12.50%" in report
     assert "25.00%" in report
+
+
+def test_markdown_report_includes_path_length_matching_section():
+    module = _load_benchmark_photonic_module()
+    args = module.argparse.Namespace(
+        path_length_matching=True,
+        allow_45_degree_turns=False,
+        include_heater_obstacles=True,
+        obstacle_mode="bounding_boxes",
+        max_iterations=5_000_000,
+        routing_window_scale=0.05,
+        use_indexed_heap=False,
+        primitive_ordering="library",
+        heuristic_mode="distance",
+        heap_tie_breaker="smaller_g",
+    )
+    row = _row_with_attempts()
+    row.update(
+        {
+            "path_length_analysis_s": 0.01,
+            "meander_obstacle_map_s": 0.02,
+            "meander_planning_s": 0.03,
+            "route_realization_s": 0.04,
+            "meander_requirements": 2,
+            "meander_planner_calls": 1,
+            "meander_requested_um": 30.0,
+            "meander_inserted_um": 20.0,
+            "meander_disregarded_um": 5.0,
+            "meander_unmatched_um": 10.0,
+            "meander_status_counts": {"planned": 1, "below_minimum_bump": 1},
+        }
+    )
+
+    report = module._markdown_report([row], args)
+
+    assert "Path-Length Matching" in report
+    assert "planned:1" in report
+    assert "below_minimum_bump:1" in report
 
 
 def test_parser_defaults_keep_losing_experiments_gated(monkeypatch):
