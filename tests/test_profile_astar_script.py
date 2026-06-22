@@ -64,7 +64,12 @@ def test_two_object_port_scenarios_cover_all_cardinal_pairs():
 
 def test_markdown_report_contains_route_stats_columns():
     module = _load_profile_astar_module()
-    args = module.argparse.Namespace(iterations=3, warmup=1, use_indexed_heap=False)
+    args = module.argparse.Namespace(
+        iterations=3,
+        warmup=1,
+        use_indexed_heap=False,
+        primitive_ordering="library",
+    )
     report = module._markdown_report(
         [
             {

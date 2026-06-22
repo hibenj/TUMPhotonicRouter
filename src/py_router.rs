@@ -5,7 +5,7 @@ use rustc_hash::FxHashSet;
 
 use crate::astar::{
     export_route_svg, route_single_net_with_config, try_simple_route_with_config, AStarConfig,
-    RouteResult, RouteSearchStats, State,
+    PrimitiveOrdering, RouteResult, RouteSearchStats, State,
 };
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
@@ -184,11 +184,13 @@ pub struct PyAStarConfig {
     pub enable_jps4: bool,
     #[pyo3(get, set)]
     pub use_indexed_heap: bool,
+    #[pyo3(get, set)]
+    pub primitive_ordering: String,
 }
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false))]
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string()))]
     fn new(
         max_iterations: usize,
         bend_weight: f64,
@@ -206,6 +208,7 @@ impl PyAStarConfig {
         history_weight: f64,
         collect_detailed_timing: bool,
         use_indexed_heap: bool,
+        primitive_ordering: String,
     ) -> Self {
         Self {
             max_iterations,
@@ -228,6 +231,7 @@ impl PyAStarConfig {
             collect_detailed_timing,
             enable_jps4: false,
             use_indexed_heap,
+            primitive_ordering,
         }
     }
 }
@@ -495,6 +499,17 @@ fn allowed_angles_to_mask(angles: Option<&Vec<u8>>) -> PyResult<Option<u8>> {
     Ok(Some(mask))
 }
 
+fn parse_primitive_ordering(value: &str) -> PyResult<PrimitiveOrdering> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "library" => Ok(PrimitiveOrdering::Library),
+        "long_straight_first" => Ok(PrimitiveOrdering::LongStraightFirst),
+        "target_biased" => Ok(PrimitiveOrdering::TargetBiased),
+        _ => Err(PyValueError::new_err(
+            "primitive_ordering must be one of 'library', 'long_straight_first', or 'target_biased'",
+        )),
+    }
+}
+
 fn astar_config_from_py(
     astar_cfg: &PyAStarConfig,
     primitive_cfg: &PyPrimitiveLibraryConfig,
@@ -504,6 +519,7 @@ fn astar_config_from_py(
 ) -> PyResult<AStarConfig> {
     let allowed_target_angles_mask =
         allowed_angles_to_mask(astar_cfg.allowed_target_angles.as_ref())?;
+    let primitive_ordering = parse_primitive_ordering(&astar_cfg.primitive_ordering)?;
     Ok(AStarConfig {
         max_iterations: astar_cfg.max_iterations,
         bend_weight: astar_cfg.bend_weight * primitive_cfg.bend_weight,
@@ -527,6 +543,7 @@ fn astar_config_from_py(
         collect_detailed_timing: astar_cfg.collect_detailed_timing,
         enable_jps4: astar_cfg.enable_jps4,
         use_indexed_heap: astar_cfg.use_indexed_heap,
+        primitive_ordering,
     })
 }
 
@@ -2352,8 +2369,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
@@ -2374,8 +2406,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -2458,8 +2505,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -2559,8 +2621,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 1, 12, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -2651,8 +2728,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -2738,8 +2830,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -2763,8 +2870,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 1, 12, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -2864,8 +2986,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -2954,8 +3091,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -3043,8 +3195,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let eff = router.effective_bend_radius_um(None).unwrap();
@@ -3058,8 +3225,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let eff = router.effective_bend_radius_um(Some(1.1)).unwrap();
@@ -3074,8 +3256,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         Python::with_gil(|py| {
@@ -3106,8 +3303,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -3242,8 +3454,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 60, 60, 2, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -3359,8 +3586,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 26, 26, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         Python::with_gil(|py| {
@@ -3415,8 +3657,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 26, 26, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let err = Python::with_gil(|py| {
@@ -3454,8 +3711,23 @@ mod tests {
             grid,
             PyPrimitiveLibraryConfig::new(1.0, 26, 26, 1, 1.0, true),
             PyAStarConfig::new(
-                10000, 1.0, 0, true, None, true, 12, 0.35, 3, true, 0.5, 10_000_000, false, 0.0,
-                false, false,
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                false,
+                false,
+                "library".to_string(),
             ),
         );
         let reserved_cells: Vec<(i32, i32)> = Python::with_gil(|py| {

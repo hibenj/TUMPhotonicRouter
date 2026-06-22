@@ -110,6 +110,7 @@ def test_markdown_report_includes_slowest_route_attempts():
         max_iterations=5_000_000,
         routing_window_scale=0.05,
         use_indexed_heap=False,
+        primitive_ordering="library",
     )
 
     report = module._markdown_report([_row_with_attempts()], args)

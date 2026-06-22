@@ -18,6 +18,8 @@ Useful variants:
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --path-length-matching --include-heater-obstacles --ripup-reroute
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --attempt-output build/profiles/photonic_attempts.csv
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --use-indexed-heap
+.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --primitive-ordering long_straight_first
+.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --primitive-ordering target_biased
 .venv/bin/python scripts/benchmark_photonic.py --output docs/photonic_baseline.md --include-heater-obstacles --ripup-reroute
 ```
 
@@ -49,6 +51,13 @@ pushing duplicate entries for every improved cost. A successful queue
 optimization run should reduce stale-generation heap skips and maximum heap
 size while preserving route success and route cost.
 
+Use `--primitive-ordering` to compare behavior-preserving primitive iteration
+orders. `library` preserves primitive-library order, `long_straight_first`
+tries long straight transitions before short straight transitions, and
+`target_biased` sorts each state's primitives by one-step cost plus target
+heuristic. These modes should preserve route success and route cost; benchmark
+them before considering any default change.
+
 ## Isolated Rust A*
 
 Use this when measuring only synthetic Rust A* routing scenarios through the PyO3
@@ -65,6 +74,7 @@ Useful variants:
 .venv/bin/python scripts/profile_astar.py --output build/profiles/astar.md --json-output build/profiles/astar.json
 .venv/bin/python scripts/profile_astar.py --iterations 5 --warmup 1 --check-baseline
 .venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --use-indexed-heap --iterations 25 --warmup 3
+.venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --primitive-ordering long_straight_first --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py --paired-comparison --iterations 25 --warmup 3
 ```
 

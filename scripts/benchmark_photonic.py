@@ -215,6 +215,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         enable_path_length_matching=args.path_length_matching,
         allow_45_degree_turns=args.allow_45_degree_turns,
         use_indexed_heap=args.use_indexed_heap,
+        primitive_ordering=args.primitive_ordering,
         max_iterations=args.max_iterations,
         routing_window_scale=args.routing_window_scale,
         include_heater_obstacles=args.include_heater_obstacles,
@@ -285,6 +286,8 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         str(args.waveguide_clearance_um),
         "--heater-clearance-um",
         str(args.heater_clearance_um),
+        "--primitive-ordering",
+        args.primitive_ordering,
     ]
     if args.use_indexed_heap:
         command.append("--use-indexed-heap")
@@ -339,6 +342,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Max iterations: `{args.max_iterations}`",
         f"- Routing window scale: `{args.routing_window_scale}`",
         f"- Indexed heap: `{args.use_indexed_heap}`",
+        f"- Primitive ordering: `{args.primitive_ordering}`",
         "",
         "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Obstacle checks | Footprint rect checks | Full fallback |",
         "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -457,6 +461,12 @@ def _parse_args() -> argparse.Namespace:
         "--use-indexed-heap",
         action="store_true",
         help="Use the experimental decrease-key indexed heap for dense A*.",
+    )
+    parser.add_argument(
+        "--primitive-ordering",
+        choices=("library", "long_straight_first", "target_biased"),
+        default="library",
+        help="Dense A* primitive iteration order experiment.",
     )
     parser.add_argument("--obstacle-mode", default="bounding_boxes")
     parser.add_argument("--waveguide-clearance-um", type=float, default=0.5)

@@ -10,8 +10,7 @@ use std::time::Instant;
 use rustc_hash::FxHashSet;
 
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
-use crate::primitives::PrimitiveGeometry;
-use crate::primitives::PrimitiveLibrary;
+use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary};
 use crate::simple_routes::{
     direction_between as simple_direction_between, expand_candidate_to_grid_points,
     try_straight_l_or_z_candidate_with_config, GridPoint, SimpleRouteCandidate, SimpleZRouteConfig,
@@ -59,6 +58,7 @@ pub struct AStarConfig {
     pub collect_detailed_timing: bool,
     pub enable_jps4: bool,
     pub use_indexed_heap: bool,
+    pub primitive_ordering: PrimitiveOrdering,
 }
 
 impl Default for AStarConfig {
@@ -85,8 +85,17 @@ impl Default for AStarConfig {
             collect_detailed_timing: false,
             enable_jps4: false,
             use_indexed_heap: false,
+            primitive_ordering: PrimitiveOrdering::Library,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PrimitiveOrdering {
+    #[default]
+    Library,
+    LongStraightFirst,
+    TargetBiased,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1916,6 +1925,102 @@ fn primitive_transition_class(geometry: &PrimitiveGeometry, dx: i32, dy: i32) ->
     }
 }
 
+fn fixed_primitive_order(len: usize) -> ([usize; 8], usize) {
+    let mut order = [0usize; 8];
+    for (idx, slot) in order.iter_mut().enumerate().take(len.min(8)) {
+        *slot = idx;
+    }
+    (order, len.min(8))
+}
+
+fn primitive_class_order_rank(class: usize) -> usize {
+    match class {
+        PRIMITIVE_STRAIGHT_LONG => 0,
+        PRIMITIVE_STRAIGHT_SHORT => 1,
+        PRIMITIVE_BEND_45 => 2,
+        PRIMITIVE_BEND_90 => 3,
+        _ => 4,
+    }
+}
+
+fn target_biased_primitive_score(
+    primitive: &Primitive,
+    state: State,
+    target: State,
+    grid_size_um: f64,
+    bend_weight: f64,
+) -> f64 {
+    let Some(next_x) = state.x.checked_add(primitive.dx) else {
+        return f64::INFINITY;
+    };
+    let Some(next_y) = state.y.checked_add(primitive.dy) else {
+        return f64::INFINITY;
+    };
+    primitive.length_um
+        + bend_weight * primitive.bend_cost
+        + heuristic(
+            State::new(next_x, next_y, primitive.end_angle),
+            target,
+            grid_size_um,
+        )
+}
+
+fn primitive_iteration_order(
+    primitives: &[Primitive],
+    state: State,
+    target: State,
+    grid_size_um: f64,
+    bend_weight: f64,
+    ordering: PrimitiveOrdering,
+) -> ([usize; 8], usize) {
+    let (mut order, len) = fixed_primitive_order(primitives.len());
+    match ordering {
+        PrimitiveOrdering::Library => {}
+        PrimitiveOrdering::LongStraightFirst => {
+            order[..len].sort_by(|a, b| {
+                let a_primitive = &primitives[*a];
+                let b_primitive = &primitives[*b];
+                let a_class = primitive_transition_class(
+                    &a_primitive.geometry,
+                    a_primitive.dx,
+                    a_primitive.dy,
+                );
+                let b_class = primitive_transition_class(
+                    &b_primitive.geometry,
+                    b_primitive.dx,
+                    b_primitive.dy,
+                );
+                primitive_class_order_rank(a_class)
+                    .cmp(&primitive_class_order_rank(b_class))
+                    .then_with(|| a.cmp(b))
+            });
+        }
+        PrimitiveOrdering::TargetBiased => {
+            order[..len].sort_by(|a, b| {
+                let a_score = target_biased_primitive_score(
+                    &primitives[*a],
+                    state,
+                    target,
+                    grid_size_um,
+                    bend_weight,
+                );
+                let b_score = target_biased_primitive_score(
+                    &primitives[*b],
+                    state,
+                    target,
+                    grid_size_um,
+                    bend_weight,
+                );
+                a_score
+                    .partial_cmp(&b_score)
+                    .unwrap_or(Ordering::Equal)
+                    .then_with(|| a.cmp(b))
+            });
+        }
+    }
+    (order, len)
+}
+
 fn route_single_net_with_bounds(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
@@ -2071,7 +2176,17 @@ fn route_single_net_with_bounds(
         };
         let mut neighbor_loop_heap_time_us = 0u128;
         let mut neighbor_loop_legality_time_us = 0u128;
-        for (primitive, profile) in primitive_bucket.iter().zip(footprint_profiles.iter()) {
+        let (primitive_order, primitive_order_len) = primitive_iteration_order(
+            primitive_bucket,
+            state,
+            target,
+            primitives.grid_size_um(),
+            config.bend_weight,
+            config.primitive_ordering,
+        );
+        for primitive_idx in primitive_order.into_iter().take(primitive_order_len) {
+            let primitive = &primitive_bucket[primitive_idx];
+            let profile = &footprint_profiles[primitive_idx];
             let primitive_class =
                 primitive_transition_class(&primitive.geometry, primitive.dx, primitive.dy);
             stats.generated_neighbors += 1;
@@ -3041,6 +3156,49 @@ mod tests {
         assert_eq!(indexed_route.stats.stale_generation_heap_entries, 0);
         assert!(duplicate_route.stats.stale_generation_heap_entries > 0);
         assert!(indexed_route.stats.max_heap_size <= duplicate_route.stats.max_heap_size);
+    }
+
+    #[test]
+    fn primitive_ordering_modes_preserve_route_cost_on_forced_detour() {
+        let mut map = ObstacleMap::new(180, 80);
+        for y in 4..=72 {
+            if !(42..=50).contains(&y) {
+                map.add_static_cell(85, y);
+            }
+        }
+        let library = primitive_library_no45_bend2();
+        let source = State::new(12, 20, 0);
+        let target = State::new(160, 20, 0);
+        let base_config = AStarConfig {
+            max_iterations: 500_000,
+            require_target_angle: false,
+            enable_simple_routes: false,
+            routing_window_fallback_full_grid: true,
+            ..AStarConfig::default()
+        };
+        let baseline =
+            route_single_net_with_config(&map, &library, source, target, None, &base_config)
+                .expect("baseline route should exist");
+
+        for primitive_ordering in [
+            PrimitiveOrdering::LongStraightFirst,
+            PrimitiveOrdering::TargetBiased,
+        ] {
+            let result = route_single_net_with_config(
+                &map,
+                &library,
+                source,
+                target,
+                None,
+                &AStarConfig {
+                    primitive_ordering,
+                    ..base_config.clone()
+                },
+            )
+            .expect("ordered route should exist");
+            assert_eq!(result.reached_target, baseline.reached_target);
+            assert!((result.total_cost - baseline.total_cost).abs() < 1.0e-9);
+        }
     }
 
     #[test]

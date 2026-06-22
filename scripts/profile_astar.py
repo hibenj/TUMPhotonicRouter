@@ -50,6 +50,7 @@ class AStarScenario:
     max_iterations: int = 500_000
     enable_jps4: bool = False
     use_indexed_heap: bool = False
+    primitive_ordering: str = "library"
     primitive_mode: str = "photonic"
 
 
@@ -80,6 +81,7 @@ class RustBackend(Protocol):
         routing_window_fallback_full_grid: bool,
         collect_detailed_timing: bool,
         use_indexed_heap: bool,
+        primitive_ordering: str,
     ) -> Any: ...
 
     def PyPhotonicRouter(self, grid: object, primitive: object, astar: Any) -> Any: ...
@@ -366,6 +368,7 @@ def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
         routing_window_fallback_full_grid=scenario.routing_window_fallback_full_grid,
         collect_detailed_timing=True,
         use_indexed_heap=scenario.use_indexed_heap,
+        primitive_ordering=scenario.primitive_ordering,
     )
     astar.enable_simple_routes = scenario.enable_simple_routes
     astar.enable_jps4 = scenario.enable_jps4
@@ -496,6 +499,7 @@ def run_scenario(
         "jps4_fallbacks": _route_stat(last_route, "jps4_fallbacks"),
         "jps4_fallback_reason": str(getattr(last_route, "jps4_fallback_reason", "")),
         "indexed_heap": scenario.use_indexed_heap,
+        "primitive_ordering": scenario.primitive_ordering,
         "full_grid_fallback": bool(_route_stat(last_route, "used_full_grid_fallback")),
         "route_cells": len(getattr(last_route, "cells", [])),
         "route_length_um": float(getattr(last_route, "total_length_um", 0.0)),
@@ -578,6 +582,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Iterations: `{args.iterations}`",
         f"- Warmup: `{args.warmup}`",
         f"- Indexed heap: `{getattr(args, 'use_indexed_heap', False)}`",
+        f"- Primitive ordering: `{getattr(args, 'primitive_ordering', 'library')}`",
         "",
         "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Primitive gen | Primitive accepted | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
@@ -786,6 +791,12 @@ def _parse_args() -> argparse.Namespace:
         help="Use the experimental decrease-key indexed heap for dense A*.",
     )
     parser.add_argument(
+        "--primitive-ordering",
+        choices=("library", "long_straight_first", "target_biased"),
+        default="library",
+        help="Dense A* primitive iteration order experiment.",
+    )
+    parser.add_argument(
         "--paired-comparison",
         action="store_true",
         help=(
@@ -851,6 +862,11 @@ def main() -> int:
     if args.use_indexed_heap:
         catalog = {
             name: replace(scenario, use_indexed_heap=True)
+            for name, scenario in catalog.items()
+        }
+    if args.primitive_ordering != "library":
+        catalog = {
+            name: replace(scenario, primitive_ordering=args.primitive_ordering)
             for name, scenario in catalog.items()
         }
     rows = [
