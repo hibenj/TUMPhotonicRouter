@@ -130,6 +130,12 @@ pub struct RouteSearchStats {
     pub heap_pushes: usize,
     pub heap_pops: usize,
     pub skipped_duplicate_heap_entries: usize,
+    pub stale_generation_heap_entries: usize,
+    pub closed_heap_entries: usize,
+    pub max_heap_size: usize,
+    pub dense_search_states: usize,
+    pub best_cost_updates: usize,
+    pub parent_updates: usize,
     pub obstacle_clearance_checks: usize,
     pub window_rejects: usize,
     pub footprint_rejects: usize,
@@ -292,6 +298,10 @@ impl DenseSearchStorage {
             parent_primitive: vec![0; state_count],
             closed: DenseBitset::new(state_count)?,
         })
+    }
+
+    fn state_count(&self) -> usize {
+        self.g_costs.len()
     }
 
     fn state_to_idx(&self, state: State) -> Option<usize> {
@@ -1210,10 +1220,12 @@ fn route_single_net_jps4(
     let mut closed = DenseBitset::new(cell_count)?;
     let mut open_set = BinaryHeap::new();
     let mut counter = 0u64;
+    stats.dense_search_states = cell_count;
 
     let source_idx = dense_grid.idx_of(source.x, source.y)?;
     let target_point = (target.x, target.y);
     g_costs[source_idx] = 0.0;
+    stats.best_cost_updates += 1;
     open_set.push(OpenEntry {
         f_score: jps4_heuristic(source.x, source.y, target_point, grid_size_um),
         g_score: 0.0,
@@ -1222,6 +1234,7 @@ fn route_single_net_jps4(
         idx: source_idx,
     });
     stats.heap_pushes += 1;
+    stats.max_heap_size = stats.max_heap_size.max(open_set.len());
     counter += 1;
 
     let mut reached_idx = None;
@@ -1234,6 +1247,7 @@ fn route_single_net_jps4(
         }
         if closed.get(entry.idx) {
             stats.skipped_duplicate_heap_entries += 1;
+            stats.closed_heap_entries += 1;
             continue;
         }
         closed.set(entry.idx)?;
@@ -1261,6 +1275,8 @@ fn route_single_net_jps4(
             }
             g_costs[jump_idx] = tentative_g;
             parent_idx[jump_idx] = u32::try_from(entry.idx).ok()?;
+            stats.best_cost_updates += 1;
+            stats.parent_updates += 1;
             open_set.push(OpenEntry {
                 f_score: tentative_g + jps4_heuristic(jump_x, jump_y, target_point, grid_size_um),
                 g_score: tentative_g,
@@ -1269,6 +1285,7 @@ fn route_single_net_jps4(
                 idx: jump_idx,
             });
             stats.heap_pushes += 1;
+            stats.max_heap_size = stats.max_heap_size.max(open_set.len());
             counter += 1;
         }
     }
@@ -1754,6 +1771,7 @@ fn route_single_net_with_bounds(
     };
 
     let mut storage = DenseSearchStorage::new(bounds, config.max_dense_states)?;
+    stats.dense_search_states = storage.state_count();
     let dense_grid = match DenseRoutingGrid::from_obstacle_map(
         obstacle_map,
         bounds,
@@ -1788,6 +1806,7 @@ fn route_single_net_with_bounds(
 
     storage.g_costs[source_idx] = 0.0;
     storage.best_generation[source_idx] = counter;
+    stats.best_cost_updates += 1;
     let source_entry = OpenEntry {
         f_score: heuristic(source, target, primitives.grid_size_um()),
         g_score: 0.0,
@@ -1803,6 +1822,7 @@ fn route_single_net_with_bounds(
         open_set.push(source_entry);
     }
     stats.heap_pushes += 1;
+    stats.max_heap_size = stats.max_heap_size.max(open_set.len());
     counter += 1;
 
     let mut iterations = 0usize;
@@ -1827,10 +1847,12 @@ fn route_single_net_with_bounds(
         let idx = entry.idx;
         if storage.best_generation[idx] != entry.generation {
             stats.skipped_duplicate_heap_entries += 1;
+            stats.stale_generation_heap_entries += 1;
             continue;
         }
         if storage.closed.get(idx) {
             stats.skipped_duplicate_heap_entries += 1;
+            stats.closed_heap_entries += 1;
             continue;
         }
         let state = storage.idx_to_state(idx);
@@ -1955,6 +1977,8 @@ fn route_single_net_with_bounds(
             storage.parent_primitive[next_idx] = primitive.id;
             storage.g_costs[next_idx] = tentative_g;
             storage.best_generation[next_idx] = counter;
+            stats.best_cost_updates += 1;
+            stats.parent_updates += 1;
             let next_entry = OpenEntry {
                 f_score: tentative_g + heuristic(next_state, target, primitives.grid_size_um()),
                 g_score: tentative_g,
@@ -1972,6 +1996,7 @@ fn route_single_net_with_bounds(
                 open_set.push(next_entry);
             }
             stats.heap_pushes += 1;
+            stats.max_heap_size = stats.max_heap_size.max(open_set.len());
             counter += 1;
         }
         if let Some(neighbor_loop_start) = neighbor_loop_start {

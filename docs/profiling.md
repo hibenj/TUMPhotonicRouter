@@ -31,8 +31,10 @@ includes the attempt bucket (`normal_route`, `probe_route`,
 `repair_failed_net`, or `reroute_victims`), net name, elapsed time, failure
 state, repair round, expanded states, generated neighbors, heap push/pop
 counts, duplicate heap skips, obstacle/clearance checks, routing-window
-bounds/area, footprint rectangle checks, dense-grid build time, and fallback
-flags. The Markdown report also shows the slowest non-simple attempts inline.
+bounds/area, heap stale-skip split, maximum heap size, dense search-state
+count, cost/parent update counts, footprint rectangle checks, dense-grid build
+time, and fallback flags. The Markdown report also shows the slowest non-simple
+attempts inline.
 
 The Python routing flow defaults to `--routing-window-scale 0.05` after the
 window-diagnostic pass. On `mmi_heater_8x4_ripup_reroute`, this reduced route
@@ -60,10 +62,11 @@ Useful variants:
 
 The A* profile reports median and p95 wall time plus Rust route counters such as
 expanded states, generated neighbors, heap pushes/pops, skipped duplicate heap
-entries, obstacle/clearance checks, footprint checks, dense-grid build time,
-neighbor-generation time, heap-operation time, legality-check time,
-reconstruction time, full-grid fallback use, target-state match, route cells,
-and route length.
+entries, stale-generation versus already-closed heap skips, maximum heap size,
+dense search-state count, cost/parent update counts, obstacle/clearance checks,
+footprint checks, dense-grid build time, neighbor-generation time,
+heap-operation time, legality-check time, reconstruction time, full-grid
+fallback use, target-state match, route cells, and route length.
 
 The isolated profiler enables detailed Rust timing buckets explicitly. Normal
 routing keeps detailed timing disabled by default so production runs still
@@ -72,10 +75,11 @@ collect counters without paying per-operation timing overhead.
 The end-to-end photonic benchmark also collects quiet A* route-search counters
 through `RoutingFlowStats`. Its Markdown report includes route attempts,
 simple-route count, repair count, expanded states, generated neighbors, heap
-push/pop counts, duplicate heap skips, obstacle/clearance checks, footprint
-rectangle checks, full-grid fallbacks, and aggregate A* search time. The worker
-JSON rows additionally include load/layout time and the Rust timing buckets for
-neighbor generation, heap operations, legality checks, and reconstruction.
+push/pop counts, duplicate heap skips, stale-skip split, maximum heap size,
+obstacle/clearance checks, footprint rectangle checks, full-grid fallbacks, and
+aggregate A* search time. The worker JSON rows additionally include load/layout
+time and the Rust timing buckets for neighbor generation, heap operations,
+legality checks, and reconstruction.
 
 Use `--paired-comparison` to run selected scenarios twice: once with baseline
 A* and once with the accelerator flag requested. When no scenario names are

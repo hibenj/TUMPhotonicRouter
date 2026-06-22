@@ -427,6 +427,15 @@ def run_scenario(
         "heap_pushes": _route_stat(last_route, "heap_pushes"),
         "heap_pops": _route_stat(last_route, "heap_pops"),
         "duplicate_heap_skips": _route_stat(last_route, "skipped_duplicate_heap_entries"),
+        "stale_generation_heap_entries": _route_stat(
+            last_route,
+            "stale_generation_heap_entries",
+        ),
+        "closed_heap_entries": _route_stat(last_route, "closed_heap_entries"),
+        "max_heap_size": _route_stat(last_route, "max_heap_size"),
+        "dense_search_states": _route_stat(last_route, "dense_search_states"),
+        "best_cost_updates": _route_stat(last_route, "best_cost_updates"),
+        "parent_updates": _route_stat(last_route, "parent_updates"),
         "obstacle_clearance_checks": _route_stat(last_route, "obstacle_clearance_checks"),
         "window_attempts": _route_stat(last_route, "window_attempts"),
         "window_rejects": _route_stat(last_route, "window_rejects"),
@@ -527,12 +536,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Iterations: `{args.iterations}`",
         f"- Warmup: `{args.warmup}`",
         "",
-        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Heap push/pop | Dup skips | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
+        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {jps4_status} | {jps4_fallback_reason} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
+            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_states} | {best_cost_updates}/{parent_updates} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {jps4_status} | {jps4_fallback_reason} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
                 scenario=row["scenario"],
                 grid=row["grid"],
                 static_cells=row["static_cells"],
@@ -543,6 +552,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 heap_pushes=row["heap_pushes"],
                 heap_pops=row["heap_pops"],
                 duplicate_heap_skips=row["duplicate_heap_skips"],
+                stale_generation_heap_entries=row.get("stale_generation_heap_entries", 0),
+                closed_heap_entries=row.get("closed_heap_entries", 0),
+                max_heap_size=row.get("max_heap_size", 0),
+                dense_search_states=row.get("dense_search_states", 0),
+                best_cost_updates=row.get("best_cost_updates", 0),
+                parent_updates=row.get("parent_updates", 0),
                 obstacle_clearance_checks=row["obstacle_clearance_checks"],
                 footprint_checks=row["footprint_checks"],
                 dense_build_s=_format_seconds(_object_to_float(row["dense_build_s"])),

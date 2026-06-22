@@ -96,6 +96,12 @@ class RouteTimingBucket:
     heap_pushes: int = 0
     heap_pops: int = 0
     skipped_duplicate_heap_entries: int = 0
+    stale_generation_heap_entries: int = 0
+    closed_heap_entries: int = 0
+    max_heap_size: int = 0
+    dense_search_states: int = 0
+    best_cost_updates: int = 0
+    parent_updates: int = 0
     obstacle_clearance_checks: int = 0
     window_attempts: int = 0
     window_rejects: int = 0
@@ -136,6 +142,27 @@ class RouteTimingBucket:
             route_obj,
             "skipped_duplicate_heap_entries",
         )
+        self.stale_generation_heap_entries += _get_route_int_stat(
+            route_obj,
+            "stale_generation_heap_entries",
+        )
+        self.closed_heap_entries += _get_route_int_stat(
+            route_obj,
+            "closed_heap_entries",
+        )
+        self.max_heap_size = max(
+            self.max_heap_size,
+            _get_route_int_stat(route_obj, "max_heap_size"),
+        )
+        self.dense_search_states += _get_route_int_stat(
+            route_obj,
+            "dense_search_states",
+        )
+        self.best_cost_updates += _get_route_int_stat(
+            route_obj,
+            "best_cost_updates",
+        )
+        self.parent_updates += _get_route_int_stat(route_obj, "parent_updates")
         self.obstacle_clearance_checks += _get_route_int_stat(
             route_obj,
             "obstacle_clearance_checks",
@@ -209,6 +236,12 @@ class RouteAttemptRecord:
     heap_pushes: int = 0
     heap_pops: int = 0
     skipped_duplicate_heap_entries: int = 0
+    stale_generation_heap_entries: int = 0
+    closed_heap_entries: int = 0
+    max_heap_size: int = 0
+    dense_search_states: int = 0
+    best_cost_updates: int = 0
+    parent_updates: int = 0
     obstacle_clearance_checks: int = 0
     window_attempts: int = 0
     last_window_min_x: int = 0
@@ -252,6 +285,12 @@ class RouteAttemptRecord:
             "heap_pushes": self.heap_pushes,
             "heap_pops": self.heap_pops,
             "skipped_duplicate_heap_entries": self.skipped_duplicate_heap_entries,
+            "stale_generation_heap_entries": self.stale_generation_heap_entries,
+            "closed_heap_entries": self.closed_heap_entries,
+            "max_heap_size": self.max_heap_size,
+            "dense_search_states": self.dense_search_states,
+            "best_cost_updates": self.best_cost_updates,
+            "parent_updates": self.parent_updates,
             "obstacle_clearance_checks": self.obstacle_clearance_checks,
             "window_attempts": self.window_attempts,
             "last_window_min_x": self.last_window_min_x,
@@ -315,6 +354,18 @@ def route_attempt_record_from_route(
             route_obj,
             "skipped_duplicate_heap_entries",
         ),
+        stale_generation_heap_entries=_get_route_int_stat(
+            route_obj,
+            "stale_generation_heap_entries",
+        ),
+        closed_heap_entries=_get_route_int_stat(
+            route_obj,
+            "closed_heap_entries",
+        ),
+        max_heap_size=_get_route_int_stat(route_obj, "max_heap_size"),
+        dense_search_states=_get_route_int_stat(route_obj, "dense_search_states"),
+        best_cost_updates=_get_route_int_stat(route_obj, "best_cost_updates"),
+        parent_updates=_get_route_int_stat(route_obj, "parent_updates"),
         obstacle_clearance_checks=_get_route_int_stat(
             route_obj,
             "obstacle_clearance_checks",
@@ -372,6 +423,12 @@ class RouteSearchSummary:
     heap_pushes: int = 0
     heap_pops: int = 0
     skipped_duplicate_heap_entries: int = 0
+    stale_generation_heap_entries: int = 0
+    closed_heap_entries: int = 0
+    max_heap_size: int = 0
+    dense_search_states: int = 0
+    best_cost_updates: int = 0
+    parent_updates: int = 0
     obstacle_clearance_checks: int = 0
     footprint_checks: int = 0
     footprint_rejects: int = 0
@@ -424,6 +481,14 @@ def summarize_route_search(
         skipped_duplicate_heap_entries=sum(
             bucket.skipped_duplicate_heap_entries for bucket in buckets
         ),
+        stale_generation_heap_entries=sum(
+            bucket.stale_generation_heap_entries for bucket in buckets
+        ),
+        closed_heap_entries=sum(bucket.closed_heap_entries for bucket in buckets),
+        max_heap_size=max((bucket.max_heap_size for bucket in buckets), default=0),
+        dense_search_states=sum(bucket.dense_search_states for bucket in buckets),
+        best_cost_updates=sum(bucket.best_cost_updates for bucket in buckets),
+        parent_updates=sum(bucket.parent_updates for bucket in buckets),
         obstacle_clearance_checks=sum(
             bucket.obstacle_clearance_checks for bucket in buckets
         ),

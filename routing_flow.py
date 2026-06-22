@@ -76,6 +76,12 @@ class RoutingFlowStats:
     heap_pushes: int = 0
     heap_pops: int = 0
     skipped_duplicate_heap_entries: int = 0
+    stale_generation_heap_entries: int = 0
+    closed_heap_entries: int = 0
+    max_heap_size: int = 0
+    dense_search_states: int = 0
+    best_cost_updates: int = 0
+    parent_updates: int = 0
     obstacle_clearance_checks: int = 0
     footprint_checks: int = 0
     footprint_rect_checks: int = 0
@@ -108,6 +114,12 @@ class RoutingFlowStats:
             "heap_pushes": self.heap_pushes,
             "heap_pops": self.heap_pops,
             "skipped_duplicate_heap_entries": self.skipped_duplicate_heap_entries,
+            "stale_generation_heap_entries": self.stale_generation_heap_entries,
+            "closed_heap_entries": self.closed_heap_entries,
+            "max_heap_size": self.max_heap_size,
+            "dense_search_states": self.dense_search_states,
+            "best_cost_updates": self.best_cost_updates,
+            "parent_updates": self.parent_updates,
             "obstacle_clearance_checks": self.obstacle_clearance_checks,
             "footprint_checks": self.footprint_checks,
             "footprint_rect_checks": self.footprint_rect_checks,
@@ -716,6 +728,14 @@ def run_routing_flow(
         stats.skipped_duplicate_heap_entries = int(
             route_summary.skipped_duplicate_heap_entries
         )
+        stats.stale_generation_heap_entries = int(
+            route_summary.stale_generation_heap_entries
+        )
+        stats.closed_heap_entries = int(route_summary.closed_heap_entries)
+        stats.max_heap_size = int(route_summary.max_heap_size)
+        stats.dense_search_states = int(route_summary.dense_search_states)
+        stats.best_cost_updates = int(route_summary.best_cost_updates)
+        stats.parent_updates = int(route_summary.parent_updates)
         stats.obstacle_clearance_checks = int(route_summary.obstacle_clearance_checks)
         stats.footprint_checks = int(route_summary.footprint_checks)
         stats.footprint_rect_checks = int(route_summary.footprint_rect_checks)

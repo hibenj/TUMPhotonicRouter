@@ -41,6 +41,12 @@ AttemptColumn: TypeAlias = Literal[
     "heap_pushes",
     "heap_pops",
     "skipped_duplicate_heap_entries",
+    "stale_generation_heap_entries",
+    "closed_heap_entries",
+    "max_heap_size",
+    "dense_search_states",
+    "best_cost_updates",
+    "parent_updates",
     "obstacle_clearance_checks",
     "window_attempts",
     "last_window_min_x",
@@ -72,6 +78,12 @@ ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
     "heap_pushes",
     "heap_pops",
     "skipped_duplicate_heap_entries",
+    "stale_generation_heap_entries",
+    "closed_heap_entries",
+    "max_heap_size",
+    "dense_search_states",
+    "best_cost_updates",
+    "parent_updates",
     "obstacle_clearance_checks",
     "window_attempts",
     "last_window_min_x",
@@ -207,6 +219,12 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "heap_pushes": stats.heap_pushes,
         "heap_pops": stats.heap_pops,
         "duplicate_heap_skips": stats.skipped_duplicate_heap_entries,
+        "stale_generation_heap_entries": stats.stale_generation_heap_entries,
+        "closed_heap_entries": stats.closed_heap_entries,
+        "max_heap_size": stats.max_heap_size,
+        "dense_search_states": stats.dense_search_states,
+        "best_cost_updates": stats.best_cost_updates,
+        "parent_updates": stats.parent_updates,
         "obstacle_clearance_checks": stats.obstacle_clearance_checks,
         "footprint_checks": stats.footprint_checks,
         "footprint_rect_checks": stats.footprint_rect_checks,
@@ -287,12 +305,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Max iterations: `{args.max_iterations}`",
         f"- Routing window scale: `{args.routing_window_scale}`",
         "",
-        "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Obstacle checks | Footprint rect checks | Full fallback |",
-        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Obstacle checks | Footprint rect checks | Full fallback |",
+        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {benchmark} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {dup_skips} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
+            "| {benchmark} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {dup_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
                 benchmark=row["benchmark"],
                 instances=row["instances"],
                 nets=row["nets"],
@@ -308,6 +326,11 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 heap_pushes=_format_int(row["heap_pushes"]),
                 heap_pops=_format_int(row["heap_pops"]),
                 dup_skips=_format_int(row["duplicate_heap_skips"]),
+                stale_generation_heap_entries=_format_int(
+                    row["stale_generation_heap_entries"]
+                ),
+                closed_heap_entries=_format_int(row["closed_heap_entries"]),
+                max_heap_size=_format_int(row["max_heap_size"]),
                 obstacle_checks=_format_int(row["obstacle_clearance_checks"]),
                 footprint_rect_checks=_format_int(row["footprint_rect_checks"]),
                 fallbacks=_format_int(row["full_grid_fallbacks"]),
@@ -330,13 +353,13 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 "",
                 "## Slowest Route Attempts",
                 "",
-                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Window cells | Expanded | Generated | Heap push/pop | Rect checks | Dense build s | Failed |",
-                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Window cells | Expanded | Generated | Heap push/pop | Stale gen/closed | Max heap | Rect checks | Dense build s | Failed |",
+                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for record in slow_attempts:
             lines.append(
-                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {window_area} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {rect_checks} | {dense_build_s} | {failed} |".format(
+                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {window_area} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {rect_checks} | {dense_build_s} | {failed} |".format(
                     benchmark=record.get("benchmark", ""),
                     attempt=record.get("attempt_index", ""),
                     bucket=record.get("bucket_name", ""),
@@ -348,6 +371,11 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     generated=_format_int(record.get("generated_neighbors")),
                     heap_pushes=_format_int(record.get("heap_pushes")),
                     heap_pops=_format_int(record.get("heap_pops")),
+                    stale_generation_heap_entries=_format_int(
+                        record.get("stale_generation_heap_entries")
+                    ),
+                    closed_heap_entries=_format_int(record.get("closed_heap_entries")),
+                    max_heap_size=_format_int(record.get("max_heap_size")),
                     rect_checks=_format_int(record.get("footprint_rect_checks")),
                     dense_build_s=_format_seconds(
                         _record_seconds(record, "dense_grid_build_time_s")

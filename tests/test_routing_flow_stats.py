@@ -152,6 +152,12 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
                     heap_pushes=50,
                     heap_pops=45,
                     skipped_duplicate_heap_entries=5,
+                    stale_generation_heap_entries=3,
+                    closed_heap_entries=2,
+                    max_heap_size=12,
+                    dense_search_states=1000,
+                    best_cost_updates=51,
+                    parent_updates=50,
                     obstacle_clearance_checks=88,
                     footprint_checks=77,
                     footprint_rect_checks=66,
@@ -237,6 +243,12 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
                     heap_pushes=300,
                     heap_pops=250,
                     skipped_duplicate_heap_entries=7,
+                    stale_generation_heap_entries=4,
+                    closed_heap_entries=3,
+                    max_heap_size=80,
+                    dense_search_states=2000,
+                    best_cost_updates=301,
+                    parent_updates=300,
                     obstacle_clearance_checks=99,
                     footprint_checks=88,
                     footprint_rect_checks=77,
@@ -261,6 +273,12 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
                         heap_pushes=300,
                         heap_pops=250,
                         skipped_duplicate_heap_entries=7,
+                        stale_generation_heap_entries=4,
+                        closed_heap_entries=3,
+                        max_heap_size=80,
+                        dense_search_states=2000,
+                        best_cost_updates=301,
+                        parent_updates=300,
                         obstacle_clearance_checks=99,
                         footprint_rect_checks=77,
                     )
@@ -295,6 +313,12 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
     assert stats.heap_pushes == 300
     assert stats.heap_pops == 250
     assert stats.skipped_duplicate_heap_entries == 7
+    assert stats.stale_generation_heap_entries == 4
+    assert stats.closed_heap_entries == 3
+    assert stats.max_heap_size == 80
+    assert stats.dense_search_states == 2000
+    assert stats.best_cost_updates == 301
+    assert stats.parent_updates == 300
     assert stats.obstacle_clearance_checks == 99
     assert stats.footprint_checks == 88
     assert stats.footprint_rect_checks == 77
@@ -324,6 +348,12 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "heap_pushes": 300,
             "heap_pops": 250,
             "skipped_duplicate_heap_entries": 7,
+            "stale_generation_heap_entries": 4,
+            "closed_heap_entries": 3,
+            "max_heap_size": 80,
+            "dense_search_states": 2000,
+            "best_cost_updates": 301,
+            "parent_updates": 300,
             "obstacle_clearance_checks": 99,
             "window_attempts": 0,
             "last_window_min_x": 0,
