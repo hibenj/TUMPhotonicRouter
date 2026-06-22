@@ -1,6 +1,7 @@
 from benchmark_metadata import load_benchmark_metadata
 from benchmarks.TOY import build_schematic
 import pytest
+from dataclasses import replace
 from typing import Any, Protocol, cast
 from gdsfactory.component import Component
 from photonic_router.static_obstacle_builder import _load_rust_backend
@@ -300,6 +301,220 @@ def test_group_lifted_requirements_do_not_raise_already_reachable_deficits():
     ]
     assert groups[0]["target_lift_um"] == pytest.approx(0.0)
     assert groups[0]["edges_requiring_meander"] == 1
+
+
+def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
+    schematic = build_schematic()
+    short_edge = RoutedEdgeKey(
+        net_name="gc0_to_mmi_in1",
+        source=PortRef(instance="gc_0", port="o1"),
+        target=PortRef(instance="mmi_0", port="o2"),
+    )
+    long_edge = RoutedEdgeKey(
+        net_name="gc1_to_mmi_in2",
+        source=PortRef(instance="gc_1", port="o1"),
+        target=PortRef(instance="mmi_0", port="o1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=short_edge.net_name,
+            source=short_edge.source,
+            target=short_edge.target,
+            route_obj=object(),
+            total_length_um=99.5,
+        ),
+        RoutedNetRecord(
+            net_name=long_edge.net_name,
+            source=long_edge.source,
+            target=long_edge.target,
+            route_obj=object(),
+            total_length_um=100.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out1_to_gc2",
+            source=PortRef(instance="mmi_0", port="o3"),
+            target=PortRef(instance="gc_2", port="o1"),
+            route_obj=object(),
+            total_length_um=60.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out2_to_gc3",
+            source=PortRef(instance="mmi_0", port="o4"),
+            target=PortRef(instance="gc_3", port="o1"),
+            route_obj=object(),
+            total_length_um=60.0,
+        ),
+    ]
+    routed_layout = Component(name="lifted_pipeline")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        route_rust,
+        "route_nets_rust",
+        lambda *args, **kwargs: (
+            routed_layout,
+            RustRouteDebugArtifacts(
+                obstacle_svg=None,
+                route_svgs=[],
+                routed_edge_lengths_um={},
+                routed_net_records=records,
+                realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+                realization_bend_radius_cells=4,
+            ),
+        ),
+    )
+
+    class _ObstacleMap:
+        blocked_cells: tuple[tuple[int, int], ...] = ()
+
+    monkeypatch.setattr(
+        route_rust,
+        "build_static_obstacle_map",
+        lambda *args, **kwargs: _ObstacleMap(),
+    )
+
+    def _fake_meander_planner(
+        routed_net_records: list[RoutedNetRecord],
+        requirements: list[MissingLengthRequirement],
+        **_kwargs: object,
+    ) -> tuple[list[RoutedNetRecord], dict[str, object]]:
+        required_by_edge = {req.edge_key: req.missing_length_um for req in requirements}
+        assert required_by_edge[short_edge] == pytest.approx(25.5)
+        assert required_by_edge[long_edge] == pytest.approx(25.0)
+        captured["planner_requirements"] = requirements
+        updated = [
+            replace(
+                record,
+                meander_auto_plan={
+                    "requested_extra_length_um": required_by_edge[
+                        RoutedEdgeKey(
+                            net_name=record.net_name,
+                            source=record.source,
+                            target=record.target,
+                        )
+                    ],
+                    "selected_meander_centerline": [(0.0, 0.0), (1.0, 0.0)],
+                    "selected_run_start_index": 0,
+                    "selected_run_end_index": 1,
+                },
+            )
+            if RoutedEdgeKey(
+                net_name=record.net_name,
+                source=record.source,
+                target=record.target,
+            )
+            in required_by_edge
+            else record
+            for record in routed_net_records
+        ]
+        return updated, {
+            "results": [
+                {
+                    "edge": {
+                        "net_name": short_edge.net_name,
+                        "source": {
+                            "instance": short_edge.source.instance,
+                            "port": short_edge.source.port,
+                        },
+                        "target": {
+                            "instance": short_edge.target.instance,
+                            "port": short_edge.target.port,
+                        },
+                    },
+                    "status": "planned",
+                    "requested_extra_length_um": 25.5,
+                    "inserted_extra_length_um": 25.5,
+                    "unmatched_length_um": 0.0,
+                },
+                {
+                    "edge": {
+                        "net_name": long_edge.net_name,
+                        "source": {
+                            "instance": long_edge.source.instance,
+                            "port": long_edge.source.port,
+                        },
+                        "target": {
+                            "instance": long_edge.target.instance,
+                            "port": long_edge.target.port,
+                        },
+                    },
+                    "status": "planned",
+                    "requested_extra_length_um": 25.0,
+                    "inserted_extra_length_um": 25.0,
+                    "unmatched_length_um": 0.0,
+                },
+            ],
+            "total_requested_extra_length_um": 50.5,
+            "total_inserted_extra_length_um": 50.5,
+            "total_disregarded_extra_length_um": 0.0,
+            "unmatched_length_um": 0.0,
+            "planner_calls": 2,
+            "minimum_insertable_extra_length_um": 25.132741228718345,
+        }
+
+    monkeypatch.setattr(
+        route_rust,
+        "minimum_four_bend_extra_length_um",
+        lambda **_kwargs: 25.0,
+    )
+    monkeypatch.setattr(
+        route_rust,
+        "analyze_meander_insertion_for_requirements",
+        _fake_meander_planner,
+    )
+    monkeypatch.setattr(
+        route_rust,
+        "realize_routed_net_records",
+        lambda _layout, routed_net_records, **_kwargs: captured.update(
+            realized_records=routed_net_records
+        ),
+    )
+
+    result = route_rust.route_match_and_realize(
+        Component(name="unrouted"),
+        schematic,
+        enable_path_length_matching=True,
+        node_types={
+            "gc_0": "input",
+            "gc_1": "input",
+            "mmi_0": "gate",
+            "gc_2": "output",
+            "gc_3": "output",
+        },
+        internal_delays_um={},
+    )
+
+    analysis_info = cast(dict[str, object], result.path_length_analysis_info)
+    requirements_info = cast(list[dict[str, object]], result.meander_requirements_info)
+    diagnostics = cast(
+        list[dict[str, object]],
+        analysis_info["matching_group_diagnostics"],
+    )
+    realized_records = cast(list[RoutedNetRecord], captured["realized_records"])
+    realized_by_edge = {
+        RoutedEdgeKey(
+            net_name=record.net_name,
+            source=record.source,
+            target=record.target,
+        ): record
+        for record in realized_records
+    }
+
+    assert len(requirements_info) == 2
+    assert analysis_info["minimum_insertable_extra_length_um"] == pytest.approx(25.0)
+    assert diagnostics[0]["target_lift_um"] == pytest.approx(25.0)
+    assert diagnostics[0]["max_physical_residual_um"] == pytest.approx(0.0)
+    assert diagnostics[0]["max_disregarded_residual_um"] == pytest.approx(0.0)
+    assert diagnostics[0]["within_tolerance"] is True
+    assert diagnostics[0]["edges_requiring_meander"] == 2
+    assert realized_by_edge[short_edge].meander_auto_plan is not None
+    assert realized_by_edge[long_edge].meander_auto_plan is not None
+    assert cast(dict[str, object], realized_by_edge[short_edge].meander_auto_plan)[
+        "requested_extra_length_um"
+    ] == pytest.approx(25.5)
+    assert cast(dict[str, object], realized_by_edge[long_edge].meander_auto_plan)[
+        "requested_extra_length_um"
+    ] == pytest.approx(25.0)
 
 
 def test_matching_group_diagnostics_reports_post_meander_residuals():

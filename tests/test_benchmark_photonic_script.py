@@ -223,6 +223,13 @@ def test_markdown_report_includes_path_length_matching_section():
             "meander_obstacle_map_s": 0.02,
             "meander_planning_s": 0.03,
             "route_realization_s": 0.04,
+            "path_length_group_count": 2,
+            "path_length_groups_with_requirements": 2,
+            "path_length_groups_over_tolerance": 0,
+            "path_length_lifted_group_count": 1,
+            "path_length_max_target_lift_um": 25.0,
+            "path_length_min_insertable_extra_um": 25.0,
+            "path_length_raw_requirements": 1,
             "meander_requirements": 2,
             "meander_planner_calls": 1,
             "meander_requested_um": 30.0,
@@ -253,10 +260,46 @@ def test_markdown_report_includes_path_length_matching_section():
     report = module._markdown_report([row], args)
 
     assert "Path-Length Matching" in report
+    assert "Lifted groups" in report
+    assert "| case | 2 | 2 | 1 | 25.0000 | 25.0000 | 1 | 0 |" in report
     assert "planned:1" in report
     assert "below_minimum_bump:1" in report
     assert "Meander Planner Diagnostics" in report
     assert "runs=6 intervals=7 blocked=1 plan_fail=2 exact_mismatch=3" in report
+
+
+def test_path_length_group_diagnostics_accepts_get_only_info_objects():
+    module = _load_benchmark_photonic_module()
+
+    class _Info:
+        def __init__(self, values: dict[str, object]) -> None:
+            self._values = values
+
+        def get(self, key: str, default: object = None) -> object:
+            return self._values.get(key, default)
+
+    layout_info = _Info(
+        {
+            "path_length_analysis": _Info(
+                {
+                    "matching_group_diagnostics": [
+                        {
+                            "node_name": "gate0",
+                            "target_lift_um": 25.0,
+                            "max_physical_residual_um": 0.0,
+                        }
+                    ]
+                }
+            )
+        }
+    )
+
+    groups = module._path_length_group_diagnostics(layout_info)
+
+    assert len(groups) == 1
+    assert groups[0]["node_name"] == "gate0"
+    assert module._count_lifted_groups(groups) == 1
+    assert module._max_group_float(groups, "target_lift_um") == 25.0
 
 
 def test_parser_defaults_keep_losing_experiments_gated(monkeypatch):

@@ -285,10 +285,10 @@ def _slowest_meander_result(results: Iterable[object]) -> dict[str, object]:
 
 
 def _path_length_group_diagnostics(layout_info: object) -> list[Mapping[str, object]]:
-    if not isinstance(layout_info, Mapping):
+    if not hasattr(layout_info, "get"):
         return []
     analysis = layout_info.get("path_length_analysis", {})
-    if not isinstance(analysis, Mapping):
+    if not hasattr(analysis, "get"):
         return []
     groups = analysis.get("matching_group_diagnostics")
     if not isinstance(groups, list):
@@ -296,6 +296,15 @@ def _path_length_group_diagnostics(layout_info: object) -> list[Mapping[str, obj
     if not isinstance(groups, list):
         return []
     return [group for group in groups if isinstance(group, Mapping)]
+
+
+def _path_length_analysis_info(layout_info: object) -> object:
+    if not hasattr(layout_info, "get"):
+        return {}
+    analysis = layout_info.get("path_length_analysis", {})
+    if not hasattr(analysis, "get"):
+        return {}
+    return analysis
 
 
 def _max_group_float(groups: Iterable[Mapping[str, object]], key: str) -> float:
@@ -320,6 +329,18 @@ def _count_groups_over_tolerance(groups: Iterable[Mapping[str, object]]) -> int:
         if within is False:
             count += 1
     return count
+
+
+def _count_lifted_groups(groups: Iterable[Mapping[str, object]]) -> int:
+    count = 0
+    for group in groups:
+        if _numeric_float(group.get("target_lift_um")) > 0.0:
+            count += 1
+    return count
+
+
+def _list_length(value: object) -> int:
+    return len(value) if isinstance(value, list) else 0
 
 
 def _flatten_attempt_records(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
@@ -393,6 +414,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         meander_status_counts[status] = meander_status_counts.get(status, 0) + 1
     slowest_meander = _slowest_meander_result(meander_results)
     matching_group_diagnostics = _path_length_group_diagnostics(layout_info)
+    path_length_analysis = _path_length_analysis_info(layout_info)
     return {
         "benchmark": benchmark,
         "instances": stats.instance_count,
@@ -424,6 +446,19 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         ),
         "path_length_groups_over_tolerance": _count_groups_over_tolerance(
             matching_group_diagnostics
+        ),
+        "path_length_lifted_group_count": _count_lifted_groups(
+            matching_group_diagnostics
+        ),
+        "path_length_max_target_lift_um": _max_group_float(
+            matching_group_diagnostics,
+            "target_lift_um",
+        ),
+        "path_length_raw_requirements": _list_length(
+            path_length_analysis.get("raw_requirements", [])
+        ),
+        "path_length_min_insertable_extra_um": path_length_analysis.get(
+            "minimum_insertable_extra_length_um"
         ),
         "path_length_max_accepted_unmatched_um": _max_group_float(
             matching_group_diagnostics,
@@ -646,17 +681,29 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 "",
                 "## Path-Length Matching",
                 "",
-                "| Benchmark | Groups | Groups needing PLM | Groups over tol | Max accepted residual um | Max physical residual um | Max disregarded residual um | Requirements | Planner calls | Requested um | Inserted um | Disregarded um | Unmatched um | Analysis s | Obstacle s | Planning s | Realization s | Statuses |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| Benchmark | Groups | Groups needing PLM | Lifted groups | Max lift um | Min bump um | Raw reqs | Groups over tol | Max accepted residual um | Max physical residual um | Max disregarded residual um | Requirements | Planner calls | Requested um | Inserted um | Disregarded um | Unmatched um | Analysis s | Obstacle s | Planning s | Realization s | Statuses |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for row in plm_rows:
             lines.append(
-                "| {benchmark} | {groups} | {groups_needing} | {groups_over} | {max_accepted} | {max_physical} | {max_disregarded} | {requirements} | {planner_calls} | {requested} | {inserted} | {disregarded} | {unmatched} | {analysis_s} | {obstacle_s} | {planning_s} | {realization_s} | {statuses} |".format(
+                "| {benchmark} | {groups} | {groups_needing} | {lifted_groups} | {max_lift} | {min_bump} | {raw_requirements} | {groups_over} | {max_accepted} | {max_physical} | {max_disregarded} | {requirements} | {planner_calls} | {requested} | {inserted} | {disregarded} | {unmatched} | {analysis_s} | {obstacle_s} | {planning_s} | {realization_s} | {statuses} |".format(
                     benchmark=row["benchmark"],
                     groups=_format_int(row.get("path_length_group_count")),
                     groups_needing=_format_int(
                         row.get("path_length_groups_with_requirements")
+                    ),
+                    lifted_groups=_format_int(
+                        row.get("path_length_lifted_group_count")
+                    ),
+                    max_lift=_format_seconds(
+                        _record_seconds(row, "path_length_max_target_lift_um")
+                    ),
+                    min_bump=_format_seconds(
+                        _record_seconds(row, "path_length_min_insertable_extra_um")
+                    ),
+                    raw_requirements=_format_int(
+                        row.get("path_length_raw_requirements")
                     ),
                     groups_over=_format_int(row.get("path_length_groups_over_tolerance")),
                     max_accepted=_format_seconds(
