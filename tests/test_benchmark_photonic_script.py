@@ -123,6 +123,46 @@ def test_markdown_report_includes_slowest_route_attempts():
     assert "reroute_victims" in report
     assert "n0" in report
     assert "0.7500" in report
+    assert "Dominant Route Diagnostics" not in report
+
+
+def test_markdown_report_includes_diagnostics_when_available():
+    module = _load_benchmark_photonic_module()
+    args = module.argparse.Namespace(
+        path_length_matching=False,
+        allow_45_degree_turns=False,
+        include_heater_obstacles=True,
+        obstacle_mode="bounding_boxes",
+        max_iterations=5_000_000,
+        routing_window_scale=0.05,
+        use_indexed_heap=False,
+        primitive_ordering="library",
+        heuristic_mode="distance",
+        attempt_diagnostics=True,
+    )
+    row = _row_with_attempts()
+    attempts = row["route_attempt_records"]
+    assert isinstance(attempts, list)
+    attempts[1]["diagnostics"] = {
+        "span_x_cells": 12,
+        "span_y_cells": 3,
+        "window_width_cells": 20,
+        "window_height_cells": 8,
+        "window_to_span_bbox_area": 3.333,
+        "window_static_density": 0.125,
+        "window_dynamic_density": 0.25,
+        "committed_dynamic_cells_before": 42,
+        "candidate_blocker_count": 2,
+        "ripup_victim_count": 1,
+    }
+
+    report = module._markdown_report([row], args)
+
+    assert "Dominant Route Diagnostics" in report
+    assert "12x3" in report
+    assert "20x8" in report
+    assert "12.50%" in report
+    assert "25.00%" in report
 
 
 def test_parser_defaults_keep_losing_experiments_gated(monkeypatch):

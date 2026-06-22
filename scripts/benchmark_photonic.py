@@ -66,6 +66,7 @@ AttemptColumn: TypeAlias = Literal[
     "dense_grid_build_time_s",
     "dense_grid_cells",
     "used_full_grid_fallback",
+    "diagnostics",
     "error",
 ]
 ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
@@ -111,6 +112,7 @@ ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
     "dense_grid_build_time_s",
     "dense_grid_cells",
     "used_full_grid_fallback",
+    "diagnostics",
     "error",
 )
 
@@ -187,6 +189,33 @@ def _record_seconds(record: dict[str, object], key: str) -> float:
     return float(value) if isinstance(value, (int, float, str)) else 0.0
 
 
+def _record_diagnostics(record: dict[str, object]) -> dict[str, object]:
+    diagnostics = record.get("diagnostics", {})
+    return diagnostics if isinstance(diagnostics, dict) else {}
+
+
+def _diagnostic_float(
+    diagnostics: dict[str, object],
+    key: str,
+) -> float | None:
+    value = diagnostics.get(key)
+    if isinstance(value, (int, float, str)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _format_ratio(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.3f}"
+
+
+def _format_percent(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{100.0 * value:.2f}%"
+
+
 def _flatten_attempt_records(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     flattened: list[dict[str, object]] = []
     for row in rows:
@@ -231,6 +260,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         routing_window_scale=args.routing_window_scale,
         include_heater_obstacles=args.include_heater_obstacles,
         ripup_reroute_config=RipupRerouteConfig(enabled=args.ripup_reroute),
+        collect_attempt_diagnostics=getattr(args, "attempt_diagnostics", False),
         static_obstacle_config=StaticObstacleMapConfig(
             obstacle_mode=args.obstacle_mode,
             clearance_um=args.waveguide_clearance_um,
@@ -313,6 +343,8 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         command.append("--include-heater-obstacles")
     if args.ripup_reroute:
         command.append("--ripup-reroute")
+    if getattr(args, "attempt_diagnostics", False):
+        command.append("--attempt-diagnostics")
     return command
 
 
@@ -358,6 +390,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Indexed heap: `{args.use_indexed_heap}`",
         f"- Primitive ordering: `{args.primitive_ordering}`",
         f"- Heuristic mode: `{args.heuristic_mode}`",
+        f"- Attempt diagnostics: `{getattr(args, 'attempt_diagnostics', False)}`",
         "",
         "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
         "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -452,6 +485,57 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     failed=record.get("failed", ""),
                 )
             )
+        diagnostic_attempts = [
+            record for record in slow_attempts if _record_diagnostics(record)
+        ]
+        if diagnostic_attempts:
+            lines.extend(
+                [
+                    "",
+                    "## Dominant Route Diagnostics",
+                    "",
+                    "| Benchmark | Attempt | Bucket | Route | Net | Span | Window | Window/span | Static dens | Dynamic dens | Dynamic before | Blockers | Victims |",
+                    "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+                ]
+            )
+        for record in diagnostic_attempts[:6]:
+            diagnostics = _record_diagnostics(record)
+            span = (
+                f"{_format_int(diagnostics.get('span_x_cells'))}x"
+                f"{_format_int(diagnostics.get('span_y_cells'))}"
+            )
+            window = (
+                f"{_format_int(diagnostics.get('window_width_cells'))}x"
+                f"{_format_int(diagnostics.get('window_height_cells'))}"
+            )
+            lines.append(
+                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {span} | {window} | {window_span} | {static_density} | {dynamic_density} | {dynamic_before} | {blockers} | {victims} |".format(
+                    benchmark=record.get("benchmark", ""),
+                    attempt=record.get("attempt_index", ""),
+                    bucket=record.get("bucket_name", ""),
+                    route=record.get("route_index", ""),
+                    net=record.get("net_name", ""),
+                    span=span,
+                    window=window,
+                    window_span=_format_ratio(
+                        _diagnostic_float(
+                            diagnostics,
+                            "window_to_span_bbox_area",
+                        )
+                    ),
+                    static_density=_format_percent(
+                        _diagnostic_float(diagnostics, "window_static_density")
+                    ),
+                    dynamic_density=_format_percent(
+                        _diagnostic_float(diagnostics, "window_dynamic_density")
+                    ),
+                    dynamic_before=_format_int(
+                        diagnostics.get("committed_dynamic_cells_before")
+                    ),
+                    blockers=_format_int(diagnostics.get("candidate_blocker_count")),
+                    victims=_format_int(diagnostics.get("ripup_victim_count")),
+                )
+            )
     lines.extend(
         [
             "",
@@ -478,6 +562,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--routing-window-scale", type=float, default=0.05)
     parser.add_argument("--include-heater-obstacles", action="store_true")
     parser.add_argument("--ripup-reroute", action="store_true")
+    parser.add_argument(
+        "--attempt-diagnostics",
+        action="store_true",
+        help=(
+            "Collect extra per-attempt window, obstacle-density, and rip-up "
+            "diagnostics for slow or failed route attempts."
+        ),
+    )
     parser.add_argument(
         "--use-indexed-heap",
         action="store_true",

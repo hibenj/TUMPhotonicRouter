@@ -368,6 +368,7 @@ class RouteAttemptRecord:
     reconstruction_time_us: int = 0
     max_window_area_cells: int = 0
     used_full_grid_fallback: bool = False
+    diagnostics: dict[str, object] = field(default_factory=dict)
 
     @property
     def used_simple_route(self) -> bool:
@@ -433,6 +434,7 @@ class RouteAttemptRecord:
             "reconstruction_time_s": self.reconstruction_time_us / 1_000_000.0,
             "max_window_area_cells": self.max_window_area_cells,
             "used_full_grid_fallback": self.used_full_grid_fallback,
+            "diagnostics": dict(self.diagnostics),
         }
 
 
@@ -450,6 +452,7 @@ def route_attempt_record_from_route(
     failed: bool = False,
     repair_round: int | None = None,
     error: str | None = None,
+    diagnostics: Mapping[str, object] | None = None,
 ) -> RouteAttemptRecord:
     route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
     total_length_um = (
@@ -563,6 +566,7 @@ def route_attempt_record_from_route(
         used_full_grid_fallback=bool(
             getattr(route_obj, "used_full_grid_fallback", False)
         ),
+        diagnostics=dict(diagnostics or {}),
     )
 
 

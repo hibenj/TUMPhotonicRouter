@@ -389,5 +389,6 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "reconstruction_time_s": 0.0,
             "max_window_area_cells": 0,
             "used_full_grid_fallback": False,
+            "diagnostics": {},
         }
     ]

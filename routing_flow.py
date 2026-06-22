@@ -51,6 +51,7 @@ SCRIPT_RIPUP_MAX_ROUNDS = 4
 SCRIPT_RIPUP_MAX_VICTIMS = 8
 SCRIPT_RIPUP_HISTORY_WEIGHT = 2.0
 SCRIPT_RIPUP_HISTORY_INCREMENT = 1
+SCRIPT_ATTEMPT_DIAGNOSTICS = False
 
 
 @dataclass
@@ -408,6 +409,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--attempt-diagnostics",
+        action="store_true",
+        default=SCRIPT_ATTEMPT_DIAGNOSTICS,
+        help=(
+            "Collect extra per-attempt window, obstacle-density, and rip-up "
+            "diagnostics for slow or failed route attempts."
+        ),
+    )
+    parser.add_argument(
         "--enable-jps4",
         type=_parse_bool_flag,
         default=False,
@@ -467,6 +477,7 @@ def main(argv: list[str] | None = None) -> Component:
             history_weight=args.ripup_history_weight,
             history_increment=args.ripup_history_increment,
         ),
+        collect_attempt_diagnostics=args.attempt_diagnostics,
         static_obstacle_config=StaticObstacleMapConfig(
             obstacle_mode=args.obstacle_mode,
             clearance_um=args.waveguide_clearance_um,
@@ -538,6 +549,7 @@ def run_routing_flow(
     ripup_reroute_config: RipupRerouteConfig | None = None,
     static_obstacle_config: StaticObstacleMapConfig | None = None,
     collect_route_stats: bool = False,
+    collect_attempt_diagnostics: bool = False,
     stats: RoutingFlowStats | None = None,
 ) -> Component:
     """Execute the routing flow for a given benchmark.
@@ -587,6 +599,8 @@ def run_routing_flow(
         collect_route_stats: If True, collect route-search counters without
             printing debug timing. This is enabled automatically when stats is
             provided.
+        collect_attempt_diagnostics: If True, collect extra per-attempt window,
+            obstacle-density, and ripup diagnostics for slow/failed attempts.
 
     Returns:
         The routed layout component.
@@ -722,6 +736,7 @@ def run_routing_flow(
             max_iterations=max_iterations,
             routing_window_scale=routing_window_scale,
             collect_route_stats=collect_route_stats or stats is not None,
+            collect_attempt_diagnostics=collect_attempt_diagnostics,
             include_heater_obstacles=include_heater_obstacles,
             ripup_reroute_config=ripup_reroute_config,
             path_length_meander_height_um=path_length_meander_height_um,

@@ -105,6 +105,7 @@ def route_match_and_realize(
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
     collect_route_stats: bool = False,
+    collect_attempt_diagnostics: bool = False,
     include_heater_obstacles: bool = False,
     ripup_reroute_config: RipupRerouteConfig | None = None,
     path_length_meander_height_um: float = 20.0,
@@ -119,7 +120,7 @@ def route_match_and_realize(
         )
 
     t_route_nets_start = 0.0
-    collect_timing = debug_timing or collect_route_stats
+    collect_timing = debug_timing or collect_route_stats or collect_attempt_diagnostics
 
     if collect_timing:
         t_route_nets_start = time.perf_counter()
@@ -141,6 +142,7 @@ def route_match_and_realize(
         routing_window_scale=routing_window_scale,
         debug_timing=debug_timing,
         collect_route_stats=collect_route_stats,
+        collect_attempt_diagnostics=collect_attempt_diagnostics,
         include_heater_obstacles=include_heater_obstacles,
         ripup_reroute_config=ripup_reroute_config,
         defer_realization=True,
@@ -235,6 +237,39 @@ def _cells_bbox(cells: set[tuple[int, int]]) -> tuple[int, int, int, int] | None
     xs = [c[0] for c in cells]
     ys = [c[1] for c in cells]
     return min(xs), max(xs), min(ys), max(ys)
+
+
+def _rect_cell_count(
+    *,
+    min_x: int,
+    max_x: int,
+    min_y: int,
+    max_y: int,
+) -> int:
+    width = max(0, max_x - min_x + 1)
+    height = max(0, max_y - min_y + 1)
+    return width * height
+
+
+def _rect_overlap_cell_count(
+    rect: tuple[int, int, int, int],
+    *,
+    min_x: int,
+    max_x: int,
+    min_y: int,
+    max_y: int,
+) -> int:
+    rect_min_x, rect_min_y, rect_max_x, rect_max_y = rect
+    overlap_min_x = max(min_x, rect_min_x)
+    overlap_max_x = min(max_x, rect_max_x)
+    overlap_min_y = max(min_y, rect_min_y)
+    overlap_max_y = min(max_y, rect_max_y)
+    return _rect_cell_count(
+        min_x=overlap_min_x,
+        max_x=overlap_max_x,
+        min_y=overlap_min_y,
+        max_y=overlap_max_y,
+    )
 
 
 def _format_cells_preview(cells: set[tuple[int, int]], *, limit: int = 120) -> str:
@@ -414,6 +449,7 @@ def route_nets_rust(
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
     collect_route_stats: bool = False,
+    collect_attempt_diagnostics: bool = False,
     include_heater_obstacles: bool = False,
     ripup_reroute_config: RipupRerouteConfig | None = None,
     defer_realization: bool = False,
@@ -795,6 +831,7 @@ def route_nets_rust(
     raw_blocked_cells = cast(Iterable[tuple[int, int]], raw_blocked_obj)
     raw_static_cells = {(int(cell[0]), int(cell[1])) for cell in raw_blocked_cells}
     static_blocked_cells_before_port_reservations = raw_static_cells
+    blocked_static_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
     if hasattr(obstacle_map, "blocked_static_rects"):
         blocked_static_rects: list[tuple[int, int, int, int]] = []
         raw_blocked_rects = cast(
@@ -806,6 +843,7 @@ def route_nets_rust(
             blocked_static_rects.append(
                 (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
             )
+        blocked_static_rects_for_diagnostics = list(blocked_static_rects)
         if blocked_static_rects:
             if not hasattr(router, "set_static_rects"):
                 raise RuntimeError(
@@ -824,12 +862,12 @@ def route_nets_rust(
     repair_config = ripup_reroute_config or RipupRerouteConfig()
     route_jobs_by_id = {job.net_id: job for job in route_jobs}
     route_order = [job.net_id for job in route_jobs]
+    collect_timing = debug_timing or collect_route_stats or collect_attempt_diagnostics
+    track_dynamic_cells = diagnostics_enabled
     route_bookkeeping = RouteBookkeeping(
         route_order=route_order,
-        diagnostics_enabled=diagnostics_enabled,
+        diagnostics_enabled=track_dynamic_cells,
     )
-
-    collect_timing = debug_timing or collect_route_stats
 
     t_astar_start = 0.0
     if collect_timing:
@@ -873,6 +911,9 @@ def route_nets_rust(
         failed: bool = False,
         repair_round: int | None = None,
         error_text: str | None = None,
+        diagnostics: dict[str, object] | None = None,
+        candidate_blockers: list[int] | None = None,
+        ripup_ids: list[int] | None = None,
     ) -> None:
         if not collect_timing:
             return
@@ -888,6 +929,21 @@ def route_nets_rust(
                 route_obj,
                 failed=failed,
             )
+        if diagnostics is None:
+            generated_neighbors = (
+                int(getattr(route_obj, "generated_neighbors", 0))
+                if route_obj is not None
+                else 0
+            )
+            if collect_attempt_diagnostics and (
+                failed or elapsed_s >= 0.01 or generated_neighbors >= 100_000
+            ):
+                diagnostics = _route_attempt_diagnostics(
+                    job,
+                    route_obj,
+                    candidate_blockers=candidate_blockers,
+                    ripup_ids=ripup_ids,
+                )
         route_attempt_records.append(
             route_attempt_record_from_route(
                 attempt_index=len(route_attempt_records) + 1,
@@ -902,11 +958,25 @@ def route_nets_rust(
                 failed=failed,
                 repair_round=repair_round,
                 error=error_text,
+                diagnostics=diagnostics,
             )
         )
 
     def _committed_dynamic_cells(*, exclude_net_id: int | None = None) -> set[tuple[int, int]]:
         return route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
+
+    def _committed_dynamic_cells_for_attempt(
+        *,
+        exclude_net_id: int | None = None,
+    ) -> set[tuple[int, int]]:
+        if route_bookkeeping.diagnostics_enabled:
+            return route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
+        merged: set[tuple[int, int]] = set()
+        for net_id in route_bookkeeping.records_by_id:
+            if exclude_net_id is not None and int(net_id) == int(exclude_net_id):
+                continue
+            merged.update(_route_cells_from_router(net_id))
+        return merged
 
     def _route_cells_from_router(net_id: int) -> set[tuple[int, int]]:
         return {
@@ -949,6 +1019,154 @@ def route_nets_rust(
             opened_cells_set,
             sorted(opened_cells_set),
         )
+
+    def _static_cells_in_rect(min_x: int, max_x: int, min_y: int, max_y: int) -> int:
+        if min_x > max_x or min_y > max_y:
+            return 0
+        if blocked_static_rects_for_diagnostics:
+            return sum(
+                _rect_overlap_cell_count(
+                    rect,
+                    min_x=min_x,
+                    max_x=max_x,
+                    min_y=min_y,
+                    max_y=max_y,
+                )
+                for rect in blocked_static_rects_for_diagnostics
+            )
+        return sum(
+            1
+            for x, y in static_blocked_cells_before_port_reservations
+            if min_x <= x <= max_x and min_y <= y <= max_y
+        )
+
+    def _cells_in_rect(
+        cells: set[tuple[int, int]],
+        *,
+        min_x: int,
+        max_x: int,
+        min_y: int,
+        max_y: int,
+    ) -> int:
+        if min_x > max_x or min_y > max_y:
+            return 0
+        return sum(1 for x, y in cells if min_x <= x <= max_x and min_y <= y <= max_y)
+
+    def _route_attempt_diagnostics(
+        job: RouteJob,
+        route_obj: object | None,
+        *,
+        candidate_blockers: list[int] | None = None,
+        ripup_ids: list[int] | None = None,
+    ) -> dict[str, object]:
+        dynamic_cells_before = _committed_dynamic_cells_for_attempt(exclude_net_id=job.net_id)
+        source_state, target_state, _, _, opened_cells = _states_and_openings(job)
+        source_x = int(source_state.x)
+        source_y = int(source_state.y)
+        source_angle = int(source_state.angle)
+        target_x = int(target_state.x)
+        target_y = int(target_state.y)
+        target_angle = int(target_state.angle)
+        span_x = abs(target_x - source_x)
+        span_y = abs(target_y - source_y)
+        span_bbox_min_x = min(source_x, target_x)
+        span_bbox_max_x = max(source_x, target_x)
+        span_bbox_min_y = min(source_y, target_y)
+        span_bbox_max_y = max(source_y, target_y)
+        span_bbox_area = _rect_cell_count(
+            min_x=span_bbox_min_x,
+            max_x=span_bbox_max_x,
+            min_y=span_bbox_min_y,
+            max_y=span_bbox_max_y,
+        )
+        window_min_x = int(getattr(route_obj, "last_window_min_x", 0)) if route_obj else 0
+        window_max_x = int(getattr(route_obj, "last_window_max_x", -1)) if route_obj else -1
+        window_min_y = int(getattr(route_obj, "last_window_min_y", 0)) if route_obj else 0
+        window_max_y = int(getattr(route_obj, "last_window_max_y", -1)) if route_obj else -1
+        window_area = int(getattr(route_obj, "last_window_area_cells", 0)) if route_obj else 0
+        if window_area <= 0:
+            window_area = _rect_cell_count(
+                min_x=window_min_x,
+                max_x=window_max_x,
+                min_y=window_min_y,
+                max_y=window_max_y,
+            )
+        window_static_cells = _static_cells_in_rect(
+            window_min_x,
+            window_max_x,
+            window_min_y,
+            window_max_y,
+        )
+        window_dynamic_cells = _cells_in_rect(
+            dynamic_cells_before,
+            min_x=window_min_x,
+            max_x=window_max_x,
+            min_y=window_min_y,
+            max_y=window_max_y,
+        )
+        span_static_cells = _static_cells_in_rect(
+            span_bbox_min_x,
+            span_bbox_max_x,
+            span_bbox_min_y,
+            span_bbox_max_y,
+        )
+        span_dynamic_cells = _cells_in_rect(
+            dynamic_cells_before,
+            min_x=span_bbox_min_x,
+            max_x=span_bbox_max_x,
+            min_y=span_bbox_min_y,
+            max_y=span_bbox_max_y,
+        )
+        blocker_ids = list(candidate_blockers or [])
+        victim_ids = list(ripup_ids or [])
+        return {
+            "source_state": [source_x, source_y, source_angle],
+            "target_state": [target_x, target_y, target_angle],
+            "span_x_cells": span_x,
+            "span_y_cells": span_y,
+            "span_manhattan_cells": span_x + span_y,
+            "span_bbox_area_cells": span_bbox_area,
+            "span_static_cells": span_static_cells,
+            "span_dynamic_cells": span_dynamic_cells,
+            "opened_cells_count": len(opened_cells),
+            "block_radius_cells": block_radius_cells,
+            "bend_radius_cells": bend_radius_cells,
+            "window_width_cells": max(0, window_max_x - window_min_x + 1),
+            "window_height_cells": max(0, window_max_y - window_min_y + 1),
+            "window_area_cells": window_area,
+            "window_to_span_bbox_area": (
+                float(window_area) / float(span_bbox_area)
+                if span_bbox_area > 0 and window_area > 0
+                else None
+            ),
+            "window_static_cells": window_static_cells,
+            "window_dynamic_cells": window_dynamic_cells,
+            "window_static_density": (
+                float(window_static_cells) / float(window_area)
+                if window_area > 0
+                else None
+            ),
+            "window_dynamic_density": (
+                float(window_dynamic_cells) / float(window_area)
+                if window_area > 0
+                else None
+            ),
+            "committed_dynamic_cells_before": len(dynamic_cells_before),
+            "candidate_blocker_count": len(blocker_ids),
+            "candidate_blocker_net_ids": blocker_ids,
+            "candidate_blocker_route_indices": [
+                route_jobs_by_id[net_id].route_index
+                for net_id in blocker_ids
+                if net_id in route_jobs_by_id
+            ],
+            "ripup_victim_count": len(victim_ids),
+            "ripup_victim_net_ids": victim_ids,
+            "ripup_victim_route_indices": [
+                route_jobs_by_id[net_id].route_index
+                for net_id in victim_ids
+                if net_id in route_jobs_by_id
+            ],
+        }
 
     def _write_route_diagnostics(
         *,
@@ -1039,7 +1257,7 @@ def route_nets_rust(
             job,
             route_obj,
             opened_cells,
-            route_cells=_route_cells_from_router(job.net_id) if diagnostics_enabled else None,
+            route_cells=_route_cells_from_router(job.net_id) if track_dynamic_cells else None,
         )
 
     def _route_and_commit(
@@ -1048,6 +1266,8 @@ def route_nets_rust(
         repair: bool,
         timing_bucket: str,
         repair_round: int | None = None,
+        candidate_blockers: list[int] | None = None,
+        ripup_ids: list[int] | None = None,
     ) -> tuple[Any, list[tuple[int, int]]]:
         source_state, target_state, _, _, opened_cells = _states_and_openings(job)
         route_start = _timing_start()
@@ -1069,6 +1289,8 @@ def route_nets_rust(
                     failed=True,
                     repair_round=repair_round,
                     error_text=str(exc),
+                    candidate_blockers=candidate_blockers,
+                    ripup_ids=ripup_ids,
                 )
                 raise
         else:
@@ -1088,6 +1310,8 @@ def route_nets_rust(
                     failed=True,
                     repair_round=repair_round,
                     error_text=str(exc),
+                    candidate_blockers=candidate_blockers,
+                    ripup_ids=ripup_ids,
                 )
                 raise
         _record_route_attempt(
@@ -1096,6 +1320,8 @@ def route_nets_rust(
             route_start,
             route_obj,
             repair_round=repair_round,
+            candidate_blockers=candidate_blockers,
+            ripup_ids=ripup_ids,
         )
         _record_route(job, route_obj, opened_cells)
         return route_obj, opened_cells
@@ -1200,7 +1426,12 @@ def route_nets_rust(
                 error_text=str(exc),
             )
             return False
-        _record_route_attempt(job, "probe_route", probe_start, probe_route)
+        _record_route_attempt(
+            job,
+            "probe_route",
+            probe_start,
+            probe_route,
+        )
 
         history_start = _timing_start()
         router.add_history_for_route(
@@ -1273,6 +1504,8 @@ def route_nets_rust(
                     repair=False,
                     timing_bucket="repair_failed_net",
                     repair_round=round_idx,
+                    candidate_blockers=candidate_blockers,
+                    ripup_ids=ripup_ids,
                 )
                 total_expanded_states += int(getattr(repaired_route, "expanded_states", 0))
                 if int(getattr(repaired_route, "expanded_states", 0)) == 0:
@@ -1285,6 +1518,8 @@ def route_nets_rust(
                         repair=True,
                         timing_bucket="reroute_victims",
                         repair_round=round_idx,
+                        candidate_blockers=candidate_blockers,
+                        ripup_ids=ripup_ids,
                     )
                     total_expanded_states += int(getattr(rerouted_obj, "expanded_states", 0))
                     if int(getattr(rerouted_obj, "expanded_states", 0)) == 0:
