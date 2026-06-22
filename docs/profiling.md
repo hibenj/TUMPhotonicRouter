@@ -14,10 +14,15 @@ loading, schematic translation, obstacle extraction, Rust routing, and realizati
 Useful variants:
 
 ```bash
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4 --include-heater-obstacles --ripup-reroute
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4 --path-length-matching --include-heater-obstacles --ripup-reroute
+.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute
+.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --path-length-matching --include-heater-obstacles --ripup-reroute
 .venv/bin/python scripts/benchmark_photonic.py --output docs/photonic_baseline.md --include-heater-obstacles --ripup-reroute
 ```
+
+The `mmi_heater_8x4_ripup_reroute` case is the current end-to-end A* stress
+case: it forces one rip-up repair and runs real A* searches in the photonic
+pipeline. Use the default 5,000,000 iteration budget for this benchmark; lower
+budgets such as 500,000 can fail before the repair route completes.
 
 ## Isolated Rust A*
 

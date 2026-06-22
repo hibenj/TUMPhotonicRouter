@@ -20,7 +20,7 @@ from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from routing_flow import RipupRerouteConfig, RoutingFlowStats, run_routing_flow
 
 
-DEFAULT_BENCHMARKS = ("TOY", "mmi_heater", "mmi_heater_8x4")
+DEFAULT_BENCHMARKS = ("TOY", "mmi_heater", "mmi_heater_8x4_ripup_reroute")
 WORKER_MARKER = "PHOTONIC_BENCHMARK_JSON:"
 
 
