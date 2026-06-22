@@ -5,7 +5,7 @@ use rustc_hash::FxHashSet;
 
 use crate::astar::{
     export_route_svg, route_single_net_with_config, try_simple_route_with_config, AStarConfig,
-    PrimitiveOrdering, RouteResult, RouteSearchStats, State,
+    HeuristicMode, PrimitiveOrdering, RouteResult, RouteSearchStats, State,
 };
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
@@ -186,11 +186,13 @@ pub struct PyAStarConfig {
     pub use_indexed_heap: bool,
     #[pyo3(get, set)]
     pub primitive_ordering: String,
+    #[pyo3(get, set)]
+    pub heuristic_mode: String,
 }
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string()))]
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string(),heuristic_mode="distance".to_string()))]
     fn new(
         max_iterations: usize,
         bend_weight: f64,
@@ -209,6 +211,7 @@ impl PyAStarConfig {
         collect_detailed_timing: bool,
         use_indexed_heap: bool,
         primitive_ordering: String,
+        heuristic_mode: String,
     ) -> Self {
         Self {
             max_iterations,
@@ -232,6 +235,7 @@ impl PyAStarConfig {
             enable_jps4: false,
             use_indexed_heap,
             primitive_ordering,
+            heuristic_mode,
         }
     }
 }
@@ -510,6 +514,16 @@ fn parse_primitive_ordering(value: &str) -> PyResult<PrimitiveOrdering> {
     }
 }
 
+fn parse_heuristic_mode(value: &str) -> PyResult<HeuristicMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "distance" => Ok(HeuristicMode::Distance),
+        "heading_aware" => Ok(HeuristicMode::HeadingAware),
+        _ => Err(PyValueError::new_err(
+            "heuristic_mode must be one of 'distance' or 'heading_aware'",
+        )),
+    }
+}
+
 fn astar_config_from_py(
     astar_cfg: &PyAStarConfig,
     primitive_cfg: &PyPrimitiveLibraryConfig,
@@ -520,6 +534,7 @@ fn astar_config_from_py(
     let allowed_target_angles_mask =
         allowed_angles_to_mask(astar_cfg.allowed_target_angles.as_ref())?;
     let primitive_ordering = parse_primitive_ordering(&astar_cfg.primitive_ordering)?;
+    let heuristic_mode = parse_heuristic_mode(&astar_cfg.heuristic_mode)?;
     Ok(AStarConfig {
         max_iterations: astar_cfg.max_iterations,
         bend_weight: astar_cfg.bend_weight * primitive_cfg.bend_weight,
@@ -544,6 +559,7 @@ fn astar_config_from_py(
         enable_jps4: astar_cfg.enable_jps4,
         use_indexed_heap: astar_cfg.use_indexed_heap,
         primitive_ordering,
+        heuristic_mode,
     })
 }
 
@@ -2386,6 +2402,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
@@ -2423,6 +2440,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -2522,6 +2540,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -2638,6 +2657,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -2745,6 +2765,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -2847,6 +2868,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -2887,6 +2909,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -3003,6 +3026,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -3108,6 +3132,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -3212,6 +3237,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let eff = router.effective_bend_radius_um(None).unwrap();
@@ -3242,6 +3268,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let eff = router.effective_bend_radius_um(Some(1.1)).unwrap();
@@ -3273,6 +3300,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         Python::with_gil(|py| {
@@ -3320,6 +3348,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -3471,6 +3500,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let route = PyRouteResult {
@@ -3603,6 +3633,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         Python::with_gil(|py| {
@@ -3674,6 +3705,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let err = Python::with_gil(|py| {
@@ -3728,6 +3760,7 @@ mod tests {
                 false,
                 false,
                 "library".to_string(),
+                "distance".to_string(),
             ),
         );
         let reserved_cells: Vec<(i32, i32)> = Python::with_gil(|py| {

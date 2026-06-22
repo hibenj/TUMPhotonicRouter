@@ -51,6 +51,7 @@ class AStarScenario:
     enable_jps4: bool = False
     use_indexed_heap: bool = False
     primitive_ordering: str = "library"
+    heuristic_mode: str = "distance"
     primitive_mode: str = "photonic"
 
 
@@ -82,6 +83,7 @@ class RustBackend(Protocol):
         collect_detailed_timing: bool,
         use_indexed_heap: bool,
         primitive_ordering: str,
+        heuristic_mode: str,
     ) -> Any: ...
 
     def PyPhotonicRouter(self, grid: object, primitive: object, astar: Any) -> Any: ...
@@ -369,6 +371,7 @@ def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
         collect_detailed_timing=True,
         use_indexed_heap=scenario.use_indexed_heap,
         primitive_ordering=scenario.primitive_ordering,
+        heuristic_mode=scenario.heuristic_mode,
     )
     astar.enable_simple_routes = scenario.enable_simple_routes
     astar.enable_jps4 = scenario.enable_jps4
@@ -500,6 +503,7 @@ def run_scenario(
         "jps4_fallback_reason": str(getattr(last_route, "jps4_fallback_reason", "")),
         "indexed_heap": scenario.use_indexed_heap,
         "primitive_ordering": scenario.primitive_ordering,
+        "heuristic_mode": scenario.heuristic_mode,
         "full_grid_fallback": bool(_route_stat(last_route, "used_full_grid_fallback")),
         "route_cells": len(getattr(last_route, "cells", [])),
         "route_length_um": float(getattr(last_route, "total_length_um", 0.0)),
@@ -583,6 +587,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Warmup: `{args.warmup}`",
         f"- Indexed heap: `{getattr(args, 'use_indexed_heap', False)}`",
         f"- Primitive ordering: `{getattr(args, 'primitive_ordering', 'library')}`",
+        f"- Heuristic mode: `{getattr(args, 'heuristic_mode', 'distance')}`",
         "",
         "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Primitive gen | Primitive accepted | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
@@ -797,6 +802,12 @@ def _parse_args() -> argparse.Namespace:
         help="Dense A* primitive iteration order experiment.",
     )
     parser.add_argument(
+        "--heuristic-mode",
+        choices=("distance", "heading_aware"),
+        default="distance",
+        help="Dense A* heuristic experiment.",
+    )
+    parser.add_argument(
         "--paired-comparison",
         action="store_true",
         help=(
@@ -867,6 +878,11 @@ def main() -> int:
     if args.primitive_ordering != "library":
         catalog = {
             name: replace(scenario, primitive_ordering=args.primitive_ordering)
+            for name, scenario in catalog.items()
+        }
+    if args.heuristic_mode != "distance":
+        catalog = {
+            name: replace(scenario, heuristic_mode=args.heuristic_mode)
             for name, scenario in catalog.items()
         }
     rows = [

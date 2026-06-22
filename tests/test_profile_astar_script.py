@@ -69,6 +69,7 @@ def test_markdown_report_contains_route_stats_columns():
         warmup=1,
         use_indexed_heap=False,
         primitive_ordering="library",
+        heuristic_mode="distance",
     )
     report = module._markdown_report(
         [

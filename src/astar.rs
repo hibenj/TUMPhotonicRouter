@@ -10,7 +10,7 @@ use std::time::Instant;
 use rustc_hash::FxHashSet;
 
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
-use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary};
+use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
 use crate::simple_routes::{
     direction_between as simple_direction_between, expand_candidate_to_grid_points,
     try_straight_l_or_z_candidate_with_config, GridPoint, SimpleRouteCandidate, SimpleZRouteConfig,
@@ -59,6 +59,7 @@ pub struct AStarConfig {
     pub enable_jps4: bool,
     pub use_indexed_heap: bool,
     pub primitive_ordering: PrimitiveOrdering,
+    pub heuristic_mode: HeuristicMode,
 }
 
 impl Default for AStarConfig {
@@ -86,6 +87,7 @@ impl Default for AStarConfig {
             enable_jps4: false,
             use_indexed_heap: false,
             primitive_ordering: PrimitiveOrdering::Library,
+            heuristic_mode: HeuristicMode::Distance,
         }
     }
 }
@@ -96,6 +98,13 @@ pub enum PrimitiveOrdering {
     Library,
     LongStraightFirst,
     TargetBiased,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HeuristicMode {
+    #[default]
+    Distance,
+    HeadingAware,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1958,7 +1967,7 @@ fn target_biased_primitive_score(
     };
     primitive.length_um
         + bend_weight * primitive.bend_cost
-        + heuristic(
+        + distance_heuristic(
             State::new(next_x, next_y, primitive.end_angle),
             target,
             grid_size_um,
@@ -2063,6 +2072,7 @@ fn route_single_net_with_bounds(
     };
     stats.dense_grid_cells = dense_grid.blocked_count();
     stats.dense_grid_build_time_us = dense_grid.build_time_us();
+    let minimum_bend_cost = minimum_positive_bend_cost(primitives, config.bend_weight);
 
     let primitive_footprint_profiles: Vec<Vec<FootprintCollisionProfile>> = (0u8..8u8)
         .map(|angle| {
@@ -2083,7 +2093,13 @@ fn route_single_net_with_bounds(
     storage.best_generation[source_idx] = counter;
     stats.best_cost_updates += 1;
     let source_entry = OpenEntry {
-        f_score: heuristic(source, target, primitives.grid_size_um()),
+        f_score: heuristic(
+            source,
+            target,
+            primitives.grid_size_um(),
+            config,
+            minimum_bend_cost,
+        ),
         g_score: 0.0,
         counter,
         generation: counter,
@@ -2283,7 +2299,14 @@ fn route_single_net_with_bounds(
             stats.best_cost_updates += 1;
             stats.parent_updates += 1;
             let next_entry = OpenEntry {
-                f_score: tentative_g + heuristic(next_state, target, primitives.grid_size_um()),
+                f_score: tentative_g
+                    + heuristic(
+                        next_state,
+                        target,
+                        primitives.grid_size_um(),
+                        config,
+                        minimum_bend_cost,
+                    ),
                 g_score: tentative_g,
                 counter,
                 generation: counter,
@@ -2428,19 +2451,81 @@ fn target_reached(state: State, target: State, config: &AStarConfig) -> bool {
     if !pos_ok {
         return false;
     }
-    if let Some(mask) = config.allowed_target_angles_mask {
-        return (mask & (1u8 << (state.angle % 8))) != 0;
+    if config.allowed_target_angles_mask.is_some() {
+        return target_angle_satisfied(state, target, config);
     }
     if config.require_target_angle {
-        return state.angle == target.angle;
+        return target_angle_satisfied(state, target, config);
     }
     true
 }
 
-fn heuristic(state: State, target: State, grid_size_um: f64) -> f64 {
+fn target_angle_satisfied(state: State, target: State, config: &AStarConfig) -> bool {
+    if let Some(mask) = config.allowed_target_angles_mask {
+        return (mask & (1u8 << (state.angle % 8))) != 0;
+    }
+    !config.require_target_angle || state.angle == target.angle
+}
+
+fn distance_heuristic(state: State, target: State, grid_size_um: f64) -> f64 {
     let dx = (target.x - state.x) as f64;
     let dy = (target.y - state.y) as f64;
     (dx * dx + dy * dy).sqrt() * grid_size_um
+}
+
+fn direction_reaches_target_ray(state: State, target: State, tolerance: i32) -> bool {
+    let dx = target.x - state.x;
+    let dy = target.y - state.y;
+    if dx.abs() <= tolerance && dy.abs() <= tolerance {
+        return true;
+    }
+    let (dir_x, dir_y) = DIRECTIONS[(state.angle % 8) as usize];
+    match (dir_x, dir_y) {
+        (0, 0) => false,
+        (0, _) => dx.abs() <= tolerance && dy.signum() == dir_y,
+        (_, 0) => dy.abs() <= tolerance && dx.signum() == dir_x,
+        _ => {
+            dx.signum() == dir_x && dy.signum() == dir_y && (dx.abs() - dy.abs()).abs() <= tolerance
+        }
+    }
+}
+
+fn minimum_positive_bend_cost(primitives: &PrimitiveLibrary, bend_weight: f64) -> f64 {
+    if bend_weight <= 0.0 {
+        return 0.0;
+    }
+    let min_bend_cost = (0u8..8u8)
+        .flat_map(|angle| primitives.get_primitives_for_angle(angle).iter())
+        .filter_map(|primitive| {
+            if primitive.bend_cost > 0.0 {
+                Some(primitive.bend_cost)
+            } else {
+                None
+            }
+        })
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+    min_bend_cost.map_or(0.0, |cost| cost * bend_weight)
+}
+
+fn heuristic(
+    state: State,
+    target: State,
+    grid_size_um: f64,
+    config: &AStarConfig,
+    minimum_bend_cost: f64,
+) -> f64 {
+    let distance = distance_heuristic(state, target, grid_size_um);
+    if config.heuristic_mode != HeuristicMode::HeadingAware || minimum_bend_cost <= 0.0 {
+        return distance;
+    }
+    let tolerance = config.target_tolerance_cells.max(0);
+    let needs_turn_to_reach_target = !direction_reaches_target_ray(state, target, tolerance);
+    let needs_turn_to_satisfy_target_angle = !target_angle_satisfied(state, target, config);
+    if needs_turn_to_reach_target || needs_turn_to_satisfy_target_angle {
+        distance + minimum_bend_cost
+    } else {
+        distance
+    }
 }
 
 fn reconstruct_route_dense(
@@ -3199,6 +3284,90 @@ mod tests {
             assert_eq!(result.reached_target, baseline.reached_target);
             assert!((result.total_cost - baseline.total_cost).abs() < 1.0e-9);
         }
+    }
+
+    #[test]
+    fn heading_aware_heuristic_adds_only_unavoidable_minimum_bend_bound() {
+        let library = primitive_library_no45_bend2();
+        let min_bend_cost = minimum_positive_bend_cost(&library, 1.0);
+        let config = AStarConfig {
+            heuristic_mode: HeuristicMode::HeadingAware,
+            require_target_angle: false,
+            ..AStarConfig::default()
+        };
+        let straight_source = State::new(0, 0, 0);
+        let straight_target = State::new(10, 0, 0);
+        assert_eq!(
+            heuristic(
+                straight_source,
+                straight_target,
+                1.0,
+                &config,
+                min_bend_cost
+            ),
+            distance_heuristic(straight_source, straight_target, 1.0)
+        );
+
+        let off_ray_target = State::new(10, 5, 0);
+        assert_eq!(
+            heuristic(straight_source, off_ray_target, 1.0, &config, min_bend_cost),
+            distance_heuristic(straight_source, off_ray_target, 1.0) + min_bend_cost
+        );
+
+        let target_angle_config = AStarConfig {
+            heuristic_mode: HeuristicMode::HeadingAware,
+            require_target_angle: true,
+            ..AStarConfig::default()
+        };
+        let mismatched_angle_target = State::new(10, 0, 2);
+        assert_eq!(
+            heuristic(
+                straight_source,
+                mismatched_angle_target,
+                1.0,
+                &target_angle_config,
+                min_bend_cost,
+            ),
+            distance_heuristic(straight_source, mismatched_angle_target, 1.0) + min_bend_cost
+        );
+    }
+
+    #[test]
+    fn heading_aware_heuristic_preserves_route_cost_on_forced_detour() {
+        let mut map = ObstacleMap::new(180, 80);
+        for y in 4..=72 {
+            if !(42..=50).contains(&y) {
+                map.add_static_cell(85, y);
+            }
+        }
+        let library = primitive_library_no45_bend2();
+        let source = State::new(12, 20, 0);
+        let target = State::new(160, 20, 0);
+        let base_config = AStarConfig {
+            max_iterations: 500_000,
+            require_target_angle: false,
+            enable_simple_routes: false,
+            routing_window_fallback_full_grid: true,
+            ..AStarConfig::default()
+        };
+        let baseline =
+            route_single_net_with_config(&map, &library, source, target, None, &base_config)
+                .expect("baseline route should exist");
+        let heading_aware = route_single_net_with_config(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &AStarConfig {
+                heuristic_mode: HeuristicMode::HeadingAware,
+                ..base_config
+            },
+        )
+        .expect("heading-aware route should exist");
+
+        assert_eq!(heading_aware.reached_target, baseline.reached_target);
+        assert!((heading_aware.total_cost - baseline.total_cost).abs() < 1.0e-9);
     }
 
     #[test]

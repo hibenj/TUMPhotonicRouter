@@ -216,6 +216,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         allow_45_degree_turns=args.allow_45_degree_turns,
         use_indexed_heap=args.use_indexed_heap,
         primitive_ordering=args.primitive_ordering,
+        heuristic_mode=args.heuristic_mode,
         max_iterations=args.max_iterations,
         routing_window_scale=args.routing_window_scale,
         include_heater_obstacles=args.include_heater_obstacles,
@@ -288,6 +289,8 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         str(args.heater_clearance_um),
         "--primitive-ordering",
         args.primitive_ordering,
+        "--heuristic-mode",
+        args.heuristic_mode,
     ]
     if args.use_indexed_heap:
         command.append("--use-indexed-heap")
@@ -343,6 +346,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Routing window scale: `{args.routing_window_scale}`",
         f"- Indexed heap: `{args.use_indexed_heap}`",
         f"- Primitive ordering: `{args.primitive_ordering}`",
+        f"- Heuristic mode: `{args.heuristic_mode}`",
         "",
         "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Obstacle checks | Footprint rect checks | Full fallback |",
         "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -467,6 +471,12 @@ def _parse_args() -> argparse.Namespace:
         choices=("library", "long_straight_first", "target_biased"),
         default="library",
         help="Dense A* primitive iteration order experiment.",
+    )
+    parser.add_argument(
+        "--heuristic-mode",
+        choices=("distance", "heading_aware"),
+        default="distance",
+        help="Dense A* heuristic experiment.",
     )
     parser.add_argument("--obstacle-mode", default="bounding_boxes")
     parser.add_argument("--waveguide-clearance-um", type=float, default=0.5)
