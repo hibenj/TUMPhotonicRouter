@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+from collections.abc import Mapping
 from datetime import datetime
 import json
 from pathlib import Path
 import platform
 import subprocess
 import sys
-from typing import Any, Iterable, Literal, Mapping, TypeAlias, cast
+from typing import Any, Iterable, Literal, Protocol, TypeAlias, TypeGuard, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -115,6 +116,14 @@ ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
     "diagnostics",
     "error",
 )
+
+
+class SupportsGet(Protocol):
+    def get(self, key: str, default: object = None) -> object: ...
+
+
+def _supports_get(value: object) -> TypeGuard[SupportsGet]:
+    return hasattr(value, "get")
 
 
 def _git_rev() -> str:
@@ -285,10 +294,10 @@ def _slowest_meander_result(results: Iterable[object]) -> dict[str, object]:
 
 
 def _path_length_group_diagnostics(layout_info: object) -> list[Mapping[str, object]]:
-    if not hasattr(layout_info, "get"):
+    if not _supports_get(layout_info):
         return []
     analysis = layout_info.get("path_length_analysis", {})
-    if not hasattr(analysis, "get"):
+    if not _supports_get(analysis):
         return []
     groups = analysis.get("matching_group_diagnostics")
     if not isinstance(groups, list):
@@ -298,11 +307,11 @@ def _path_length_group_diagnostics(layout_info: object) -> list[Mapping[str, obj
     return [group for group in groups if isinstance(group, Mapping)]
 
 
-def _path_length_analysis_info(layout_info: object) -> object:
-    if not hasattr(layout_info, "get"):
+def _path_length_analysis_info(layout_info: object) -> SupportsGet:
+    if not _supports_get(layout_info):
         return {}
     analysis = layout_info.get("path_length_analysis", {})
-    if not hasattr(analysis, "get"):
+    if not _supports_get(analysis):
         return {}
     return analysis
 
@@ -397,9 +406,8 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         ),
         stats=stats,
     )
-    layout_info = getattr(routed_layout, "info", {})
-    if not hasattr(layout_info, "get"):
-        layout_info = {}
+    layout_info_raw = getattr(routed_layout, "info", {})
+    layout_info: SupportsGet = layout_info_raw if _supports_get(layout_info_raw) else {}
     meander_report = layout_info.get("meander_insertion_report", {})
     if not isinstance(meander_report, Mapping):
         meander_report = {}
