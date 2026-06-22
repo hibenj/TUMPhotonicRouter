@@ -239,11 +239,11 @@ const BITSET_WORD_BITS: usize = u64::BITS as usize;
 
 struct DenseSearchStorage {
     bounds: RoutingBounds,
-    width: i32,
+    width_usize: usize,
     g_costs: Vec<f64>,
     parent_idx: Vec<u32>,
     parent_primitive: Vec<u16>,
-    closed: Vec<bool>,
+    closed: DenseBitset,
 }
 
 impl DenseSearchStorage {
@@ -265,11 +265,11 @@ impl DenseSearchStorage {
 
         Some(Self {
             bounds,
-            width,
+            width_usize,
             g_costs: vec![f64::INFINITY; state_count],
             parent_idx: vec![NO_PARENT; state_count],
             parent_primitive: vec![0; state_count],
-            closed: vec![false; state_count],
+            closed: DenseBitset::new(state_count)?,
         })
     }
 
@@ -279,20 +279,18 @@ impl DenseSearchStorage {
         }
         let local_x = usize::try_from(state.x.checked_sub(self.bounds.min_x)?).ok()?;
         let local_y = usize::try_from(state.y.checked_sub(self.bounds.min_y)?).ok()?;
-        let width = usize::try_from(self.width).ok()?;
         local_y
-            .checked_mul(width)?
+            .checked_mul(self.width_usize)?
             .checked_add(local_x)?
             .checked_mul(8)?
             .checked_add(usize::from(state.angle))
     }
 
     fn idx_to_state(&self, idx: usize) -> State {
-        let width = usize::try_from(self.width).expect("width must be > 0");
         let angle = (idx % 8) as u8;
         let cell_idx = idx / 8;
-        let local_x = (cell_idx % width) as i32;
-        let local_y = (cell_idx / width) as i32;
+        let local_x = (cell_idx % self.width_usize) as i32;
+        let local_y = (cell_idx / self.width_usize) as i32;
         State::new(
             self.bounds.min_x + local_x,
             self.bounds.min_y + local_y,
@@ -301,11 +299,11 @@ impl DenseSearchStorage {
     }
 }
 
-struct DenseBlockedBitset {
+struct DenseBitset {
     bits: Vec<u64>,
 }
 
-impl DenseBlockedBitset {
+impl DenseBitset {
     fn new(cell_count: usize) -> Option<Self> {
         let words = cell_count
             .checked_add(BITSET_WORD_BITS - 1)?
@@ -339,7 +337,7 @@ struct DenseRoutingGrid {
     bounds: RoutingBounds,
     width: i32,
     height: i32,
-    blocked_bits: DenseBlockedBitset,
+    blocked_bits: DenseBitset,
     blocked_prefix: Option<Vec<u32>>,
     history: Option<Vec<u32>>,
     history_prefix: Option<Vec<u64>>,
@@ -371,7 +369,7 @@ impl DenseRoutingGrid {
         }
 
         let mut blocked_cells = vec![0u8; cell_count];
-        let mut blocked_bits = DenseBlockedBitset::new(cell_count)?;
+        let mut blocked_bits = DenseBitset::new(cell_count)?;
         let mut history = if build_history {
             Some(vec![0u32; cell_count])
         } else {
@@ -485,17 +483,12 @@ impl DenseRoutingGrid {
         local_min_y: i32,
         local_max_y: i32,
     ) -> Option<u32> {
-        let height = self
-            .bounds
-            .max_y
-            .checked_sub(self.bounds.min_y)?
-            .checked_add(1)?;
         let width = self.width;
         if local_min_x > local_max_x || local_min_y > local_max_y {
             return None;
         }
-        debug_assert_eq!(height, self.height);
-        if local_min_x < 0 || local_min_y < 0 || local_max_x >= width || local_max_y >= height {
+        if local_min_x < 0 || local_min_y < 0 || local_max_x >= width || local_max_y >= self.height
+        {
             return None;
         }
 
@@ -558,16 +551,12 @@ impl DenseRoutingGrid {
         local_min_y: i32,
         local_max_y: i32,
     ) -> Option<u64> {
-        let height = self
-            .bounds
-            .max_y
-            .checked_sub(self.bounds.min_y)?
-            .checked_add(1)?;
         let width = self.width;
         if local_min_x > local_max_x || local_min_y > local_max_y {
             return None;
         }
-        if local_min_x < 0 || local_min_y < 0 || local_max_x >= width || local_max_y >= height {
+        if local_min_x < 0 || local_min_y < 0 || local_max_x >= width || local_max_y >= self.height
+        {
             return None;
         }
 
@@ -1314,7 +1303,7 @@ fn route_single_net_with_bounds(
         }
 
         let idx = entry.idx;
-        if storage.closed[idx] {
+        if storage.closed.get(idx) {
             stats.skipped_duplicate_heap_entries += 1;
             continue;
         }
@@ -1344,7 +1333,7 @@ fn route_single_net_with_bounds(
                 &storage,
             );
         }
-        storage.closed[idx] = true;
+        storage.closed.set(idx)?;
         stats.expanded_states += 1;
 
         let current_g = storage.g_costs[idx];
@@ -1376,7 +1365,7 @@ fn route_single_net_with_bounds(
             let Some(next_idx) = storage.state_to_idx(next_state) else {
                 continue;
             };
-            if storage.closed[next_idx] {
+            if storage.closed.get(next_idx) {
                 continue;
             }
 
