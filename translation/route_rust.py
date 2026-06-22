@@ -437,10 +437,12 @@ def route_nets_rust(
         route_width_um: Realized waveguide width in micrometers.
         route_layer: Target GDS layer/datatype tuple for route polygons.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
-        use_indexed_heap: If True, use decrease-key indexed heap queueing
-            instead of duplicate-entry BinaryHeap queueing for dense A*.
-        primitive_ordering: Dense A* primitive iteration order. Supported
-            values: "library", "long_straight_first", "target_biased".
+        use_indexed_heap: Benchmark-only queue experiment. Pass 8E measured
+            this slower than duplicate-entry BinaryHeap queueing, so the
+            production default remains False.
+        primitive_ordering: Benchmark-only dense A* primitive iteration order.
+            Supported values: "library", "long_straight_first",
+            "target_biased". Pass 8F keeps "library" as the default.
         heuristic_mode: Dense A* heuristic. Supported values: "distance",
             "heading_aware".
         max_iterations: Maximum A* state expansions per route attempt.

@@ -40,6 +40,16 @@ def test_default_scenario_names_exclude_jps4_experiments():
     assert "jps4_empty_grid" not in defaults
 
 
+def test_parser_defaults_keep_losing_experiments_gated(monkeypatch):
+    module = _load_profile_astar_module()
+    monkeypatch.setattr(sys, "argv", ["profile_astar.py"])
+
+    args = module._parse_args()
+
+    assert args.use_indexed_heap is False
+    assert args.primitive_ordering == "library"
+
+
 def test_two_object_port_scenarios_cover_all_cardinal_pairs():
     module = _load_profile_astar_module()
     scenarios = module._two_object_port_scenarios()

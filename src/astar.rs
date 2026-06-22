@@ -3275,6 +3275,13 @@ mod tests {
     }
 
     #[test]
+    fn default_search_experiments_stay_gated_off() {
+        let config = AStarConfig::default();
+        assert!(!config.use_indexed_heap);
+        assert_eq!(config.primitive_ordering, PrimitiveOrdering::Library);
+    }
+
+    #[test]
     fn indexed_heap_matches_duplicate_heap_on_forced_detour() {
         let mut map = ObstacleMap::new(180, 80);
         for y in 4..=72 {

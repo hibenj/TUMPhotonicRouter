@@ -125,6 +125,16 @@ def test_markdown_report_includes_slowest_route_attempts():
     assert "0.7500" in report
 
 
+def test_parser_defaults_keep_losing_experiments_gated(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(sys, "argv", ["benchmark_photonic.py"])
+
+    args = module._parse_args()
+
+    assert args.use_indexed_heap is False
+    assert args.primitive_ordering == "library"
+
+
 def test_write_attempt_output_supports_json_and_csv(tmp_path):
     module = _load_benchmark_photonic_module()
     rows = [_row_with_attempts()]

@@ -481,13 +481,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-indexed-heap",
         action="store_true",
-        help="Use the experimental decrease-key indexed heap for dense A*.",
+        help=(
+            "Benchmark-only: use the experimental decrease-key indexed heap "
+            "for dense A* (slower in Pass 8E; default stays off)."
+        ),
     )
     parser.add_argument(
         "--primitive-ordering",
         choices=("library", "long_straight_first", "target_biased"),
         default="library",
-        help="Dense A* primitive iteration order experiment.",
+        help=(
+            "Benchmark-only dense A* primitive ordering experiment "
+            "(Pass 8F keeps library as the default)."
+        ),
     )
     parser.add_argument(
         "--heuristic-mode",

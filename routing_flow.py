@@ -565,9 +565,11 @@ def run_routing_flow(
         path_length_meander_height_um: Maximum meander height used when
                       inserting path-length matching meanders.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
-        use_indexed_heap: If True, use the experimental decrease-key indexed
-                      heap for dense A* queueing.
-        primitive_ordering: Dense A* primitive iteration order experiment.
+        use_indexed_heap: Benchmark-only indexed-heap experiment. Pass 8E
+            measured it slower than duplicate-entry BinaryHeap queueing, so
+            the default remains False.
+        primitive_ordering: Benchmark-only dense A* primitive ordering
+            experiment. Pass 8F keeps "library" as the default.
         heuristic_mode: Dense A* heuristic experiment.
         max_iterations: Maximum A* state expansions per route attempt.
         routing_window_scale: Optional A* routing-window margin scale. If None,
