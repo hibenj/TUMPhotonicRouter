@@ -21,6 +21,7 @@ from translation.route_rust import (
 )
 from translation.route_rust_analysis import (
     analysis_to_info_dict,
+    compute_group_lifted_requirements,
     matching_group_diagnostics_to_info,
 )
 import translation.route_rust as route_rust
@@ -172,6 +173,133 @@ def test_path_length_analysis_reports_matching_groups():
     assert groups[0]["incoming_count"] == 2
     assert groups[0]["edges_requiring_meander"] == 1
     assert groups[0]["max_missing_length_um"] == pytest.approx(20.0)
+
+
+def test_group_lifted_requirements_raise_sub_bump_deficit_to_reachable_target():
+    schematic = build_schematic()
+    metadata = load_benchmark_metadata("TOY")
+    short_edge = RoutedEdgeKey(
+        net_name="gc0_to_mmi_in1",
+        source=PortRef(instance="gc_0", port="o1"),
+        target=PortRef(instance="mmi_0", port="o2"),
+    )
+    long_edge = RoutedEdgeKey(
+        net_name="gc1_to_mmi_in2",
+        source=PortRef(instance="gc_1", port="o1"),
+        target=PortRef(instance="mmi_0", port="o1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=short_edge.net_name,
+            source=short_edge.source,
+            target=short_edge.target,
+            route_obj=None,
+            total_length_um=99.5,
+        ),
+        RoutedNetRecord(
+            net_name=long_edge.net_name,
+            source=long_edge.source,
+            target=long_edge.target,
+            route_obj=None,
+            total_length_um=100.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out1_to_gc2",
+            source=PortRef(instance="mmi_0", port="o3"),
+            target=PortRef(instance="gc_2", port="o1"),
+            route_obj=None,
+            total_length_um=60.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out2_to_gc3",
+            source=PortRef(instance="mmi_0", port="o4"),
+            target=PortRef(instance="gc_3", port="o1"),
+            route_obj=None,
+            total_length_um=60.0,
+        ),
+    ]
+    result, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types=metadata["node_types"],
+        internal_delays_um=metadata["internal_delays_um"],
+    )
+
+    requirements, groups = compute_group_lifted_requirements(
+        result,
+        minimum_insertable_extra_um=25.0,
+    )
+    required_by_edge = {
+        req.edge_key: req.missing_length_um
+        for req in requirements
+    }
+
+    assert required_by_edge[short_edge] == pytest.approx(25.5)
+    assert required_by_edge[long_edge] == pytest.approx(25.0)
+    assert groups[0]["target_lift_um"] == pytest.approx(25.0)
+    assert groups[0]["edges_requiring_meander"] == 2
+
+
+def test_group_lifted_requirements_do_not_raise_already_reachable_deficits():
+    schematic = build_schematic()
+    metadata = load_benchmark_metadata("TOY")
+    short_edge = RoutedEdgeKey(
+        net_name="gc0_to_mmi_in1",
+        source=PortRef(instance="gc_0", port="o1"),
+        target=PortRef(instance="mmi_0", port="o2"),
+    )
+    long_edge = RoutedEdgeKey(
+        net_name="gc1_to_mmi_in2",
+        source=PortRef(instance="gc_1", port="o1"),
+        target=PortRef(instance="mmi_0", port="o1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=short_edge.net_name,
+            source=short_edge.source,
+            target=short_edge.target,
+            route_obj=None,
+            total_length_um=70.0,
+        ),
+        RoutedNetRecord(
+            net_name=long_edge.net_name,
+            source=long_edge.source,
+            target=long_edge.target,
+            route_obj=None,
+            total_length_um=100.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out1_to_gc2",
+            source=PortRef(instance="mmi_0", port="o3"),
+            target=PortRef(instance="gc_2", port="o1"),
+            route_obj=None,
+            total_length_um=60.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out2_to_gc3",
+            source=PortRef(instance="mmi_0", port="o4"),
+            target=PortRef(instance="gc_3", port="o1"),
+            route_obj=None,
+            total_length_um=60.0,
+        ),
+    ]
+    result, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types=metadata["node_types"],
+        internal_delays_um=metadata["internal_delays_um"],
+    )
+
+    requirements, groups = compute_group_lifted_requirements(
+        result,
+        minimum_insertable_extra_um=25.0,
+    )
+
+    assert requirements == [
+        MissingLengthRequirement(edge_key=short_edge, missing_length_um=30.0)
+    ]
+    assert groups[0]["target_lift_um"] == pytest.approx(0.0)
+    assert groups[0]["edges_requiring_meander"] == 1
 
 
 def test_matching_group_diagnostics_reports_post_meander_residuals():

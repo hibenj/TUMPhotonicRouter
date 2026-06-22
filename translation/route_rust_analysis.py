@@ -51,6 +51,115 @@ def analyze_path_length_matching(
     return analysis, list(list_edges_requiring_meander(analysis))
 
 
+def minimum_four_bend_extra_length_um(
+    *,
+    grid_size_um: float,
+    bend_radius_cells: int,
+) -> float:
+    """Minimum practical matching request: one bump needs four 90-degree bends."""
+    bend_radius_um = max(0.0, float(grid_size_um) * float(bend_radius_cells))
+    return 2.0 * 3.141592653589793 * bend_radius_um
+
+
+def compute_group_lifted_requirements(
+    analysis: PathLengthAnalysisResult,
+    *,
+    minimum_insertable_extra_um: float,
+    tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
+) -> tuple[list[MissingLengthRequirement], list[dict[str, object]]]:
+    """Raise convergence targets when an edge deficit is smaller than one bump.
+
+    The topological pass propagates lifted output arrivals downstream. Without
+    this, adding one bump at an upstream node would be invisible to later
+    convergence groups.
+    """
+    min_insertable = max(0.0, float(minimum_insertable_extra_um))
+    adjusted_output_arrivals: dict[str, float] = {}
+    requirements: list[MissingLengthRequirement] = []
+    groups: list[dict[str, object]] = []
+
+    for node_name in analysis.topological_order:
+        timing = analysis.node_timings[node_name]
+        if not timing.incoming_edges:
+            adjusted_input_arrival = 0.0
+            adjusted_output_arrivals[node_name] = adjusted_input_arrival + float(
+                timing.internal_delay_um
+            )
+            continue
+
+        edge_arrivals: list[tuple[NodeIncomingEdgeTiming, float]] = []
+        for edge_timing in timing.incoming_edges:
+            source_output = adjusted_output_arrivals.get(
+                edge_timing.edge_key.source.instance,
+                0.0,
+            )
+            edge_arrivals.append(
+                (edge_timing, source_output + float(edge_timing.routed_length_um))
+            )
+        base_target = max(arrival for _, arrival in edge_arrivals)
+        base_missing = [
+            max(0.0, base_target - arrival)
+            for _, arrival in edge_arrivals
+        ]
+        has_sub_bump_deficit = any(
+            tolerance_um < missing < min_insertable - tolerance_um
+            for missing in base_missing
+        )
+        lift_um = min_insertable if has_sub_bump_deficit else 0.0
+        adjusted_target = base_target + lift_um
+        adjusted_output_arrivals[node_name] = adjusted_target + float(
+            timing.internal_delay_um
+        )
+
+        if len(edge_arrivals) < 2:
+            continue
+
+        incoming_edges: list[dict[str, object]] = []
+        edges_requiring_meander = 0
+        adjusted_missing_values: list[float] = []
+        for (edge_timing, arrival), raw_missing in zip(edge_arrivals, base_missing):
+            adjusted_missing = max(0.0, adjusted_target - arrival)
+            if adjusted_missing <= tolerance_um:
+                adjusted_missing = 0.0
+            else:
+                edges_requiring_meander += 1
+                requirements.append(
+                    MissingLengthRequirement(
+                        edge_key=edge_timing.edge_key,
+                        missing_length_um=adjusted_missing,
+                    )
+                )
+            adjusted_missing_values.append(adjusted_missing)
+            incoming_edges.append(
+                {
+                    **_incoming_edge_timing_to_dict(edge_timing),
+                    "adjusted_edge_arrival_um": float(arrival),
+                    "raw_missing_length_um": float(raw_missing),
+                    "target_lift_um": float(lift_um),
+                    "adjusted_missing_length_um": float(adjusted_missing),
+                }
+            )
+
+        groups.append(
+            {
+                "node_name": timing.node_name,
+                "node_type": timing.node_type.value,
+                "incoming_count": len(edge_arrivals),
+                "base_target_input_arrival_um": float(base_target),
+                "target_lift_um": float(lift_um),
+                "target_input_arrival_um": float(adjusted_target),
+                "output_arrival_um": float(adjusted_output_arrivals[node_name]),
+                "minimum_insertable_extra_um": float(min_insertable),
+                "max_missing_length_um": max(adjusted_missing_values, default=0.0),
+                "total_missing_length_um": float(sum(adjusted_missing_values)),
+                "edges_requiring_meander": edges_requiring_meander,
+                "incoming_edges": incoming_edges,
+            }
+        )
+
+    return requirements, groups
+
+
 def edge_key_to_dict(edge_key: RoutedEdgeKey) -> dict[str, object]:
     return {
         "net_name": edge_key.net_name,
@@ -144,6 +253,8 @@ def matching_group_diagnostics_to_info(
     analysis: PathLengthAnalysisResult,
     meander_report: dict[str, object] | None,
     *,
+    adjusted_requirements: list[MissingLengthRequirement] | None = None,
+    lifted_groups: list[dict[str, object]] | None = None,
     tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
 ) -> list[dict[str, object]]:
     results = []
@@ -163,15 +274,43 @@ def matching_group_diagnostics_to_info(
         status_by_edge[edge_id] = str(item.get("status", "unknown"))
         unmatched_by_edge[edge_id] = float(item.get("unmatched_length_um", 0.0))
 
+    adjusted_missing_by_edge: dict[tuple[str, str, str, str, str], float] = {}
+    if adjusted_requirements is not None:
+        adjusted_missing_by_edge = {
+            _edge_identity(req.edge_key): float(req.missing_length_um)
+            for req in adjusted_requirements
+        }
+
+    base_groups = lifted_groups if lifted_groups is not None else matching_groups_to_info(analysis)
     diagnostics: list[dict[str, object]] = []
-    for group in matching_groups_to_info(analysis):
+    for group in base_groups:
         edges: list[dict[str, object]] = []
         max_unmatched = 0.0
         max_physical_residual = 0.0
         max_disregarded = 0.0
-        for edge_timing in analysis.node_timings[str(group["node_name"])].incoming_edges:
+        raw_edges = group.get("incoming_edges", [])
+        if not isinstance(raw_edges, list):
+            raw_edges = []
+        timing_edges_by_id = {
+            _edge_identity(edge_timing.edge_key): edge_timing
+            for edge_timing in analysis.node_timings[str(group["node_name"])].incoming_edges
+        }
+        for raw_edge in raw_edges:
+            if not isinstance(raw_edge, dict):
+                continue
+            edge_id = _edge_identity_from_info(raw_edge.get("edge"))
+            if edge_id is None:
+                continue
+            edge_timing = timing_edges_by_id.get(edge_id)
+            if edge_timing is None:
+                continue
             edge_id = _edge_identity(edge_timing.edge_key)
-            missing = float(edge_timing.missing_length_um)
+            missing = float(
+                raw_edge.get(
+                    "adjusted_missing_length_um",
+                    adjusted_missing_by_edge.get(edge_id, edge_timing.missing_length_um),
+                )
+            )
             inserted = float(inserted_by_edge.get(edge_id, 0.0))
             status = status_by_edge.get(edge_id, "not_required" if missing == 0.0 else "missing")
             physical_residual = max(0.0, missing - inserted)
@@ -184,7 +323,7 @@ def matching_group_diagnostics_to_info(
             max_disregarded = max(max_disregarded, disregarded)
             edges.append(
                 {
-                    **_incoming_edge_timing_to_dict(edge_timing),
+                    **raw_edge,
                     "inserted_extra_length_um": inserted,
                     "physical_residual_um": physical_residual,
                     "accepted_unmatched_um": accepted_unmatched,

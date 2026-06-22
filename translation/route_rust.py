@@ -27,7 +27,9 @@ from photonic_router.routing_layers import (
 from translation.route_rust_analysis import (
     analysis_to_info_dict,
     analyze_path_length_matching,
+    compute_group_lifted_requirements,
     matching_group_diagnostics_to_info,
+    minimum_four_bend_extra_length_um,
     requirement_to_dict,
 )
 from translation import route_rust_meanders as _meander_impl
@@ -166,6 +168,29 @@ def route_match_and_realize(
         )
         pipeline_timings_s["path_length_analysis"] = time.perf_counter() - t_analysis_start
         analysis_info = analysis_to_info_dict(analysis)
+        raw_requirements = list(requirements)
+        min_insertable_extra_um = minimum_four_bend_extra_length_um(
+            grid_size_um=float(debug_artifacts.realization_grid_spec[2])
+            if debug_artifacts.realization_grid_spec is not None
+            else 0.0,
+            bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+        )
+        requirements, lifted_groups = compute_group_lifted_requirements(
+            analysis,
+            minimum_insertable_extra_um=min_insertable_extra_um,
+        )
+        analysis_info["raw_requirements"] = [
+            requirement_to_dict(req)
+            for req in raw_requirements
+        ]
+        analysis_info["requirements"] = [
+            requirement_to_dict(req)
+            for req in requirements
+        ]
+        analysis_info["matching_groups"] = lifted_groups
+        analysis_info["minimum_insertable_extra_length_um"] = float(
+            min_insertable_extra_um
+        )
         requirements_info = [requirement_to_dict(req) for req in requirements]
         if debug_artifacts.realization_grid_spec is None:
             raise RuntimeError("Missing realization grid spec from routing phase.")
@@ -212,7 +237,12 @@ def route_match_and_realize(
         )
         if analysis_info is not None:
             analysis_info["matching_group_diagnostics"] = (
-                matching_group_diagnostics_to_info(analysis, meander_report_info)
+                matching_group_diagnostics_to_info(
+                    analysis,
+                    meander_report_info,
+                    adjusted_requirements=requirements,
+                    lifted_groups=lifted_groups,
+                )
             )
 
     if debug_artifacts.realization_grid_spec is None:
