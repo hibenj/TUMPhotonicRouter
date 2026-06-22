@@ -19,6 +19,22 @@ from translation.route_rust_types import RoutedNetRecord
 PATH_LENGTH_MATCH_TOLERANCE_UM = 1.0e-6
 
 
+def _object_to_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, (str, bytes, bytearray, int, float)):
+        return float(value)
+    return default
+
+
+def _object_to_int(value: object, default: int = 0) -> int:
+    if isinstance(value, (str, bytes, bytearray, int, float)):
+        return int(value)
+    return default
+
+
+def _list_length(value: object) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
 def routed_net_records_to_edge_lengths(
     records: list[RoutedNetRecord],
 ) -> dict[RoutedEdgeKey, float]:
@@ -367,9 +383,9 @@ def path_length_acceptance_summary(
         for edge in raw_edges:
             if not isinstance(edge, dict):
                 continue
-            physical_residual = float(edge.get("physical_residual_um", 0.0))
-            accepted_unmatched = float(edge.get("accepted_unmatched_um", 0.0))
-            disregarded_residual = float(edge.get("disregarded_residual_um", 0.0))
+            physical_residual = _object_to_float(edge.get("physical_residual_um", 0.0))
+            accepted_unmatched = _object_to_float(edge.get("accepted_unmatched_um", 0.0))
+            disregarded_residual = _object_to_float(edge.get("disregarded_residual_um", 0.0))
             max_physical_residual = max(max_physical_residual, physical_residual)
             max_accepted_unmatched = max(max_accepted_unmatched, accepted_unmatched)
             max_disregarded_residual = max(max_disregarded_residual, disregarded_residual)
@@ -379,13 +395,13 @@ def path_length_acceptance_summary(
                 {
                     "edge": edge.get("edge", {}),
                     "meander_status": edge.get("meander_status", "unknown"),
-                    "requested_extra_length_um": float(
+                    "requested_extra_length_um": _object_to_float(
                         edge.get(
                             "adjusted_missing_length_um",
                             edge.get("missing_length_um", 0.0),
                         )
                     ),
-                    "inserted_extra_length_um": float(
+                    "inserted_extra_length_um": _object_to_float(
                         edge.get("inserted_extra_length_um", 0.0)
                     ),
                     "physical_residual_um": physical_residual,
@@ -398,11 +414,11 @@ def path_length_acceptance_summary(
                 {
                     "node_name": group.get("node_name", ""),
                     "node_type": group.get("node_type", ""),
-                    "target_input_arrival_um": float(
+                    "target_input_arrival_um": _object_to_float(
                         group.get("target_input_arrival_um", 0.0)
                     ),
-                    "target_lift_um": float(group.get("target_lift_um", 0.0)),
-                    "max_physical_residual_um": float(
+                    "target_lift_um": _object_to_float(group.get("target_lift_um", 0.0)),
+                    "max_physical_residual_um": _object_to_float(
                         group.get("max_physical_residual_um", 0.0)
                     ),
                     "failures": group_failures,
@@ -413,11 +429,7 @@ def path_length_acceptance_summary(
         "passed": not failed_groups,
         "tolerance_um": float(tolerance_um),
         "failed_group_count": len(failed_groups),
-        "failed_edge_count": sum(
-            len(group.get("failures", []))
-            for group in failed_groups
-            if isinstance(group.get("failures", []), list)
-        ),
+        "failed_edge_count": sum(_list_length(group.get("failures", [])) for group in failed_groups),
         "max_physical_residual_um": float(max_physical_residual),
         "max_accepted_unmatched_um": float(max_accepted_unmatched),
         "max_disregarded_residual_um": float(max_disregarded_residual),
@@ -432,10 +444,10 @@ def format_path_length_acceptance_failure(summary: dict[str, object]) -> str:
         failed_groups = []
     lines = [
         "Path-length matching failed: "
-        f"{int(summary.get('failed_edge_count', 0))} edge(s) in "
-        f"{int(summary.get('failed_group_count', 0))} group(s) retain physical "
-        f"residual above {float(summary.get('tolerance_um', 0.0)):.6g} um "
-        f"(max {float(summary.get('max_physical_residual_um', 0.0)):.6g} um)."
+        f"{_object_to_int(summary.get('failed_edge_count', 0))} edge(s) in "
+        f"{_object_to_int(summary.get('failed_group_count', 0))} group(s) retain physical "
+        f"residual above {_object_to_float(summary.get('tolerance_um', 0.0)):.6g} um "
+        f"(max {_object_to_float(summary.get('max_physical_residual_um', 0.0)):.6g} um)."
     ]
     for group in failed_groups[:5]:
         if not isinstance(group, dict):

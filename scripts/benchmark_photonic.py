@@ -126,6 +126,9 @@ def _supports_get(value: object) -> TypeGuard[SupportsGet]:
     return hasattr(value, "get")
 
 
+EMPTY_INFO: SupportsGet = {}
+
+
 def _git_rev() -> str:
     try:
         return subprocess.check_output(
@@ -309,10 +312,10 @@ def _path_length_group_diagnostics(layout_info: object) -> list[Mapping[str, obj
 
 def _path_length_analysis_info(layout_info: object) -> SupportsGet:
     if not _supports_get(layout_info):
-        return {}
+        return EMPTY_INFO
     analysis = layout_info.get("path_length_analysis", {})
     if not _supports_get(analysis):
-        return {}
+        return EMPTY_INFO
     return analysis
 
 
@@ -407,7 +410,9 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         stats=stats,
     )
     layout_info_raw = getattr(routed_layout, "info", {})
-    layout_info: SupportsGet = layout_info_raw if _supports_get(layout_info_raw) else {}
+    layout_info: SupportsGet = (
+        layout_info_raw if _supports_get(layout_info_raw) else EMPTY_INFO
+    )
     meander_report = layout_info.get("meander_insertion_report", {})
     if not isinstance(meander_report, Mapping):
         meander_report = {}
@@ -443,11 +448,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "meander_planning_s": stats.step_times_s.get("meander_planning"),
         "route_realization_s": stats.step_times_s.get("route_realization"),
         "astar_s": stats.astar_time_s,
-        "meander_requirements": len(
-            layout_info.get("meander_requirements", [])
-            if isinstance(layout_info.get("meander_requirements", []), list)
-            else []
-        ),
+        "meander_requirements": _list_length(layout_info.get("meander_requirements", [])),
         "path_length_group_count": len(matching_group_diagnostics),
         "path_length_groups_with_requirements": _count_groups_with_requirements(
             matching_group_diagnostics
