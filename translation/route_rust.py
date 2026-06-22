@@ -28,8 +28,10 @@ from translation.route_rust_analysis import (
     analysis_to_info_dict,
     analyze_path_length_matching,
     compute_group_lifted_requirements,
+    format_path_length_acceptance_failure,
     matching_group_diagnostics_to_info,
     minimum_four_bend_extra_length_um,
+    path_length_acceptance_summary,
     requirement_to_dict,
 )
 from translation import route_rust_meanders as _meander_impl
@@ -236,14 +238,21 @@ def route_match_and_realize(
             time.perf_counter() - t_meander_planning_start
         )
         if analysis_info is not None:
-            analysis_info["matching_group_diagnostics"] = (
-                matching_group_diagnostics_to_info(
-                    analysis,
-                    meander_report_info,
-                    adjusted_requirements=requirements,
-                    lifted_groups=lifted_groups,
-                )
+            matching_group_diagnostics = matching_group_diagnostics_to_info(
+                analysis,
+                meander_report_info,
+                adjusted_requirements=requirements,
+                lifted_groups=lifted_groups,
             )
+            acceptance_summary = path_length_acceptance_summary(
+                matching_group_diagnostics
+            )
+            analysis_info["matching_group_diagnostics"] = matching_group_diagnostics
+            analysis_info["path_length_acceptance"] = acceptance_summary
+            if not acceptance_summary["passed"]:
+                raise RuntimeError(
+                    format_path_length_acceptance_failure(acceptance_summary)
+                )
 
     if debug_artifacts.realization_grid_spec is None:
         raise RuntimeError("Missing realization grid spec from routing phase.")

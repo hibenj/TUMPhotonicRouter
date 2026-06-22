@@ -346,6 +346,137 @@ def matching_group_diagnostics_to_info(
     return diagnostics
 
 
+def path_length_acceptance_summary(
+    diagnostics: list[dict[str, object]],
+    *,
+    tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
+) -> dict[str, object]:
+    """Summarize whether realized PLM exactly satisfies every group target."""
+    failed_groups: list[dict[str, object]] = []
+    max_physical_residual = 0.0
+    max_accepted_unmatched = 0.0
+    max_disregarded_residual = 0.0
+
+    for group in diagnostics:
+        if not isinstance(group, dict):
+            continue
+        group_failures: list[dict[str, object]] = []
+        raw_edges = group.get("incoming_edges", [])
+        if not isinstance(raw_edges, list):
+            raw_edges = []
+        for edge in raw_edges:
+            if not isinstance(edge, dict):
+                continue
+            physical_residual = float(edge.get("physical_residual_um", 0.0))
+            accepted_unmatched = float(edge.get("accepted_unmatched_um", 0.0))
+            disregarded_residual = float(edge.get("disregarded_residual_um", 0.0))
+            max_physical_residual = max(max_physical_residual, physical_residual)
+            max_accepted_unmatched = max(max_accepted_unmatched, accepted_unmatched)
+            max_disregarded_residual = max(max_disregarded_residual, disregarded_residual)
+            if physical_residual <= tolerance_um:
+                continue
+            group_failures.append(
+                {
+                    "edge": edge.get("edge", {}),
+                    "meander_status": edge.get("meander_status", "unknown"),
+                    "requested_extra_length_um": float(
+                        edge.get(
+                            "adjusted_missing_length_um",
+                            edge.get("missing_length_um", 0.0),
+                        )
+                    ),
+                    "inserted_extra_length_um": float(
+                        edge.get("inserted_extra_length_um", 0.0)
+                    ),
+                    "physical_residual_um": physical_residual,
+                    "accepted_unmatched_um": accepted_unmatched,
+                    "disregarded_residual_um": disregarded_residual,
+                }
+            )
+        if group_failures:
+            failed_groups.append(
+                {
+                    "node_name": group.get("node_name", ""),
+                    "node_type": group.get("node_type", ""),
+                    "target_input_arrival_um": float(
+                        group.get("target_input_arrival_um", 0.0)
+                    ),
+                    "target_lift_um": float(group.get("target_lift_um", 0.0)),
+                    "max_physical_residual_um": float(
+                        group.get("max_physical_residual_um", 0.0)
+                    ),
+                    "failures": group_failures,
+                }
+            )
+
+    return {
+        "passed": not failed_groups,
+        "tolerance_um": float(tolerance_um),
+        "failed_group_count": len(failed_groups),
+        "failed_edge_count": sum(
+            len(group.get("failures", []))
+            for group in failed_groups
+            if isinstance(group.get("failures", []), list)
+        ),
+        "max_physical_residual_um": float(max_physical_residual),
+        "max_accepted_unmatched_um": float(max_accepted_unmatched),
+        "max_disregarded_residual_um": float(max_disregarded_residual),
+        "failed_groups": failed_groups,
+    }
+
+
+def format_path_length_acceptance_failure(summary: dict[str, object]) -> str:
+    """Build a compact user-facing PLM failure message."""
+    failed_groups = summary.get("failed_groups", [])
+    if not isinstance(failed_groups, list):
+        failed_groups = []
+    lines = [
+        "Path-length matching failed: "
+        f"{int(summary.get('failed_edge_count', 0))} edge(s) in "
+        f"{int(summary.get('failed_group_count', 0))} group(s) retain physical "
+        f"residual above {float(summary.get('tolerance_um', 0.0)):.6g} um "
+        f"(max {float(summary.get('max_physical_residual_um', 0.0)):.6g} um)."
+    ]
+    for group in failed_groups[:5]:
+        if not isinstance(group, dict):
+            continue
+        node_name = str(group.get("node_name", "<unknown>"))
+        failures = group.get("failures", [])
+        if not isinstance(failures, list):
+            failures = []
+        for failure in failures[:3]:
+            if not isinstance(failure, dict):
+                continue
+            edge_info = failure.get("edge", {})
+            lines.append(
+                "  - "
+                f"{node_name} {_edge_label_from_info(edge_info)}: "
+                f"requested={float(failure.get('requested_extra_length_um', 0.0)):.6g} um, "
+                f"inserted={float(failure.get('inserted_extra_length_um', 0.0)):.6g} um, "
+                f"residual={float(failure.get('physical_residual_um', 0.0)):.6g} um, "
+                f"status={failure.get('meander_status', 'unknown')}"
+            )
+    if len(failed_groups) > 5:
+        lines.append(f"  - ... {len(failed_groups) - 5} more failed group(s)")
+    return "\n".join(lines)
+
+
+def _edge_label_from_info(edge_info: object) -> str:
+    if not isinstance(edge_info, dict):
+        return "<unknown edge>"
+    source = edge_info.get("source", {})
+    target = edge_info.get("target", {})
+    if not isinstance(source, dict):
+        source = {}
+    if not isinstance(target, dict):
+        target = {}
+    return (
+        f"{edge_info.get('net_name', '<unknown>')} "
+        f"{source.get('instance', '?')},{source.get('port', '?')} -> "
+        f"{target.get('instance', '?')},{target.get('port', '?')}"
+    )
+
+
 def analysis_to_info_dict(analysis: PathLengthAnalysisResult) -> dict[str, object]:
     return {
         "topological_order": list(analysis.topological_order),

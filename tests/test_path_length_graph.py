@@ -23,7 +23,9 @@ from translation.route_rust import (
 from translation.route_rust_analysis import (
     analysis_to_info_dict,
     compute_group_lifted_requirements,
+    format_path_length_acceptance_failure,
     matching_group_diagnostics_to_info,
+    path_length_acceptance_summary,
 )
 import translation.route_rust as route_rust
 import routing_flow
@@ -471,7 +473,7 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
     )
 
     result = route_rust.route_match_and_realize(
-        Component(name="unrouted"),
+        Component(name="unrouted_lifted_pipeline_pass"),
         schematic,
         enable_path_length_matching=True,
         node_types={
@@ -490,6 +492,7 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
         list[dict[str, object]],
         analysis_info["matching_group_diagnostics"],
     )
+    acceptance = cast(dict[str, object], analysis_info["path_length_acceptance"])
     realized_records = cast(list[RoutedNetRecord], captured["realized_records"])
     realized_by_edge = {
         RoutedEdgeKey(
@@ -506,6 +509,8 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
     assert diagnostics[0]["max_physical_residual_um"] == pytest.approx(0.0)
     assert diagnostics[0]["max_disregarded_residual_um"] == pytest.approx(0.0)
     assert diagnostics[0]["within_tolerance"] is True
+    assert acceptance["passed"] is True
+    assert acceptance["failed_edge_count"] == 0
     assert diagnostics[0]["edges_requiring_meander"] == 2
     assert realized_by_edge[short_edge].meander_auto_plan is not None
     assert realized_by_edge[long_edge].meander_auto_plan is not None
@@ -515,6 +520,146 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
     assert cast(dict[str, object], realized_by_edge[long_edge].meander_auto_plan)[
         "requested_extra_length_um"
     ] == pytest.approx(25.0)
+
+
+def test_route_match_and_realize_rejects_unrealized_lifted_plm(monkeypatch):
+    schematic = build_schematic()
+    short_edge = RoutedEdgeKey(
+        net_name="gc0_to_mmi_in1",
+        source=PortRef(instance="gc_0", port="o1"),
+        target=PortRef(instance="mmi_0", port="o2"),
+    )
+    long_edge = RoutedEdgeKey(
+        net_name="gc1_to_mmi_in2",
+        source=PortRef(instance="gc_1", port="o1"),
+        target=PortRef(instance="mmi_0", port="o1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=short_edge.net_name,
+            source=short_edge.source,
+            target=short_edge.target,
+            route_obj=object(),
+            total_length_um=99.5,
+        ),
+        RoutedNetRecord(
+            net_name=long_edge.net_name,
+            source=long_edge.source,
+            target=long_edge.target,
+            route_obj=object(),
+            total_length_um=100.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out1_to_gc2",
+            source=PortRef(instance="mmi_0", port="o3"),
+            target=PortRef(instance="gc_2", port="o1"),
+            route_obj=object(),
+            total_length_um=60.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out2_to_gc3",
+            source=PortRef(instance="mmi_0", port="o4"),
+            target=PortRef(instance="gc_3", port="o1"),
+            route_obj=object(),
+            total_length_um=60.0,
+        ),
+    ]
+    captured: dict[str, object] = {"realized": False}
+
+    monkeypatch.setattr(
+        route_rust,
+        "route_nets_rust",
+        lambda *args, **kwargs: (
+            Component(name="failed_lifted_pipeline"),
+            RustRouteDebugArtifacts(
+                obstacle_svg=None,
+                route_svgs=[],
+                routed_edge_lengths_um={},
+                routed_net_records=records,
+                realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+                realization_bend_radius_cells=4,
+            ),
+        ),
+    )
+
+    class _ObstacleMap:
+        blocked_cells: tuple[tuple[int, int], ...] = ()
+
+    monkeypatch.setattr(
+        route_rust,
+        "build_static_obstacle_map",
+        lambda *args, **kwargs: _ObstacleMap(),
+    )
+
+    def _fake_failed_planner(
+        _routed_net_records: list[RoutedNetRecord],
+        requirements: list[MissingLengthRequirement],
+        **_kwargs: object,
+    ) -> tuple[list[RoutedNetRecord], dict[str, object]]:
+        required_by_edge = {req.edge_key: req.missing_length_um for req in requirements}
+        return records, {
+            "results": [
+                {
+                    "edge": {
+                        "net_name": edge.net_name,
+                        "source": {
+                            "instance": edge.source.instance,
+                            "port": edge.source.port,
+                        },
+                        "target": {
+                            "instance": edge.target.instance,
+                            "port": edge.target.port,
+                        },
+                    },
+                    "status": "no_candidate",
+                    "reason": "synthetic planning failure",
+                    "requested_extra_length_um": required_by_edge[edge],
+                    "inserted_extra_length_um": 0.0,
+                    "unmatched_length_um": required_by_edge[edge],
+                }
+                for edge in (short_edge, long_edge)
+            ],
+            "total_requested_extra_length_um": sum(required_by_edge.values()),
+            "total_inserted_extra_length_um": 0.0,
+            "total_disregarded_extra_length_um": 0.0,
+            "unmatched_length_um": sum(required_by_edge.values()),
+            "planner_calls": 2,
+        }
+
+    monkeypatch.setattr(
+        route_rust,
+        "minimum_four_bend_extra_length_um",
+        lambda **_kwargs: 25.0,
+    )
+    monkeypatch.setattr(
+        route_rust,
+        "analyze_meander_insertion_for_requirements",
+        _fake_failed_planner,
+    )
+    monkeypatch.setattr(
+        route_rust,
+        "realize_routed_net_records",
+        lambda *args, **kwargs: captured.update(realized=True),
+    )
+
+    with pytest.raises(RuntimeError, match="Path-length matching failed") as exc_info:
+        route_rust.route_match_and_realize(
+            Component(name="unrouted_lifted_pipeline_fail"),
+            schematic,
+            enable_path_length_matching=True,
+            node_types={
+                "gc_0": "input",
+                "gc_1": "input",
+                "mmi_0": "gate",
+                "gc_2": "output",
+                "gc_3": "output",
+            },
+            internal_delays_um={},
+        )
+
+    assert "gc0_to_mmi_in1" in str(exc_info.value)
+    assert "no_candidate" in str(exc_info.value)
+    assert captured["realized"] is False
 
 
 def test_matching_group_diagnostics_reports_post_meander_residuals():
@@ -662,6 +807,77 @@ def test_matching_group_diagnostics_tracks_disregarded_small_residual():
     assert groups[0]["max_accepted_unmatched_um"] == pytest.approx(0.0)
     assert groups[0]["max_physical_residual_um"] == pytest.approx(0.5)
     assert groups[0]["max_disregarded_residual_um"] == pytest.approx(0.5)
+
+
+def test_path_length_acceptance_uses_physical_residual_not_accepted_unmatched():
+    diagnostics = [
+        {
+            "node_name": "gate0",
+            "node_type": "gate",
+            "target_input_arrival_um": 100.0,
+            "target_lift_um": 25.0,
+            "max_physical_residual_um": 25.0,
+            "incoming_edges": [
+                {
+                    "edge": {
+                        "net_name": "n0",
+                        "source": {"instance": "src0", "port": "o1"},
+                        "target": {"instance": "gate0", "port": "i0"},
+                    },
+                    "adjusted_missing_length_um": 25.0,
+                    "inserted_extra_length_um": 0.0,
+                    "physical_residual_um": 25.0,
+                    "accepted_unmatched_um": 0.0,
+                    "disregarded_residual_um": 25.0,
+                    "meander_status": "below_minimum_bump",
+                }
+            ],
+        }
+    ]
+
+    summary = path_length_acceptance_summary(diagnostics)
+    message = format_path_length_acceptance_failure(summary)
+
+    assert summary["passed"] is False
+    assert summary["failed_group_count"] == 1
+    assert summary["failed_edge_count"] == 1
+    assert summary["max_physical_residual_um"] == pytest.approx(25.0)
+    assert "below_minimum_bump" in message
+    assert "residual=25" in message
+
+
+def test_path_length_acceptance_passes_exactly_realized_group():
+    diagnostics = [
+        {
+            "node_name": "gate0",
+            "node_type": "gate",
+            "target_input_arrival_um": 125.0,
+            "target_lift_um": 25.0,
+            "max_physical_residual_um": 0.0,
+            "incoming_edges": [
+                {
+                    "edge": {
+                        "net_name": "n0",
+                        "source": {"instance": "src0", "port": "o1"},
+                        "target": {"instance": "gate0", "port": "i0"},
+                    },
+                    "adjusted_missing_length_um": 25.0,
+                    "inserted_extra_length_um": 25.0,
+                    "physical_residual_um": 0.0,
+                    "accepted_unmatched_um": 0.0,
+                    "disregarded_residual_um": 0.0,
+                    "meander_status": "planned",
+                }
+            ],
+        }
+    ]
+
+    summary = path_length_acceptance_summary(diagnostics)
+
+    assert summary["passed"] is True
+    assert summary["failed_group_count"] == 0
+    assert summary["failed_edge_count"] == 0
+    assert summary["max_physical_residual_um"] == pytest.approx(0.0)
 
 
 def _build_two_stage_schematic_for_convergence() -> _SchematicLike:
