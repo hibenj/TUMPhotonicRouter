@@ -248,12 +248,14 @@ impl FootprintCollisionProfile {
 }
 
 const NO_PARENT: u32 = u32::MAX;
+const NO_GENERATION: u64 = u64::MAX;
 const BITSET_WORD_BITS: usize = u64::BITS as usize;
 
 struct DenseSearchStorage {
     bounds: RoutingBounds,
     width_usize: usize,
     g_costs: Vec<f64>,
+    best_generation: Vec<u64>,
     parent_idx: Vec<u32>,
     parent_primitive: Vec<u16>,
     closed: DenseBitset,
@@ -280,6 +282,7 @@ impl DenseSearchStorage {
             bounds,
             width_usize,
             g_costs: vec![f64::INFINITY; state_count],
+            best_generation: vec![NO_GENERATION; state_count],
             parent_idx: vec![NO_PARENT; state_count],
             parent_primitive: vec![0; state_count],
             closed: DenseBitset::new(state_count)?,
@@ -743,6 +746,7 @@ struct OpenEntry {
     f_score: f64,
     g_score: f64,
     counter: u64,
+    generation: u64,
     idx: usize,
 }
 
@@ -1111,6 +1115,7 @@ fn route_single_net_jps4(
         f_score: jps4_heuristic(source.x, source.y, target_point, grid_size_um),
         g_score: 0.0,
         counter,
+        generation: counter,
         idx: source_idx,
     });
     stats.heap_pushes += 1;
@@ -1157,6 +1162,7 @@ fn route_single_net_jps4(
                 f_score: tentative_g + jps4_heuristic(jump_x, jump_y, target_point, grid_size_um),
                 g_score: tentative_g,
                 counter,
+                generation: counter,
                 idx: jump_idx,
             });
             stats.heap_pushes += 1;
@@ -1678,10 +1684,12 @@ fn route_single_net_with_bounds(
     let source_idx = storage.state_to_idx(source)?;
 
     storage.g_costs[source_idx] = 0.0;
+    storage.best_generation[source_idx] = counter;
     let source_entry = OpenEntry {
         f_score: heuristic(source, target, primitives.grid_size_um()),
         g_score: 0.0,
         counter,
+        generation: counter,
         idx: source_idx,
     };
     if collect_detailed_timing {
@@ -1714,6 +1722,10 @@ fn route_single_net_with_bounds(
         }
 
         let idx = entry.idx;
+        if storage.best_generation[idx] != entry.generation {
+            stats.skipped_duplicate_heap_entries += 1;
+            continue;
+        }
         if storage.closed.get(idx) {
             stats.skipped_duplicate_heap_entries += 1;
             continue;
@@ -1839,10 +1851,12 @@ fn route_single_net_with_bounds(
             storage.parent_idx[next_idx] = idx as u32;
             storage.parent_primitive[next_idx] = primitive.id;
             storage.g_costs[next_idx] = tentative_g;
+            storage.best_generation[next_idx] = counter;
             let next_entry = OpenEntry {
                 f_score: tentative_g + heuristic(next_state, target, primitives.grid_size_um()),
                 g_score: tentative_g,
                 counter,
+                generation: counter,
                 idx: next_idx,
             };
             if collect_detailed_timing {
