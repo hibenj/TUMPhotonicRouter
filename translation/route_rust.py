@@ -44,6 +44,7 @@ from translation.route_rust_types import (
     RoutedNetRecord,
     RustRouteDebugArtifacts,
     _as_float,
+    route_attempt_record_from_route,
     summarize_route_search,
 )
 
@@ -811,6 +812,7 @@ def route_nets_rust(
     total_expanded_states = 0
     simple_route_count = 0
     repair_count = 0
+    route_attempt_records = []
     route_timing_buckets: dict[str, RouteTimingBucket] = {
         name: RouteTimingBucket()
         for name in (
@@ -837,25 +839,45 @@ def route_nets_rust(
             failed=failed,
         )
 
-    def _record_route_timing(
+    def _record_route_attempt(
+        job: RouteJob,
         bucket_name: str,
         start_s: float,
         route_obj: object | None = None,
         *,
         failed: bool = False,
+        repair_round: int | None = None,
+        error_text: str | None = None,
     ) -> None:
         if not collect_timing:
             return
+        elapsed_s = time.perf_counter() - start_s
         if route_obj is None:
             route_timing_buckets[bucket_name].record_elapsed(
-                time.perf_counter() - start_s,
+                elapsed_s,
                 failed=failed,
             )
-            return
-        route_timing_buckets[bucket_name].record_route(
-            time.perf_counter() - start_s,
-            route_obj,
-            failed=failed,
+        else:
+            route_timing_buckets[bucket_name].record_route(
+                elapsed_s,
+                route_obj,
+                failed=failed,
+            )
+        route_attempt_records.append(
+            route_attempt_record_from_route(
+                attempt_index=len(route_attempt_records) + 1,
+                bucket_name=bucket_name,
+                net_id=job.net_id,
+                route_index=job.route_index,
+                net_name=job.net_name,
+                source=f"{job.inst1},{job.port1}",
+                target=f"{job.inst2},{job.port2}",
+                elapsed_s=elapsed_s,
+                route_obj=route_obj,
+                failed=failed,
+                repair_round=repair_round,
+                error=error_text,
+            )
         )
 
     def _committed_dynamic_cells(*, exclude_net_id: int | None = None) -> set[tuple[int, int]]:
@@ -1000,6 +1022,7 @@ def route_nets_rust(
         *,
         repair: bool,
         timing_bucket: str,
+        repair_round: int | None = None,
     ) -> tuple[Any, list[tuple[int, int]]]:
         source_state, target_state, _, _, opened_cells = _states_and_openings(job)
         route_start = _timing_start()
@@ -1013,8 +1036,15 @@ def route_nets_rust(
                     opened_cells,
                     float(repair_config.history_weight),
                 )
-            except RuntimeError:
-                _record_route_timing(timing_bucket, route_start, failed=True)
+            except RuntimeError as exc:
+                _record_route_attempt(
+                    job,
+                    timing_bucket,
+                    route_start,
+                    failed=True,
+                    repair_round=repair_round,
+                    error_text=str(exc),
+                )
                 raise
         else:
             try:
@@ -1025,10 +1055,23 @@ def route_nets_rust(
                     block_radius_cells,
                     opened_cells,
                 )
-            except RuntimeError:
-                _record_route_timing(timing_bucket, route_start, failed=True)
+            except RuntimeError as exc:
+                _record_route_attempt(
+                    job,
+                    timing_bucket,
+                    route_start,
+                    failed=True,
+                    repair_round=repair_round,
+                    error_text=str(exc),
+                )
                 raise
-        _record_route_timing(timing_bucket, route_start, route_obj)
+        _record_route_attempt(
+            job,
+            timing_bucket,
+            route_start,
+            route_obj,
+            repair_round=repair_round,
+        )
         _record_route(job, route_obj, opened_cells)
         return route_obj, opened_cells
 
@@ -1123,10 +1166,16 @@ def route_nets_rust(
                 block_radius_cells,
                 opened_cells,
             )
-        except RuntimeError:
-            _record_route_timing("probe_route", probe_start, failed=True)
+        except RuntimeError as exc:
+            _record_route_attempt(
+                job,
+                "probe_route",
+                probe_start,
+                failed=True,
+                error_text=str(exc),
+            )
             return False
-        _record_route_timing("probe_route", probe_start, probe_route)
+        _record_route_attempt(job, "probe_route", probe_start, probe_route)
 
         history_start = _timing_start()
         router.add_history_for_route(
@@ -1198,6 +1247,7 @@ def route_nets_rust(
                     # conflict that caused this rip-up.
                     repair=False,
                     timing_bucket="repair_failed_net",
+                    repair_round=round_idx,
                 )
                 total_expanded_states += int(getattr(repaired_route, "expanded_states", 0))
                 if int(getattr(repaired_route, "expanded_states", 0)) == 0:
@@ -1209,6 +1259,7 @@ def route_nets_rust(
                         reroute_job,
                         repair=True,
                         timing_bucket="reroute_victims",
+                        repair_round=round_idx,
                     )
                     total_expanded_states += int(getattr(rerouted_obj, "expanded_states", 0))
                     if int(getattr(rerouted_obj, "expanded_states", 0)) == 0:
@@ -1421,4 +1472,5 @@ def route_nets_rust(
             repair_count=repair_count,
             astar_elapsed_s=astar_elapsed_s,
         ),
+        route_attempt_records=route_attempt_records,
     )

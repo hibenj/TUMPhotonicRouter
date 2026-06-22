@@ -6,7 +6,7 @@ from routing_flow import (
     run_routing_flow,
 )
 import benchmark_metadata
-from translation.route_rust_types import RouteSearchSummary
+from translation.route_rust_types import RouteAttemptRecord, RouteSearchSummary
 from types import SimpleNamespace
 
 
@@ -246,6 +246,25 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
                     legality_check_time_us=33_000,
                     reconstruction_time_us=44_000,
                 ),
+                route_attempt_records=[
+                    RouteAttemptRecord(
+                        attempt_index=1,
+                        bucket_name="normal_route",
+                        net_id=1,
+                        route_index=1,
+                        net_name="n0",
+                        source="a,o1",
+                        target="b,o1",
+                        elapsed_s=0.25,
+                        expanded_states=123,
+                        generated_neighbors=456,
+                        heap_pushes=300,
+                        heap_pops=250,
+                        skipped_duplicate_heap_entries=7,
+                        obstacle_clearance_checks=99,
+                        footprint_rect_checks=77,
+                    )
+                ],
             ),
             path_length_analysis_info=None,
             meander_requirements_info=None,
@@ -284,3 +303,38 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
     assert stats.heap_operation_time_s == 0.022
     assert stats.legality_check_time_s == 0.033
     assert stats.reconstruction_time_s == 0.044
+    assert stats.route_attempt_records == [
+        {
+            "attempt_index": 1,
+            "bucket_name": "normal_route",
+            "net_id": 1,
+            "route_index": 1,
+            "net_name": "n0",
+            "source": "a,o1",
+            "target": "b,o1",
+            "elapsed_s": 0.25,
+            "failed": False,
+            "repair_round": None,
+            "error": None,
+            "total_length_um": None,
+            "route_cells": 0,
+            "used_simple_route": False,
+            "expanded_states": 123,
+            "generated_neighbors": 456,
+            "heap_pushes": 300,
+            "heap_pops": 250,
+            "skipped_duplicate_heap_entries": 7,
+            "obstacle_clearance_checks": 99,
+            "window_attempts": 0,
+            "footprint_checks": 0,
+            "footprint_rect_checks": 77,
+            "dense_grid_build_time_s": 0.0,
+            "dense_grid_cells": 0,
+            "neighbor_generation_time_s": 0.0,
+            "heap_operation_time_s": 0.0,
+            "legality_check_time_s": 0.0,
+            "reconstruction_time_s": 0.0,
+            "max_window_area_cells": 0,
+            "used_full_grid_fallback": False,
+        }
+    ]

@@ -45,6 +45,7 @@ class RustRouteDebugArtifacts:
     route_search_summary: "RouteSearchSummary" = field(
         default_factory=lambda: RouteSearchSummary()
     )
+    route_attempt_records: list["RouteAttemptRecord"] = field(default_factory=list)
     static_blocked_cells: tuple[tuple[int, int], ...] = ()
     static_obstacle_count: int = 0
     realization_grid_spec: tuple[int, int, float, float, float] | None = None
@@ -186,6 +187,160 @@ class RouteTimingBucket:
         )
         if bool(getattr(route_obj, "used_full_grid_fallback", False)):
             self.full_grid_fallbacks += 1
+
+
+@dataclass(frozen=True)
+class RouteAttemptRecord:
+    attempt_index: int
+    bucket_name: str
+    net_id: int
+    route_index: int
+    net_name: str
+    source: str
+    target: str
+    elapsed_s: float
+    failed: bool = False
+    repair_round: int | None = None
+    error: str | None = None
+    total_length_um: float | None = None
+    route_cells: int = 0
+    expanded_states: int = 0
+    generated_neighbors: int = 0
+    heap_pushes: int = 0
+    heap_pops: int = 0
+    skipped_duplicate_heap_entries: int = 0
+    obstacle_clearance_checks: int = 0
+    window_attempts: int = 0
+    footprint_checks: int = 0
+    footprint_rect_checks: int = 0
+    dense_grid_build_time_us: int = 0
+    dense_grid_cells: int = 0
+    neighbor_generation_time_us: int = 0
+    heap_operation_time_us: int = 0
+    legality_check_time_us: int = 0
+    reconstruction_time_us: int = 0
+    max_window_area_cells: int = 0
+    used_full_grid_fallback: bool = False
+
+    @property
+    def used_simple_route(self) -> bool:
+        return not self.failed and self.expanded_states == 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "attempt_index": self.attempt_index,
+            "bucket_name": self.bucket_name,
+            "net_id": self.net_id,
+            "route_index": self.route_index,
+            "net_name": self.net_name,
+            "source": self.source,
+            "target": self.target,
+            "elapsed_s": self.elapsed_s,
+            "failed": self.failed,
+            "repair_round": self.repair_round,
+            "error": self.error,
+            "total_length_um": self.total_length_um,
+            "route_cells": self.route_cells,
+            "used_simple_route": self.used_simple_route,
+            "expanded_states": self.expanded_states,
+            "generated_neighbors": self.generated_neighbors,
+            "heap_pushes": self.heap_pushes,
+            "heap_pops": self.heap_pops,
+            "skipped_duplicate_heap_entries": self.skipped_duplicate_heap_entries,
+            "obstacle_clearance_checks": self.obstacle_clearance_checks,
+            "window_attempts": self.window_attempts,
+            "footprint_checks": self.footprint_checks,
+            "footprint_rect_checks": self.footprint_rect_checks,
+            "dense_grid_build_time_s": self.dense_grid_build_time_us / 1_000_000.0,
+            "dense_grid_cells": self.dense_grid_cells,
+            "neighbor_generation_time_s": self.neighbor_generation_time_us / 1_000_000.0,
+            "heap_operation_time_s": self.heap_operation_time_us / 1_000_000.0,
+            "legality_check_time_s": self.legality_check_time_us / 1_000_000.0,
+            "reconstruction_time_s": self.reconstruction_time_us / 1_000_000.0,
+            "max_window_area_cells": self.max_window_area_cells,
+            "used_full_grid_fallback": self.used_full_grid_fallback,
+        }
+
+
+def route_attempt_record_from_route(
+    *,
+    attempt_index: int,
+    bucket_name: str,
+    net_id: int,
+    route_index: int,
+    net_name: str,
+    source: str,
+    target: str,
+    elapsed_s: float,
+    route_obj: object | None = None,
+    failed: bool = False,
+    repair_round: int | None = None,
+    error: str | None = None,
+) -> RouteAttemptRecord:
+    route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
+    total_length_um = (
+        _as_float(getattr(route_obj, "total_length_um"), 0.0)
+        if route_obj is not None and hasattr(route_obj, "total_length_um")
+        else None
+    )
+    return RouteAttemptRecord(
+        attempt_index=int(attempt_index),
+        bucket_name=bucket_name,
+        net_id=int(net_id),
+        route_index=int(route_index),
+        net_name=net_name,
+        source=source,
+        target=target,
+        elapsed_s=float(elapsed_s),
+        failed=bool(failed),
+        repair_round=repair_round,
+        error=error,
+        total_length_um=total_length_um,
+        route_cells=len(route_cells or ()),
+        expanded_states=_get_route_int_stat(route_obj, "expanded_states"),
+        generated_neighbors=_get_route_int_stat(route_obj, "generated_neighbors"),
+        heap_pushes=_get_route_int_stat(route_obj, "heap_pushes"),
+        heap_pops=_get_route_int_stat(route_obj, "heap_pops"),
+        skipped_duplicate_heap_entries=_get_route_int_stat(
+            route_obj,
+            "skipped_duplicate_heap_entries",
+        ),
+        obstacle_clearance_checks=_get_route_int_stat(
+            route_obj,
+            "obstacle_clearance_checks",
+        ),
+        window_attempts=_get_route_int_stat(route_obj, "window_attempts"),
+        footprint_checks=_get_route_int_stat(route_obj, "primitive_footprint_checks"),
+        footprint_rect_checks=_get_route_int_stat(
+            route_obj,
+            "primitive_footprint_rect_checks",
+        ),
+        dense_grid_build_time_us=_get_route_int_stat(
+            route_obj,
+            "dense_grid_build_time_us",
+        ),
+        dense_grid_cells=_get_route_int_stat(route_obj, "dense_grid_cells"),
+        neighbor_generation_time_us=_get_route_int_stat(
+            route_obj,
+            "neighbor_generation_time_us",
+        ),
+        heap_operation_time_us=_get_route_int_stat(
+            route_obj,
+            "heap_operation_time_us",
+        ),
+        legality_check_time_us=_get_route_int_stat(
+            route_obj,
+            "legality_check_time_us",
+        ),
+        reconstruction_time_us=_get_route_int_stat(
+            route_obj,
+            "reconstruction_time_us",
+        ),
+        max_window_area_cells=_get_route_int_stat(route_obj, "max_window_area_cells"),
+        used_full_grid_fallback=bool(
+            getattr(route_obj, "used_full_grid_fallback", False)
+        ),
+    )
 
 
 @dataclass(frozen=True)

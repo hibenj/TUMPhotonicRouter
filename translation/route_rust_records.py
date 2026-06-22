@@ -9,6 +9,7 @@ from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
 
 from translation.route_rust_types import (
     RouteJob,
+    RouteAttemptRecord,
     RouteSearchSummary,
     RoutedNetRecord,
     RustRouteDebugArtifacts,
@@ -133,6 +134,7 @@ def build_route_debug_artifacts(
     allow_45_degree_turns: bool,
     bend_radius_cells: int,
     route_search_summary: RouteSearchSummary | None = None,
+    route_attempt_records: list[RouteAttemptRecord] | None = None,
 ) -> RustRouteDebugArtifacts:
     return RustRouteDebugArtifacts(
         obstacle_svg=obstacle_svg,
@@ -140,6 +142,7 @@ def build_route_debug_artifacts(
         routed_edge_lengths_um=routed_edge_lengths_from_records(routed_net_records),
         routed_net_records=routed_net_records,
         route_search_summary=route_search_summary or RouteSearchSummary(),
+        route_attempt_records=list(route_attempt_records or []),
         # Keep meander planning base obstacles limited to layout-static geometry.
         # Port-access reservation lanes are routing-time guards and are added to
         # `static_cells` for net-to-net A* ordering, but they should not globally

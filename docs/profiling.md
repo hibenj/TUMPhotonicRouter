@@ -16,6 +16,7 @@ Useful variants:
 ```bash
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --path-length-matching --include-heater-obstacles --ripup-reroute
+.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --attempt-output build/profiles/photonic_attempts.csv
 .venv/bin/python scripts/benchmark_photonic.py --output docs/photonic_baseline.md --include-heater-obstacles --ripup-reroute
 ```
 
@@ -23,6 +24,15 @@ The `mmi_heater_8x4_ripup_reroute` case is the current end-to-end A* stress
 case: it forces one rip-up repair and runs real A* searches in the photonic
 pipeline. Use the default 5,000,000 iteration budget for this benchmark; lower
 budgets such as 500,000 can fail before the repair route completes.
+
+Use `--attempt-output` to write per-route-attempt records. A `.csv` suffix
+writes a spreadsheet-friendly table; other suffixes write JSON. Each record
+includes the attempt bucket (`normal_route`, `probe_route`,
+`repair_failed_net`, or `reroute_victims`), net name, elapsed time, failure
+state, repair round, expanded states, generated neighbors, heap push/pop
+counts, duplicate heap skips, obstacle/clearance checks, footprint rectangle
+checks, dense-grid build time, and fallback flags. The Markdown report also
+shows the slowest non-simple attempts inline.
 
 ## Isolated Rust A*
 

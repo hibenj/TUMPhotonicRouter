@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from datetime import datetime
 import json
 from pathlib import Path
 import platform
 import subprocess
 import sys
-from typing import Iterable, cast
+from typing import Any, Iterable, Literal, Mapping, TypeAlias, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -22,6 +23,56 @@ from routing_flow import RipupRerouteConfig, RoutingFlowStats, run_routing_flow
 
 DEFAULT_BENCHMARKS = ("TOY", "mmi_heater", "mmi_heater_8x4_ripup_reroute")
 WORKER_MARKER = "PHOTONIC_BENCHMARK_JSON:"
+AttemptColumn: TypeAlias = Literal[
+    "benchmark",
+    "attempt_index",
+    "bucket_name",
+    "net_id",
+    "route_index",
+    "net_name",
+    "source",
+    "target",
+    "elapsed_s",
+    "failed",
+    "repair_round",
+    "used_simple_route",
+    "expanded_states",
+    "generated_neighbors",
+    "heap_pushes",
+    "heap_pops",
+    "skipped_duplicate_heap_entries",
+    "obstacle_clearance_checks",
+    "footprint_rect_checks",
+    "dense_grid_build_time_s",
+    "dense_grid_cells",
+    "used_full_grid_fallback",
+    "error",
+]
+ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
+    "benchmark",
+    "attempt_index",
+    "bucket_name",
+    "net_id",
+    "route_index",
+    "net_name",
+    "source",
+    "target",
+    "elapsed_s",
+    "failed",
+    "repair_round",
+    "used_simple_route",
+    "expanded_states",
+    "generated_neighbors",
+    "heap_pushes",
+    "heap_pops",
+    "skipped_duplicate_heap_entries",
+    "obstacle_clearance_checks",
+    "footprint_rect_checks",
+    "dense_grid_build_time_s",
+    "dense_grid_cells",
+    "used_full_grid_fallback",
+    "error",
+)
 
 
 def _git_rev() -> str:
@@ -52,6 +103,51 @@ def _format_int(value: object) -> str:
 
 def _row_seconds(row: dict[str, object], key: str) -> float | None:
     return cast(float | None, row[key])
+
+
+def _route_attempt_records(row: dict[str, object]) -> list[dict[str, object]]:
+    records = row.get("route_attempt_records", [])
+    if not isinstance(records, list):
+        return []
+    return [record for record in records if isinstance(record, dict)]
+
+
+def _attempt_seconds(record: dict[str, object]) -> float:
+    value = record.get("elapsed_s", 0.0)
+    return float(value) if isinstance(value, (int, float, str)) else 0.0
+
+
+def _record_seconds(record: dict[str, object], key: str) -> float:
+    value = record.get(key, 0.0)
+    return float(value) if isinstance(value, (int, float, str)) else 0.0
+
+
+def _flatten_attempt_records(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    flattened: list[dict[str, object]] = []
+    for row in rows:
+        benchmark = str(row.get("benchmark", ""))
+        for record in _route_attempt_records(row):
+            flattened.append({"benchmark": benchmark, **record})
+    return flattened
+
+
+def _write_attempt_output(rows: Iterable[dict[str, object]], output_path: Path) -> None:
+    records = _flatten_attempt_records(rows)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.suffix.lower() == ".csv":
+        with output_path.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(
+                stream,
+                fieldnames=list(ATTEMPT_COLUMNS),
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            writer.writerows(cast(Iterable[Mapping[AttemptColumn, Any]], cast(object, records)))
+        return
+    output_path.write_text(
+        json.dumps(records, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str, object]:
@@ -106,6 +202,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "heap_operation_s": stats.heap_operation_time_s,
         "legality_check_s": stats.legality_check_time_s,
         "reconstruction_s": stats.reconstruction_time_s,
+        "route_attempt_records": stats.route_attempt_records,
     }
 
 
@@ -200,10 +297,51 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 fallbacks=_format_int(row["full_grid_fallbacks"]),
             )
         )
+    all_attempts = _flatten_attempt_records(rows)
+    slow_attempts = sorted(
+        (
+            record
+            for record in all_attempts
+            if not bool(record.get("used_simple_route", False))
+            or bool(record.get("failed", False))
+        ),
+        key=_attempt_seconds,
+        reverse=True,
+    )[:8]
+    if slow_attempts:
+        lines.extend(
+            [
+                "",
+                "## Slowest Route Attempts",
+                "",
+                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Expanded | Generated | Heap push/pop | Rect checks | Dense build s | Failed |",
+                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for record in slow_attempts:
+            lines.append(
+                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {rect_checks} | {dense_build_s} | {failed} |".format(
+                    benchmark=record.get("benchmark", ""),
+                    attempt=record.get("attempt_index", ""),
+                    bucket=record.get("bucket_name", ""),
+                    route=record.get("route_index", ""),
+                    net=record.get("net_name", ""),
+                    time_s=_format_seconds(_attempt_seconds(record)),
+                    expanded=_format_int(record.get("expanded_states")),
+                    generated=_format_int(record.get("generated_neighbors")),
+                    heap_pushes=_format_int(record.get("heap_pushes")),
+                    heap_pops=_format_int(record.get("heap_pops")),
+                    rect_checks=_format_int(record.get("footprint_rect_checks")),
+                    dense_build_s=_format_seconds(
+                        _record_seconds(record, "dense_grid_build_time_s")
+                    ),
+                    failed=record.get("failed", ""),
+                )
+            )
     lines.extend(
         [
             "",
-            "Detailed JSON rows also include load/layout time plus neighbor-generation, heap-operation, legality-check, and reconstruction timing buckets.",
+            "Detailed JSON rows also include load/layout time, per-attempt route records, and neighbor-generation, heap-operation, legality-check, and reconstruction timing buckets.",
         ]
     )
     lines.append("")
@@ -214,6 +352,12 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("benchmarks", nargs="*", default=list(DEFAULT_BENCHMARKS))
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--attempt-output",
+        type=Path,
+        default=None,
+        help="Write per-route-attempt records as JSON, or CSV when the suffix is .csv.",
+    )
     parser.add_argument("--path-length-matching", action="store_true")
     parser.add_argument("--allow-45-degree-turns", action="store_true")
     parser.add_argument("--max-iterations", type=int, default=5_000_000)
@@ -242,6 +386,11 @@ def main() -> int:
             output_path = PROJECT_ROOT / output_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(report, encoding="utf-8")
+    if args.attempt_output is not None:
+        attempt_output_path = args.attempt_output
+        if not attempt_output_path.is_absolute():
+            attempt_output_path = PROJECT_ROOT / attempt_output_path
+        _write_attempt_output(rows, attempt_output_path)
     return 0
 
 

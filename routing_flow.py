@@ -83,6 +83,7 @@ class RoutingFlowStats:
     heap_operation_time_s: float = 0.0
     legality_check_time_s: float = 0.0
     reconstruction_time_s: float = 0.0
+    route_attempt_records: list[dict[str, object]] = field(default_factory=list)
     step_times_s: dict[str, float] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -114,6 +115,7 @@ class RoutingFlowStats:
             "heap_operation_time_s": self.heap_operation_time_s,
             "legality_check_time_s": self.legality_check_time_s,
             "reconstruction_time_s": self.reconstruction_time_s,
+            "route_attempt_records": list(self.route_attempt_records),
             "step_times_s": dict(self.step_times_s),
         }
 
@@ -714,6 +716,11 @@ def run_routing_flow(
         stats.reconstruction_time_s = (
             float(route_summary.reconstruction_time_us) / 1_000_000.0
         )
+        stats.route_attempt_records = [
+            record.as_dict() if hasattr(record, "as_dict") else dict(record)
+            for record in getattr(debug_artifacts, "route_attempt_records", ())
+            if hasattr(record, "as_dict") or isinstance(record, dict)
+        ]
     if debug_timing:
         print(f"      - Routing time: {t_route_end - t_route_start:.4f} s")
     print(f"      ✓ Routed layout generated: {routed_layout.name}")
