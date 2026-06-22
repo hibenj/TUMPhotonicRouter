@@ -434,8 +434,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--heuristic-mode",
         choices=("distance", "heading_aware"),
-        default="distance",
-        help="Dense A* heuristic experiment (default: distance).",
+        default="heading_aware",
+        help="Dense A* heuristic mode (default: heading_aware).",
     )
     return parser
 
@@ -526,7 +526,7 @@ def run_routing_flow(
     enable_jps4: bool = False,
     use_indexed_heap: bool = False,
     primitive_ordering: str = "library",
-    heuristic_mode: str = "distance",
+    heuristic_mode: str = "heading_aware",
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     include_heater_obstacles: bool = False,

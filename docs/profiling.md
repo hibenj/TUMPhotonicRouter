@@ -20,7 +20,7 @@ Useful variants:
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --use-indexed-heap
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --primitive-ordering long_straight_first
 .venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --primitive-ordering target_biased
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --heuristic-mode heading_aware
+.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --heuristic-mode distance
 .venv/bin/python scripts/benchmark_photonic.py --output docs/photonic_baseline.md --include-heater-obstacles --ripup-reroute
 ```
 
@@ -59,10 +59,9 @@ tries long straight transitions before short straight transitions, and
 heuristic. These modes should preserve route success and route cost; benchmark
 them before considering any default change.
 
-Use `--heuristic-mode heading_aware` to add a conservative minimum-bend lower
-bound to the default distance heuristic. It remains optional until route-cost
-equivalence and expansion/runtime wins are confirmed on both synthetic profiles
-and photonic routing-flow benchmarks.
+The default heuristic mode is `heading_aware`, which adds a conservative
+minimum-bend lower bound to the distance heuristic. Use
+`--heuristic-mode distance` for baseline comparisons or regression checks.
 
 ## Isolated Rust A*
 
@@ -81,7 +80,7 @@ Useful variants:
 .venv/bin/python scripts/profile_astar.py --iterations 5 --warmup 1 --check-baseline
 .venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --use-indexed-heap --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --primitive-ordering long_straight_first --iterations 25 --warmup 3
-.venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --heuristic-mode heading_aware --iterations 25 --warmup 3
+.venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --heuristic-mode distance --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py --paired-comparison --paired-accelerator heading_aware --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py --paired-comparison --iterations 25 --warmup 3
 ```

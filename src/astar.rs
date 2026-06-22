@@ -87,7 +87,7 @@ impl Default for AStarConfig {
             enable_jps4: false,
             use_indexed_heap: false,
             primitive_ordering: PrimitiveOrdering::Library,
-            heuristic_mode: HeuristicMode::Distance,
+            heuristic_mode: HeuristicMode::HeadingAware,
         }
     }
 }
@@ -3339,6 +3339,34 @@ mod tests {
         }
     }
 
+    fn assert_heading_aware_matches_distance(
+        map: &ObstacleMap,
+        library: &PrimitiveLibrary,
+        source: State,
+        target: State,
+        mut base_config: AStarConfig,
+    ) {
+        base_config.heuristic_mode = HeuristicMode::Distance;
+        let distance =
+            route_single_net_with_config(map, library, source, target, None, &base_config)
+                .expect("distance heuristic route should exist");
+        let heading_aware = route_single_net_with_config(
+            map,
+            library,
+            source,
+            target,
+            None,
+            &AStarConfig {
+                heuristic_mode: HeuristicMode::HeadingAware,
+                ..base_config
+            },
+        )
+        .expect("heading-aware heuristic route should exist");
+
+        assert_eq!(heading_aware.reached_target, distance.reached_target);
+        assert!((heading_aware.total_cost - distance.total_cost).abs() < 1.0e-9);
+    }
+
     #[test]
     fn heading_aware_heuristic_adds_only_unavoidable_minimum_bend_bound() {
         let library = primitive_library_no45_bend2();
@@ -3395,24 +3423,54 @@ mod tests {
             routing_window_fallback_full_grid: true,
             ..AStarConfig::default()
         };
-        let baseline =
-            route_single_net_with_config(&map, &library, source, target, None, &base_config)
-                .expect("baseline route should exist");
-        let heading_aware = route_single_net_with_config(
-            &map,
-            &library,
-            source,
-            target,
-            None,
-            &AStarConfig {
-                heuristic_mode: HeuristicMode::HeadingAware,
-                ..base_config
-            },
-        )
-        .expect("heading-aware route should exist");
+        assert_heading_aware_matches_distance(&map, &library, source, target, base_config);
+    }
 
-        assert_eq!(heading_aware.reached_target, baseline.reached_target);
-        assert!((heading_aware.total_cost - baseline.total_cost).abs() < 1.0e-9);
+    #[test]
+    fn heading_aware_heuristic_preserves_route_cost_on_simple_block() {
+        let mut map = ObstacleMap::new(12, 8);
+        map.add_static_cell(3, 3);
+        map.add_static_cell(4, 3);
+        map.add_static_cell(5, 3);
+        assert_heading_aware_matches_distance(
+            &map,
+            &primitive_library(),
+            State::new(1, 3, 0),
+            State::new(8, 3, 0),
+            AStarConfig {
+                enable_simple_routes: false,
+                routing_window_fallback_full_grid: true,
+                ..AStarConfig::default()
+            },
+        );
+    }
+
+    #[test]
+    fn heading_aware_heuristic_preserves_route_cost_around_two_large_blocks() {
+        let mut map = ObstacleMap::new(90, 50);
+        for x in 18..=32 {
+            for y in 8..=38 {
+                map.add_static_cell(x, y);
+            }
+        }
+        for x in 52..=66 {
+            for y in 12..=42 {
+                map.add_static_cell(x, y);
+            }
+        }
+        assert_heading_aware_matches_distance(
+            &map,
+            &primitive_library_no45_bend2(),
+            State::new(6, 25, 0),
+            State::new(82, 25, 0),
+            AStarConfig {
+                max_iterations: 500_000,
+                require_target_angle: false,
+                enable_simple_routes: false,
+                routing_window_fallback_full_grid: true,
+                ..AStarConfig::default()
+            },
+        );
     }
 
     #[test]

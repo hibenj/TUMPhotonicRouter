@@ -192,7 +192,7 @@ pub struct PyAStarConfig {
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string(),heuristic_mode="distance".to_string()))]
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string(),heuristic_mode="heading_aware".to_string()))]
     fn new(
         max_iterations: usize,
         bend_weight: f64,

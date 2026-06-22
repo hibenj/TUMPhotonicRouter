@@ -475,8 +475,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--heuristic-mode",
         choices=("distance", "heading_aware"),
-        default="distance",
-        help="Dense A* heuristic experiment.",
+        default="heading_aware",
+        help="Dense A* heuristic mode.",
     )
     parser.add_argument("--obstacle-mode", default="bounding_boxes")
     parser.add_argument("--waveguide-clearance-um", type=float, default=0.5)

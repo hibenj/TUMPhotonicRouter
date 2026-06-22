@@ -51,7 +51,7 @@ class AStarScenario:
     enable_jps4: bool = False
     use_indexed_heap: bool = False
     primitive_ordering: str = "library"
-    heuristic_mode: str = "distance"
+    heuristic_mode: str = "heading_aware"
     primitive_mode: str = "photonic"
 
 
@@ -587,7 +587,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Warmup: `{args.warmup}`",
         f"- Indexed heap: `{getattr(args, 'use_indexed_heap', False)}`",
         f"- Primitive ordering: `{getattr(args, 'primitive_ordering', 'library')}`",
-        f"- Heuristic mode: `{getattr(args, 'heuristic_mode', 'distance')}`",
+        f"- Heuristic mode: `{getattr(args, 'heuristic_mode', 'heading_aware')}`",
         "",
         "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Primitive gen | Primitive accepted | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
@@ -821,8 +821,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--heuristic-mode",
         choices=("distance", "heading_aware"),
-        default="distance",
-        help="Dense A* heuristic experiment.",
+        default="heading_aware",
+        help="Dense A* heuristic mode.",
     )
     parser.add_argument(
         "--paired-comparison",
@@ -906,7 +906,7 @@ def main() -> int:
             name: replace(scenario, primitive_ordering=args.primitive_ordering)
             for name, scenario in catalog.items()
         }
-    if args.heuristic_mode != "distance":
+    if args.heuristic_mode != "heading_aware":
         catalog = {
             name: replace(scenario, heuristic_mode=args.heuristic_mode)
             for name, scenario in catalog.items()
