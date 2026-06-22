@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -15,7 +17,7 @@ use crate::geometry_realization::{
     meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
     plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
-    plan_auto_analytic_meander_for_route_depth_sweep as plan_auto_analytic_meander_for_route_depth_sweep_rs,
+    plan_auto_analytic_meander_for_route_depth_sweep_with_prefix as plan_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs,
     realize_route_polygon_from_auto_plan as realize_route_polygon_from_auto_plan_rs,
     realize_route_polygon_from_primitives as realize_route_polygon_from_primitives_rs,
     realize_route_polygon_with_analytic_meander as realize_route_polygon_with_analytic_meander_rs,
@@ -435,6 +437,7 @@ pub struct PyPhotonicRouter {
     primitives: PrimitiveLibrary,
     static_cells: FxHashSet<CellKey>,
     port_open_cells: FxHashSet<CellKey>,
+    meander_base_prefix: RefCell<Option<DenseOccupancyPrefix>>,
 }
 
 fn pack_cells(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
@@ -820,15 +823,32 @@ impl PyPhotonicRouter {
             primitives,
             static_cells: FxHashSet::default(),
             port_open_cells: FxHashSet::default(),
+            meander_base_prefix: RefCell::new(None),
         }
     }
+    fn invalidate_meander_base_prefix(&self) {
+        self.meander_base_prefix.borrow_mut().take();
+    }
+
+    fn ensure_meander_base_prefix(&self) {
+        let mut cached = self.meander_base_prefix.borrow_mut();
+        if cached.is_none() {
+            *cached = Some(DenseOccupancyPrefix::from_obstacle_map(
+                &self.obstacle_map,
+                None,
+            ));
+        }
+    }
+
     fn add_static_cells(&mut self, cells: Vec<(i32, i32)>) {
+        self.invalidate_meander_base_prefix();
         for (x, y) in &cells {
             self.static_cells.insert(pack_xy(*x, *y));
         }
         self.obstacle_map.add_static_cells(&cells);
     }
     fn clear_static_cells(&mut self) {
+        self.invalidate_meander_base_prefix();
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.static_cells.clear();
     }
@@ -848,6 +868,7 @@ impl PyPhotonicRouter {
             })
             .collect();
         self.obstacle_map.set_static_rects(&obstacle_rects);
+        self.invalidate_meander_base_prefix();
     }
     fn add_port_open_cells(&mut self, cells: Vec<(i32, i32)>) {
         self.port_open_cells.extend(pack_cells(&cells));
@@ -924,6 +945,7 @@ impl PyPhotonicRouter {
                     self.grid.height as i32,
                 );
                 if self.obstacle_map.commit_route(net_id, &route_cells) {
+                    self.invalidate_meander_base_prefix();
                     return Py::new(py, convert_result(py, &self.primitives, &result)?);
                 }
             }
@@ -958,16 +980,22 @@ impl PyPhotonicRouter {
                 "Failed to commit routed cells to obstacle map",
             ));
         }
+        self.invalidate_meander_base_prefix();
 
         Py::new(py, convert_result(py, &self.primitives, &result)?)
     }
 
     fn ripup_route(&mut self, net_id: u64) -> bool {
-        self.obstacle_map.ripup_route(net_id)
+        let removed = self.obstacle_map.ripup_route(net_id);
+        if removed {
+            self.invalidate_meander_base_prefix();
+        }
+        removed
     }
 
     fn clear_dynamic(&mut self) {
         self.obstacle_map.clear_dynamic();
+        self.invalidate_meander_base_prefix();
     }
 
     fn get_net_cells(&self, net_id: u64) -> Vec<(i32, i32)> {
@@ -978,7 +1006,11 @@ impl PyPhotonicRouter {
     }
 
     fn commit_route_cells(&mut self, net_id: u64, cells: Vec<(i32, i32)>) -> bool {
-        self.obstacle_map.commit_route(net_id, &cells)
+        let committed = self.obstacle_map.commit_route(net_id, &cells);
+        if committed {
+            self.invalidate_meander_base_prefix();
+        }
+        committed
     }
 
     fn dynamic_owners_for_cells(&self, cells: Vec<(i32, i32)>) -> Vec<u64> {
@@ -1140,6 +1172,7 @@ impl PyPhotonicRouter {
                 "Failed to commit routed cells to obstacle map",
             ));
         }
+        self.invalidate_meander_base_prefix();
 
         Py::new(py, convert_result(py, &self.primitives, &result)?)
     }
@@ -1579,7 +1612,7 @@ impl PyPhotonicRouter {
         )
     }
 
-    #[pyo3(signature=(route,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
+    #[pyo3(signature=(route,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
     fn plan_auto_analytic_meander_for_route_depth_sweep(
         &self,
         py: Python<'_>,
@@ -1596,6 +1629,7 @@ impl PyPhotonicRouter {
         side_policy: &str,
         opened_cells: Option<Vec<(i32, i32)>>,
         planning_mode: &str,
+        extra_blocked_cells: Option<Vec<(i32, i32)>>,
     ) -> PyResult<PyObject> {
         if requested_extra_length_um <= 0.0 {
             return Err(PyValueError::new_err(
@@ -1663,12 +1697,26 @@ impl PyPhotonicRouter {
         } else {
             Some(&self.port_open_cells)
         };
-        let plan = plan_auto_analytic_meander_for_route_depth_sweep_rs(
+        let extra_blocked_owned;
+        let extra_blocked_ref: Option<&FxHashSet<CellKey>> =
+            if let Some(cells) = extra_blocked_cells.as_ref() {
+                extra_blocked_owned = pack_cells(cells);
+                Some(&extra_blocked_owned)
+            } else {
+                None
+            };
+        self.ensure_meander_base_prefix();
+        let cached = self.meander_base_prefix.borrow();
+        let base_prefix = cached
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let plan = plan_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs(
             &r,
             &self.primitives,
             &grid,
-            &self.obstacle_map,
+            base_prefix,
             opened_ref,
+            extra_blocked_ref,
             &cfg,
             &box_depths_um,
         )
@@ -1986,6 +2034,7 @@ impl PyPhotonicRouter {
                 "Failed to commit merged route and meander reservation cells",
             ));
         }
+        self.invalidate_meander_base_prefix();
 
         let py_route = Py::new(py, convert_result(py, &self.primitives, &result)?)?;
         let d = PyDict::new_bound(py);

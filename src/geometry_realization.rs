@@ -141,6 +141,159 @@ impl DenseOccupancyPrefix {
     }
 }
 
+trait RectOccupancyQuery {
+    fn blocked_count_in_rect(
+        &self,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> Option<u32>;
+}
+
+impl RectOccupancyQuery for DenseOccupancyPrefix {
+    fn blocked_count_in_rect(
+        &self,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> Option<u32> {
+        DenseOccupancyPrefix::blocked_count_in_rect(self, min_x, max_x, min_y, max_y)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SparseCellIndex {
+    rows: Vec<Vec<i32>>,
+    is_empty: bool,
+}
+
+impl SparseCellIndex {
+    fn from_cells<I>(width: i32, height: i32, cells: I) -> Self
+    where
+        I: IntoIterator<Item = CellKey>,
+    {
+        let row_count = usize::try_from(height.max(0)).unwrap_or(0);
+        let mut rows = vec![Vec::new(); row_count];
+        for key in cells {
+            let (x, y) = unpack_xy(key);
+            if x < 0 || y < 0 || x >= width || y >= height {
+                continue;
+            }
+            let yu = usize::try_from(y).expect("non-negative y fits usize");
+            rows[yu].push(x);
+        }
+        for row in &mut rows {
+            row.sort_unstable();
+            row.dedup();
+        }
+        let is_empty = rows.iter().all(Vec::is_empty);
+        Self { rows, is_empty }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty
+    }
+
+    fn count_in_rect(&self, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u32 {
+        if min_x > max_x || min_y > max_y || self.is_empty() {
+            return 0;
+        }
+        let first_y = usize::try_from(min_y.max(0)).unwrap_or(0);
+        let last_y = usize::try_from(max_y.max(0)).unwrap_or(0);
+        if first_y >= self.rows.len() {
+            return 0;
+        }
+        let last_y = last_y.min(self.rows.len().saturating_sub(1));
+        let mut total = 0usize;
+        for row in &self.rows[first_y..=last_y] {
+            let start = row.partition_point(|x| *x < min_x);
+            let end = row.partition_point(|x| *x <= max_x);
+            total = total.saturating_add(end.saturating_sub(start));
+        }
+        total.try_into().unwrap_or(u32::MAX)
+    }
+}
+
+struct OverlayOccupancyQuery<'a> {
+    base: &'a DenseOccupancyPrefix,
+    opened_index: SparseCellIndex,
+    extra_blocked_index: SparseCellIndex,
+}
+
+impl<'a> OverlayOccupancyQuery<'a> {
+    fn new(
+        base: &'a DenseOccupancyPrefix,
+        opened_cells: Option<&'a FxHashSet<CellKey>>,
+        extra_blocked_cells: Option<&'a FxHashSet<CellKey>>,
+    ) -> Self {
+        let opened_index = SparseCellIndex::from_cells(
+            base.width,
+            base.height,
+            opened_cells
+                .into_iter()
+                .flat_map(|cells| cells.iter().copied())
+                .filter(|&key| {
+                    let (x, y) = unpack_xy(key);
+                    base.blocked_count_in_rect(x, x, y, y)
+                        .is_some_and(|count| count > 0)
+                }),
+        );
+        let extra_blocked_index = SparseCellIndex::from_cells(
+            base.width,
+            base.height,
+            extra_blocked_cells
+                .into_iter()
+                .flat_map(|cells| cells.iter().copied())
+                .filter(|&key| {
+                    let opened = opened_cells.is_some_and(|cells| cells.contains(&key));
+                    let (x, y) = unpack_xy(key);
+                    let base_blocked = base
+                        .blocked_count_in_rect(x, x, y, y)
+                        .is_some_and(|count| count > 0);
+                    !base_blocked || opened
+                }),
+        );
+        Self {
+            base,
+            opened_index,
+            extra_blocked_index,
+        }
+    }
+
+    fn opened_count_in_rect(&self, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u32 {
+        self.opened_index
+            .count_in_rect(min_x, max_x, min_y, max_y)
+    }
+
+    fn extra_blocked_count_in_rect(
+        &self,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> u32 {
+        self.extra_blocked_index
+            .count_in_rect(min_x, max_x, min_y, max_y)
+    }
+}
+
+impl RectOccupancyQuery for OverlayOccupancyQuery<'_> {
+    fn blocked_count_in_rect(
+        &self,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> Option<u32> {
+        let base = self.base.blocked_count_in_rect(min_x, max_x, min_y, max_y)?;
+        let opened = self.opened_count_in_rect(min_x, max_x, min_y, max_y);
+        let extra = self.extra_blocked_count_in_rect(min_x, max_x, min_y, max_y);
+        Some(base.saturating_sub(opened).saturating_add(extra))
+    }
+}
+
 /// Minimal grid information required to convert grid cells to physical points.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeometryGridSpec {
@@ -852,8 +1005,17 @@ pub fn check_meander_box_free_with_prefix(
     prefix: &DenseOccupancyPrefix,
     clearance_radius_cells: i32,
 ) -> Result<GridRect, GeometryError> {
+    check_meander_box_free_with_occupancy(box_um, grid, prefix, clearance_radius_cells)
+}
+
+fn check_meander_box_free_with_occupancy<Q: RectOccupancyQuery>(
+    box_um: MeanderBox,
+    grid: &GeometryGridSpec,
+    occupancy: &Q,
+    clearance_radius_cells: i32,
+) -> Result<GridRect, GeometryError> {
     let rect = meander_box_to_grid_rect(box_um, grid, clearance_radius_cells)?;
-    let blocked = prefix
+    let blocked = occupancy
         .blocked_count_in_rect(rect.min_x, rect.max_x, rect.min_y, rect.max_y)
         .ok_or(GeometryError::MeanderBoxOutOfBounds(rect))?;
     if blocked > 0 {
@@ -1125,7 +1287,7 @@ fn projected_free_interval_segments(
     endpoint_inset_um: f64,
     min_segment_length_um: f64,
     grid: &GeometryGridSpec,
-    prefix: &DenseOccupancyPrefix,
+    occupancy: &impl RectOccupancyQuery,
     clearance_radius_cells: i32,
 ) -> Result<Vec<StraightSegment>, GeometryError> {
     if endpoint_inset_um < 0.0 || !endpoint_inset_um.is_finite() {
@@ -1191,7 +1353,7 @@ fn projected_free_interval_segments(
                 idx + clearance_radius_cells,
             )
         };
-        let free = prefix
+        let free = occupancy
             .blocked_count_in_rect(query.0, query.1, query.2, query.3)
             .map(|blocked| blocked == 0)
             .unwrap_or(false);
@@ -1477,6 +1639,215 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                         box_um,
                         grid,
                         &prefix,
+                        config.clearance_radius_cells,
+                    ) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            rejected_box_blocked += 1;
+                            continue;
+                        }
+                    };
+                    let plan_cfg = AnalyticMeanderConfig {
+                        requested_extra_length_um: config.requested_extra_length_um,
+                        min_bend_radius_um: config.min_bend_radius_um,
+                        min_straight_um: config.min_straight_um,
+                        max_bumps: config.max_bumps,
+                        max_meander_height_um: actual_depth_um,
+                        side,
+                        mode: config.mode,
+                    };
+                    let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            rejected_planning_failed += 1;
+                            continue;
+                        }
+                    };
+                    if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs()
+                        > 1.0e-6
+                    {
+                        rejected_exact_length_mismatch += 1;
+                        continue;
+                    }
+                    selected_run = Some(run);
+                    selected_segment = Some(segment);
+                    selected = Some((box_um, rect, plan, actual_depth_um));
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    let no_auto_err = || GeometryError::NoAutoMeanderCandidate {
+        candidate_runs: runs.len(),
+        candidate_intervals,
+        rejected_box_blocked,
+        rejected_planning_failed,
+        rejected_exact_length_mismatch,
+        rejected_too_short,
+    };
+    let (selected_box, selected_grid_rect, plan, selected_box_depth_um) =
+        selected.ok_or_else(no_auto_err)?;
+    let run = selected_run.ok_or_else(no_auto_err)?;
+    let segment = selected_segment.ok_or_else(no_auto_err)?;
+    let replacement_centerline = build_run_replacement_centerline(run, &plan.centerline);
+    Ok(AutoRouteAnalyticMeanderPlan {
+        selected_segment_index: run.start_index,
+        selected_run_start_index: run.start_index,
+        selected_run_end_index: run.end_index,
+        selected_segment: segment,
+        replacement_centerline,
+        selected_run_length_um: run.length_um,
+        selected_box_depth_um,
+        selected_interval_length_um: distance(
+            (segment.start.x_um, segment.start.y_um),
+            (segment.end.x_um, segment.end.y_um),
+        ),
+        candidate_runs: runs.len(),
+        candidate_intervals,
+        rejected_box_blocked,
+        rejected_planning_failed,
+        rejected_exact_length_mismatch,
+        rejected_too_short,
+        selected_box,
+        selected_grid_rect,
+        plan,
+    })
+}
+
+pub fn plan_auto_analytic_meander_for_route_depth_sweep_with_prefix(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    base_prefix: &DenseOccupancyPrefix,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    extra_blocked_cells: Option<&FxHashSet<CellKey>>,
+    config: &AutoMeanderConfig,
+    box_depths_um: &[f64],
+) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
+    if !config.requested_extra_length_um.is_finite()
+        || config.requested_extra_length_um <= 0.0
+        || !config.min_bend_radius_um.is_finite()
+        || config.min_bend_radius_um <= 0.0
+        || !config.min_straight_um.is_finite()
+        || config.min_straight_um < 0.0
+        || config.max_bumps == 0
+        || !config.max_meander_height_um.is_finite()
+        || config.max_meander_height_um <= 0.0
+        || !config.box_depth_um.is_finite()
+        || config.box_depth_um <= 0.0
+        || !config.min_segment_length_um.is_finite()
+        || config.min_segment_length_um <= 0.0
+        || !config.endpoint_inset_um.is_finite()
+        || config.endpoint_inset_um < 0.0
+        || config.clearance_radius_cells < 0
+        || box_depths_um.is_empty()
+    {
+        return Err(GeometryError::InvalidMeanderBox);
+    }
+    for depth_um in box_depths_um {
+        if !depth_um.is_finite() || *depth_um <= 0.0 {
+            return Err(GeometryError::InvalidMeanderBox);
+        }
+    }
+
+    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
+    let occupancy = OverlayOccupancyQuery::new(base_prefix, opened_cells, extra_blocked_cells);
+    let side_order: &[MeanderSide] = match config.side_policy {
+        AutoMeanderSidePolicy::Left => &[MeanderSide::Left],
+        AutoMeanderSidePolicy::Right => &[MeanderSide::Right],
+        AutoMeanderSidePolicy::Both => &[MeanderSide::Left, MeanderSide::Right],
+    };
+
+    let runs = extract_axis_aligned_straight_runs(&centerline, config.min_segment_length_um);
+    if runs.is_empty() {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+    let mut run_order: Vec<CenterlineStraightRun> = runs.clone();
+    run_order.sort_by(|a, b| {
+        let len_cmp = b.length_um.total_cmp(&a.length_um);
+        if len_cmp.is_eq() {
+            a.start_index.cmp(&b.start_index)
+        } else {
+            len_cmp
+        }
+    });
+
+    let mut rejected_box_blocked = 0usize;
+    let mut rejected_planning_failed = 0usize;
+    let mut rejected_exact_length_mismatch = 0usize;
+    let mut rejected_too_short = 0usize;
+    let mut candidate_intervals = 0usize;
+    let mut selected: Option<(MeanderBox, GridRect, AnalyticMeanderPlan, f64)> = None;
+    let mut selected_run: Option<CenterlineStraightRun> = None;
+    let mut selected_segment: Option<StraightSegment> = None;
+    'outer: for &box_depth_um in box_depths_um {
+        let footprint = match plan_fill_box_multi_bump_footprint(
+            config.requested_extra_length_um,
+            config.min_bend_radius_um,
+            config.min_straight_um,
+            config.max_bumps,
+            box_depth_um.min(config.max_meander_height_um),
+        ) {
+            Ok(v) => v,
+            Err(_) => {
+                rejected_planning_failed += 1;
+                continue;
+            }
+        };
+        let actual_depth_um = footprint.amplitude_um;
+        let required_interval_length_um = footprint
+            .insertion_width_um
+            .max(config.min_segment_length_um);
+        for run in run_order.iter().copied() {
+            for &side in side_order {
+                let free_segments = match projected_free_interval_segments(
+                    run,
+                    side,
+                    actual_depth_um,
+                    config.endpoint_inset_um,
+                    required_interval_length_um,
+                    grid,
+                    &occupancy,
+                    config.clearance_radius_cells,
+                ) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        rejected_planning_failed += 1;
+                        continue;
+                    }
+                };
+                if free_segments.is_empty() {
+                    rejected_box_blocked += 1;
+                    continue;
+                }
+                candidate_intervals += free_segments.len();
+                for free_segment in free_segments {
+                    let free_length = segment_length_um(free_segment);
+                    if free_length + EPS < footprint.insertion_width_um {
+                        rejected_too_short += 1;
+                        continue;
+                    }
+                    let segment =
+                        match centered_subsegment(free_segment, footprint.insertion_width_um) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                rejected_too_short += 1;
+                                continue;
+                            }
+                        };
+                    let box_um = match build_meander_box_for_segment(segment, side, actual_depth_um)
+                    {
+                        Ok(v) => v,
+                        Err(_) => {
+                            rejected_planning_failed += 1;
+                            continue;
+                        }
+                    };
+                    let rect = match check_meander_box_free_with_occupancy(
+                        box_um,
+                        grid,
+                        &occupancy,
                         config.clearance_radius_cells,
                     ) {
                         Ok(v) => v,

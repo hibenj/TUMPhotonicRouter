@@ -252,27 +252,43 @@ def analyze_meander_insertion_for_requirements(
         entry["opened_route_cell_count"] = len(current_route_open_cells)
         best_rr: dict[str, object] | None = None
         last_exc: Exception | None = None
+        used_reserved_overlay = True
         t_plan_start = time.perf_counter()
         try:
             planner_calls += 1
-            best_rr = cast(
-                dict[str, object],
-                router.plan_auto_analytic_meander_for_route_depth_sweep(
-                    record.route_obj,
-                    requested_extra_length_um=float(requested),
-                    box_depths_um=box_depths_um,
-                    min_bend_radius_um=None,
-                    min_straight_um=min_straight_um,
-                    max_bumps=max_bumps,
-                    max_meander_height_um=max_height_um,
-                    min_segment_length_um=min_seg_um,
-                    endpoint_inset_um=endpoint_inset_um,
-                    clearance_radius_cells=0,
-                    side_policy="both",
-                    opened_cells=sorted(current_route_open_cells),
-                    planning_mode="fill_box_multi_bump",
-                ),
+            planner_kwargs = dict(
+                requested_extra_length_um=float(requested),
+                box_depths_um=box_depths_um,
+                min_bend_radius_um=None,
+                min_straight_um=min_straight_um,
+                max_bumps=max_bumps,
+                max_meander_height_um=max_height_um,
+                min_segment_length_um=min_seg_um,
+                endpoint_inset_um=endpoint_inset_um,
+                clearance_radius_cells=0,
+                side_policy="both",
+                opened_cells=sorted(current_route_open_cells),
+                planning_mode="fill_box_multi_bump",
+                extra_blocked_cells=sorted(reserved_meander_cells),
             )
+            try:
+                best_rr = cast(
+                    dict[str, object],
+                    router.plan_auto_analytic_meander_for_route_depth_sweep(
+                        record.route_obj,
+                        **planner_kwargs,
+                    ),
+                )
+            except TypeError:
+                used_reserved_overlay = False
+                planner_kwargs.pop("extra_blocked_cells", None)
+                best_rr = cast(
+                    dict[str, object],
+                    router.plan_auto_analytic_meander_for_route_depth_sweep(
+                        record.route_obj,
+                        **planner_kwargs,
+                    ),
+                )
         except Exception as exc:
             last_exc = exc
         elapsed_s = time.perf_counter() - t_plan_start
@@ -319,6 +335,7 @@ def analyze_meander_insertion_for_requirements(
         entry["selected_interval_length_um"] = rr.get("selected_interval_length_um")
         entry["endpoint_inset_um"] = endpoint_inset_um
         entry["requested_probe_length_um"] = requested
+        entry["used_reserved_overlay"] = used_reserved_overlay
         if unmatched > 1.0e-9:
             entry["status"] = "planned_partial"
         total_inserted += inserted
@@ -326,7 +343,8 @@ def analyze_meander_insertion_for_requirements(
         new_reserved_cells = _grid_rect_cells(selected_grid_rect)
         if new_reserved_cells:
             reserved_meander_cells.update(new_reserved_cells)
-            router.add_static_cells(list(new_reserved_cells))
+            if not used_reserved_overlay:
+                router.add_static_cells(list(new_reserved_cells))
         updated[edge_key] = RoutedNetRecord(
             net_name=record.net_name,
             source=record.source,
