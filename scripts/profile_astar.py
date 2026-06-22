@@ -662,18 +662,31 @@ def _paired_comparison_rows(
     *,
     iterations: int,
     warmup: int,
+    accelerator: str = "jps4",
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for scenario in scenarios:
-        baseline_primitive_mode = (
-            "grid4_unit" if scenario.primitive_mode == "jps4_unit" else scenario.primitive_mode
-        )
-        baseline_scenario = replace(
-            scenario,
-            enable_jps4=False,
-            primitive_mode=baseline_primitive_mode,
-        )
-        accelerated_scenario = replace(scenario, enable_jps4=True)
+        if accelerator == "heading_aware":
+            baseline_scenario = replace(
+                scenario,
+                enable_jps4=False,
+                heuristic_mode="distance",
+            )
+            accelerated_scenario = replace(
+                scenario,
+                enable_jps4=False,
+                heuristic_mode="heading_aware",
+            )
+        else:
+            baseline_primitive_mode = (
+                "grid4_unit" if scenario.primitive_mode == "jps4_unit" else scenario.primitive_mode
+            )
+            baseline_scenario = replace(
+                scenario,
+                enable_jps4=False,
+                primitive_mode=baseline_primitive_mode,
+            )
+            accelerated_scenario = replace(scenario, enable_jps4=True)
         baseline = run_scenario(
             rust_backend,
             baseline_scenario,
@@ -691,6 +704,7 @@ def _paired_comparison_rows(
         rows.append(
             {
                 "scenario": scenario.name,
+                "accelerator": accelerator,
                 "primitive_mode": scenario.primitive_mode,
                 "baseline": baseline,
                 "accelerated": accelerated,
@@ -712,9 +726,10 @@ def _markdown_paired_report(rows: Iterable[dict[str, object]], args: argparse.Na
         f"- Python: `{platform.python_version()}`",
         f"- Iterations: `{args.iterations}`",
         f"- Warmup: `{args.warmup}`",
+        f"- Paired accelerator: `{getattr(args, 'paired_accelerator', 'jps4')}`",
         "",
-        "| Scenario | Primitive mode | Base median s | Accel median s | Time delta | Base expanded | Accel expanded | Expanded ratio | Base generated | Accel generated | Generated ratio | Base heap | Accel heap | JPS4 | Fallback | Length delta um | Target cell |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |",
+        "| Scenario | Primitive mode | Base mode | Accel mode | Base median s | Accel median s | Time delta | Base expanded | Accel expanded | Expanded ratio | Base generated | Accel generated | Generated ratio | Base heap | Accel heap | JPS4 | Fallback | Length delta um | Target cell |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |",
     ]
     for row in rows:
         baseline = row["baseline"]
@@ -731,9 +746,11 @@ def _markdown_paired_report(rows: Iterable[dict[str, object]], args: argparse.Na
             else ("requested" if accelerated.get("jps4_requested") else "off")
         )
         lines.append(
-            "| {scenario} | {primitive_mode} | {base_median} | {accel_median} | {time_delta} | {base_expanded} | {accel_expanded} | {expanded_ratio} | {base_generated} | {accel_generated} | {generated_ratio} | {base_heap} | {accel_heap} | {jps4_status} | {fallback} | {length_delta:.3f} | {target_cell_match} |".format(
+            "| {scenario} | {primitive_mode} | {base_mode} | {accel_mode} | {base_median} | {accel_median} | {time_delta} | {base_expanded} | {accel_expanded} | {expanded_ratio} | {base_generated} | {accel_generated} | {generated_ratio} | {base_heap} | {accel_heap} | {jps4_status} | {fallback} | {length_delta:.3f} | {target_cell_match} |".format(
                 scenario=row["scenario"],
                 primitive_mode=row["primitive_mode"],
+                base_mode=str(baseline.get("heuristic_mode", "")),
+                accel_mode=str(accelerated.get("heuristic_mode", "")),
                 base_median=_format_seconds(_object_to_float(baseline["median_s"])),
                 accel_median=_format_seconds(_object_to_float(accelerated["median_s"])),
                 time_delta=_percent_delta(
@@ -812,13 +829,21 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Run each selected scenario twice, baseline and accelerator-requested, "
-            "and report side-by-side deltas. Defaults to jps4_* scenarios when "
-            "no scenario names are provided."
+            "and report side-by-side deltas."
         ),
+    )
+    parser.add_argument(
+        "--paired-accelerator",
+        choices=("jps4", "heading_aware"),
+        default="jps4",
+        help="Accelerator to compare when --paired-comparison is set.",
     )
     args = parser.parse_args()
     if args.paired_comparison and args.scenarios == default_scenarios:
-        args.scenarios = sorted(name for name in catalog if name.startswith("jps4_"))
+        if args.paired_accelerator == "heading_aware":
+            args.scenarios = ["wall_gap_astar", "slalom_astar", "full_grid_fallback"]
+        else:
+            args.scenarios = sorted(name for name in catalog if name.startswith("jps4_"))
     unknown = sorted(set(args.scenarios) - set(catalog))
     if unknown:
         parser.error(
@@ -851,6 +876,7 @@ def main() -> int:
             [catalog[name] for name in args.scenarios],
             iterations=args.iterations,
             warmup=args.warmup,
+            accelerator=args.paired_accelerator,
         )
         report = _markdown_paired_report(paired_rows, args)
         print(report)

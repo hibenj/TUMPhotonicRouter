@@ -82,6 +82,7 @@ Useful variants:
 .venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --use-indexed-heap --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --primitive-ordering long_straight_first --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --heuristic-mode heading_aware --iterations 25 --warmup 3
+.venv/bin/python scripts/profile_astar.py --paired-comparison --paired-accelerator heading_aware --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py --paired-comparison --iterations 25 --warmup 3
 ```
 
