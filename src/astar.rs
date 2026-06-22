@@ -351,13 +351,17 @@ impl DenseSearchStorage {
         if state.angle >= 8 || !self.bounds.contains(state.x, state.y) {
             return None;
         }
-        let local_x = usize::try_from(state.x.checked_sub(self.bounds.min_x)?).ok()?;
-        let local_y = usize::try_from(state.y.checked_sub(self.bounds.min_y)?).ok()?;
-        local_y
-            .checked_mul(self.width_usize)?
-            .checked_add(local_x)?
-            .checked_mul(8)?
-            .checked_add(usize::from(state.angle))
+        self.in_bounds_state_to_idx(state)
+    }
+
+    fn in_bounds_state_to_idx(&self, state: State) -> Option<usize> {
+        self.in_bounds_parts_to_idx(state.x, state.y, state.angle)
+    }
+
+    fn in_bounds_parts_to_idx(&self, x: i32, y: i32, angle: u8) -> Option<usize> {
+        let local_x = usize::try_from(x.checked_sub(self.bounds.min_x)?).ok()?;
+        let local_y = usize::try_from(y.checked_sub(self.bounds.min_y)?).ok()?;
+        Some(((local_y * self.width_usize) + local_x) * 8 + usize::from(angle))
     }
 
     fn idx_to_state(&self, idx: usize) -> State {
@@ -2110,6 +2114,10 @@ fn route_single_net_with_bounds(
                 .collect()
         })
         .collect();
+    let primitive_buckets: [&[Primitive]; 8] =
+        std::array::from_fn(|angle| primitives.get_primitives_for_angle(angle as u8));
+    let target_tolerance = config.target_tolerance_cells.max(0);
+    let accepted_target_angles = target_angle_acceptance(target, config);
 
     let mut open_set = OpenSet::new(config.use_indexed_heap, storage.state_count());
     let mut counter = 0u32;
@@ -2173,7 +2181,10 @@ fn route_single_net_with_bounds(
             continue;
         }
         let state = storage.idx_to_state(idx);
-        if target_reached(state, target, config) {
+        if (state.x - target.x).abs() <= target_tolerance
+            && (state.y - target.y).abs() <= target_tolerance
+            && accepted_target_angles[state.angle as usize]
+        {
             if collect_detailed_timing {
                 let reconstruction_start = Instant::now();
                 let mut route = reconstruct_route_dense(
@@ -2203,7 +2214,7 @@ fn route_single_net_with_bounds(
 
         let current_g = storage.g_costs[idx];
         let angle = state.angle as usize;
-        let primitive_bucket = primitives.get_primitives_for_angle(state.angle);
+        let primitive_bucket = primitive_buckets[angle];
         let footprint_profiles = &primitive_footprint_profiles[angle];
         let neighbor_loop_start = if collect_detailed_timing {
             Some(Instant::now())
@@ -2227,22 +2238,16 @@ fn route_single_net_with_bounds(
                 primitive_transition_class(&primitive.geometry, primitive.dx, primitive.dy);
             stats.generated_neighbors += 1;
             stats.primitive_generated_by_class[primitive_class] += 1;
-            let next_state = State::new(
-                state.x.checked_add(primitive.dx)?,
-                state.y.checked_add(primitive.dy)?,
-                primitive.end_angle,
-            );
+            let next_x = state.x.checked_add(primitive.dx)?;
+            let next_y = state.y.checked_add(primitive.dy)?;
+            let next_angle = primitive.end_angle % 8;
 
-            if !obstacle_map.in_bounds(next_state.x, next_state.y) {
-                stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
-                continue;
-            }
-            if !bounds.contains(next_state.x, next_state.y) {
+            if !bounds.contains(next_x, next_y) {
                 stats.window_rejects += 1;
                 stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
                 continue;
             }
-            let Some(next_idx) = storage.state_to_idx(next_state) else {
+            let Some(next_idx) = storage.in_bounds_parts_to_idx(next_x, next_y, next_angle) else {
                 stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
                 continue;
             };
@@ -2320,7 +2325,12 @@ fn route_single_net_with_bounds(
             stats.best_cost_updates += 1;
             stats.parent_updates += 1;
             let next_entry = OpenEntry {
-                f_score: tentative_g + search_heuristic.estimate(next_state),
+                f_score: tentative_g
+                    + search_heuristic.estimate(State {
+                        x: next_x,
+                        y: next_y,
+                        angle: next_angle,
+                    }),
                 g_score: tentative_g,
                 counter: generation,
                 generation,
@@ -2456,42 +2466,6 @@ pub fn export_route_svg(obstacle_map: &ObstacleMap, route_result: &RouteResult) 
 
     svg.push_str("</svg>\n");
     svg
-}
-
-fn target_reached(state: State, target: State, config: &AStarConfig) -> bool {
-    let tolerance = config.target_tolerance_cells.max(0);
-    let pos_ok = (state.x - target.x).abs() <= tolerance && (state.y - target.y).abs() <= tolerance;
-    if !pos_ok {
-        return false;
-    }
-    if config.allowed_target_angles_mask.is_some() {
-        return target_angle_satisfied(state, target, config);
-    }
-    if config.require_target_angle {
-        return target_angle_satisfied(state, target, config);
-    }
-    true
-}
-
-fn target_angle_satisfied(state: State, target: State, config: &AStarConfig) -> bool {
-    target_angle_satisfied_by_parts(
-        state,
-        target,
-        config.allowed_target_angles_mask,
-        config.require_target_angle,
-    )
-}
-
-fn target_angle_satisfied_by_parts(
-    state: State,
-    target: State,
-    allowed_target_angles_mask: Option<u8>,
-    require_target_angle: bool,
-) -> bool {
-    if let Some(mask) = allowed_target_angles_mask {
-        return (mask & (1u8 << (state.angle % 8))) != 0;
-    }
-    !require_target_angle || state.angle == target.angle
 }
 
 fn distance_heuristic(state: State, target: State, grid_size_um: f64) -> f64 {
