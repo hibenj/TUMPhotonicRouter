@@ -52,6 +52,12 @@ pushing duplicate entries for every improved cost. A successful queue
 optimization run should reduce stale-generation heap skips and maximum heap
 size while preserving route success and route cost.
 
+Pass 8E result: keep the duplicate-entry `BinaryHeap` as the default. On
+`mmi_heater_8x4_ripup_reroute`, the indexed heap removed stale skips and lowered
+maximum heap size, but A* time increased from about 0.85 s to about 1.03 s in
+the same release-build benchmark. Synthetic profiles showed the same pattern:
+fewer duplicate pops, but slower median wall time.
+
 Use `--primitive-ordering` to compare behavior-preserving primitive iteration
 orders. `library` preserves primitive-library order, `long_straight_first`
 tries long straight transitions before short straight transitions, and
