@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import time
 from collections import Counter
 from typing import cast
 
@@ -175,6 +176,7 @@ def analyze_meander_insertion_for_requirements(
     total_inserted = 0.0
     total_disregarded = 0.0
     planner_calls = 0
+    planner_elapsed_s = 0.0
     min_insertable_extra_um = _minimum_four_bend_extra_length_um(
         grid_size_um=float(grid_size_um_cfg),
         bend_radius_cells=int(bend_radius_cells),
@@ -200,6 +202,7 @@ def analyze_meander_insertion_for_requirements(
             "side": None,
             "using_legacy_meander_path": False,
             "minimum_insertable_extra_length_um": min_insertable_extra_um,
+            "planning_elapsed_s": 0.0,
         }
         if requested < min_insertable_extra_um:
             total_disregarded += requested
@@ -233,6 +236,7 @@ def analyze_meander_insertion_for_requirements(
         ]
         if not box_depths_um:
             box_depths_um = [max_height_um]
+        entry["box_depth_candidates_um"] = list(box_depths_um)
         bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
         endpoint_inset_um = (
             max(2.0 * bend_radius_um, min_seg_um)
@@ -245,8 +249,10 @@ def analyze_meander_insertion_for_requirements(
             bend_radius_um=bend_radius_um,
         )
         entry["max_bumps"] = max_bumps
+        entry["opened_route_cell_count"] = len(current_route_open_cells)
         best_rr: dict[str, object] | None = None
         last_exc: Exception | None = None
+        t_plan_start = time.perf_counter()
         try:
             planner_calls += 1
             best_rr = cast(
@@ -269,6 +275,9 @@ def analyze_meander_insertion_for_requirements(
             )
         except Exception as exc:
             last_exc = exc
+        elapsed_s = time.perf_counter() - t_plan_start
+        planner_elapsed_s += elapsed_s
+        entry["planning_elapsed_s"] = elapsed_s
 
         if best_rr is None:
             entry["status"] = "no_candidate"
@@ -357,6 +366,7 @@ def analyze_meander_insertion_for_requirements(
             "total_disregarded_extra_length_um": float(total_disregarded),
             "unmatched_length_um": float(total_unmatched),
             "planner_calls": int(planner_calls),
+            "planner_elapsed_s": float(planner_elapsed_s),
             "minimum_insertable_extra_length_um": float(min_insertable_extra_um),
             "using_legacy_meander_path": False,
         },

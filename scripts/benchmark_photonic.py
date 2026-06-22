@@ -227,6 +227,63 @@ def _format_status_counts(value: object) -> str:
     return " ".join(parts)
 
 
+def _numeric_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _numeric_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return default
+    return default
+
+
+def _sum_meander_result_int(results: Iterable[object], key: str) -> int:
+    total = 0
+    for result in results:
+        if isinstance(result, Mapping):
+            total += _numeric_int(result.get(key))
+    return total
+
+
+def _max_meander_result_int(results: Iterable[object], key: str) -> int:
+    maximum = 0
+    for result in results:
+        if isinstance(result, Mapping):
+            maximum = max(maximum, _numeric_int(result.get(key)))
+    return maximum
+
+
+def _slowest_meander_result(results: Iterable[object]) -> dict[str, object]:
+    slowest: dict[str, object] = {}
+    slowest_elapsed_s = 0.0
+    for result in results:
+        if not isinstance(result, Mapping):
+            continue
+        elapsed_s = _numeric_float(result.get("planning_elapsed_s"))
+        if not slowest or elapsed_s > slowest_elapsed_s:
+            slowest = dict(result)
+            slowest_elapsed_s = elapsed_s
+    return slowest
+
+
 def _flatten_attempt_records(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
     flattened: list[dict[str, object]] = []
     for row in rows:
@@ -293,6 +350,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
             continue
         status = str(result.get("status", "unknown"))
         meander_status_counts[status] = meander_status_counts.get(status, 0) + 1
+    slowest_meander = _slowest_meander_result(meander_results)
     return {
         "benchmark": benchmark,
         "instances": stats.instance_count,
@@ -324,6 +382,51 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "meander_disregarded_um": meander_report.get("total_disregarded_extra_length_um"),
         "meander_unmatched_um": meander_report.get("unmatched_length_um"),
         "meander_status_counts": meander_status_counts,
+        "meander_planner_elapsed_s": meander_report.get("planner_elapsed_s"),
+        "meander_candidate_runs": _sum_meander_result_int(
+            meander_results,
+            "candidate_runs",
+        ),
+        "meander_candidate_intervals": _sum_meander_result_int(
+            meander_results,
+            "candidate_intervals",
+        ),
+        "meander_rejected_box_blocked": _sum_meander_result_int(
+            meander_results,
+            "rejected_box_blocked",
+        ),
+        "meander_rejected_planning_failed": _sum_meander_result_int(
+            meander_results,
+            "rejected_planning_failed",
+        ),
+        "meander_rejected_exact_length_mismatch": _sum_meander_result_int(
+            meander_results,
+            "rejected_exact_length_mismatch",
+        ),
+        "meander_rejected_too_short": _sum_meander_result_int(
+            meander_results,
+            "rejected_too_short",
+        ),
+        "meander_max_candidate_runs": _max_meander_result_int(
+            meander_results,
+            "candidate_runs",
+        ),
+        "meander_max_candidate_intervals": _max_meander_result_int(
+            meander_results,
+            "candidate_intervals",
+        ),
+        "slowest_meander_planning_s": slowest_meander.get("planning_elapsed_s"),
+        "slowest_meander_status": slowest_meander.get("status"),
+        "slowest_meander_requested_um": slowest_meander.get("requested_extra_length_um"),
+        "slowest_meander_candidate_runs": slowest_meander.get("candidate_runs"),
+        "slowest_meander_candidate_intervals": slowest_meander.get("candidate_intervals"),
+        "slowest_meander_rejected_box_blocked": slowest_meander.get("rejected_box_blocked"),
+        "slowest_meander_rejected_planning_failed": slowest_meander.get(
+            "rejected_planning_failed"
+        ),
+        "slowest_meander_rejected_exact_length_mismatch": slowest_meander.get(
+            "rejected_exact_length_mismatch"
+        ),
         "route_attempts": stats.route_attempts,
         "route_failures": stats.route_failures,
         "simple_routes": stats.simple_route_count,
@@ -519,6 +622,74 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     statuses=_format_status_counts(row.get("meander_status_counts")),
                 )
             )
+        diagnostic_rows = [
+            row
+            for row in plm_rows
+            if row.get("meander_planner_calls") not in (None, 0)
+            or row.get("meander_candidate_runs") not in (None, 0)
+            or row.get("slowest_meander_planning_s") is not None
+        ]
+        if diagnostic_rows:
+            lines.extend(
+                [
+                    "",
+                    "## Meander Planner Diagnostics",
+                    "",
+                    "| Benchmark | Planner elapsed s | Candidate runs | Intervals | Blocked | Plan fail | Exact mismatch | Too short | Max runs | Max intervals | Slowest s | Slowest requested um | Slowest status | Slowest counters |",
+                    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+                ]
+            )
+            for row in diagnostic_rows:
+                slowest_counters = (
+                    "runs={runs} intervals={intervals} blocked={blocked} "
+                    "plan_fail={plan_fail} exact_mismatch={exact_mismatch}"
+                ).format(
+                    runs=_format_int(row.get("slowest_meander_candidate_runs")),
+                    intervals=_format_int(
+                        row.get("slowest_meander_candidate_intervals")
+                    ),
+                    blocked=_format_int(
+                        row.get("slowest_meander_rejected_box_blocked")
+                    ),
+                    plan_fail=_format_int(
+                        row.get("slowest_meander_rejected_planning_failed")
+                    ),
+                    exact_mismatch=_format_int(
+                        row.get("slowest_meander_rejected_exact_length_mismatch")
+                    ),
+                )
+                lines.append(
+                    "| {benchmark} | {planner_elapsed_s} | {candidate_runs} | {candidate_intervals} | {blocked} | {plan_fail} | {exact_mismatch} | {too_short} | {max_runs} | {max_intervals} | {slowest_s} | {slowest_requested} | {slowest_status} | {slowest_counters} |".format(
+                        benchmark=row["benchmark"],
+                        planner_elapsed_s=_format_seconds(
+                            _record_seconds(row, "meander_planner_elapsed_s")
+                        ),
+                        candidate_runs=_format_int(row.get("meander_candidate_runs")),
+                        candidate_intervals=_format_int(
+                            row.get("meander_candidate_intervals")
+                        ),
+                        blocked=_format_int(row.get("meander_rejected_box_blocked")),
+                        plan_fail=_format_int(
+                            row.get("meander_rejected_planning_failed")
+                        ),
+                        exact_mismatch=_format_int(
+                            row.get("meander_rejected_exact_length_mismatch")
+                        ),
+                        too_short=_format_int(row.get("meander_rejected_too_short")),
+                        max_runs=_format_int(row.get("meander_max_candidate_runs")),
+                        max_intervals=_format_int(
+                            row.get("meander_max_candidate_intervals")
+                        ),
+                        slowest_s=_format_seconds(
+                            _record_seconds(row, "slowest_meander_planning_s")
+                        ),
+                        slowest_requested=_format_seconds(
+                            _record_seconds(row, "slowest_meander_requested_um")
+                        ),
+                        slowest_status=row.get("slowest_meander_status", ""),
+                        slowest_counters=slowest_counters,
+                    )
+                )
     all_attempts = _flatten_attempt_records(rows)
     slow_attempts = sorted(
         (

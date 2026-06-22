@@ -37,6 +37,23 @@ def _row_with_attempts() -> dict[str, object]:
         "meander_disregarded_um": None,
         "meander_unmatched_um": None,
         "meander_status_counts": {},
+        "meander_planner_elapsed_s": None,
+        "meander_candidate_runs": 0,
+        "meander_candidate_intervals": 0,
+        "meander_rejected_box_blocked": 0,
+        "meander_rejected_planning_failed": 0,
+        "meander_rejected_exact_length_mismatch": 0,
+        "meander_rejected_too_short": 0,
+        "meander_max_candidate_runs": 0,
+        "meander_max_candidate_intervals": 0,
+        "slowest_meander_planning_s": None,
+        "slowest_meander_status": None,
+        "slowest_meander_requested_um": None,
+        "slowest_meander_candidate_runs": None,
+        "slowest_meander_candidate_intervals": None,
+        "slowest_meander_rejected_box_blocked": None,
+        "slowest_meander_rejected_planning_failed": None,
+        "slowest_meander_rejected_exact_length_mismatch": None,
         "route_attempts": 2,
         "simple_routes": 1,
         "repairs": 1,
@@ -213,6 +230,23 @@ def test_markdown_report_includes_path_length_matching_section():
             "meander_disregarded_um": 5.0,
             "meander_unmatched_um": 10.0,
             "meander_status_counts": {"planned": 1, "below_minimum_bump": 1},
+            "meander_planner_elapsed_s": 0.025,
+            "meander_candidate_runs": 8,
+            "meander_candidate_intervals": 13,
+            "meander_rejected_box_blocked": 2,
+            "meander_rejected_planning_failed": 3,
+            "meander_rejected_exact_length_mismatch": 4,
+            "meander_rejected_too_short": 5,
+            "meander_max_candidate_runs": 6,
+            "meander_max_candidate_intervals": 7,
+            "slowest_meander_planning_s": 0.02,
+            "slowest_meander_status": "planned",
+            "slowest_meander_requested_um": 12.0,
+            "slowest_meander_candidate_runs": 6,
+            "slowest_meander_candidate_intervals": 7,
+            "slowest_meander_rejected_box_blocked": 1,
+            "slowest_meander_rejected_planning_failed": 2,
+            "slowest_meander_rejected_exact_length_mismatch": 3,
         }
     )
 
@@ -221,6 +255,8 @@ def test_markdown_report_includes_path_length_matching_section():
     assert "Path-Length Matching" in report
     assert "planned:1" in report
     assert "below_minimum_bump:1" in report
+    assert "Meander Planner Diagnostics" in report
+    assert "runs=6 intervals=7 blocked=1 plan_fail=2 exact_mismatch=3" in report
 
 
 def test_parser_defaults_keep_losing_experiments_gated(monkeypatch):

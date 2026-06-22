@@ -509,6 +509,8 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
     assert int(cast(int, entry["max_bumps"])) == 259
     assert int(cast(int, entry["bumps"])) == 81
     assert entry.get("effective_bend_radius_um") is not None
+    assert float(cast(float, entry["planning_elapsed_s"])) >= 0.0
+    assert float(cast(float, report["planner_elapsed_s"])) >= 0.0
 
 
 def test_meander_planning_does_not_open_port_or_static_cells(monkeypatch):
