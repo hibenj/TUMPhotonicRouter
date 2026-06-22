@@ -115,6 +115,7 @@ def test_markdown_report_includes_slowest_route_attempts():
         use_indexed_heap=False,
         primitive_ordering="library",
         heuristic_mode="distance",
+        heap_tie_breaker="smaller_g",
     )
 
     report = module._markdown_report([_row_with_attempts()], args)
@@ -138,6 +139,7 @@ def test_markdown_report_includes_diagnostics_when_available():
         use_indexed_heap=False,
         primitive_ordering="library",
         heuristic_mode="distance",
+        heap_tie_breaker="smaller_g",
         attempt_diagnostics=True,
     )
     row = _row_with_attempts()
@@ -173,6 +175,7 @@ def test_parser_defaults_keep_losing_experiments_gated(monkeypatch):
 
     assert args.use_indexed_heap is False
     assert args.primitive_ordering == "library"
+    assert args.heap_tie_breaker == "smaller_g"
 
 
 def test_write_attempt_output_supports_json_and_csv(tmp_path):

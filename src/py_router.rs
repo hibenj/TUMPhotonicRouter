@@ -5,7 +5,7 @@ use rustc_hash::FxHashSet;
 
 use crate::astar::{
     export_route_svg, route_single_net_with_config, try_simple_route_with_config, AStarConfig,
-    HeuristicMode, PrimitiveOrdering, RouteResult, RouteSearchStats, State,
+    HeapTieBreaker, HeuristicMode, PrimitiveOrdering, RouteResult, RouteSearchStats, State,
 };
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
@@ -188,6 +188,8 @@ pub struct PyAStarConfig {
     pub primitive_ordering: String,
     #[pyo3(get, set)]
     pub heuristic_mode: String,
+    #[pyo3(get, set)]
+    pub heap_tie_breaker: String,
 }
 #[pymethods]
 impl PyAStarConfig {
@@ -236,6 +238,7 @@ impl PyAStarConfig {
             use_indexed_heap,
             primitive_ordering,
             heuristic_mode,
+            heap_tie_breaker: "smaller_g".to_string(),
         }
     }
 }
@@ -526,6 +529,16 @@ fn parse_heuristic_mode(value: &str) -> PyResult<HeuristicMode> {
     }
 }
 
+fn parse_heap_tie_breaker(value: &str) -> PyResult<HeapTieBreaker> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "smaller_g" => Ok(HeapTieBreaker::SmallerG),
+        "larger_g" => Ok(HeapTieBreaker::LargerG),
+        _ => Err(PyValueError::new_err(
+            "heap_tie_breaker must be one of 'smaller_g' or 'larger_g'",
+        )),
+    }
+}
+
 fn astar_config_from_py(
     astar_cfg: &PyAStarConfig,
     primitive_cfg: &PyPrimitiveLibraryConfig,
@@ -537,6 +550,7 @@ fn astar_config_from_py(
         allowed_angles_to_mask(astar_cfg.allowed_target_angles.as_ref())?;
     let primitive_ordering = parse_primitive_ordering(&astar_cfg.primitive_ordering)?;
     let heuristic_mode = parse_heuristic_mode(&astar_cfg.heuristic_mode)?;
+    let heap_tie_breaker = parse_heap_tie_breaker(&astar_cfg.heap_tie_breaker)?;
     Ok(AStarConfig {
         max_iterations: astar_cfg.max_iterations,
         bend_weight: astar_cfg.bend_weight * primitive_cfg.bend_weight,
@@ -562,6 +576,7 @@ fn astar_config_from_py(
         use_indexed_heap: astar_cfg.use_indexed_heap,
         primitive_ordering,
         heuristic_mode,
+        heap_tie_breaker,
     })
 }
 

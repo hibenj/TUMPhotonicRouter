@@ -101,6 +101,7 @@ def route_match_and_realize(
     use_indexed_heap: bool = False,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
+    heap_tie_breaker: str = "smaller_g",
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
@@ -138,6 +139,7 @@ def route_match_and_realize(
         use_indexed_heap=use_indexed_heap,
         primitive_ordering=primitive_ordering,
         heuristic_mode=heuristic_mode,
+        heap_tie_breaker=heap_tie_breaker,
         max_iterations=max_iterations,
         routing_window_scale=routing_window_scale,
         debug_timing=debug_timing,
@@ -445,6 +447,7 @@ def route_nets_rust(
     use_indexed_heap: bool = False,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
+    heap_tie_breaker: str = "smaller_g",
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
@@ -565,6 +568,7 @@ def route_nets_rust(
     astar_cfg.use_indexed_heap = bool(use_indexed_heap)
     astar_cfg.primitive_ordering = str(primitive_ordering)
     astar_cfg.heuristic_mode = str(heuristic_mode)
+    astar_cfg.heap_tie_breaker = str(heap_tie_breaker)
     if routing_window_scale is not None:
         astar_cfg.routing_window_scale = float(routing_window_scale)
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)

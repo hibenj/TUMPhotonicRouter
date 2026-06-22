@@ -61,6 +61,7 @@ pub struct AStarConfig {
     pub use_indexed_heap: bool,
     pub primitive_ordering: PrimitiveOrdering,
     pub heuristic_mode: HeuristicMode,
+    pub heap_tie_breaker: HeapTieBreaker,
 }
 
 impl Default for AStarConfig {
@@ -89,6 +90,7 @@ impl Default for AStarConfig {
             use_indexed_heap: false,
             primitive_ordering: PrimitiveOrdering::Library,
             heuristic_mode: HeuristicMode::HeadingAware,
+            heap_tie_breaker: HeapTieBreaker::SmallerG,
         }
     }
 }
@@ -106,6 +108,13 @@ pub enum HeuristicMode {
     #[default]
     Distance,
     HeadingAware,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HeapTieBreaker {
+    #[default]
+    SmallerG,
+    LargerG,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -916,6 +925,7 @@ impl DenseRoutingGrid {
 #[derive(Clone, Copy, Debug)]
 struct OpenEntry {
     f_score: f64,
+    tie_score: f64,
     g_score: f64,
     counter: u32,
     generation: u32,
@@ -938,8 +948,8 @@ impl Ord for OpenEntry {
             .unwrap_or(Ordering::Equal)
             .then_with(|| {
                 other
-                    .g_score
-                    .partial_cmp(&self.g_score)
+                    .tie_score
+                    .partial_cmp(&self.tie_score)
                     .unwrap_or(Ordering::Equal)
             })
             .then_with(|| other.counter.cmp(&self.counter))
@@ -1047,6 +1057,14 @@ impl IndexedOpenSet {
 
 fn entry_is_better(candidate: &OpenEntry, current: &OpenEntry) -> bool {
     candidate.cmp(current) == Ordering::Greater
+}
+
+#[inline]
+fn heap_tie_score(g_score: f64, tie_breaker: HeapTieBreaker) -> f64 {
+    match tie_breaker {
+        HeapTieBreaker::SmallerG => g_score,
+        HeapTieBreaker::LargerG => -g_score,
+    }
 }
 
 fn next_search_generation(counter: &mut u32) -> Option<u32> {
@@ -1453,6 +1471,7 @@ fn route_single_net_jps4(
     let generation = next_search_generation(&mut counter)?;
     open_set.push(OpenEntry {
         f_score: jps4_heuristic(source.x, source.y, target_point, grid_size_um),
+        tie_score: heap_tie_score(0.0, HeapTieBreaker::SmallerG),
         g_score: 0.0,
         counter: generation,
         generation,
@@ -1504,6 +1523,7 @@ fn route_single_net_jps4(
             let generation = next_search_generation(&mut counter)?;
             open_set.push(OpenEntry {
                 f_score: tentative_g + jps4_heuristic(jump_x, jump_y, target_point, grid_size_um),
+                tie_score: heap_tie_score(tentative_g, HeapTieBreaker::SmallerG),
                 g_score: tentative_g,
                 counter: generation,
                 generation,
@@ -2153,6 +2173,7 @@ fn route_single_net_with_bounds(
     stats.best_cost_updates += 1;
     let source_entry = OpenEntry {
         f_score: search_heuristic.estimate(source),
+        tie_score: heap_tie_score(0.0, config.heap_tie_breaker),
         g_score: 0.0,
         counter: generation,
         generation,
@@ -2352,6 +2373,7 @@ fn route_single_net_with_bounds(
                         y: next_y,
                         angle: next_angle,
                     }),
+                tie_score: heap_tie_score(tentative_g, config.heap_tie_breaker),
                 g_score: tentative_g,
                 counter: generation,
                 generation,
@@ -3279,6 +3301,7 @@ mod tests {
         let config = AStarConfig::default();
         assert!(!config.use_indexed_heap);
         assert_eq!(config.primitive_ordering, PrimitiveOrdering::Library);
+        assert_eq!(config.heap_tie_breaker, HeapTieBreaker::SmallerG);
     }
 
     #[test]
@@ -3365,6 +3388,45 @@ mod tests {
             assert_eq!(result.reached_target, baseline.reached_target);
             assert!((result.total_cost - baseline.total_cost).abs() < 1.0e-9);
         }
+    }
+
+    #[test]
+    fn heap_tie_breaker_modes_preserve_route_cost_on_forced_detour() {
+        let mut map = ObstacleMap::new(180, 80);
+        for y in 4..=72 {
+            if !(42..=50).contains(&y) {
+                map.add_static_cell(85, y);
+            }
+        }
+        let library = primitive_library_no45_bend2();
+        let source = State::new(12, 20, 0);
+        let target = State::new(160, 20, 0);
+        let base_config = AStarConfig {
+            max_iterations: 500_000,
+            require_target_angle: false,
+            enable_simple_routes: false,
+            routing_window_fallback_full_grid: true,
+            ..AStarConfig::default()
+        };
+        let baseline =
+            route_single_net_with_config(&map, &library, source, target, None, &base_config)
+                .expect("baseline route should exist");
+
+        let larger_g = route_single_net_with_config(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &AStarConfig {
+                heap_tie_breaker: HeapTieBreaker::LargerG,
+                ..base_config
+            },
+        )
+        .expect("larger-g route should exist");
+
+        assert_eq!(larger_g.reached_target, baseline.reached_target);
+        assert!((larger_g.total_cost - baseline.total_cost).abs() < 1.0e-9);
     }
 
     fn assert_heading_aware_matches_distance(

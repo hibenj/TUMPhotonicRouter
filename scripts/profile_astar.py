@@ -52,6 +52,7 @@ class AStarScenario:
     use_indexed_heap: bool = False
     primitive_ordering: str = "library"
     heuristic_mode: str = "heading_aware"
+    heap_tie_breaker: str = "smaller_g"
     primitive_mode: str = "photonic"
 
 
@@ -379,6 +380,7 @@ def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
         primitive_ordering=scenario.primitive_ordering,
         heuristic_mode=scenario.heuristic_mode,
     )
+    astar.heap_tie_breaker = scenario.heap_tie_breaker
     astar.enable_simple_routes = scenario.enable_simple_routes
     astar.enable_jps4 = scenario.enable_jps4
     router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
@@ -598,6 +600,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Indexed heap: `{getattr(args, 'use_indexed_heap', False)}`",
         f"- Primitive ordering: `{getattr(args, 'primitive_ordering', 'library')}`",
         f"- Heuristic mode: `{getattr(args, 'heuristic_mode', 'heading_aware')}`",
+        f"- Heap tie-breaker: `{getattr(args, 'heap_tie_breaker', 'smaller_g')}`",
         "",
         "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Primitive gen | Primitive accepted | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Dense MiB | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
@@ -844,6 +847,15 @@ def _parse_args() -> argparse.Namespace:
         help="Dense A* heuristic mode.",
     )
     parser.add_argument(
+        "--heap-tie-breaker",
+        choices=("smaller_g", "larger_g"),
+        default="smaller_g",
+        help=(
+            "Benchmark-only dense A* heap tie-breaker experiment. "
+            "Default preserves historical smaller-g behavior."
+        ),
+    )
+    parser.add_argument(
         "--paired-comparison",
         action="store_true",
         help=(
@@ -928,6 +940,11 @@ def main() -> int:
     if args.heuristic_mode != "heading_aware":
         catalog = {
             name: replace(scenario, heuristic_mode=args.heuristic_mode)
+            for name, scenario in catalog.items()
+        }
+    if args.heap_tie_breaker != "smaller_g":
+        catalog = {
+            name: replace(scenario, heap_tie_breaker=args.heap_tie_breaker)
             for name, scenario in catalog.items()
         }
     rows = [

@@ -449,6 +449,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="heading_aware",
         help="Dense A* heuristic mode (default: heading_aware).",
     )
+    parser.add_argument(
+        "--heap-tie-breaker",
+        choices=("smaller_g", "larger_g"),
+        default="smaller_g",
+        help=(
+            "Dense A* heap tie-breaker experiment. Default preserves the "
+            "historical smaller-g behavior."
+        ),
+    )
     return parser
 
 
@@ -465,6 +474,7 @@ def main(argv: list[str] | None = None) -> Component:
         use_indexed_heap=args.use_indexed_heap,
         primitive_ordering=args.primitive_ordering,
         heuristic_mode=args.heuristic_mode,
+        heap_tie_breaker=args.heap_tie_breaker,
         enable_path_length_matching=args.path_length_matching,
         path_length_meander_height_um=args.path_length_meander_height_um,
         max_iterations=args.max_iterations,
@@ -540,6 +550,7 @@ def run_routing_flow(
     use_indexed_heap: bool = False,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
+    heap_tie_breaker: str = "smaller_g",
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     include_heater_obstacles: bool = False,
@@ -583,6 +594,9 @@ def run_routing_flow(
         primitive_ordering: Benchmark-only dense A* primitive ordering
             experiment. Pass 8F keeps "library" as the default.
         heuristic_mode: Dense A* heuristic experiment.
+        heap_tie_breaker: Benchmark-only dense A* heap tie-breaker experiment.
+            "smaller_g" preserves historical behavior; "larger_g" favors
+            deeper states on equal f-score plateaus.
         max_iterations: Maximum A* state expansions per route attempt.
         routing_window_scale: Optional A* routing-window margin scale. If None,
                       the Rust AStarConfig default is used.
@@ -733,6 +747,7 @@ def run_routing_flow(
             use_indexed_heap=use_indexed_heap,
             primitive_ordering=primitive_ordering,
             heuristic_mode=heuristic_mode,
+            heap_tie_breaker=heap_tie_breaker,
             max_iterations=max_iterations,
             routing_window_scale=routing_window_scale,
             collect_route_stats=collect_route_stats or stats is not None,

@@ -256,6 +256,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         use_indexed_heap=args.use_indexed_heap,
         primitive_ordering=args.primitive_ordering,
         heuristic_mode=args.heuristic_mode,
+        heap_tie_breaker=args.heap_tie_breaker,
         max_iterations=args.max_iterations,
         routing_window_scale=args.routing_window_scale,
         include_heater_obstacles=args.include_heater_obstacles,
@@ -332,6 +333,8 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         args.primitive_ordering,
         "--heuristic-mode",
         args.heuristic_mode,
+        "--heap-tie-breaker",
+        args.heap_tie_breaker,
     ]
     if args.use_indexed_heap:
         command.append("--use-indexed-heap")
@@ -390,6 +393,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Indexed heap: `{args.use_indexed_heap}`",
         f"- Primitive ordering: `{args.primitive_ordering}`",
         f"- Heuristic mode: `{args.heuristic_mode}`",
+        f"- Heap tie-breaker: `{getattr(args, 'heap_tie_breaker', 'smaller_g')}`",
         f"- Attempt diagnostics: `{getattr(args, 'attempt_diagnostics', False)}`",
         "",
         "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
@@ -592,6 +596,15 @@ def _parse_args() -> argparse.Namespace:
         choices=("distance", "heading_aware"),
         default="heading_aware",
         help="Dense A* heuristic mode.",
+    )
+    parser.add_argument(
+        "--heap-tie-breaker",
+        choices=("smaller_g", "larger_g"),
+        default="smaller_g",
+        help=(
+            "Benchmark-only dense A* heap tie-breaker experiment. "
+            "Default preserves historical smaller-g behavior."
+        ),
     )
     parser.add_argument("--obstacle-mode", default="bounding_boxes")
     parser.add_argument("--waveguide-clearance-um", type=float, default=0.5)
