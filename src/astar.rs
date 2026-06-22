@@ -120,6 +120,11 @@ pub struct RouteResult {
 pub struct RouteSearchStats {
     pub window_attempts: u32,
     pub used_full_grid_fallback: bool,
+    pub last_window_min_x: i32,
+    pub last_window_max_x: i32,
+    pub last_window_min_y: i32,
+    pub last_window_max_y: i32,
+    pub last_window_area_cells: i64,
     pub expanded_states: usize,
     pub generated_neighbors: usize,
     pub heap_pushes: usize,
@@ -1021,6 +1026,11 @@ pub fn route_single_net_with_config(
         last_bounds = Some(bounds);
         stats.window_attempts += 1;
         stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(bounds));
+        stats.last_window_min_x = bounds.min_x;
+        stats.last_window_max_x = bounds.max_x;
+        stats.last_window_min_y = bounds.min_y;
+        stats.last_window_max_y = bounds.max_y;
+        stats.last_window_area_cells = window_area(bounds);
 
         if let Some(route) = route_single_net_with_bounds(
             obstacle_map,
@@ -1039,6 +1049,18 @@ pub fn route_single_net_with_config(
     if config.routing_window_fallback_full_grid {
         stats.window_attempts += 1;
         stats.used_full_grid_fallback = true;
+        let full_bounds = RoutingBounds {
+            min_x: 0,
+            max_x: obstacle_map.width() - 1,
+            min_y: 0,
+            max_y: obstacle_map.height() - 1,
+        };
+        stats.last_window_min_x = full_bounds.min_x;
+        stats.last_window_max_x = full_bounds.max_x;
+        stats.last_window_min_y = full_bounds.min_y;
+        stats.last_window_max_y = full_bounds.max_y;
+        stats.last_window_area_cells = window_area(full_bounds);
+        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
         return route_single_net_with_bounds(
             obstacle_map,
             primitives,

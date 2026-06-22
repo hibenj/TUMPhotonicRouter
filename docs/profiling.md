@@ -30,9 +30,15 @@ writes a spreadsheet-friendly table; other suffixes write JSON. Each record
 includes the attempt bucket (`normal_route`, `probe_route`,
 `repair_failed_net`, or `reroute_victims`), net name, elapsed time, failure
 state, repair round, expanded states, generated neighbors, heap push/pop
-counts, duplicate heap skips, obstacle/clearance checks, footprint rectangle
-checks, dense-grid build time, and fallback flags. The Markdown report also
-shows the slowest non-simple attempts inline.
+counts, duplicate heap skips, obstacle/clearance checks, routing-window
+bounds/area, footprint rectangle checks, dense-grid build time, and fallback
+flags. The Markdown report also shows the slowest non-simple attempts inline.
+
+The Python routing flow defaults to `--routing-window-scale 0.05` after the
+window-diagnostic pass. On `mmi_heater_8x4_ripup_reroute`, this reduced route
+42's largest window from about 806k cells to about 339k cells while preserving
+the same repair count and successful route. Use `--routing-window-scale 0.35`
+to reproduce the older, wider-window behavior.
 
 ## Isolated Rust A*
 

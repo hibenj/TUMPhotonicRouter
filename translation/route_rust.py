@@ -99,6 +99,7 @@ def route_match_and_realize(
     allow_45_degree_turns: bool = True,
     enable_jps4: bool = False,
     max_iterations: int = 500_000,
+    routing_window_scale: float | None = None,
     debug_timing: bool = False,
     collect_route_stats: bool = False,
     include_heater_obstacles: bool = False,
@@ -131,6 +132,7 @@ def route_match_and_realize(
         allow_45_degree_turns=allow_45_degree_turns,
         enable_jps4=enable_jps4,
         max_iterations=max_iterations,
+        routing_window_scale=routing_window_scale,
         debug_timing=debug_timing,
         collect_route_stats=collect_route_stats,
         include_heater_obstacles=include_heater_obstacles,
@@ -400,6 +402,7 @@ def route_nets_rust(
     allow_45_degree_turns: bool = True,
     enable_jps4: bool = False,
     max_iterations: int = 500_000,
+    routing_window_scale: float | None = None,
     debug_timing: bool = False,
     collect_route_stats: bool = False,
     include_heater_obstacles: bool = False,
@@ -506,6 +509,8 @@ def route_nets_rust(
     bend_radius_cells = int(primitive_cfg.bend_radius_cells)
     astar_cfg = rust_backend.AStarConfig(max_iterations=int(max_iterations))
     astar_cfg.enable_jps4 = bool(enable_jps4)
+    if routing_window_scale is not None:
+        astar_cfg.routing_window_scale = float(routing_window_scale)
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
     block_radius_cells = max(

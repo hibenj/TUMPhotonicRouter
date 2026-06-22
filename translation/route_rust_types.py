@@ -211,6 +211,11 @@ class RouteAttemptRecord:
     skipped_duplicate_heap_entries: int = 0
     obstacle_clearance_checks: int = 0
     window_attempts: int = 0
+    last_window_min_x: int = 0
+    last_window_max_x: int = 0
+    last_window_min_y: int = 0
+    last_window_max_y: int = 0
+    last_window_area_cells: int = 0
     footprint_checks: int = 0
     footprint_rect_checks: int = 0
     dense_grid_build_time_us: int = 0
@@ -249,6 +254,11 @@ class RouteAttemptRecord:
             "skipped_duplicate_heap_entries": self.skipped_duplicate_heap_entries,
             "obstacle_clearance_checks": self.obstacle_clearance_checks,
             "window_attempts": self.window_attempts,
+            "last_window_min_x": self.last_window_min_x,
+            "last_window_max_x": self.last_window_max_x,
+            "last_window_min_y": self.last_window_min_y,
+            "last_window_max_y": self.last_window_max_y,
+            "last_window_area_cells": self.last_window_area_cells,
             "footprint_checks": self.footprint_checks,
             "footprint_rect_checks": self.footprint_rect_checks,
             "dense_grid_build_time_s": self.dense_grid_build_time_us / 1_000_000.0,
@@ -310,6 +320,11 @@ def route_attempt_record_from_route(
             "obstacle_clearance_checks",
         ),
         window_attempts=_get_route_int_stat(route_obj, "window_attempts"),
+        last_window_min_x=_get_route_int_stat(route_obj, "last_window_min_x"),
+        last_window_max_x=_get_route_int_stat(route_obj, "last_window_max_x"),
+        last_window_min_y=_get_route_int_stat(route_obj, "last_window_min_y"),
+        last_window_max_y=_get_route_int_stat(route_obj, "last_window_max_y"),
+        last_window_area_cells=_get_route_int_stat(route_obj, "last_window_area_cells"),
         footprint_checks=_get_route_int_stat(route_obj, "primitive_footprint_checks"),
         footprint_rect_checks=_get_route_int_stat(
             route_obj,

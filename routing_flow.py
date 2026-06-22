@@ -39,6 +39,7 @@ SCRIPT_ALLOW_45_DEGREE_TURNS = False
 SCRIPT_ENABLE_PATH_LENGTH_MATCHING = False
 SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = 20.0
 SCRIPT_MAX_ITERATIONS = 5_000_000
+SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
 SCRIPT_OBSTACLE_MODE = "bounding_boxes"
 SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.5
@@ -285,6 +286,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=f"Maximum A* state expansions per route attempt (default: {SCRIPT_MAX_ITERATIONS}).",
     )
     parser.add_argument(
+        "--routing-window-scale",
+        type=float,
+        default=SCRIPT_ROUTING_WINDOW_SCALE,
+        metavar="SCALE",
+        help=(
+            "Routing-window margin scale relative to source-target span "
+            f"(default: {SCRIPT_ROUTING_WINDOW_SCALE})."
+        ),
+    )
+    parser.add_argument(
         "--include-heater-obstacles",
         type=_parse_bool_flag,
         default=SCRIPT_INCLUDE_HEATER_OBSTACLES,
@@ -408,6 +419,7 @@ def main(argv: list[str] | None = None) -> Component:
         enable_path_length_matching=args.path_length_matching,
         path_length_meander_height_um=args.path_length_meander_height_um,
         max_iterations=args.max_iterations,
+        routing_window_scale=args.routing_window_scale,
         include_heater_obstacles=args.include_heater_obstacles,
         ripup_reroute_config=RipupRerouteConfig(
             enabled=args.ripup_reroute,
@@ -476,6 +488,7 @@ def run_routing_flow(
     allow_45_degree_turns: bool = True,
     enable_jps4: bool = False,
     max_iterations: int = 500_000,
+    routing_window_scale: float | None = None,
     include_heater_obstacles: bool = False,
     waveguide_clearance_um: float | None = None,
     heater_clearance_um: float | None = None,
@@ -511,6 +524,8 @@ def run_routing_flow(
                       inserting path-length matching meanders.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
         max_iterations: Maximum A* state expansions per route attempt.
+        routing_window_scale: Optional A* routing-window margin scale. If None,
+                      the Rust AStarConfig default is used.
         include_heater_obstacles: If True, include configured heater/metal
                       layers as static optical-routing obstacles and enable
                       component-specific heater optical port openings.
@@ -654,6 +669,7 @@ def run_routing_flow(
             allow_45_degree_turns=allow_45_degree_turns,
             enable_jps4=enable_jps4,
             max_iterations=max_iterations,
+            routing_window_scale=routing_window_scale,
             collect_route_stats=collect_route_stats or stats is not None,
             include_heater_obstacles=include_heater_obstacles,
             ripup_reroute_config=ripup_reroute_config,

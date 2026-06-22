@@ -42,6 +42,12 @@ AttemptColumn: TypeAlias = Literal[
     "heap_pops",
     "skipped_duplicate_heap_entries",
     "obstacle_clearance_checks",
+    "window_attempts",
+    "last_window_min_x",
+    "last_window_max_x",
+    "last_window_min_y",
+    "last_window_max_y",
+    "last_window_area_cells",
     "footprint_rect_checks",
     "dense_grid_build_time_s",
     "dense_grid_cells",
@@ -67,6 +73,12 @@ ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
     "heap_pops",
     "skipped_duplicate_heap_entries",
     "obstacle_clearance_checks",
+    "window_attempts",
+    "last_window_min_x",
+    "last_window_max_x",
+    "last_window_min_y",
+    "last_window_max_y",
+    "last_window_area_cells",
     "footprint_rect_checks",
     "dense_grid_build_time_s",
     "dense_grid_cells",
@@ -160,6 +172,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         enable_path_length_matching=args.path_length_matching,
         allow_45_degree_turns=args.allow_45_degree_turns,
         max_iterations=args.max_iterations,
+        routing_window_scale=args.routing_window_scale,
         include_heater_obstacles=args.include_heater_obstacles,
         ripup_reroute_config=RipupRerouteConfig(enabled=args.ripup_reroute),
         static_obstacle_config=StaticObstacleMapConfig(
@@ -214,6 +227,8 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         benchmark,
         "--max-iterations",
         str(args.max_iterations),
+        "--routing-window-scale",
+        str(args.routing_window_scale),
         "--obstacle-mode",
         args.obstacle_mode,
         "--waveguide-clearance-um",
@@ -270,6 +285,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Heater obstacles: `{args.include_heater_obstacles}`",
         f"- Obstacle mode: `{args.obstacle_mode}`",
         f"- Max iterations: `{args.max_iterations}`",
+        f"- Routing window scale: `{args.routing_window_scale}`",
         "",
         "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Obstacle checks | Footprint rect checks | Full fallback |",
         "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -314,19 +330,20 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 "",
                 "## Slowest Route Attempts",
                 "",
-                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Expanded | Generated | Heap push/pop | Rect checks | Dense build s | Failed |",
-                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Window cells | Expanded | Generated | Heap push/pop | Rect checks | Dense build s | Failed |",
+                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for record in slow_attempts:
             lines.append(
-                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {rect_checks} | {dense_build_s} | {failed} |".format(
+                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {window_area} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {rect_checks} | {dense_build_s} | {failed} |".format(
                     benchmark=record.get("benchmark", ""),
                     attempt=record.get("attempt_index", ""),
                     bucket=record.get("bucket_name", ""),
                     route=record.get("route_index", ""),
                     net=record.get("net_name", ""),
                     time_s=_format_seconds(_attempt_seconds(record)),
+                    window_area=_format_int(record.get("last_window_area_cells")),
                     expanded=_format_int(record.get("expanded_states")),
                     generated=_format_int(record.get("generated_neighbors")),
                     heap_pushes=_format_int(record.get("heap_pushes")),
@@ -361,6 +378,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--path-length-matching", action="store_true")
     parser.add_argument("--allow-45-degree-turns", action="store_true")
     parser.add_argument("--max-iterations", type=int, default=5_000_000)
+    parser.add_argument("--routing-window-scale", type=float, default=0.05)
     parser.add_argument("--include-heater-obstacles", action="store_true")
     parser.add_argument("--ripup-reroute", action="store_true")
     parser.add_argument("--obstacle-mode", default="bounding_boxes")

@@ -90,6 +90,7 @@ def test_markdown_report_includes_slowest_route_attempts():
         include_heater_obstacles=True,
         obstacle_mode="bounding_boxes",
         max_iterations=5_000_000,
+        routing_window_scale=0.05,
     )
 
     report = module._markdown_report([_row_with_attempts()], args)
