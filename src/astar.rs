@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use rustc_hash::FxHashSet;
 
-use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
+use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
 use crate::primitives::PrimitiveGeometry;
 use crate::primitives::PrimitiveLibrary;
 use crate::simple_routes::{
@@ -361,6 +361,19 @@ struct DenseRoutingGrid {
     build_time_us: u128,
 }
 
+fn intersect_bounds_rect(bounds: RoutingBounds, rect: GridRect) -> Option<GridRect> {
+    let x_min = bounds.min_x.max(rect.x_min);
+    let y_min = bounds.min_y.max(rect.y_min);
+    let x_max = bounds.max_x.min(rect.x_max);
+    let y_max = bounds.max_y.min(rect.y_max);
+    (x_min <= x_max && y_min <= y_max).then_some(GridRect {
+        x_min,
+        y_min,
+        x_max,
+        y_max,
+    })
+}
+
 impl DenseRoutingGrid {
     fn from_obstacle_map(
         obstacle_map: &ObstacleMap,
@@ -392,28 +405,96 @@ impl DenseRoutingGrid {
             None
         };
         let mut blocked_count = 0usize;
-        for local_y in 0..height {
-            for local_x in 0..width {
-                let x = bounds.min_x + local_x;
-                let y = bounds.min_y + local_y;
-                let idx = usize::try_from(local_y)
-                    .ok()?
-                    .checked_mul(width_usize)?
-                    .checked_add(usize::try_from(local_x).ok()?)?;
-                let opened = opened_cells
-                    .map(|cells| cells.contains(&pack_xy(x, y)))
-                    .unwrap_or(false);
-                let is_blocked = (!ignore_dynamic_obstacles
-                    && obstacle_map.is_dynamic_blocked(x, y))
-                    || (!opened && obstacle_map.is_static_blocked(x, y));
-                if is_blocked {
-                    blocked_count += 1;
-                    blocked_cells[idx] = 1;
-                    blocked_bits.set(idx)?;
+
+        let local_idx = |x: i32, y: i32| -> Option<usize> {
+            let local_x = x.checked_sub(bounds.min_x)?;
+            let local_y = y.checked_sub(bounds.min_y)?;
+            if local_x < 0 || local_x >= width || local_y < 0 || local_y >= height {
+                return None;
+            }
+            usize::try_from(local_y)
+                .ok()?
+                .checked_mul(width_usize)?
+                .checked_add(usize::try_from(local_x).ok()?)
+        };
+
+        let opened_contains = |x: i32, y: i32| -> bool {
+            opened_cells
+                .map(|cells| cells.contains(&pack_xy(x, y)))
+                .unwrap_or(false)
+        };
+
+        let mark_blocked = |idx: usize,
+                            blocked_cells: &mut [u8],
+                            blocked_bits: &mut DenseBitset,
+                            blocked_count: &mut usize|
+         -> Option<()> {
+            if blocked_cells[idx] == 0 {
+                blocked_cells[idx] = 1;
+                blocked_bits.set(idx)?;
+                *blocked_count += 1;
+            }
+            Some(())
+        };
+
+        for rect in obstacle_map.static_rects() {
+            let Some(rect) = intersect_bounds_rect(bounds, *rect) else {
+                continue;
+            };
+            for y in rect.y_min..=rect.y_max {
+                for x in rect.x_min..=rect.x_max {
+                    if opened_contains(x, y) {
+                        continue;
+                    }
+                    let idx = local_idx(x, y)?;
+                    mark_blocked(
+                        idx,
+                        &mut blocked_cells,
+                        &mut blocked_bits,
+                        &mut blocked_count,
+                    )?;
                 }
-                if let Some(history) = history.as_mut() {
-                    history[idx] = obstacle_map.get_history_cost(x, y);
-                }
+            }
+        }
+
+        for key in obstacle_map.static_obstacle_keys() {
+            let (x, y) = unpack_xy(key);
+            if opened_contains(x, y) {
+                continue;
+            }
+            let Some(idx) = local_idx(x, y) else {
+                continue;
+            };
+            mark_blocked(
+                idx,
+                &mut blocked_cells,
+                &mut blocked_bits,
+                &mut blocked_count,
+            )?;
+        }
+
+        if !ignore_dynamic_obstacles {
+            for key in obstacle_map.dynamic_obstacle_keys() {
+                let (x, y) = unpack_xy(key);
+                let Some(idx) = local_idx(x, y) else {
+                    continue;
+                };
+                mark_blocked(
+                    idx,
+                    &mut blocked_cells,
+                    &mut blocked_bits,
+                    &mut blocked_count,
+                )?;
+            }
+        }
+
+        if let Some(history) = history.as_mut() {
+            for (key, cost) in obstacle_map.history_entries() {
+                let (x, y) = unpack_xy(key);
+                let Some(idx) = local_idx(x, y) else {
+                    continue;
+                };
+                history[idx] = cost;
             }
         }
 

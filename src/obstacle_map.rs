@@ -182,6 +182,26 @@ impl ObstacleMap {
         self.add_static_rects(rects);
     }
 
+    /// Compact static rectangles currently used by the map.
+    pub fn static_rects(&self) -> &[GridRect] {
+        &self.static_rects
+    }
+
+    /// Packed cell keys with explicit static obstacle references.
+    pub fn static_obstacle_keys(&self) -> impl Iterator<Item = CellKey> + '_ {
+        self.static_obstacles.keys().copied()
+    }
+
+    /// Packed cell keys with dynamic route obstacle references.
+    pub fn dynamic_obstacle_keys(&self) -> impl Iterator<Item = CellKey> + '_ {
+        self.dynamic_obstacles.keys().copied()
+    }
+
+    /// Packed cell keys with accumulated rip-up history costs.
+    pub fn history_entries(&self) -> impl Iterator<Item = (CellKey, u32)> + '_ {
+        self.history_cost.iter().map(|(&key, &cost)| (key, cost))
+    }
+
     /// Remove every static obstacle entry (compact + cell-based).
     pub fn clear_static_cells(&mut self) {
         self.static_obstacles.clear();
