@@ -48,6 +48,7 @@ class AStarScenario:
     routing_window_fallback_full_grid: bool = True
     max_iterations: int = 500_000
     enable_jps4: bool = False
+    primitive_mode: str = "photonic"
 
 
 class RustBackend(Protocol):
@@ -126,6 +127,10 @@ def _slalom_walls() -> tuple[tuple[int, int], ...]:
             if not gap_min <= y <= gap_max
         )
     return tuple(cells)
+
+
+def _jps4_detour_wall() -> tuple[tuple[int, int], ...]:
+    return tuple((90, y) for y in range(4, 76) if y != 62)
 
 
 PORT_ANGLES = {
@@ -258,9 +263,53 @@ def _scenario_catalog() -> dict[str, AStarScenario]:
             use_routing_window=True,
             routing_window_fallback_full_grid=True,
         ),
+        "jps4_empty_grid": AStarScenario(
+            name="jps4_empty_grid",
+            width=180,
+            height=90,
+            source=(10, 12, 0),
+            target=(160, 72, 0),
+            enable_simple_routes=False,
+            require_target_angle=False,
+            use_routing_window=False,
+            primitive_mode="jps4_unit",
+        ),
+        "jps4_corridor": AStarScenario(
+            name="jps4_corridor",
+            width=180,
+            height=48,
+            source=(8, 24, 0),
+            target=(170, 24, 0),
+            static_cells=tuple(
+                (x, y)
+                for y in range(48)
+                if y != 24
+                for x in range(180)
+            ),
+            enable_simple_routes=False,
+            require_target_angle=False,
+            use_routing_window=False,
+            primitive_mode="jps4_unit",
+        ),
+        "jps4_forced_detour": AStarScenario(
+            name="jps4_forced_detour",
+            width=180,
+            height=90,
+            source=(12, 18, 0),
+            target=(165, 18, 0),
+            static_cells=_jps4_detour_wall(),
+            enable_simple_routes=False,
+            require_target_angle=False,
+            use_routing_window=False,
+            primitive_mode="jps4_unit",
+        ),
     }
     scenarios.update(_two_object_port_scenarios())
     return scenarios
+
+
+def _default_scenario_names(catalog: dict[str, AStarScenario]) -> list[str]:
+    return [name for name in catalog if not name.startswith("jps4_")]
 
 
 def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
@@ -276,6 +325,12 @@ def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
         bend_radius_cells=2,
         allow_45_degree_turns=scenario.allow_45_degree_turns,
     )
+    if scenario.primitive_mode == "jps4_unit":
+        primitive.jps4_unit_grid = True
+    elif scenario.primitive_mode == "grid4_unit":
+        primitive.grid4_unit_grid = True
+    elif scenario.primitive_mode != "photonic":
+        raise ValueError(f"unknown primitive mode: {scenario.primitive_mode}")
     astar = rust_backend.AStarConfig(
         max_iterations=scenario.max_iterations,
         require_target_angle=scenario.require_target_angle,
@@ -513,13 +568,136 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
     return "\n".join(lines)
 
 
+def _percent_delta(new: float, old: float) -> str:
+    if old == 0.0:
+        return ""
+    return f"{((new - old) / old) * 100.0:+.1f}%"
+
+
+def _ratio_delta(new: object, old: object) -> str:
+    old_value = _object_to_float(old)
+    new_value = _object_to_float(new)
+    if old_value == 0.0:
+        return ""
+    return f"{new_value / old_value:.3f}x"
+
+
+def _paired_comparison_rows(
+    rust_backend: RustBackend,
+    scenarios: Iterable[AStarScenario],
+    *,
+    iterations: int,
+    warmup: int,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for scenario in scenarios:
+        baseline_primitive_mode = (
+            "grid4_unit" if scenario.primitive_mode == "jps4_unit" else scenario.primitive_mode
+        )
+        baseline_scenario = replace(
+            scenario,
+            enable_jps4=False,
+            primitive_mode=baseline_primitive_mode,
+        )
+        accelerated_scenario = replace(scenario, enable_jps4=True)
+        baseline = run_scenario(
+            rust_backend,
+            baseline_scenario,
+            iterations=iterations,
+            warmup=warmup,
+        )
+        accelerated = run_scenario(
+            rust_backend,
+            accelerated_scenario,
+            iterations=iterations,
+            warmup=warmup,
+        )
+        baseline_reached = _object_to_list(baseline["reached_target"])
+        accelerated_reached = _object_to_list(accelerated["reached_target"])
+        rows.append(
+            {
+                "scenario": scenario.name,
+                "primitive_mode": scenario.primitive_mode,
+                "baseline": baseline,
+                "accelerated": accelerated,
+                "length_delta_um": _object_to_float(accelerated["route_length_um"])
+                - _object_to_float(baseline["route_length_um"]),
+                "target_cell_match": accelerated_reached[:2] == baseline_reached[:2],
+                "target_state_match": accelerated_reached == baseline_reached,
+            }
+        )
+    return rows
+
+
+def _markdown_paired_report(rows: Iterable[dict[str, object]], args: argparse.Namespace) -> str:
+    lines = [
+        "# Paired Rust A* Accelerator Comparison",
+        "",
+        f"- Captured: {datetime.now().astimezone().isoformat(timespec='seconds')}",
+        f"- Git revision: `{_git_rev()}`",
+        f"- Python: `{platform.python_version()}`",
+        f"- Iterations: `{args.iterations}`",
+        f"- Warmup: `{args.warmup}`",
+        "",
+        "| Scenario | Primitive mode | Base median s | Accel median s | Time delta | Base expanded | Accel expanded | Expanded ratio | Base generated | Accel generated | Generated ratio | Base heap | Accel heap | JPS4 | Fallback | Length delta um | Target cell |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |",
+    ]
+    for row in rows:
+        baseline = row["baseline"]
+        accelerated = row["accelerated"]
+        assert isinstance(baseline, dict)
+        assert isinstance(accelerated, dict)
+        base_heap = f"{baseline['heap_pushes']}/{baseline['heap_pops']}"
+        accel_heap = f"{accelerated['heap_pushes']}/{accelerated['heap_pops']}"
+        jps4_status = (
+            "used"
+            if accelerated.get("jps4_used")
+            else "eligible"
+            if accelerated.get("jps4_eligible")
+            else ("requested" if accelerated.get("jps4_requested") else "off")
+        )
+        lines.append(
+            "| {scenario} | {primitive_mode} | {base_median} | {accel_median} | {time_delta} | {base_expanded} | {accel_expanded} | {expanded_ratio} | {base_generated} | {accel_generated} | {generated_ratio} | {base_heap} | {accel_heap} | {jps4_status} | {fallback} | {length_delta:.3f} | {target_cell_match} |".format(
+                scenario=row["scenario"],
+                primitive_mode=row["primitive_mode"],
+                base_median=_format_seconds(_object_to_float(baseline["median_s"])),
+                accel_median=_format_seconds(_object_to_float(accelerated["median_s"])),
+                time_delta=_percent_delta(
+                    _object_to_float(accelerated["median_s"]),
+                    _object_to_float(baseline["median_s"]),
+                ),
+                base_expanded=baseline["expanded_states"],
+                accel_expanded=accelerated["expanded_states"],
+                expanded_ratio=_ratio_delta(
+                    accelerated["expanded_states"],
+                    baseline["expanded_states"],
+                ),
+                base_generated=baseline["generated_neighbors"],
+                accel_generated=accelerated["generated_neighbors"],
+                generated_ratio=_ratio_delta(
+                    accelerated["generated_neighbors"],
+                    baseline["generated_neighbors"],
+                ),
+                base_heap=base_heap,
+                accel_heap=accel_heap,
+                jps4_status=jps4_status,
+                fallback=accelerated.get("jps4_fallback_reason", ""),
+                length_delta=_object_to_float(row["length_delta_um"]),
+                target_cell_match=row["target_cell_match"],
+            )
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _parse_args() -> argparse.Namespace:
     catalog = _scenario_catalog()
+    default_scenarios = _default_scenario_names(catalog)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "scenarios",
         nargs="*",
-        default=list(catalog),
+        default=default_scenarios,
         metavar="scenario",
         help=f"Scenario names. Available: {', '.join(sorted(catalog))}",
     )
@@ -538,7 +716,18 @@ def _parse_args() -> argparse.Namespace:
             "scenario. Pass 3A reports eligibility and falls back to baseline A*."
         ),
     )
+    parser.add_argument(
+        "--paired-comparison",
+        action="store_true",
+        help=(
+            "Run each selected scenario twice, baseline and accelerator-requested, "
+            "and report side-by-side deltas. Defaults to jps4_* scenarios when "
+            "no scenario names are provided."
+        ),
+    )
     args = parser.parse_args()
+    if args.paired_comparison and args.scenarios == default_scenarios:
+        args.scenarios = sorted(name for name in catalog if name.startswith("jps4_"))
     unknown = sorted(set(args.scenarios) - set(catalog))
     if unknown:
         parser.error(
@@ -565,6 +754,26 @@ def main() -> int:
     rust_backend = cast(RustBackend, rust_backend_obj)
 
     catalog = _scenario_catalog()
+    if args.paired_comparison:
+        paired_rows = _paired_comparison_rows(
+            rust_backend,
+            [catalog[name] for name in args.scenarios],
+            iterations=args.iterations,
+            warmup=args.warmup,
+        )
+        report = _markdown_paired_report(paired_rows, args)
+        print(report)
+        if args.check_baseline:
+            print(
+                "Baseline quality check is not applied to paired comparison reports.",
+                file=sys.stderr,
+            )
+        if args.output is not None:
+            _write_text(args.output, report)
+        if args.json_output is not None:
+            _write_text(args.json_output, json.dumps(paired_rows, indent=2, sort_keys=True) + "\n")
+        return 0
+
     if args.enable_jps4:
         catalog = {
             name: replace(scenario, enable_jps4=True)

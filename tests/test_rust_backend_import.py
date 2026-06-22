@@ -22,3 +22,16 @@ def test_astar_config_exposes_jps4_flag():
     assert cfg.enable_jps4 is False
     cfg.enable_jps4 = True
     assert cfg.enable_jps4 is True
+
+
+def test_primitive_config_exposes_grid_experiment_flags():
+    backend = _load_rust_backend()
+    assert backend is not None
+    cfg = backend.PrimitiveLibraryConfig()
+
+    assert cfg.jps4_unit_grid is False
+    assert cfg.grid4_unit_grid is False
+    cfg.jps4_unit_grid = True
+    cfg.grid4_unit_grid = True
+    assert cfg.jps4_unit_grid is True
+    assert cfg.grid4_unit_grid is True

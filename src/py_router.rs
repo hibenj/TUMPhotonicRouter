@@ -34,6 +34,7 @@ use crate::meander::{
 };
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
 use crate::primitives::{
+    create_grid4_unit_grid_primitive_library, create_jps4_unit_grid_primitive_library,
     create_photonic_primitive_library, Primitive, PrimitiveLibrary, PrimitiveLibraryConfig,
 };
 use crate::static_obstacle_builder::{PortInput, StaticGridSpec};
@@ -91,6 +92,10 @@ pub struct PyPrimitiveLibraryConfig {
     pub allow_45_degree_turns: bool,
     #[pyo3(get, set)]
     pub bend_weight: f64,
+    #[pyo3(get, set)]
+    pub jps4_unit_grid: bool,
+    #[pyo3(get, set)]
+    pub grid4_unit_grid: bool,
 }
 
 #[pymethods]
@@ -112,6 +117,8 @@ impl PyPrimitiveLibraryConfig {
             bend_radius_cells,
             allow_45_degree_turns,
             bend_weight,
+            jps4_unit_grid: false,
+            grid4_unit_grid: false,
         }
     }
 
@@ -701,13 +708,19 @@ impl PyPhotonicRouter {
         primitive_config: PyPrimitiveLibraryConfig,
         astar_config: PyAStarConfig,
     ) -> Self {
-        let primitives = create_photonic_primitive_library(PrimitiveLibraryConfig {
-            grid_size_um: primitive_config.grid_size_um,
-            straight_short_cells: primitive_config.straight_short_cells,
-            straight_long_cells: primitive_config.straight_long_cells,
-            bend_radius_cells: primitive_config.bend_radius_cells,
-            allow_45_degree_turns: primitive_config.allow_45_degree_turns,
-        });
+        let primitives = if primitive_config.jps4_unit_grid {
+            create_jps4_unit_grid_primitive_library(primitive_config.grid_size_um)
+        } else if primitive_config.grid4_unit_grid {
+            create_grid4_unit_grid_primitive_library(primitive_config.grid_size_um)
+        } else {
+            create_photonic_primitive_library(PrimitiveLibraryConfig {
+                grid_size_um: primitive_config.grid_size_um,
+                straight_short_cells: primitive_config.straight_short_cells,
+                straight_long_cells: primitive_config.straight_long_cells,
+                bend_radius_cells: primitive_config.bend_radius_cells,
+                allow_45_degree_turns: primitive_config.allow_45_degree_turns,
+            })
+        };
         Self {
             obstacle_map: ObstacleMap::new(grid_spec.width as i32, grid_spec.height as i32),
             grid: grid_spec,

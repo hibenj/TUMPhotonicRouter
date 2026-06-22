@@ -34,6 +34,7 @@ Useful variants:
 .venv/bin/python scripts/profile_astar.py straight_astar wall_gap_astar --iterations 100 --warmup 10
 .venv/bin/python scripts/profile_astar.py --output build/profiles/astar.md --json-output build/profiles/astar.json
 .venv/bin/python scripts/profile_astar.py --iterations 5 --warmup 1 --check-baseline
+.venv/bin/python scripts/profile_astar.py --paired-comparison --iterations 25 --warmup 3
 ```
 
 The A* profile reports median and p95 wall time plus Rust route counters such as
@@ -46,6 +47,13 @@ and route length.
 The isolated profiler enables detailed Rust timing buckets explicitly. Normal
 routing keeps detailed timing disabled by default so production runs still
 collect counters without paying per-operation timing overhead.
+
+Use `--paired-comparison` to run selected scenarios twice: once with baseline
+A* and once with the accelerator flag requested. When no scenario names are
+provided, paired mode defaults to synthetic `jps4_*` scenarios that use a
+plain 4-connected grid baseline and the JPS4 unit-grid accelerator mode. The
+paired report shows time, expansion, generated-neighbor, heap-operation, route
+length, target-cell, and fallback deltas side by side.
 
 The baseline check compares the current route length and reached target state
 against `docs/astar_quality_baseline.json`. Use it before and after heuristic

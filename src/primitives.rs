@@ -175,6 +175,63 @@ pub fn create_photonic_primitive_library(config: PrimitiveLibraryConfig) -> Prim
     PrimitiveLibrary::new(primitives_per_angle, config.grid_size_um)
 }
 
+/// Create a plain 4-connected unit-step grid library for accelerator experiments.
+///
+/// This is intentionally not photonic: it has no bend primitives, no diagonal
+/// states, and one unit straight move in each cardinal direction. It is used to
+/// benchmark grid-search accelerators against a matching baseline without
+/// weakening the photonic primitive eligibility guard.
+pub fn create_jps4_unit_grid_primitive_library(grid_size_um: f64) -> PrimitiveLibrary {
+    assert!(grid_size_um > 0.0, "grid_size_um must be positive");
+    let mut next_id = 0u16;
+    let mut primitives_per_angle = Vec::with_capacity(8);
+    for angle in 0..8u8 {
+        if angle % 2 == 0 {
+            primitives_per_angle.push(vec![make_straight(
+                next_primitive_id(&mut next_id),
+                angle,
+                1,
+                grid_size_um,
+            )]);
+        } else {
+            primitives_per_angle.push(Vec::new());
+        }
+    }
+    PrimitiveLibrary::new(primitives_per_angle, grid_size_um)
+}
+
+/// Create a plain 4-connected unit-step grid library for baseline A* experiments.
+///
+/// Every state can step in any cardinal direction with uniform cost. This
+/// matches the topology used by the JPS4 prototype, but it intentionally fails
+/// JPS4 eligibility so it remains a baseline A* mode.
+pub fn create_grid4_unit_grid_primitive_library(grid_size_um: f64) -> PrimitiveLibrary {
+    assert!(grid_size_um > 0.0, "grid_size_um must be positive");
+    let mut next_id = 0u16;
+    let mut primitives_per_angle = Vec::with_capacity(8);
+    for start_angle in 0..8u8 {
+        let mut primitives = Vec::with_capacity(4);
+        for end_angle in [0u8, 2, 4, 6] {
+            let dir = direction(end_angle);
+            primitives.push(Primitive {
+                id: next_primitive_id(&mut next_id),
+                start_angle,
+                end_angle,
+                dx: dir.0,
+                dy: dir.1,
+                footprint: vec![(0, 0), dir],
+                length_um: grid_size_um,
+                bend_cost: 0.0,
+                geometry: PrimitiveGeometry::Straight {
+                    length_um: grid_size_um,
+                },
+            });
+        }
+        primitives_per_angle.push(primitives);
+    }
+    PrimitiveLibrary::new(primitives_per_angle, grid_size_um)
+}
+
 fn make_straight(id: u16, angle: u8, cells: i32, grid_size_um: f64) -> Primitive {
     let dir = direction(angle);
     let footprint = line_footprint((0, 0), dir, cells);
