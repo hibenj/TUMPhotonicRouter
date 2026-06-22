@@ -293,6 +293,25 @@ impl FootprintCollisionProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PrimitiveSearchMetadata {
+    transition_class: usize,
+    base_step_cost: f64,
+}
+
+impl PrimitiveSearchMetadata {
+    fn from_primitive(primitive: &Primitive, bend_weight: f64) -> Self {
+        Self {
+            transition_class: primitive_transition_class(
+                &primitive.geometry,
+                primitive.dx,
+                primitive.dy,
+            ),
+            base_step_cost: primitive.length_um + bend_weight * primitive.bend_cost,
+        }
+    }
+}
+
 const NO_PARENT: u32 = u32::MAX;
 const NO_GENERATION: u32 = u32::MAX;
 const BITSET_WORD_BITS: usize = u64::BITS as usize;
@@ -1990,10 +2009,10 @@ fn primitive_class_order_rank(class: usize) -> usize {
 
 fn target_biased_primitive_score(
     primitive: &Primitive,
+    metadata: PrimitiveSearchMetadata,
     state: State,
     target: State,
     grid_size_um: f64,
-    bend_weight: f64,
 ) -> f64 {
     let Some(next_x) = state.x.checked_add(primitive.dx) else {
         return f64::INFINITY;
@@ -2001,8 +2020,7 @@ fn target_biased_primitive_score(
     let Some(next_y) = state.y.checked_add(primitive.dy) else {
         return f64::INFINITY;
     };
-    primitive.length_um
-        + bend_weight * primitive.bend_cost
+    metadata.base_step_cost
         + distance_heuristic(
             State::new(next_x, next_y, primitive.end_angle),
             target,
@@ -2012,10 +2030,10 @@ fn target_biased_primitive_score(
 
 fn primitive_iteration_order(
     primitives: &[Primitive],
+    metadata: &[PrimitiveSearchMetadata],
     state: State,
     target: State,
     grid_size_um: f64,
-    bend_weight: f64,
     ordering: PrimitiveOrdering,
 ) -> ([usize; 8], usize) {
     let (mut order, len) = fixed_primitive_order(primitives.len());
@@ -2023,20 +2041,8 @@ fn primitive_iteration_order(
         PrimitiveOrdering::Library => {}
         PrimitiveOrdering::LongStraightFirst => {
             order[..len].sort_by(|a, b| {
-                let a_primitive = &primitives[*a];
-                let b_primitive = &primitives[*b];
-                let a_class = primitive_transition_class(
-                    &a_primitive.geometry,
-                    a_primitive.dx,
-                    a_primitive.dy,
-                );
-                let b_class = primitive_transition_class(
-                    &b_primitive.geometry,
-                    b_primitive.dx,
-                    b_primitive.dy,
-                );
-                primitive_class_order_rank(a_class)
-                    .cmp(&primitive_class_order_rank(b_class))
+                primitive_class_order_rank(metadata[*a].transition_class)
+                    .cmp(&primitive_class_order_rank(metadata[*b].transition_class))
                     .then_with(|| a.cmp(b))
             });
         }
@@ -2044,17 +2050,17 @@ fn primitive_iteration_order(
             order[..len].sort_by(|a, b| {
                 let a_score = target_biased_primitive_score(
                     &primitives[*a],
+                    metadata[*a],
                     state,
                     target,
                     grid_size_um,
-                    bend_weight,
                 );
                 let b_score = target_biased_primitive_score(
                     &primitives[*b],
+                    metadata[*b],
                     state,
                     target,
                     grid_size_um,
-                    bend_weight,
                 );
                 a_score
                     .partial_cmp(&b_score)
@@ -2111,17 +2117,28 @@ fn route_single_net_with_bounds(
     stats.dense_grid_build_time_us = dense_grid.build_time_us();
     let search_heuristic = SearchHeuristic::new(target, primitives, config);
 
-    let primitive_footprint_profiles: Vec<Vec<FootprintCollisionProfile>> = (0u8..8u8)
-        .map(|angle| {
-            primitives
-                .get_primitives_for_angle(angle)
+    let primitive_buckets: [&[Primitive]; 8] =
+        std::array::from_fn(|angle| primitives.get_primitives_for_angle(angle as u8));
+    let primitive_search_metadata: Vec<Vec<PrimitiveSearchMetadata>> = primitive_buckets
+        .iter()
+        .map(|bucket| {
+            bucket
+                .iter()
+                .map(|primitive| {
+                    PrimitiveSearchMetadata::from_primitive(primitive, config.bend_weight)
+                })
+                .collect()
+        })
+        .collect();
+    let primitive_footprint_profiles: Vec<Vec<FootprintCollisionProfile>> = primitive_buckets
+        .iter()
+        .map(|bucket| {
+            bucket
                 .iter()
                 .map(|primitive| FootprintCollisionProfile::from_footprint(&primitive.footprint))
                 .collect()
         })
         .collect();
-    let primitive_buckets: [&[Primitive]; 8] =
-        std::array::from_fn(|angle| primitives.get_primitives_for_angle(angle as u8));
     let target_tolerance = config.target_tolerance_cells.max(0);
     let accepted_target_angles = target_angle_acceptance(target, config);
 
@@ -2221,6 +2238,7 @@ fn route_single_net_with_bounds(
         let current_g = storage.g_costs[idx];
         let angle = state.angle as usize;
         let primitive_bucket = primitive_buckets[angle];
+        let primitive_metadata = &primitive_search_metadata[angle];
         let footprint_profiles = &primitive_footprint_profiles[angle];
         let neighbor_loop_start = if collect_detailed_timing {
             Some(Instant::now())
@@ -2231,17 +2249,17 @@ fn route_single_net_with_bounds(
         let mut neighbor_loop_legality_time_us = 0u128;
         let (primitive_order, primitive_order_len) = primitive_iteration_order(
             primitive_bucket,
+            primitive_metadata,
             state,
             target,
             primitives.grid_size_um(),
-            config.bend_weight,
             config.primitive_ordering,
         );
         for primitive_idx in primitive_order.into_iter().take(primitive_order_len) {
             let primitive = &primitive_bucket[primitive_idx];
+            let metadata = primitive_metadata[primitive_idx];
             let profile = &footprint_profiles[primitive_idx];
-            let primitive_class =
-                primitive_transition_class(&primitive.geometry, primitive.dx, primitive.dy);
+            let primitive_class = metadata.transition_class;
             stats.generated_neighbors += 1;
             stats.primitive_generated_by_class[primitive_class] += 1;
             let next_x = state.x.checked_add(primitive.dx)?;
@@ -2259,7 +2277,7 @@ fn route_single_net_with_bounds(
                 continue;
             }
 
-            let base_step_cost = primitive.length_um + config.bend_weight * primitive.bend_cost;
+            let base_step_cost = metadata.base_step_cost;
             let tentative_g_lower_bound = current_g + base_step_cost;
             if tentative_g_lower_bound >= storage.g_costs[next_idx] {
                 stats.primitive_cost_pruned_by_class[primitive_class] += 1;
