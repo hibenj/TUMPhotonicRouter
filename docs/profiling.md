@@ -48,6 +48,14 @@ The isolated profiler enables detailed Rust timing buckets explicitly. Normal
 routing keeps detailed timing disabled by default so production runs still
 collect counters without paying per-operation timing overhead.
 
+The end-to-end photonic benchmark also collects quiet A* route-search counters
+through `RoutingFlowStats`. Its Markdown report includes route attempts,
+simple-route count, repair count, expanded states, generated neighbors, heap
+push/pop counts, duplicate heap skips, obstacle/clearance checks, footprint
+rectangle checks, full-grid fallbacks, and aggregate A* search time. The worker
+JSON rows additionally include load/layout time and the Rust timing buckets for
+neighbor generation, heap operations, legality checks, and reconstruction.
+
 Use `--paired-comparison` to run selected scenarios twice: once with baseline
 A* and once with the accelerator flag requested. When no scenario names are
 provided, paired mode defaults to synthetic `jps4_*` scenarios that use a

@@ -44,6 +44,7 @@ from translation.route_rust_types import (
     RoutedNetRecord,
     RustRouteDebugArtifacts,
     _as_float,
+    summarize_route_search,
 )
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
@@ -98,6 +99,7 @@ def route_match_and_realize(
     enable_jps4: bool = False,
     max_iterations: int = 500_000,
     debug_timing: bool = False,
+    collect_route_stats: bool = False,
     include_heater_obstacles: bool = False,
     ripup_reroute_config: RipupRerouteConfig | None = None,
     path_length_meander_height_um: float = 20.0,
@@ -112,7 +114,9 @@ def route_match_and_realize(
         )
 
     t_route_nets_start = 0.0
-    if debug_timing:
+    collect_timing = debug_timing or collect_route_stats
+
+    if collect_timing:
         t_route_nets_start = time.perf_counter()
     routed_layout, debug_artifacts = route_nets_rust(
         unrouted_layout,
@@ -127,6 +131,7 @@ def route_match_and_realize(
         enable_jps4=enable_jps4,
         max_iterations=max_iterations,
         debug_timing=debug_timing,
+        collect_route_stats=collect_route_stats,
         include_heater_obstacles=include_heater_obstacles,
         ripup_reroute_config=ripup_reroute_config,
         defer_realization=True,
@@ -395,6 +400,7 @@ def route_nets_rust(
     enable_jps4: bool = False,
     max_iterations: int = 500_000,
     debug_timing: bool = False,
+    collect_route_stats: bool = False,
     include_heater_obstacles: bool = False,
     ripup_reroute_config: RipupRerouteConfig | None = None,
     defer_realization: bool = False,
@@ -797,8 +803,10 @@ def route_nets_rust(
         diagnostics_enabled=diagnostics_enabled,
     )
 
+    collect_timing = debug_timing or collect_route_stats
+
     t_astar_start = 0.0
-    if debug_timing:
+    if collect_timing:
         t_astar_start = time.perf_counter()
     total_expanded_states = 0
     simple_route_count = 0
@@ -819,10 +827,10 @@ def route_nets_rust(
     }
 
     def _timing_start() -> float:
-        return time.perf_counter() if debug_timing else 0.0
+        return time.perf_counter() if collect_timing else 0.0
 
     def _record_elapsed(bucket_name: str, start_s: float, *, failed: bool = False) -> None:
-        if not debug_timing:
+        if not collect_timing:
             return
         route_timing_buckets[bucket_name].record_elapsed(
             time.perf_counter() - start_s,
@@ -836,7 +844,7 @@ def route_nets_rust(
         *,
         failed: bool = False,
     ) -> None:
-        if not debug_timing:
+        if not collect_timing:
             return
         if route_obj is None:
             route_timing_buckets[bucket_name].record_elapsed(
@@ -1315,9 +1323,12 @@ def route_nets_rust(
 
     routed_net_records = route_bookkeeping.ordered_records()
 
+    astar_elapsed_s = 0.0
+    if collect_timing:
+        astar_elapsed_s = time.perf_counter() - t_astar_start
+
     if debug_timing:
-        t_astar_end = time.perf_counter()
-        print(f"      - Astar time: {t_astar_end - t_astar_start:.4f} s")
+        print(f"      - Astar time: {astar_elapsed_s:.4f} s")
         print(
             "      - Route search stats: "
             f"simple={simple_route_count}/{len(route_jobs)}, "
@@ -1403,4 +1414,11 @@ def route_nets_rust(
         realization_grid_spec=realization_grid_spec,
         allow_45_degree_turns=allow_45_degree_turns,
         bend_radius_cells=bend_radius_cells,
+        route_search_summary=summarize_route_search(
+            route_timing_buckets,
+            route_count=len(route_jobs),
+            simple_route_count=simple_route_count,
+            repair_count=repair_count,
+            astar_elapsed_s=astar_elapsed_s,
+        ),
     )

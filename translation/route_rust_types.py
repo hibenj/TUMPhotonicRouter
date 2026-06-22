@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Mapping
 
 from gdsfactory.component import Component
 from gdsfactory.typings import Port
@@ -41,6 +42,9 @@ class RustRouteDebugArtifacts:
     route_svgs: list[Path]
     routed_edge_lengths_um: dict[RoutedEdgeKey, float]
     routed_net_records: list["RoutedNetRecord"] = field(default_factory=list)
+    route_search_summary: "RouteSearchSummary" = field(
+        default_factory=lambda: RouteSearchSummary()
+    )
     static_blocked_cells: tuple[tuple[int, int], ...] = ()
     static_obstacle_count: int = 0
     realization_grid_spec: tuple[int, int, float, float, float] | None = None
@@ -182,6 +186,95 @@ class RouteTimingBucket:
         )
         if bool(getattr(route_obj, "used_full_grid_fallback", False)):
             self.full_grid_fallbacks += 1
+
+
+@dataclass(frozen=True)
+class RouteSearchSummary:
+    route_count: int = 0
+    route_attempts: int = 0
+    route_failures: int = 0
+    simple_route_count: int = 0
+    repair_count: int = 0
+    astar_elapsed_s: float = 0.0
+    normal_route_time_s: float = 0.0
+    expanded_states: int = 0
+    generated_neighbors: int = 0
+    heap_pushes: int = 0
+    heap_pops: int = 0
+    skipped_duplicate_heap_entries: int = 0
+    obstacle_clearance_checks: int = 0
+    footprint_checks: int = 0
+    footprint_rejects: int = 0
+    footprint_rect_checks: int = 0
+    footprint_rect_rejects: int = 0
+    dense_grid_build_time_us: int = 0
+    dense_grid_cells: int = 0
+    neighbor_generation_time_us: int = 0
+    heap_operation_time_us: int = 0
+    legality_check_time_us: int = 0
+    reconstruction_time_us: int = 0
+    max_window_area_cells: int = 0
+    full_grid_fallbacks: int = 0
+
+
+def summarize_route_search(
+    route_timing_buckets: Mapping[str, RouteTimingBucket],
+    *,
+    route_count: int,
+    simple_route_count: int,
+    repair_count: int,
+    astar_elapsed_s: float,
+) -> RouteSearchSummary:
+    """Aggregate route-search counters used by quiet benchmark reporting."""
+    route_bucket_names = (
+        "normal_route",
+        "probe_route",
+        "repair_failed_net",
+        "reroute_victims",
+    )
+    buckets = [
+        bucket
+        for bucket_name in route_bucket_names
+        if (bucket := route_timing_buckets.get(bucket_name)) is not None
+    ]
+    return RouteSearchSummary(
+        route_count=int(route_count),
+        route_attempts=sum(bucket.calls for bucket in buckets),
+        route_failures=sum(bucket.failures for bucket in buckets),
+        simple_route_count=int(simple_route_count),
+        repair_count=int(repair_count),
+        astar_elapsed_s=float(astar_elapsed_s),
+        normal_route_time_s=float(
+            route_timing_buckets.get("normal_route", RouteTimingBucket()).elapsed_s
+        ),
+        expanded_states=sum(bucket.expanded_states for bucket in buckets),
+        generated_neighbors=sum(bucket.generated_neighbors for bucket in buckets),
+        heap_pushes=sum(bucket.heap_pushes for bucket in buckets),
+        heap_pops=sum(bucket.heap_pops for bucket in buckets),
+        skipped_duplicate_heap_entries=sum(
+            bucket.skipped_duplicate_heap_entries for bucket in buckets
+        ),
+        obstacle_clearance_checks=sum(
+            bucket.obstacle_clearance_checks for bucket in buckets
+        ),
+        footprint_checks=sum(bucket.footprint_checks for bucket in buckets),
+        footprint_rejects=sum(bucket.footprint_rejects for bucket in buckets),
+        footprint_rect_checks=sum(bucket.footprint_rect_checks for bucket in buckets),
+        footprint_rect_rejects=sum(bucket.footprint_rect_rejects for bucket in buckets),
+        dense_grid_build_time_us=sum(bucket.dense_grid_build_time_us for bucket in buckets),
+        dense_grid_cells=sum(bucket.dense_grid_cells for bucket in buckets),
+        neighbor_generation_time_us=sum(
+            bucket.neighbor_generation_time_us for bucket in buckets
+        ),
+        heap_operation_time_us=sum(bucket.heap_operation_time_us for bucket in buckets),
+        legality_check_time_us=sum(bucket.legality_check_time_us for bucket in buckets),
+        reconstruction_time_us=sum(bucket.reconstruction_time_us for bucket in buckets),
+        max_window_area_cells=max(
+            (bucket.max_window_area_cells for bucket in buckets),
+            default=0,
+        ),
+        full_grid_fallbacks=sum(bucket.full_grid_fallbacks for bucket in buckets),
+    )
 
 
 @dataclass(frozen=True)

@@ -42,6 +42,14 @@ def _format_seconds(value: float | None) -> str:
     return f"{value:.4f}"
 
 
+def _format_int(value: object) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return ""
+    return f"{int(value):,}"
+
+
 def _row_seconds(row: dict[str, object], key: str) -> float | None:
     return cast(float | None, row[key])
 
@@ -80,6 +88,24 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "load_s": stats.step_times_s.get("load_benchmark"),
         "layout_s": stats.step_times_s.get("layout_from_schematic"),
         "route_s": stats.step_times_s.get("baseline_gdsfactory_routing"),
+        "astar_s": stats.astar_time_s,
+        "route_attempts": stats.route_attempts,
+        "route_failures": stats.route_failures,
+        "simple_routes": stats.simple_route_count,
+        "repairs": stats.repair_count,
+        "expanded_states": stats.expanded_states,
+        "generated_neighbors": stats.generated_neighbors,
+        "heap_pushes": stats.heap_pushes,
+        "heap_pops": stats.heap_pops,
+        "duplicate_heap_skips": stats.skipped_duplicate_heap_entries,
+        "obstacle_clearance_checks": stats.obstacle_clearance_checks,
+        "footprint_checks": stats.footprint_checks,
+        "footprint_rect_checks": stats.footprint_rect_checks,
+        "full_grid_fallbacks": stats.full_grid_fallbacks,
+        "neighbor_generation_s": stats.neighbor_generation_time_s,
+        "heap_operation_s": stats.heap_operation_time_s,
+        "legality_check_s": stats.legality_check_time_s,
+        "reconstruction_s": stats.reconstruction_time_s,
     }
 
 
@@ -148,22 +174,38 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Obstacle mode: `{args.obstacle_mode}`",
         f"- Max iterations: `{args.max_iterations}`",
         "",
-        "| Benchmark | Instances | Nets | Grid | Total s | Load s | Layout s | Route s |",
-        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |",
+        "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Obstacle checks | Footprint rect checks | Full fallback |",
+        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {benchmark} | {instances} | {nets} | {grid} | {total_s} | {load_s} | {layout_s} | {route_s} |".format(
+            "| {benchmark} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {dup_skips} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
                 benchmark=row["benchmark"],
                 instances=row["instances"],
                 nets=row["nets"],
                 grid=row["grid"],
                 total_s=_format_seconds(_row_seconds(row, "total_s")),
-                load_s=_format_seconds(_row_seconds(row, "load_s")),
-                layout_s=_format_seconds(_row_seconds(row, "layout_s")),
                 route_s=_format_seconds(_row_seconds(row, "route_s")),
+                astar_s=_format_seconds(_row_seconds(row, "astar_s")),
+                attempts=_format_int(row["route_attempts"]),
+                simple=_format_int(row["simple_routes"]),
+                repairs=_format_int(row["repairs"]),
+                expanded=_format_int(row["expanded_states"]),
+                generated=_format_int(row["generated_neighbors"]),
+                heap_pushes=_format_int(row["heap_pushes"]),
+                heap_pops=_format_int(row["heap_pops"]),
+                dup_skips=_format_int(row["duplicate_heap_skips"]),
+                obstacle_checks=_format_int(row["obstacle_clearance_checks"]),
+                footprint_rect_checks=_format_int(row["footprint_rect_checks"]),
+                fallbacks=_format_int(row["full_grid_fallbacks"]),
             )
         )
+    lines.extend(
+        [
+            "",
+            "Detailed JSON rows also include load/layout time plus neighbor-generation, heap-operation, legality-check, and reconstruction timing buckets.",
+        ]
+    )
     lines.append("")
     return "\n".join(lines)
 

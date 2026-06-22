@@ -65,6 +65,24 @@ class RoutingFlowStats:
     raw_blocked_cells: int | None = None
     blocked_cells: int | None = None
     port_open_cells: int = 0
+    astar_time_s: float = 0.0
+    route_attempts: int = 0
+    route_failures: int = 0
+    simple_route_count: int = 0
+    repair_count: int = 0
+    expanded_states: int = 0
+    generated_neighbors: int = 0
+    heap_pushes: int = 0
+    heap_pops: int = 0
+    skipped_duplicate_heap_entries: int = 0
+    obstacle_clearance_checks: int = 0
+    footprint_checks: int = 0
+    footprint_rect_checks: int = 0
+    full_grid_fallbacks: int = 0
+    neighbor_generation_time_s: float = 0.0
+    heap_operation_time_s: float = 0.0
+    legality_check_time_s: float = 0.0
+    reconstruction_time_s: float = 0.0
     step_times_s: dict[str, float] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -78,6 +96,24 @@ class RoutingFlowStats:
             "raw_blocked_cells": self.raw_blocked_cells,
             "blocked_cells": self.blocked_cells,
             "port_open_cells": self.port_open_cells,
+            "astar_time_s": self.astar_time_s,
+            "route_attempts": self.route_attempts,
+            "route_failures": self.route_failures,
+            "simple_route_count": self.simple_route_count,
+            "repair_count": self.repair_count,
+            "expanded_states": self.expanded_states,
+            "generated_neighbors": self.generated_neighbors,
+            "heap_pushes": self.heap_pushes,
+            "heap_pops": self.heap_pops,
+            "skipped_duplicate_heap_entries": self.skipped_duplicate_heap_entries,
+            "obstacle_clearance_checks": self.obstacle_clearance_checks,
+            "footprint_checks": self.footprint_checks,
+            "footprint_rect_checks": self.footprint_rect_checks,
+            "full_grid_fallbacks": self.full_grid_fallbacks,
+            "neighbor_generation_time_s": self.neighbor_generation_time_s,
+            "heap_operation_time_s": self.heap_operation_time_s,
+            "legality_check_time_s": self.legality_check_time_s,
+            "reconstruction_time_s": self.reconstruction_time_s,
             "step_times_s": dict(self.step_times_s),
         }
 
@@ -444,6 +480,7 @@ def run_routing_flow(
     obstacle_clearance_um: float | None = None,
     ripup_reroute_config: RipupRerouteConfig | None = None,
     static_obstacle_config: StaticObstacleMapConfig | None = None,
+    collect_route_stats: bool = False,
     stats: RoutingFlowStats | None = None,
 ) -> Component:
     """Execute the routing flow for a given benchmark.
@@ -482,6 +519,9 @@ def run_routing_flow(
         obstacle_clearance_um: Deprecated alias for waveguide_clearance_um.
         static_obstacle_config: Optional obstacle builder config. If omitted,
             strict bounding-box static obstacles are used.
+        collect_route_stats: If True, collect route-search counters without
+            printing debug timing. This is enabled automatically when stats is
+            provided.
 
     Returns:
         The routed layout component.
@@ -612,6 +652,7 @@ def run_routing_flow(
             allow_45_degree_turns=allow_45_degree_turns,
             enable_jps4=enable_jps4,
             max_iterations=max_iterations,
+            collect_route_stats=collect_route_stats or stats is not None,
             include_heater_obstacles=include_heater_obstacles,
             ripup_reroute_config=ripup_reroute_config,
             path_length_meander_height_um=path_length_meander_height_um,
@@ -644,6 +685,35 @@ def run_routing_flow(
                 stats.port_open_cells = max(1, grid_area - blocked_count)
             else:
                 stats.port_open_cells = max(1, blocked_count)
+        route_summary = debug_artifacts.route_search_summary
+        stats.astar_time_s = float(route_summary.astar_elapsed_s)
+        stats.route_attempts = int(route_summary.route_attempts)
+        stats.route_failures = int(route_summary.route_failures)
+        stats.simple_route_count = int(route_summary.simple_route_count)
+        stats.repair_count = int(route_summary.repair_count)
+        stats.expanded_states = int(route_summary.expanded_states)
+        stats.generated_neighbors = int(route_summary.generated_neighbors)
+        stats.heap_pushes = int(route_summary.heap_pushes)
+        stats.heap_pops = int(route_summary.heap_pops)
+        stats.skipped_duplicate_heap_entries = int(
+            route_summary.skipped_duplicate_heap_entries
+        )
+        stats.obstacle_clearance_checks = int(route_summary.obstacle_clearance_checks)
+        stats.footprint_checks = int(route_summary.footprint_checks)
+        stats.footprint_rect_checks = int(route_summary.footprint_rect_checks)
+        stats.full_grid_fallbacks = int(route_summary.full_grid_fallbacks)
+        stats.neighbor_generation_time_s = (
+            float(route_summary.neighbor_generation_time_us) / 1_000_000.0
+        )
+        stats.heap_operation_time_s = (
+            float(route_summary.heap_operation_time_us) / 1_000_000.0
+        )
+        stats.legality_check_time_s = (
+            float(route_summary.legality_check_time_us) / 1_000_000.0
+        )
+        stats.reconstruction_time_s = (
+            float(route_summary.reconstruction_time_us) / 1_000_000.0
+        )
     if debug_timing:
         print(f"      - Routing time: {t_route_end - t_route_start:.4f} s")
     print(f"      ✓ Routed layout generated: {routed_layout.name}")
