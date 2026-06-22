@@ -118,6 +118,12 @@ pub struct RouteResult {
     pub stats: RouteSearchStats,
 }
 
+const PRIMITIVE_TRANSITION_CLASS_COUNT: usize = 4;
+const PRIMITIVE_STRAIGHT_SHORT: usize = 0;
+const PRIMITIVE_STRAIGHT_LONG: usize = 1;
+const PRIMITIVE_BEND_45: usize = 2;
+const PRIMITIVE_BEND_90: usize = 3;
+
 #[derive(Clone, Debug, Default)]
 pub struct RouteSearchStats {
     pub window_attempts: u32,
@@ -141,6 +147,13 @@ pub struct RouteSearchStats {
     pub obstacle_clearance_checks: usize,
     pub window_rejects: usize,
     pub footprint_rejects: usize,
+    pub primitive_generated_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
+    pub primitive_bounds_rejects_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
+    pub primitive_closed_rejects_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
+    pub primitive_cost_pruned_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
+    pub primitive_footprint_checks_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
+    pub primitive_footprint_rejects_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
+    pub primitive_accepted_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
     pub primitive_footprint_checks: usize,
     pub primitive_footprint_cells_tested: usize,
     pub primitive_footprint_rect_checks: usize,
@@ -1884,6 +1897,25 @@ fn find_bend_primitive_id(
     candidates.into_iter().next()
 }
 
+fn primitive_transition_class(geometry: &PrimitiveGeometry, dx: i32, dy: i32) -> usize {
+    match geometry {
+        PrimitiveGeometry::Straight { .. } => {
+            if dx.abs().max(dy.abs()) <= 1 {
+                PRIMITIVE_STRAIGHT_SHORT
+            } else {
+                PRIMITIVE_STRAIGHT_LONG
+            }
+        }
+        PrimitiveGeometry::Bend { angle_delta, .. } => {
+            if angle_delta.unsigned_abs() == 1 {
+                PRIMITIVE_BEND_45
+            } else {
+                PRIMITIVE_BEND_90
+            }
+        }
+    }
+}
+
 fn route_single_net_with_bounds(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
@@ -2040,7 +2072,10 @@ fn route_single_net_with_bounds(
         let mut neighbor_loop_heap_time_us = 0u128;
         let mut neighbor_loop_legality_time_us = 0u128;
         for (primitive, profile) in primitive_bucket.iter().zip(footprint_profiles.iter()) {
+            let primitive_class =
+                primitive_transition_class(&primitive.geometry, primitive.dx, primitive.dy);
             stats.generated_neighbors += 1;
+            stats.primitive_generated_by_class[primitive_class] += 1;
             let next_state = State::new(
                 state.x.checked_add(primitive.dx)?,
                 state.y.checked_add(primitive.dy)?,
@@ -2048,26 +2083,32 @@ fn route_single_net_with_bounds(
             );
 
             if !obstacle_map.in_bounds(next_state.x, next_state.y) {
+                stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
                 continue;
             }
             if !bounds.contains(next_state.x, next_state.y) {
                 stats.window_rejects += 1;
+                stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
                 continue;
             }
             let Some(next_idx) = storage.state_to_idx(next_state) else {
+                stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
                 continue;
             };
             if storage.closed.get(next_idx) {
+                stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                 continue;
             }
 
             let base_step_cost = primitive.length_um + config.bend_weight * primitive.bend_cost;
             let tentative_g_lower_bound = current_g + base_step_cost;
             if tentative_g_lower_bound >= storage.g_costs[next_idx] {
+                stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                 continue;
             }
 
             stats.primitive_footprint_checks += 1;
+            stats.primitive_footprint_checks_by_class[primitive_class] += 1;
             stats.obstacle_clearance_checks += 1;
             // TODO: bounds may need primitive-footprint margin to avoid rejecting valid routes near window edges.
             let footprint_free = if collect_detailed_timing {
@@ -2094,6 +2135,7 @@ fn route_single_net_with_bounds(
             };
             if !footprint_free {
                 stats.footprint_rejects += 1;
+                stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
                 if profile.is_full_rect {
                     stats.primitive_footprint_rect_rejects += 1;
                 }
@@ -2114,9 +2156,11 @@ fn route_single_net_with_bounds(
             let step_cost = base_step_cost + history_cost;
             let tentative_g = current_g + step_cost;
             if tentative_g >= storage.g_costs[next_idx] {
+                stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                 continue;
             }
 
+            stats.primitive_accepted_by_class[primitive_class] += 1;
             storage.parent_idx[next_idx] = idx as u32;
             storage.parent_primitive[next_idx] = primitive.id;
             storage.g_costs[next_idx] = tentative_g;
@@ -3629,6 +3673,30 @@ mod tests {
         assert_eq!(result.stats.legality_check_time_us, 0);
         assert_eq!(result.stats.reconstruction_time_us, 0);
         assert!(result.stats.primitive_footprint_rect_checks > 0);
+        assert_eq!(
+            result
+                .stats
+                .primitive_generated_by_class
+                .iter()
+                .sum::<usize>(),
+            result.stats.generated_neighbors
+        );
+        assert_eq!(
+            result
+                .stats
+                .primitive_footprint_checks_by_class
+                .iter()
+                .sum::<usize>(),
+            result.stats.primitive_footprint_checks
+        );
+        assert!(
+            result
+                .stats
+                .primitive_accepted_by_class
+                .iter()
+                .sum::<usize>()
+                > 0
+        );
         assert_eq!(result.stats.dense_grid_cells, 0);
     }
 

@@ -54,6 +54,13 @@ AttemptColumn: TypeAlias = Literal[
     "last_window_min_y",
     "last_window_max_y",
     "last_window_area_cells",
+    "primitive_generated_by_class",
+    "primitive_bounds_rejects_by_class",
+    "primitive_closed_rejects_by_class",
+    "primitive_cost_pruned_by_class",
+    "primitive_footprint_checks_by_class",
+    "primitive_footprint_rejects_by_class",
+    "primitive_accepted_by_class",
     "footprint_rect_checks",
     "dense_grid_build_time_s",
     "dense_grid_cells",
@@ -91,6 +98,13 @@ ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
     "last_window_min_y",
     "last_window_max_y",
     "last_window_area_cells",
+    "primitive_generated_by_class",
+    "primitive_bounds_rejects_by_class",
+    "primitive_closed_rejects_by_class",
+    "primitive_cost_pruned_by_class",
+    "primitive_footprint_checks_by_class",
+    "primitive_footprint_rejects_by_class",
+    "primitive_accepted_by_class",
     "footprint_rect_checks",
     "dense_grid_build_time_s",
     "dense_grid_cells",
@@ -123,6 +137,23 @@ def _format_int(value: object) -> str:
     if not isinstance(value, (str, bytes, bytearray, int, float)):
         return ""
     return f"{int(value):,}"
+
+
+def _format_primitive_counter(value: object) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    labels = (
+        ("straight_short", "s"),
+        ("straight_long", "l"),
+        ("bend45", "b45"),
+        ("bend90", "b90"),
+    )
+    parts = []
+    for key, label in labels:
+        raw = value.get(key, 0)
+        count = int(raw) if isinstance(raw, (str, bytes, bytearray, int, float)) else 0
+        parts.append(f"{label}:{count:,}")
+    return " ".join(parts)
 
 
 def _row_seconds(row: dict[str, object], key: str) -> float | None:
@@ -357,13 +388,13 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 "",
                 "## Slowest Route Attempts",
                 "",
-                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Window cells | Expanded | Generated | Heap push/pop | Stale gen/closed | Max heap | Rect checks | Dense build s | Failed |",
-                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Window cells | Expanded | Generated | Primitive gen | Primitive accepted | Primitive footprint rejects | Heap push/pop | Stale gen/closed | Max heap | Rect checks | Dense build s | Failed |",
+                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for record in slow_attempts:
             lines.append(
-                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {window_area} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {rect_checks} | {dense_build_s} | {failed} |".format(
+                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {window_area} | {expanded} | {generated} | {primitive_generated} | {primitive_accepted} | {primitive_footprint_rejects} | {heap_pushes}/{heap_pops} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {rect_checks} | {dense_build_s} | {failed} |".format(
                     benchmark=record.get("benchmark", ""),
                     attempt=record.get("attempt_index", ""),
                     bucket=record.get("bucket_name", ""),
@@ -373,6 +404,15 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     window_area=_format_int(record.get("last_window_area_cells")),
                     expanded=_format_int(record.get("expanded_states")),
                     generated=_format_int(record.get("generated_neighbors")),
+                    primitive_generated=_format_primitive_counter(
+                        record.get("primitive_generated_by_class")
+                    ),
+                    primitive_accepted=_format_primitive_counter(
+                        record.get("primitive_accepted_by_class")
+                    ),
+                    primitive_footprint_rejects=_format_primitive_counter(
+                        record.get("primitive_footprint_rejects_by_class")
+                    ),
                     heap_pushes=_format_int(record.get("heap_pushes")),
                     heap_pops=_format_int(record.get("heap_pops")),
                     stale_generation_heap_entries=_format_int(

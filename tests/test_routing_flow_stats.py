@@ -327,6 +327,12 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
     assert stats.heap_operation_time_s == 0.022
     assert stats.legality_check_time_s == 0.033
     assert stats.reconstruction_time_s == 0.044
+    zero_primitive_counters = {
+        "straight_short": 0,
+        "straight_long": 0,
+        "bend45": 0,
+        "bend90": 0,
+    }
     assert stats.route_attempt_records == [
         {
             "attempt_index": 1,
@@ -361,6 +367,13 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "last_window_min_y": 0,
             "last_window_max_y": 0,
             "last_window_area_cells": 0,
+            "primitive_generated_by_class": zero_primitive_counters,
+            "primitive_bounds_rejects_by_class": zero_primitive_counters,
+            "primitive_closed_rejects_by_class": zero_primitive_counters,
+            "primitive_cost_pruned_by_class": zero_primitive_counters,
+            "primitive_footprint_checks_by_class": zero_primitive_counters,
+            "primitive_footprint_rejects_by_class": zero_primitive_counters,
+            "primitive_accepted_by_class": zero_primitive_counters,
             "footprint_checks": 0,
             "footprint_rect_checks": 77,
             "dense_grid_build_time_s": 0.0,

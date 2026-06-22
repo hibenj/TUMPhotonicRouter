@@ -317,6 +317,20 @@ pub struct PyRouteResult {
     #[pyo3(get)]
     pub footprint_rejects: usize,
     #[pyo3(get)]
+    pub primitive_generated_by_class: Vec<usize>,
+    #[pyo3(get)]
+    pub primitive_bounds_rejects_by_class: Vec<usize>,
+    #[pyo3(get)]
+    pub primitive_closed_rejects_by_class: Vec<usize>,
+    #[pyo3(get)]
+    pub primitive_cost_pruned_by_class: Vec<usize>,
+    #[pyo3(get)]
+    pub primitive_footprint_checks_by_class: Vec<usize>,
+    #[pyo3(get)]
+    pub primitive_footprint_rejects_by_class: Vec<usize>,
+    #[pyo3(get)]
+    pub primitive_accepted_by_class: Vec<usize>,
+    #[pyo3(get)]
     pub dense_grid_build_failures: usize,
     #[pyo3(get)]
     pub max_window_area_cells: i64,
@@ -2186,6 +2200,13 @@ fn convert_result(
         obstacle_clearance_checks: r.stats.obstacle_clearance_checks,
         window_rejects: r.stats.window_rejects,
         footprint_rejects: r.stats.footprint_rejects,
+        primitive_generated_by_class: r.stats.primitive_generated_by_class.to_vec(),
+        primitive_bounds_rejects_by_class: r.stats.primitive_bounds_rejects_by_class.to_vec(),
+        primitive_closed_rejects_by_class: r.stats.primitive_closed_rejects_by_class.to_vec(),
+        primitive_cost_pruned_by_class: r.stats.primitive_cost_pruned_by_class.to_vec(),
+        primitive_footprint_checks_by_class: r.stats.primitive_footprint_checks_by_class.to_vec(),
+        primitive_footprint_rejects_by_class: r.stats.primitive_footprint_rejects_by_class.to_vec(),
+        primitive_accepted_by_class: r.stats.primitive_accepted_by_class.to_vec(),
         dense_grid_build_failures: r.stats.dense_grid_build_failures,
         max_window_area_cells: r.stats.max_window_area_cells,
         primitive_footprint_checks: r.stats.primitive_footprint_checks,
@@ -2219,6 +2240,14 @@ fn convert_result(
         jps4_fallbacks: r.stats.jps4_fallbacks,
         jps4_fallback_reason: r.stats.jps4_fallback_reason.clone(),
     })
+}
+
+fn vec_to_primitive_counter_array(values: &[usize]) -> [usize; 4] {
+    let mut counters = [0usize; 4];
+    for (idx, value) in values.iter().copied().take(4).enumerate() {
+        counters[idx] = value;
+    }
+    counters
 }
 
 fn to_route_result(route: &PyRouteResult) -> RouteResult {
@@ -2265,6 +2294,27 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             obstacle_clearance_checks: route.obstacle_clearance_checks,
             window_rejects: route.window_rejects,
             footprint_rejects: route.footprint_rejects,
+            primitive_generated_by_class: vec_to_primitive_counter_array(
+                &route.primitive_generated_by_class,
+            ),
+            primitive_bounds_rejects_by_class: vec_to_primitive_counter_array(
+                &route.primitive_bounds_rejects_by_class,
+            ),
+            primitive_closed_rejects_by_class: vec_to_primitive_counter_array(
+                &route.primitive_closed_rejects_by_class,
+            ),
+            primitive_cost_pruned_by_class: vec_to_primitive_counter_array(
+                &route.primitive_cost_pruned_by_class,
+            ),
+            primitive_footprint_checks_by_class: vec_to_primitive_counter_array(
+                &route.primitive_footprint_checks_by_class,
+            ),
+            primitive_footprint_rejects_by_class: vec_to_primitive_counter_array(
+                &route.primitive_footprint_rejects_by_class,
+            ),
+            primitive_accepted_by_class: vec_to_primitive_counter_array(
+                &route.primitive_accepted_by_class,
+            ),
             dense_grid_build_failures: route.dense_grid_build_failures,
             max_window_area_cells: route.max_window_area_cells,
             primitive_footprint_checks: route.primitive_footprint_checks,
@@ -2359,6 +2409,13 @@ mod tests {
             obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
+            primitive_generated_by_class: vec![0; 4],
+            primitive_bounds_rejects_by_class: vec![0; 4],
+            primitive_closed_rejects_by_class: vec![0; 4],
+            primitive_cost_pruned_by_class: vec![0; 4],
+            primitive_footprint_checks_by_class: vec![0; 4],
+            primitive_footprint_rejects_by_class: vec![0; 4],
+            primitive_accepted_by_class: vec![0; 4],
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
             primitive_footprint_checks: 0,
@@ -2436,6 +2493,13 @@ mod tests {
             obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
+            primitive_generated_by_class: vec![0; 4],
+            primitive_bounds_rejects_by_class: vec![0; 4],
+            primitive_closed_rejects_by_class: vec![0; 4],
+            primitive_cost_pruned_by_class: vec![0; 4],
+            primitive_footprint_checks_by_class: vec![0; 4],
+            primitive_footprint_rejects_by_class: vec![0; 4],
+            primitive_accepted_by_class: vec![0; 4],
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
             primitive_footprint_checks: 0,
@@ -2530,6 +2594,13 @@ mod tests {
             obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
+            primitive_generated_by_class: vec![0; 4],
+            primitive_bounds_rejects_by_class: vec![0; 4],
+            primitive_closed_rejects_by_class: vec![0; 4],
+            primitive_cost_pruned_by_class: vec![0; 4],
+            primitive_footprint_checks_by_class: vec![0; 4],
+            primitive_footprint_rejects_by_class: vec![0; 4],
+            primitive_accepted_by_class: vec![0; 4],
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
             primitive_footprint_checks: 0,
@@ -2616,6 +2687,13 @@ mod tests {
             obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
+            primitive_generated_by_class: vec![0; 4],
+            primitive_bounds_rejects_by_class: vec![0; 4],
+            primitive_closed_rejects_by_class: vec![0; 4],
+            primitive_cost_pruned_by_class: vec![0; 4],
+            primitive_footprint_checks_by_class: vec![0; 4],
+            primitive_footprint_rejects_by_class: vec![0; 4],
+            primitive_accepted_by_class: vec![0; 4],
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
             primitive_footprint_checks: 0,
@@ -2720,6 +2798,13 @@ mod tests {
             obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
+            primitive_generated_by_class: vec![0; 4],
+            primitive_bounds_rejects_by_class: vec![0; 4],
+            primitive_closed_rejects_by_class: vec![0; 4],
+            primitive_cost_pruned_by_class: vec![0; 4],
+            primitive_footprint_checks_by_class: vec![0; 4],
+            primitive_footprint_rejects_by_class: vec![0; 4],
+            primitive_accepted_by_class: vec![0; 4],
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
             primitive_footprint_checks: 0,
@@ -2814,6 +2899,13 @@ mod tests {
             obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
+            primitive_generated_by_class: vec![0; 4],
+            primitive_bounds_rejects_by_class: vec![0; 4],
+            primitive_closed_rejects_by_class: vec![0; 4],
+            primitive_cost_pruned_by_class: vec![0; 4],
+            primitive_footprint_checks_by_class: vec![0; 4],
+            primitive_footprint_rejects_by_class: vec![0; 4],
+            primitive_accepted_by_class: vec![0; 4],
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
             primitive_footprint_checks: 0,
@@ -2897,6 +2989,13 @@ mod tests {
             obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
+            primitive_generated_by_class: vec![0; 4],
+            primitive_bounds_rejects_by_class: vec![0; 4],
+            primitive_closed_rejects_by_class: vec![0; 4],
+            primitive_cost_pruned_by_class: vec![0; 4],
+            primitive_footprint_checks_by_class: vec![0; 4],
+            primitive_footprint_rejects_by_class: vec![0; 4],
+            primitive_accepted_by_class: vec![0; 4],
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
             primitive_footprint_checks: 0,
@@ -3042,6 +3141,13 @@ mod tests {
             obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
+            primitive_generated_by_class: vec![0; 4],
+            primitive_bounds_rejects_by_class: vec![0; 4],
+            primitive_closed_rejects_by_class: vec![0; 4],
+            primitive_cost_pruned_by_class: vec![0; 4],
+            primitive_footprint_checks_by_class: vec![0; 4],
+            primitive_footprint_rejects_by_class: vec![0; 4],
+            primitive_accepted_by_class: vec![0; 4],
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
             primitive_footprint_checks: 0,
@@ -3171,6 +3277,13 @@ mod tests {
             obstacle_clearance_checks: 0,
             window_rejects: 0,
             footprint_rejects: 0,
+            primitive_generated_by_class: vec![0; 4],
+            primitive_bounds_rejects_by_class: vec![0; 4],
+            primitive_closed_rejects_by_class: vec![0; 4],
+            primitive_cost_pruned_by_class: vec![0; 4],
+            primitive_footprint_checks_by_class: vec![0; 4],
+            primitive_footprint_rejects_by_class: vec![0; 4],
+            primitive_accepted_by_class: vec![0; 4],
             dense_grid_build_failures: 0,
             max_window_area_cells: 0,
             primitive_footprint_checks: 0,

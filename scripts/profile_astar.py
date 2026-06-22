@@ -19,7 +19,7 @@ import statistics
 import subprocess
 import sys
 import time
-from typing import Any, Iterable, Protocol, cast
+from typing import Any, Iterable, Literal, Protocol, TypeAlias, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SOURCE = PROJECT_ROOT / "python"
@@ -30,6 +30,7 @@ for path in (PROJECT_ROOT, PYTHON_SOURCE):
 from photonic_router.static_obstacle_builder import _load_rust_backend
 
 DEFAULT_BASELINE_PATH = PROJECT_ROOT / "docs" / "astar_quality_baseline.json"
+PrimitiveClass: TypeAlias = Literal["straight_short", "straight_long", "bend45", "bend90"]
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,31 @@ def _format_seconds(value: float | None) -> str:
     if value is None:
         return ""
     return f"{value:.6f}"
+
+
+def _route_counter_dict(route_obj: object, attr: str) -> dict[str, int]:
+    values = getattr(route_obj, attr, None)
+    labels: tuple[PrimitiveClass, ...] = ("straight_short", "straight_long", "bend45", "bend90")
+    counters: dict[str, int] = {label: 0 for label in labels}
+    if not isinstance(values, IterableABC):
+        return counters
+    sequence = list(values)
+    for label, value in zip(labels, sequence):
+        if isinstance(value, (str, bytes, bytearray, int, float)):
+            counters[label] = int(value)
+    return counters
+
+
+def _format_primitive_counter(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    labels = (
+        ("straight_short", "s"),
+        ("straight_long", "l"),
+        ("bend45", "b45"),
+        ("bend90", "b90"),
+    )
+    return " ".join(f"{label}:{int(value.get(key, 0)):,}" for key, label in labels)
 
 
 def _vertical_wall_with_gap(
@@ -442,6 +468,18 @@ def run_scenario(
         "obstacle_clearance_checks": _route_stat(last_route, "obstacle_clearance_checks"),
         "window_attempts": _route_stat(last_route, "window_attempts"),
         "window_rejects": _route_stat(last_route, "window_rejects"),
+        "primitive_generated_by_class": _route_counter_dict(
+            last_route,
+            "primitive_generated_by_class",
+        ),
+        "primitive_accepted_by_class": _route_counter_dict(
+            last_route,
+            "primitive_accepted_by_class",
+        ),
+        "primitive_footprint_rejects_by_class": _route_counter_dict(
+            last_route,
+            "primitive_footprint_rejects_by_class",
+        ),
         "footprint_checks": _route_stat(last_route, "primitive_footprint_checks"),
         "footprint_rejects": _route_stat(last_route, "footprint_rejects"),
         "rect_checks": _route_stat(last_route, "primitive_footprint_rect_checks"),
@@ -541,12 +579,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Warmup: `{args.warmup}`",
         f"- Indexed heap: `{getattr(args, 'use_indexed_heap', False)}`",
         "",
-        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
+        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Primitive gen | Primitive accepted | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_states} | {best_cost_updates}/{parent_updates} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {jps4_status} | {jps4_fallback_reason} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
+            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {primitive_generated} | {primitive_accepted} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_states} | {best_cost_updates}/{parent_updates} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {jps4_status} | {jps4_fallback_reason} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
                 scenario=row["scenario"],
                 grid=row["grid"],
                 static_cells=row["static_cells"],
@@ -554,6 +592,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 p95_s=_format_seconds(_object_to_float(row["p95_s"])),
                 expanded_states=row["expanded_states"],
                 generated_neighbors=row["generated_neighbors"],
+                primitive_generated=_format_primitive_counter(
+                    row.get("primitive_generated_by_class")
+                ),
+                primitive_accepted=_format_primitive_counter(
+                    row.get("primitive_accepted_by_class")
+                ),
                 heap_pushes=row["heap_pushes"],
                 heap_pops=row["heap_pops"],
                 duplicate_heap_skips=row["duplicate_heap_skips"],

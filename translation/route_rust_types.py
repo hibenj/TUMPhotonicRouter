@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -10,6 +11,38 @@ from gdsfactory.component import Component
 from gdsfactory.typings import Port
 
 from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
+
+PRIMITIVE_TRANSITION_CLASSES = (
+    "straight_short",
+    "straight_long",
+    "bend45",
+    "bend90",
+)
+
+
+def _empty_primitive_counter_dict() -> dict[str, int]:
+    return {name: 0 for name in PRIMITIVE_TRANSITION_CLASSES}
+
+
+def _get_route_counter_dict(route_obj: object | None, attr: str) -> dict[str, int]:
+    counters = _empty_primitive_counter_dict()
+    if route_obj is None:
+        return counters
+    values = getattr(route_obj, attr, None)
+    if not isinstance(values, IterableABC):
+        return counters
+    sequence = list(values)
+    for name, value in zip(PRIMITIVE_TRANSITION_CLASSES, sequence):
+        try:
+            counters[name] = int(value)
+        except (TypeError, ValueError):
+            counters[name] = 0
+    return counters
+
+
+def _add_counter_dict(target: dict[str, int], source: Mapping[str, int]) -> None:
+    for name in PRIMITIVE_TRANSITION_CLASSES:
+        target[name] = int(target.get(name, 0)) + int(source.get(name, 0))
 
 
 def _as_float(value: object, default: float = 0.0) -> float:
@@ -106,6 +139,27 @@ class RouteTimingBucket:
     window_attempts: int = 0
     window_rejects: int = 0
     footprint_rejects: int = 0
+    primitive_generated_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_bounds_rejects_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_closed_rejects_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_cost_pruned_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_footprint_checks_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_footprint_rejects_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_accepted_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
     footprint_checks: int = 0
     footprint_cells_tested: int = 0
     footprint_rect_checks: int = 0
@@ -170,6 +224,34 @@ class RouteTimingBucket:
         self.window_attempts += _get_route_int_stat(route_obj, "window_attempts")
         self.window_rejects += _get_route_int_stat(route_obj, "window_rejects")
         self.footprint_rejects += _get_route_int_stat(route_obj, "footprint_rejects")
+        _add_counter_dict(
+            self.primitive_generated_by_class,
+            _get_route_counter_dict(route_obj, "primitive_generated_by_class"),
+        )
+        _add_counter_dict(
+            self.primitive_bounds_rejects_by_class,
+            _get_route_counter_dict(route_obj, "primitive_bounds_rejects_by_class"),
+        )
+        _add_counter_dict(
+            self.primitive_closed_rejects_by_class,
+            _get_route_counter_dict(route_obj, "primitive_closed_rejects_by_class"),
+        )
+        _add_counter_dict(
+            self.primitive_cost_pruned_by_class,
+            _get_route_counter_dict(route_obj, "primitive_cost_pruned_by_class"),
+        )
+        _add_counter_dict(
+            self.primitive_footprint_checks_by_class,
+            _get_route_counter_dict(route_obj, "primitive_footprint_checks_by_class"),
+        )
+        _add_counter_dict(
+            self.primitive_footprint_rejects_by_class,
+            _get_route_counter_dict(route_obj, "primitive_footprint_rejects_by_class"),
+        )
+        _add_counter_dict(
+            self.primitive_accepted_by_class,
+            _get_route_counter_dict(route_obj, "primitive_accepted_by_class"),
+        )
         self.footprint_checks += _get_route_int_stat(route_obj, "primitive_footprint_checks")
         self.footprint_cells_tested += _get_route_int_stat(
             route_obj,
@@ -249,6 +331,27 @@ class RouteAttemptRecord:
     last_window_min_y: int = 0
     last_window_max_y: int = 0
     last_window_area_cells: int = 0
+    primitive_generated_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_bounds_rejects_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_closed_rejects_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_cost_pruned_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_footprint_checks_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_footprint_rejects_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_accepted_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
     footprint_checks: int = 0
     footprint_rect_checks: int = 0
     dense_grid_build_time_us: int = 0
@@ -298,6 +401,21 @@ class RouteAttemptRecord:
             "last_window_min_y": self.last_window_min_y,
             "last_window_max_y": self.last_window_max_y,
             "last_window_area_cells": self.last_window_area_cells,
+            "primitive_generated_by_class": dict(self.primitive_generated_by_class),
+            "primitive_bounds_rejects_by_class": dict(
+                self.primitive_bounds_rejects_by_class
+            ),
+            "primitive_closed_rejects_by_class": dict(
+                self.primitive_closed_rejects_by_class
+            ),
+            "primitive_cost_pruned_by_class": dict(self.primitive_cost_pruned_by_class),
+            "primitive_footprint_checks_by_class": dict(
+                self.primitive_footprint_checks_by_class
+            ),
+            "primitive_footprint_rejects_by_class": dict(
+                self.primitive_footprint_rejects_by_class
+            ),
+            "primitive_accepted_by_class": dict(self.primitive_accepted_by_class),
             "footprint_checks": self.footprint_checks,
             "footprint_rect_checks": self.footprint_rect_checks,
             "dense_grid_build_time_s": self.dense_grid_build_time_us / 1_000_000.0,
@@ -376,6 +494,34 @@ def route_attempt_record_from_route(
         last_window_min_y=_get_route_int_stat(route_obj, "last_window_min_y"),
         last_window_max_y=_get_route_int_stat(route_obj, "last_window_max_y"),
         last_window_area_cells=_get_route_int_stat(route_obj, "last_window_area_cells"),
+        primitive_generated_by_class=_get_route_counter_dict(
+            route_obj,
+            "primitive_generated_by_class",
+        ),
+        primitive_bounds_rejects_by_class=_get_route_counter_dict(
+            route_obj,
+            "primitive_bounds_rejects_by_class",
+        ),
+        primitive_closed_rejects_by_class=_get_route_counter_dict(
+            route_obj,
+            "primitive_closed_rejects_by_class",
+        ),
+        primitive_cost_pruned_by_class=_get_route_counter_dict(
+            route_obj,
+            "primitive_cost_pruned_by_class",
+        ),
+        primitive_footprint_checks_by_class=_get_route_counter_dict(
+            route_obj,
+            "primitive_footprint_checks_by_class",
+        ),
+        primitive_footprint_rejects_by_class=_get_route_counter_dict(
+            route_obj,
+            "primitive_footprint_rejects_by_class",
+        ),
+        primitive_accepted_by_class=_get_route_counter_dict(
+            route_obj,
+            "primitive_accepted_by_class",
+        ),
         footprint_checks=_get_route_int_stat(route_obj, "primitive_footprint_checks"),
         footprint_rect_checks=_get_route_int_stat(
             route_obj,
@@ -430,6 +576,27 @@ class RouteSearchSummary:
     best_cost_updates: int = 0
     parent_updates: int = 0
     obstacle_clearance_checks: int = 0
+    primitive_generated_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_bounds_rejects_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_closed_rejects_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_cost_pruned_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_footprint_checks_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_footprint_rejects_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
+    primitive_accepted_by_class: dict[str, int] = field(
+        default_factory=_empty_primitive_counter_dict
+    )
     footprint_checks: int = 0
     footprint_rejects: int = 0
     footprint_rect_checks: int = 0
@@ -464,6 +631,12 @@ def summarize_route_search(
         for bucket_name in route_bucket_names
         if (bucket := route_timing_buckets.get(bucket_name)) is not None
     ]
+    def sum_bucket_counters(attr: str) -> dict[str, int]:
+        counters = _empty_primitive_counter_dict()
+        for bucket in buckets:
+            _add_counter_dict(counters, getattr(bucket, attr))
+        return counters
+
     return RouteSearchSummary(
         route_count=int(route_count),
         route_attempts=sum(bucket.calls for bucket in buckets),
@@ -492,6 +665,21 @@ def summarize_route_search(
         obstacle_clearance_checks=sum(
             bucket.obstacle_clearance_checks for bucket in buckets
         ),
+        primitive_generated_by_class=sum_bucket_counters("primitive_generated_by_class"),
+        primitive_bounds_rejects_by_class=sum_bucket_counters(
+            "primitive_bounds_rejects_by_class"
+        ),
+        primitive_closed_rejects_by_class=sum_bucket_counters(
+            "primitive_closed_rejects_by_class"
+        ),
+        primitive_cost_pruned_by_class=sum_bucket_counters("primitive_cost_pruned_by_class"),
+        primitive_footprint_checks_by_class=sum_bucket_counters(
+            "primitive_footprint_checks_by_class"
+        ),
+        primitive_footprint_rejects_by_class=sum_bucket_counters(
+            "primitive_footprint_rejects_by_class"
+        ),
+        primitive_accepted_by_class=sum_bucket_counters("primitive_accepted_by_class"),
         footprint_checks=sum(bucket.footprint_checks for bucket in buckets),
         footprint_rejects=sum(bucket.footprint_rejects for bucket in buckets),
         footprint_rect_checks=sum(bucket.footprint_rect_checks for bucket in buckets),
