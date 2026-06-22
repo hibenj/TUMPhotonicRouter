@@ -13,3 +13,12 @@ def test_rust_backend_exposes_router_class():
     assert hasattr(backend, "GridSpec")
     assert hasattr(backend, "build_static_obstacle_map_rs")
 
+
+def test_astar_config_exposes_jps4_flag():
+    backend = _load_rust_backend()
+    assert backend is not None
+    cfg = backend.AStarConfig()
+
+    assert cfg.enable_jps4 is False
+    cfg.enable_jps4 = True
+    assert cfg.enable_jps4 is True

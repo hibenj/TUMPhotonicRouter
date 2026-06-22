@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable as IterableABC
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import json
 from pathlib import Path
@@ -47,6 +47,7 @@ class AStarScenario:
     use_routing_window: bool = True
     routing_window_fallback_full_grid: bool = True
     max_iterations: int = 500_000
+    enable_jps4: bool = False
 
 
 class RustBackend(Protocol):
@@ -283,6 +284,7 @@ def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
         collect_detailed_timing=True,
     )
     astar.enable_simple_routes = scenario.enable_simple_routes
+    astar.enable_jps4 = scenario.enable_jps4
     router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
     if scenario.static_cells:
         router.set_static_cells(list(scenario.static_cells))
@@ -383,6 +385,11 @@ def run_scenario(
         "heap_operation_s": float(_route_stat(last_route, "heap_operation_time_us")) / 1_000_000.0,
         "legality_check_s": float(_route_stat(last_route, "legality_check_time_us")) / 1_000_000.0,
         "reconstruction_s": float(_route_stat(last_route, "reconstruction_time_us")) / 1_000_000.0,
+        "jps4_requested": bool(_route_stat(last_route, "jps4_requested")),
+        "jps4_eligible": bool(_route_stat(last_route, "jps4_eligible")),
+        "jps4_used": bool(_route_stat(last_route, "jps4_used")),
+        "jps4_fallbacks": _route_stat(last_route, "jps4_fallbacks"),
+        "jps4_fallback_reason": str(getattr(last_route, "jps4_fallback_reason", "")),
         "full_grid_fallback": bool(_route_stat(last_route, "used_full_grid_fallback")),
         "route_cells": len(getattr(last_route, "cells", [])),
         "route_length_um": float(getattr(last_route, "total_length_um", 0.0)),
@@ -465,12 +472,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Iterations: `{args.iterations}`",
         f"- Warmup: `{args.warmup}`",
         "",
-        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Heap push/pop | Dup skips | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | Full grid | Target ok | Route cells | Length um |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: |",
+        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Heap push/pop | Dup skips | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
+            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {jps4_status} | {jps4_fallback_reason} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
                 scenario=row["scenario"],
                 grid=row["grid"],
                 static_cells=row["static_cells"],
@@ -488,6 +495,14 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 heap_operation_s=_format_seconds(_object_to_float(row["heap_operation_s"])),
                 legality_check_s=_format_seconds(_object_to_float(row["legality_check_s"])),
                 reconstruction_s=_format_seconds(_object_to_float(row["reconstruction_s"])),
+                jps4_status=(
+                    "used"
+                    if row.get("jps4_used")
+                    else "eligible"
+                    if row.get("jps4_eligible")
+                    else ("requested" if row.get("jps4_requested") else "off")
+                ),
+                jps4_fallback_reason=row.get("jps4_fallback_reason", ""),
                 full_grid_fallback=row["full_grid_fallback"],
                 target_state_ok=row.get("target_state_ok", ""),
                 route_cells=row["route_cells"],
@@ -515,6 +530,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE_PATH)
     parser.add_argument("--check-baseline", action="store_true")
     parser.add_argument("--length-tolerance-um", type=float, default=None)
+    parser.add_argument(
+        "--enable-jps4",
+        action="store_true",
+        help=(
+            "Request the experimental Manhattan JPS4 accelerator for every "
+            "scenario. Pass 3A reports eligibility and falls back to baseline A*."
+        ),
+    )
     args = parser.parse_args()
     unknown = sorted(set(args.scenarios) - set(catalog))
     if unknown:
@@ -542,6 +565,11 @@ def main() -> int:
     rust_backend = cast(RustBackend, rust_backend_obj)
 
     catalog = _scenario_catalog()
+    if args.enable_jps4:
+        catalog = {
+            name: replace(scenario, enable_jps4=True)
+            for name, scenario in catalog.items()
+        }
     rows = [
         run_scenario(
             rust_backend,

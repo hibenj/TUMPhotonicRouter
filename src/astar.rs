@@ -57,6 +57,7 @@ pub struct AStarConfig {
     pub ignore_dynamic_obstacles: bool,
     pub history_weight: f64,
     pub collect_detailed_timing: bool,
+    pub enable_jps4: bool,
 }
 
 impl Default for AStarConfig {
@@ -81,6 +82,7 @@ impl Default for AStarConfig {
             ignore_dynamic_obstacles: false,
             history_weight: 0.0,
             collect_detailed_timing: false,
+            enable_jps4: false,
         }
     }
 }
@@ -138,6 +140,17 @@ pub struct RouteSearchStats {
     pub heap_operation_time_us: u128,
     pub legality_check_time_us: u128,
     pub reconstruction_time_us: u128,
+    pub jps4_requested: bool,
+    pub jps4_eligible: bool,
+    pub jps4_used: bool,
+    pub jps4_fallbacks: usize,
+    pub jps4_fallback_reason: String,
+}
+
+#[derive(Clone, Debug)]
+struct Jps4Eligibility {
+    eligible: bool,
+    reason: &'static str,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -868,7 +881,28 @@ pub fn route_single_net_with_config(
     anchor_open_cells.insert(pack_xy(target.x, target.y));
 
     let mut stats = RouteSearchStats::default();
-    if let Some(simple_route) = try_simple_route_with_config(
+    let jps4_eligibility = evaluate_jps4_eligibility(primitives, source, target, config);
+    stats.jps4_requested = config.enable_jps4;
+    stats.jps4_eligible = jps4_eligibility.eligible;
+    stats.jps4_fallback_reason = jps4_eligibility.reason.to_string();
+    if config.enable_jps4 && jps4_eligibility.eligible {
+        if let Some(route) = route_single_net_jps4(
+            obstacle_map,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            primitives.grid_size_um(),
+            stats.clone(),
+        ) {
+            return Some(route);
+        }
+        stats.jps4_fallbacks += 1;
+        stats.jps4_fallback_reason = "jps4 search failed".to_string();
+    } else if config.enable_jps4 {
+        stats.jps4_fallbacks += 1;
+    }
+    if let Some(mut simple_route) = try_simple_route_with_config(
         obstacle_map,
         primitives,
         source,
@@ -876,6 +910,7 @@ pub fn route_single_net_with_config(
         port_open_cells,
         config,
     ) {
+        simple_route.stats = stats;
         return Some(simple_route);
     }
 
@@ -932,6 +967,382 @@ pub fn route_single_net_with_config(
     }
 
     None
+}
+
+fn evaluate_jps4_eligibility(
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    config: &AStarConfig,
+) -> Jps4Eligibility {
+    if !config.enable_jps4 {
+        return Jps4Eligibility {
+            eligible: false,
+            reason: "disabled",
+        };
+    }
+    if config.target_tolerance_cells != 0 {
+        return Jps4Eligibility {
+            eligible: false,
+            reason: "target tolerance is nonzero",
+        };
+    }
+    if config.require_target_angle || config.allowed_target_angles_mask.is_some() {
+        return Jps4Eligibility {
+            eligible: false,
+            reason: "target heading constraints are active",
+        };
+    }
+    if config.history_weight != 0.0 {
+        return Jps4Eligibility {
+            eligible: false,
+            reason: "history costs are active",
+        };
+    }
+    if source.angle % 2 != 0 || target.angle % 2 != 0 {
+        return Jps4Eligibility {
+            eligible: false,
+            reason: "source or target heading is diagonal",
+        };
+    }
+    if !primitive_library_is_plain_jps4_grid(primitives) {
+        return Jps4Eligibility {
+            eligible: false,
+            reason: "primitive library is not plain 4-connected unit grid",
+        };
+    }
+
+    Jps4Eligibility {
+        eligible: true,
+        reason: "eligible",
+    }
+}
+
+fn primitive_library_is_plain_jps4_grid(primitives: &PrimitiveLibrary) -> bool {
+    for angle in 0..8u8 {
+        let bucket = primitives.get_primitives_for_angle(angle);
+        if angle % 2 != 0 {
+            if !bucket.is_empty() {
+                return false;
+            }
+            continue;
+        }
+        if bucket.len() != 1 {
+            return false;
+        }
+        let primitive = &bucket[0];
+        if primitive.start_angle != angle || primitive.end_angle != angle {
+            return false;
+        }
+        if primitive.bend_cost != 0.0 {
+            return false;
+        }
+        if primitive.dx.abs() + primitive.dy.abs() != 1 {
+            return false;
+        }
+        if primitive.dx != 0 && primitive.dy != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+const JPS4_DIRECTIONS: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
+
+fn route_single_net_jps4(
+    obstacle_map: &ObstacleMap,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    grid_size_um: f64,
+    mut stats: RouteSearchStats,
+) -> Option<RouteResult> {
+    let bounds = RoutingBounds {
+        min_x: 0,
+        max_x: obstacle_map.width() - 1,
+        min_y: 0,
+        max_y: obstacle_map.height() - 1,
+    };
+    let dense_grid = DenseRoutingGrid::from_obstacle_map(
+        obstacle_map,
+        bounds,
+        port_open_cells,
+        config.max_dense_obstacle_cells,
+        config.ignore_dynamic_obstacles,
+        false,
+    )?;
+    stats.dense_grid_cells = dense_grid.blocked_count();
+    stats.dense_grid_build_time_us = dense_grid.build_time_us();
+    stats.window_attempts = 1;
+
+    if dense_grid.is_blocked(source.x, source.y) || dense_grid.is_blocked(target.x, target.y) {
+        return None;
+    }
+
+    if source.x == target.x && source.y == target.y {
+        stats.jps4_used = true;
+        return Some(RouteResult {
+            states: vec![source],
+            primitives: Vec::new(),
+            cells: vec![(source.x, source.y)],
+            compressed_waypoints: vec![(source.x, source.y)],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target: target,
+            reached_target: target,
+            stats,
+        });
+    }
+
+    let width = usize::try_from(dense_grid.width).ok()?;
+    let height = usize::try_from(dense_grid.height).ok()?;
+    let cell_count = width.checked_mul(height)?;
+    let mut g_costs = vec![f64::INFINITY; cell_count];
+    let mut parent_idx = vec![NO_PARENT; cell_count];
+    let mut closed = DenseBitset::new(cell_count)?;
+    let mut open_set = BinaryHeap::new();
+    let mut counter = 0u64;
+
+    let source_idx = dense_grid.idx_of(source.x, source.y)?;
+    let target_point = (target.x, target.y);
+    g_costs[source_idx] = 0.0;
+    open_set.push(OpenEntry {
+        f_score: jps4_heuristic(source.x, source.y, target_point, grid_size_um),
+        g_score: 0.0,
+        counter,
+        idx: source_idx,
+    });
+    stats.heap_pushes += 1;
+    counter += 1;
+
+    let mut reached_idx = None;
+    let mut iterations = 0usize;
+    while let Some(entry) = open_set.pop() {
+        stats.heap_pops += 1;
+        iterations += 1;
+        if iterations > config.max_iterations {
+            return None;
+        }
+        if closed.get(entry.idx) {
+            stats.skipped_duplicate_heap_entries += 1;
+            continue;
+        }
+        closed.set(entry.idx)?;
+        stats.expanded_states += 1;
+        let (x, y) = jps4_idx_to_xy(entry.idx, &dense_grid)?;
+        if (x, y) == target_point {
+            reached_idx = Some(entry.idx);
+            break;
+        }
+
+        for (dx, dy) in JPS4_DIRECTIONS {
+            stats.generated_neighbors += 1;
+            let Some((jump_x, jump_y, distance_cells)) =
+                jps4_jump(&dense_grid, x, y, dx, dy, target_point, &mut stats)
+            else {
+                continue;
+            };
+            let jump_idx = dense_grid.idx_of(jump_x, jump_y)?;
+            if closed.get(jump_idx) {
+                continue;
+            }
+            let tentative_g = g_costs[entry.idx] + f64::from(distance_cells) * grid_size_um;
+            if tentative_g >= g_costs[jump_idx] {
+                continue;
+            }
+            g_costs[jump_idx] = tentative_g;
+            parent_idx[jump_idx] = u32::try_from(entry.idx).ok()?;
+            open_set.push(OpenEntry {
+                f_score: tentative_g + jps4_heuristic(jump_x, jump_y, target_point, grid_size_um),
+                g_score: tentative_g,
+                counter,
+                idx: jump_idx,
+            });
+            stats.heap_pushes += 1;
+            counter += 1;
+        }
+    }
+
+    let reached_idx = reached_idx?;
+    stats.jps4_used = true;
+    reconstruct_jps4_route(
+        source,
+        target,
+        source_idx,
+        reached_idx,
+        &parent_idx,
+        &dense_grid,
+        g_costs[reached_idx],
+        stats,
+    )
+}
+
+fn jps4_jump(
+    dense_grid: &DenseRoutingGrid,
+    start_x: i32,
+    start_y: i32,
+    dx: i32,
+    dy: i32,
+    target: (i32, i32),
+    stats: &mut RouteSearchStats,
+) -> Option<(i32, i32, i32)> {
+    let mut x = start_x;
+    let mut y = start_y;
+    let mut distance = 0i32;
+    loop {
+        let previous_x = x;
+        let previous_y = y;
+        x = x.checked_add(dx)?;
+        y = y.checked_add(dy)?;
+        distance = distance.checked_add(1)?;
+        stats.obstacle_clearance_checks += 1;
+        if dense_grid.is_blocked(x, y) {
+            if distance > 1 {
+                return Some((previous_x, previous_y, distance - 1));
+            }
+            return None;
+        }
+        if (x, y) == target {
+            return Some((x, y, distance));
+        }
+        if (dx != 0 && x == target.0) || (dy != 0 && y == target.1) {
+            return Some((x, y, distance));
+        }
+        if jps4_has_forced_neighbor(dense_grid, x, y, dx, dy) {
+            return Some((x, y, distance));
+        }
+        if jps4_has_obstacle_corner_opening(dense_grid, x, y, dx, dy) {
+            return Some((x, y, distance));
+        }
+    }
+}
+
+fn jps4_has_forced_neighbor(
+    dense_grid: &DenseRoutingGrid,
+    x: i32,
+    y: i32,
+    dx: i32,
+    dy: i32,
+) -> bool {
+    if dx != 0 {
+        (dense_grid.is_blocked(x, y + 1) && !dense_grid.is_blocked(x + dx, y + 1))
+            || (dense_grid.is_blocked(x, y - 1) && !dense_grid.is_blocked(x + dx, y - 1))
+    } else if dy != 0 {
+        (dense_grid.is_blocked(x + 1, y) && !dense_grid.is_blocked(x + 1, y + dy))
+            || (dense_grid.is_blocked(x - 1, y) && !dense_grid.is_blocked(x - 1, y + dy))
+    } else {
+        false
+    }
+}
+
+fn jps4_has_obstacle_corner_opening(
+    dense_grid: &DenseRoutingGrid,
+    x: i32,
+    y: i32,
+    dx: i32,
+    dy: i32,
+) -> bool {
+    if dx != 0 {
+        (dense_grid.is_blocked(x - dx, y + 1) && !dense_grid.is_blocked(x, y + 1))
+            || (dense_grid.is_blocked(x - dx, y - 1) && !dense_grid.is_blocked(x, y - 1))
+    } else if dy != 0 {
+        (dense_grid.is_blocked(x + 1, y - dy) && !dense_grid.is_blocked(x + 1, y))
+            || (dense_grid.is_blocked(x - 1, y - dy) && !dense_grid.is_blocked(x - 1, y))
+    } else {
+        false
+    }
+}
+
+fn jps4_heuristic(x: i32, y: i32, target: (i32, i32), grid_size_um: f64) -> f64 {
+    f64::from((target.0 - x).abs() + (target.1 - y).abs()) * grid_size_um
+}
+
+fn jps4_idx_to_xy(idx: usize, dense_grid: &DenseRoutingGrid) -> Option<(i32, i32)> {
+    let width = usize::try_from(dense_grid.width).ok()?;
+    let local_x = i32::try_from(idx % width).ok()?;
+    let local_y = i32::try_from(idx / width).ok()?;
+    Some((
+        dense_grid.bounds.min_x + local_x,
+        dense_grid.bounds.min_y + local_y,
+    ))
+}
+
+fn reconstruct_jps4_route(
+    _source: State,
+    target: State,
+    source_idx: usize,
+    reached_idx: usize,
+    parent_idx: &[u32],
+    dense_grid: &DenseRoutingGrid,
+    total_cost: f64,
+    stats: RouteSearchStats,
+) -> Option<RouteResult> {
+    let mut jump_indices = Vec::new();
+    let mut current = reached_idx;
+    loop {
+        jump_indices.push(current);
+        if current == source_idx {
+            break;
+        }
+        let parent = *parent_idx.get(current)?;
+        if parent == NO_PARENT {
+            return None;
+        }
+        current = usize::try_from(parent).ok()?;
+    }
+    jump_indices.reverse();
+
+    let mut cells = Vec::new();
+    for idx in jump_indices {
+        let point = jps4_idx_to_xy(idx, dense_grid)?;
+        if cells.is_empty() {
+            cells.push(point);
+            continue;
+        }
+        let previous = *cells.last()?;
+        let step_x = (point.0 - previous.0).signum();
+        let step_y = (point.1 - previous.1).signum();
+        let mut x = previous.0;
+        let mut y = previous.1;
+        while (x, y) != point {
+            x = x.checked_add(step_x)?;
+            y = y.checked_add(step_y)?;
+            cells.push((x, y));
+        }
+    }
+
+    let mut states = Vec::with_capacity(cells.len());
+    for idx in 0..cells.len() {
+        let angle = if idx + 1 < cells.len() {
+            jps4_angle_between(cells[idx], cells[idx + 1])?
+        } else {
+            target.angle
+        };
+        states.push(State::new(cells[idx].0, cells[idx].1, angle));
+    }
+    let compressed_waypoints = compress_grid_waypoints(&cells);
+    Some(RouteResult {
+        states,
+        primitives: Vec::new(),
+        cells,
+        compressed_waypoints,
+        total_length_um: total_cost,
+        total_cost,
+        requested_target: target,
+        reached_target: target,
+        stats,
+    })
+}
+
+fn jps4_angle_between(a: (i32, i32), b: (i32, i32)) -> Option<u8> {
+    match ((b.0 - a.0).signum(), (b.1 - a.1).signum()) {
+        (1, 0) => Some(0),
+        (0, 1) => Some(2),
+        (-1, 0) => Some(4),
+        (0, -1) => Some(6),
+        _ => None,
+    }
 }
 
 fn simple_candidate_to_route_result(
@@ -1698,7 +2109,10 @@ mod tests {
     use super::*;
     use crate::geometry_realization::{route_to_primitive_centerline, GeometryGridSpec};
     use crate::obstacle_map::ObstacleMap;
-    use crate::primitives::{create_photonic_primitive_library, PrimitiveLibraryConfig};
+    use crate::primitives::{
+        create_photonic_primitive_library, Primitive, PrimitiveGeometry, PrimitiveLibraryConfig,
+    };
+    use std::collections::VecDeque;
 
     fn primitive_library() -> PrimitiveLibrary {
         create_photonic_primitive_library(PrimitiveLibraryConfig {
@@ -1708,6 +2122,219 @@ mod tests {
             bend_radius_cells: 1,
             allow_45_degree_turns: true,
         })
+    }
+
+    fn plain_jps4_primitive_library() -> PrimitiveLibrary {
+        let mut next_id = 0u16;
+        let mut buckets = Vec::with_capacity(8);
+        for angle in 0..8u8 {
+            if angle % 2 == 0 {
+                let (dx, dy) = match angle {
+                    0 => (1, 0),
+                    2 => (0, 1),
+                    4 => (-1, 0),
+                    6 => (0, -1),
+                    _ => unreachable!(),
+                };
+                buckets.push(vec![Primitive {
+                    id: next_id,
+                    start_angle: angle,
+                    end_angle: angle,
+                    dx,
+                    dy,
+                    footprint: vec![(0, 0), (dx, dy)],
+                    length_um: 1.0,
+                    bend_cost: 0.0,
+                    geometry: PrimitiveGeometry::Straight { length_um: 1.0 },
+                }]);
+                next_id += 1;
+            } else {
+                buckets.push(Vec::new());
+            }
+        }
+        PrimitiveLibrary::new(buckets, 1.0)
+    }
+
+    fn reference_astar4_distance(
+        map: &ObstacleMap,
+        source: (i32, i32),
+        target: (i32, i32),
+    ) -> Option<usize> {
+        if map.is_blocked(source.0, source.1) || map.is_blocked(target.0, target.1) {
+            return None;
+        }
+        let width = usize::try_from(map.width()).ok()?;
+        let height = usize::try_from(map.height()).ok()?;
+        let mut distances = vec![usize::MAX; width.checked_mul(height)?];
+        let idx = |x: i32, y: i32| -> Option<usize> {
+            if !map.in_bounds(x, y) {
+                return None;
+            }
+            let ux = usize::try_from(x).ok()?;
+            let uy = usize::try_from(y).ok()?;
+            uy.checked_mul(width)?.checked_add(ux)
+        };
+        let source_idx = idx(source.0, source.1)?;
+        distances[source_idx] = 0;
+        let mut queue = VecDeque::new();
+        queue.push_back(source);
+        while let Some((x, y)) = queue.pop_front() {
+            let current_distance = distances[idx(x, y)?];
+            if (x, y) == target {
+                return Some(current_distance);
+            }
+            for (dx, dy) in JPS4_DIRECTIONS {
+                let nx = x + dx;
+                let ny = y + dy;
+                if map.is_blocked(nx, ny) {
+                    continue;
+                }
+                let next_idx = idx(nx, ny)?;
+                if distances[next_idx] != usize::MAX {
+                    continue;
+                }
+                distances[next_idx] = current_distance + 1;
+                queue.push_back((nx, ny));
+            }
+        }
+        None
+    }
+
+    fn route_with_jps4(map: &ObstacleMap, source: State, target: State) -> RouteResult {
+        let mut config = AStarConfig::default();
+        config.enable_jps4 = true;
+        config.require_target_angle = false;
+        config.enable_simple_routes = false;
+        route_single_net_with_config(
+            map,
+            &plain_jps4_primitive_library(),
+            source,
+            target,
+            None,
+            &config,
+        )
+        .expect("jps4 route should exist")
+    }
+
+    #[test]
+    fn jps4_eligibility_rejects_current_photonic_primitives() {
+        let mut config = AStarConfig::default();
+        config.enable_jps4 = true;
+        config.require_target_angle = false;
+
+        let eligibility = evaluate_jps4_eligibility(
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            &config,
+        );
+
+        assert!(!eligibility.eligible);
+        assert_eq!(
+            eligibility.reason,
+            "primitive library is not plain 4-connected unit grid"
+        );
+    }
+
+    #[test]
+    fn jps4_eligibility_accepts_plain_cardinal_unit_grid() {
+        let mut config = AStarConfig::default();
+        config.enable_jps4 = true;
+        config.require_target_angle = false;
+
+        let eligibility = evaluate_jps4_eligibility(
+            &plain_jps4_primitive_library(),
+            State::new(1, 1, 0),
+            State::new(5, 1, 0),
+            &config,
+        );
+
+        assert!(eligibility.eligible);
+        assert_eq!(eligibility.reason, "eligible");
+    }
+
+    #[test]
+    fn jps4_request_falls_back_to_baseline_route_for_photonic_primitives() {
+        let map = ObstacleMap::new(10, 5);
+        let mut config = AStarConfig::default();
+        config.enable_jps4 = true;
+        config.require_target_angle = false;
+
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 2, 0),
+            State::new(5, 2, 0),
+            None,
+            &config,
+        )
+        .expect("baseline fallback route should exist");
+
+        assert_eq!(result.states.first().copied(), Some(State::new(1, 2, 0)));
+        assert_eq!(result.states.last().copied(), Some(State::new(5, 2, 0)));
+        assert!(result.stats.jps4_requested);
+        assert!(!result.stats.jps4_eligible);
+        assert_eq!(result.stats.jps4_fallbacks, 1);
+        assert_eq!(
+            result.stats.jps4_fallback_reason,
+            "primitive library is not plain 4-connected unit grid"
+        );
+    }
+
+    #[test]
+    fn jps4_routes_empty_map_like_reference_astar4() {
+        let map = ObstacleMap::new(12, 9);
+        let source = State::new(1, 1, 0);
+        let target = State::new(9, 6, 0);
+        let route = route_with_jps4(&map, source, target);
+        let reference_distance =
+            reference_astar4_distance(&map, (source.x, source.y), (target.x, target.y)).unwrap();
+
+        assert!(route.stats.jps4_used);
+        assert_eq!(route.total_length_um, reference_distance as f64);
+        assert_eq!(route.cells.first().copied(), Some((source.x, source.y)));
+        assert_eq!(route.cells.last().copied(), Some((target.x, target.y)));
+    }
+
+    #[test]
+    fn jps4_routes_narrow_corridor_like_reference_astar4() {
+        let mut map = ObstacleMap::new(14, 7);
+        for y in 0..7 {
+            if y == 3 {
+                continue;
+            }
+            for x in 0..14 {
+                map.add_static_cell(x, y);
+            }
+        }
+        let source = State::new(1, 3, 0);
+        let target = State::new(12, 3, 0);
+        let route = route_with_jps4(&map, source, target);
+        let reference_distance =
+            reference_astar4_distance(&map, (source.x, source.y), (target.x, target.y)).unwrap();
+
+        assert!(route.stats.jps4_used);
+        assert_eq!(route.total_length_um, reference_distance as f64);
+        assert_eq!(route.compressed_waypoints, vec![(1, 3), (12, 3)]);
+    }
+
+    #[test]
+    fn jps4_routes_forced_detour_like_reference_astar4() {
+        let mut map = ObstacleMap::new(12, 10);
+        for y in 0..9 {
+            if y != 7 {
+                map.add_static_cell(5, y);
+            }
+        }
+        let source = State::new(2, 2, 0);
+        let target = State::new(9, 2, 0);
+        let route = route_with_jps4(&map, source, target);
+        let reference_distance =
+            reference_astar4_distance(&map, (source.x, source.y), (target.x, target.y)).unwrap();
+
+        assert!(route.stats.jps4_used);
+        assert_eq!(route.total_length_um, reference_distance as f64);
+        assert!(route.cells.contains(&(5, 7)));
     }
 
     #[test]

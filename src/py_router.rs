@@ -173,6 +173,8 @@ pub struct PyAStarConfig {
     pub history_weight: f64,
     #[pyo3(get, set)]
     pub collect_detailed_timing: bool,
+    #[pyo3(get, set)]
+    pub enable_jps4: bool,
 }
 #[pymethods]
 impl PyAStarConfig {
@@ -214,6 +216,7 @@ impl PyAStarConfig {
             ignore_dynamic_obstacles,
             history_weight,
             collect_detailed_timing,
+            enable_jps4: false,
         }
     }
 }
@@ -304,6 +307,16 @@ pub struct PyRouteResult {
     pub legality_check_time_us: u64,
     #[pyo3(get)]
     pub reconstruction_time_us: u64,
+    #[pyo3(get)]
+    pub jps4_requested: bool,
+    #[pyo3(get)]
+    pub jps4_eligible: bool,
+    #[pyo3(get)]
+    pub jps4_used: bool,
+    #[pyo3(get)]
+    pub jps4_fallbacks: usize,
+    #[pyo3(get)]
+    pub jps4_fallback_reason: String,
 }
 
 #[pyclass(name = "PortAccess")]
@@ -465,6 +478,7 @@ fn astar_config_from_py(
             .unwrap_or(astar_cfg.ignore_dynamic_obstacles),
         history_weight: history_weight.unwrap_or(astar_cfg.history_weight),
         collect_detailed_timing: astar_cfg.collect_detailed_timing,
+        enable_jps4: astar_cfg.enable_jps4,
     })
 }
 
@@ -2148,6 +2162,11 @@ fn convert_result(
             let clamped = r.stats.reconstruction_time_us.min(u64::MAX as u128);
             clamped as u64
         },
+        jps4_requested: r.stats.jps4_requested,
+        jps4_eligible: r.stats.jps4_eligible,
+        jps4_used: r.stats.jps4_used,
+        jps4_fallbacks: r.stats.jps4_fallbacks,
+        jps4_fallback_reason: r.stats.jps4_fallback_reason.clone(),
     })
 }
 
@@ -2196,6 +2215,11 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             heap_operation_time_us: u128::from(route.heap_operation_time_us),
             legality_check_time_us: u128::from(route.legality_check_time_us),
             reconstruction_time_us: u128::from(route.reconstruction_time_us),
+            jps4_requested: route.jps4_requested,
+            jps4_eligible: route.jps4_eligible,
+            jps4_used: route.jps4_used,
+            jps4_fallbacks: route.jps4_fallbacks,
+            jps4_fallback_reason: route.jps4_fallback_reason.clone(),
         },
     }
 }
@@ -2274,6 +2298,11 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
+            jps4_requested: false,
+            jps4_eligible: false,
+            jps4_used: false,
+            jps4_fallbacks: 0,
+            jps4_fallback_reason: String::new(),
         };
         let err = router
             .realize_route_polygon_with_analytic_meander(
@@ -2335,6 +2364,11 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
+            jps4_requested: false,
+            jps4_eligible: false,
+            jps4_used: false,
+            jps4_fallbacks: 0,
+            jps4_fallback_reason: String::new(),
         };
 
         let ok_poly = router
@@ -2413,6 +2447,11 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
+            jps4_requested: false,
+            jps4_eligible: false,
+            jps4_used: false,
+            jps4_fallbacks: 0,
+            jps4_fallback_reason: String::new(),
         };
         Python::with_gil(|py| {
             let obj = router
@@ -2483,6 +2522,11 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
+            jps4_requested: false,
+            jps4_eligible: false,
+            jps4_used: false,
+            jps4_fallbacks: 0,
+            jps4_fallback_reason: String::new(),
         };
         let err = router
             .realize_route_polygon_with_checked_analytic_meander_box(
@@ -2571,6 +2615,11 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
+            jps4_requested: false,
+            jps4_eligible: false,
+            jps4_used: false,
+            jps4_fallbacks: 0,
+            jps4_fallback_reason: String::new(),
         };
         Python::with_gil(|py| {
             let obj = router
@@ -2649,6 +2698,11 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
+            jps4_requested: false,
+            jps4_eligible: false,
+            jps4_used: false,
+            jps4_fallbacks: 0,
+            jps4_fallback_reason: String::new(),
         };
         Python::with_gil(|py| {
             let obj = router
@@ -2716,6 +2770,11 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
+            jps4_requested: false,
+            jps4_eligible: false,
+            jps4_used: false,
+            jps4_fallbacks: 0,
+            jps4_fallback_reason: String::new(),
         };
         Python::with_gil(|py| {
             let err = router
@@ -2845,6 +2904,11 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
+            jps4_requested: false,
+            jps4_eligible: false,
+            jps4_used: false,
+            jps4_fallbacks: 0,
+            jps4_fallback_reason: String::new(),
         };
         Python::with_gil(|py| {
             let none_obj = router
@@ -2958,6 +3022,11 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
+            jps4_requested: false,
+            jps4_eligible: false,
+            jps4_used: false,
+            jps4_fallbacks: 0,
+            jps4_fallback_reason: String::new(),
         };
         Python::with_gil(|py| {
             let auto_obj = router

@@ -344,6 +344,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             f"(default: {SCRIPT_RIPUP_HISTORY_INCREMENT})."
         ),
     )
+    parser.add_argument(
+        "--enable-jps4",
+        type=_parse_bool_flag,
+        default=False,
+        metavar="BOOL",
+        help=(
+            "Request the experimental Manhattan JPS4 accelerator when eligible "
+            "(default: false). Pass 3A still falls back to baseline A*."
+        ),
+    )
     return parser
 
 
@@ -356,6 +366,7 @@ def main(argv: list[str] | None = None) -> Component:
         debug_meanders=args.debug_meanders,
         show_klayout=args.show_klayout,
         allow_45_degree_turns=args.allow_45_degree_turns,
+        enable_jps4=args.enable_jps4,
         enable_path_length_matching=args.path_length_matching,
         path_length_meander_height_um=args.path_length_meander_height_um,
         max_iterations=args.max_iterations,
@@ -425,6 +436,7 @@ def run_routing_flow(
     enable_path_length_matching: bool = False,
     path_length_meander_height_um: float = 20.0,
     allow_45_degree_turns: bool = True,
+    enable_jps4: bool = False,
     max_iterations: int = 500_000,
     include_heater_obstacles: bool = False,
     waveguide_clearance_um: float | None = None,
@@ -598,6 +610,7 @@ def run_routing_flow(
             debug_route_indices=debug_route_indices,
             debug_timing=debug_timing,
             allow_45_degree_turns=allow_45_degree_turns,
+            enable_jps4=enable_jps4,
             max_iterations=max_iterations,
             include_heater_obstacles=include_heater_obstacles,
             ripup_reroute_config=ripup_reroute_config,

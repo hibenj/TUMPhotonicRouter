@@ -72,6 +72,11 @@ def test_markdown_report_contains_route_stats_columns():
                 "heap_operation_s": 0.0002,
                 "legality_check_s": 0.0003,
                 "reconstruction_s": 0.0004,
+                "jps4_requested": True,
+                "jps4_eligible": False,
+                "jps4_used": False,
+                "jps4_fallbacks": 1,
+                "jps4_fallback_reason": "primitive library is not plain 4-connected unit grid",
                 "full_grid_fallback": False,
                 "target_state_ok": True,
                 "route_cells": 5,
@@ -85,6 +90,8 @@ def test_markdown_report_contains_route_stats_columns():
     assert "Footprint checks" in report
     assert "Heap push/pop" in report
     assert "Legality checks" in report
+    assert "JPS4 fallback" in report
+    assert "primitive library is not plain 4-connected unit grid" in report
     assert "| case | 10x10 | 2 |" in report
 
 
