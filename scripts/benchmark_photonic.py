@@ -285,10 +285,10 @@ def _slowest_meander_result(results: Iterable[object]) -> dict[str, object]:
 
 
 def _path_length_group_diagnostics(layout_info: object) -> list[Mapping[str, object]]:
-    if not hasattr(layout_info, "get"):
+    if not isinstance(layout_info, Mapping):
         return []
     analysis = layout_info.get("path_length_analysis", {})
-    if not hasattr(analysis, "get"):
+    if not isinstance(analysis, Mapping):
         return []
     groups = analysis.get("matching_group_diagnostics")
     if not isinstance(groups, list):
