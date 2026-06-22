@@ -122,11 +122,16 @@ class SupportsGet(Protocol):
     def get(self, key: str, default: object = None) -> object: ...
 
 
+class EmptyInfo:
+    def get(self, key: str, default: object = None) -> object:
+        return default
+
+
 def _supports_get(value: object) -> TypeGuard[SupportsGet]:
     return hasattr(value, "get")
 
 
-EMPTY_INFO: SupportsGet = {}
+EMPTY_INFO: SupportsGet = EmptyInfo()
 
 
 def _git_rev() -> str:
