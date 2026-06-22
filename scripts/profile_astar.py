@@ -109,6 +109,12 @@ def _format_seconds(value: float | None) -> str:
     return f"{value:.6f}"
 
 
+def _format_mib(value: object) -> str:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return ""
+    return f"{float(value) / (1024.0 * 1024.0):.2f}"
+
+
 def _route_counter_dict(route_obj: object, attr: str) -> dict[str, int]:
     values = getattr(route_obj, attr, None)
     labels: tuple[PrimitiveClass, ...] = ("straight_short", "straight_long", "bend45", "bend90")
@@ -469,6 +475,10 @@ def run_scenario(
         "closed_heap_entries": _route_stat(last_route, "closed_heap_entries"),
         "max_heap_size": _route_stat(last_route, "max_heap_size"),
         "dense_search_states": _route_stat(last_route, "dense_search_states"),
+        "dense_search_storage_bytes": _route_stat(
+            last_route,
+            "dense_search_storage_bytes",
+        ),
         "best_cost_updates": _route_stat(last_route, "best_cost_updates"),
         "parent_updates": _route_stat(last_route, "parent_updates"),
         "obstacle_clearance_checks": _route_stat(last_route, "obstacle_clearance_checks"),
@@ -589,12 +599,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Primitive ordering: `{getattr(args, 'primitive_ordering', 'library')}`",
         f"- Heuristic mode: `{getattr(args, 'heuristic_mode', 'heading_aware')}`",
         "",
-        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Primitive gen | Primitive accepted | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
+        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Primitive gen | Primitive accepted | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Dense MiB | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {primitive_generated} | {primitive_accepted} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_states} | {best_cost_updates}/{parent_updates} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {jps4_status} | {jps4_fallback_reason} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
+            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {primitive_generated} | {primitive_accepted} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_states} | {dense_search_storage_mib} | {best_cost_updates}/{parent_updates} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {jps4_status} | {jps4_fallback_reason} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
                 scenario=row["scenario"],
                 grid=row["grid"],
                 static_cells=row["static_cells"],
@@ -615,6 +625,9 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 closed_heap_entries=row.get("closed_heap_entries", 0),
                 max_heap_size=row.get("max_heap_size", 0),
                 dense_search_states=row.get("dense_search_states", 0),
+                dense_search_storage_mib=_format_mib(
+                    row.get("dense_search_storage_bytes", 0)
+                ),
                 best_cost_updates=row.get("best_cost_updates", 0),
                 parent_updates=row.get("parent_updates", 0),
                 obstacle_clearance_checks=row["obstacle_clearance_checks"],

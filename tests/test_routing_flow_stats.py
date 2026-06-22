@@ -156,6 +156,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
                     closed_heap_entries=2,
                     max_heap_size=12,
                     dense_search_states=1000,
+                    dense_search_storage_bytes=18_125,
                     best_cost_updates=51,
                     parent_updates=50,
                     obstacle_clearance_checks=88,
@@ -247,6 +248,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
                     closed_heap_entries=3,
                     max_heap_size=80,
                     dense_search_states=2000,
+                    dense_search_storage_bytes=36_250,
                     best_cost_updates=301,
                     parent_updates=300,
                     obstacle_clearance_checks=99,
@@ -277,6 +279,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
                         closed_heap_entries=3,
                         max_heap_size=80,
                         dense_search_states=2000,
+                        dense_search_storage_bytes=36_250,
                         best_cost_updates=301,
                         parent_updates=300,
                         obstacle_clearance_checks=99,
@@ -317,6 +320,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
     assert stats.closed_heap_entries == 3
     assert stats.max_heap_size == 80
     assert stats.dense_search_states == 2000
+    assert stats.dense_search_storage_bytes == 36_250
     assert stats.best_cost_updates == 301
     assert stats.parent_updates == 300
     assert stats.obstacle_clearance_checks == 99
@@ -358,6 +362,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "closed_heap_entries": 3,
             "max_heap_size": 80,
             "dense_search_states": 2000,
+            "dense_search_storage_bytes": 36_250,
             "best_cost_updates": 301,
             "parent_updates": 300,
             "obstacle_clearance_checks": 99,

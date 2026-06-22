@@ -133,6 +133,7 @@ class RouteTimingBucket:
     closed_heap_entries: int = 0
     max_heap_size: int = 0
     dense_search_states: int = 0
+    dense_search_storage_bytes: int = 0
     best_cost_updates: int = 0
     parent_updates: int = 0
     obstacle_clearance_checks: int = 0
@@ -211,6 +212,10 @@ class RouteTimingBucket:
         self.dense_search_states += _get_route_int_stat(
             route_obj,
             "dense_search_states",
+        )
+        self.dense_search_storage_bytes += _get_route_int_stat(
+            route_obj,
+            "dense_search_storage_bytes",
         )
         self.best_cost_updates += _get_route_int_stat(
             route_obj,
@@ -322,6 +327,7 @@ class RouteAttemptRecord:
     closed_heap_entries: int = 0
     max_heap_size: int = 0
     dense_search_states: int = 0
+    dense_search_storage_bytes: int = 0
     best_cost_updates: int = 0
     parent_updates: int = 0
     obstacle_clearance_checks: int = 0
@@ -392,6 +398,7 @@ class RouteAttemptRecord:
             "closed_heap_entries": self.closed_heap_entries,
             "max_heap_size": self.max_heap_size,
             "dense_search_states": self.dense_search_states,
+            "dense_search_storage_bytes": self.dense_search_storage_bytes,
             "best_cost_updates": self.best_cost_updates,
             "parent_updates": self.parent_updates,
             "obstacle_clearance_checks": self.obstacle_clearance_checks,
@@ -482,6 +489,10 @@ def route_attempt_record_from_route(
         ),
         max_heap_size=_get_route_int_stat(route_obj, "max_heap_size"),
         dense_search_states=_get_route_int_stat(route_obj, "dense_search_states"),
+        dense_search_storage_bytes=_get_route_int_stat(
+            route_obj,
+            "dense_search_storage_bytes",
+        ),
         best_cost_updates=_get_route_int_stat(route_obj, "best_cost_updates"),
         parent_updates=_get_route_int_stat(route_obj, "parent_updates"),
         obstacle_clearance_checks=_get_route_int_stat(
@@ -573,6 +584,7 @@ class RouteSearchSummary:
     closed_heap_entries: int = 0
     max_heap_size: int = 0
     dense_search_states: int = 0
+    dense_search_storage_bytes: int = 0
     best_cost_updates: int = 0
     parent_updates: int = 0
     obstacle_clearance_checks: int = 0
@@ -660,6 +672,9 @@ def summarize_route_search(
         closed_heap_entries=sum(bucket.closed_heap_entries for bucket in buckets),
         max_heap_size=max((bucket.max_heap_size for bucket in buckets), default=0),
         dense_search_states=sum(bucket.dense_search_states for bucket in buckets),
+        dense_search_storage_bytes=sum(
+            bucket.dense_search_storage_bytes for bucket in buckets
+        ),
         best_cost_updates=sum(bucket.best_cost_updates for bucket in buckets),
         parent_updates=sum(bucket.parent_updates for bucket in buckets),
         obstacle_clearance_checks=sum(

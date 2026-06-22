@@ -45,6 +45,7 @@ AttemptColumn: TypeAlias = Literal[
     "closed_heap_entries",
     "max_heap_size",
     "dense_search_states",
+    "dense_search_storage_bytes",
     "best_cost_updates",
     "parent_updates",
     "obstacle_clearance_checks",
@@ -89,6 +90,7 @@ ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
     "closed_heap_entries",
     "max_heap_size",
     "dense_search_states",
+    "dense_search_storage_bytes",
     "best_cost_updates",
     "parent_updates",
     "obstacle_clearance_checks",
@@ -137,6 +139,14 @@ def _format_int(value: object) -> str:
     if not isinstance(value, (str, bytes, bytearray, int, float)):
         return ""
     return f"{int(value):,}"
+
+
+def _format_mib(value: object) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return ""
+    return f"{float(value) / (1024.0 * 1024.0):.2f}"
 
 
 def _format_primitive_counter(value: object) -> str:
@@ -257,6 +267,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "closed_heap_entries": stats.closed_heap_entries,
         "max_heap_size": stats.max_heap_size,
         "dense_search_states": stats.dense_search_states,
+        "dense_search_storage_bytes": stats.dense_search_storage_bytes,
         "best_cost_updates": stats.best_cost_updates,
         "parent_updates": stats.parent_updates,
         "obstacle_clearance_checks": stats.obstacle_clearance_checks,
@@ -348,12 +359,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Primitive ordering: `{args.primitive_ordering}`",
         f"- Heuristic mode: `{args.heuristic_mode}`",
         "",
-        "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Obstacle checks | Footprint rect checks | Full fallback |",
-        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
+        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {benchmark} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {dup_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
+            "| {benchmark} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {dup_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
                 benchmark=row["benchmark"],
                 instances=row["instances"],
                 nets=row["nets"],
@@ -374,6 +385,9 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 ),
                 closed_heap_entries=_format_int(row["closed_heap_entries"]),
                 max_heap_size=_format_int(row["max_heap_size"]),
+                dense_search_storage_mib=_format_mib(
+                    row["dense_search_storage_bytes"]
+                ),
                 obstacle_checks=_format_int(row["obstacle_clearance_checks"]),
                 footprint_rect_checks=_format_int(row["footprint_rect_checks"]),
                 fallbacks=_format_int(row["full_grid_fallbacks"]),
@@ -396,13 +410,13 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 "",
                 "## Slowest Route Attempts",
                 "",
-                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Window cells | Expanded | Generated | Primitive gen | Primitive accepted | Primitive footprint rejects | Heap push/pop | Stale gen/closed | Max heap | Rect checks | Dense build s | Failed |",
-                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Window cells | Expanded | Generated | Primitive gen | Primitive accepted | Primitive footprint rejects | Heap push/pop | Stale gen/closed | Max heap | Dense MiB | Rect checks | Dense build s | Failed |",
+                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for record in slow_attempts:
             lines.append(
-                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {window_area} | {expanded} | {generated} | {primitive_generated} | {primitive_accepted} | {primitive_footprint_rejects} | {heap_pushes}/{heap_pops} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {rect_checks} | {dense_build_s} | {failed} |".format(
+                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {window_area} | {expanded} | {generated} | {primitive_generated} | {primitive_accepted} | {primitive_footprint_rejects} | {heap_pushes}/{heap_pops} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {rect_checks} | {dense_build_s} | {failed} |".format(
                     benchmark=record.get("benchmark", ""),
                     attempt=record.get("attempt_index", ""),
                     bucket=record.get("bucket_name", ""),
@@ -428,6 +442,9 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     ),
                     closed_heap_entries=_format_int(record.get("closed_heap_entries")),
                     max_heap_size=_format_int(record.get("max_heap_size")),
+                    dense_search_storage_mib=_format_mib(
+                        record.get("dense_search_storage_bytes")
+                    ),
                     rect_checks=_format_int(record.get("footprint_rect_checks")),
                     dense_build_s=_format_seconds(
                         _record_seconds(record, "dense_grid_build_time_s")

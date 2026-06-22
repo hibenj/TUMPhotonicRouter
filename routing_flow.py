@@ -80,6 +80,7 @@ class RoutingFlowStats:
     closed_heap_entries: int = 0
     max_heap_size: int = 0
     dense_search_states: int = 0
+    dense_search_storage_bytes: int = 0
     best_cost_updates: int = 0
     parent_updates: int = 0
     obstacle_clearance_checks: int = 0
@@ -118,6 +119,7 @@ class RoutingFlowStats:
             "closed_heap_entries": self.closed_heap_entries,
             "max_heap_size": self.max_heap_size,
             "dense_search_states": self.dense_search_states,
+            "dense_search_storage_bytes": self.dense_search_storage_bytes,
             "best_cost_updates": self.best_cost_updates,
             "parent_updates": self.parent_updates,
             "obstacle_clearance_checks": self.obstacle_clearance_checks,
@@ -769,6 +771,9 @@ def run_routing_flow(
         stats.closed_heap_entries = int(route_summary.closed_heap_entries)
         stats.max_heap_size = int(route_summary.max_heap_size)
         stats.dense_search_states = int(route_summary.dense_search_states)
+        stats.dense_search_storage_bytes = int(
+            route_summary.dense_search_storage_bytes
+        )
         stats.best_cost_updates = int(route_summary.best_cost_updates)
         stats.parent_updates = int(route_summary.parent_updates)
         stats.obstacle_clearance_checks = int(route_summary.obstacle_clearance_checks)

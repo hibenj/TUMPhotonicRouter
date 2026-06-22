@@ -5,6 +5,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::mem::size_of;
 use std::time::Instant;
 
 use rustc_hash::FxHashSet;
@@ -160,6 +161,7 @@ pub struct RouteSearchStats {
     pub closed_heap_entries: usize,
     pub max_heap_size: usize,
     pub dense_search_states: usize,
+    pub dense_search_storage_bytes: usize,
     pub best_cost_updates: usize,
     pub parent_updates: usize,
     pub obstacle_clearance_checks: usize,
@@ -292,14 +294,14 @@ impl FootprintCollisionProfile {
 }
 
 const NO_PARENT: u32 = u32::MAX;
-const NO_GENERATION: u64 = u64::MAX;
+const NO_GENERATION: u32 = u32::MAX;
 const BITSET_WORD_BITS: usize = u64::BITS as usize;
 
 struct DenseSearchStorage {
     bounds: RoutingBounds,
     width_usize: usize,
     g_costs: Vec<f64>,
-    best_generation: Vec<u64>,
+    best_generation: Vec<u32>,
     parent_idx: Vec<u32>,
     parent_primitive: Vec<u16>,
     closed: DenseBitset,
@@ -335,6 +337,14 @@ impl DenseSearchStorage {
 
     fn state_count(&self) -> usize {
         self.g_costs.len()
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        self.g_costs.len() * size_of::<f64>()
+            + self.best_generation.len() * size_of::<u32>()
+            + self.parent_idx.len() * size_of::<u32>()
+            + self.parent_primitive.len() * size_of::<u16>()
+            + self.closed.allocated_bytes()
     }
 
     fn state_to_idx(&self, state: State) -> Option<usize> {
@@ -394,6 +404,10 @@ impl DenseBitset {
             .get(word_idx)
             .map(|word| (word & (1u64 << bit_idx)) != 0)
             .unwrap_or(true)
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        self.bits.len() * size_of::<u64>()
     }
 }
 
@@ -874,8 +888,8 @@ impl DenseRoutingGrid {
 struct OpenEntry {
     f_score: f64,
     g_score: f64,
-    counter: u64,
-    generation: u64,
+    counter: u32,
+    generation: u32,
     idx: usize,
 }
 
@@ -1004,6 +1018,15 @@ impl IndexedOpenSet {
 
 fn entry_is_better(candidate: &OpenEntry, current: &OpenEntry) -> bool {
     candidate.cmp(current) == Ordering::Greater
+}
+
+fn next_search_generation(counter: &mut u32) -> Option<u32> {
+    if *counter == NO_GENERATION {
+        return None;
+    }
+    let current = *counter;
+    *counter = counter.checked_add(1)?;
+    Some(current)
 }
 
 enum OpenSet {
@@ -1388,23 +1411,26 @@ fn route_single_net_jps4(
     let mut parent_idx = vec![NO_PARENT; cell_count];
     let mut closed = DenseBitset::new(cell_count)?;
     let mut open_set = BinaryHeap::new();
-    let mut counter = 0u64;
+    let mut counter = 0u32;
     stats.dense_search_states = cell_count;
+    stats.dense_search_storage_bytes = g_costs.len() * size_of::<f64>()
+        + parent_idx.len() * size_of::<u32>()
+        + closed.allocated_bytes();
 
     let source_idx = dense_grid.idx_of(source.x, source.y)?;
     let target_point = (target.x, target.y);
     g_costs[source_idx] = 0.0;
     stats.best_cost_updates += 1;
+    let generation = next_search_generation(&mut counter)?;
     open_set.push(OpenEntry {
         f_score: jps4_heuristic(source.x, source.y, target_point, grid_size_um),
         g_score: 0.0,
-        counter,
-        generation: counter,
+        counter: generation,
+        generation,
         idx: source_idx,
     });
     stats.heap_pushes += 1;
     stats.max_heap_size = stats.max_heap_size.max(open_set.len());
-    counter += 1;
 
     let mut reached_idx = None;
     let mut iterations = 0usize;
@@ -1446,16 +1472,16 @@ fn route_single_net_jps4(
             parent_idx[jump_idx] = u32::try_from(entry.idx).ok()?;
             stats.best_cost_updates += 1;
             stats.parent_updates += 1;
+            let generation = next_search_generation(&mut counter)?;
             open_set.push(OpenEntry {
                 f_score: tentative_g + jps4_heuristic(jump_x, jump_y, target_point, grid_size_um),
                 g_score: tentative_g,
-                counter,
-                generation: counter,
+                counter: generation,
+                generation,
                 idx: jump_idx,
             });
             stats.heap_pushes += 1;
             stats.max_heap_size = stats.max_heap_size.max(open_set.len());
-            counter += 1;
         }
     }
 
@@ -2056,6 +2082,7 @@ fn route_single_net_with_bounds(
 
     let mut storage = DenseSearchStorage::new(bounds, config.max_dense_states)?;
     stats.dense_search_states = storage.state_count();
+    stats.dense_search_storage_bytes = storage.allocated_bytes();
     let dense_grid = match DenseRoutingGrid::from_obstacle_map(
         obstacle_map,
         bounds,
@@ -2085,18 +2112,19 @@ fn route_single_net_with_bounds(
         .collect();
 
     let mut open_set = OpenSet::new(config.use_indexed_heap, storage.state_count());
-    let mut counter = 0u64;
+    let mut counter = 0u32;
     let collect_detailed_timing = config.collect_detailed_timing;
     let source_idx = storage.state_to_idx(source)?;
 
     storage.g_costs[source_idx] = 0.0;
-    storage.best_generation[source_idx] = counter;
+    let generation = next_search_generation(&mut counter)?;
+    storage.best_generation[source_idx] = generation;
     stats.best_cost_updates += 1;
     let source_entry = OpenEntry {
         f_score: search_heuristic.estimate(source),
         g_score: 0.0,
-        counter,
-        generation: counter,
+        counter: generation,
+        generation,
         idx: source_idx,
     };
     if collect_detailed_timing {
@@ -2114,8 +2142,6 @@ fn route_single_net_with_bounds(
             stats.max_heap_size = stats.max_heap_size.max(open_set.len());
         }
     }
-    counter += 1;
-
     let mut iterations = 0usize;
     loop {
         let entry = if collect_detailed_timing {
@@ -2289,14 +2315,15 @@ fn route_single_net_with_bounds(
             storage.parent_idx[next_idx] = idx as u32;
             storage.parent_primitive[next_idx] = primitive.id;
             storage.g_costs[next_idx] = tentative_g;
-            storage.best_generation[next_idx] = counter;
+            let generation = next_search_generation(&mut counter)?;
+            storage.best_generation[next_idx] = generation;
             stats.best_cost_updates += 1;
             stats.parent_updates += 1;
             let next_entry = OpenEntry {
                 f_score: tentative_g + search_heuristic.estimate(next_state),
                 g_score: tentative_g,
-                counter,
-                generation: counter,
+                counter: generation,
+                generation,
                 idx: next_idx,
             };
             if collect_detailed_timing {
@@ -2316,7 +2343,6 @@ fn route_single_net_with_bounds(
                     stats.max_heap_size = stats.max_heap_size.max(open_set.len());
                 }
             }
-            counter += 1;
         }
         if let Some(neighbor_loop_start) = neighbor_loop_start {
             let neighbor_loop_elapsed_us = neighbor_loop_start.elapsed().as_micros();
