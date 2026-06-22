@@ -351,29 +351,35 @@ impl DenseSearchStorage {
         if state.angle >= 8 || !self.bounds.contains(state.x, state.y) {
             return None;
         }
-        self.in_bounds_state_to_idx(state)
+        Some(self.in_bounds_state_to_idx(state))
     }
 
-    fn in_bounds_state_to_idx(&self, state: State) -> Option<usize> {
+    #[inline]
+    fn in_bounds_state_to_idx(&self, state: State) -> usize {
         self.in_bounds_parts_to_idx(state.x, state.y, state.angle)
     }
 
-    fn in_bounds_parts_to_idx(&self, x: i32, y: i32, angle: u8) -> Option<usize> {
-        let local_x = usize::try_from(x.checked_sub(self.bounds.min_x)?).ok()?;
-        let local_y = usize::try_from(y.checked_sub(self.bounds.min_y)?).ok()?;
-        Some(((local_y * self.width_usize) + local_x) * 8 + usize::from(angle))
+    #[inline]
+    fn in_bounds_parts_to_idx(&self, x: i32, y: i32, angle: u8) -> usize {
+        debug_assert!(angle < 8);
+        debug_assert!(self.bounds.contains(x, y));
+        let local_x = (x - self.bounds.min_x) as usize;
+        let local_y = (y - self.bounds.min_y) as usize;
+        ((local_y * self.width_usize) + local_x) << 3 | usize::from(angle)
     }
 
+    #[inline]
     fn idx_to_state(&self, idx: usize) -> State {
-        let angle = (idx % 8) as u8;
-        let cell_idx = idx / 8;
+        debug_assert!(idx < self.state_count());
+        let angle = (idx & 7) as u8;
+        let cell_idx = idx >> 3;
         let local_x = (cell_idx % self.width_usize) as i32;
         let local_y = (cell_idx / self.width_usize) as i32;
-        State::new(
-            self.bounds.min_x + local_x,
-            self.bounds.min_y + local_y,
+        State {
+            x: self.bounds.min_x + local_x,
+            y: self.bounds.min_y + local_y,
             angle,
-        )
+        }
     }
 }
 
@@ -2247,10 +2253,7 @@ fn route_single_net_with_bounds(
                 stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
                 continue;
             }
-            let Some(next_idx) = storage.in_bounds_parts_to_idx(next_x, next_y, next_angle) else {
-                stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
-                continue;
-            };
+            let next_idx = storage.in_bounds_parts_to_idx(next_x, next_y, next_angle);
             if storage.closed.get(next_idx) {
                 stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                 continue;
