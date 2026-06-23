@@ -22,6 +22,7 @@ from benchmarks.mmi_heater_8x4_ripup_reroute import (
 from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
 from translation.electrical.bundle_detail_router import (
     _offset_path_by_local_normals,
+    _pad_stub_step_cost,
     _realize_ordered_bundle_lanes,
 )
 from translation.electrical.obstacle_extraction import build_electrical_obstacle_map
@@ -1138,6 +1139,48 @@ def test_detailed_bundle_router_assigns_spaced_offsets_from_topology():
     assert right_outer.pad_stub_path[1][1] == max(
         route.pad_stub_path[1][1] for route in right_bundle_routes
     )
+
+
+def test_pad_stub_cost_penalizes_turns_and_backtracking():
+    config = ElectricalRoutingConfig(pad_side="top")
+    targets = frozenset({(5, 5)})
+
+    straight_toward_target = _pad_stub_step_cost(
+        (3, 5),
+        (4, 5),
+        0,
+        0,
+        targets,
+        config,
+    )
+    turning_away_from_target = _pad_stub_step_cost(
+        (3, 5),
+        (3, 6),
+        0,
+        2,
+        targets,
+        config,
+    )
+    reversing_laterally = _pad_stub_step_cost(
+        (3, 5),
+        (2, 5),
+        0,
+        1,
+        targets,
+        config,
+    )
+    moving_away_from_pad_edge = _pad_stub_step_cost(
+        (3, 4),
+        (3, 3),
+        2,
+        3,
+        targets,
+        config,
+    )
+
+    assert turning_away_from_target > straight_toward_target
+    assert reversing_laterally > straight_toward_target
+    assert moving_away_from_pad_edge > straight_toward_target
 
 
 def test_metal_realization_creates_assigned_pads_but_not_empty_slots():

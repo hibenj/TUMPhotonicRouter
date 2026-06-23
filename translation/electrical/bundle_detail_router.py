@@ -166,11 +166,11 @@ def route_detailed_bundles(
             )
             route_prefix, source_stub_path, bundle_track_tail, pad_stub_start = (
                 _route_prefix_to_pad_stub_start(
-                    source_point=source_point,
-                    bundle_track_path=bundle_track_path,
-                    pad_lane=pad_lane,
-                    pad_side=config.pad_side,
-                )
+                source_point=source_point,
+                bundle_track_path=bundle_track_path,
+                pad_lane=pad_lane,
+                pad_side=config.pad_side,
+            )
             )
             pad_stub_blocked = set(hard_blocked)
             pad_stub_blocked.update(all_terminal_cells)
@@ -282,7 +282,8 @@ def _route_order_for_bundle(
     route_side: RouteSide,
 ) -> tuple[tuple[int, ElectricalTerminal], ...]:
     ranked_terminals: tuple[tuple[int, ElectricalTerminal], ...] = tuple(
-        enumerate(bundle.ordered_terminals)
+        (rank, terminal)
+        for rank, terminal in enumerate(bundle.ordered_terminals)
     )
     if route_side == "right":
         return tuple(reversed(ranked_terminals))
@@ -601,9 +602,14 @@ def _route_pad_stub_path(
                 continue
             if neighbor in blocked:
                 continue
-            step_cost = 10
-            if direction != _NO_DIRECTION and direction != next_direction:
-                step_cost += 4
+            step_cost = _pad_stub_step_cost(
+                cell,
+                neighbor,
+                direction,
+                next_direction,
+                targets,
+                config,
+            )
             next_cost = cost + step_cost
             next_state: SearchState = (neighbor, next_direction)
             if next_cost >= best_cost.get(next_state, 1_000_000_000):
@@ -654,6 +660,60 @@ def _pad_stub_heuristic(
     targets: frozenset[GridCell],
 ) -> int:
     return 10 * min(_manhattan(cell, target) for target in targets)
+
+
+def _pad_stub_step_cost(
+    cell: GridCell,
+    neighbor: GridCell,
+    direction: DirectionIndex,
+    next_direction: DirectionIndex,
+    targets: frozenset[GridCell],
+    config: ElectricalRoutingConfig,
+) -> int:
+    cost = 10
+    if direction != _NO_DIRECTION and direction != next_direction:
+        cost += 10
+    if _distance_to_targets(neighbor, targets) > _distance_to_targets(cell, targets):
+        cost += 8
+    if _moves_away_from_pad_edge(cell, neighbor, targets, config):
+        cost += 4
+    if _moves_away_from_target_center_x(cell, neighbor, targets):
+        cost += 2
+    return cost
+
+
+def _distance_to_targets(cell: GridCell, targets: frozenset[GridCell]) -> int:
+    return min(_manhattan(cell, target) for target in targets)
+
+
+def _moves_away_from_pad_edge(
+    cell: GridCell,
+    neighbor: GridCell,
+    targets: frozenset[GridCell],
+    config: ElectricalRoutingConfig,
+) -> bool:
+    _, y = cell
+    _, next_y = neighbor
+    if config.pad_side == "top":
+        target_y = min(target_y for _, target_y in targets)
+        return next_y < y and y <= target_y
+    target_y = max(target_y for _, target_y in targets)
+    return next_y > y and y >= target_y
+
+
+def _moves_away_from_target_center_x(
+    cell: GridCell,
+    neighbor: GridCell,
+    targets: frozenset[GridCell],
+) -> bool:
+    x, _ = cell
+    next_x, _ = neighbor
+    target_x = _target_center_x(targets)
+    return abs(next_x - target_x) > abs(x - target_x)
+
+
+def _target_center_x(targets: frozenset[GridCell]) -> int:
+    return round((min(x for x, _ in targets) + max(x for x, _ in targets)) / 2.0)
 
 
 def _reconstruct_search_path(
@@ -1014,8 +1074,11 @@ def _offset_path_by_local_normals(
         return tuple((x + 0.5, y + 0.5) for x, y in path)
 
     simplified = _simplify_manhattan_path(path)
+    first_cell = next(iter(simplified), None)
+    if first_cell is None:
+        return ()
     if len(simplified) <= 1:
-        x, y = simplified[0]
+        x, y = first_cell
         return ((x + 0.5, y + 0.5),)
 
     normals = [
