@@ -508,6 +508,7 @@ def _selected_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "raw_metal_area_um2",
         "same_net_duplicate_rect_count",
         "same_net_overlap_pair_count",
+        "same_net_overlap_pair_count_by_source",
         "cross_net_min_spacing_um",
         "required_cross_net_clearance_um",
         "centerline_length_um",

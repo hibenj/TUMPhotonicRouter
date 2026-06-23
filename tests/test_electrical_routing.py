@@ -200,6 +200,10 @@ def test_verifier_models_terminal_landing_contact():
 
     issue_codes = {issue.code for issue in verification.issues}
     assert "missing_terminal_contact" not in issue_codes
+    assert verification.metrics["same_net_overlap_pair_count_by_source"] == {
+        "bus_route/terminal_adapter": 1,
+        "terminal_adapter/terminal_adapter": 2,
+    }
 
 
 def test_terminal_contact_selects_physical_port_not_logical_center():

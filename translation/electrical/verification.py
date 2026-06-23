@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 import math
 from typing import Any
@@ -32,9 +33,16 @@ from .types import (
 class _NetGeometry:
     net_id: str
     rects: tuple[BBox, ...]
+    rect_sources: tuple[str, ...]
     allowed_cells: frozenset[GridCell]
     allowed_physical_bboxes: tuple[BBox, ...] = ()
     centerline_points_um: tuple[tuple[float, float], ...] = ()
+
+
+@dataclass(frozen=True)
+class _TaggedRect:
+    bbox: BBox
+    source: str
 
 
 def verify_electrical_routing(
@@ -57,17 +65,21 @@ def verify_electrical_routing(
     net_geometries: list[_NetGeometry] = []
 
     pad_bboxes_by_net = _pad_bboxes_by_net(pad_plan)
-    common_bus_rects = clean_rects(
+    common_bus_tagged_rects = _clean_tagged_rects(
         (
-            *_common_bus_rects(
+            *_common_bus_tagged_rects(
                 common_bus,
                 common_bus_escape,
                 obstacle_map,
                 config,
             ),
-            *pad_bboxes_by_net.get("common_bus", ()),
+            *(
+                _TaggedRect(bbox, "pad")
+                for bbox in pad_bboxes_by_net.get("common_bus", ())
+            ),
         )
     )
+    common_bus_rects = tuple(tagged.bbox for tagged in common_bus_tagged_rects)
     common_bus_route_points = _common_bus_centerline_points(
         common_bus,
         common_bus_escape,
@@ -83,6 +95,7 @@ def verify_electrical_routing(
         _NetGeometry(
             net_id="common_bus",
             rects=common_bus_rects,
+            rect_sources=tuple(tagged.source for tagged in common_bus_tagged_rects),
             allowed_cells=frozenset(common_bus_allowed),
             allowed_physical_bboxes=_common_bus_allowed_physical_bboxes(
                 common_bus,
@@ -102,12 +115,16 @@ def verify_electrical_routing(
                 if route.pad_assignment is not None
                 else f"individual:{route.terminal.heater_id}"
             )
-            route_rects = clean_rects(
+            route_tagged_rects = _clean_tagged_rects(
                 (
-                    *_detailed_route_rects(route, obstacle_map, config),
-                    *pad_bboxes_by_net.get(route_net_id, ()),
+                    *_detailed_route_tagged_rects(route, obstacle_map, config),
+                    *(
+                        _TaggedRect(bbox, "pad")
+                        for bbox in pad_bboxes_by_net.get(route_net_id, ())
+                    ),
                 )
             )
+            route_rects = tuple(tagged.bbox for tagged in route_tagged_rects)
             route_start_um = _route_start_um(route, obstacle_map)
             allowed_cells = set(
                 _individual_terminal_open_cells(obstacle_map).get(
@@ -129,6 +146,7 @@ def verify_electrical_routing(
                 _NetGeometry(
                     net_id=route_net_id,
                     rects=route_rects,
+                    rect_sources=tuple(tagged.source for tagged in route_tagged_rects),
                     allowed_cells=frozenset(allowed_cells),
                     allowed_physical_bboxes=(access.contact_bbox,),
                     centerline_points_um=_detailed_route_centerline_points(
@@ -178,28 +196,30 @@ def verify_electrical_routing(
     )
 
 
-def _common_bus_rects(
+def _common_bus_tagged_rects(
     common_bus: CommonBusRoutingResult,
     common_bus_escape: CommonBusEscapeResult | None,
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
-) -> tuple[BBox, ...]:
-    rects: list[BBox] = [common_bus.bus.bbox]
+) -> tuple[_TaggedRect, ...]:
+    rects: list[_TaggedRect] = [_TaggedRect(common_bus.bus.bbox, "bus_stripe")]
     for route in common_bus.routes:
         rects.extend(
-            _terminal_grid_route_rects(
+            _terminal_grid_route_tagged_rects(
                 route.terminal,
                 route.path,
                 obstacle_map,
                 config.bus_width_um,
+                route_source="bus_route",
             )
         )
     if common_bus_escape is not None and common_bus_escape.success:
         rects.extend(
-            _grid_wire_rects(
+            _tagged_grid_wire_rects(
                 common_bus_escape.path,
                 obstacle_map,
                 config.bus_width_um,
+                "bus_escape",
             )
         )
     return tuple(rects)
@@ -572,6 +592,9 @@ def _quality_metrics(
         _rect_overlap_pair_count(net.rects)
         for net in net_geometries
     )
+    same_net_overlap_pairs_by_source = Counter[str]()
+    for net in net_geometries:
+        same_net_overlap_pairs_by_source.update(_rect_overlap_pair_counts_by_source(net))
     min_spacing = _min_cross_net_spacing(net_geometries)
     return {
         "net_count": len(net_geometries),
@@ -583,6 +606,9 @@ def _quality_metrics(
         "raw_metal_area_um2": sum(_rect_area(rect) for rect in all_rects),
         "same_net_duplicate_rect_count": same_net_duplicate_rects,
         "same_net_overlap_pair_count": same_net_overlap_pairs,
+        "same_net_overlap_pair_count_by_source": dict(
+            sorted(same_net_overlap_pairs_by_source.items())
+        ),
         "cross_net_min_spacing_um": min_spacing,
         "required_cross_net_clearance_um": max(0.0, config.obstacle_clearance_um),
         "centerline_length_um": sum(
@@ -600,52 +626,60 @@ def _quality_metrics(
     }
 
 
-def _detailed_route_rects(
+def _detailed_route_tagged_rects(
     route: DetailedBundleRoute,
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
-) -> tuple[BBox, ...]:
-    return _terminal_point_route_rects(
+) -> tuple[_TaggedRect, ...]:
+    return _terminal_point_route_tagged_rects(
         route.terminal,
         route.offset_path,
         obstacle_map,
         config.wire_width_um,
+        route_source="route_tail",
     )
 
 
-def _grid_wire_rects(
+def _tagged_grid_wire_rects(
     path: tuple[GridCell, ...],
     obstacle_map: ElectricalObstacleMap,
     width_um: float,
-) -> tuple[BBox, ...]:
+    source: str,
+) -> tuple[_TaggedRect, ...]:
     points = tuple(
         _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
         for cell in path
     )
-    return _point_wire_rects(points, width_um)
+    return _tagged_point_wire_rects(points, width_um, source)
 
 
-def _terminal_grid_route_rects(
+def _terminal_grid_route_tagged_rects(
     terminal: ElectricalTerminal,
     path: tuple[GridCell, ...],
     obstacle_map: ElectricalObstacleMap,
     width_um: float,
-) -> tuple[BBox, ...]:
-    return _terminal_access_rects(
+    *,
+    route_source: str,
+) -> tuple[_TaggedRect, ...]:
+    return _terminal_access_tagged_rects(
         _terminal_grid_route_access(terminal, path, obstacle_map, width_um),
         width_um,
+        route_source=route_source,
     )
 
 
-def _terminal_point_route_rects(
+def _terminal_point_route_tagged_rects(
     terminal: ElectricalTerminal,
     points_grid: tuple[GridPoint, ...],
     obstacle_map: ElectricalObstacleMap,
     width_um: float,
-) -> tuple[BBox, ...]:
-    return _terminal_access_rects(
+    *,
+    route_source: str,
+) -> tuple[_TaggedRect, ...]:
+    return _terminal_access_tagged_rects(
         _terminal_point_route_access(terminal, points_grid, obstacle_map, width_um),
         width_um,
+        route_source=route_source,
     )
 
 
@@ -693,13 +727,21 @@ def _terminal_point_route_access(
     )
 
 
-def _terminal_access_rects(
+def _terminal_access_tagged_rects(
     access: Any,
     width_um: float,
-) -> tuple[BBox, ...]:
-    rects: list[BBox] = [access.contact_bbox]
-    rects.extend(_point_wire_rects(access.adapter_points, access.access_width_um))
-    rects.extend(_point_wire_rects(access.route_tail_points, width_um))
+    *,
+    route_source: str,
+) -> tuple[_TaggedRect, ...]:
+    rects: list[_TaggedRect] = [_TaggedRect(access.contact_bbox, "terminal_contact")]
+    rects.extend(
+        _tagged_point_wire_rects(
+            access.adapter_points,
+            access.access_width_um,
+            "terminal_adapter",
+        )
+    )
+    rects.extend(_tagged_point_wire_rects(access.route_tail_points, width_um, route_source))
     return tuple(rects)
 
 
@@ -728,11 +770,29 @@ def _grid_cell_center_um(
     return _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
 
 
-def _point_wire_rects(
+def _tagged_point_wire_rects(
     points: tuple[tuple[float, float], ...],
     width_um: float,
-) -> tuple[BBox, ...]:
-    return wire_rects_for_points(points, width_um)
+    source: str,
+) -> tuple[_TaggedRect, ...]:
+    return tuple(
+        _TaggedRect(rect, source)
+        for rect in wire_rects_for_points(points, width_um)
+    )
+
+
+def _clean_tagged_rects(
+    tagged_rects: tuple[_TaggedRect, ...],
+) -> tuple[_TaggedRect, ...]:
+    source_by_bbox: dict[BBox, str] = {}
+    for tagged in tagged_rects:
+        bbox = _normalized_bbox(tagged.bbox)
+        if bbox is not None:
+            source_by_bbox.setdefault(bbox, tagged.source)
+    return tuple(
+        _TaggedRect(bbox, source_by_bbox.get(bbox, "unknown"))
+        for bbox in clean_rects(tagged.bbox for tagged in tagged_rects)
+    )
 
 
 def _route_start_um(
@@ -825,6 +885,21 @@ def _rect_overlap_pair_count(rects: tuple[BBox, ...]) -> int:
     return count
 
 
+def _rect_overlap_pair_counts_by_source(net: _NetGeometry) -> Counter[str]:
+    counts = Counter[str]()
+    for index, left in enumerate(net.rects):
+        for right_index in range(index + 1, len(net.rects)):
+            right = net.rects[right_index]
+            overlap = _rect_intersection(left, right)
+            if overlap is None or _rect_area(overlap) <= 0.0:
+                continue
+            source_pair = "/".join(
+                sorted((net.rect_sources[index], net.rect_sources[right_index]))
+            )
+            counts[source_pair] += 1
+    return counts
+
+
 def _polyline_length(points: tuple[tuple[float, float], ...]) -> float:
     return sum(
         abs(end[0] - start[0]) + abs(end[1] - start[1])
@@ -880,6 +955,17 @@ def _rect_intersection(left: BBox, right: BBox) -> BBox | None:
         min(left[2], right[2]),
         min(left[3], right[3]),
     )
+
+
+def _normalized_bbox(rect: BBox) -> BBox | None:
+    xmin, ymin, xmax, ymax = rect
+    if xmax < xmin:
+        xmin, xmax = xmax, xmin
+    if ymax < ymin:
+        ymin, ymax = ymax, ymin
+    if xmax == xmin or ymax == ymin:
+        return None
+    return (xmin, ymin, xmax, ymax)
 
 
 def _rect_is_covered_by_any(rect: BBox, covers: tuple[BBox, ...]) -> bool:

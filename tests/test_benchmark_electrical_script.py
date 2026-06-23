@@ -47,6 +47,17 @@ def _result_stub() -> SimpleNamespace:
             "raw_metal_area_um2": 574_514.772,
             "same_net_duplicate_rect_count": 0,
             "same_net_overlap_pair_count": 103,
+            "same_net_overlap_pair_count_by_source": {
+                "bus_escape/bus_stripe": 1,
+                "bus_escape/pad": 1,
+                "bus_route/bus_route": 15,
+                "bus_route/bus_stripe": 3,
+                "bus_route/terminal_adapter": 13,
+                "pad/route_tail": 11,
+                "route_tail/route_tail": 30,
+                "route_tail/terminal_adapter": 13,
+                "terminal_adapter/terminal_adapter": 16,
+            },
             "cross_net_min_spacing_um": 11.0,
             "required_cross_net_clearance_um": 10.0,
             "centerline_length_um": 19_390.0,
@@ -130,6 +141,15 @@ def test_electrical_benchmark_uses_case_specific_guardrails():
     small_summary["metrics"]["rect_count"] = 9
     small_summary["metrics"]["same_net_duplicate_rect_count"] = 0
     small_summary["metrics"]["same_net_overlap_pair_count"] = 7
+    small_summary["metrics"]["same_net_overlap_pair_count_by_source"] = {
+        "bus_escape/bus_escape": 1,
+        "bus_escape/bus_stripe": 1,
+        "bus_escape/pad": 1,
+        "bus_route/bus_stripe": 1,
+        "bus_route/terminal_adapter": 1,
+        "pad/route_tail": 1,
+        "route_tail/terminal_adapter": 1,
+    }
     small_summary["realization_metrics"]["output_polygon_count"] = 2
     small_summary["realization_metrics"]["pre_union_rect_count"] = 9
 

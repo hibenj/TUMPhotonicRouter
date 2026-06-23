@@ -16,7 +16,16 @@
       "rect_count": 9,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_overlap_pair_count": 7
+      "same_net_overlap_pair_count": 7,
+      "same_net_overlap_pair_count_by_source": {
+        "bus_escape/bus_escape": 1,
+        "bus_escape/bus_stripe": 1,
+        "bus_escape/pad": 1,
+        "bus_route/bus_stripe": 1,
+        "bus_route/terminal_adapter": 1,
+        "pad/route_tail": 1,
+        "route_tail/terminal_adapter": 1
+      }
     },
     "pad_assignment_count": 2,
     "pad_side": "top",
@@ -47,7 +56,19 @@
       "rect_count": 189,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_overlap_pair_count": 188
+      "same_net_overlap_pair_count": 188,
+      "same_net_overlap_pair_count_by_source": {
+        "bus_escape/bus_escape": 1,
+        "bus_escape/bus_stripe": 1,
+        "bus_escape/pad": 1,
+        "bus_route/bus_route": 27,
+        "bus_route/bus_stripe": 5,
+        "bus_route/terminal_adapter": 20,
+        "pad/route_tail": 20,
+        "route_tail/route_tail": 59,
+        "route_tail/terminal_adapter": 24,
+        "terminal_adapter/terminal_adapter": 30
+      }
     },
     "pad_assignment_count": 21,
     "pad_side": "top",
@@ -78,7 +99,18 @@
       "rect_count": 104,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_overlap_pair_count": 103
+      "same_net_overlap_pair_count": 103,
+      "same_net_overlap_pair_count_by_source": {
+        "bus_escape/bus_stripe": 1,
+        "bus_escape/pad": 1,
+        "bus_route/bus_route": 15,
+        "bus_route/bus_stripe": 3,
+        "bus_route/terminal_adapter": 13,
+        "pad/route_tail": 11,
+        "route_tail/route_tail": 30,
+        "route_tail/terminal_adapter": 13,
+        "terminal_adapter/terminal_adapter": 16
+      }
     },
     "pad_assignment_count": 12,
     "pad_side": "top",
