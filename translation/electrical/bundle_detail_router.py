@@ -281,7 +281,9 @@ def _route_order_for_bundle(
     bundle: EscapeBundle,
     route_side: RouteSide,
 ) -> tuple[tuple[int, ElectricalTerminal], ...]:
-    ranked_terminals = tuple(enumerate(bundle.ordered_terminals))
+    ranked_terminals: tuple[tuple[int, ElectricalTerminal], ...] = tuple(
+        enumerate(bundle.ordered_terminals)
+    )
     if route_side == "right":
         return tuple(reversed(ranked_terminals))
     return ranked_terminals

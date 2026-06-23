@@ -1,11 +1,7 @@
 import gdsfactory as gf
-import numpy as np
 from gdsfactory.gpdk import get_generic_pdk
 
 from gdsfactory.schematic import (
-    Bundle,
-    Net,
-    Netlist,
     Instance,
     Placement,
     Schematic,
