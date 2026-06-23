@@ -74,14 +74,13 @@ def route_common_bus(
         )
 
     while remaining:
-        selected_ids = {terminal.id for terminal in selected.values()}
         candidates: list[_CandidatePath] = []
         for group in remaining.values():
             for terminal in group.terminals:
                 forbidden = _forbidden_terminal_cells(
                     obstacle_map,
                     all_terminal_cells,
-                    allowed_terminal_ids=selected_ids | {terminal.id},
+                    allowed_terminal_ids={terminal.id},
                 )
                 path = _shortest_path_to_tree(
                     terminal,
@@ -250,6 +249,7 @@ def _build_local_trunk_pair_routes(
 ) -> tuple[tuple[TerminalPairGroup, ElectricalTerminal, tuple[GridCell, ...]], ...] | None:
     terminal_routes: list[tuple[TerminalPairGroup, ElectricalTerminal, tuple[GridCell, ...]]] = []
     arm_endpoints: list[GridCell] = []
+    all_terminal_cells = _all_terminal_cells(obstacle_map)
     for group in group_pair:
         terminal = min(
             group.terminals,
@@ -265,22 +265,40 @@ def _build_local_trunk_pair_routes(
         _, start_y = start
         trunk_cell = (target_grid_x, start_y)
         arm = _axis_path(start, trunk_cell)
-        if _path_hits_blockers(arm, blocked, allowed=set(obstacle_map.terminal_open_cells.get(terminal.id, ()))): 
+        allowed_terminal_cells = set(_terminal_open_cells(obstacle_map, terminal.id))
+        forbidden = set(all_terminal_cells).difference(allowed_terminal_cells)
+        if _path_hits_blockers(
+            arm,
+            blocked,
+            allowed=allowed_terminal_cells,
+            forbidden=forbidden,
+        ):
             return None
         terminal_routes.append((group, terminal, arm))
         arm_endpoints.append(trunk_cell)
 
     trunk_y_values = [cell[1] for cell in arm_endpoints]
-    target_tree_cell = min(tree_cells, key=lambda cell: (abs(cell[0] - target_grid_x), cell[1]))
+    tree_targets = tree_cells.difference(all_terminal_cells) or tree_cells
+    target_tree_cell = min(tree_targets, key=lambda cell: (abs(cell[0] - target_grid_x), cell[1]))
     trunk_bus_cell = (target_grid_x, target_tree_cell[1])
     trunk_y_values.append(trunk_bus_cell[1])
     trunk_min_y = min(trunk_y_values)
     trunk_max_y = max(trunk_y_values)
     trunk = tuple((target_grid_x, y) for y in range(trunk_min_y, trunk_max_y + 1))
-    if _path_hits_blockers(trunk, blocked, allowed=set()):
+    if _path_hits_blockers(
+        trunk,
+        blocked,
+        allowed=set(arm_endpoints),
+        forbidden=set(all_terminal_cells).difference(arm_endpoints),
+    ):
         return None
     connector = _axis_path(trunk_bus_cell, target_tree_cell)
-    if _path_hits_blockers(connector, blocked, allowed=set(tree_cells)):
+    if _path_hits_blockers(
+        connector,
+        blocked,
+        allowed=set(tree_cells),
+        forbidden=set(all_terminal_cells),
+    ):
         return None
 
     trunk_and_connector = tuple(dict.fromkeys((*trunk, *connector)))
@@ -299,7 +317,7 @@ def _nearest_terminal_cell(
     obstacle_map: ElectricalObstacleMap,
     target_grid_x: int,
 ) -> GridCell | None:
-    cells = obstacle_map.terminal_open_cells.get(terminal.id, frozenset())
+    cells = _terminal_open_cells(obstacle_map, terminal.id)
     if not cells:
         center = physical_to_grid(terminal.center[0], terminal.center[1], obstacle_map.grid)
         return center
@@ -324,8 +342,12 @@ def _path_hits_blockers(
     blocked: set[GridCell],
     *,
     allowed: set[GridCell],
+    forbidden: set[GridCell] | frozenset[GridCell] = frozenset(),
 ) -> bool:
-    return any(cell in blocked and cell not in allowed for cell in path)
+    return any(
+        (cell in blocked and cell not in allowed) or cell in forbidden
+        for cell in path
+    )
 
 
 def _local_pair_target_grid_x_by_group(
@@ -449,7 +471,11 @@ def _candidate_distance_to_target_x(
 
 def _all_terminal_cells(obstacle_map: ElectricalObstacleMap) -> frozenset[GridCell]:
     cells: set[GridCell] = set()
-    for terminal_cells in obstacle_map.terminal_open_cells.values():
+    terminal_open_cells = (
+        obstacle_map.common_bus_terminal_open_cells
+        or obstacle_map.terminal_open_cells
+    )
+    for terminal_cells in terminal_open_cells.values():
         cells.update(terminal_cells)
     return frozenset(cells)
 
@@ -462,7 +488,7 @@ def _forbidden_terminal_cells(
 ) -> frozenset[GridCell]:
     allowed: set[GridCell] = set()
     for terminal_id in allowed_terminal_ids:
-        allowed.update(obstacle_map.terminal_open_cells.get(terminal_id, ()))
+        allowed.update(_terminal_open_cells(obstacle_map, terminal_id))
     return frozenset(all_terminal_cells.difference(allowed))
 
 
@@ -475,17 +501,23 @@ def _shortest_path_to_tree(
     obstacle_map: ElectricalObstacleMap,
 ) -> tuple[GridCell, ...] | None:
     grid = obstacle_map.grid
-    terminal_cells = obstacle_map.terminal_open_cells.get(terminal.id, frozenset())
+    terminal_cells = _terminal_open_cells(obstacle_map, terminal.id)
     center_cell = physical_to_grid(terminal.center[0], terminal.center[1], grid)
+    start_candidates = {
+        cell for cell in terminal_cells if _in_bounds(cell, grid.width, grid.height)
+    }
+    if not start_candidates and _in_bounds(center_cell, grid.width, grid.height):
+        start_candidates.add(center_cell)
     starts = sorted(
-        {cell for cell in terminal_cells if _in_bounds(cell, grid.width, grid.height)}
-        | ({center_cell} if _in_bounds(center_cell, grid.width, grid.height) else set()),
+        start_candidates,
         key=lambda cell: (_manhattan(cell, center_cell), cell[0], cell[1]),
     )
     if not starts:
         return None
 
-    targets = tree_cells
+    targets = tree_cells.difference(forbidden)
+    if not targets:
+        return None
     if any(start in targets for start in starts):
         start = min((cell for cell in starts if cell in targets), key=lambda c: (c[0], c[1]))
         return (start,)
@@ -545,3 +577,12 @@ def _in_bounds(cell: GridCell, width: int, height: int) -> bool:
 
 def _manhattan(a: GridCell, b: GridCell) -> int:
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _terminal_open_cells(
+    obstacle_map: ElectricalObstacleMap,
+    terminal_id: str,
+) -> frozenset[GridCell]:
+    if obstacle_map.common_bus_terminal_open_cells:
+        return obstacle_map.common_bus_terminal_open_cells.get(terminal_id, frozenset())
+    return obstacle_map.terminal_open_cells.get(terminal_id, frozenset())

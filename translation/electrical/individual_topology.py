@@ -52,7 +52,7 @@ def compute_individual_escape_topology(
         )
 
     terminal_cell_set: set[GridCell] = set()
-    for cells in obstacle_map.terminal_open_cells.values():
+    for cells in _individual_terminal_open_cells(obstacle_map).values():
         terminal_cell_set.update(cells)
     terminal_cells = frozenset(terminal_cell_set)
     blocked = set(obstacle_map.blocked_cells)
@@ -71,7 +71,7 @@ def compute_individual_escape_topology(
     failed_routes: list[EscapeTopologyRoute] = []
     cell_usage: dict[GridCell, int] = {}
     for terminal in _individual_terminals(common_bus):
-        source_cells = obstacle_map.terminal_open_cells.get(terminal.id, frozenset())
+        source_cells = _terminal_open_cells(obstacle_map, terminal.id)
         path = _best_source_path_to_boundary(
             source_cells=source_cells,
             next_cell=next_cell,
@@ -565,3 +565,22 @@ def _reverse_neighbors(
 def _in_bounds(cell: GridCell, width: int, height: int) -> bool:
     x, y = cell
     return 0 <= x < width and 0 <= y < height
+
+
+def _individual_terminal_open_cells(
+    obstacle_map: ElectricalObstacleMap,
+) -> dict[str, frozenset[GridCell]]:
+    return (
+        obstacle_map.individual_terminal_open_cells
+        or obstacle_map.terminal_open_cells
+    )
+
+
+def _terminal_open_cells(
+    obstacle_map: ElectricalObstacleMap,
+    terminal_id: str,
+) -> frozenset[GridCell]:
+    return _individual_terminal_open_cells(obstacle_map).get(
+        terminal_id,
+        frozenset(),
+    )

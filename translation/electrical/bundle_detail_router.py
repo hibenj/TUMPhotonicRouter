@@ -54,12 +54,26 @@ def route_detailed_bundles(
         assignment.slot.index: pad_access_cells(assignment.slot, obstacle_map, config)
         for assignment in pad_plan.assignments
     }
+    pad_lane_rank_by_slot = {
+        assignment.slot.index: rank
+        for rank, assignment in enumerate(
+            sorted(
+                (
+                    assignment
+                    for assignment in pad_plan.assignments
+                    if assignment.kind == "individual"
+                ),
+                key=lambda assignment: assignment.slot.index,
+            )
+        )
+    }
+    pad_lane_count = max(1, len(pad_lane_rank_by_slot))
     topology_route_by_terminal_id = {
         route.terminal.id: route for route in topology.routes if route.success
     }
     all_terminal_cells = (
-        set().union(*obstacle_map.terminal_open_cells.values())
-        if obstacle_map.terminal_open_cells
+        set().union(*_individual_terminal_open_cells(obstacle_map).values())
+        if _individual_terminal_open_cells(obstacle_map)
         else set()
     )
     hard_blocked = set(obstacle_map.blocked_cells)
@@ -139,16 +153,19 @@ def route_detailed_bundles(
                 lane_count=bundle.required_tracks,
                 route_side=route_side,
                 track_end=bundle_track_path[-1] if bundle_track_path else source_point,
+                pad_lane_rank=pad_lane_rank_by_slot.get(assignment.slot.index, rank),
+                pad_lane_count=pad_lane_count,
             )
-            detailed_path, source_stub_path, bundle_track_tail, pad_stub_path = (
-                _complete_offset_route(
+            route_prefix, source_stub_path, bundle_track_tail, pad_stub_start = (
+                _route_prefix_to_pad_stub_start(
                     source_point=source_point,
                     bundle_track_path=bundle_track_path,
                     pad_lane=pad_lane,
-                    pad_target=pad_stub_target,
                     pad_side=config.pad_side,
                 )
             )
+            pad_stub_path = _pad_stub_path(pad_stub_start, pad_lane, pad_stub_target)
+            detailed_path = _dedupe_points((*route_prefix, *pad_stub_path[1:]))
             path = _cells_from_point_path(detailed_path)
             track_cell = _representative_track_cell(topology_route)
             lane_cell = _representative_lane_cell(path, target_cells, config)
@@ -229,7 +246,7 @@ def _detail_failure_reason(
         return "terminal has no successful topology route"
     if not target_cells:
         return "assigned pad slot has no access cells"
-    source_cells = obstacle_map.terminal_open_cells.get(terminal.id, frozenset())
+    source_cells = _terminal_open_cells(obstacle_map, terminal.id)
     if not source_cells:
         return "terminal has no source cells in electrical grid"
     route_cells = set(topology_route.path)
@@ -277,62 +294,47 @@ def _individual_pad_lane_point(
     lane_count: int,
     route_side: str,
     track_end: tuple[float, float],
+    pad_lane_rank: int,
+    pad_lane_count: int,
 ) -> tuple[float, float]:
     target = _target_cell(target_cells, config)
-    base_lane_y = _pad_lane_y(target_cells, obstacle_map, config)
-    direction_x = -1 if target[0] + 0.5 < track_end[0] else 1
-    lane_offsets = [
-        _lane_offset_for_direction(
-            (direction_x, 0),
-            lane_index,
-            lane_count=lane_count,
-            route_side=route_side,
-            track_pitch_cells=float(track_pitch_cells),
-        )[1]
-        for lane_index in range(max(1, lane_count))
-    ]
-    lane_offset_y = lane_offsets[min(rank, len(lane_offsets) - 1)]
-    lane_gap_cells = max(1, math.ceil(config.wire_width_um / obstacle_map.grid.grid_size_um))
-    if config.pad_side == "top":
-        safe_min_y = max((cell[1] for cell in all_terminal_cells), default=0) + 1
-        target_edge_y = min(y for _, y in target_cells)
-        bottom_access_base_y = target_edge_y - lane_gap_cells - max(lane_offsets)
-        if bottom_access_base_y + min(lane_offsets) >= safe_min_y:
-            lane_base_y = bottom_access_base_y
-        else:
-            lane_base_y = safe_min_y - min(lane_offsets)
-        lane_y = lane_base_y + lane_offset_y
+    direction_x = 1 if target[0] + 0.5 >= track_end[0] else -1
+    track_pitch_cells = max(
+        1,
+        math.ceil(
+            (config.wire_width_um + config.individual_route_spacing_um)
+            / obstacle_map.grid.grid_size_um
+        ),
+    )
+    if direction_x >= 0:
+        shelf_index = pad_lane_rank + 1
     else:
-        safe_max_y = min((cell[1] for cell in all_terminal_cells), default=obstacle_map.grid.height - 1) - 1
+        shelf_index = pad_lane_count - pad_lane_rank
+    if config.pad_side == "top":
+        target_edge_y = min(y for _, y in target_cells)
+        lane_y = target_edge_y - shelf_index * track_pitch_cells
+    else:
         target_edge_y = max(y for _, y in target_cells)
-        top_access_base_y = target_edge_y + lane_gap_cells - min(lane_offsets)
-        if top_access_base_y + max(lane_offsets) <= safe_max_y:
-            lane_base_y = top_access_base_y
-        else:
-            lane_base_y = safe_max_y - max(lane_offsets)
-        lane_y = lane_base_y + lane_offset_y
-        lane_y = max(0, lane_y)
+        lane_y = target_edge_y + shelf_index * track_pitch_cells
+    lane_y = min(max(0, lane_y), obstacle_map.grid.height - 1)
     return (target[0] + 0.5, lane_y + 0.5)
 
 
-def _complete_offset_route(
+def _route_prefix_to_pad_stub_start(
     *,
     source_point: tuple[float, float],
     bundle_track_path: tuple[tuple[float, float], ...],
     pad_lane: tuple[float, float],
-    pad_target: tuple[float, float],
     pad_side: str,
 ) -> tuple[
     tuple[tuple[float, float], ...],
     tuple[tuple[float, float], ...],
     tuple[tuple[float, float], ...],
-    tuple[tuple[float, float], ...],
+    tuple[float, float],
 ]:
     if not bundle_track_path:
         source_stub = _manhattan_point_path(source_point, pad_lane)
-        pad_stub = _manhattan_point_path(pad_lane, pad_target)
-        complete = _dedupe_points((*source_stub, *pad_stub[1:]))
-        return complete, source_stub, (), pad_stub
+        return source_stub, source_stub, (), source_stub[-1]
 
     attach_point, track_tail = _attach_point_and_tail(
         source_point,
@@ -342,9 +344,8 @@ def _complete_offset_route(
     source_stub = _manhattan_point_path(source_point, attach_point)
     track_tail = _truncate_track_tail_at_pad_lane(track_tail, pad_lane)
     pad_stub_start = track_tail[-1] if track_tail else attach_point
-    pad_stub = _pad_stub_path(pad_stub_start, pad_lane, pad_target)
-    complete = _dedupe_points((*source_stub, *track_tail[1:], *pad_stub[1:]))
-    return complete, source_stub, track_tail, pad_stub
+    prefix = _dedupe_points((*source_stub, *track_tail[1:]))
+    return prefix, source_stub, track_tail, pad_stub_start
 
 
 def _truncate_track_tail_at_pad_lane(
@@ -483,17 +484,6 @@ def _dedupe_points(
             continue
         deduped.append(point)
     return tuple(deduped)
-
-
-def _pad_lane_y(
-    target_cells: frozenset[GridCell],
-    obstacle_map: ElectricalObstacleMap,
-    config: ElectricalRoutingConfig,
-) -> int:
-    lane_gap_cells = max(1, math.ceil(config.wire_width_um / obstacle_map.grid.grid_size_um))
-    if config.pad_side == "top":
-        return max(0, min(y for _, y in target_cells) - lane_gap_cells)
-    return min(obstacle_map.grid.height - 1, max(y for _, y in target_cells) + lane_gap_cells)
 
 
 def grid_segment(start: GridCell, end: GridCell) -> tuple[GridCell, ...]:
@@ -920,3 +910,22 @@ def _median(values: tuple[int, ...]) -> float:
     if len(sorted_values) % 2 == 1:
         return float(sorted_values[mid])
     return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+
+
+def _individual_terminal_open_cells(
+    obstacle_map: ElectricalObstacleMap,
+) -> dict[str, frozenset[GridCell]]:
+    return (
+        obstacle_map.individual_terminal_open_cells
+        or obstacle_map.terminal_open_cells
+    )
+
+
+def _terminal_open_cells(
+    obstacle_map: ElectricalObstacleMap,
+    terminal_id: str,
+) -> frozenset[GridCell]:
+    return _individual_terminal_open_cells(obstacle_map).get(
+        terminal_id,
+        frozenset(),
+    )

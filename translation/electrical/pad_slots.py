@@ -67,9 +67,13 @@ def plan_pad_slots(
     assignment_indices = [*individual_indices, common_bus_index]
     min_slot_index = min(0, min(assignment_indices, default=0))
     max_slot_index = max(0, max(assignment_indices, default=0)) + config.pad_extra_slots_right
+    pad_offset_um = max(
+        config.pad_offset_um,
+        _required_pad_channel_offset_um(len(individual_indices), config),
+    )
 
     slot_by_index = {
-        index: _make_slot(index, origin_x, obstacle_map, config)
+        index: _make_slot(index, origin_x, obstacle_map, config, pad_offset_um)
         for index in range(min_slot_index, max_slot_index + 1)
     }
 
@@ -301,15 +305,16 @@ def _make_slot(
     origin_x: float,
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
+    pad_offset_um: float,
 ) -> PadSlot:
     center_x = origin_x + index * config.pad_pitch_um
     half_width = config.bondpad_width_um / 2.0
     half_length = config.bondpad_length_um / 2.0
     _, layout_ymin, _, layout_ymax = obstacle_map.layout_bbox
     if config.pad_side == "top":
-        center_y = layout_ymax + config.pad_offset_um + half_length
+        center_y = layout_ymax + pad_offset_um + half_length
     else:
-        center_y = layout_ymin - config.pad_offset_um - half_length
+        center_y = layout_ymin - pad_offset_um - half_length
     bbox = (
         center_x - half_width,
         center_y - half_length,
@@ -322,6 +327,16 @@ def _make_slot(
         bbox=bbox,
         side=config.pad_side,
     )
+
+
+def _required_pad_channel_offset_um(
+    individual_route_count: int,
+    config: ElectricalRoutingConfig,
+) -> float:
+    if individual_route_count <= 0:
+        return config.pad_offset_um
+    track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
+    return individual_route_count * track_pitch_um + config.wire_width_um
 
 
 def pad_access_bbox(slot: PadSlot, config: ElectricalRoutingConfig) -> tuple[float, float, float, float]:

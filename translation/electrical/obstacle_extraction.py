@@ -11,6 +11,7 @@ from photonic_router.static_obstacle_builder import (
 )
 
 from .pitch_grid import bbox_to_grid_cells, disk_cells
+from .terminal_contacts import terminal_contact_seed_point_for_side
 from .types import (
     BusStripe,
     ElectricalObstacleMap,
@@ -29,7 +30,11 @@ def build_electrical_obstacle_map(
 
     config.validate()
     all_geometry = extract_benchmark(component)
-    die_bbox = _electrical_die_bbox(all_geometry.bbox, config)
+    die_bbox = _electrical_die_bbox(
+        all_geometry.bbox,
+        config,
+        individual_route_count=len(terminal_groups),
+    )
     static_config = StaticObstacleMapConfig(
         grid_size_um=config.routing_grid_pitch_um,
         security_margin_um=0.0,
@@ -51,12 +56,24 @@ def build_electrical_obstacle_map(
     bus_bbox = _bus_bbox(all_geometry.bbox, config)
     bus_cells = bbox_to_grid_cells(bus_bbox, grid)
 
+    common_bus_terminal_open_cells: dict[str, frozenset[tuple[int, int]]] = {}
+    individual_terminal_open_cells: dict[str, frozenset[tuple[int, int]]] = {}
     terminal_open_cells: dict[str, frozenset[tuple[int, int]]] = {}
     for terminal in _iter_terminals(terminal_groups):
-        terminal_open_cells[terminal.id] = disk_cells(
-            terminal.center,
+        common_bus_cells = disk_cells(
+            terminal_contact_seed_point_for_side(terminal, config.bus_side),
             config.terminal_open_radius_um,
             grid,
+        )
+        individual_cells = disk_cells(
+            terminal_contact_seed_point_for_side(terminal, config.pad_side),
+            config.terminal_open_radius_um,
+            grid,
+        )
+        common_bus_terminal_open_cells[terminal.id] = frozenset(common_bus_cells)
+        individual_terminal_open_cells[terminal.id] = frozenset(individual_cells)
+        terminal_open_cells[terminal.id] = frozenset(
+            set(common_bus_cells) | set(individual_cells)
         )
 
     cleared_cells = set(bus_cells)
@@ -78,6 +95,14 @@ def build_electrical_obstacle_map(
         ),
         die_bbox=die_bbox,
         layout_bbox=all_geometry.bbox,
+        raw_obstacle_bboxes=tuple(
+            dict.fromkeys(
+                _polygon_bbox(polygon)
+                for polygon in static_obstacles.benchmark.polygons
+            )
+        ),
+        common_bus_terminal_open_cells=common_bus_terminal_open_cells,
+        individual_terminal_open_cells=individual_terminal_open_cells,
     )
 
 
@@ -85,7 +110,18 @@ def _iter_terminals(groups: tuple[TerminalPairGroup, ...]) -> tuple[ElectricalTe
     return tuple(terminal for group in groups for terminal in group.terminals)
 
 
-def _electrical_die_bbox(layout_bbox: BBox, config: ElectricalRoutingConfig) -> BBox:
+def _polygon_bbox(polygon: list[tuple[float, float]]) -> BBox:
+    xs = [point[0] for point in polygon]
+    ys = [point[1] for point in polygon]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _electrical_die_bbox(
+    layout_bbox: BBox,
+    config: ElectricalRoutingConfig,
+    *,
+    individual_route_count: int,
+) -> BBox:
     xmin, ymin, xmax, ymax = layout_bbox
     margin = config.layout_margin_um
     x_margin = max(
@@ -93,7 +129,11 @@ def _electrical_die_bbox(layout_bbox: BBox, config: ElectricalRoutingConfig) -> 
         config.bus_x_margin_um + config.pad_pitch_um + config.bondpad_width_um,
     )
     bus_extra = config.bus_offset_um + config.bus_width_um + margin
-    pad_extra = config.pad_offset_um + config.bondpad_length_um + margin
+    pad_offset_um = max(
+        config.pad_offset_um,
+        _required_pad_channel_offset_um(individual_route_count, config),
+    )
+    pad_extra = pad_offset_um + config.bondpad_length_um + margin
     top_extra = pad_extra if config.pad_side == "top" else bus_extra
     bottom_extra = pad_extra if config.pad_side == "bottom" else bus_extra
     if config.bus_side == "bottom":
@@ -109,6 +149,16 @@ def _electrical_die_bbox(layout_bbox: BBox, config: ElectricalRoutingConfig) -> 
         xmax + x_margin,
         ymax + top_extra,
     )
+
+
+def _required_pad_channel_offset_um(
+    individual_route_count: int,
+    config: ElectricalRoutingConfig,
+) -> float:
+    if individual_route_count <= 0:
+        return config.pad_offset_um
+    track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
+    return individual_route_count * track_pitch_um + config.wire_width_um
 
 
 def _bus_bbox(layout_bbox: BBox, config: ElectricalRoutingConfig) -> BBox:

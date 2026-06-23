@@ -182,6 +182,13 @@ class ElectricalObstacleMap:
     bus: BusStripe
     die_bbox: BBox
     layout_bbox: BBox
+    raw_obstacle_bboxes: tuple[BBox, ...] = ()
+    common_bus_terminal_open_cells: dict[str, frozenset[GridCell]] = field(
+        default_factory=dict
+    )
+    individual_terminal_open_cells: dict[str, frozenset[GridCell]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)

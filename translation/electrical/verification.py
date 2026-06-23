@@ -7,6 +7,7 @@ from typing import Any
 
 from .pad_slots import pad_access_bbox
 from .pitch_grid import bbox_to_grid_cells
+from .terminal_contacts import terminal_access_path, terminal_contact_bboxes
 from .types import (
     BBox,
     CommonBusEscapeResult,
@@ -30,6 +31,7 @@ class _NetGeometry:
     net_id: str
     rects: tuple[BBox, ...]
     allowed_cells: frozenset[GridCell]
+    allowed_physical_bboxes: tuple[BBox, ...] = ()
 
 
 def verify_electrical_routing(
@@ -61,12 +63,18 @@ def verify_electrical_routing(
         common_bus,
         common_bus_escape,
         obstacle_map,
+        config,
     )
     net_geometries.append(
         _NetGeometry(
             net_id="common_bus",
             rects=common_bus_rects,
             allowed_cells=frozenset(common_bus_allowed),
+            allowed_physical_bboxes=_common_bus_allowed_physical_bboxes(
+                common_bus,
+                obstacle_map,
+                config,
+            ),
         )
     )
     _verify_common_bus_terminal_contacts(issues, common_bus, common_bus_rects)
@@ -75,13 +83,29 @@ def verify_electrical_routing(
     if detailed_bundle_routes is not None:
         for route in detailed_bundle_routes.routes:
             route_rects = _detailed_route_rects(route, obstacle_map, config)
-            allowed_cells = set(obstacle_map.terminal_open_cells.get(route.terminal.id, ()))
+            route_start_um = _route_start_um(route, obstacle_map)
+            allowed_cells = set(
+                _individual_terminal_open_cells(obstacle_map).get(
+                    route.terminal.id,
+                    (),
+                )
+            )
+            access = _terminal_route_access(route, obstacle_map, config.wire_width_um)
+            allowed_cells.update(
+                _terminal_contact_cells(
+                    route.terminal,
+                    obstacle_map,
+                    config.wire_width_um,
+                    route_start_um=route_start_um,
+                )
+            )
             allowed_cells.update(route.target_cells)
             net_geometries.append(
                 _NetGeometry(
                     net_id=f"individual:{route.terminal.heater_id}",
                     rects=route_rects,
                     allowed_cells=frozenset(allowed_cells),
+                    allowed_physical_bboxes=(access.contact_bbox,),
                 )
             )
             _verify_terminal_contact(
@@ -109,6 +133,7 @@ def verify_electrical_routing(
                 )
             )
 
+    _verify_raw_physical_obstacle_overlaps(issues, net_geometries, obstacle_map)
     _verify_blocked_cell_clearance(issues, net_geometries, obstacle_map)
     _verify_cross_net_overlaps(issues, net_geometries)
 
@@ -123,7 +148,14 @@ def _common_bus_rects(
 ) -> tuple[BBox, ...]:
     rects: list[BBox] = [common_bus.bus.bbox]
     for route in common_bus.routes:
-        rects.extend(_grid_wire_rects(route.path, obstacle_map, config.bus_width_um))
+        rects.extend(
+            _terminal_grid_route_rects(
+                route.terminal,
+                route.path,
+                obstacle_map,
+                config.bus_width_um,
+            )
+        )
     if common_bus_escape is not None and common_bus_escape.success:
         rects.extend(
             _grid_wire_rects(
@@ -139,13 +171,62 @@ def _common_bus_allowed_cells(
     common_bus: CommonBusRoutingResult,
     common_bus_escape: CommonBusEscapeResult | None,
     obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
 ) -> set[GridCell]:
     allowed: set[GridCell] = set(common_bus.bus.cells)
     for route in common_bus.routes:
-        allowed.update(obstacle_map.terminal_open_cells.get(route.terminal.id, ()))
+        allowed.update(
+            _common_bus_terminal_open_cells(obstacle_map).get(route.terminal.id, ())
+        )
+        allowed.update(
+            _terminal_contact_cells(
+                route.terminal,
+                obstacle_map,
+                config.bus_width_um,
+                route_start_um=(
+                    _grid_cell_center_um(route.path[0], obstacle_map)
+                    if route.path
+                    else None
+                ),
+            )
+        )
     if common_bus_escape is not None:
         allowed.update(common_bus_escape.target_cells)
     return allowed
+
+
+def _common_bus_allowed_physical_bboxes(
+    common_bus: CommonBusRoutingResult,
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> tuple[BBox, ...]:
+    return tuple(
+        _terminal_grid_route_access(
+            route.terminal,
+            route.path,
+            obstacle_map,
+            config.bus_width_um,
+        ).contact_bbox
+        for route in common_bus.routes
+    )
+
+
+def _common_bus_terminal_open_cells(
+    obstacle_map: ElectricalObstacleMap,
+) -> dict[str, frozenset[GridCell]]:
+    return (
+        obstacle_map.common_bus_terminal_open_cells
+        or obstacle_map.terminal_open_cells
+    )
+
+
+def _individual_terminal_open_cells(
+    obstacle_map: ElectricalObstacleMap,
+) -> dict[str, frozenset[GridCell]]:
+    return (
+        obstacle_map.individual_terminal_open_cells
+        or obstacle_map.terminal_open_cells
+    )
 
 
 def _verify_common_bus_terminal_contacts(
@@ -209,13 +290,17 @@ def _verify_terminal_contact(
     net_id: str | None,
     route: TerminalBusRoute | None = None,
 ) -> None:
-    terminal_bboxes = _terminal_contact_bboxes(terminal)
-    if any(_any_rect_intersects(rects, bbox) for bbox in terminal_bboxes):
+    terminal_bboxes = terminal_contact_bboxes(terminal, fallback_width_um=0.0)
+    contacted_bboxes = tuple(
+        bbox for bbox in terminal_bboxes if _any_rect_intersects(rects, bbox)
+    )
+    if contacted_bboxes:
         return
     details: dict[str, Any] = {
         "terminal_id": terminal.id,
         "heater_id": terminal.heater_id,
         "terminal_bbox": terminal.bbox,
+        "contact_bboxes": terminal_bboxes,
     }
     if route is not None:
         details["route_cost"] = route.cost
@@ -265,6 +350,42 @@ def _verify_individual_pad_contact(
             },
         )
     )
+
+
+def _verify_raw_physical_obstacle_overlaps(
+    issues: list[ElectricalVerificationIssue],
+    net_geometries: list[_NetGeometry],
+    obstacle_map: ElectricalObstacleMap,
+) -> None:
+    if not obstacle_map.raw_obstacle_bboxes:
+        return
+    for net in net_geometries:
+        illegal_overlaps: set[BBox] = set()
+        for rect in net.rects:
+            for obstacle_bbox in obstacle_map.raw_obstacle_bboxes:
+                overlap = _rect_intersection(rect, obstacle_bbox)
+                if overlap is None or _rect_area(overlap) <= 0:
+                    continue
+                if _rect_is_covered_by_any(overlap, net.allowed_physical_bboxes):
+                    continue
+                illegal_overlaps.add(overlap)
+        if not illegal_overlaps:
+            continue
+        sorted_overlaps = tuple(sorted(illegal_overlaps))
+        issues.append(
+            ElectricalVerificationIssue(
+                code="metal_overlaps_raw_obstacle",
+                message=(
+                    f"Metal for {net.net_id} overlaps original obstacle geometry "
+                    "outside an allowed terminal contact."
+                ),
+                net_id=net.net_id,
+                details={
+                    "overlap_count": len(sorted_overlaps),
+                    "sample_overlaps": sorted_overlaps[:10],
+                },
+            )
+        )
 
 
 def _verify_blocked_cell_clearance(
@@ -327,11 +448,12 @@ def _detailed_route_rects(
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
 ) -> tuple[BBox, ...]:
-    points_um = tuple(
-        _grid_point_to_um(point, obstacle_map)
-        for point in route.offset_path
+    return _terminal_point_route_rects(
+        route.terminal,
+        route.offset_path,
+        obstacle_map,
+        config.wire_width_um,
     )
-    return _point_wire_rects(points_um, config.wire_width_um)
 
 
 def _grid_wire_rects(
@@ -344,6 +466,109 @@ def _grid_wire_rects(
         for cell in path
     )
     return _point_wire_rects(points, width_um)
+
+
+def _terminal_grid_route_rects(
+    terminal: ElectricalTerminal,
+    path: tuple[GridCell, ...],
+    obstacle_map: ElectricalObstacleMap,
+    width_um: float,
+) -> tuple[BBox, ...]:
+    return _terminal_access_rects(
+        _terminal_grid_route_access(terminal, path, obstacle_map, width_um),
+        width_um,
+    )
+
+
+def _terminal_point_route_rects(
+    terminal: ElectricalTerminal,
+    points_grid: tuple[GridPoint, ...],
+    obstacle_map: ElectricalObstacleMap,
+    width_um: float,
+) -> tuple[BBox, ...]:
+    return _terminal_access_rects(
+        _terminal_point_route_access(terminal, points_grid, obstacle_map, width_um),
+        width_um,
+    )
+
+
+def _terminal_grid_route_access(
+    terminal: ElectricalTerminal,
+    path: tuple[GridCell, ...],
+    obstacle_map: ElectricalObstacleMap,
+    width_um: float,
+) -> Any:
+    points_um = tuple(
+        _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
+        for cell in path
+    )
+    return terminal_access_path(
+        terminal,
+        points_um,
+        fallback_width_um=width_um,
+    )
+
+
+def _terminal_route_access(
+    route: DetailedBundleRoute,
+    obstacle_map: ElectricalObstacleMap,
+    width_um: float,
+) -> Any:
+    return _terminal_point_route_access(
+        route.terminal,
+        route.offset_path,
+        obstacle_map,
+        width_um,
+    )
+
+
+def _terminal_point_route_access(
+    terminal: ElectricalTerminal,
+    points_grid: tuple[GridPoint, ...],
+    obstacle_map: ElectricalObstacleMap,
+    width_um: float,
+) -> Any:
+    points_um = tuple(_grid_point_to_um(point, obstacle_map) for point in points_grid)
+    return terminal_access_path(
+        terminal,
+        points_um,
+        fallback_width_um=width_um,
+    )
+
+
+def _terminal_access_rects(
+    access: Any,
+    width_um: float,
+) -> tuple[BBox, ...]:
+    rects: list[BBox] = [access.contact_bbox]
+    rects.extend(_point_wire_rects(access.adapter_points, access.access_width_um))
+    rects.extend(_point_wire_rects(access.route_tail_points, width_um))
+    return tuple(rects)
+
+
+def _terminal_contact_cells(
+    terminal: ElectricalTerminal,
+    obstacle_map: ElectricalObstacleMap,
+    width_um: float,
+    *,
+    route_start_um: tuple[float, float] | None,
+) -> frozenset[GridCell]:
+    access = terminal_access_path(
+        terminal,
+        (route_start_um,) if route_start_um is not None else (),
+        fallback_width_um=width_um,
+    )
+    return bbox_to_grid_cells(
+        access.contact_bbox,
+        obstacle_map.grid,
+    )
+
+
+def _grid_cell_center_um(
+    cell: GridCell,
+    obstacle_map: ElectricalObstacleMap,
+) -> tuple[float, float]:
+    return _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
 
 
 def _point_wire_rects(
@@ -400,21 +625,13 @@ def _point_rect(point: tuple[float, float], half_width: float) -> BBox:
     return (x - half_width, y - half_width, x + half_width, y + half_width)
 
 
-def _terminal_contact_bboxes(terminal: ElectricalTerminal) -> tuple[BBox, ...]:
-    port_bboxes: list[BBox] = []
-    for port in terminal.ports:
-        half_width = max(float(port.width or 0.0) / 2.0, 0.0)
-        port_bboxes.append(
-            (
-                port.center[0] - half_width,
-                port.center[1] - half_width,
-                port.center[0] + half_width,
-                port.center[1] + half_width,
-            )
-        )
-    if port_bboxes:
-        return tuple(port_bboxes)
-    return (terminal.bbox,)
+def _route_start_um(
+    route: DetailedBundleRoute,
+    obstacle_map: ElectricalObstacleMap,
+) -> tuple[float, float] | None:
+    if not route.offset_path:
+        return None
+    return _grid_point_to_um(route.offset_path[0], obstacle_map)
 
 
 def _grid_point_to_um(
@@ -453,6 +670,23 @@ def _rect_intersection(left: BBox, right: BBox) -> BBox | None:
         min(left[2], right[2]),
         min(left[3], right[3]),
     )
+
+
+def _rect_is_covered_by_any(rect: BBox, covers: tuple[BBox, ...]) -> bool:
+    return any(_rect_contains(cover, rect) for cover in covers)
+
+
+def _rect_contains(outer: BBox, inner: BBox) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and outer[2] >= inner[2]
+        and outer[3] >= inner[3]
+    )
+
+
+def _rect_area(rect: BBox) -> float:
+    return max(0.0, rect[2] - rect[0]) * max(0.0, rect[3] - rect[1])
 
 
 def _rect_intersects(left: BBox, right: BBox) -> bool:

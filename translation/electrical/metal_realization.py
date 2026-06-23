@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from gdsfactory.component import Component
 
+from .terminal_contacts import terminal_access_path
 from .types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
     DetailedBundleRoutingResult,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,
+    ElectricalTerminal,
     GridCell,
     GridPoint,
     PadPlan,
@@ -37,8 +39,9 @@ def realize_electrical_metal(
 
     _append_rect(routed, common_bus.bus.bbox, config.metal_layer)
     for route in common_bus.routes:
-        _append_grid_wire_path(
+        _append_terminal_grid_route(
             routed,
+            route.terminal,
             route.path,
             obstacle_map,
             width_um=config.bus_width_um,
@@ -58,8 +61,9 @@ def realize_electrical_metal(
         for route in detailed_bundle_routes.routes:
             if not route.success:
                 continue
-            _append_point_wire_path(
+            _append_terminal_point_route(
                 routed,
+                route.terminal,
                 route.offset_path,
                 obstacle_map,
                 width_um=config.wire_width_um,
@@ -71,6 +75,60 @@ def realize_electrical_metal(
             _append_rect(routed, assignment.slot.bbox, config.metal_layer)
 
     return routed
+
+
+def _append_terminal_grid_route(
+    component: Component,
+    terminal: ElectricalTerminal,
+    path: tuple[GridCell, ...],
+    obstacle_map: ElectricalObstacleMap,
+    *,
+    width_um: float,
+    layer: tuple[int, int],
+) -> None:
+    points = tuple(
+        _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
+        for cell in path
+    )
+    _append_terminal_um_route(component, terminal, points, width_um=width_um, layer=layer)
+
+
+def _append_terminal_point_route(
+    component: Component,
+    terminal: ElectricalTerminal,
+    points_grid: tuple[GridPoint, ...],
+    obstacle_map: ElectricalObstacleMap,
+    *,
+    width_um: float,
+    layer: tuple[int, int],
+) -> None:
+    points = tuple(_grid_point_to_um(point, obstacle_map) for point in points_grid)
+    _append_terminal_um_route(component, terminal, points, width_um=width_um, layer=layer)
+
+
+def _append_terminal_um_route(
+    component: Component,
+    terminal: ElectricalTerminal,
+    route_points_um: tuple[tuple[float, float], ...],
+    *,
+    width_um: float,
+    layer: tuple[int, int],
+) -> None:
+    """Draw a physical-port adapter and only the usable snapped route tail."""
+
+    access = terminal_access_path(
+        terminal,
+        route_points_um,
+        fallback_width_um=width_um,
+    )
+    _append_rect(component, access.contact_bbox, layer)
+    _append_um_wire_path(
+        component,
+        access.adapter_points,
+        width_um=access.access_width_um,
+        layer=layer,
+    )
+    _append_um_wire_path(component, access.route_tail_points, width_um=width_um, layer=layer)
 
 
 def _append_grid_wire_path(
@@ -94,6 +152,16 @@ def _append_point_wire_path(
     layer: tuple[int, int],
 ) -> None:
     points_um = tuple(_grid_point_to_um(point, obstacle_map) for point in points_grid)
+    _append_um_wire_path(component, points_um, width_um=width_um, layer=layer)
+
+
+def _append_um_wire_path(
+    component: Component,
+    points_um: tuple[tuple[float, float], ...],
+    *,
+    width_um: float,
+    layer: tuple[int, int],
+) -> None:
     points_um = _simplify_manhattan_points(_dedupe_points(points_um))
     if not points_um:
         return

@@ -20,7 +20,11 @@ from translation.electrical.bundle_detail_router import (
     _offset_path_by_local_normals,
     _realize_ordered_bundle_lanes,
 )
+from translation.electrical.obstacle_extraction import build_electrical_obstacle_map
 from translation.electrical.pad_slots import pad_access_bbox
+from translation.electrical.pitch_grid import disk_cells
+from translation.electrical.terminal_contacts import select_terminal_contact, terminal_access_path
+from translation.electrical.terminal_contacts import terminal_contact_seed_points
 from translation.electrical.terminal_extraction import extract_heater_terminal_pairs
 from translation.electrical.types import (
     BusStripe,
@@ -56,7 +60,10 @@ def _polygon_bboxes_by_layer(component: Component, layer: tuple[int, int]):
     }
 
 
-def _verification_obstacle_map() -> ElectricalObstacleMap:
+def _verification_obstacle_map(
+    *,
+    raw_obstacle_bboxes: tuple[tuple[float, float, float, float], ...] = (),
+) -> ElectricalObstacleMap:
     grid = SimpleNamespace(
         width=40,
         height=40,
@@ -76,6 +83,7 @@ def _verification_obstacle_map() -> ElectricalObstacleMap:
         bus=bus,
         die_bbox=(0.0, 0.0, 400.0, 400.0),
         layout_bbox=(0.0, 0.0, 200.0, 200.0),
+        raw_obstacle_bboxes=raw_obstacle_bboxes,
     )
 
 
@@ -103,7 +111,7 @@ def _terminal(terminal_id: str, center: tuple[float, float]) -> ElectricalTermin
     )
 
 
-def test_verifier_flags_missing_heater_terminal_contact():
+def test_verifier_models_terminal_landing_contact():
     obstacle_map = _verification_obstacle_map()
     config = ElectricalRoutingConfig(
         pad_side="top",
@@ -138,8 +146,59 @@ def test_verifier_flags_missing_heater_terminal_contact():
     )
 
     issue_codes = {issue.code for issue in verification.issues}
-    assert not verification.success
-    assert "missing_terminal_contact" in issue_codes
+    assert "missing_terminal_contact" not in issue_codes
+
+
+def test_terminal_contact_selects_physical_port_not_logical_center():
+    terminal = ElectricalTerminal(
+        id="heater_0:l",
+        heater_id="heater_0",
+        side_key="l",
+        center=(50.0, 50.0),
+        bbox=(38.0, 38.0, 62.0, 62.0),
+        ports=(
+            ElectricalPortRef("l_e1", (40.0, 50.0), 180.0, 4.0, (49, 0)),
+            ElectricalPortRef("l_e2", (50.0, 60.0), 90.0, 4.0, (49, 0)),
+            ElectricalPortRef("l_e3", (60.0, 50.0), 0.0, 4.0, (49, 0)),
+            ElectricalPortRef("l_e4", (50.0, 40.0), 270.0, 4.0, (49, 0)),
+        ),
+        layer=(49, 0),
+    )
+
+    contact_center, contact_bbox = select_terminal_contact(
+        terminal,
+        route_start_um=(0.0, 50.0),
+        fallback_width_um=20.0,
+    )
+
+    assert contact_center == (40.0, 50.0)
+    assert contact_center != terminal.center
+    assert contact_bbox == (38.0, 48.0, 42.0, 52.0)
+
+
+def test_terminal_access_path_trims_snapped_points_inside_terminal():
+    terminal = ElectricalTerminal(
+        id="heater_0:l",
+        heater_id="heater_0",
+        side_key="l",
+        center=(50.0, 50.0),
+        bbox=(38.0, 38.0, 62.0, 62.0),
+        ports=(
+            ElectricalPortRef("l_e2", (50.0, 60.0), 90.0, 4.0, (49, 0)),
+        ),
+        layer=(49, 0),
+    )
+
+    access = terminal_access_path(
+        terminal,
+        route_points_um=((50.0, 60.0), (50.0, 65.0), (50.0, 90.0)),
+        fallback_width_um=10.0,
+    )
+
+    assert access.contact_center == (50.0, 60.0)
+    assert access.access_width_um == 4.0
+    assert access.adapter_points == ((50.0, 60.0), (50.0, 67.0), (50.0, 90.0))
+    assert access.route_tail_points == ((50.0, 90.0),)
 
 
 def test_verifier_flags_cross_net_metal_overlap():
@@ -221,6 +280,85 @@ def test_verifier_flags_cross_net_metal_overlap():
     assert "cross_net_metal_overlap" in issue_codes
 
 
+def test_verifier_flags_raw_physical_obstacle_overlap_outside_port_contact():
+    obstacle_map = _verification_obstacle_map(
+        raw_obstacle_bboxes=((30.0, 15.0, 40.0, 25.0),),
+    )
+    config = ElectricalRoutingConfig(
+        pad_side="top",
+        routing_grid_pitch_um=10.0,
+        wire_width_um=10.0,
+        bus_width_um=10.0,
+    )
+    terminal = _terminal("heater_0:r", (20.0, 20.0))
+    pad_slot = PadSlot(
+        index=0,
+        center=(50.0, 300.0),
+        bbox=(10.0, 260.0, 90.0, 340.0),
+        side="top",
+    )
+    pad_assignment = PadAssignment(
+        slot=pad_slot,
+        net_id="individual:heater_0",
+        kind="individual",
+        terminal=terminal,
+        heater_id="heater_0",
+    )
+    common_bus = CommonBusRoutingResult(
+        bus_side="bottom",
+        bus=obstacle_map.bus,
+        selected_terminals={},
+        unselected_terminals={"heater_0": terminal},
+        routes=(),
+        tree_cells=frozenset(obstacle_map.bus.cells),
+    )
+    detailed_routes = DetailedBundleRoutingResult(
+        routes=(
+            DetailedBundleRoute(
+                bundle_id=0,
+                rank=0,
+                terminal=terminal,
+                pad_assignment=pad_assignment,
+                path=((2, 2), (5, 2)),
+                target_cells=frozenset({(5, 26)}),
+                track_cell=(2, 2),
+                lane_cell=(5, 2),
+                offset_um=0.0,
+                offset_axis="x",
+                offset_path=((2.0, 2.0), (5.0, 2.0)),
+                success=True,
+            ),
+        ),
+        failed_routes=(),
+        committed_cells=frozenset({(2, 2), (5, 2)}),
+    )
+
+    verification = verify_electrical_routing(
+        obstacle_map,
+        common_bus,
+        common_bus_escape=CommonBusEscapeResult(
+            pad_assignment=None,
+            path=(),
+            target_cells=frozenset(),
+            success=False,
+            reason="not relevant for physical overlap test",
+        ),
+        detailed_bundle_routes=detailed_routes,
+        pad_plan=PadPlan(
+            side="top",
+            pitch_um=130.0,
+            origin_x_um=0.0,
+            slots=(pad_slot,),
+            assignments=(pad_assignment,),
+            empty_slots=(),
+        ),
+        config=config,
+    )
+
+    issue_codes = {issue.code for issue in verification.issues}
+    assert "metal_overlaps_raw_obstacle" in issue_codes
+
+
 def test_extracts_two_logical_terminals_from_multi_port_heater():
     schematic = build_single_heater_schematic()
     component = layout_from_schematic(schematic)
@@ -234,6 +372,31 @@ def test_extracts_two_logical_terminals_from_multi_port_heater():
     assert len(group.terminal_a.ports) == 4
     assert len(group.terminal_b.ports) == 4
     assert group.terminal_a.center[0] < group.terminal_b.center[0]
+
+
+def test_obstacle_map_uses_role_specific_terminal_openings():
+    schematic = build_single_heater_schematic()
+    component = layout_from_schematic(schematic)
+    config = ElectricalRoutingConfig()
+    groups = extract_heater_terminal_pairs(component, schematic, config)
+
+    obstacle_map = build_electrical_obstacle_map(component, groups, config)
+    terminal = groups[0].terminal_a
+    all_port_cells: set[tuple[int, int]] = set()
+    for point in terminal_contact_seed_points(terminal):
+        all_port_cells.update(
+            disk_cells(point, config.terminal_open_radius_um, obstacle_map.grid)
+        )
+    common_cells = obstacle_map.common_bus_terminal_open_cells[terminal.id]
+    individual_cells = obstacle_map.individual_terminal_open_cells[terminal.id]
+
+    assert common_cells
+    assert individual_cells
+    assert set(common_cells) != all_port_cells
+    assert set(individual_cells) != all_port_cells
+    assert obstacle_map.terminal_open_cells[terminal.id] == frozenset(
+        set(common_cells) | set(individual_cells)
+    )
 
 
 def test_pad_side_derives_opposite_common_bus_side():
@@ -269,6 +432,15 @@ def test_common_bus_router_selects_exactly_one_terminal_per_heater(tmp_path):
         unselected = result.common_bus.unselected_terminals[group.heater_id]
         assert selected.id != unselected.id
         assert {selected.id, unselected.id} == {group.terminal_a.id, group.terminal_b.id}
+    for route in result.common_bus.routes:
+        other_terminal_cells = set().union(
+            *(
+                cells
+                for terminal_id, cells in result.obstacle_map.common_bus_terminal_open_cells.items()
+                if terminal_id != route.terminal.id
+            )
+        )
+        assert not set(route.path).intersection(other_terminal_cells)
 
     svg_path = tmp_path / "electrical" / "mmi8x4_common_bus.svg"
     assert svg_path.exists()
@@ -651,7 +823,7 @@ def test_individual_topology_groups_escape_corridors_before_pad_assignment():
         other_terminal_cells = set().union(
             *(
                 cells
-                for terminal_id, cells in result.obstacle_map.terminal_open_cells.items()
+                for terminal_id, cells in result.obstacle_map.individual_terminal_open_cells.items()
                 if terminal_id != route.terminal.id
             )
         )
@@ -738,7 +910,7 @@ def test_detailed_bundle_router_assigns_spaced_offsets_from_topology():
         route for route in detailed.routes if route.bundle_id == result.individual_topology.bundles[0].bundle_id
     ]
     assert [route.rank for route in first_bundle_routes] == [0, 1, 2, 3]
-    assert [route.offset_um for route in first_bundle_routes] == [-120.0, -80.0, -40.0, -0.0]
+    assert [route.offset_um for route in first_bundle_routes] == [-120.0, -80.0, -40.0, 0.0]
     assert all(route.offset_axis == "x" for route in first_bundle_routes)
     assert [route.pad_assignment.slot.index for route in first_bundle_routes] == [0, 1, 2, 3]
     assert [route.terminal.id for route in first_bundle_routes] == [
@@ -754,11 +926,11 @@ def test_detailed_bundle_router_assigns_spaced_offsets_from_topology():
     assert [route.pad_assignment.slot.index for route in right_bundle_routes] == [4, 5, 6, 7]
 
     for route in detailed.routes:
-        source_cells = result.obstacle_map.terminal_open_cells[route.terminal.id]
+        source_cells = result.obstacle_map.individual_terminal_open_cells[route.terminal.id]
         other_terminal_cells = set().union(
             *(
                 cells
-                for terminal_id, cells in result.obstacle_map.terminal_open_cells.items()
+                for terminal_id, cells in result.obstacle_map.individual_terminal_open_cells.items()
                 if terminal_id != route.terminal.id
             )
         )
