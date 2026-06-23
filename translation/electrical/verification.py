@@ -727,6 +727,7 @@ def _point_wire_rects(
     points: tuple[tuple[float, float], ...],
     width_um: float,
 ) -> tuple[BBox, ...]:
+    points = _simplify_manhattan_points(_dedupe_points(points))
     if not points:
         return ()
     half_width = width_um / 2.0
@@ -775,6 +776,33 @@ def _segment_rects(
 def _point_rect(point: tuple[float, float], half_width: float) -> BBox:
     x, y = point
     return (x - half_width, y - half_width, x + half_width, y + half_width)
+
+
+def _dedupe_points(
+    points: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    deduped: list[tuple[float, float]] = []
+    for point in points:
+        if deduped and deduped[-1] == point:
+            continue
+        deduped.append(point)
+    return tuple(deduped)
+
+
+def _simplify_manhattan_points(
+    points: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    if len(points) <= 2:
+        return points
+    simplified: list[tuple[float, float]] = [points[0]]
+    previous_direction = _point_direction(points[0], points[1])
+    for index in range(1, len(points) - 1):
+        current_direction = _point_direction(points[index], points[index + 1])
+        if current_direction != previous_direction:
+            simplified.append(points[index])
+            previous_direction = current_direction
+    simplified.append(points[-1])
+    return tuple(simplified)
 
 
 def _route_start_um(

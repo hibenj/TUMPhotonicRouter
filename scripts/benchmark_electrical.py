@@ -31,7 +31,10 @@ DEFAULT_GUARDRAILS: Mapping[str, float | int | bool] = {
     "pad_channel_height_um_max": 220.0,
     "centerline_length_um_max": 21_000.0,
     "bend_count_max": 75,
-    "raw_metal_area_um2_max": 1_300_000.0,
+    "raw_metal_area_um2_max": 800_000.0,
+    "rect_count_max": 400,
+    "same_net_duplicate_rect_count_max": 80,
+    "same_net_overlap_pair_count_max": 2_000,
     "output_polygon_count_max": 20,
     "pre_union_rect_count_max": 450,
 }
@@ -41,15 +44,29 @@ def run_electrical_benchmark(
     benchmark_name: str = DEFAULT_BENCHMARK,
     *,
     config: ElectricalRoutingConfig | None = None,
+    artifacts_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Run one electrical benchmark and return a stable JSON-compatible row."""
 
     config = config or ElectricalRoutingConfig()
     schematic = load_benchmark(benchmark_name)
     component = layout_from_schematic(schematic)
-    result = route_electrical_heaters(component, schematic, config)
+    result = route_electrical_heaters(
+        component,
+        schematic,
+        config,
+        debug_dir=artifacts_dir,
+        debug_prefix=benchmark_name,
+    )
     summary = electrical_benchmark_summary(benchmark_name, config, result)
     summary["guardrail_violations"] = guardrail_violations(summary)
+    if artifacts_dir is not None:
+        summary["artifacts"] = write_artifact_bundle(
+            summary,
+            result,
+            artifacts_dir,
+            benchmark_name,
+        )
     return summary
 
 
@@ -107,6 +124,9 @@ def guardrail_violations(
     _check_metric_max(violations, summary, "centerline_length_um", guardrails)
     _check_metric_max(violations, summary, "bend_count", guardrails)
     _check_metric_max(violations, summary, "raw_metal_area_um2", guardrails)
+    _check_metric_max(violations, summary, "rect_count", guardrails)
+    _check_metric_max(violations, summary, "same_net_duplicate_rect_count", guardrails)
+    _check_metric_max(violations, summary, "same_net_overlap_pair_count", guardrails)
     _check_realization_max(violations, summary, "output_polygon_count", guardrails)
     _check_realization_max(violations, summary, "pre_union_rect_count", guardrails)
     _check_cross_net_spacing(violations, summary)
@@ -280,6 +300,92 @@ def _write_json(summary: Mapping[str, Any], output_path: Path | None) -> None:
     output_path.write_text(text, encoding="utf-8")
 
 
+def write_artifact_bundle(
+    summary: Mapping[str, Any],
+    result: object,
+    artifacts_dir: Path,
+    benchmark_name: str,
+) -> dict[str, str]:
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = artifacts_dir / f"{benchmark_name}_summary.json"
+    report_path = artifacts_dir / f"{benchmark_name}_summary.md"
+    artifact_paths: dict[str, str] = {
+        "summary_json": str(summary_path),
+        "summary_md": str(report_path),
+    }
+
+    debug_artifacts = _as_dict(getattr(result, "debug_artifacts", {}))
+    common_bus_svg = debug_artifacts.get("common_bus_svg")
+    if isinstance(common_bus_svg, str):
+        artifact_paths["common_bus_svg"] = common_bus_svg
+
+    routed_component = getattr(result, "routed_component", None)
+    if routed_component is not None:
+        gds_path = artifacts_dir / f"{benchmark_name}_electrical.gds"
+        writer = getattr(routed_component, "write_gds", None)
+        if callable(writer):
+            writer(gds_path)
+            artifact_paths["gds"] = str(gds_path)
+
+    summary_with_artifacts = dict(summary)
+    summary_with_artifacts["artifacts"] = dict(sorted(artifact_paths.items()))
+    _write_json(summary_with_artifacts, summary_path)
+    report_path.write_text(_markdown_report(summary_with_artifacts), encoding="utf-8")
+    return artifact_paths
+
+
+def _markdown_report(summary: Mapping[str, Any]) -> str:
+    metrics = summary.get("metrics", {})
+    realization = summary.get("realization_metrics", {})
+    violations = summary.get("guardrail_violations", [])
+    metric_rows = [
+        ("verification_success", summary.get("verification_success")),
+        ("verification_error_count", summary.get("verification_error_count")),
+        ("verification_warning_count", summary.get("verification_warning_count")),
+        ("detailed_route_count", summary.get("detailed_route_count")),
+        ("failed_detailed_route_count", summary.get("failed_detailed_route_count")),
+        ("pad_assignment_count", summary.get("pad_assignment_count")),
+        ("centerline_length_um", _mapping_get(metrics, "centerline_length_um")),
+        ("bend_count", _mapping_get(metrics, "bend_count")),
+        ("pad_channel_height_um", _mapping_get(metrics, "pad_channel_height_um")),
+        ("raw_metal_area_um2", _mapping_get(metrics, "raw_metal_area_um2")),
+        ("rect_count", _mapping_get(metrics, "rect_count")),
+        ("same_net_overlap_pair_count", _mapping_get(metrics, "same_net_overlap_pair_count")),
+        ("cross_net_min_spacing_um", _mapping_get(metrics, "cross_net_min_spacing_um")),
+        ("output_polygon_count", _mapping_get(realization, "output_polygon_count")),
+        ("pre_union_rect_count", _mapping_get(realization, "pre_union_rect_count")),
+    ]
+    lines = [
+        f"# Electrical Benchmark: {summary.get('benchmark', '')}",
+        "",
+        f"- Pad side: `{summary.get('pad_side', '')}`",
+        f"- Guardrail violations: `{len(violations) if isinstance(violations, list) else 0}`",
+        "",
+        "| Metric | Value |",
+        "|---|---:|",
+    ]
+    lines.extend(f"| `{name}` | `{value}` |" for name, value in metric_rows)
+    if isinstance(violations, list) and violations:
+        lines.extend(["", "## Guardrail Violations", ""])
+        for violation in violations:
+            if not isinstance(violation, Mapping):
+                continue
+            lines.append(
+                "- "
+                f"`{violation.get('name')}` "
+                f"{violation.get('operator')} "
+                f"`{violation.get('expected')}` "
+                f"(actual `{violation.get('actual')}`)"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _mapping_get(value: object, key: str) -> object:
+    if isinstance(value, Mapping):
+        return value.get(key)
+    return None
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run an electrical-routing benchmark and emit JSON metrics."
@@ -307,6 +413,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="top",
         help="Electrical pad side for the benchmark.",
     )
+    parser.add_argument(
+        "--artifacts-dir",
+        type=Path,
+        default=None,
+        help="Optional directory for summary JSON, Markdown, debug SVG, and GDS artifacts.",
+    )
     return parser.parse_args(argv)
 
 
@@ -315,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = run_electrical_benchmark(
         args.benchmark,
         config=ElectricalRoutingConfig(pad_side=args.pad_side),
+        artifacts_dir=args.artifacts_dir,
     )
     _write_json(summary, args.output)
     if args.check and summary["guardrail_violations"]:
