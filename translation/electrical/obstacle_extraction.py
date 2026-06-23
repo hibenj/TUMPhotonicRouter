@@ -11,6 +11,7 @@ from photonic_router.static_obstacle_builder import (
 )
 
 from .pitch_grid import bbox_to_grid_cells, disk_cells
+from .port_access import build_electrical_port_accesses
 from .terminal_contacts import terminal_contact_seed_point_for_side
 from .types import (
     BusStripe,
@@ -82,6 +83,14 @@ def build_electrical_obstacle_map(
 
     blocked = set(static_obstacles.blocked_cells)
     blocked.difference_update(cleared_cells)
+    common_bus_port_accesses, individual_port_accesses = build_electrical_port_accesses(
+        terminal_groups,
+        common_bus_open_cells=common_bus_terminal_open_cells,
+        individual_open_cells=individual_terminal_open_cells,
+        blocked_cells=frozenset(blocked),
+        grid=grid,
+        config=config,
+    )
 
     return ElectricalObstacleMap(
         grid=grid,
@@ -103,6 +112,8 @@ def build_electrical_obstacle_map(
         ),
         common_bus_terminal_open_cells=common_bus_terminal_open_cells,
         individual_terminal_open_cells=individual_terminal_open_cells,
+        common_bus_port_accesses=common_bus_port_accesses,
+        individual_port_accesses=individual_port_accesses,
     )
 
 

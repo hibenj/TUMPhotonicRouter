@@ -18,6 +18,7 @@ from .types import (
     DetailedBundleRoute,
     DetailedBundleRoutingResult,
     ElectricalObstacleMap,
+    ElectricalPortAccess,
     ElectricalRoutingConfig,
     ElectricalTerminal,
     ElectricalVerificationIssue,
@@ -209,6 +210,8 @@ def verify_electrical_routing(
         metrics=_quality_metrics(
             net_geometries,
             obstacle_map,
+            common_bus,
+            detailed_bundle_routes,
             pad_plan,
             config,
         ),
@@ -230,6 +233,7 @@ def _common_bus_tagged_rects(
                 obstacle_map,
                 config.bus_width_um,
                 route_source="bus_route",
+                access=_common_bus_access(obstacle_map, route.terminal),
             )
         )
     if common_bus_escape is not None and common_bus_escape.success:
@@ -265,6 +269,7 @@ def _common_bus_allowed_cells(
                     if route.path
                     else None
                 ),
+                access=_common_bus_access(obstacle_map, route.terminal),
             )
         )
     if common_bus_escape is not None:
@@ -283,6 +288,7 @@ def _common_bus_allowed_physical_bboxes(
             route.path,
             obstacle_map,
             config.bus_width_um,
+            access=_common_bus_access(obstacle_map, route.terminal),
         ).contact_bbox
         for route in common_bus.routes
     )
@@ -304,6 +310,20 @@ def _individual_terminal_open_cells(
         obstacle_map.individual_terminal_open_cells
         or obstacle_map.terminal_open_cells
     )
+
+
+def _common_bus_access(
+    obstacle_map: ElectricalObstacleMap,
+    terminal: ElectricalTerminal,
+) -> ElectricalPortAccess | None:
+    return obstacle_map.common_bus_port_accesses.get(terminal.id)
+
+
+def _individual_access(
+    obstacle_map: ElectricalObstacleMap,
+    terminal: ElectricalTerminal,
+) -> ElectricalPortAccess | None:
+    return obstacle_map.individual_port_accesses.get(terminal.id)
 
 
 def _pad_bboxes_by_net(pad_plan: PadPlan | None) -> dict[str, tuple[BBox, ...]]:
@@ -598,6 +618,8 @@ def _verify_cross_net_spacing(
 def _quality_metrics(
     net_geometries: list[_NetGeometry],
     obstacle_map: ElectricalObstacleMap,
+    common_bus: CommonBusRoutingResult,
+    detailed_bundle_routes: DetailedBundleRoutingResult | None,
     pad_plan: PadPlan | None,
     config: ElectricalRoutingConfig,
 ) -> dict[str, Any]:
@@ -648,6 +670,8 @@ def _quality_metrics(
     union_area = sum(union_area_by_net.values())
     area_overcount = raw_area - union_area
     min_spacing = _min_cross_net_spacing(net_geometries)
+    access_metrics = _port_access_metrics(obstacle_map)
+    route_start_metrics = _route_start_metrics(common_bus, detailed_bundle_routes)
     return {
         "net_count": len(net_geometries),
         "rect_count": len(all_rects),
@@ -704,7 +728,116 @@ def _quality_metrics(
             pad_plan,
             obstacle_map,
         ),
+        **access_metrics,
+        **route_start_metrics,
     }
+
+
+def _route_start_metrics(
+    common_bus: CommonBusRoutingResult,
+    detailed_bundle_routes: DetailedBundleRoutingResult | None,
+) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    for route in common_bus.routes:
+        records.append(
+            {
+                "purpose": "common_bus",
+                "terminal_id": route.terminal.id,
+                "route_start_cell": route.route_start_cell,
+                "access_anchor_cell": route.access_anchor_cell,
+                "used_access_anchor": route.used_access_anchor,
+            }
+        )
+    if detailed_bundle_routes is not None:
+        for route in detailed_bundle_routes.routes:
+            records.append(
+                {
+                    "purpose": "individual",
+                    "terminal_id": route.terminal.id,
+                    "route_start_cell": route.route_start_cell,
+                    "access_anchor_cell": route.access_anchor_cell,
+                    "used_access_anchor": route.used_access_anchor,
+                }
+            )
+    route_count_by_purpose = Counter(str(record["purpose"]) for record in records)
+    exact_count_by_purpose = Counter(
+        str(record["purpose"])
+        for record in records
+        if bool(record["used_access_anchor"])
+    )
+    biased_count_by_purpose = Counter(
+        str(record["purpose"])
+        for record in records
+        if record["access_anchor_cell"] is not None
+        and not bool(record["used_access_anchor"])
+    )
+    return {
+        "port_access_route_start_count_by_purpose": dict(
+            sorted(route_count_by_purpose.items())
+        ),
+        "port_access_exact_anchor_route_count_by_purpose": dict(
+            sorted(exact_count_by_purpose.items())
+        ),
+        "port_access_biased_route_count_by_purpose": dict(
+            sorted(biased_count_by_purpose.items())
+        ),
+        "port_access_route_start_records": sorted(
+            records,
+            key=lambda record: (
+                str(record["purpose"]),
+                str(record["terminal_id"]),
+            ),
+        ),
+    }
+
+
+def _port_access_metrics(obstacle_map: ElectricalObstacleMap) -> dict[str, Any]:
+    accesses = tuple(_all_port_accesses(obstacle_map))
+    blocked = set(obstacle_map.blocked_cells)
+    blocked_anchors = tuple(
+        access for access in accesses if access.anchor_cell in blocked
+    )
+    missing_contact_accesses = tuple(
+        access for access in accesses if not access.contact_bbox
+    )
+    access_count_by_purpose = Counter(access.purpose for access in accesses)
+    return {
+        "port_access_count": len(accesses),
+        "port_access_count_by_purpose": dict(sorted(access_count_by_purpose.items())),
+        "port_access_max_offset_um": max(
+            (
+                math.hypot(
+                    access.anchor_point_um[0] - access.port_point_um[0],
+                    access.anchor_point_um[1] - access.port_point_um[1],
+                )
+                for access in accesses
+            ),
+            default=0.0,
+        ),
+        "port_access_max_length_um": max(
+            (access.access_length_um for access in accesses),
+            default=0.0,
+        ),
+        "port_access_blocked_anchor_count": len(blocked_anchors),
+        "port_access_missing_contact_count": len(missing_contact_accesses),
+    }
+
+
+def _all_port_accesses(
+    obstacle_map: ElectricalObstacleMap,
+) -> tuple[ElectricalPortAccess, ...]:
+    accesses_by_key: dict[tuple[str, str], ElectricalPortAccess] = {}
+    for terminal_id, access in obstacle_map.common_bus_port_accesses.items():
+        accesses_by_key[("common_bus", terminal_id)] = access
+    for terminal_id, access in obstacle_map.individual_port_accesses.items():
+        accesses_by_key[("individual", terminal_id)] = access
+    return tuple(
+        access
+        for _, access in sorted(
+            accesses_by_key.items(),
+            key=lambda item: (item[0][0], item[0][1]),
+        )
+    )
 
 
 def _detailed_route_tagged_rects(
@@ -718,6 +851,7 @@ def _detailed_route_tagged_rects(
         obstacle_map,
         config.wire_width_um,
         route_source="route_tail",
+        access=_individual_access(obstacle_map, route.terminal),
     )
 
 
@@ -741,9 +875,16 @@ def _terminal_grid_route_tagged_rects(
     width_um: float,
     *,
     route_source: str,
+    access: ElectricalPortAccess | None = None,
 ) -> tuple[_TaggedRect, ...]:
     return _terminal_access_tagged_rects(
-        _terminal_grid_route_access(terminal, path, obstacle_map, width_um),
+        _terminal_grid_route_access(
+            terminal,
+            path,
+            obstacle_map,
+            width_um,
+            access=access,
+        ),
         width_um,
         route_source=route_source,
     )
@@ -756,9 +897,16 @@ def _terminal_point_route_tagged_rects(
     width_um: float,
     *,
     route_source: str,
+    access: ElectricalPortAccess | None = None,
 ) -> tuple[_TaggedRect, ...]:
     return _terminal_access_tagged_rects(
-        _terminal_point_route_access(terminal, points_grid, obstacle_map, width_um),
+        _terminal_point_route_access(
+            terminal,
+            points_grid,
+            obstacle_map,
+            width_um,
+            access=access,
+        ),
         width_um,
         route_source=route_source,
     )
@@ -769,6 +917,8 @@ def _terminal_grid_route_access(
     path: tuple[GridCell, ...],
     obstacle_map: ElectricalObstacleMap,
     width_um: float,
+    *,
+    access: ElectricalPortAccess | None = None,
 ) -> Any:
     points_um = tuple(
         _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
@@ -778,6 +928,7 @@ def _terminal_grid_route_access(
         terminal,
         points_um,
         fallback_width_um=width_um,
+        preferred_port_name=access.port_name if access is not None else None,
     )
 
 
@@ -791,6 +942,7 @@ def _terminal_route_access(
         route.offset_path,
         obstacle_map,
         width_um,
+        access=_individual_access(obstacle_map, route.terminal),
     )
 
 
@@ -799,12 +951,15 @@ def _terminal_point_route_access(
     points_grid: tuple[GridPoint, ...],
     obstacle_map: ElectricalObstacleMap,
     width_um: float,
+    *,
+    access: ElectricalPortAccess | None = None,
 ) -> Any:
     points_um = tuple(_grid_point_to_um(point, obstacle_map) for point in points_grid)
     return terminal_access_path(
         terminal,
         points_um,
         fallback_width_um=width_um,
+        preferred_port_name=access.port_name if access is not None else None,
     )
 
 
@@ -839,14 +994,16 @@ def _terminal_contact_cells(
     width_um: float,
     *,
     route_start_um: tuple[float, float] | None,
+    access: ElectricalPortAccess | None = None,
 ) -> frozenset[GridCell]:
-    access = terminal_access_path(
+    terminal_access = terminal_access_path(
         terminal,
         (route_start_um,) if route_start_um is not None else (),
         fallback_width_um=width_um,
+        preferred_port_name=access.port_name if access is not None else None,
     )
     return bbox_to_grid_cells(
-        access.contact_bbox,
+        terminal_access.contact_bbox,
         obstacle_map.grid,
     )
 

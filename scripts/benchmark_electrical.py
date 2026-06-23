@@ -555,6 +555,15 @@ def _selected_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "centerline_length_um",
         "bend_count",
         "pad_channel_height_um",
+        "port_access_count",
+        "port_access_count_by_purpose",
+        "port_access_max_offset_um",
+        "port_access_max_length_um",
+        "port_access_blocked_anchor_count",
+        "port_access_missing_contact_count",
+        "port_access_route_start_count_by_purpose",
+        "port_access_exact_anchor_route_count_by_purpose",
+        "port_access_biased_route_count_by_purpose",
     )
     return {key: metrics.get(key) for key in keys if key in metrics}
 

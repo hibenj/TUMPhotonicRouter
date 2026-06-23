@@ -220,11 +220,14 @@ def route_detailed_bundles(
                 offset_um=offset_um,
                 offset_axis=_offset_axis(bundle),
                 offset_path=detailed_path,
-                source_stub_path=source_stub_path,
-                bundle_track_path=bundle_track_tail,
-                pad_stub_path=pad_stub_path,
-                success=True,
-            )
+                        source_stub_path=source_stub_path,
+                        bundle_track_path=bundle_track_tail,
+                        pad_stub_path=pad_stub_path,
+                        access_anchor_cell=topology_route.access_anchor_cell,
+                        route_start_cell=topology_route.route_start_cell,
+                        used_access_anchor=topology_route.used_access_anchor,
+                        success=True,
+                    )
             routes.append(route)
             committed_cells.update(path)
             committed_footprint_cells.update(
@@ -374,8 +377,9 @@ def _detail_failure_reason(
     blocked_hits = route_cells.intersection(hard_blocked)
     if blocked_hits:
         return "topology route intersects hard blockers"
-    if topology_route.path[0] not in source_cells:
-        return "topology route does not start in source terminal opening"
+    access_anchor = topology_route.access_anchor_cell
+    if topology_route.path[0] not in source_cells and topology_route.path[0] != access_anchor:
+        return "topology route does not start in source terminal access"
     return None
 
 

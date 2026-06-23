@@ -9,6 +9,7 @@ from typing import Iterable, cast
 
 from photonic_router.static_obstacle_builder import physical_to_grid
 
+from .port_access import choose_route_start_cell, ordered_route_start_cells
 from .types import (
     CommonBusRoutingResult,
     ElectricalObstacleMap,
@@ -127,6 +128,16 @@ def route_common_bus(
                 terminal=best.terminal,
                 path=best_path,
                 cost=best.cost,
+                access_anchor_cell=_terminal_access_anchor_cell(
+                    obstacle_map,
+                    best.terminal.id,
+                ),
+                route_start_cell=best_path[0] if best_path else None,
+                used_access_anchor=_route_uses_access_anchor(
+                    obstacle_map,
+                    best.terminal.id,
+                    best_path,
+                ),
             )
         )
         tree_cells.update(best_path)
@@ -197,6 +208,16 @@ def _route_local_trunks(
                     terminal=terminal,
                     path=path,
                     cost=max(0, len(path) - 1),
+                    access_anchor_cell=_terminal_access_anchor_cell(
+                        obstacle_map,
+                        terminal.id,
+                    ),
+                    route_start_cell=path[0] if path else None,
+                    used_access_anchor=_route_uses_access_anchor(
+                        obstacle_map,
+                        terminal.id,
+                        path,
+                    ),
                 )
             )
             tree_cells.update(path)
@@ -266,6 +287,9 @@ def _build_local_trunk_pair_routes(
         trunk_cell = (target_grid_x, start_y)
         arm = _axis_path(start, trunk_cell)
         allowed_terminal_cells = set(_terminal_open_cells(obstacle_map, terminal.id))
+        access_anchor = _terminal_access_anchor_cell(obstacle_map, terminal.id)
+        if access_anchor is not None:
+            allowed_terminal_cells.add(access_anchor)
         forbidden = set(all_terminal_cells).difference(allowed_terminal_cells)
         if _path_hits_blockers(
             arm,
@@ -317,11 +341,16 @@ def _nearest_terminal_cell(
     obstacle_map: ElectricalObstacleMap,
     target_grid_x: int,
 ) -> GridCell | None:
-    cells = _terminal_open_cells(obstacle_map, terminal.id)
-    if not cells:
-        center = physical_to_grid(terminal.center[0], terminal.center[1], obstacle_map.grid)
-        return center
-    return min(cells, key=lambda cell: (abs(cell[0] - target_grid_x), abs(cell[1]), cell[0], cell[1]))
+    center = physical_to_grid(terminal.center[0], terminal.center[1], obstacle_map.grid)
+    choice = choose_route_start_cell(
+        access=_terminal_access(obstacle_map, terminal.id),
+        opened_cells=_terminal_open_cells(obstacle_map, terminal.id),
+        grid=obstacle_map.grid,
+        fallback_cell=center,
+        bias_key=lambda cell: (abs(cell[0] - target_grid_x), abs(cell[1]), cell[0], cell[1]),
+        prefer_access_anchor=False,
+    )
+    return choice.cell if choice is not None else None
 
 
 def _axis_path(start: GridCell, end: GridCell) -> tuple[GridCell, ...]:
@@ -503,14 +532,12 @@ def _shortest_path_to_tree(
     grid = obstacle_map.grid
     terminal_cells = _terminal_open_cells(obstacle_map, terminal.id)
     center_cell = physical_to_grid(terminal.center[0], terminal.center[1], grid)
-    start_candidates = {
-        cell for cell in terminal_cells if _in_bounds(cell, grid.width, grid.height)
-    }
-    if not start_candidates and _in_bounds(center_cell, grid.width, grid.height):
-        start_candidates.add(center_cell)
-    starts = sorted(
-        start_candidates,
-        key=lambda cell: (_manhattan(cell, center_cell), cell[0], cell[1]),
+    starts = ordered_route_start_cells(
+        access=_terminal_access(obstacle_map, terminal.id),
+        opened_cells=terminal_cells,
+        grid=grid,
+        fallback_cell=center_cell,
+        bias_key=lambda cell: (_manhattan(cell, center_cell), cell[0], cell[1]),
     )
     if not starts:
         return None
@@ -586,3 +613,27 @@ def _terminal_open_cells(
     if obstacle_map.common_bus_terminal_open_cells:
         return obstacle_map.common_bus_terminal_open_cells.get(terminal_id, frozenset())
     return obstacle_map.terminal_open_cells.get(terminal_id, frozenset())
+
+
+def _terminal_access_anchor_cell(
+    obstacle_map: ElectricalObstacleMap,
+    terminal_id: str,
+) -> GridCell | None:
+    access = _terminal_access(obstacle_map, terminal_id)
+    return access.anchor_cell if access is not None else None
+
+
+def _terminal_access(
+    obstacle_map: ElectricalObstacleMap,
+    terminal_id: str,
+):
+    return obstacle_map.common_bus_port_accesses.get(terminal_id)
+
+
+def _route_uses_access_anchor(
+    obstacle_map: ElectricalObstacleMap,
+    terminal_id: str,
+    path: tuple[GridCell, ...],
+) -> bool:
+    anchor = _terminal_access_anchor_cell(obstacle_map, terminal_id)
+    return bool(path) and anchor is not None and path[0] == anchor

@@ -150,6 +150,28 @@ class ElectricalTerminal:
 
 
 @dataclass(frozen=True)
+class ElectricalPortAccess:
+    """Explicit physical-terminal to electrical-grid access selection."""
+
+    terminal_id: str
+    heater_id: str
+    purpose: Literal["common_bus", "individual"]
+    side: Side
+    port_name: str | None
+    port_point_um: Point
+    port_orientation_deg: float | None
+    port_width_um: float | None
+    contact_bbox: BBox
+    anchor_cell: GridCell
+    anchor_point_um: Point
+    access_centerline_um: tuple[Point, ...]
+    opened_cells: frozenset[GridCell]
+    reserved_cells: frozenset[GridCell]
+    access_length_um: float
+    reason: str = "selected"
+
+
+@dataclass(frozen=True)
 class TerminalPairGroup:
     """The two interchangeable electrical terminals of one heater."""
 
@@ -189,6 +211,12 @@ class ElectricalObstacleMap:
     individual_terminal_open_cells: dict[str, frozenset[GridCell]] = field(
         default_factory=dict
     )
+    common_bus_port_accesses: dict[str, ElectricalPortAccess] = field(
+        default_factory=dict
+    )
+    individual_port_accesses: dict[str, ElectricalPortAccess] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -197,6 +225,9 @@ class TerminalBusRoute:
     terminal: ElectricalTerminal
     path: tuple[GridCell, ...]
     cost: int
+    access_anchor_cell: GridCell | None = None
+    route_start_cell: GridCell | None = None
+    used_access_anchor: bool = False
 
 
 @dataclass(frozen=True)
@@ -288,6 +319,9 @@ class EscapeTopologyRoute:
     exit_cell: GridCell | None
     success: bool
     reason: str | None = None
+    access_anchor_cell: GridCell | None = None
+    route_start_cell: GridCell | None = None
+    used_access_anchor: bool = False
 
     @property
     def cost(self) -> int:
@@ -346,6 +380,9 @@ class DetailedBundleRoute:
     source_stub_path: tuple[GridPoint, ...] = ()
     bundle_track_path: tuple[GridPoint, ...] = ()
     pad_stub_path: tuple[GridPoint, ...] = ()
+    access_anchor_cell: GridCell | None = None
+    route_start_cell: GridCell | None = None
+    used_access_anchor: bool = False
 
     @property
     def cost(self) -> int:

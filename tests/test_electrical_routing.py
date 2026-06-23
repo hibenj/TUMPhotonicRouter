@@ -28,6 +28,7 @@ from translation.electrical.bundle_detail_router import (
 from translation.electrical.obstacle_extraction import build_electrical_obstacle_map
 from translation.electrical.pad_slots import pad_access_bbox
 from translation.electrical.pitch_grid import disk_cells
+from translation.electrical.port_access import build_terminal_port_access
 from translation.electrical.rect_geometry import clean_rects, union_rect_area, wire_rects_for_points
 from translation.electrical.terminal_contacts import select_terminal_contact, terminal_access_path
 from translation.electrical.terminal_contacts import terminal_contact_seed_points
@@ -269,6 +270,99 @@ def test_terminal_access_path_trims_snapped_points_inside_terminal():
     assert access.access_width_um == 4.0
     assert access.adapter_points == ((50.0, 60.0), (50.0, 67.0), (50.0, 90.0))
     assert access.route_tail_points == ((50.0, 90.0),)
+
+
+def test_terminal_access_path_can_pin_selected_physical_port():
+    terminal = ElectricalTerminal(
+        id="heater_0:l",
+        heater_id="heater_0",
+        side_key="l",
+        center=(50.0, 50.0),
+        bbox=(38.0, 38.0, 62.0, 62.0),
+        ports=(
+            ElectricalPortRef("l_e1", (40.0, 50.0), 180.0, 4.0, (49, 0)),
+            ElectricalPortRef("l_e3", (60.0, 50.0), 0.0, 4.0, (49, 0)),
+        ),
+        layer=(49, 0),
+    )
+
+    access = terminal_access_path(
+        terminal,
+        route_points_um=((100.0, 50.0),),
+        fallback_width_um=10.0,
+        preferred_port_name="l_e1",
+    )
+
+    assert access.contact_center == (40.0, 50.0)
+    assert access.contact_bbox == (38.0, 48.0, 42.0, 52.0)
+
+
+def test_build_terminal_port_access_skips_blocked_candidate_cell():
+    grid = SimpleNamespace(width=8, height=8, grid_size_um=10.0, origin=(0.0, 0.0))
+    terminal = ElectricalTerminal(
+        id="heater_0:t",
+        heater_id="heater_0",
+        side_key="t",
+        center=(23.0, 24.0),
+        bbox=(18.0, 18.0, 28.0, 28.0),
+        ports=(
+            ElectricalPortRef("top", (23.0, 29.0), 90.0, 4.0, (49, 0)),
+        ),
+        layer=(49, 0),
+    )
+
+    access = build_terminal_port_access(
+        terminal,
+        purpose="individual",
+        side="top",
+        opened_cells=frozenset({(2, 2), (2, 3)}),
+        blocked_cells=frozenset({(2, 3)}),
+        grid=grid,
+        fallback_width_um=10.0,
+    )
+
+    assert access.anchor_cell == (2, 2)
+    assert access.port_point_um == (23.0, 29.0)
+    assert access.access_centerline_um[0] == access.port_point_um
+    assert access.access_centerline_um[-1] == access.anchor_point_um
+
+
+def test_build_terminal_port_access_uses_side_specific_port():
+    grid = SimpleNamespace(width=8, height=8, grid_size_um=10.0, origin=(0.0, 0.0))
+    terminal = ElectricalTerminal(
+        id="heater_0:x",
+        heater_id="heater_0",
+        side_key="x",
+        center=(40.0, 40.0),
+        bbox=(35.0, 35.0, 45.0, 45.0),
+        ports=(
+            ElectricalPortRef("bottom", (40.0, 35.0), 270.0, 4.0, (49, 0)),
+            ElectricalPortRef("top", (40.0, 45.0), 90.0, 4.0, (49, 0)),
+        ),
+        layer=(49, 0),
+    )
+
+    top_access = build_terminal_port_access(
+        terminal,
+        purpose="individual",
+        side="top",
+        opened_cells=frozenset({(4, 4)}),
+        blocked_cells=frozenset(),
+        grid=grid,
+        fallback_width_um=10.0,
+    )
+    bottom_access = build_terminal_port_access(
+        terminal,
+        purpose="common_bus",
+        side="bottom",
+        opened_cells=frozenset({(4, 3)}),
+        blocked_cells=frozenset(),
+        grid=grid,
+        fallback_width_um=10.0,
+    )
+
+    assert top_access.port_name == "top"
+    assert bottom_access.port_name == "bottom"
 
 
 def test_verifier_flags_cross_net_metal_overlap():
@@ -679,14 +773,19 @@ def test_common_bus_local_trunk_strategy_creates_middle_trunk_for_pairs():
     grid = result.obstacle_map.grid
     midpoint_grid_x = int((midpoint_x - grid.origin[0]) // grid.grid_size_um)
     route_cells = set()
+    local_pair_routes = []
     for heater_id in ("heater_0", "heater_post_0", "heater_1", "heater_post_1"):
         route = next(route for route in result.common_bus.routes if route.heater_id == heater_id)
+        local_pair_routes.append(route)
         route_cells.update(route.path)
 
     trunk_cells = {cell for cell in route_cells if cell[0] == midpoint_grid_x}
     assert len(trunk_cells) >= 4
     assert result.common_bus.selected_terminals["heater_0"].side_key == "r"
     assert result.common_bus.selected_terminals["heater_post_0"].side_key == "l"
+    assert all(route.access_anchor_cell is not None for route in local_pair_routes)
+    assert all(route.route_start_cell == route.path[0] for route in local_pair_routes)
+    assert any(not route.used_access_anchor for route in local_pair_routes)
 
 
 def test_pad_plan_assigns_slots_without_realizing_geometry():

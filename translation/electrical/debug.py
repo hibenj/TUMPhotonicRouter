@@ -13,6 +13,7 @@ from .types import (
     CommonBusRoutingResult,
     DetailedBundleRoutingResult,
     ElectricalObstacleMap,
+    ElectricalPortAccess,
     ElectricalRoutingConfig,
     ElectricalTerminal,
     GridCell,
@@ -145,6 +146,7 @@ def electrical_metal_snapshot_svg(
         for terminal in terminals
         for bbox in _terminal_contact_bboxes(terminal, config.wire_width_um)
     )
+    port_accesses = _all_port_accesses(obstacle_map)
 
     view_bbox = _expanded_bbox(
         (
@@ -154,6 +156,11 @@ def electrical_metal_snapshot_svg(
             *pad_bboxes,
             *terminal_bboxes,
             *contact_bboxes,
+            *(
+                _point_bbox(point)
+                for access in port_accesses
+                for point in access.access_centerline_um
+            ),
             *(_polygon_bbox(polygon) for polygon in metal_polygons),
             *(_polygon_bbox(polygon) for polygon in heater_polygons),
         ),
@@ -251,6 +258,19 @@ def electrical_metal_snapshot_svg(
             stroke_width=0.5,
             title="assigned pad",
         )
+    for access in port_accesses:
+        _append_snapshot_polyline(
+            parts,
+            ctx,
+            access.access_centerline_um,
+            stroke="#7b2cbf" if access.purpose == "common_bus" else "#0081a7",
+            stroke_width=0.6,
+            opacity=0.9,
+            title=(
+                f"{access.purpose} access {access.terminal_id} "
+                f"anchor={access.anchor_cell}"
+            ),
+        )
     for polygon in sorted(metal_polygons):
         _append_snapshot_polygon(
             parts,
@@ -341,6 +361,22 @@ def electrical_debug_svg(
             route_cells.update(route.path)
         _append_cells(parts, grid.height, route_cells, fill="#f28c28", opacity=0.95)
         _append_cells(parts, grid.height, common_bus.tree_cells, fill="#33a853", opacity=0.35)
+        for route in common_bus.routes:
+            _append_route_polyline(
+                parts,
+                grid.height,
+                route.path,
+                stroke="#9c4f00",
+                stroke_width=0.16,
+                opacity=0.85,
+                offset=(0.0, 0.0),
+                title=(
+                    f"common bus terminal={route.terminal.id} "
+                    f"start={route.route_start_cell} "
+                    f"anchor={route.access_anchor_cell} "
+                    f"used_anchor={route.used_access_anchor}"
+                ),
+            )
 
     if common_bus_escape is not None:
         _append_cells(parts, grid.height, common_bus_escape.target_cells, fill="#8ab4f8", opacity=0.7)
@@ -369,7 +405,8 @@ def electrical_debug_svg(
                 f"detailed bundle={route.bundle_id} rank={route.rank} "
                 f"lane={route.rank} offset={route.offset_um:.3g}um axis=ordered-bus "
                 f"pad={route.pad_assignment.slot.index if route.pad_assignment is not None else 'none'} "
-                f"terminal={route.terminal.id}"
+                f"terminal={route.terminal.id} start={route.route_start_cell} "
+                f"anchor={route.access_anchor_cell} used_anchor={route.used_access_anchor}"
             )
             if route.offset_path:
                 _append_point_polyline(
@@ -447,6 +484,34 @@ def electrical_debug_svg(
             elif terminal_id in unselected_ids:
                 fill = "#ea4335"
         _append_cells(parts, grid.height, cells, fill=fill, opacity=0.55)
+
+    _append_cells(
+        parts,
+        grid.height,
+        (access.anchor_cell for access in obstacle_map.common_bus_port_accesses.values()),
+        fill="#7b2cbf",
+        opacity=0.95,
+    )
+    _append_cells(
+        parts,
+        grid.height,
+        (access.anchor_cell for access in obstacle_map.individual_port_accesses.values()),
+        fill="#0081a7",
+        opacity=0.95,
+    )
+    for access in _all_port_accesses(obstacle_map):
+        _append_point_polyline(
+            parts,
+            grid.height,
+            _access_centerline_grid(access, grid),
+            stroke="#7b2cbf" if access.purpose == "common_bus" else "#0081a7",
+            stroke_width=0.18,
+            opacity=0.75,
+            title=(
+                f"{access.purpose} access {access.terminal_id} "
+                f"length={access.access_length_um:.3g}um"
+            ),
+        )
 
     terminal_order_index = (
         {terminal.id: index for index, terminal in enumerate(individual_topology.terminal_order)}
@@ -529,6 +594,38 @@ def _terminal_contact_bboxes(
     return terminal_contact_bboxes(terminal, fallback_width_um)
 
 
+def _all_port_accesses(
+    obstacle_map: ElectricalObstacleMap,
+) -> tuple[ElectricalPortAccess, ...]:
+    accesses = [
+        *obstacle_map.common_bus_port_accesses.values(),
+        *obstacle_map.individual_port_accesses.values(),
+    ]
+    return tuple(
+        sorted(
+            accesses,
+            key=lambda access: (access.purpose, access.terminal_id),
+        )
+    )
+
+
+def _access_centerline_grid(
+    access: ElectricalPortAccess,
+    grid: _DebugGrid,
+) -> tuple[tuple[float, float], ...]:
+    origin_x, origin_y = grid.origin
+    grid_size = grid.grid_size_um
+    return tuple(
+        ((x - origin_x) / grid_size, (y - origin_y) / grid_size)
+        for x, y in access.access_centerline_um
+    )
+
+
+def _point_bbox(point: tuple[float, float]) -> BBox:
+    x, y = point
+    return (x, y, x, y)
+
+
 def _expanded_bbox(
     bboxes: Iterable[BBox | None],
     *,
@@ -597,6 +694,30 @@ def _append_snapshot_polygon(
         f'<polygon points="{points}" fill="{fill}" opacity="{opacity:.6g}" '
         f'stroke="{stroke}" stroke-width="{stroke_width:.6g}" '
         f'vector-effect="non-scaling-stroke"><title>{escape(title)}</title></polygon>'
+    )
+
+
+def _append_snapshot_polyline(
+    parts: list[str],
+    ctx: _SnapshotContext,
+    points_um: tuple[tuple[float, float], ...],
+    *,
+    stroke: str,
+    stroke_width: float,
+    opacity: float,
+    title: str,
+) -> None:
+    if len(points_um) < 2:
+        return
+    points = " ".join(
+        f"{x - ctx.xmin:.6g},{ctx.ymax - y:.6g}"
+        for x, y in points_um
+    )
+    parts.append(
+        f'<polyline points="{points}" fill="none" stroke="{stroke}" '
+        f'stroke-width="{stroke_width:.6g}" opacity="{opacity:.6g}" '
+        f'stroke-linecap="round" stroke-linejoin="round" '
+        f'vector-effect="non-scaling-stroke"><title>{escape(title)}</title></polyline>'
     )
 
 

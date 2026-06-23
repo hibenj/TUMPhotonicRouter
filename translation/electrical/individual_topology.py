@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Literal
 
+from .port_access import ordered_route_start_cells
 from .types import (
     CommonBusRoutingResult,
     ElectricalObstacleMap,
@@ -72,8 +73,10 @@ def compute_individual_escape_topology(
     cell_usage: dict[GridCell, int] = {}
     for terminal in _individual_terminals(common_bus):
         source_cells = _terminal_open_cells(obstacle_map, terminal.id)
+        access = _terminal_access(obstacle_map, terminal.id)
         path = _best_source_path_to_boundary(
             source_cells=source_cells,
+            access=access,
             next_cell=next_cell,
             targets=target_cells,
             blocked=blocked.difference(source_cells),
@@ -83,6 +86,7 @@ def compute_individual_escape_topology(
             terminal=terminal,
             obstacle_map=obstacle_map,
         )
+        access_anchor = access.anchor_cell if access is not None else None
         if not path:
             failed_routes.append(
                 EscapeTopologyRoute(
@@ -91,6 +95,7 @@ def compute_individual_escape_topology(
                     exit_cell=None,
                     success=False,
                     reason="terminal cannot reach pad-side escape boundary",
+                    access_anchor_cell=access_anchor,
                 )
             )
             continue
@@ -100,6 +105,9 @@ def compute_individual_escape_topology(
             path=path,
             exit_cell=path[-1],
             success=True,
+            access_anchor_cell=access_anchor,
+            route_start_cell=path[0],
+            used_access_anchor=access_anchor is not None and path[0] == access_anchor,
         )
         routes.append(route)
         for cell in _route_core_cells(route, obstacle_map, terminal_cells, config):
@@ -201,6 +209,7 @@ def _trace_to_boundary(
 def _best_source_path_to_boundary(
     *,
     source_cells: frozenset[GridCell],
+    access: object | None,
     next_cell: dict[GridCell, GridCell | None],
     targets: frozenset[GridCell],
     blocked: set[GridCell],
@@ -211,14 +220,22 @@ def _best_source_path_to_boundary(
     obstacle_map: ElectricalObstacleMap,
 ) -> tuple[GridCell, ...]:
     candidates: list[tuple[tuple[int, int, int, GridCell], tuple[GridCell, ...]]] = []
-    for source in source_cells:
-        if not _in_bounds(source, width, height) or source in blocked:
-            continue
+    starts = ordered_route_start_cells(
+        access=access,  # type: ignore[arg-type]
+        opened_cells=source_cells,
+        grid=obstacle_map.grid,
+        blocked_cells=blocked,
+        bias_key=lambda cell: _source_candidate_key(
+            cell,
+            terminal,
+            obstacle_map,
+            pad_side,
+        ),
+    )
+    start_rank = {cell: rank for rank, cell in enumerate(starts)}
+    for source in starts:
         if source in targets:
-            candidates.append((
-                _source_candidate_key(source, terminal, obstacle_map, pad_side),
-                (source,),
-            ))
+            candidates.append(((start_rank[source], 0, 0, source), (source,)))
             continue
         for neighbor in _forward_neighbors(source, pad_side=pad_side):
             if not _in_bounds(neighbor, width, height):
@@ -230,10 +247,7 @@ def _best_source_path_to_boundary(
             tail = _trace_to_boundary(neighbor, next_cell, targets)
             if not tail:
                 continue
-            candidates.append((
-                _source_candidate_key(source, terminal, obstacle_map, pad_side),
-                (source, *tail),
-            ))
+            candidates.append(((start_rank[source], 0, 0, source), (source, *tail)))
     if not candidates:
         return ()
     return min(candidates, key=lambda item: (len(item[1]), item[0]))[1]
@@ -584,3 +598,18 @@ def _terminal_open_cells(
         terminal_id,
         frozenset(),
     )
+
+
+def _terminal_access_anchor_cell(
+    obstacle_map: ElectricalObstacleMap,
+    terminal_id: str,
+) -> GridCell | None:
+    access = _terminal_access(obstacle_map, terminal_id)
+    return access.anchor_cell if access is not None else None
+
+
+def _terminal_access(
+    obstacle_map: ElectricalObstacleMap,
+    terminal_id: str,
+):
+    return obstacle_map.individual_port_accesses.get(terminal_id)

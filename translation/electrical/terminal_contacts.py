@@ -84,6 +84,8 @@ def terminal_access_path(
     terminal: ElectricalTerminal,
     route_points_um: tuple[Point, ...],
     fallback_width_um: float,
+    *,
+    preferred_port_name: str | None = None,
 ) -> TerminalAccessPath:
     """Build a port-exact adapter from one physical port to the route tail.
 
@@ -98,6 +100,7 @@ def terminal_access_path(
         terminal,
         route_start_um,
         fallback_width_um,
+        preferred_port_name=preferred_port_name,
     )
     trimmed_tail = _trim_route_points_inside_terminal(
         route_points_um,
@@ -171,10 +174,16 @@ def _select_terminal_contact_with_port(
     terminal: ElectricalTerminal,
     route_start_um: Point | None,
     fallback_width_um: float,
+    *,
+    preferred_port_name: str | None = None,
 ) -> tuple[Point, BBox, ElectricalPortRef | None]:
     contacts = terminal_contact_bboxes(terminal, fallback_width_um)
     if not terminal.ports:
         return (terminal.center, contacts[0], None)
+    if preferred_port_name is not None:
+        for port, bbox in zip(terminal.ports, contacts):
+            if port.name == preferred_port_name:
+                return (port.center, bbox, port)
     if route_start_um is None:
         port = terminal.ports[0]
         return (port.center, contacts[0], port)

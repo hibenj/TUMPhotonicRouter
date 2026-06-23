@@ -17,6 +17,7 @@ from .types import (
     CommonBusRoutingResult,
     DetailedBundleRoutingResult,
     ElectricalObstacleMap,
+    ElectricalPortAccess,
     ElectricalRoutingConfig,
     ElectricalTerminal,
     GridCell,
@@ -64,6 +65,7 @@ def realize_electrical_metal(
             obstacle_map,
             width_um=config.bus_width_um,
             trim_route_tail_bends=False,
+            access=_common_bus_access(obstacle_map, route.terminal),
         )
 
     if common_bus_escape is not None and common_bus_escape.success:
@@ -90,6 +92,7 @@ def realize_electrical_metal(
                 obstacle_map,
                 width_um=config.wire_width_um,
                 trim_route_tail_bends=True,
+                access=_individual_access(obstacle_map, route.terminal),
             )
 
     if pad_plan is not None:
@@ -144,6 +147,7 @@ def _append_terminal_grid_route(
     *,
     width_um: float,
     trim_route_tail_bends: bool,
+    access: ElectricalPortAccess | None = None,
 ) -> None:
     points = tuple(
         _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
@@ -155,6 +159,7 @@ def _append_terminal_grid_route(
         points,
         width_um=width_um,
         trim_route_tail_bends=trim_route_tail_bends,
+        access=access,
     )
 
 
@@ -166,6 +171,7 @@ def _append_terminal_point_route(
     *,
     width_um: float,
     trim_route_tail_bends: bool,
+    access: ElectricalPortAccess | None = None,
 ) -> None:
     points = tuple(_grid_point_to_um(point, obstacle_map) for point in points_grid)
     _append_terminal_um_route(
@@ -174,6 +180,7 @@ def _append_terminal_point_route(
         points,
         width_um=width_um,
         trim_route_tail_bends=trim_route_tail_bends,
+        access=access,
     )
 
 
@@ -184,6 +191,7 @@ def _append_terminal_um_route(
     *,
     width_um: float,
     trim_route_tail_bends: bool,
+    access: ElectricalPortAccess | None = None,
 ) -> None:
     """Draw a physical-port adapter and only the usable snapped route tail."""
 
@@ -191,6 +199,7 @@ def _append_terminal_um_route(
         terminal,
         route_points_um,
         fallback_width_um=width_um,
+        preferred_port_name=access.port_name if access is not None else None,
     )
     _append_rect(rects, access.contact_bbox)
     _append_um_wire_path(
@@ -204,6 +213,20 @@ def _append_terminal_um_route(
         width_um=width_um,
         trim_bends=trim_route_tail_bends,
     )
+
+
+def _common_bus_access(
+    obstacle_map: ElectricalObstacleMap,
+    terminal: ElectricalTerminal,
+) -> ElectricalPortAccess | None:
+    return obstacle_map.common_bus_port_accesses.get(terminal.id)
+
+
+def _individual_access(
+    obstacle_map: ElectricalObstacleMap,
+    terminal: ElectricalTerminal,
+) -> ElectricalPortAccess | None:
+    return obstacle_map.individual_port_accesses.get(terminal.id)
 
 
 def _append_grid_wire_path(
