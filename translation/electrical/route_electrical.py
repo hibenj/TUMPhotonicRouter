@@ -29,11 +29,10 @@ def route_electrical_heaters(
 ) -> ElectricalRoutingResult:
     """Run the current electrical heater-routing milestones.
 
-    This does not yet realize metal polygons or route individual heater-control
-    terminals to pad slots. It extracts heater terminal pairs, builds the
-    electrical obstacle grid, routes one terminal per heater to the derived
-    opposite-side common bus, plans abstract pad slots, and optionally writes a
-    debug SVG.
+    It extracts heater terminal pairs, builds the electrical obstacle grid,
+    routes one terminal per heater to the derived opposite-side common bus,
+    plans abstract pad slots, routes the remaining individual terminals to
+    those slots, realizes metal polygons, and optionally writes a debug SVG.
     """
 
     config = config or ElectricalRoutingConfig()

@@ -1,6 +1,7 @@
 from routing_flow import (
     RipupRerouteConfig,
     RoutingFlowStats,
+    _build_arg_parser,
     _format_debug_route_indices,
     _parse_debug_svg_selector,
     run_routing_flow,
@@ -52,6 +53,26 @@ def test_routing_flow_populates_stats():
     assert stats_dict["expanded_states"] == stats.expanded_states
 
 
+def test_routing_flow_routes_single_heater_electrical_metal_end_to_end():
+    routed = run_routing_flow(
+        "mmi_heater",
+        show_unrouted=False,
+        show_routed=False,
+        show_static_obstacles_svg=False,
+        include_heater_obstacles=True,
+        enable_electrical_routing=True,
+    )
+
+    assert "electrical_routing" in routed.info
+    summary = routed.info["electrical_routing"]
+    assert summary["terminal_group_count"] == 1
+    assert summary["common_bus_success"] is True
+    assert summary["pad_assignment_count"] >= 2
+    assert summary["detailed_route_count"] >= 1
+    assert summary["failed_detailed_route_count"] == 0
+    assert routed.get_polygons(by="tuple").get((49, 0), [])
+
+
 def test_debug_svg_selector_parses_boolean_and_all_modes():
     assert _parse_debug_svg_selector(False) == (False, None)
     assert _parse_debug_svg_selector(True) == (True, None)
@@ -67,6 +88,28 @@ def test_debug_svg_selector_parses_1_based_route_indices():
 
 def test_format_debug_route_indices_collapses_ranges():
     assert _format_debug_route_indices({2, 5, 6, 7, 10}) == "2,5-7,10"
+
+
+def test_electrical_cli_flags_parse_into_namespace():
+    args = _build_arg_parser().parse_args(
+        [
+            "mmi_heater",
+            "--electrical-routing",
+            "true",
+            "--electrical-pad-side",
+            "bottom",
+            "--electrical-grid-pitch-um",
+            "20",
+            "--electrical-obstacle-clearance-um",
+            "5",
+        ]
+    )
+
+    assert args.benchmark == "mmi_heater"
+    assert args.electrical_routing is True
+    assert args.electrical_pad_side == "bottom"
+    assert args.electrical_grid_pitch_um == 20.0
+    assert args.electrical_obstacle_clearance_um == 5.0
 
 
 def test_resolve_auto_internal_delay_markers_per_instance(monkeypatch):
@@ -392,3 +435,144 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "diagnostics": {},
         }
     ]
+
+
+def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
+    captured = {}
+
+    schematic = SimpleNamespace(
+        netlist=SimpleNamespace(
+            instances={"heater_0": object()},
+            routes={"n0": object()},
+        ),
+        placements={},
+    )
+    optical_layout = SimpleNamespace(
+        name="unrouted_layout",
+        bbox=(0.0, 0.0, 10.0, 10.0),
+    )
+    optical_routed_layout = SimpleNamespace(
+        name="optical_routed",
+        info={"optical_marker": "kept"},
+    )
+    electrical_layout = SimpleNamespace(
+        name="electrical_routed",
+        info={},
+    )
+    electrical_layout.write_gds = lambda path: captured.setdefault("gds_path", path)
+
+    def fake_load_benchmark(_benchmark_name: str):
+        return schematic
+
+    def fake_layout_from_schematic(_schematic: object):
+        return optical_layout
+
+    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+        return {"node_types": None, "internal_delays_um": None}
+
+    def fake_route_match_and_realize(
+        _layout: object,
+        _schematic: object,
+        **_kwargs: object,
+    ):
+        return SimpleNamespace(
+            routed_layout=optical_routed_layout,
+            debug_artifacts=SimpleNamespace(
+                realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
+                static_blocked_cells=set(),
+                route_attempt_records=[],
+                route_search_summary=RouteSearchSummary(route_count=1),
+            ),
+            path_length_analysis_info=None,
+            meander_requirements_info=None,
+            meander_insertion_report_info=None,
+            pipeline_timings_s={},
+        )
+
+    electrical_config = SimpleNamespace(name="electrical_config")
+
+    def fake_route_electrical_heaters(
+        component: object,
+        schematic_arg: object,
+        config: object,
+        *,
+        debug_dir: object,
+        debug_prefix: str,
+    ):
+        captured["electrical_component_input"] = component
+        captured["electrical_schematic"] = schematic_arg
+        captured["electrical_config"] = config
+        captured["debug_dir"] = debug_dir
+        captured["debug_prefix"] = debug_prefix
+        return SimpleNamespace(
+            terminal_groups=(object(), object()),
+            common_bus=SimpleNamespace(success=True, failed_heaters=()),
+            pad_plan=SimpleNamespace(assignments=(object(), object(), object())),
+            common_bus_escape=SimpleNamespace(success=True),
+            detailed_bundle_routes=SimpleNamespace(
+                routes=(object(), object()),
+                failed_routes=(),
+            ),
+            routed_component=electrical_layout,
+            debug_artifacts={
+                "common_bus_svg": "build/electrical/fake_common_bus.svg"
+            },
+        )
+
+    import routing_flow
+
+    monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
+    monkeypatch.setattr(
+        routing_flow,
+        "layout_from_schematic",
+        fake_layout_from_schematic,
+    )
+    monkeypatch.setattr(routing_flow, "load_benchmark_metadata", fake_load_metadata)
+    monkeypatch.setattr(
+        routing_flow,
+        "route_match_and_realize",
+        fake_route_match_and_realize,
+    )
+    monkeypatch.setattr(
+        routing_flow,
+        "route_electrical_heaters",
+        fake_route_electrical_heaters,
+    )
+
+    stats = RoutingFlowStats()
+    result = run_routing_flow(
+        "FAKE",
+        debug_timing=False,
+        show_klayout=False,
+        enable_electrical_routing=True,
+        electrical_config=electrical_config,
+        stats=stats,
+    )
+
+    assert result is electrical_layout
+    assert captured["electrical_component_input"] is optical_routed_layout
+    assert captured["electrical_schematic"] is schematic
+    assert captured["electrical_config"] is electrical_config
+    assert captured["debug_dir"] is None
+    assert captured["debug_prefix"] == "fake"
+    assert captured["gds_path"] == "build/routed_FAKE.gds"
+    assert electrical_layout.info["optical_marker"] == "kept"
+    summary = electrical_layout.info["electrical_routing"]
+    assert summary["terminal_group_count"] == 2
+    assert summary["common_bus_success"] is True
+    assert summary["pad_assignment_count"] == 3
+    assert summary["detailed_route_count"] == 2
+    assert summary["failed_detailed_route_count"] == 0
+    assert summary["debug_artifacts"] == {
+        "common_bus_svg": "build/electrical/fake_common_bus.svg"
+    }
+    assert stats.electrical_terminal_groups == 2
+    assert stats.electrical_pad_assignments == 3
+    assert stats.electrical_detailed_routes == 2
+    assert stats.electrical_failed_detailed_routes == 0
+    assert stats.step_times_s["electrical_routing"] >= 0.0
+    stats_dict = stats.as_dict()
+    assert stats_dict["electrical_terminal_groups"] == 2
+    assert stats_dict["electrical_pad_assignments"] == 3
+    assert stats_dict["electrical_detailed_routes"] == 2
+    assert stats_dict["electrical_failed_detailed_routes"] == 0

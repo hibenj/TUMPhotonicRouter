@@ -4,7 +4,8 @@ This module orchestrates the photonic routing flow:
 1. Load benchmark (schematic)
 2. Translate schematic to unrouted layout
 3. Route connections using the Rust router backend
-4. [Future] Generate final routed layout
+4. Optionally route heater electrical metal
+5. Generate final routed layout
 """
 
 import argparse
@@ -19,6 +20,11 @@ from benchmark_metadata import load_benchmark_metadata
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
+from translation.electrical import (
+    ElectricalRoutingConfig,
+    ElectricalRoutingResult,
+    route_electrical_heaters,
+)
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import (
     RipupRerouteConfig,
@@ -52,6 +58,10 @@ SCRIPT_RIPUP_MAX_VICTIMS = 8
 SCRIPT_RIPUP_HISTORY_WEIGHT = 2.0
 SCRIPT_RIPUP_HISTORY_INCREMENT = 1
 SCRIPT_ATTEMPT_DIAGNOSTICS = False
+SCRIPT_ENABLE_ELECTRICAL_ROUTING = True
+SCRIPT_ELECTRICAL_PAD_SIDE = "top"
+SCRIPT_ELECTRICAL_GRID_PITCH_UM = 10.0
+SCRIPT_ELECTRICAL_OBSTACLE_CLEARANCE_UM = 10.0
 
 
 @dataclass
@@ -92,6 +102,10 @@ class RoutingFlowStats:
     heap_operation_time_s: float = 0.0
     legality_check_time_s: float = 0.0
     reconstruction_time_s: float = 0.0
+    electrical_terminal_groups: int = 0
+    electrical_pad_assignments: int = 0
+    electrical_detailed_routes: int = 0
+    electrical_failed_detailed_routes: int = 0
     route_attempt_records: list[dict[str, object]] = field(default_factory=list)
     step_times_s: dict[str, float] = field(default_factory=dict)
 
@@ -131,6 +145,10 @@ class RoutingFlowStats:
             "heap_operation_time_s": self.heap_operation_time_s,
             "legality_check_time_s": self.legality_check_time_s,
             "reconstruction_time_s": self.reconstruction_time_s,
+            "electrical_terminal_groups": self.electrical_terminal_groups,
+            "electrical_pad_assignments": self.electrical_pad_assignments,
+            "electrical_detailed_routes": self.electrical_detailed_routes,
+            "electrical_failed_detailed_routes": self.electrical_failed_detailed_routes,
             "route_attempt_records": list(self.route_attempt_records),
             "step_times_s": dict(self.step_times_s),
         }
@@ -418,6 +436,45 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--electrical-routing",
+        type=_parse_bool_flag,
+        default=SCRIPT_ENABLE_ELECTRICAL_ROUTING,
+        metavar="BOOL",
+        help=(
+            "Route heater electrical metal after optical routing "
+            f"(default: {str(SCRIPT_ENABLE_ELECTRICAL_ROUTING).lower()})."
+        ),
+    )
+    parser.add_argument(
+        "--electrical-pad-side",
+        choices=("top", "bottom"),
+        default=SCRIPT_ELECTRICAL_PAD_SIDE,
+        help=(
+            "Side used for electrical bondpad placement "
+            f"(default: {SCRIPT_ELECTRICAL_PAD_SIDE})."
+        ),
+    )
+    parser.add_argument(
+        "--electrical-grid-pitch-um",
+        type=float,
+        default=SCRIPT_ELECTRICAL_GRID_PITCH_UM,
+        metavar="UM",
+        help=(
+            "Electrical routing grid pitch "
+            f"(default: {SCRIPT_ELECTRICAL_GRID_PITCH_UM})."
+        ),
+    )
+    parser.add_argument(
+        "--electrical-obstacle-clearance-um",
+        type=float,
+        default=SCRIPT_ELECTRICAL_OBSTACLE_CLEARANCE_UM,
+        metavar="UM",
+        help=(
+            "Electrical routing obstacle clearance "
+            f"(default: {SCRIPT_ELECTRICAL_OBSTACLE_CLEARANCE_UM})."
+        ),
+    )
+    parser.add_argument(
         "--enable-jps4",
         type=_parse_bool_flag,
         default=False,
@@ -488,6 +545,12 @@ def main(argv: list[str] | None = None) -> Component:
             history_increment=args.ripup_history_increment,
         ),
         collect_attempt_diagnostics=args.attempt_diagnostics,
+        enable_electrical_routing=args.electrical_routing,
+        electrical_config=ElectricalRoutingConfig(
+            pad_side=args.electrical_pad_side,
+            routing_grid_pitch_um=args.electrical_grid_pitch_um,
+            obstacle_clearance_um=args.electrical_obstacle_clearance_um,
+        ),
         static_obstacle_config=StaticObstacleMapConfig(
             obstacle_mode=args.obstacle_mode,
             clearance_um=args.waveguide_clearance_um,
@@ -532,6 +595,67 @@ def load_benchmark(benchmark_name: str) -> Schematic:
         ) from e
 
 
+def _component_info(component: Component) -> Any:
+    """Return a mutable component info object, creating one for test doubles."""
+
+    info = getattr(component, "info", None)
+    if info is None:
+        info = {}
+        setattr(component, "info", info)
+    return info
+
+
+def _copy_component_info(source: Component, target: Component) -> None:
+    source_info = getattr(source, "info", None)
+    if source_info is None:
+        return
+    target_info = _component_info(target)
+    for key, value in getattr(source_info, "items", lambda: ())():
+        if key not in target_info:
+            target_info[key] = value
+
+
+def _electrical_summary(result: ElectricalRoutingResult) -> dict[str, Any]:
+    detailed_routes = result.detailed_bundle_routes
+    failed_detailed_routes = (
+        tuple(detailed_routes.failed_routes) if detailed_routes is not None else ()
+    )
+    return {
+        "terminal_group_count": len(result.terminal_groups),
+        "common_bus_success": result.common_bus.success,
+        "failed_heaters": tuple(result.common_bus.failed_heaters),
+        "pad_assignment_count": (
+            len(result.pad_plan.assignments) if result.pad_plan is not None else 0
+        ),
+        "common_bus_escape_success": (
+            result.common_bus_escape.success
+            if result.common_bus_escape is not None
+            else None
+        ),
+        "detailed_route_count": (
+            len(detailed_routes.routes) if detailed_routes is not None else 0
+        ),
+        "failed_detailed_route_count": len(failed_detailed_routes),
+        "failed_detailed_routes": tuple(
+            {
+                "terminal_id": route.terminal.id,
+                "reason": route.reason,
+            }
+            for route in failed_detailed_routes
+        ),
+        "debug_artifacts": dict(result.debug_artifacts),
+    }
+
+
+def _electrical_failure_summary(result: ElectricalRoutingResult) -> str:
+    summary = _electrical_summary(result)
+    return (
+        "Electrical routing failed to produce a routed component: "
+        f"failed_heaters={summary['failed_heaters']}, "
+        f"failed_detailed_route_count={summary['failed_detailed_route_count']}"
+    )
+
+
 def run_routing_flow(
     benchmark_name: str,
     *,
@@ -559,6 +683,8 @@ def run_routing_flow(
     obstacle_clearance_um: float | None = None,
     ripup_reroute_config: RipupRerouteConfig | None = None,
     static_obstacle_config: StaticObstacleMapConfig | None = None,
+    enable_electrical_routing: bool = False,
+    electrical_config: ElectricalRoutingConfig | None = None,
     collect_route_stats: bool = False,
     collect_attempt_diagnostics: bool = False,
     stats: RoutingFlowStats | None = None,
@@ -610,6 +736,11 @@ def run_routing_flow(
         obstacle_clearance_um: Deprecated alias for waveguide_clearance_um.
         static_obstacle_config: Optional obstacle builder config. If omitted,
             strict bounding-box static obstacles are used.
+        enable_electrical_routing: If True, run the electrical heater-metal
+            routing stage after optical routing and return/write/show the
+            electrically routed component.
+        electrical_config: Optional electrical routing configuration. If
+            omitted, `ElectricalRoutingConfig()` defaults are used.
         collect_route_stats: If True, collect route-search counters without
             printing debug timing. This is enabled automatically when stats is
             provided.
@@ -629,6 +760,7 @@ def run_routing_flow(
         # Historical argument kept for compatibility.
         pass
     debug_svgs_enabled, debug_route_indices = _parse_debug_svg_selector(debug_svgs)
+    total_steps = 4 if enable_electrical_routing else 3
 
     print(f"\n{'='*60}")
     print(f"Routing Flow: {benchmark_name}")
@@ -662,6 +794,7 @@ def run_routing_flow(
             f"build/routes/{prefix}_*.svg",
             f"build/routes/{prefix}_*_diagnostics.txt",
             f"build/routes/{prefix}_*_FAILED.txt",
+            f"build/electrical/{prefix}_*.svg",
         ):
             for path in Path(".").glob(pattern):
                 try:
@@ -676,13 +809,20 @@ def run_routing_flow(
         build_dir = Path("build")
         obstacle_dir = build_dir / "static_obstacles"
         routes_dir = build_dir / "routes"
+        electrical_dir = build_dir / "electrical"
         obstacle_svgs = sorted(obstacle_dir.glob(f"{prefix}_*.svg")) if obstacle_dir.exists() else []
         route_svgs = sorted(routes_dir.glob(f"{prefix}_*.svg")) if routes_dir.exists() else []
+        electrical_svgs = (
+            sorted(electrical_dir.glob(f"{prefix}_*.svg"))
+            if electrical_dir.exists()
+            else []
+        )
         failed_logs = sorted(routes_dir.glob(f"{prefix}_*_FAILED.txt")) if routes_dir.exists() else []
 
         print("      - Partial debug artifacts:")
         print(f"        static obstacle SVGs: {len(obstacle_svgs)}")
         print(f"        route SVGs: {len(route_svgs)}")
+        print(f"        electrical SVGs: {len(electrical_svgs)}")
         print(f"        failure logs: {len(failed_logs)}")
         for failed_log in failed_logs:
             print(f"        failure log: {failed_log}")
@@ -692,12 +832,14 @@ def run_routing_flow(
                 webbrowser.open_new_tab(svg_path.resolve().as_uri())
             for svg_path in route_svgs:
                 webbrowser.open_new_tab(svg_path.resolve().as_uri())
+            for svg_path in electrical_svgs:
+                webbrowser.open_new_tab(svg_path.resolve().as_uri())
         except Exception as e:
             print(f"      - Warning: failed to open partial SVGs automatically: {e}")
 
     # Step 1: Load benchmark
     step_load_start = time.perf_counter()
-    print(f"\n[1/3] Loading benchmark: {benchmark_name}...")
+    print(f"\n[1/{total_steps}] Loading benchmark: {benchmark_name}...")
     schematic = load_benchmark(benchmark_name)
     step_load_end = time.perf_counter()
     if stats is not None:
@@ -710,7 +852,7 @@ def run_routing_flow(
 
     # Step 2: Translate schematic to layout
     step_layout_start = time.perf_counter()
-    print("\n[2/3] Translating schematic to layout...")
+    print(f"\n[2/{total_steps}] Translating schematic to layout...")
     unrouted_layout = layout_from_schematic(schematic)
     step_layout_end = time.perf_counter()
     if stats is not None:
@@ -724,7 +866,7 @@ def run_routing_flow(
         print(f"      - Translation time: {step_layout_end - step_layout_start:.4f} s")
 
     # Step 3: Route nets with Rust backend
-    print("\n[3/3] Routing nets with Rust backend...")
+    print(f"\n[3/{total_steps}] Routing nets with Rust backend...")
     if stats is not None:
         stats.step_times_s["build_static_obstacle_map"] = 0.0
         stats.step_times_s["baseline_gdsfactory_routing"] = 0.0
@@ -834,6 +976,7 @@ def run_routing_flow(
     if debug_timing:
         print(f"      - Routing time: {t_route_end - t_route_start:.4f} s")
     print(f"      ✓ Routed layout generated: {routed_layout.name}")
+    electrical_result: ElectricalRoutingResult | None = None
 
     if route_result.path_length_analysis_info is not None:
         meander_report_info = getattr(route_result, "meander_insertion_report_info", None)
@@ -951,6 +1094,61 @@ def run_routing_flow(
                         f"reserved_cells_count={reserved_cells_count}, reason={reason}"
                     )
 
+    if enable_electrical_routing:
+        print(f"\n[4/{total_steps}] Routing heater electrical metal...")
+        t_electrical_start = time.perf_counter()
+        electrical_result = route_electrical_heaters(
+            routed_layout,
+            schematic,
+            electrical_config,
+            debug_dir=debug_dir,
+            debug_prefix=benchmark_name.lower(),
+        )
+        t_electrical_end = time.perf_counter()
+        if stats is not None:
+            stats.step_times_s["electrical_routing"] = (
+                t_electrical_end - t_electrical_start
+            )
+        if electrical_result.routed_component is None:
+            raise RuntimeError(_electrical_failure_summary(electrical_result))
+        electrical_summary = _electrical_summary(electrical_result)
+        if stats is not None:
+            stats.electrical_terminal_groups = int(
+                electrical_summary["terminal_group_count"]
+            )
+            stats.electrical_pad_assignments = int(
+                electrical_summary["pad_assignment_count"]
+            )
+            stats.electrical_detailed_routes = int(
+                electrical_summary["detailed_route_count"]
+            )
+            stats.electrical_failed_detailed_routes = int(
+                electrical_summary["failed_detailed_route_count"]
+            )
+        optical_routed_layout = routed_layout
+        routed_layout = electrical_result.routed_component
+        _copy_component_info(optical_routed_layout, routed_layout)
+        _component_info(routed_layout)["electrical_routing"] = electrical_summary
+        electrical_pad_count = (
+            len(electrical_result.pad_plan.assignments)
+            if electrical_result.pad_plan
+            else 0
+        )
+        print(f"      ✓ Electrical layout generated: {routed_layout.name}")
+        print(
+            "      - Electrical routes: "
+            f"heaters={len(electrical_result.terminal_groups)}, "
+            f"pads={electrical_pad_count}"
+        )
+        if debug_timing:
+            print(
+                "      - Electrical routing time: "
+                f"{t_electrical_end - t_electrical_start:.4f} s"
+            )
+        if debug_svgs_enabled:
+            for name, path in electrical_result.debug_artifacts.items():
+                print(f"      - Electrical {name}: {path}")
+
     if debug_svgs_enabled:
         if debug_artifacts.obstacle_svg is not None:
             print(f"      - Obstacle SVG: {debug_artifacts.obstacle_svg}")
@@ -974,6 +1172,11 @@ def run_routing_flow(
                 svg_path = Path(svg)
                 if svg_path.exists():
                     webbrowser.open_new_tab(svg_path.resolve().as_uri())
+            if electrical_result is not None:
+                for svg in electrical_result.debug_artifacts.values():
+                    svg_path = Path(svg)
+                    if svg_path.exists():
+                        webbrowser.open_new_tab(svg_path.resolve().as_uri())
         except Exception as e:
             print(f"      - Warning: failed to open SVGs automatically: {e}")
 
