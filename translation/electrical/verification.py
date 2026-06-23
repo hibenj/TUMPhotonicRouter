@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .pad_slots import pad_access_bbox
 from .pitch_grid import bbox_to_grid_cells
@@ -211,7 +212,7 @@ def _verify_terminal_contact(
     terminal_bboxes = _terminal_contact_bboxes(terminal)
     if any(_any_rect_intersects(rects, bbox) for bbox in terminal_bboxes):
         return
-    details = {
+    details: dict[str, Any] = {
         "terminal_id": terminal.id,
         "heater_id": terminal.heater_id,
         "terminal_bbox": terminal.bbox,
