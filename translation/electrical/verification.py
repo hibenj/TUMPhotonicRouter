@@ -45,6 +45,25 @@ class _TaggedRect:
     source: str
 
 
+_INTENTIONAL_SAME_NET_OVERLAP_PAIRS = frozenset(
+    {
+        ("bus_escape", "bus_escape"),
+        ("bus_escape", "bus_stripe"),
+        ("bus_escape", "pad"),
+        ("bus_route", "bus_route"),
+        ("bus_route", "bus_stripe"),
+        ("bus_route", "terminal_adapter"),
+        ("bus_route", "terminal_contact"),
+        ("pad", "route_tail"),
+        ("route_tail", "route_tail"),
+        ("route_tail", "terminal_adapter"),
+        ("route_tail", "terminal_contact"),
+        ("terminal_adapter", "terminal_adapter"),
+        ("terminal_adapter", "terminal_contact"),
+    }
+)
+
+
 def verify_electrical_routing(
     obstacle_map: ElectricalObstacleMap,
     common_bus: CommonBusRoutingResult,
@@ -593,8 +612,19 @@ def _quality_metrics(
         for net in net_geometries
     )
     same_net_overlap_pairs_by_source = Counter[str]()
+    same_net_intentional_overlap_pairs_by_reason = Counter[str]()
+    same_net_redundant_overlap_pairs_by_source = Counter[str]()
     for net in net_geometries:
         same_net_overlap_pairs_by_source.update(_rect_overlap_pair_counts_by_source(net))
+        classification = _classify_same_net_overlap_pairs(net)
+        same_net_intentional_overlap_pairs_by_reason.update(classification["intentional"])
+        same_net_redundant_overlap_pairs_by_source.update(classification["redundant"])
+    same_net_intentional_overlap_pairs = sum(
+        same_net_intentional_overlap_pairs_by_reason.values()
+    )
+    same_net_redundant_overlap_pairs = sum(
+        same_net_redundant_overlap_pairs_by_source.values()
+    )
     min_spacing = _min_cross_net_spacing(net_geometries)
     return {
         "net_count": len(net_geometries),
@@ -608,6 +638,14 @@ def _quality_metrics(
         "same_net_overlap_pair_count": same_net_overlap_pairs,
         "same_net_overlap_pair_count_by_source": dict(
             sorted(same_net_overlap_pairs_by_source.items())
+        ),
+        "same_net_intentional_overlap_pair_count": same_net_intentional_overlap_pairs,
+        "same_net_intentional_overlap_pair_count_by_reason": dict(
+            sorted(same_net_intentional_overlap_pairs_by_reason.items())
+        ),
+        "same_net_redundant_overlap_pair_count": same_net_redundant_overlap_pairs,
+        "same_net_redundant_overlap_pair_count_by_source": dict(
+            sorted(same_net_redundant_overlap_pairs_by_source.items())
         ),
         "cross_net_min_spacing_um": min_spacing,
         "required_cross_net_clearance_um": max(0.0, config.obstacle_clearance_um),
@@ -785,14 +823,27 @@ def _clean_tagged_rects(
     tagged_rects: tuple[_TaggedRect, ...],
 ) -> tuple[_TaggedRect, ...]:
     source_by_bbox: dict[BBox, str] = {}
-    for tagged in tagged_rects:
-        bbox = _normalized_bbox(tagged.bbox)
-        if bbox is not None:
-            source_by_bbox.setdefault(bbox, tagged.source)
+    valid_bboxes: list[BBox] = []
+    for bbox, source in _normalized_tagged_bbox_sources(tagged_rects):
+        valid_bboxes.append(bbox)
+        source_by_bbox.setdefault(bbox, source)
     return tuple(
         _TaggedRect(bbox, source_by_bbox.get(bbox, "unknown"))
-        for bbox in clean_rects(tagged.bbox for tagged in tagged_rects)
+        for bbox in clean_rects(valid_bboxes)
     )
+
+
+def _normalized_tagged_bbox_sources(
+    tagged_rects: tuple[_TaggedRect, ...],
+) -> tuple[tuple[BBox, str], ...]:
+    bbox_sources: list[tuple[BBox, str]] = []
+    for tagged in tagged_rects:
+        normalized_bbox = _normalized_bbox(tagged.bbox)
+        if normalized_bbox is None:
+            continue
+        bbox: BBox = normalized_bbox
+        bbox_sources.append((bbox, tagged.source))
+    return tuple(bbox_sources)
 
 
 def _route_start_um(
@@ -898,6 +949,39 @@ def _rect_overlap_pair_counts_by_source(net: _NetGeometry) -> Counter[str]:
             )
             counts[source_pair] += 1
     return counts
+
+
+def _classify_same_net_overlap_pairs(
+    net: _NetGeometry,
+) -> dict[str, Counter[str]]:
+    intentional = Counter[str]()
+    redundant = Counter[str]()
+    for index, left in enumerate(net.rects):
+        for right_index in range(index + 1, len(net.rects)):
+            right = net.rects[right_index]
+            overlap = _rect_intersection(left, right)
+            if overlap is None or _rect_area(overlap) <= 0.0:
+                continue
+            sorted_sources = sorted((net.rect_sources[index], net.rect_sources[right_index]))
+            source_pair = (sorted_sources[0], sorted_sources[1])
+            if source_pair in _INTENTIONAL_SAME_NET_OVERLAP_PAIRS:
+                intentional[_intentional_overlap_reason(source_pair)] += 1
+                continue
+            redundant["/".join(source_pair)] += 1
+    return {"intentional": intentional, "redundant": redundant}
+
+
+def _intentional_overlap_reason(source_pair: tuple[str, str]) -> str:
+    sources = set(source_pair)
+    if "pad" in sources:
+        return "pad_contact"
+    if "bus_stripe" in sources:
+        return "bus_stripe_contact"
+    if "terminal_adapter" in sources or "terminal_contact" in sources:
+        return "terminal_access_join"
+    if source_pair[0] == source_pair[1]:
+        return "same_source_wire_join"
+    return "same_net_join"
 
 
 def _polyline_length(points: tuple[tuple[float, float], ...]) -> float:

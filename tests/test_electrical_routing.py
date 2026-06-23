@@ -204,6 +204,11 @@ def test_verifier_models_terminal_landing_contact():
         "bus_route/terminal_adapter": 1,
         "terminal_adapter/terminal_adapter": 2,
     }
+    assert verification.metrics["same_net_intentional_overlap_pair_count"] == 3
+    assert verification.metrics["same_net_redundant_overlap_pair_count"] == 0
+    assert verification.metrics["same_net_intentional_overlap_pair_count_by_reason"] == {
+        "terminal_access_join": 3,
+    }
 
 
 def test_terminal_contact_selects_physical_port_not_logical_center():

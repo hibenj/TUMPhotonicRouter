@@ -58,6 +58,15 @@ def _result_stub() -> SimpleNamespace:
                 "route_tail/terminal_adapter": 13,
                 "terminal_adapter/terminal_adapter": 16,
             },
+            "same_net_intentional_overlap_pair_count": 103,
+            "same_net_intentional_overlap_pair_count_by_reason": {
+                "bus_stripe_contact": 4,
+                "pad_contact": 12,
+                "same_source_wire_join": 45,
+                "terminal_access_join": 42,
+            },
+            "same_net_redundant_overlap_pair_count": 0,
+            "same_net_redundant_overlap_pair_count_by_source": {},
             "cross_net_min_spacing_um": 11.0,
             "required_cross_net_clearance_um": 10.0,
             "centerline_length_um": 19_390.0,
@@ -150,6 +159,15 @@ def test_electrical_benchmark_uses_case_specific_guardrails():
         "pad/route_tail": 1,
         "route_tail/terminal_adapter": 1,
     }
+    small_summary["metrics"]["same_net_intentional_overlap_pair_count"] = 7
+    small_summary["metrics"]["same_net_intentional_overlap_pair_count_by_reason"] = {
+        "bus_stripe_contact": 2,
+        "pad_contact": 2,
+        "same_source_wire_join": 1,
+        "terminal_access_join": 2,
+    }
+    small_summary["metrics"]["same_net_redundant_overlap_pair_count"] = 0
+    small_summary["metrics"]["same_net_redundant_overlap_pair_count_by_source"] = {}
     small_summary["realization_metrics"]["output_polygon_count"] = 2
     small_summary["realization_metrics"]["pre_union_rect_count"] = 9
 
@@ -174,6 +192,7 @@ def test_electrical_benchmark_guardrails_report_metric_regressions():
     summary["failed_detailed_route_count"] = 1
     summary["metrics"]["centerline_length_um"] = 25_000.0
     summary["metrics"]["same_net_overlap_pair_count"] = 3_000
+    summary["metrics"]["same_net_redundant_overlap_pair_count"] = 1
     summary["metrics"]["cross_net_min_spacing_um"] = 5.0
 
     violations = module.guardrail_violations(summary)
@@ -186,6 +205,7 @@ def test_electrical_benchmark_guardrails_report_metric_regressions():
         "failed_detailed_route_count",
         "metrics.centerline_length_um",
         "metrics.same_net_overlap_pair_count",
+        "metrics.same_net_redundant_overlap_pair_count",
         "metrics.cross_net_min_spacing_um",
     }
 

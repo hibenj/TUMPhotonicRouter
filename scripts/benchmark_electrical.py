@@ -38,6 +38,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "rect_count_max": 130,
     "same_net_duplicate_rect_count_max": 0,
     "same_net_overlap_pair_count_max": 150,
+    "same_net_redundant_overlap_pair_count_max": 0,
     "output_polygon_count_max": 20,
     "pre_union_rect_count_max": 130,
 }
@@ -57,6 +58,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "rect_count_max": 20,
         "same_net_duplicate_rect_count_max": 0,
         "same_net_overlap_pair_count_max": 20,
+        "same_net_redundant_overlap_pair_count_max": 0,
         "output_polygon_count_max": 5,
         "pre_union_rect_count_max": 20,
     },
@@ -74,6 +76,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "rect_count_max": 230,
         "same_net_duplicate_rect_count_max": 0,
         "same_net_overlap_pair_count_max": 250,
+        "same_net_redundant_overlap_pair_count_max": 0,
         "output_polygon_count_max": 25,
         "pre_union_rect_count_max": 230,
     },
@@ -198,6 +201,12 @@ def guardrail_violations(
     _check_metric_max(violations, summary, "rect_count", guardrails)
     _check_metric_max(violations, summary, "same_net_duplicate_rect_count", guardrails)
     _check_metric_max(violations, summary, "same_net_overlap_pair_count", guardrails)
+    _check_metric_max(
+        violations,
+        summary,
+        "same_net_redundant_overlap_pair_count",
+        guardrails,
+    )
     _check_realization_max(violations, summary, "output_polygon_count", guardrails)
     _check_realization_max(violations, summary, "pre_union_rect_count", guardrails)
     _check_cross_net_spacing(violations, summary)
@@ -509,6 +518,10 @@ def _selected_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "same_net_duplicate_rect_count",
         "same_net_overlap_pair_count",
         "same_net_overlap_pair_count_by_source",
+        "same_net_intentional_overlap_pair_count",
+        "same_net_intentional_overlap_pair_count_by_reason",
+        "same_net_redundant_overlap_pair_count",
+        "same_net_redundant_overlap_pair_count_by_source",
         "cross_net_min_spacing_um",
         "required_cross_net_clearance_um",
         "centerline_length_um",
@@ -638,6 +651,10 @@ def _markdown_report(summary: Mapping[str, Any]) -> str:
         ("raw_metal_area_um2", _mapping_get(metrics, "raw_metal_area_um2")),
         ("rect_count", _mapping_get(metrics, "rect_count")),
         ("same_net_overlap_pair_count", _mapping_get(metrics, "same_net_overlap_pair_count")),
+        (
+            "same_net_redundant_overlap_pair_count",
+            _mapping_get(metrics, "same_net_redundant_overlap_pair_count"),
+        ),
         ("cross_net_min_spacing_um", _mapping_get(metrics, "cross_net_min_spacing_um")),
         ("output_polygon_count", _mapping_get(realization, "output_polygon_count")),
         ("pre_union_rect_count", _mapping_get(realization, "pre_union_rect_count")),
