@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from gdsfactory.component import Component
+import klayout.db as kdb
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -58,6 +59,22 @@ def _polygon_bboxes_by_layer(component: Component, layer: tuple[int, int]):
         )
         for polygon in component.get_polygons(by="tuple").get(layer, [])
     }
+
+
+def _polygon_region_by_layer(component: Component, layer: tuple[int, int]) -> kdb.Region:
+    region = kdb.Region()
+    for polygon in component.get_polygons(merge=False, by="tuple").get(layer, []):
+        region.insert(polygon)
+    return region
+
+
+def _box_region(bbox_um) -> kdb.Region:
+    return kdb.Region(kdb.Box(*_dbu_bbox(bbox_um)))
+
+
+def _region_covers_bbox(region: kdb.Region, bbox_um) -> bool:
+    box = _box_region(bbox_um)
+    return (box - region).is_empty()
 
 
 def _verification_obstacle_map(
@@ -278,6 +295,95 @@ def test_verifier_flags_cross_net_metal_overlap():
     issue_codes = {issue.code for issue in verification.issues}
     assert not verification.success
     assert "cross_net_metal_overlap" in issue_codes
+
+
+def test_verifier_includes_assigned_pad_rectangles_in_cross_net_overlap():
+    obstacle_map = _verification_obstacle_map()
+    config = ElectricalRoutingConfig(
+        pad_side="top",
+        routing_grid_pitch_um=10.0,
+        wire_width_um=10.0,
+        bus_width_um=10.0,
+    )
+    terminal = _terminal("heater_0:r", (20.0, 20.0))
+    overlapping_pad_slot = PadSlot(
+        index=0,
+        center=(50.0, 300.0),
+        bbox=(10.0, 260.0, 90.0, 340.0),
+        side="top",
+    )
+    individual_assignment = PadAssignment(
+        slot=overlapping_pad_slot,
+        net_id="individual:heater_0",
+        kind="individual",
+        terminal=terminal,
+        heater_id="heater_0",
+    )
+    common_assignment = PadAssignment(
+        slot=overlapping_pad_slot,
+        net_id="common_bus",
+        kind="common_bus",
+    )
+    common_bus = CommonBusRoutingResult(
+        bus_side="bottom",
+        bus=obstacle_map.bus,
+        selected_terminals={},
+        unselected_terminals={"heater_0": terminal},
+        routes=(),
+        tree_cells=frozenset(obstacle_map.bus.cells),
+    )
+    detailed_routes = DetailedBundleRoutingResult(
+        routes=(
+            DetailedBundleRoute(
+                bundle_id=0,
+                rank=0,
+                terminal=terminal,
+                pad_assignment=individual_assignment,
+                path=((2, 2), (5, 2)),
+                target_cells=frozenset({(5, 26)}),
+                track_cell=(2, 2),
+                lane_cell=(5, 2),
+                offset_um=0.0,
+                offset_axis="x",
+                offset_path=((2.0, 2.0), (5.0, 2.0)),
+                success=True,
+            ),
+        ),
+        failed_routes=(),
+        committed_cells=frozenset({(2, 2), (5, 2)}),
+    )
+
+    verification = verify_electrical_routing(
+        obstacle_map,
+        common_bus,
+        common_bus_escape=CommonBusEscapeResult(
+            pad_assignment=common_assignment,
+            path=(),
+            target_cells=frozenset(),
+            success=False,
+            reason="not relevant for pad rectangle overlap test",
+        ),
+        detailed_bundle_routes=detailed_routes,
+        pad_plan=PadPlan(
+            side="top",
+            pitch_um=130.0,
+            origin_x_um=0.0,
+            slots=(overlapping_pad_slot,),
+            assignments=(individual_assignment, common_assignment),
+            empty_slots=(),
+        ),
+        config=config,
+    )
+
+    cross_net_issues = [
+        issue for issue in verification.issues
+        if issue.code == "cross_net_metal_overlap"
+    ]
+    assert cross_net_issues
+    assert any(
+        issue.details["other_net_id"] == "individual:heater_0"
+        for issue in cross_net_issues
+    )
 
 
 def test_verifier_flags_raw_physical_obstacle_overlap_outside_port_contact():
@@ -900,6 +1006,14 @@ def test_detailed_bundle_router_assigns_spaced_offsets_from_topology():
     result = route_electrical_heaters(component, schematic, config)
 
     assert result.detailed_bundle_routes is not None
+    assert result.verification is not None
+    assert result.verification.success
+    metrics = result.verification.metrics
+    assert metrics["net_count"] == len(result.detailed_bundle_routes.routes) + 1
+    assert metrics["rect_count"] > 0
+    assert metrics["raw_metal_area_um2"] > 0.0
+    assert metrics["centerline_length_um"] > 0.0
+    assert metrics["pad_channel_height_um"] >= config.pad_offset_um
     detailed = result.detailed_bundle_routes
     assert detailed.success
     assert len(detailed.routes) == 20
@@ -988,13 +1102,13 @@ def test_metal_realization_creates_assigned_pads_but_not_empty_slots():
 
     routed_component = result.routed_component
     assert routed_component is not None
-    polygon_bboxes = _polygon_bboxes_by_layer(routed_component, config.metal_layer)
-    assigned_pad_bboxes = {_dbu_bbox(assignment.slot.bbox) for assignment in result.pad_plan.assignments}
-    empty_slot_bboxes = {_dbu_bbox(slot.bbox) for slot in result.pad_plan.empty_slots}
+    metal_region = _polygon_region_by_layer(routed_component, config.metal_layer)
 
-    assert assigned_pad_bboxes
-    assert assigned_pad_bboxes.issubset(polygon_bboxes)
-    assert not empty_slot_bboxes.intersection(polygon_bboxes)
+    assert result.pad_plan.assignments
+    for assignment in result.pad_plan.assignments:
+        assert _region_covers_bbox(metal_region, assignment.slot.bbox)
+    for slot in result.pad_plan.empty_slots:
+        assert not _region_covers_bbox(metal_region, slot.bbox)
 
 
 def test_metal_realization_adds_wire_polygons_for_bus_and_individual_routes():
@@ -1014,23 +1128,19 @@ def test_metal_realization_adds_wire_polygons_for_bus_and_individual_routes():
     result = route_electrical_heaters(component, schematic, config)
 
     assert result.routed_component is not None
-    polygons = result.routed_component.get_polygons(by="tuple").get(config.metal_layer, [])
-    assigned_pad_bboxes = {_dbu_bbox(assignment.slot.bbox) for assignment in result.pad_plan.assignments}
-    wire_width_dbu = round(config.wire_width_um * 1000)
-    bus_width_dbu = round(config.bus_width_um * 1000)
-    wire_like_bboxes = []
-    for polygon in polygons:
-        bbox = polygon.bbox()
-        bbox_tuple = (bbox.left, bbox.bottom, bbox.right, bbox.top)
-        if bbox_tuple in assigned_pad_bboxes:
-            continue
-        if bbox.width() == wire_width_dbu or bbox.height() == wire_width_dbu:
-            wire_like_bboxes.append(bbox_tuple)
-        elif bbox.width() == bus_width_dbu or bbox.height() == bus_width_dbu:
-            wire_like_bboxes.append(bbox_tuple)
-
-    assert wire_like_bboxes
-    assert len(wire_like_bboxes) >= len(result.detailed_bundle_routes.routes)
+    assert result.verification is not None
+    realization_metrics = dict(result.routed_component.info["electrical_metal_realization"])
+    polygons = result.routed_component.get_polygons(
+        merge=False,
+        by="tuple",
+    ).get(config.metal_layer, [])
+    pre_union_rect_count = result.verification.metrics["rect_count"]
+    assert polygons
+    assert len(polygons) < pre_union_rect_count
+    assert realization_metrics["pre_union_rect_count"] <= pre_union_rect_count
+    assert realization_metrics["output_polygon_count"] < realization_metrics["pre_union_rect_count"]
+    assert realization_metrics["output_polygon_count"] <= len(polygons)
+    assert len(polygons) >= len(result.detailed_bundle_routes.routes)
 
 
 def test_show_realized_electrical_metal_in_klayout():

@@ -621,6 +621,11 @@ def _electrical_summary(result: ElectricalRoutingResult) -> dict[str, Any]:
         tuple(detailed_routes.failed_routes) if detailed_routes is not None else ()
     )
     verification = getattr(result, "verification", None)
+    realization_metrics = (
+        dict(result.routed_component.info.get("electrical_metal_realization", {}))
+        if result.routed_component is not None
+        else {}
+    )
     return {
         "terminal_group_count": len(result.terminal_groups),
         "common_bus_success": result.common_bus.success,
@@ -649,6 +654,12 @@ def _electrical_summary(result: ElectricalRoutingResult) -> dict[str, Any]:
         "verification_warning_count": (
             verification.warning_count if verification is not None else 0
         ),
+        "verification_metrics": (
+            dict(verification.metrics)
+            if verification is not None
+            else {}
+        ),
+        "realization_metrics": realization_metrics,
         "verification_issues": (
             tuple(
                 {

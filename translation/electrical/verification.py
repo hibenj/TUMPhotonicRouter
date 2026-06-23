@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 from .pad_slots import pad_access_bbox
@@ -32,6 +33,7 @@ class _NetGeometry:
     rects: tuple[BBox, ...]
     allowed_cells: frozenset[GridCell]
     allowed_physical_bboxes: tuple[BBox, ...] = ()
+    centerline_points_um: tuple[tuple[float, float], ...] = ()
 
 
 def verify_electrical_routing(
@@ -53,11 +55,20 @@ def verify_electrical_routing(
     issues: list[ElectricalVerificationIssue] = []
     net_geometries: list[_NetGeometry] = []
 
-    common_bus_rects = _common_bus_rects(
+    pad_bboxes_by_net = _pad_bboxes_by_net(pad_plan)
+    common_bus_rects = (
+        *_common_bus_rects(
+            common_bus,
+            common_bus_escape,
+            obstacle_map,
+            config,
+        ),
+        *pad_bboxes_by_net.get("common_bus", ()),
+    )
+    common_bus_route_points = _common_bus_centerline_points(
         common_bus,
         common_bus_escape,
         obstacle_map,
-        config,
     )
     common_bus_allowed = _common_bus_allowed_cells(
         common_bus,
@@ -75,6 +86,7 @@ def verify_electrical_routing(
                 obstacle_map,
                 config,
             ),
+            centerline_points_um=common_bus_route_points,
         )
     )
     _verify_common_bus_terminal_contacts(issues, common_bus, common_bus_rects)
@@ -82,7 +94,15 @@ def verify_electrical_routing(
 
     if detailed_bundle_routes is not None:
         for route in detailed_bundle_routes.routes:
-            route_rects = _detailed_route_rects(route, obstacle_map, config)
+            route_net_id = (
+                route.pad_assignment.net_id
+                if route.pad_assignment is not None
+                else f"individual:{route.terminal.heater_id}"
+            )
+            route_rects = (
+                *_detailed_route_rects(route, obstacle_map, config),
+                *pad_bboxes_by_net.get(route_net_id, ()),
+            )
             route_start_um = _route_start_um(route, obstacle_map)
             allowed_cells = set(
                 _individual_terminal_open_cells(obstacle_map).get(
@@ -102,10 +122,14 @@ def verify_electrical_routing(
             allowed_cells.update(route.target_cells)
             net_geometries.append(
                 _NetGeometry(
-                    net_id=f"individual:{route.terminal.heater_id}",
+                    net_id=route_net_id,
                     rects=route_rects,
                     allowed_cells=frozenset(allowed_cells),
                     allowed_physical_bboxes=(access.contact_bbox,),
+                    centerline_points_um=_detailed_route_centerline_points(
+                        route,
+                        obstacle_map,
+                    ),
                 )
             )
             _verify_terminal_contact(
@@ -136,8 +160,17 @@ def verify_electrical_routing(
     _verify_raw_physical_obstacle_overlaps(issues, net_geometries, obstacle_map)
     _verify_blocked_cell_clearance(issues, net_geometries, obstacle_map)
     _verify_cross_net_overlaps(issues, net_geometries)
+    _verify_cross_net_spacing(issues, net_geometries, config)
 
-    return ElectricalVerificationResult(issues=tuple(issues))
+    return ElectricalVerificationResult(
+        issues=tuple(issues),
+        metrics=_quality_metrics(
+            net_geometries,
+            obstacle_map,
+            pad_plan,
+            config,
+        ),
+    )
 
 
 def _common_bus_rects(
@@ -226,6 +259,47 @@ def _individual_terminal_open_cells(
     return (
         obstacle_map.individual_terminal_open_cells
         or obstacle_map.terminal_open_cells
+    )
+
+
+def _pad_bboxes_by_net(pad_plan: PadPlan | None) -> dict[str, tuple[BBox, ...]]:
+    if pad_plan is None:
+        return {}
+    bboxes_by_net: dict[str, list[BBox]] = {}
+    for assignment in pad_plan.assignments:
+        bboxes_by_net.setdefault(assignment.net_id, []).append(assignment.slot.bbox)
+    return {
+        net_id: tuple(bboxes)
+        for net_id, bboxes in bboxes_by_net.items()
+    }
+
+
+def _common_bus_centerline_points(
+    common_bus: CommonBusRoutingResult,
+    common_bus_escape: CommonBusEscapeResult | None,
+    obstacle_map: ElectricalObstacleMap,
+) -> tuple[tuple[float, float], ...]:
+    points: list[tuple[float, float]] = []
+    for route in common_bus.routes:
+        points.extend(
+            _grid_cell_center_um(cell, obstacle_map)
+            for cell in route.path
+        )
+    if common_bus_escape is not None and common_bus_escape.success:
+        points.extend(
+            _grid_cell_center_um(cell, obstacle_map)
+            for cell in common_bus_escape.path
+        )
+    return tuple(points)
+
+
+def _detailed_route_centerline_points(
+    route: DetailedBundleRoute,
+    obstacle_map: ElectricalObstacleMap,
+) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        _grid_point_to_um(point, obstacle_map)
+        for point in route.offset_path
     )
 
 
@@ -441,6 +515,84 @@ def _verify_cross_net_overlaps(
                     },
                 )
             )
+
+
+def _verify_cross_net_spacing(
+    issues: list[ElectricalVerificationIssue],
+    net_geometries: list[_NetGeometry],
+    config: ElectricalRoutingConfig,
+) -> None:
+    required_clearance = max(0.0, config.obstacle_clearance_um)
+    if required_clearance <= 0.0:
+        return
+    for index, left in enumerate(net_geometries):
+        for right in net_geometries[index + 1 :]:
+            if left.net_id == right.net_id:
+                continue
+            min_spacing = _min_rect_spacing(left.rects, right.rects)
+            if min_spacing is None or min_spacing <= 0.0:
+                continue
+            if min_spacing >= required_clearance:
+                continue
+            issues.append(
+                ElectricalVerificationIssue(
+                    code="cross_net_metal_spacing",
+                    message=(
+                        f"Metal for {left.net_id} is closer than the required "
+                        f"{required_clearance:.3f}um clearance to {right.net_id}."
+                    ),
+                    net_id=left.net_id,
+                    details={
+                        "other_net_id": right.net_id,
+                        "required_clearance_um": required_clearance,
+                        "actual_clearance_um": min_spacing,
+                    },
+                )
+            )
+
+
+def _quality_metrics(
+    net_geometries: list[_NetGeometry],
+    obstacle_map: ElectricalObstacleMap,
+    pad_plan: PadPlan | None,
+    config: ElectricalRoutingConfig,
+) -> dict[str, Any]:
+    rects_by_net = {net.net_id: net.rects for net in net_geometries}
+    all_rects = tuple(rect for net in net_geometries for rect in net.rects)
+    same_net_duplicate_rects = sum(
+        _duplicate_rect_count(net.rects)
+        for net in net_geometries
+    )
+    same_net_overlap_pairs = sum(
+        _rect_overlap_pair_count(net.rects)
+        for net in net_geometries
+    )
+    min_spacing = _min_cross_net_spacing(net_geometries)
+    return {
+        "net_count": len(net_geometries),
+        "rect_count": len(all_rects),
+        "rect_count_by_net": {
+            net_id: len(rects)
+            for net_id, rects in sorted(rects_by_net.items())
+        },
+        "raw_metal_area_um2": sum(_rect_area(rect) for rect in all_rects),
+        "same_net_duplicate_rect_count": same_net_duplicate_rects,
+        "same_net_overlap_pair_count": same_net_overlap_pairs,
+        "cross_net_min_spacing_um": min_spacing,
+        "required_cross_net_clearance_um": max(0.0, config.obstacle_clearance_um),
+        "centerline_length_um": sum(
+            _polyline_length(net.centerline_points_um)
+            for net in net_geometries
+        ),
+        "bend_count": sum(
+            _bend_count(net.centerline_points_um)
+            for net in net_geometries
+        ),
+        "pad_channel_height_um": _pad_channel_height_um(
+            pad_plan,
+            obstacle_map,
+        ),
+    }
 
 
 def _detailed_route_rects(
@@ -659,6 +811,106 @@ def _rect_overlap_samples(
                 continue
             overlaps.append(overlap)
     return tuple(overlaps)
+
+
+def _min_cross_net_spacing(
+    net_geometries: list[_NetGeometry],
+) -> float | None:
+    min_spacing: float | None = None
+    for index, left in enumerate(net_geometries):
+        for right in net_geometries[index + 1 :]:
+            spacing = _min_rect_spacing(left.rects, right.rects)
+            if spacing is None:
+                continue
+            if min_spacing is None or spacing < min_spacing:
+                min_spacing = spacing
+    return min_spacing
+
+
+def _min_rect_spacing(
+    left_rects: tuple[BBox, ...],
+    right_rects: tuple[BBox, ...],
+) -> float | None:
+    min_spacing: float | None = None
+    for left in left_rects:
+        for right in right_rects:
+            spacing = _rect_spacing(left, right)
+            if min_spacing is None or spacing < min_spacing:
+                min_spacing = spacing
+    return min_spacing
+
+
+def _rect_spacing(left: BBox, right: BBox) -> float:
+    x_gap = max(right[0] - left[2], left[0] - right[2], 0.0)
+    y_gap = max(right[1] - left[3], left[1] - right[3], 0.0)
+    return math.hypot(x_gap, y_gap)
+
+
+def _duplicate_rect_count(rects: tuple[BBox, ...]) -> int:
+    seen: set[BBox] = set()
+    duplicates = 0
+    for rect in rects:
+        if rect in seen:
+            duplicates += 1
+        seen.add(rect)
+    return duplicates
+
+
+def _rect_overlap_pair_count(rects: tuple[BBox, ...]) -> int:
+    count = 0
+    for index, left in enumerate(rects):
+        for right in rects[index + 1 :]:
+            overlap = _rect_intersection(left, right)
+            if overlap is None or _rect_area(overlap) <= 0.0:
+                continue
+            count += 1
+    return count
+
+
+def _polyline_length(points: tuple[tuple[float, float], ...]) -> float:
+    return sum(
+        abs(end[0] - start[0]) + abs(end[1] - start[1])
+        for start, end in zip(points, points[1:])
+    )
+
+
+def _bend_count(points: tuple[tuple[float, float], ...]) -> int:
+    if len(points) < 3:
+        return 0
+    count = 0
+    previous = _point_direction(points[0], points[1])
+    for start, end in zip(points[1:], points[2:]):
+        current = _point_direction(start, end)
+        if current != (0, 0) and previous != (0, 0) and current != previous:
+            count += 1
+        if current != (0, 0):
+            previous = current
+    return count
+
+
+def _point_direction(
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> tuple[int, int]:
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    if dx != 0:
+        return (1 if dx > 0 else -1, 0)
+    if dy != 0:
+        return (0, 1 if dy > 0 else -1)
+    return (0, 0)
+
+
+def _pad_channel_height_um(
+    pad_plan: PadPlan | None,
+    obstacle_map: ElectricalObstacleMap,
+) -> float | None:
+    if pad_plan is None or not pad_plan.assigned_slots:
+        return None
+    _, layout_ymin, _, layout_ymax = obstacle_map.layout_bbox
+    if pad_plan.side == "top":
+        return min(slot.bbox[1] for slot in pad_plan.assigned_slots) - layout_ymax
+    return layout_ymin - max(slot.bbox[3] for slot in pad_plan.assigned_slots)
 
 
 def _rect_intersection(left: BBox, right: BBox) -> BBox | None:

@@ -383,6 +383,7 @@ class ElectricalVerificationResult:
     """Post-route electrical correctness checks."""
 
     issues: tuple[ElectricalVerificationIssue, ...] = ()
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     @property
     def error_count(self) -> int:
