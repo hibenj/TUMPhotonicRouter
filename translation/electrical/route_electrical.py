@@ -17,6 +17,7 @@ from .obstacle_extraction import build_electrical_obstacle_map
 from .pad_slots import plan_pad_slots
 from .terminal_extraction import extract_heater_terminal_pairs
 from .types import ElectricalRoutingConfig, ElectricalRoutingResult
+from .verification import verify_electrical_routing
 
 
 def route_electrical_heaters(
@@ -86,6 +87,18 @@ def route_electrical_heaters(
         if common_bus.success
         else None
     )
+    verification = (
+        verify_electrical_routing(
+            obstacle_map,
+            common_bus,
+            common_bus_escape,
+            detailed_bundle_routes,
+            pad_plan,
+            config,
+        )
+        if routed_component is not None
+        else None
+    )
     artifacts: dict[str, str] = {}
     if debug_dir is not None:
         debug_path = Path(debug_dir) / "electrical" / f"{debug_prefix}_common_bus.svg"
@@ -110,5 +123,6 @@ def route_electrical_heaters(
         individual_topology=individual_topology,
         detailed_bundle_routes=detailed_bundle_routes,
         routed_component=routed_component,
+        verification=verification,
         debug_artifacts=artifacts,
     )

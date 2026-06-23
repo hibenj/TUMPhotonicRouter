@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from gdsfactory.component import Component
@@ -21,6 +22,21 @@ from translation.electrical.bundle_detail_router import (
 )
 from translation.electrical.pad_slots import pad_access_bbox
 from translation.electrical.terminal_extraction import extract_heater_terminal_pairs
+from translation.electrical.types import (
+    BusStripe,
+    CommonBusEscapeResult,
+    CommonBusRoutingResult,
+    DetailedBundleRoute,
+    DetailedBundleRoutingResult,
+    ElectricalObstacleMap,
+    ElectricalPortRef,
+    ElectricalTerminal,
+    PadAssignment,
+    PadPlan,
+    PadSlot,
+    TerminalBusRoute,
+)
+from translation.electrical.verification import verify_electrical_routing
 from translation.layout_from_schematic import layout_from_schematic
 
 
@@ -38,6 +54,171 @@ def _polygon_bboxes_by_layer(component: Component, layer: tuple[int, int]):
         )
         for polygon in component.get_polygons(by="tuple").get(layer, [])
     }
+
+
+def _verification_obstacle_map() -> ElectricalObstacleMap:
+    grid = SimpleNamespace(
+        width=40,
+        height=40,
+        grid_size_um=10.0,
+        origin=(0.0, 0.0),
+    )
+    bus = BusStripe(
+        side="bottom",
+        bbox=(0.0, 0.0, 40.0, 10.0),
+        cells=frozenset({(0, 0), (1, 0), (2, 0), (3, 0)}),
+    )
+    return ElectricalObstacleMap(
+        grid=grid,
+        raw_blocked_cells=frozenset(),
+        blocked_cells=frozenset(),
+        terminal_open_cells={},
+        bus=bus,
+        die_bbox=(0.0, 0.0, 400.0, 400.0),
+        layout_bbox=(0.0, 0.0, 200.0, 200.0),
+    )
+
+
+def _terminal(terminal_id: str, center: tuple[float, float]) -> ElectricalTerminal:
+    port = ElectricalPortRef(
+        name="e1",
+        center=center,
+        orientation=None,
+        width=4.0,
+        layer=(49, 0),
+    )
+    return ElectricalTerminal(
+        id=terminal_id,
+        heater_id=terminal_id.split(":", 1)[0],
+        side_key=terminal_id.split(":", 1)[1],
+        center=center,
+        bbox=(
+            center[0] - 2.0,
+            center[1] - 2.0,
+            center[0] + 2.0,
+            center[1] + 2.0,
+        ),
+        ports=(port,),
+        layer=(49, 0),
+    )
+
+
+def test_verifier_flags_missing_heater_terminal_contact():
+    obstacle_map = _verification_obstacle_map()
+    config = ElectricalRoutingConfig(
+        pad_side="top",
+        routing_grid_pitch_um=10.0,
+        wire_width_um=4.0,
+        bus_width_um=4.0,
+    )
+    terminal = _terminal("heater_0:l", (5.0, 120.0))
+    common_bus = CommonBusRoutingResult(
+        bus_side="bottom",
+        bus=obstacle_map.bus,
+        selected_terminals={"heater_0": terminal},
+        unselected_terminals={},
+        routes=(
+            TerminalBusRoute(
+                heater_id="heater_0",
+                terminal=terminal,
+                path=((20, 20), (20, 19), (20, 18)),
+                cost=2,
+            ),
+        ),
+        tree_cells=frozenset(obstacle_map.bus.cells),
+    )
+
+    verification = verify_electrical_routing(
+        obstacle_map,
+        common_bus,
+        common_bus_escape=None,
+        detailed_bundle_routes=None,
+        pad_plan=None,
+        config=config,
+    )
+
+    issue_codes = {issue.code for issue in verification.issues}
+    assert not verification.success
+    assert "missing_terminal_contact" in issue_codes
+
+
+def test_verifier_flags_cross_net_metal_overlap():
+    obstacle_map = _verification_obstacle_map()
+    config = ElectricalRoutingConfig(
+        pad_side="top",
+        routing_grid_pitch_um=10.0,
+        wire_width_um=10.0,
+        bus_width_um=10.0,
+    )
+    terminal = _terminal("heater_0:r", (20.0, 20.0))
+    pad_slot = PadSlot(
+        index=0,
+        center=(20.0, 300.0),
+        bbox=(-20.0, 260.0, 60.0, 340.0),
+        side="top",
+    )
+    pad_assignment = PadAssignment(
+        slot=pad_slot,
+        net_id="individual:heater_0",
+        kind="individual",
+        terminal=terminal,
+        heater_id="heater_0",
+    )
+    common_bus = CommonBusRoutingResult(
+        bus_side="bottom",
+        bus=obstacle_map.bus,
+        selected_terminals={},
+        unselected_terminals={"heater_0": terminal},
+        routes=(),
+        tree_cells=frozenset(obstacle_map.bus.cells),
+    )
+    common_bus_escape = CommonBusEscapeResult(
+        pad_assignment=None,
+        path=(),
+        target_cells=frozenset(),
+        success=False,
+        reason="not relevant for overlap test",
+    )
+    detailed_routes = DetailedBundleRoutingResult(
+        routes=(
+            DetailedBundleRoute(
+                bundle_id=0,
+                rank=0,
+                terminal=terminal,
+                pad_assignment=pad_assignment,
+                path=((0, 0), (1, 0), (2, 0)),
+                target_cells=frozenset({(2, 26)}),
+                track_cell=(1, 0),
+                lane_cell=(2, 0),
+                offset_um=0.0,
+                offset_axis="x",
+                offset_path=((0.5, 0.5), (2.5, 0.5)),
+                success=True,
+            ),
+        ),
+        failed_routes=(),
+        committed_cells=frozenset({(0, 0), (1, 0), (2, 0)}),
+    )
+
+    verification = verify_electrical_routing(
+        obstacle_map,
+        common_bus,
+        common_bus_escape=common_bus_escape,
+        detailed_bundle_routes=detailed_routes,
+        pad_plan=PadPlan(
+            side="top",
+            pitch_um=130.0,
+            origin_x_um=0.0,
+            slots=(pad_slot,),
+            assignments=(pad_assignment,),
+            empty_slots=(),
+        ),
+        config=config,
+    )
+
+    issue_codes = {issue.code for issue in verification.issues}
+    assert not verification.success
+    assert "cross_net_metal_overlap" in issue_codes
 
 
 def test_extracts_two_logical_terminals_from_multi_port_heater():

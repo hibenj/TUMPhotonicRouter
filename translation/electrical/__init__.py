@@ -11,6 +11,8 @@ from .types import (
     ElectricalRoutingConfig,
     ElectricalRoutingResult,
     ElectricalTerminal,
+    ElectricalVerificationIssue,
+    ElectricalVerificationResult,
     EscapeBundle,
     EscapeTopologyRoute,
     IndividualEscapeTopologyResult,
@@ -19,6 +21,7 @@ from .types import (
     PadSlot,
     TerminalPairGroup,
 )
+from .verification import verify_electrical_routing
 
 __all__ = [
     "CommonBusRoutingResult",
@@ -29,6 +32,8 @@ __all__ = [
     "ElectricalRoutingConfig",
     "ElectricalRoutingResult",
     "ElectricalTerminal",
+    "ElectricalVerificationIssue",
+    "ElectricalVerificationResult",
     "EscapeBundle",
     "EscapeTopologyRoute",
     "IndividualEscapeTopologyResult",
@@ -38,4 +43,5 @@ __all__ = [
     "TerminalPairGroup",
     "realize_electrical_metal",
     "route_electrical_heaters",
+    "verify_electrical_routing",
 ]

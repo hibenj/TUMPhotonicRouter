@@ -361,6 +361,36 @@ class DetailedBundleRoutingResult:
 
 
 @dataclass(frozen=True)
+class ElectricalVerificationIssue:
+    """One electrical routing verification issue."""
+
+    code: str
+    message: str
+    severity: Literal["error", "warning"] = "error"
+    net_id: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ElectricalVerificationResult:
+    """Post-route electrical correctness checks."""
+
+    issues: tuple[ElectricalVerificationIssue, ...] = ()
+
+    @property
+    def error_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "error")
+
+    @property
+    def warning_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "warning")
+
+    @property
+    def success(self) -> bool:
+        return self.error_count == 0
+
+
+@dataclass(frozen=True)
 class ElectricalRoutingResult:
     """Electrical routing milestone result payload."""
 
@@ -372,6 +402,7 @@ class ElectricalRoutingResult:
     individual_topology: IndividualEscapeTopologyResult | None = None
     detailed_bundle_routes: DetailedBundleRoutingResult | None = None
     routed_component: Component | None = None
+    verification: ElectricalVerificationResult | None = None
     debug_artifacts: dict[str, str] = field(default_factory=dict)
 
 
