@@ -97,7 +97,7 @@ def test_wire_rect_generation_omits_redundant_vertex_squares():
     )
 
     assert rects == (
-        (-5.0, -5.0, 25.0, 5.0),
+        (-5.0, -5.0, 15.0, 5.0),
         (15.0, -5.0, 25.0, 25.0),
     )
     assert clean_rects(
@@ -108,7 +108,7 @@ def test_wire_rect_generation_omits_redundant_vertex_squares():
             (25.0, -5.0, 35.0, 5.0),
         )
     ) == (
-        (-5.0, -5.0, 25.0, 5.0),
+        (-5.0, -5.0, 15.0, 5.0),
         (25.0, -5.0, 35.0, 5.0),
     )
     assert union_rect_area(rects) == 500.0
@@ -203,13 +203,22 @@ def test_verifier_models_terminal_landing_contact():
     assert "missing_terminal_contact" not in issue_codes
     assert verification.metrics["same_net_overlap_pair_count_by_source"] == {
         "bus_route/terminal_adapter": 1,
-        "terminal_adapter/terminal_adapter": 2,
+        "terminal_adapter/terminal_adapter": 1,
     }
-    assert verification.metrics["same_net_intentional_overlap_pair_count"] == 3
+    assert verification.metrics["same_net_intentional_overlap_pair_count"] == 2
     assert verification.metrics["same_net_redundant_overlap_pair_count"] == 0
     assert verification.metrics["same_net_intentional_overlap_pair_count_by_reason"] == {
-        "terminal_access_join": 3,
+        "terminal_access_join": 2,
     }
+    assert verification.metrics["metal_area_overcount_um2"] == 32.0
+    assert verification.metrics["metal_area_overcount_by_reason_um2"] == {
+        "terminal_access_join": 32.0,
+    }
+    assert verification.metrics["metal_area_overcount_by_source_um2"] == {
+        "bus_route/terminal_adapter": 16.0,
+        "terminal_adapter/terminal_adapter": 16.0,
+    }
+    assert verification.metrics["metal_redundant_area_overcount_um2"] == 0
 
 
 def test_terminal_contact_selects_physical_port_not_logical_center():

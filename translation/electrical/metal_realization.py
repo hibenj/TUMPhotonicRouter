@@ -58,6 +58,7 @@ def realize_electrical_metal(
             route.path,
             obstacle_map,
             width_um=config.bus_width_um,
+            trim_route_tail_bends=False,
         )
 
     if common_bus_escape is not None and common_bus_escape.success:
@@ -83,6 +84,7 @@ def realize_electrical_metal(
                 route.offset_path,
                 obstacle_map,
                 width_um=config.wire_width_um,
+                trim_route_tail_bends=True,
             )
 
     if pad_plan is not None:
@@ -136,12 +138,19 @@ def _append_terminal_grid_route(
     obstacle_map: ElectricalObstacleMap,
     *,
     width_um: float,
+    trim_route_tail_bends: bool,
 ) -> None:
     points = tuple(
         _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
         for cell in path
     )
-    _append_terminal_um_route(rects, terminal, points, width_um=width_um)
+    _append_terminal_um_route(
+        rects,
+        terminal,
+        points,
+        width_um=width_um,
+        trim_route_tail_bends=trim_route_tail_bends,
+    )
 
 
 def _append_terminal_point_route(
@@ -151,9 +160,16 @@ def _append_terminal_point_route(
     obstacle_map: ElectricalObstacleMap,
     *,
     width_um: float,
+    trim_route_tail_bends: bool,
 ) -> None:
     points = tuple(_grid_point_to_um(point, obstacle_map) for point in points_grid)
-    _append_terminal_um_route(rects, terminal, points, width_um=width_um)
+    _append_terminal_um_route(
+        rects,
+        terminal,
+        points,
+        width_um=width_um,
+        trim_route_tail_bends=trim_route_tail_bends,
+    )
 
 
 def _append_terminal_um_route(
@@ -162,6 +178,7 @@ def _append_terminal_um_route(
     route_points_um: tuple[tuple[float, float], ...],
     *,
     width_um: float,
+    trim_route_tail_bends: bool,
 ) -> None:
     """Draw a physical-port adapter and only the usable snapped route tail."""
 
@@ -176,7 +193,12 @@ def _append_terminal_um_route(
         access.adapter_points,
         width_um=access.access_width_um,
     )
-    _append_um_wire_path(rects, access.route_tail_points, width_um=width_um)
+    _append_um_wire_path(
+        rects,
+        access.route_tail_points,
+        width_um=width_um,
+        trim_bends=trim_route_tail_bends,
+    )
 
 
 def _append_grid_wire_path(
@@ -206,8 +228,9 @@ def _append_um_wire_path(
     points_um: tuple[tuple[float, float], ...],
     *,
     width_um: float,
+    trim_bends: bool = True,
 ) -> None:
-    rects.extend(wire_rects_for_points(points_um, width_um))
+    rects.extend(wire_rects_for_points(points_um, width_um, trim_bends=trim_bends))
 
 
 def _append_rect(

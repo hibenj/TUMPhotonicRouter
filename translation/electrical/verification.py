@@ -625,6 +625,17 @@ def _quality_metrics(
     same_net_redundant_overlap_pairs = sum(
         same_net_redundant_overlap_pairs_by_source.values()
     )
+    area_overcount_by_reason: dict[str, float] = {}
+    area_overcount_by_source: dict[str, float] = {}
+    redundant_area_overcount_by_source: dict[str, float] = {}
+    for net in net_geometries:
+        area_attribution = _area_overcount_attribution(net)
+        _add_float_values(area_overcount_by_reason, area_attribution["by_reason"])
+        _add_float_values(area_overcount_by_source, area_attribution["by_source"])
+        _add_float_values(
+            redundant_area_overcount_by_source,
+            area_attribution["redundant_by_source"],
+        )
     raw_area_by_net = {
         net.net_id: sum(_rect_area(rect) for rect in net.rects)
         for net in net_geometries
@@ -653,6 +664,18 @@ def _quality_metrics(
             area_overcount / raw_area
             if raw_area > 0.0
             else 0.0
+        ),
+        "metal_area_overcount_by_reason_um2": dict(
+            sorted(area_overcount_by_reason.items())
+        ),
+        "metal_area_overcount_by_source_um2": dict(
+            sorted(area_overcount_by_source.items())
+        ),
+        "metal_redundant_area_overcount_um2": sum(
+            redundant_area_overcount_by_source.values()
+        ),
+        "metal_redundant_area_overcount_by_source_um2": dict(
+            sorted(redundant_area_overcount_by_source.items())
         ),
         "same_net_duplicate_rect_count": same_net_duplicate_rects,
         "same_net_overlap_pair_count": same_net_overlap_pairs,
@@ -799,7 +822,14 @@ def _terminal_access_tagged_rects(
             "terminal_adapter",
         )
     )
-    rects.extend(_tagged_point_wire_rects(access.route_tail_points, width_um, route_source))
+    rects.extend(
+        _tagged_point_wire_rects(
+            access.route_tail_points,
+            width_um,
+            route_source,
+            trim_bends=route_source != "bus_route",
+        )
+    )
     return tuple(rects)
 
 
@@ -832,10 +862,12 @@ def _tagged_point_wire_rects(
     points: tuple[tuple[float, float], ...],
     width_um: float,
     source: str,
+    *,
+    trim_bends: bool = True,
 ) -> tuple[_TaggedRect, ...]:
     return tuple(
         _TaggedRect(rect, source)
-        for rect in wire_rects_for_points(points, width_um)
+        for rect in wire_rects_for_points(points, width_um, trim_bends=trim_bends)
     )
 
 
@@ -982,13 +1014,85 @@ def _classify_same_net_overlap_pairs(
             overlap = _rect_intersection(left, right)
             if overlap is None or _rect_area(overlap) <= 0.0:
                 continue
-            sorted_sources = sorted((net.rect_sources[index], net.rect_sources[right_index]))
-            source_pair = (sorted_sources[0], sorted_sources[1])
+            source_pair = _source_pair(net, index, right_index)
             if source_pair in _INTENTIONAL_SAME_NET_OVERLAP_PAIRS:
                 intentional[_intentional_overlap_reason(source_pair)] += 1
                 continue
             redundant["/".join(source_pair)] += 1
     return {"intentional": intentional, "redundant": redundant}
+
+
+def _area_overcount_attribution(
+    net: _NetGeometry,
+) -> dict[str, dict[str, float]]:
+    by_reason: dict[str, float] = {}
+    by_source: dict[str, float] = {}
+    redundant_by_source: dict[str, float] = {}
+    if len(net.rects) < 2:
+        return {
+            "by_reason": by_reason,
+            "by_source": by_source,
+            "redundant_by_source": redundant_by_source,
+        }
+    x_edges = sorted({rect[0] for rect in net.rects} | {rect[2] for rect in net.rects})
+    y_edges = sorted({rect[1] for rect in net.rects} | {rect[3] for rect in net.rects})
+    for left, right in zip(x_edges, x_edges[1:]):
+        if right <= left:
+            continue
+        for bottom, top in zip(y_edges, y_edges[1:]):
+            if top <= bottom:
+                continue
+            covering = tuple(
+                index
+                for index, rect in enumerate(net.rects)
+                if rect[0] < right
+                and rect[2] > left
+                and rect[1] < top
+                and rect[3] > bottom
+            )
+            cover_count = len(covering)
+            if cover_count < 2:
+                continue
+            cell_area = (right - left) * (top - bottom)
+            pair_count = cover_count * (cover_count - 1) / 2.0
+            pair_area = cell_area * (cover_count - 1) / pair_count
+            for pair_index, left_index in enumerate(covering):
+                for right_index in covering[pair_index + 1 :]:
+                    source_pair = _source_pair(net, left_index, right_index)
+                    source_key = "/".join(source_pair)
+                    _add_float_value(by_source, source_key, pair_area)
+                    if source_pair in _INTENTIONAL_SAME_NET_OVERLAP_PAIRS:
+                        _add_float_value(
+                            by_reason,
+                            _intentional_overlap_reason(source_pair),
+                            pair_area,
+                        )
+                        continue
+                    _add_float_value(by_reason, "redundant", pair_area)
+                    _add_float_value(redundant_by_source, source_key, pair_area)
+    return {
+        "by_reason": by_reason,
+        "by_source": by_source,
+        "redundant_by_source": redundant_by_source,
+    }
+
+
+def _add_float_values(target: dict[str, float], values: dict[str, float]) -> None:
+    for key, value in values.items():
+        _add_float_value(target, key, value)
+
+
+def _add_float_value(target: dict[str, float], key: str, value: float) -> None:
+    target[key] = target.get(key, 0.0) + value
+
+
+def _source_pair(
+    net: _NetGeometry,
+    left_index: int,
+    right_index: int,
+) -> tuple[str, str]:
+    sorted_sources = sorted((net.rect_sources[left_index], net.rect_sources[right_index]))
+    return (sorted_sources[0], sorted_sources[1])
 
 
 def _intentional_overlap_reason(source_pair: tuple[str, str]) -> str:

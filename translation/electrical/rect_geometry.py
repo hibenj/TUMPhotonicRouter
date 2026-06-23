@@ -9,6 +9,8 @@ from .types import BBox, Point
 def wire_rects_for_points(
     points: tuple[Point, ...],
     width_um: float,
+    *,
+    trim_bends: bool = True,
 ) -> tuple[BBox, ...]:
     """Return Manhattan wire rectangles for a centerline path.
 
@@ -24,8 +26,24 @@ def wire_rects_for_points(
     if len(points) == 1:
         return (_point_rect(points[0], half_width),)
     rects: list[BBox] = []
-    for start, end in zip(points, points[1:]):
-        rects.extend(_segment_rects(start, end, half_width))
+    directions = tuple(
+        _point_direction(start, end)
+        for start, end in zip(points, points[1:])
+    )
+    for index, (start, end) in enumerate(zip(points, points[1:])):
+        trim_end = (
+            trim_bends
+            and index + 1 < len(directions)
+            and directions[index] != directions[index + 1]
+        )
+        rects.extend(
+            _segment_rects(
+                start,
+                end,
+                half_width,
+                trim_end_um=(2.0 * half_width) if trim_end else 0.0,
+            )
+        )
     return clean_rects(rects)
 
 
@@ -39,7 +57,8 @@ def clean_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
             if (normalized_rect := _normalize_rect(rect)) is not None
         }
     )
-    return _drop_contained_rects(tuple(normalized))
+    without_contained = _drop_contained_rects(tuple(normalized))
+    return _drop_union_redundant_rects(without_contained)
 
 
 def rect_area(rect: BBox) -> float:
@@ -84,6 +103,29 @@ def _drop_contained_rects(rects: tuple[BBox, ...]) -> tuple[BBox, ...]:
     return tuple(kept)
 
 
+def _drop_union_redundant_rects(rects: tuple[BBox, ...]) -> tuple[BBox, ...]:
+    kept = list(rects)
+    index = 0
+    while index < len(kept):
+        without_candidate = tuple(
+            rect
+            for other_index, rect in enumerate(kept)
+            if other_index != index
+        )
+        if _same_area(
+            union_rect_area(kept),
+            union_rect_area(without_candidate),
+        ):
+            kept.pop(index)
+            continue
+        index += 1
+    return tuple(kept)
+
+
+def _same_area(left: float, right: float) -> bool:
+    return abs(left - right) <= 1e-9
+
+
 def _merged_interval_length(intervals: Iterable[tuple[float, float]]) -> float:
     sorted_intervals = sorted(intervals)
     if not sorted_intervals:
@@ -104,35 +146,51 @@ def _segment_rects(
     start: Point,
     end: Point,
     half_width: float,
+    *,
+    trim_end_um: float = 0.0,
 ) -> tuple[BBox, ...]:
     sx, sy = start
     ex, ey = end
     if sx == ex and sy == ey:
         return (_point_rect(start, half_width),)
     if sx == ex:
+        trimmed_end_y = _trim_axis_endpoint(sy, ey, trim_end_um)
         return (
             _normalize_non_degenerate_rect(
                 (
                     sx - half_width,
-                    min(sy, ey) - half_width,
+                    min(sy, trimmed_end_y) - half_width,
                     sx + half_width,
-                    max(sy, ey) + half_width,
+                    max(sy, trimmed_end_y) + half_width,
                 )
             ),
         )
     if sy == ey:
+        trimmed_end_x = _trim_axis_endpoint(sx, ex, trim_end_um)
         return (
             _normalize_non_degenerate_rect(
                 (
-                    min(sx, ex) - half_width,
+                    min(sx, trimmed_end_x) - half_width,
                     sy - half_width,
-                    max(sx, ex) + half_width,
+                    max(sx, trimmed_end_x) + half_width,
                     sy + half_width,
                 )
             ),
         )
     via = (ex, sy)
-    return (*_segment_rects(start, via, half_width), *_segment_rects(via, end, half_width))
+    return (
+        *_segment_rects(start, via, half_width),
+        *_segment_rects(via, end, half_width, trim_end_um=trim_end_um),
+    )
+
+
+def _trim_axis_endpoint(start: float, end: float, trim_end_um: float) -> float:
+    length = abs(end - start)
+    if trim_end_um <= 0.0 or length <= trim_end_um:
+        return end
+    if end > start:
+        return end - trim_end_um
+    return end + trim_end_um
 
 
 def _point_rect(point: Point, half_width: float) -> BBox:
