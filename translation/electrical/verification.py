@@ -9,7 +9,7 @@ from typing import Any
 
 from .pad_slots import pad_access_bbox
 from .pitch_grid import bbox_to_grid_cells
-from .rect_geometry import clean_rects, union_rect_area, wire_rects_for_points
+from .rect_geometry import disjoint_union_rects, union_rect_area, wire_rects_for_points
 from .terminal_contacts import terminal_access_path, terminal_contact_bboxes
 from .types import (
     BBox,
@@ -874,15 +874,58 @@ def _tagged_point_wire_rects(
 def _clean_tagged_rects(
     tagged_rects: tuple[_TaggedRect, ...],
 ) -> tuple[_TaggedRect, ...]:
-    source_by_bbox: dict[BBox, str] = {}
-    valid_bboxes: list[BBox] = []
+    bboxes_by_source: dict[str, list[BBox]] = {}
     for bbox, source in _normalized_tagged_bbox_sources(tagged_rects):
-        valid_bboxes.append(bbox)
-        source_by_bbox.setdefault(bbox, source)
-    return tuple(
-        _TaggedRect(bbox, source_by_bbox.get(bbox, "unknown"))
-        for bbox in clean_rects(valid_bboxes)
+        bboxes_by_source.setdefault(source, []).append(bbox)
+    source_disjoint_rects = tuple(
+        _TaggedRect(bbox, source)
+        for source, bboxes in sorted(bboxes_by_source.items())
+        for bbox in disjoint_union_rects(bboxes)
     )
+    return _drop_union_redundant_tagged_rects(source_disjoint_rects)
+
+
+def _drop_union_redundant_tagged_rects(
+    tagged_rects: tuple[_TaggedRect, ...],
+) -> tuple[_TaggedRect, ...]:
+    kept = sorted(tagged_rects, key=_tagged_rect_sort_key)
+    index = 0
+    while index < len(kept):
+        without_candidate = tuple(
+            tagged.bbox
+            for other_index, tagged in enumerate(kept)
+            if other_index != index
+        )
+        if _same_area(
+            union_rect_area(tagged.bbox for tagged in kept),
+            union_rect_area(without_candidate),
+        ):
+            kept.pop(index)
+            index = 0
+            continue
+        index += 1
+    return tuple(sorted(kept, key=_tagged_rect_sort_key))
+
+
+def _tagged_rect_sort_key(tagged: _TaggedRect) -> tuple[int, str, BBox]:
+    return (_source_keep_priority(tagged.source), tagged.source, tagged.bbox)
+
+
+def _source_keep_priority(source: str) -> int:
+    priorities = {
+        "terminal_contact": 0,
+        "terminal_adapter": 1,
+        "route_tail": 2,
+        "bus_route": 3,
+        "bus_escape": 4,
+        "pad": 5,
+        "bus_stripe": 6,
+    }
+    return priorities.get(source, 10)
+
+
+def _same_area(left: float, right: float) -> bool:
+    return abs(left - right) <= 1e-9
 
 
 def _normalized_tagged_bbox_sources(

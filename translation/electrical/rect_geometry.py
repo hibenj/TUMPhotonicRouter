@@ -6,6 +6,7 @@ from collections.abc import Iterable
 
 from .types import BBox, Point
 
+
 def wire_rects_for_points(
     points: tuple[Point, ...],
     width_um: float,
@@ -59,6 +60,27 @@ def clean_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
     )
     without_contained = _drop_contained_rects(tuple(normalized))
     return _drop_union_redundant_rects(without_contained)
+
+
+def disjoint_union_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
+    """Return a deterministic non-overlapping rectangle cover of the same union."""
+
+    compact = clean_rects(rects)
+    if len(compact) < 2:
+        return compact
+    x_edges = sorted({rect[0] for rect in compact} | {rect[2] for rect in compact})
+    strips: list[BBox] = []
+    for left, right in zip(x_edges, x_edges[1:]):
+        if right <= left:
+            continue
+        intervals = [
+            (rect[1], rect[3])
+            for rect in compact
+            if rect[0] < right and rect[2] > left
+        ]
+        for bottom, top in _merged_intervals(intervals):
+            strips.append((left, bottom, right, top))
+    return _merge_adjacent_x_strips(tuple(strips))
 
 
 def rect_area(rect: BBox) -> float:
@@ -127,19 +149,45 @@ def _same_area(left: float, right: float) -> bool:
 
 
 def _merged_interval_length(intervals: Iterable[tuple[float, float]]) -> float:
-    sorted_intervals = sorted(intervals)
+    return sum(end - start for start, end in _merged_intervals(intervals))
+
+
+def _merged_intervals(
+    intervals: Iterable[tuple[float, float]],
+) -> tuple[tuple[float, float], ...]:
+    sorted_intervals = sorted(
+        (start, end)
+        for start, end in intervals
+        if end > start
+    )
     if not sorted_intervals:
-        return 0.0
-    total = 0.0
+        return ()
+    merged: list[tuple[float, float]] = []
     current_start, current_end = sorted_intervals[0]
     for start, end in sorted_intervals[1:]:
         if start <= current_end:
             current_end = max(current_end, end)
             continue
-        total += current_end - current_start
+        merged.append((current_start, current_end))
         current_start, current_end = start, end
-    total += current_end - current_start
-    return total
+    merged.append((current_start, current_end))
+    return tuple(merged)
+
+
+def _merge_adjacent_x_strips(rects: tuple[BBox, ...]) -> tuple[BBox, ...]:
+    active: dict[tuple[float, float], BBox] = {}
+    merged: list[BBox] = []
+    for left, bottom, right, top in sorted(rects):
+        key = (bottom, top)
+        previous = active.get(key)
+        if previous is not None and previous[2] == left:
+            active[key] = (previous[0], bottom, right, top)
+            continue
+        if previous is not None:
+            merged.append(previous)
+        active[key] = (left, bottom, right, top)
+    merged.extend(active.values())
+    return tuple(sorted(merged))
 
 
 def _segment_rects(

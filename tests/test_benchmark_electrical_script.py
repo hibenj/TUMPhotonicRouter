@@ -43,47 +43,41 @@ def _result_stub() -> SimpleNamespace:
         issues=(),
         metrics={
             "net_count": 12,
-            "rect_count": 104,
-            "raw_metal_area_um2": 562_168.772,
+            "rect_count": 102,
+            "raw_metal_area_um2": 556_778.772,
             "union_metal_area_um2": 549_599.152,
-            "metal_area_overcount_um2": 12_569.619999999995,
-            "metal_area_overcount_ratio": 0.0223591572959161,
+            "metal_area_overcount_um2": 7_179.619999999995,
+            "metal_area_overcount_ratio": 0.0128949240902453,
             "metal_area_overcount_by_reason_um2": {
                 "bus_stripe_contact": 1_255.659999999998,
                 "pad_contact": 2_172.9600000000073,
-                "same_source_wire_join": 6_579.833333333333,
-                "terminal_access_join": 2_561.1666666666665,
+                "terminal_access_join": 3_751.0,
             },
             "metal_area_overcount_by_source_um2": {
                 "bus_escape/bus_stripe": 255.65999999999804,
                 "bus_escape/pad": 181.0800000000006,
-                "bus_route/bus_route": 4_379.833333333333,
                 "bus_route/bus_stripe": 1_000.0,
-                "bus_route/terminal_adapter": 1_653.6666666666665,
+                "bus_route/terminal_adapter": 1_875.5,
                 "pad/route_tail": 1_991.8800000000067,
-                "route_tail/route_tail": 2_200.0,
-                "route_tail/terminal_adapter": 907.5,
+                "route_tail/terminal_adapter": 1_875.5,
             },
             "metal_redundant_area_overcount_um2": 0,
             "metal_redundant_area_overcount_by_source_um2": {},
             "same_net_duplicate_rect_count": 0,
-            "same_net_overlap_pair_count": 60,
+            "same_net_overlap_pair_count": 41,
             "same_net_overlap_pair_count_by_source": {
                 "bus_escape/bus_stripe": 1,
                 "bus_escape/pad": 1,
-                "bus_route/bus_route": 15,
                 "bus_route/bus_stripe": 3,
                 "bus_route/terminal_adapter": 12,
-                "pad/route_tail": 11,
-                "route_tail/route_tail": 6,
-                "route_tail/terminal_adapter": 11,
+                "pad/route_tail": 12,
+                "route_tail/terminal_adapter": 12,
             },
-            "same_net_intentional_overlap_pair_count": 60,
+            "same_net_intentional_overlap_pair_count": 41,
             "same_net_intentional_overlap_pair_count_by_reason": {
                 "bus_stripe_contact": 4,
-                "pad_contact": 12,
-                "same_source_wire_join": 21,
-                "terminal_access_join": 23,
+                "pad_contact": 13,
+                "terminal_access_join": 24,
             },
             "same_net_redundant_overlap_pair_count": 0,
             "same_net_redundant_overlap_pair_count_by_source": {},
@@ -100,11 +94,11 @@ def _result_stub() -> SimpleNamespace:
             {
                 "electrical_metal_realization": {
                     "net_count": 12,
-                    "pre_union_rect_count": 104,
+                    "pre_union_rect_count": 128,
                     "output_polygon_count": 12,
-                    "raw_metal_area_um2": 562_168.772,
+                    "raw_metal_area_um2": 549_599.152,
                     "union_metal_area_um2": 549_599.152,
-                    "metal_area_overcount_um2": 12_569.619999999995,
+                    "metal_area_overcount_um2": 0.0,
                     "rect_count_by_net": {"common_bus": 140},
                 }
             }
@@ -140,11 +134,11 @@ def test_electrical_benchmark_summary_is_compact_and_json_ready():
     assert "internal_debug_metric" not in summary["metrics"]
     assert summary["realization_metrics"] == {
         "net_count": 12,
-        "pre_union_rect_count": 104,
+        "pre_union_rect_count": 128,
         "output_polygon_count": 12,
-        "raw_metal_area_um2": 562_168.772,
+        "raw_metal_area_um2": 549_599.152,
         "union_metal_area_um2": 549_599.152,
-        "metal_area_overcount_um2": 12_569.619999999995,
+        "metal_area_overcount_um2": 0.0,
     }
     json.dumps(summary, sort_keys=True)
 
@@ -172,22 +166,22 @@ def test_electrical_benchmark_uses_case_specific_guardrails():
     small_summary["metrics"]["centerline_length_um"] = 1_090.0
     small_summary["metrics"]["bend_count"] = 3
     small_summary["metrics"]["pad_channel_height_um"] = 60.0
-    small_summary["metrics"]["raw_metal_area_um2"] = 78_469.88
+    small_summary["metrics"]["raw_metal_area_um2"] = 78_711.88
     small_summary["metrics"]["union_metal_area_um2"] = 77_692.42
-    small_summary["metrics"]["metal_area_overcount_um2"] = 777.4600000000064
-    small_summary["metrics"]["metal_area_overcount_ratio"] = 0.009907750591692077
+    small_summary["metrics"]["metal_area_overcount_um2"] = 1_019.4600000000064
+    small_summary["metrics"]["metal_area_overcount_ratio"] = 0.012951793299817084
     small_summary["metrics"]["metal_area_overcount_by_reason_um2"] = {
         "bus_stripe_contact": 135.2200000000003,
         "pad_contact": 543.2399999999984,
-        "terminal_access_join": 99.0,
+        "terminal_access_join": 341.0,
     }
     small_summary["metrics"]["metal_area_overcount_by_source_um2"] = {
         "bus_escape/bus_stripe": 35.22000000000001,
         "bus_escape/pad": 362.15999999999894,
         "bus_route/bus_stripe": 100.00000000000028,
-        "bus_route/terminal_adapter": 49.5,
+        "bus_route/terminal_adapter": 170.5,
         "pad/route_tail": 181.07999999999947,
-        "route_tail/terminal_adapter": 49.5,
+        "route_tail/terminal_adapter": 170.5,
     }
     small_summary["metrics"]["metal_redundant_area_overcount_um2"] = 0
     small_summary["metrics"]["metal_redundant_area_overcount_by_source_um2"] = {}
@@ -211,11 +205,11 @@ def test_electrical_benchmark_uses_case_specific_guardrails():
     small_summary["metrics"]["same_net_redundant_overlap_pair_count"] = 0
     small_summary["metrics"]["same_net_redundant_overlap_pair_count_by_source"] = {}
     small_summary["realization_metrics"]["output_polygon_count"] = 2
-    small_summary["realization_metrics"]["pre_union_rect_count"] = 9
-    small_summary["realization_metrics"]["raw_metal_area_um2"] = 78_469.88
+    small_summary["realization_metrics"]["pre_union_rect_count"] = 15
+    small_summary["realization_metrics"]["raw_metal_area_um2"] = 77_692.42
     small_summary["realization_metrics"]["union_metal_area_um2"] = 77_692.42
     small_summary["realization_metrics"]["metal_area_overcount_um2"] = (
-        777.4600000000064
+        0.0
     )
 
     assert module.guardrail_violations(
@@ -450,11 +444,16 @@ def test_electrical_benchmark_writes_artifact_bundle(tmp_path):
     module = _load_benchmark_electrical_module()
     artifacts_dir = tmp_path / "artifacts"
     svg_path = artifacts_dir / "electrical" / "case_common_bus.svg"
+    metal_snapshot_path = artifacts_dir / "electrical" / "case_metal_snapshot.svg"
     svg_path.parent.mkdir(parents=True)
     svg_path.write_text("<svg />", encoding="utf-8")
+    metal_snapshot_path.write_text("<svg />", encoding="utf-8")
     routed_component = _RoutedComponent()
     result = SimpleNamespace(
-        debug_artifacts={"common_bus_svg": str(svg_path)},
+        debug_artifacts={
+            "common_bus_svg": str(svg_path),
+            "metal_snapshot_svg": str(metal_snapshot_path),
+        },
         routed_component=routed_component,
     )
     summary = {
@@ -471,21 +470,21 @@ def test_electrical_benchmark_writes_artifact_bundle(tmp_path):
             "centerline_length_um": 19_390.0,
             "bend_count": 65,
             "pad_channel_height_um": 180.0,
-            "raw_metal_area_um2": 562_168.772,
+            "raw_metal_area_um2": 556_778.772,
             "union_metal_area_um2": 549_599.152,
-            "metal_area_overcount_um2": 12_569.619999999995,
-            "metal_area_overcount_ratio": 0.0223591572959161,
-            "rect_count": 104,
-            "same_net_overlap_pair_count": 60,
+            "metal_area_overcount_um2": 7_179.619999999995,
+            "metal_area_overcount_ratio": 0.0128949240902453,
+            "rect_count": 102,
+            "same_net_overlap_pair_count": 41,
             "same_net_redundant_overlap_pair_count": 0,
             "cross_net_min_spacing_um": 11.0,
         },
         "realization_metrics": {
             "output_polygon_count": 12,
-            "pre_union_rect_count": 104,
-            "raw_metal_area_um2": 562_168.772,
+            "pre_union_rect_count": 128,
+            "raw_metal_area_um2": 549_599.152,
             "union_metal_area_um2": 549_599.152,
-            "metal_area_overcount_um2": 12_569.619999999995,
+            "metal_area_overcount_um2": 0.0,
         },
     }
 
@@ -494,6 +493,7 @@ def test_electrical_benchmark_writes_artifact_bundle(tmp_path):
     assert artifacts == {
         "common_bus_svg": str(svg_path),
         "gds": str(artifacts_dir / "case_electrical.gds"),
+        "metal_snapshot_svg": str(metal_snapshot_path),
         "summary_json": str(artifacts_dir / "case_summary.json"),
         "summary_md": str(artifacts_dir / "case_summary.md"),
     }

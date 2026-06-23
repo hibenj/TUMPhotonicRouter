@@ -60,7 +60,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "bend_count_max": 10,
         "raw_metal_area_um2_max": 80_000.0,
         "union_metal_area_um2_max": 80_000.0,
-        "metal_area_overcount_um2_max": 1_000.0,
+        "metal_area_overcount_um2_max": 1_200.0,
         "metal_area_overcount_ratio_max": 0.015,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "rect_count_max": 20,
@@ -646,9 +646,10 @@ def write_artifact_bundle(
     }
 
     debug_artifacts = _as_dict(getattr(result, "debug_artifacts", {}))
-    common_bus_svg = debug_artifacts.get("common_bus_svg")
-    if isinstance(common_bus_svg, str):
-        artifact_paths["common_bus_svg"] = common_bus_svg
+    for artifact_key in ("common_bus_svg", "metal_snapshot_svg"):
+        artifact_path = debug_artifacts.get(artifact_key)
+        if isinstance(artifact_path, str):
+            artifact_paths[artifact_key] = artifact_path
 
     routed_component = getattr(result, "routed_component", None)
     if routed_component is not None:

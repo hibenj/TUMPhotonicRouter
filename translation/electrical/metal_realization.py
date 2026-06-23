@@ -5,7 +5,12 @@ from __future__ import annotations
 from gdsfactory.component import Component
 import klayout.db as kdb
 
-from .rect_geometry import clean_rects, rect_area, union_rect_area, wire_rects_for_points
+from .rect_geometry import (
+    disjoint_union_rects,
+    rect_area,
+    union_rect_area,
+    wire_rects_for_points,
+)
 from .terminal_contacts import terminal_access_path
 from .types import (
     CommonBusEscapeResult,
@@ -92,7 +97,7 @@ def realize_electrical_metal(
             rects_by_net.setdefault(assignment.net_id, []).append(assignment.slot.bbox)
 
     rects_by_net = {
-        net_id: list(clean_rects(rects))
+        net_id: list(disjoint_union_rects(rects))
         for net_id, rects in rects_by_net.items()
     }
     polygon_count_by_net: dict[str, int] = {}

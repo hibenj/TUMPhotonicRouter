@@ -203,20 +203,18 @@ def test_verifier_models_terminal_landing_contact():
     assert "missing_terminal_contact" not in issue_codes
     assert verification.metrics["same_net_overlap_pair_count_by_source"] == {
         "bus_route/terminal_adapter": 1,
-        "terminal_adapter/terminal_adapter": 1,
     }
-    assert verification.metrics["same_net_intentional_overlap_pair_count"] == 2
+    assert verification.metrics["same_net_intentional_overlap_pair_count"] == 1
     assert verification.metrics["same_net_redundant_overlap_pair_count"] == 0
     assert verification.metrics["same_net_intentional_overlap_pair_count_by_reason"] == {
-        "terminal_access_join": 2,
+        "terminal_access_join": 1,
     }
-    assert verification.metrics["metal_area_overcount_um2"] == 32.0
+    assert verification.metrics["metal_area_overcount_um2"] == 16.0
     assert verification.metrics["metal_area_overcount_by_reason_um2"] == {
-        "terminal_access_join": 32.0,
+        "terminal_access_join": 16.0,
     }
     assert verification.metrics["metal_area_overcount_by_source_um2"] == {
         "bus_route/terminal_adapter": 16.0,
-        "terminal_adapter/terminal_adapter": 16.0,
     }
     assert verification.metrics["metal_redundant_area_overcount_um2"] == 0
 
@@ -611,6 +609,14 @@ def test_common_bus_router_selects_exactly_one_terminal_per_heater(tmp_path):
     assert "detailed bundle=" in svg
     assert "topology bundle=" not in svg
     assert "individual route pad=" not in svg
+    metal_snapshot_path = tmp_path / "electrical" / "mmi8x4_metal_snapshot.svg"
+    assert result.debug_artifacts["metal_snapshot_svg"] == str(metal_snapshot_path)
+    assert metal_snapshot_path.exists()
+    metal_snapshot = metal_snapshot_path.read_text(encoding="utf-8")
+    assert metal_snapshot.startswith("<svg")
+    assert "electrical metal snapshot" in metal_snapshot
+    assert "realized metal" in metal_snapshot
+    assert "terminal contact" in metal_snapshot
 
 
 def test_common_bus_terminal_selection_prefers_local_same_row_pair_midpoint():
@@ -1279,7 +1285,11 @@ def test_metal_realization_adds_wire_polygons_for_bus_and_individual_routes():
     pre_union_rect_count = result.verification.metrics["rect_count"]
     assert polygons
     assert len(polygons) < pre_union_rect_count
-    assert realization_metrics["pre_union_rect_count"] <= pre_union_rect_count
+    assert realization_metrics["metal_area_overcount_um2"] == pytest.approx(0.0, abs=1e-6)
+    assert realization_metrics["raw_metal_area_um2"] == pytest.approx(
+        realization_metrics["union_metal_area_um2"]
+    )
+    assert realization_metrics["pre_union_rect_count"] >= pre_union_rect_count
     assert realization_metrics["output_polygon_count"] < realization_metrics["pre_union_rect_count"]
     assert realization_metrics["output_polygon_count"] <= len(polygons)
     assert len(polygons) >= len(result.detailed_bundle_routes.routes)

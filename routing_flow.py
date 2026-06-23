@@ -9,12 +9,13 @@ This module orchestrates the photonic routing flow:
 """
 
 import argparse
+from collections import Counter
 from dataclasses import dataclass, field
 import importlib
 import time
 from pathlib import Path
 import webbrowser
-from typing import Any
+from typing import Any, cast
 
 from benchmark_metadata import load_benchmark_metadata
 from gdsfactory.component import Component
@@ -22,6 +23,8 @@ from gdsfactory.schematic import Schematic
 
 from translation.electrical import (
     ElectricalRoutingConfig,
+    ElectricalVerificationIssue,
+    ElectricalVerificationResult,
     ElectricalRoutingResult,
     route_electrical_heaters,
 )
@@ -62,6 +65,9 @@ SCRIPT_ENABLE_ELECTRICAL_ROUTING = True
 SCRIPT_ELECTRICAL_PAD_SIDE = "top"
 SCRIPT_ELECTRICAL_GRID_PITCH_UM = 10.0
 SCRIPT_ELECTRICAL_OBSTACLE_CLEARANCE_UM = 10.0
+SCRIPT_ELECTRICAL_WIRE_WIDTH_UM = 20.0
+SCRIPT_ELECTRICAL_BUS_WIDTH_UM = 20.0
+SCRIPT_ELECTRICAL_PAD_PITCH_UM = 130.0
 
 
 @dataclass
@@ -475,6 +481,36 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--electrical-wire-width-um",
+        type=float,
+        default=SCRIPT_ELECTRICAL_WIRE_WIDTH_UM,
+        metavar="UM",
+        help=(
+            "Electrical individual route wire width "
+            f"(default: {SCRIPT_ELECTRICAL_WIRE_WIDTH_UM})."
+        ),
+    )
+    parser.add_argument(
+        "--electrical-bus-width-um",
+        type=float,
+        default=SCRIPT_ELECTRICAL_BUS_WIDTH_UM,
+        metavar="UM",
+        help=(
+            "Electrical common bus route width "
+            f"(default: {SCRIPT_ELECTRICAL_BUS_WIDTH_UM})."
+        ),
+    )
+    parser.add_argument(
+        "--electrical-pad-pitch-um",
+        type=float,
+        default=SCRIPT_ELECTRICAL_PAD_PITCH_UM,
+        metavar="UM",
+        help=(
+            "Electrical bondpad pitch "
+            f"(default: {SCRIPT_ELECTRICAL_PAD_PITCH_UM})."
+        ),
+    )
+    parser.add_argument(
         "--enable-jps4",
         type=_parse_bool_flag,
         default=False,
@@ -550,6 +586,9 @@ def main(argv: list[str] | None = None) -> Component:
             pad_side=args.electrical_pad_side,
             routing_grid_pitch_um=args.electrical_grid_pitch_um,
             obstacle_clearance_um=args.electrical_obstacle_clearance_um,
+            wire_width_um=args.electrical_wire_width_um,
+            bus_width_um=args.electrical_bus_width_um,
+            pad_pitch_um=args.electrical_pad_pitch_um,
         ),
         static_obstacle_config=StaticObstacleMapConfig(
             obstacle_mode=args.obstacle_mode,
@@ -615,18 +654,67 @@ def _copy_component_info(source: Component, target: Component) -> None:
             target_info[key] = value
 
 
-def _electrical_summary(result: ElectricalRoutingResult) -> dict[str, Any]:
+def _electrical_config_summary(
+    config: ElectricalRoutingConfig | None,
+) -> dict[str, Any]:
+    if config is None:
+        config = ElectricalRoutingConfig()
+    keys = (
+        "pad_side",
+        "bus_side",
+        "routing_grid_pitch_um",
+        "obstacle_clearance_um",
+        "wire_width_um",
+        "bus_width_um",
+        "pad_pitch_um",
+        "bondpad_width_um",
+        "bondpad_length_um",
+        "pad_offset_um",
+        "pad_access_depth_um",
+        "common_bus_pad_position",
+        "individual_route_spacing_um",
+        "obstacle_mode",
+        "clearance_metric",
+        "metal_layer",
+        "heater_layers",
+        "metal_obstacle_layers",
+    )
+    summary: dict[str, Any] = {}
+    for key in keys:
+        value = getattr(config, key, None)
+        if value is None:
+            continue
+        if isinstance(value, tuple):
+            summary[key] = tuple(value)
+            continue
+        summary[key] = value
+    return summary
+
+
+def _electrical_summary(
+    result: ElectricalRoutingResult,
+    config: ElectricalRoutingConfig | None = None,
+) -> dict[str, Any]:
     detailed_routes = result.detailed_bundle_routes
     failed_detailed_routes = (
         tuple(detailed_routes.failed_routes) if detailed_routes is not None else ()
     )
-    verification = getattr(result, "verification", None)
+    verification = cast(
+        ElectricalVerificationResult | None,
+        getattr(result, "verification", None),
+    )
+    verification_issues: tuple[ElectricalVerificationIssue, ...] = (
+        verification.issues if verification is not None else ()
+    )
+    issue_counts = Counter(issue.code for issue in verification_issues)
     realization_metrics = (
         dict(result.routed_component.info.get("electrical_metal_realization", {}))
         if result.routed_component is not None
         else {}
     )
+    debug_artifacts = dict(result.debug_artifacts)
     return {
+        "config": _electrical_config_summary(config),
         "terminal_group_count": len(result.terminal_groups),
         "common_bus_success": result.common_bus.success,
         "failed_heaters": tuple(result.common_bus.failed_heaters),
@@ -654,6 +742,7 @@ def _electrical_summary(result: ElectricalRoutingResult) -> dict[str, Any]:
         "verification_warning_count": (
             verification.warning_count if verification is not None else 0
         ),
+        "verification_issue_counts": dict(sorted(issue_counts.items())),
         "verification_metrics": (
             dict(verification.metrics)
             if verification is not None
@@ -669,12 +758,13 @@ def _electrical_summary(result: ElectricalRoutingResult) -> dict[str, Any]:
                     "net_id": issue.net_id,
                     "details": dict(issue.details),
                 }
-                for issue in verification.issues
+                for issue in verification_issues
             )
             if verification is not None
             else ()
         ),
-        "debug_artifacts": dict(result.debug_artifacts),
+        "debug_artifacts": debug_artifacts,
+        "debug_artifact_count": len(debug_artifacts),
     }
 
 
@@ -999,11 +1089,16 @@ def run_routing_flow(
         stats.reconstruction_time_s = (
             float(route_summary.reconstruction_time_us) / 1_000_000.0
         )
-        stats.route_attempt_records = [
-            record.as_dict() if hasattr(record, "as_dict") else dict(record)
-            for record in getattr(debug_artifacts, "route_attempt_records", ())
-            if hasattr(record, "as_dict") or isinstance(record, dict)
-        ]
+        route_attempt_records: list[dict[str, object]] = []
+        for record in getattr(debug_artifacts, "route_attempt_records", ()):
+            as_dict = getattr(record, "as_dict", None)
+            if callable(as_dict):
+                record_dict = as_dict()
+                if isinstance(record_dict, dict):
+                    route_attempt_records.append(dict(record_dict))
+            elif isinstance(record, dict):
+                route_attempt_records.append(dict(record))
+        stats.route_attempt_records = route_attempt_records
     if debug_timing:
         print(f"      - Routing time: {t_route_end - t_route_start:.4f} s")
     print(f"      ✓ Routed layout generated: {routed_layout.name}")
@@ -1143,7 +1238,10 @@ def run_routing_flow(
             )
         if current_electrical_result.routed_component is None:
             raise RuntimeError(_electrical_failure_summary(current_electrical_result))
-        electrical_summary = _electrical_summary(current_electrical_result)
+        electrical_summary = _electrical_summary(
+            current_electrical_result,
+            electrical_config,
+        )
         if stats is not None:
             stats.electrical_terminal_groups = int(
                 electrical_summary["terminal_group_count"]

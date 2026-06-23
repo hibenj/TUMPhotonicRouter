@@ -7,6 +7,7 @@ from routing_flow import (
     run_routing_flow,
 )
 import benchmark_metadata
+from pathlib import Path
 from translation.electrical import ElectricalRoutingConfig
 from translation.route_rust_types import RouteAttemptRecord, RouteSearchSummary
 from types import SimpleNamespace
@@ -30,6 +31,8 @@ def test_routing_flow_populates_stats():
     assert stats.net_count == 4
     assert stats.static_grid_width is not None
     assert stats.static_grid_height is not None
+    assert stats.raw_blocked_cells is not None
+    assert stats.blocked_cells is not None
     assert stats.raw_blocked_cells > 0
     assert stats.blocked_cells > 0
     assert stats.port_open_cells > 0
@@ -72,6 +75,15 @@ def test_routing_flow_routes_single_heater_electrical_metal_end_to_end():
     assert summary["pad_assignment_count"] >= 2
     assert summary["detailed_route_count"] >= 1
     assert summary["failed_detailed_route_count"] == 0
+    assert summary["verification_success"] is True
+    assert summary["verification_error_count"] == 0
+    assert summary["verification_warning_count"] == 0
+    assert summary["verification_issue_counts"] == {}
+    assert summary["debug_artifact_count"] == 0
+    assert summary["config"]["pad_side"] == "top"
+    assert summary["config"]["bus_side"] == "bottom"
+    assert summary["config"]["wire_width_um"] == 20.0
+    assert summary["config"]["bus_width_um"] == 20.0
     assert routed.get_polygons(by="tuple").get((49, 0), [])
 
 
@@ -104,6 +116,12 @@ def test_electrical_cli_flags_parse_into_namespace():
             "20",
             "--electrical-obstacle-clearance-um",
             "5",
+            "--electrical-wire-width-um",
+            "18",
+            "--electrical-bus-width-um",
+            "24",
+            "--electrical-pad-pitch-um",
+            "160",
         ]
     )
 
@@ -112,6 +130,9 @@ def test_electrical_cli_flags_parse_into_namespace():
     assert args.electrical_pad_side == "bottom"
     assert args.electrical_grid_pitch_um == 20.0
     assert args.electrical_obstacle_clearance_um == 5.0
+    assert args.electrical_wire_width_um == 18.0
+    assert args.electrical_bus_width_um == 24.0
+    assert args.electrical_pad_pitch_um == 160.0
 
 
 def test_resolve_auto_internal_delay_markers_per_instance(monkeypatch):
@@ -239,6 +260,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
     )
 
     config = captured.get("obstacle_config")
+    assert config is not None
     assert hasattr(config, "obstacle_mode")
     assert config.obstacle_mode == "bounding_boxes"
     assert config.clear_port_open_cells_from_static is False
@@ -480,6 +502,8 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
         return SimpleNamespace(
             routed_layout=optical_routed_layout,
             debug_artifacts=SimpleNamespace(
+                obstacle_svg=None,
+                route_svgs=[],
                 realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
                 static_blocked_cells=set(),
                 route_attempt_records=[],
@@ -517,7 +541,8 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
             ),
             routed_component=electrical_layout,
             debug_artifacts={
-                "common_bus_svg": "build/electrical/fake_common_bus.svg"
+                "common_bus_svg": "build/electrical/fake_common_bus.svg",
+                "metal_snapshot_svg": "build/electrical/fake_metal_snapshot.svg",
             },
         )
 
@@ -545,6 +570,7 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
     result = run_routing_flow(
         "FAKE",
         debug_timing=False,
+        debug_svgs=True,
         show_klayout=False,
         enable_electrical_routing=True,
         electrical_config=cast(ElectricalRoutingConfig, cast(object, electrical_config)),
@@ -555,7 +581,7 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
     assert captured["electrical_component_input"] is optical_routed_layout
     assert captured["electrical_schematic"] is schematic
     assert captured["electrical_config"] is electrical_config
-    assert captured["debug_dir"] is None
+    assert captured["debug_dir"] == Path("build")
     assert captured["debug_prefix"] == "fake"
     assert captured["gds_path"] == "build/routed_FAKE.gds"
     assert electrical_layout.info["optical_marker"] == "kept"
@@ -565,8 +591,11 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
     assert summary["pad_assignment_count"] == 3
     assert summary["detailed_route_count"] == 2
     assert summary["failed_detailed_route_count"] == 0
+    assert summary["verification_issue_counts"] == {}
+    assert summary["debug_artifact_count"] == 2
     assert summary["debug_artifacts"] == {
-        "common_bus_svg": "build/electrical/fake_common_bus.svg"
+        "common_bus_svg": "build/electrical/fake_common_bus.svg",
+        "metal_snapshot_svg": "build/electrical/fake_metal_snapshot.svg",
     }
     assert stats.electrical_terminal_groups == 2
     assert stats.electrical_pad_assignments == 3

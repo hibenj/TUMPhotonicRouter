@@ -9,7 +9,7 @@ from gdsfactory.schematic import Schematic
 
 from .bundle_detail_router import route_detailed_bundles
 from .common_bus_router import route_common_bus
-from .debug import export_electrical_debug_svg
+from .debug import export_electrical_debug_svg, export_electrical_metal_snapshot_svg
 from .escape_router import route_common_bus_escape
 from .individual_topology import compute_individual_escape_topology
 from .metal_realization import realize_electrical_metal
@@ -113,6 +113,19 @@ def route_electrical_heaters(
             pad_plan=pad_plan,
         )
         artifacts["common_bus_svg"] = str(debug_path)
+        if routed_component is not None:
+            metal_snapshot_path = (
+                Path(debug_dir) / "electrical" / f"{debug_prefix}_metal_snapshot.svg"
+            )
+            export_electrical_metal_snapshot_svg(
+                metal_snapshot_path,
+                routed_component,
+                obstacle_map,
+                terminal_groups,
+                pad_plan,
+                config,
+            )
+            artifacts["metal_snapshot_svg"] = str(metal_snapshot_path)
 
     return ElectricalRoutingResult(
         terminal_groups=terminal_groups,
