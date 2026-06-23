@@ -21,7 +21,10 @@ from translation.layout_from_schematic import layout_from_schematic
 
 
 DEFAULT_BENCHMARK = "mmi_heater_8x4_ripup_reroute"
-DEFAULT_GUARDRAILS: Mapping[str, float | int | bool] = {
+DEFAULT_BENCHMARKS = ("mmi_heater", "mmi_heater_8x4", "mmi_heater_8x4_ripup_reroute")
+DEFAULT_BASELINE_PATH = PROJECT_ROOT / "tests" / "baselines" / "electrical_suite_metrics.json"
+BASELINE_FLOAT_TOLERANCE = 1e-6
+RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
     "verification_warning_count_max": 0,
@@ -31,12 +34,50 @@ DEFAULT_GUARDRAILS: Mapping[str, float | int | bool] = {
     "pad_channel_height_um_max": 220.0,
     "centerline_length_um_max": 21_000.0,
     "bend_count_max": 75,
-    "raw_metal_area_um2_max": 800_000.0,
-    "rect_count_max": 400,
-    "same_net_duplicate_rect_count_max": 80,
-    "same_net_overlap_pair_count_max": 2_000,
+    "raw_metal_area_um2_max": 650_000.0,
+    "rect_count_max": 130,
+    "same_net_duplicate_rect_count_max": 0,
+    "same_net_overlap_pair_count_max": 150,
     "output_polygon_count_max": 20,
-    "pre_union_rect_count_max": 450,
+    "pre_union_rect_count_max": 130,
+}
+DEFAULT_GUARDRAILS = RIPUP_REROUTE_GUARDRAILS
+BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
+    "mmi_heater": {
+        "verification_success": True,
+        "verification_error_count_max": 0,
+        "verification_warning_count_max": 0,
+        "failed_detailed_route_count_max": 0,
+        "detailed_route_count_min": 1,
+        "pad_assignment_count_min": 2,
+        "pad_channel_height_um_max": 100.0,
+        "centerline_length_um_max": 1_500.0,
+        "bend_count_max": 10,
+        "raw_metal_area_um2_max": 85_000.0,
+        "rect_count_max": 20,
+        "same_net_duplicate_rect_count_max": 0,
+        "same_net_overlap_pair_count_max": 20,
+        "output_polygon_count_max": 5,
+        "pre_union_rect_count_max": 20,
+    },
+    "mmi_heater_8x4": {
+        "verification_success": True,
+        "verification_error_count_max": 0,
+        "verification_warning_count_max": 0,
+        "failed_detailed_route_count_max": 0,
+        "detailed_route_count_min": 20,
+        "pad_assignment_count_min": 21,
+        "pad_channel_height_um_max": 220.0,
+        "centerline_length_um_max": 50_000.0,
+        "bend_count_max": 140,
+        "raw_metal_area_um2_max": 1_100_000.0,
+        "rect_count_max": 230,
+        "same_net_duplicate_rect_count_max": 0,
+        "same_net_overlap_pair_count_max": 250,
+        "output_polygon_count_max": 25,
+        "pre_union_rect_count_max": 230,
+    },
+    "mmi_heater_8x4_ripup_reroute": RIPUP_REROUTE_GUARDRAILS,
 }
 
 
@@ -59,7 +100,10 @@ def run_electrical_benchmark(
         debug_prefix=benchmark_name,
     )
     summary = electrical_benchmark_summary(benchmark_name, config, result)
-    summary["guardrail_violations"] = guardrail_violations(summary)
+    summary["guardrail_violations"] = guardrail_violations(
+        summary,
+        guardrails_for_benchmark(benchmark_name),
+    )
     if artifacts_dir is not None:
         summary["artifacts"] = write_artifact_bundle(
             summary,
@@ -68,6 +112,33 @@ def run_electrical_benchmark(
             benchmark_name,
         )
     return summary
+
+
+def run_electrical_benchmarks(
+    benchmark_names: tuple[str, ...],
+    *,
+    config: ElectricalRoutingConfig | None = None,
+    artifacts_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    config = config or ElectricalRoutingConfig()
+    use_case_subdirs = len(benchmark_names) > 1
+    summaries: list[dict[str, Any]] = []
+    for benchmark_name in benchmark_names:
+        benchmark_artifacts_dir = (
+            artifacts_dir / benchmark_name
+            if artifacts_dir is not None and use_case_subdirs
+            else artifacts_dir
+        )
+        summaries.append(
+            run_electrical_benchmark(
+                benchmark_name,
+                config=config,
+                artifacts_dir=benchmark_artifacts_dir,
+            )
+        )
+    if artifacts_dir is not None and use_case_subdirs:
+        write_suite_summary(summaries, artifacts_dir)
+    return summaries
 
 
 def electrical_benchmark_summary(
@@ -131,6 +202,202 @@ def guardrail_violations(
     _check_realization_max(violations, summary, "pre_union_rect_count", guardrails)
     _check_cross_net_spacing(violations, summary)
     return violations
+
+
+def guardrails_for_benchmark(benchmark_name: str) -> Mapping[str, float | int | bool]:
+    return BENCHMARK_GUARDRAILS.get(benchmark_name, DEFAULT_GUARDRAILS)
+
+
+def baseline_violations(
+    payload: object,
+    baseline_payload: object,
+    *,
+    float_tolerance: float = BASELINE_FLOAT_TOLERANCE,
+) -> list[dict[str, Any]]:
+    """Compare current compact benchmark rows against a committed baseline."""
+
+    current_rows = _rows_by_benchmark(payload)
+    baseline_rows = _rows_by_benchmark(baseline_payload)
+    violations: list[dict[str, Any]] = []
+    for benchmark_name in sorted(baseline_rows):
+        baseline_row = baseline_rows[benchmark_name]
+        current_row = current_rows.get(benchmark_name)
+        if current_row is None:
+            violations.append(
+                {
+                    "benchmark": benchmark_name,
+                    "name": "benchmark",
+                    "actual": None,
+                    "expected": benchmark_name,
+                    "operator": "present",
+                }
+            )
+            continue
+        _compare_baseline_row(
+            violations,
+            benchmark_name,
+            current_row,
+            baseline_row,
+            float_tolerance,
+        )
+    for benchmark_name in sorted(set(current_rows) - set(baseline_rows)):
+        violations.append(
+            {
+                "benchmark": benchmark_name,
+                "name": "benchmark",
+                "actual": benchmark_name,
+                "expected": None,
+                "operator": "absent",
+            }
+        )
+    return violations
+
+
+def attach_baseline_violations(
+    payload: object,
+    baseline_payload: object,
+    *,
+    float_tolerance: float = BASELINE_FLOAT_TOLERANCE,
+) -> list[dict[str, Any]]:
+    violations = baseline_violations(
+        payload,
+        baseline_payload,
+        float_tolerance=float_tolerance,
+    )
+    if not violations:
+        return []
+    rows = _payload_rows(payload)
+    for row in rows:
+        benchmark_name = row.get("benchmark")
+        row_violations = [
+            violation
+            for violation in violations
+            if violation.get("benchmark") == benchmark_name
+        ]
+        if row_violations:
+            row["baseline_violations"] = row_violations
+    unmatched_violations = [
+        violation
+        for violation in violations
+        if not any(row.get("benchmark") == violation.get("benchmark") for row in rows)
+    ]
+    if rows and unmatched_violations:
+        rows[0]["baseline_violations"] = [
+            *rows[0].get("baseline_violations", []),
+            *unmatched_violations,
+        ]
+    return violations
+
+
+def load_baseline(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _rows_by_benchmark(payload: object) -> dict[str, Mapping[str, Any]]:
+    rows: dict[str, Mapping[str, Any]] = {}
+    for row in _payload_rows(payload):
+        benchmark_name = row.get("benchmark")
+        if isinstance(benchmark_name, str):
+            rows[benchmark_name] = row
+    return rows
+
+
+def _payload_rows(payload: object) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        return [payload]
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    return []
+
+
+def _compare_baseline_row(
+    violations: list[dict[str, Any]],
+    benchmark_name: str,
+    current_row: Mapping[str, Any],
+    baseline_row: Mapping[str, Any],
+    float_tolerance: float,
+) -> None:
+    for key in (
+        "pad_side",
+        "verification_success",
+        "verification_error_count",
+        "verification_warning_count",
+        "terminal_group_count",
+        "pad_assignment_count",
+        "common_bus_success",
+        "common_bus_escape_success",
+        "individual_topology_success",
+        "detailed_route_count",
+        "failed_detailed_route_count",
+    ):
+        _compare_baseline_value(
+            violations,
+            benchmark_name,
+            key,
+            current_row.get(key),
+            baseline_row.get(key),
+            float_tolerance,
+        )
+
+    for section in ("metrics", "realization_metrics"):
+        current_values = current_row.get(section, {})
+        baseline_values = baseline_row.get(section, {})
+        if not isinstance(current_values, Mapping) or not isinstance(
+            baseline_values,
+            Mapping,
+        ):
+            _compare_baseline_value(
+                violations,
+                benchmark_name,
+                section,
+                current_values,
+                baseline_values,
+                float_tolerance,
+            )
+            continue
+        for key in sorted(baseline_values):
+            _compare_baseline_value(
+                violations,
+                benchmark_name,
+                f"{section}.{key}",
+                current_values.get(key),
+                baseline_values.get(key),
+                float_tolerance,
+            )
+
+
+def _compare_baseline_value(
+    violations: list[dict[str, Any]],
+    benchmark_name: str,
+    name: str,
+    actual: object,
+    expected: object,
+    float_tolerance: float,
+) -> None:
+    if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        actual_number = _number_or_none(actual)
+        if actual_number is None or abs(actual_number - float(expected)) > float_tolerance:
+            violations.append(
+                {
+                    "benchmark": benchmark_name,
+                    "name": name,
+                    "actual": actual,
+                    "expected": expected,
+                    "operator": "~=",
+                    "tolerance": float_tolerance,
+                }
+            )
+        return
+    if actual != expected:
+        violations.append(
+            {
+                "benchmark": benchmark_name,
+                "name": name,
+                "actual": actual,
+                "expected": expected,
+                "operator": "==",
+            }
+        )
 
 
 def _check_equal(
@@ -291,13 +558,32 @@ def _number(value: object) -> float:
     return 0.0
 
 
-def _write_json(summary: Mapping[str, Any], output_path: Path | None) -> None:
-    text = json.dumps(summary, indent=2, sort_keys=True) + "\n"
+def _number_or_none(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _write_json(payload: object, output_path: Path | None) -> None:
+    text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if output_path is None:
         print(text, end="")
         return
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(text, encoding="utf-8")
+
+
+def write_suite_summary(summaries: list[dict[str, Any]], artifacts_dir: Path) -> Path:
+    path = artifacts_dir / "electrical_suite_summary.json"
+    _write_json(summaries, path)
+    return path
 
 
 def write_artifact_bundle(
@@ -392,9 +678,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "benchmark",
-        nargs="?",
-        default=DEFAULT_BENCHMARK,
-        help=f"Benchmark module name from benchmarks/ (default: {DEFAULT_BENCHMARK}).",
+        nargs="*",
+        help=f"Benchmark module names from benchmarks/ (default: {DEFAULT_BENCHMARK}).",
+    )
+    parser.add_argument(
+        "--suite",
+        action="store_true",
+        help="Run the default electrical benchmark suite.",
     )
     parser.add_argument(
         "--output",
@@ -419,18 +709,67 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Optional directory for summary JSON, Markdown, debug SVG, and GDS artifacts.",
     )
+    parser.add_argument(
+        "--compare-baseline",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_BASELINE_PATH,
+        default=None,
+        help=(
+            "Optional compact benchmark baseline JSON to compare against. "
+            f"Uses {DEFAULT_BASELINE_PATH} when no path is provided."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _resolve_benchmarks(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.suite:
+        return DEFAULT_BENCHMARKS
+    benchmarks = tuple(args.benchmark)
+    return benchmarks if benchmarks else (DEFAULT_BENCHMARK,)
+
+
+def _has_guardrail_violations(payload: object) -> bool:
+    if isinstance(payload, Mapping):
+        violations = payload.get("guardrail_violations", [])
+        return isinstance(violations, list) and bool(violations)
+    if isinstance(payload, list):
+        return any(_has_guardrail_violations(item) for item in payload)
+    return False
+
+
+def _has_baseline_violations(payload: object) -> bool:
+    if isinstance(payload, Mapping):
+        violations = payload.get("baseline_violations", [])
+        return isinstance(violations, list) and bool(violations)
+    if isinstance(payload, list):
+        return any(_has_baseline_violations(item) for item in payload)
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    summary = run_electrical_benchmark(
-        args.benchmark,
-        config=ElectricalRoutingConfig(pad_side=args.pad_side),
-        artifacts_dir=args.artifacts_dir,
-    )
-    _write_json(summary, args.output)
-    if args.check and summary["guardrail_violations"]:
+    benchmark_names = _resolve_benchmarks(args)
+    config = ElectricalRoutingConfig(pad_side=args.pad_side)
+    if len(benchmark_names) == 1:
+        payload: object = run_electrical_benchmark(
+            benchmark_names[0],
+            config=config,
+            artifacts_dir=args.artifacts_dir,
+        )
+    else:
+        payload = run_electrical_benchmarks(
+            benchmark_names,
+            config=config,
+            artifacts_dir=args.artifacts_dir,
+        )
+    if args.compare_baseline is not None:
+        attach_baseline_violations(payload, load_baseline(args.compare_baseline))
+    _write_json(payload, args.output)
+    if args.check and (
+        _has_guardrail_violations(payload) or _has_baseline_violations(payload)
+    ):
         return 1
     return 0
 

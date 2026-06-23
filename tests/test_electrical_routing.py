@@ -28,6 +28,7 @@ from translation.electrical.bundle_detail_router import (
 from translation.electrical.obstacle_extraction import build_electrical_obstacle_map
 from translation.electrical.pad_slots import pad_access_bbox
 from translation.electrical.pitch_grid import disk_cells
+from translation.electrical.rect_geometry import clean_rects, wire_rects_for_points
 from translation.electrical.terminal_contacts import select_terminal_contact, terminal_access_path
 from translation.electrical.terminal_contacts import terminal_contact_seed_points
 from translation.electrical.terminal_extraction import extract_heater_terminal_pairs
@@ -87,6 +88,29 @@ def _box_region(bbox_um):
 def _region_covers_bbox(region, bbox_um) -> bool:
     box = _box_region(bbox_um)
     return (box - region).is_empty()
+
+
+def test_wire_rect_generation_omits_redundant_vertex_squares():
+    rects = wire_rects_for_points(
+        ((0.0, 0.0), (20.0, 0.0), (20.0, 20.0)),
+        width_um=10.0,
+    )
+
+    assert rects == (
+        (-5.0, -5.0, 25.0, 5.0),
+        (15.0, -5.0, 25.0, 25.0),
+    )
+    assert clean_rects(
+        (
+            rects[0],
+            rects[0],
+            (0.0, -2.0, 10.0, 2.0),
+            (25.0, -5.0, 35.0, 5.0),
+        )
+    ) == (
+        (-5.0, -5.0, 25.0, 5.0),
+        (25.0, -5.0, 35.0, 5.0),
+    )
 
 
 def _verification_obstacle_map(

@@ -1,0 +1,95 @@
+[
+  {
+    "benchmark": "mmi_heater",
+    "common_bus_escape_success": true,
+    "common_bus_success": true,
+    "detailed_route_count": 1,
+    "failed_detailed_route_count": 0,
+    "individual_topology_success": true,
+    "metrics": {
+      "bend_count": 3,
+      "centerline_length_um": 1090.0,
+      "cross_net_min_spacing_um": 142.973,
+      "net_count": 2,
+      "pad_channel_height_um": 60.000000000000014,
+      "raw_metal_area_um2": 79111.88,
+      "rect_count": 9,
+      "required_cross_net_clearance_um": 10.0,
+      "same_net_duplicate_rect_count": 0,
+      "same_net_overlap_pair_count": 7
+    },
+    "pad_assignment_count": 2,
+    "pad_side": "top",
+    "realization_metrics": {
+      "net_count": 2,
+      "output_polygon_count": 2,
+      "pre_union_rect_count": 9
+    },
+    "terminal_group_count": 1,
+    "verification_error_count": 0,
+    "verification_success": true,
+    "verification_warning_count": 0
+  },
+  {
+    "benchmark": "mmi_heater_8x4",
+    "common_bus_escape_success": true,
+    "common_bus_success": true,
+    "detailed_route_count": 20,
+    "failed_detailed_route_count": 0,
+    "individual_topology_success": true,
+    "metrics": {
+      "bend_count": 128,
+      "centerline_length_um": 46640.0,
+      "cross_net_min_spacing_um": 20.0,
+      "net_count": 21,
+      "pad_channel_height_um": 179.99999999999994,
+      "raw_metal_area_um2": 1017019.818,
+      "rect_count": 189,
+      "required_cross_net_clearance_um": 10.0,
+      "same_net_duplicate_rect_count": 0,
+      "same_net_overlap_pair_count": 188
+    },
+    "pad_assignment_count": 21,
+    "pad_side": "top",
+    "realization_metrics": {
+      "net_count": 21,
+      "output_polygon_count": 21,
+      "pre_union_rect_count": 189
+    },
+    "terminal_group_count": 20,
+    "verification_error_count": 0,
+    "verification_success": true,
+    "verification_warning_count": 0
+  },
+  {
+    "benchmark": "mmi_heater_8x4_ripup_reroute",
+    "common_bus_escape_success": true,
+    "common_bus_success": true,
+    "detailed_route_count": 11,
+    "failed_detailed_route_count": 0,
+    "individual_topology_success": true,
+    "metrics": {
+      "bend_count": 65,
+      "centerline_length_um": 19390.0,
+      "cross_net_min_spacing_um": 11.019763064603511,
+      "net_count": 12,
+      "pad_channel_height_um": 179.99999999999994,
+      "raw_metal_area_um2": 574514.772,
+      "rect_count": 104,
+      "required_cross_net_clearance_um": 10.0,
+      "same_net_duplicate_rect_count": 0,
+      "same_net_overlap_pair_count": 103
+    },
+    "pad_assignment_count": 12,
+    "pad_side": "top",
+    "realization_metrics": {
+      "net_count": 12,
+      "output_polygon_count": 12,
+      "pre_union_rect_count": 104
+    },
+    "terminal_group_count": 11,
+    "verification_error_count": 0,
+    "verification_success": true,
+    "verification_warning_count": 0
+  }
+]

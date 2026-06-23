@@ -8,6 +8,7 @@ from typing import Any
 
 from .pad_slots import pad_access_bbox
 from .pitch_grid import bbox_to_grid_cells
+from .rect_geometry import clean_rects, wire_rects_for_points
 from .terminal_contacts import terminal_access_path, terminal_contact_bboxes
 from .types import (
     BBox,
@@ -56,14 +57,16 @@ def verify_electrical_routing(
     net_geometries: list[_NetGeometry] = []
 
     pad_bboxes_by_net = _pad_bboxes_by_net(pad_plan)
-    common_bus_rects = (
-        *_common_bus_rects(
-            common_bus,
-            common_bus_escape,
-            obstacle_map,
-            config,
-        ),
-        *pad_bboxes_by_net.get("common_bus", ()),
+    common_bus_rects = clean_rects(
+        (
+            *_common_bus_rects(
+                common_bus,
+                common_bus_escape,
+                obstacle_map,
+                config,
+            ),
+            *pad_bboxes_by_net.get("common_bus", ()),
+        )
     )
     common_bus_route_points = _common_bus_centerline_points(
         common_bus,
@@ -99,9 +102,11 @@ def verify_electrical_routing(
                 if route.pad_assignment is not None
                 else f"individual:{route.terminal.heater_id}"
             )
-            route_rects = (
-                *_detailed_route_rects(route, obstacle_map, config),
-                *pad_bboxes_by_net.get(route_net_id, ()),
+            route_rects = clean_rects(
+                (
+                    *_detailed_route_rects(route, obstacle_map, config),
+                    *pad_bboxes_by_net.get(route_net_id, ()),
+                )
             )
             route_start_um = _route_start_um(route, obstacle_map)
             allowed_cells = set(
@@ -727,82 +732,7 @@ def _point_wire_rects(
     points: tuple[tuple[float, float], ...],
     width_um: float,
 ) -> tuple[BBox, ...]:
-    points = _simplify_manhattan_points(_dedupe_points(points))
-    if not points:
-        return ()
-    half_width = width_um / 2.0
-    rects: list[BBox] = []
-    if len(points) == 1:
-        rects.append(_point_rect(points[0], half_width))
-        return tuple(rects)
-    for start, end in zip(points, points[1:]):
-        rects.extend(_segment_rects(start, end, half_width))
-    for point in points:
-        rects.append(_point_rect(point, half_width))
-    return tuple(rects)
-
-
-def _segment_rects(
-    start: tuple[float, float],
-    end: tuple[float, float],
-    half_width: float,
-) -> tuple[BBox, ...]:
-    sx, sy = start
-    ex, ey = end
-    if sx == ex and sy == ey:
-        return (_point_rect(start, half_width),)
-    if sx == ex:
-        return (
-            (
-                sx - half_width,
-                min(sy, ey) - half_width,
-                sx + half_width,
-                max(sy, ey) + half_width,
-            ),
-        )
-    if sy == ey:
-        return (
-            (
-                min(sx, ex) - half_width,
-                sy - half_width,
-                max(sx, ex) + half_width,
-                sy + half_width,
-            ),
-        )
-    via = (ex, sy)
-    return (*_segment_rects(start, via, half_width), *_segment_rects(via, end, half_width))
-
-
-def _point_rect(point: tuple[float, float], half_width: float) -> BBox:
-    x, y = point
-    return (x - half_width, y - half_width, x + half_width, y + half_width)
-
-
-def _dedupe_points(
-    points: tuple[tuple[float, float], ...],
-) -> tuple[tuple[float, float], ...]:
-    deduped: list[tuple[float, float]] = []
-    for point in points:
-        if deduped and deduped[-1] == point:
-            continue
-        deduped.append(point)
-    return tuple(deduped)
-
-
-def _simplify_manhattan_points(
-    points: tuple[tuple[float, float], ...],
-) -> tuple[tuple[float, float], ...]:
-    if len(points) <= 2:
-        return points
-    simplified: list[tuple[float, float]] = [points[0]]
-    previous_direction = _point_direction(points[0], points[1])
-    for index in range(1, len(points) - 1):
-        current_direction = _point_direction(points[index], points[index + 1])
-        if current_direction != previous_direction:
-            simplified.append(points[index])
-            previous_direction = current_direction
-    simplified.append(points[-1])
-    return tuple(simplified)
+    return wire_rects_for_points(points, width_um)
 
 
 def _route_start_um(

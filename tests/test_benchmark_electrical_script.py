@@ -43,10 +43,10 @@ def _result_stub() -> SimpleNamespace:
         issues=(),
         metrics={
             "net_count": 12,
-            "rect_count": 312,
-            "raw_metal_area_um2": 734_180.942,
-            "same_net_duplicate_rect_count": 45,
-            "same_net_overlap_pair_count": 1_109,
+            "rect_count": 104,
+            "raw_metal_area_um2": 574_514.772,
+            "same_net_duplicate_rect_count": 0,
+            "same_net_overlap_pair_count": 103,
             "cross_net_min_spacing_um": 11.0,
             "required_cross_net_clearance_um": 10.0,
             "centerline_length_um": 19_390.0,
@@ -60,7 +60,7 @@ def _result_stub() -> SimpleNamespace:
             {
                 "electrical_metal_realization": {
                     "net_count": 12,
-                    "pre_union_rect_count": 312,
+                    "pre_union_rect_count": 104,
                     "output_polygon_count": 12,
                     "rect_count_by_net": {"common_bus": 140},
                 }
@@ -97,7 +97,7 @@ def test_electrical_benchmark_summary_is_compact_and_json_ready():
     assert "internal_debug_metric" not in summary["metrics"]
     assert summary["realization_metrics"] == {
         "net_count": 12,
-        "pre_union_rect_count": 312,
+        "pre_union_rect_count": 104,
         "output_polygon_count": 12,
     }
     json.dumps(summary, sort_keys=True)
@@ -112,6 +112,35 @@ def test_electrical_benchmark_guardrails_accept_current_shape():
     )
 
     assert module.guardrail_violations(summary) == []
+
+
+def test_electrical_benchmark_uses_case_specific_guardrails():
+    module = _load_benchmark_electrical_module()
+    small_summary = module.electrical_benchmark_summary(
+        "mmi_heater",
+        ElectricalRoutingConfig(pad_side="top"),
+        _result_stub(),
+    )
+    small_summary["detailed_route_count"] = 1
+    small_summary["pad_assignment_count"] = 2
+    small_summary["metrics"]["centerline_length_um"] = 1_090.0
+    small_summary["metrics"]["bend_count"] = 3
+    small_summary["metrics"]["pad_channel_height_um"] = 60.0
+    small_summary["metrics"]["raw_metal_area_um2"] = 79_111.88
+    small_summary["metrics"]["rect_count"] = 9
+    small_summary["metrics"]["same_net_duplicate_rect_count"] = 0
+    small_summary["metrics"]["same_net_overlap_pair_count"] = 7
+    small_summary["realization_metrics"]["output_polygon_count"] = 2
+    small_summary["realization_metrics"]["pre_union_rect_count"] = 9
+
+    assert module.guardrail_violations(
+        small_summary,
+        module.guardrails_for_benchmark("mmi_heater"),
+    ) == []
+    assert module.guardrail_violations(
+        small_summary,
+        module.guardrails_for_benchmark("mmi_heater_8x4_ripup_reroute"),
+    )
 
 
 def test_electrical_benchmark_guardrails_report_metric_regressions():
@@ -141,6 +170,56 @@ def test_electrical_benchmark_guardrails_report_metric_regressions():
     }
 
 
+def test_electrical_benchmark_baseline_accepts_matching_summary():
+    module = _load_benchmark_electrical_module()
+    summary = module.electrical_benchmark_summary(
+        "case",
+        ElectricalRoutingConfig(pad_side="top"),
+        _result_stub(),
+    )
+
+    assert module.baseline_violations(summary, summary) == []
+
+
+def test_electrical_benchmark_baseline_reports_metric_drift():
+    module = _load_benchmark_electrical_module()
+    baseline = module.electrical_benchmark_summary(
+        "case",
+        ElectricalRoutingConfig(pad_side="top"),
+        _result_stub(),
+    )
+    current = json.loads(json.dumps(baseline))
+    current["metrics"]["centerline_length_um"] += 1.0
+    current["realization_metrics"]["output_polygon_count"] += 1
+
+    violations = module.baseline_violations(current, baseline)
+
+    assert {
+        violation["name"]
+        for violation in violations
+    } >= {
+        "metrics.centerline_length_um",
+        "realization_metrics.output_polygon_count",
+    }
+    assert all(violation["benchmark"] == "case" for violation in violations)
+
+
+def test_electrical_benchmark_attaches_baseline_violations_to_rows():
+    module = _load_benchmark_electrical_module()
+    baseline = module.electrical_benchmark_summary(
+        "case",
+        ElectricalRoutingConfig(pad_side="top"),
+        _result_stub(),
+    )
+    current = json.loads(json.dumps(baseline))
+    current["detailed_route_count"] -= 1
+
+    violations = module.attach_baseline_violations(current, baseline)
+
+    assert violations
+    assert current["baseline_violations"] == violations
+
+
 def test_electrical_benchmark_main_writes_json(monkeypatch, tmp_path):
     module = _load_benchmark_electrical_module()
     output_path = tmp_path / "summary.json"
@@ -156,6 +235,122 @@ def test_electrical_benchmark_main_writes_json(monkeypatch, tmp_path):
 
     assert exit_code == 0
     assert json.loads(output_path.read_text(encoding="utf-8")) == expected
+
+
+def test_electrical_benchmark_suite_writes_json_list(monkeypatch, tmp_path):
+    module = _load_benchmark_electrical_module()
+    output_path = tmp_path / "suite.json"
+    captured = {}
+    rows = [
+        {"benchmark": "mmi_heater", "guardrail_violations": []},
+        {"benchmark": "mmi_heater_8x4", "guardrail_violations": []},
+    ]
+
+    def fake_run_electrical_benchmarks(benchmark_names, **kwargs):
+        captured["benchmark_names"] = benchmark_names
+        captured["artifacts_dir"] = kwargs["artifacts_dir"]
+        return rows
+
+    monkeypatch.setattr(module, "run_electrical_benchmarks", fake_run_electrical_benchmarks)
+
+    exit_code = module.main(
+        [
+            "mmi_heater",
+            "mmi_heater_8x4",
+            "--output",
+            str(output_path),
+            "--check",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["benchmark_names"] == ("mmi_heater", "mmi_heater_8x4")
+    assert captured["artifacts_dir"] is None
+    assert json.loads(output_path.read_text(encoding="utf-8")) == rows
+
+
+def test_electrical_benchmark_main_fails_on_baseline_drift(monkeypatch, tmp_path):
+    module = _load_benchmark_electrical_module()
+    output_path = tmp_path / "summary.json"
+    baseline_path = tmp_path / "baseline.json"
+    baseline = {
+        "benchmark": "case",
+        "pad_side": "top",
+        "detailed_route_count": 11,
+        "guardrail_violations": [],
+        "metrics": {"centerline_length_um": 10.0},
+        "realization_metrics": {"output_polygon_count": 1},
+    }
+    current = json.loads(json.dumps(baseline))
+    current["metrics"]["centerline_length_um"] = 11.0
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    monkeypatch.setattr(module, "run_electrical_benchmark", lambda *_args, **_kwargs: current)
+
+    exit_code = module.main(
+        [
+            "case",
+            "--compare-baseline",
+            str(baseline_path),
+            "--output",
+            str(output_path),
+            "--check",
+        ]
+    )
+
+    assert exit_code == 1
+    summary = json.loads(output_path.read_text(encoding="utf-8"))
+    assert summary["baseline_violations"][0]["name"] == "metrics.centerline_length_um"
+
+
+def test_electrical_benchmark_suite_check_fails_on_any_violation(monkeypatch, tmp_path):
+    module = _load_benchmark_electrical_module()
+    output_path = tmp_path / "suite.json"
+    rows = [
+        {"benchmark": "mmi_heater", "guardrail_violations": []},
+        {
+            "benchmark": "mmi_heater_8x4",
+            "guardrail_violations": [{"name": "verification_success"}],
+        },
+    ]
+
+    monkeypatch.setattr(
+        module,
+        "run_electrical_benchmarks",
+        lambda *_args, **_kwargs: rows,
+    )
+
+    exit_code = module.main(["--suite", "--output", str(output_path), "--check"])
+
+    assert exit_code == 1
+    assert json.loads(output_path.read_text(encoding="utf-8")) == rows
+
+
+def test_run_electrical_benchmarks_uses_artifact_subdirectories(monkeypatch, tmp_path):
+    module = _load_benchmark_electrical_module()
+    captured = []
+
+    def fake_run_electrical_benchmark(benchmark_name, **kwargs):
+        captured.append((benchmark_name, kwargs["artifacts_dir"]))
+        return {"benchmark": benchmark_name, "guardrail_violations": []}
+
+    monkeypatch.setattr(module, "run_electrical_benchmark", fake_run_electrical_benchmark)
+
+    rows = module.run_electrical_benchmarks(
+        ("a", "b"),
+        config=ElectricalRoutingConfig(pad_side="top"),
+        artifacts_dir=tmp_path,
+    )
+
+    assert rows == [
+        {"benchmark": "a", "guardrail_violations": []},
+        {"benchmark": "b", "guardrail_violations": []},
+    ]
+    assert captured == [
+        ("a", tmp_path / "a"),
+        ("b", tmp_path / "b"),
+    ]
+    assert json.loads((tmp_path / "electrical_suite_summary.json").read_text()) == rows
 
 
 def test_electrical_benchmark_writes_artifact_bundle(tmp_path):
@@ -183,14 +378,14 @@ def test_electrical_benchmark_writes_artifact_bundle(tmp_path):
             "centerline_length_um": 19_390.0,
             "bend_count": 65,
             "pad_channel_height_um": 180.0,
-            "raw_metal_area_um2": 734_180.942,
-            "rect_count": 312,
-            "same_net_overlap_pair_count": 1_109,
+            "raw_metal_area_um2": 574_514.772,
+            "rect_count": 104,
+            "same_net_overlap_pair_count": 103,
             "cross_net_min_spacing_um": 11.0,
         },
         "realization_metrics": {
             "output_polygon_count": 12,
-            "pre_union_rect_count": 312,
+            "pre_union_rect_count": 104,
         },
     }
 
