@@ -1097,21 +1097,22 @@ def run_routing_flow(
     if enable_electrical_routing:
         print(f"\n[4/{total_steps}] Routing heater electrical metal...")
         t_electrical_start = time.perf_counter()
-        electrical_result = route_electrical_heaters(
+        current_electrical_result = route_electrical_heaters(
             routed_layout,
             schematic,
             electrical_config,
             debug_dir=debug_dir,
             debug_prefix=benchmark_name.lower(),
         )
+        electrical_result = current_electrical_result
         t_electrical_end = time.perf_counter()
         if stats is not None:
             stats.step_times_s["electrical_routing"] = (
                 t_electrical_end - t_electrical_start
             )
-        if electrical_result.routed_component is None:
-            raise RuntimeError(_electrical_failure_summary(electrical_result))
-        electrical_summary = _electrical_summary(electrical_result)
+        if current_electrical_result.routed_component is None:
+            raise RuntimeError(_electrical_failure_summary(current_electrical_result))
+        electrical_summary = _electrical_summary(current_electrical_result)
         if stats is not None:
             stats.electrical_terminal_groups = int(
                 electrical_summary["terminal_group_count"]
@@ -1126,18 +1127,18 @@ def run_routing_flow(
                 electrical_summary["failed_detailed_route_count"]
             )
         optical_routed_layout = routed_layout
-        routed_layout = electrical_result.routed_component
+        routed_layout = current_electrical_result.routed_component
         _copy_component_info(optical_routed_layout, routed_layout)
         _component_info(routed_layout)["electrical_routing"] = electrical_summary
         electrical_pad_count = (
-            len(electrical_result.pad_plan.assignments)
-            if electrical_result.pad_plan
+            len(current_electrical_result.pad_plan.assignments)
+            if current_electrical_result.pad_plan
             else 0
         )
         print(f"      ✓ Electrical layout generated: {routed_layout.name}")
         print(
             "      - Electrical routes: "
-            f"heaters={len(electrical_result.terminal_groups)}, "
+            f"heaters={len(current_electrical_result.terminal_groups)}, "
             f"pads={electrical_pad_count}"
         )
         if debug_timing:
@@ -1146,7 +1147,7 @@ def run_routing_flow(
                 f"{t_electrical_end - t_electrical_start:.4f} s"
             )
         if debug_svgs_enabled:
-            for name, path in electrical_result.debug_artifacts.items():
+            for name, path in current_electrical_result.debug_artifacts.items():
                 print(f"      - Electrical {name}: {path}")
 
     if debug_svgs_enabled:

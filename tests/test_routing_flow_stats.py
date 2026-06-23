@@ -7,8 +7,10 @@ from routing_flow import (
     run_routing_flow,
 )
 import benchmark_metadata
+from translation.electrical import ElectricalRoutingConfig
 from translation.route_rust_types import RouteAttemptRecord, RouteSearchSummary
 from types import SimpleNamespace
+from typing import cast
 
 
 def test_routing_flow_populates_stats():
@@ -545,7 +547,7 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
         debug_timing=False,
         show_klayout=False,
         enable_electrical_routing=True,
-        electrical_config=electrical_config,
+        electrical_config=cast(ElectricalRoutingConfig, cast(object, electrical_config)),
         stats=stats,
     )
 
