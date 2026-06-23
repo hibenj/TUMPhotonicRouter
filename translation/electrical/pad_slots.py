@@ -69,7 +69,14 @@ def plan_pad_slots(
     max_slot_index = max(0, max(assignment_indices, default=0)) + config.pad_extra_slots_right
     pad_offset_um = max(
         config.pad_offset_um,
-        _required_pad_channel_offset_um(len(individual_indices), config),
+        _required_pad_channel_offset_um(
+            _pad_channel_route_count(
+                intervals,
+                len(individual_indices),
+                config,
+            ),
+            config,
+        ),
     )
 
     slot_by_index = {
@@ -337,6 +344,18 @@ def _required_pad_channel_offset_um(
         return config.pad_offset_um
     track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
     return individual_route_count * track_pitch_um + config.wire_width_um
+
+
+def _pad_channel_route_count(
+    intervals: tuple[_PadInterval, ...],
+    fallback_route_count: int,
+    config: ElectricalRoutingConfig,
+) -> int:
+    if config.pad_origin_x_um is not None:
+        return fallback_route_count
+    if not intervals:
+        return fallback_route_count
+    return max(len(interval.items) for interval in intervals)
 
 
 def pad_access_bbox(slot: PadSlot, config: ElectricalRoutingConfig) -> tuple[float, float, float, float]:

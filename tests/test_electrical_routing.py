@@ -16,6 +16,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from benchmarks.mmi_heater import build_schematic as build_single_heater_schematic
 from benchmarks.mmi_heater_8x4 import build_schematic as build_multi_heater_schematic
+from benchmarks.mmi_heater_8x4_ripup_reroute import (
+    build_schematic as build_ripup_reroute_schematic,
+)
 from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
 from translation.electrical.bundle_detail_router import (
     _offset_path_by_local_normals,
@@ -61,18 +64,26 @@ def _polygon_bboxes_by_layer(component: Component, layer: tuple[int, int]):
     }
 
 
-def _polygon_region_by_layer(component: Component, layer: tuple[int, int]) -> kdb.Region:
-    region = kdb.Region()
+def _kdb_region(*args):
+    return getattr(kdb, "Region")(*args)
+
+
+def _kdb_box(*args):
+    return getattr(kdb, "Box")(*args)
+
+
+def _polygon_region_by_layer(component: Component, layer: tuple[int, int]):
+    region = _kdb_region()
     for polygon in component.get_polygons(merge=False, by="tuple").get(layer, []):
         region.insert(polygon)
     return region
 
 
-def _box_region(bbox_um) -> kdb.Region:
-    return kdb.Region(kdb.Box(*_dbu_bbox(bbox_um)))
+def _box_region(bbox_um):
+    return _kdb_region(_kdb_box(*_dbu_bbox(bbox_um)))
 
 
-def _region_covers_bbox(region: kdb.Region, bbox_um) -> bool:
+def _region_covers_bbox(region, bbox_um) -> bool:
     box = _box_region(bbox_um)
     return (box - region).is_empty()
 
@@ -801,6 +812,16 @@ def test_auto_pad_origin_compacts_row_toward_escape_topology():
     )
 
     assert automatic.pad_plan.origin_x_um != forced.pad_plan.origin_x_um
+    assert automatic.verification.success
+    assert forced.verification.success
+    assert (
+        automatic.verification.metrics["pad_channel_height_um"]
+        < forced.verification.metrics["pad_channel_height_um"]
+    )
+    assert (
+        automatic.verification.metrics["centerline_length_um"]
+        < forced.verification.metrics["centerline_length_um"]
+    )
     automatic_individual = [
         assignment
         for assignment in automatic.pad_plan.assignments
@@ -829,6 +850,41 @@ def test_auto_pad_origin_compacts_row_toward_escape_topology():
         )
 
     assert exit_distance(automatic) < exit_distance(forced)
+
+
+def test_auto_pad_channel_height_uses_widest_topology_bundle():
+    schematic = build_ripup_reroute_schematic()
+    component = layout_from_schematic(schematic)
+    config = ElectricalRoutingConfig(pad_side="top")
+
+    result = route_electrical_heaters(component, schematic, config)
+
+    assert result.verification is not None
+    assert result.verification.success
+    assert result.individual_topology is not None
+    assert result.detailed_bundle_routes is not None
+    assert result.detailed_bundle_routes.success
+
+    individual_route_count = len(result.detailed_bundle_routes.routes)
+    widest_bundle_tracks = max(
+        bundle.required_tracks for bundle in result.individual_topology.bundles
+    )
+    track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
+    compact_channel_height_um = (
+        widest_bundle_tracks * track_pitch_um + config.wire_width_um
+    )
+    global_channel_height_um = (
+        individual_route_count * track_pitch_um + config.wire_width_um
+    )
+
+    assert result.verification.metrics["pad_channel_height_um"] == pytest.approx(
+        compact_channel_height_um
+    )
+    assert compact_channel_height_um < global_channel_height_um
+    assert result.verification.metrics["cross_net_min_spacing_um"] >= (
+        result.verification.metrics["required_cross_net_clearance_um"]
+    )
+    assert result.verification.metrics["centerline_length_um"] < 20_000.0
 
 
 def test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps():

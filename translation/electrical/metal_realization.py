@@ -22,6 +22,14 @@ BBox = tuple[float, float, float, float]
 RectList = list[BBox]
 
 
+def _kdb_region(*args):
+    return getattr(kdb, "Region")(*args)
+
+
+def _kdb_box(*args):
+    return getattr(kdb, "Box")(*args)
+
+
 def realize_electrical_metal(
     component: Component,
     obstacle_map: ElectricalObstacleMap,
@@ -268,10 +276,10 @@ def _append_merged_rects(
 
 
 def _merge_rects(rects: list[BBox]) -> tuple[tuple[tuple[float, float], ...], ...]:
-    region = kdb.Region()
+    region = _kdb_region()
     for rect in rects:
         xmin, ymin, xmax, ymax = rect
-        box = kdb.Box(
+        box = _kdb_box(
             _um_to_dbu(xmin),
             _um_to_dbu(ymin),
             _um_to_dbu(xmax),

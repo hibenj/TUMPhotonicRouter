@@ -1,6 +1,6 @@
 """TOY benchmark: Simple 2-component schematic for testing routing flow."""
 
-from gdsfactory.generic_tech import get_generic_pdk
+from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
 NODE_TYPES = {

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+from heapq import heappop, heappush
 from typing import Literal
 
 from .pad_slots import pad_access_cells
+from .pitch_grid import bbox_to_grid_cells
 from .types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
@@ -24,6 +26,16 @@ from .types import (
 
 Axis = Literal["x", "y"]
 RouteSide = Literal["left", "right"]
+DirectionIndex = int
+SearchState = tuple[GridCell, DirectionIndex]
+
+_NO_DIRECTION = -1
+_GRID_DIRECTIONS: tuple[GridCell, ...] = (
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+)
 
 
 def route_detailed_bundles(
@@ -54,20 +66,10 @@ def route_detailed_bundles(
         assignment.slot.index: pad_access_cells(assignment.slot, obstacle_map, config)
         for assignment in pad_plan.assignments
     }
-    pad_lane_rank_by_slot = {
-        assignment.slot.index: rank
-        for rank, assignment in enumerate(
-            sorted(
-                (
-                    assignment
-                    for assignment in pad_plan.assignments
-                    if assignment.kind == "individual"
-                ),
-                key=lambda assignment: assignment.slot.index,
-            )
-        )
-    }
-    pad_lane_count = max(1, len(pad_lane_rank_by_slot))
+    pad_lane_rank_by_slot, pad_lane_count_by_slot = _pad_lane_rank_maps(
+        pad_plan,
+        config,
+    )
     topology_route_by_terminal_id = {
         route.terminal.id: route for route in topology.routes if route.success
     }
@@ -84,6 +86,16 @@ def route_detailed_bundles(
     failed_routes: list[DetailedBundleRoute] = []
     cell_usage: dict[GridCell, int] = {}
     committed_cells: set[GridCell] = set()
+    committed_footprint_cells: set[GridCell] = set()
+    assigned_pad_cells_by_slot = {
+        assignment.slot.index: bbox_to_grid_cells(assignment.slot.bbox, obstacle_map.grid)
+        for assignment in pad_plan.assignments
+    }
+    all_assigned_pad_cells = (
+        set().union(*assigned_pad_cells_by_slot.values())
+        if assigned_pad_cells_by_slot
+        else set()
+    )
 
     for bundle in topology.bundles:
         bundle_skeleton_path = _bundle_skeleton_path(bundle, config)
@@ -95,7 +107,7 @@ def route_detailed_bundles(
             route_side=route_side,
             grid_size_um=obstacle_map.grid.grid_size_um,
         )
-        for rank, terminal in enumerate(bundle.ordered_terminals):
+        for rank, terminal in _route_order_for_bundle(bundle, route_side):
             assignment = assignments_by_terminal_id.get(terminal.id)
             topology_route = topology_route_by_terminal_id.get(terminal.id)
             target_cells = (
@@ -141,20 +153,16 @@ def route_detailed_bundles(
                 else _centerline_points(bundle_skeleton_path)
             )
             source_point = _cell_center(topology_route.path[0])
-            pad_stub_target = _target_point(target_cells, config)
             pad_lane = _individual_pad_lane_point(
-                assignment,
                 target_cells,
                 obstacle_map,
                 config,
-                track_pitch_cells,
-                all_terminal_cells,
-                rank=rank,
-                lane_count=bundle.required_tracks,
-                route_side=route_side,
                 track_end=bundle_track_path[-1] if bundle_track_path else source_point,
                 pad_lane_rank=pad_lane_rank_by_slot.get(assignment.slot.index, rank),
-                pad_lane_count=pad_lane_count,
+                pad_lane_count=pad_lane_count_by_slot.get(
+                    assignment.slot.index,
+                    bundle.required_tracks,
+                ),
             )
             route_prefix, source_stub_path, bundle_track_tail, pad_stub_start = (
                 _route_prefix_to_pad_stub_start(
@@ -164,7 +172,38 @@ def route_detailed_bundles(
                     pad_side=config.pad_side,
                 )
             )
-            pad_stub_path = _pad_stub_path(pad_stub_start, pad_lane, pad_stub_target)
+            pad_stub_blocked = set(hard_blocked)
+            pad_stub_blocked.update(all_terminal_cells)
+            pad_stub_blocked.update(committed_footprint_cells)
+            pad_stub_blocked.update(
+                all_assigned_pad_cells.difference(target_cells)
+            )
+            pad_stub_path = _route_pad_stub_path(
+                start=pad_stub_start,
+                target_cells=target_cells,
+                blocked=pad_stub_blocked,
+                obstacle_map=obstacle_map,
+                config=config,
+            )
+            if not pad_stub_path:
+                failed_routes.append(
+                    DetailedBundleRoute(
+                        bundle_id=bundle.bundle_id,
+                        rank=rank,
+                        terminal=terminal,
+                        pad_assignment=assignment,
+                        path=(),
+                        target_cells=frozenset(target_cells),
+                        track_cell=None,
+                        lane_cell=None,
+                        offset_um=offset_um,
+                        offset_axis=_offset_axis(bundle),
+                        offset_path=(),
+                        success=False,
+                        reason="pad stub cannot avoid committed metal footprint",
+                    )
+                )
+                continue
             detailed_path = _dedupe_points((*route_prefix, *pad_stub_path[1:]))
             path = _cells_from_point_path(detailed_path)
             track_cell = _representative_track_cell(topology_route)
@@ -188,6 +227,13 @@ def route_detailed_bundles(
             )
             routes.append(route)
             committed_cells.update(path)
+            committed_footprint_cells.update(
+                _wire_reservation_cells_from_point_path(
+                    detailed_path,
+                    obstacle_map,
+                    config,
+                )
+            )
             for cell in path:
                 cell_usage[cell] = cell_usage.get(cell, 0) + 1
 
@@ -223,12 +269,81 @@ def route_detailed_bundles(
         )
 
     return DetailedBundleRoutingResult(
-        routes=tuple(routes),
-        failed_routes=tuple(failed_routes),
+        routes=tuple(sorted(routes, key=_detailed_route_sort_key)),
+        failed_routes=tuple(sorted(failed_routes, key=_detailed_route_sort_key)),
         committed_cells=frozenset(committed_cells),
         cell_usage=cell_usage,
         track_pitch_cells=track_pitch_cells,
     )
+
+
+def _route_order_for_bundle(
+    bundle: EscapeBundle,
+    route_side: RouteSide,
+) -> tuple[tuple[int, ElectricalTerminal], ...]:
+    ranked_terminals = tuple(enumerate(bundle.ordered_terminals))
+    if route_side == "right":
+        return tuple(reversed(ranked_terminals))
+    return ranked_terminals
+
+
+def _detailed_route_sort_key(
+    route: DetailedBundleRoute,
+) -> tuple[int, int, str]:
+    return (route.bundle_id, route.rank, route.terminal.id)
+
+
+def _pad_lane_rank_maps(
+    pad_plan: PadPlan,
+    config: ElectricalRoutingConfig,
+) -> tuple[dict[int, int], dict[int, int]]:
+    individual_assignments = tuple(
+        assignment
+        for assignment in pad_plan.assignments
+        if assignment.kind == "individual"
+    )
+    if not individual_assignments:
+        return {}, {}
+    if config.pad_origin_x_um is not None:
+        rank_by_slot = {
+            assignment.slot.index: rank
+            for rank, assignment in enumerate(
+                sorted(individual_assignments, key=lambda assignment: assignment.slot.index)
+            )
+        }
+        count_by_slot = {
+            assignment.slot.index: len(individual_assignments)
+            for assignment in individual_assignments
+        }
+        return rank_by_slot, count_by_slot
+
+    grouped_assignments: dict[tuple[str, int], list[PadAssignment]] = {}
+    fallback_group_id = 0
+    for assignment in individual_assignments:
+        if assignment.topology_bundle_id is None:
+            group_key = ("fallback", fallback_group_id)
+            fallback_group_id += 1
+        else:
+            group_key = ("bundle", assignment.topology_bundle_id)
+        grouped_assignments.setdefault(group_key, []).append(assignment)
+
+    rank_by_slot: dict[int, int] = {}
+    count_by_slot: dict[int, int] = {}
+    for assignments in grouped_assignments.values():
+        ordered = sorted(
+            assignments,
+            key=lambda assignment: (
+                assignment.topology_rank
+                if assignment.topology_rank is not None
+                else assignment.slot.index,
+                assignment.slot.index,
+            ),
+        )
+        group_count = len(ordered)
+        for rank, assignment in enumerate(ordered):
+            rank_by_slot[assignment.slot.index] = rank
+            count_by_slot[assignment.slot.index] = group_count
+    return rank_by_slot, count_by_slot
 
 
 def _detail_failure_reason(
@@ -270,29 +385,15 @@ def _target_cell(target_cells: frozenset[GridCell], config: ElectricalRoutingCon
     return min(target_cells, key=lambda cell: (abs(cell[1] - edge_y), abs(cell[0] - center_x), cell))
 
 
-def _target_point(
-    target_cells: frozenset[GridCell],
-    config: ElectricalRoutingConfig,
-) -> tuple[float, float]:
-    target = _target_cell(target_cells, config)
-    return _cell_center(target)
-
-
 def _cell_center(cell: GridCell) -> tuple[float, float]:
     return (cell[0] + 0.5, cell[1] + 0.5)
 
 
 def _individual_pad_lane_point(
-    assignment: PadAssignment,
     target_cells: frozenset[GridCell],
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
-    track_pitch_cells: int,
-    all_terminal_cells: set[GridCell],
     *,
-    rank: int,
-    lane_count: int,
-    route_side: str,
     track_end: tuple[float, float],
     pad_lane_rank: int,
     pad_lane_count: int,
@@ -443,15 +544,158 @@ def _manhattan_point_path(
     return _dedupe_points((start, via, end))
 
 
-def _pad_stub_path(
+def _route_pad_stub_path(
+    *,
     start: tuple[float, float],
-    lane: tuple[float, float],
-    target: tuple[float, float],
+    target_cells: frozenset[GridCell],
+    blocked: set[GridCell],
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
 ) -> tuple[tuple[float, float], ...]:
-    to_lane = _manhattan_point_path(start, (start[0], lane[1]))
-    across_lane = _manhattan_point_path(to_lane[-1], lane)
-    to_target = _manhattan_point_path(across_lane[-1], target)
-    return _dedupe_points((*to_lane, *across_lane[1:], *to_target[1:]))
+    start_cell = _point_to_cell(start)
+    targets = frozenset(
+        cell
+        for cell in target_cells
+        if _in_bounds(cell, obstacle_map.grid.width, obstacle_map.grid.height)
+    )
+    if not targets:
+        return ()
+
+    blocked = set(blocked)
+    blocked.difference_update(targets)
+    blocked.discard(start_cell)
+
+    start_state: SearchState = (start_cell, _NO_DIRECTION)
+    parent: dict[SearchState, SearchState | None] = {start_state: None}
+    best_cost: dict[SearchState, int] = {start_state: 0}
+    heap: list[tuple[int, int, int, SearchState]] = []
+    counter = 0
+    heappush(
+        heap,
+        (
+            _pad_stub_heuristic(start_cell, targets),
+            0,
+            counter,
+            start_state,
+        ),
+    )
+    max_expansions = max(1, obstacle_map.grid.width * obstacle_map.grid.height * 4)
+    expansions = 0
+
+    while heap and expansions < max_expansions:
+        _, cost, _, state = heappop(heap)
+        if cost != best_cost.get(state):
+            continue
+        cell, direction = state
+        if cell in targets:
+            return _centerline_points(_reconstruct_search_path(parent, state))
+        expansions += 1
+        for next_direction, neighbor in _pad_stub_neighbors(
+            cell,
+            targets,
+            config,
+        ):
+            if not _in_bounds(neighbor, obstacle_map.grid.width, obstacle_map.grid.height):
+                continue
+            if neighbor in blocked:
+                continue
+            step_cost = 10
+            if direction != _NO_DIRECTION and direction != next_direction:
+                step_cost += 4
+            next_cost = cost + step_cost
+            next_state: SearchState = (neighbor, next_direction)
+            if next_cost >= best_cost.get(next_state, 1_000_000_000):
+                continue
+            parent[next_state] = state
+            best_cost[next_state] = next_cost
+            counter += 1
+            heappush(
+                heap,
+                (
+                    next_cost + _pad_stub_heuristic(neighbor, targets),
+                    next_cost,
+                    counter,
+                    next_state,
+                ),
+            )
+    return ()
+
+
+def _pad_stub_neighbors(
+    cell: GridCell,
+    targets: frozenset[GridCell],
+    config: ElectricalRoutingConfig,
+) -> tuple[tuple[DirectionIndex, GridCell], ...]:
+    x, y = cell
+    target_x = round(
+        (min(tx for tx, _ in targets) + max(tx for tx, _ in targets)) / 2.0
+    )
+    preferred_x_step = 1 if target_x >= x else -1
+    preferred_y_step = 1 if config.pad_side == "top" else -1
+    ordered_directions = (
+        (preferred_x_step, 0),
+        (0, preferred_y_step),
+        (-preferred_x_step, 0),
+        (0, -preferred_y_step),
+    )
+    return tuple(
+        (
+            _GRID_DIRECTIONS.index(direction),
+            (x + direction[0], y + direction[1]),
+        )
+        for direction in ordered_directions
+    )
+
+
+def _pad_stub_heuristic(
+    cell: GridCell,
+    targets: frozenset[GridCell],
+) -> int:
+    return 10 * min(_manhattan(cell, target) for target in targets)
+
+
+def _reconstruct_search_path(
+    parent: dict[SearchState, SearchState | None],
+    end: SearchState,
+) -> tuple[GridCell, ...]:
+    path: list[GridCell] = []
+    current: SearchState | None = end
+    while current is not None:
+        path.append(current[0])
+        current = parent[current]
+    path.reverse()
+    return _dedupe_path(tuple(path))
+
+
+def _wire_reservation_cells_from_point_path(
+    path: tuple[tuple[float, float], ...],
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> frozenset[GridCell]:
+    centerline = _cells_from_point_path(path)
+    radius = _wire_reservation_radius_cells(obstacle_map, config)
+    cells: set[GridCell] = set()
+    for x, y in centerline:
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                cell = (x + dx, y + dy)
+                if _in_bounds(cell, obstacle_map.grid.width, obstacle_map.grid.height):
+                    cells.add(cell)
+    return frozenset(cells)
+
+
+def _wire_reservation_radius_cells(
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> int:
+    required_center_spacing_um = config.wire_width_um + max(
+        config.obstacle_clearance_um,
+        0.0,
+    )
+    return max(
+        0,
+        math.ceil(required_center_spacing_um / obstacle_map.grid.grid_size_um) - 1,
+    )
 
 
 def _cells_from_point_path(path: tuple[tuple[float, float], ...]) -> tuple[GridCell, ...]:
@@ -500,6 +744,11 @@ def grid_segment(start: GridCell, end: GridCell) -> tuple[GridCell, ...]:
         start_y = sy + step_y
         cells.extend((ex, y) for y in range(start_y, ey + step_y, step_y))
     return tuple(cells)
+
+
+def _in_bounds(cell: GridCell, width: int, height: int) -> bool:
+    x, y = cell
+    return 0 <= x < width and 0 <= y < height
 
 
 def _rank_offset_um(

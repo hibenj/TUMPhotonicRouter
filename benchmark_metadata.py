@@ -57,7 +57,7 @@ def component_internal_delay_um(component_name: str) -> float | None:
 
     if component is None:
         try:
-            from gdsfactory.generic_tech import get_generic_pdk
+            from gdsfactory.gpdk import get_generic_pdk
 
             pdk = get_generic_pdk()
             pdk.activate()

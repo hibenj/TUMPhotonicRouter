@@ -7,7 +7,7 @@ while the lower output bypasses the heater. Both paths then meet again in a
 second-stage MMI, whose upper output passes through another heater.
 """
 
-from gdsfactory.generic_tech import get_generic_pdk
+from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
 LANE_COUNT = 4
