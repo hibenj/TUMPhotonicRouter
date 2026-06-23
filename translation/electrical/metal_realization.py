@@ -5,7 +5,7 @@ from __future__ import annotations
 from gdsfactory.component import Component
 import klayout.db as kdb
 
-from .rect_geometry import clean_rects, wire_rects_for_points
+from .rect_geometry import clean_rects, rect_area, union_rect_area, wire_rects_for_points
 from .terminal_contacts import terminal_access_path
 from .types import (
     CommonBusEscapeResult,
@@ -100,14 +100,29 @@ def realize_electrical_metal(
             rects_by_net[net_id],
             config.metal_layer,
         )
+    raw_area_by_net = {
+        net_id: sum(rect_area(rect) for rect in rects)
+        for net_id, rects in sorted(rects_by_net.items())
+    }
+    union_area_by_net = {
+        net_id: union_rect_area(rects)
+        for net_id, rects in sorted(rects_by_net.items())
+    }
+    raw_area = sum(raw_area_by_net.values())
+    union_area = sum(union_area_by_net.values())
     routed.info["electrical_metal_realization"] = {
         "net_count": len(rects_by_net),
         "pre_union_rect_count": sum(len(rects) for rects in rects_by_net.values()),
         "output_polygon_count": sum(polygon_count_by_net.values()),
+        "raw_metal_area_um2": raw_area,
+        "union_metal_area_um2": union_area,
+        "metal_area_overcount_um2": raw_area - union_area,
         "rect_count_by_net": {
             net_id: len(rects)
             for net_id, rects in sorted(rects_by_net.items())
         },
+        "raw_metal_area_by_net_um2": raw_area_by_net,
+        "union_metal_area_by_net_um2": union_area_by_net,
         "polygon_count_by_net": dict(sorted(polygon_count_by_net.items())),
     }
 

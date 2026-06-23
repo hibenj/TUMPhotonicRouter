@@ -45,6 +45,9 @@ def _result_stub() -> SimpleNamespace:
             "net_count": 12,
             "rect_count": 104,
             "raw_metal_area_um2": 574_514.772,
+            "union_metal_area_um2": 549_599.152,
+            "metal_area_overcount_um2": 24_915.619999999995,
+            "metal_area_overcount_ratio": 0.04336811029812824,
             "same_net_duplicate_rect_count": 0,
             "same_net_overlap_pair_count": 103,
             "same_net_overlap_pair_count_by_source": {
@@ -82,6 +85,9 @@ def _result_stub() -> SimpleNamespace:
                     "net_count": 12,
                     "pre_union_rect_count": 104,
                     "output_polygon_count": 12,
+                    "raw_metal_area_um2": 574_514.772,
+                    "union_metal_area_um2": 549_599.152,
+                    "metal_area_overcount_um2": 24_915.619999999995,
                     "rect_count_by_net": {"common_bus": 140},
                 }
             }
@@ -119,6 +125,9 @@ def test_electrical_benchmark_summary_is_compact_and_json_ready():
         "net_count": 12,
         "pre_union_rect_count": 104,
         "output_polygon_count": 12,
+        "raw_metal_area_um2": 574_514.772,
+        "union_metal_area_um2": 549_599.152,
+        "metal_area_overcount_um2": 24_915.619999999995,
     }
     json.dumps(summary, sort_keys=True)
 
@@ -147,6 +156,9 @@ def test_electrical_benchmark_uses_case_specific_guardrails():
     small_summary["metrics"]["bend_count"] = 3
     small_summary["metrics"]["pad_channel_height_um"] = 60.0
     small_summary["metrics"]["raw_metal_area_um2"] = 79_111.88
+    small_summary["metrics"]["union_metal_area_um2"] = 77_692.42
+    small_summary["metrics"]["metal_area_overcount_um2"] = 1_419.4600000000064
+    small_summary["metrics"]["metal_area_overcount_ratio"] = 0.017942437975181556
     small_summary["metrics"]["rect_count"] = 9
     small_summary["metrics"]["same_net_duplicate_rect_count"] = 0
     small_summary["metrics"]["same_net_overlap_pair_count"] = 7
@@ -170,6 +182,11 @@ def test_electrical_benchmark_uses_case_specific_guardrails():
     small_summary["metrics"]["same_net_redundant_overlap_pair_count_by_source"] = {}
     small_summary["realization_metrics"]["output_polygon_count"] = 2
     small_summary["realization_metrics"]["pre_union_rect_count"] = 9
+    small_summary["realization_metrics"]["raw_metal_area_um2"] = 79_111.88
+    small_summary["realization_metrics"]["union_metal_area_um2"] = 77_692.42
+    small_summary["realization_metrics"]["metal_area_overcount_um2"] = (
+        1_419.4600000000064
+    )
 
     assert module.guardrail_violations(
         small_summary,
@@ -191,6 +208,8 @@ def test_electrical_benchmark_guardrails_report_metric_regressions():
     summary["verification_success"] = False
     summary["failed_detailed_route_count"] = 1
     summary["metrics"]["centerline_length_um"] = 25_000.0
+    summary["metrics"]["metal_area_overcount_um2"] = 40_000.0
+    summary["metrics"]["metal_area_overcount_ratio"] = 0.2
     summary["metrics"]["same_net_overlap_pair_count"] = 3_000
     summary["metrics"]["same_net_redundant_overlap_pair_count"] = 1
     summary["metrics"]["cross_net_min_spacing_um"] = 5.0
@@ -204,6 +223,8 @@ def test_electrical_benchmark_guardrails_report_metric_regressions():
         "verification_success",
         "failed_detailed_route_count",
         "metrics.centerline_length_um",
+        "metrics.metal_area_overcount_um2",
+        "metrics.metal_area_overcount_ratio",
         "metrics.same_net_overlap_pair_count",
         "metrics.same_net_redundant_overlap_pair_count",
         "metrics.cross_net_min_spacing_um",
@@ -419,13 +440,20 @@ def test_electrical_benchmark_writes_artifact_bundle(tmp_path):
             "bend_count": 65,
             "pad_channel_height_um": 180.0,
             "raw_metal_area_um2": 574_514.772,
+            "union_metal_area_um2": 549_599.152,
+            "metal_area_overcount_um2": 24_915.619999999995,
+            "metal_area_overcount_ratio": 0.04336811029812824,
             "rect_count": 104,
             "same_net_overlap_pair_count": 103,
+            "same_net_redundant_overlap_pair_count": 0,
             "cross_net_min_spacing_um": 11.0,
         },
         "realization_metrics": {
             "output_polygon_count": 12,
             "pre_union_rect_count": 104,
+            "raw_metal_area_um2": 574_514.772,
+            "union_metal_area_um2": 549_599.152,
+            "metal_area_overcount_um2": 24_915.619999999995,
         },
     }
 

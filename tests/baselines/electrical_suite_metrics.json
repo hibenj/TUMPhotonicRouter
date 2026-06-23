@@ -10,6 +10,8 @@
       "bend_count": 3,
       "centerline_length_um": 1090.0,
       "cross_net_min_spacing_um": 142.973,
+      "metal_area_overcount_ratio": 0.017942437975181556,
+      "metal_area_overcount_um2": 1419.4600000000064,
       "net_count": 2,
       "pad_channel_height_um": 60.000000000000014,
       "raw_metal_area_um2": 79111.88,
@@ -34,14 +36,18 @@
         "route_tail/terminal_adapter": 1
       },
       "same_net_redundant_overlap_pair_count": 0,
-      "same_net_redundant_overlap_pair_count_by_source": {}
+      "same_net_redundant_overlap_pair_count_by_source": {},
+      "union_metal_area_um2": 77692.42
     },
     "pad_assignment_count": 2,
     "pad_side": "top",
     "realization_metrics": {
+      "metal_area_overcount_um2": 1419.4600000000064,
       "net_count": 2,
       "output_polygon_count": 2,
-      "pre_union_rect_count": 9
+      "pre_union_rect_count": 9,
+      "raw_metal_area_um2": 79111.88,
+      "union_metal_area_um2": 77692.42
     },
     "terminal_group_count": 1,
     "verification_error_count": 0,
@@ -59,6 +65,8 @@
       "bend_count": 128,
       "centerline_length_um": 46640.0,
       "cross_net_min_spacing_um": 20.0,
+      "metal_area_overcount_ratio": 0.04517062419721701,
+      "metal_area_overcount_um2": 45939.42000000004,
       "net_count": 21,
       "pad_channel_height_um": 179.99999999999994,
       "raw_metal_area_um2": 1017019.818,
@@ -86,14 +94,18 @@
         "terminal_adapter/terminal_adapter": 30
       },
       "same_net_redundant_overlap_pair_count": 0,
-      "same_net_redundant_overlap_pair_count_by_source": {}
+      "same_net_redundant_overlap_pair_count_by_source": {},
+      "union_metal_area_um2": 971080.3979999999
     },
     "pad_assignment_count": 21,
     "pad_side": "top",
     "realization_metrics": {
+      "metal_area_overcount_um2": 45939.42000000004,
       "net_count": 21,
       "output_polygon_count": 21,
-      "pre_union_rect_count": 189
+      "pre_union_rect_count": 189,
+      "raw_metal_area_um2": 1017019.818,
+      "union_metal_area_um2": 971080.3979999999
     },
     "terminal_group_count": 20,
     "verification_error_count": 0,
@@ -111,6 +123,8 @@
       "bend_count": 65,
       "centerline_length_um": 19390.0,
       "cross_net_min_spacing_um": 11.019763064603511,
+      "metal_area_overcount_ratio": 0.04336811029812824,
+      "metal_area_overcount_um2": 24915.619999999995,
       "net_count": 12,
       "pad_channel_height_um": 179.99999999999994,
       "raw_metal_area_um2": 574514.772,
@@ -137,14 +151,18 @@
         "terminal_adapter/terminal_adapter": 16
       },
       "same_net_redundant_overlap_pair_count": 0,
-      "same_net_redundant_overlap_pair_count_by_source": {}
+      "same_net_redundant_overlap_pair_count_by_source": {},
+      "union_metal_area_um2": 549599.152
     },
     "pad_assignment_count": 12,
     "pad_side": "top",
     "realization_metrics": {
+      "metal_area_overcount_um2": 24915.619999999995,
       "net_count": 12,
       "output_polygon_count": 12,
-      "pre_union_rect_count": 104
+      "pre_union_rect_count": 104,
+      "raw_metal_area_um2": 574514.772,
+      "union_metal_area_um2": 549599.152
     },
     "terminal_group_count": 11,
     "verification_error_count": 0,

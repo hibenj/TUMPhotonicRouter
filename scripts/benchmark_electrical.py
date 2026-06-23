@@ -35,6 +35,9 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "centerline_length_um_max": 21_000.0,
     "bend_count_max": 75,
     "raw_metal_area_um2_max": 650_000.0,
+    "union_metal_area_um2_max": 570_000.0,
+    "metal_area_overcount_um2_max": 30_000.0,
+    "metal_area_overcount_ratio_max": 0.06,
     "rect_count_max": 130,
     "same_net_duplicate_rect_count_max": 0,
     "same_net_overlap_pair_count_max": 150,
@@ -55,6 +58,9 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "centerline_length_um_max": 1_500.0,
         "bend_count_max": 10,
         "raw_metal_area_um2_max": 85_000.0,
+        "union_metal_area_um2_max": 80_000.0,
+        "metal_area_overcount_um2_max": 2_000.0,
+        "metal_area_overcount_ratio_max": 0.03,
         "rect_count_max": 20,
         "same_net_duplicate_rect_count_max": 0,
         "same_net_overlap_pair_count_max": 20,
@@ -73,6 +79,9 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "centerline_length_um_max": 50_000.0,
         "bend_count_max": 140,
         "raw_metal_area_um2_max": 1_100_000.0,
+        "union_metal_area_um2_max": 1_000_000.0,
+        "metal_area_overcount_um2_max": 55_000.0,
+        "metal_area_overcount_ratio_max": 0.06,
         "rect_count_max": 230,
         "same_net_duplicate_rect_count_max": 0,
         "same_net_overlap_pair_count_max": 250,
@@ -198,6 +207,9 @@ def guardrail_violations(
     _check_metric_max(violations, summary, "centerline_length_um", guardrails)
     _check_metric_max(violations, summary, "bend_count", guardrails)
     _check_metric_max(violations, summary, "raw_metal_area_um2", guardrails)
+    _check_metric_max(violations, summary, "union_metal_area_um2", guardrails)
+    _check_metric_max(violations, summary, "metal_area_overcount_um2", guardrails)
+    _check_metric_max(violations, summary, "metal_area_overcount_ratio", guardrails)
     _check_metric_max(violations, summary, "rect_count", guardrails)
     _check_metric_max(violations, summary, "same_net_duplicate_rect_count", guardrails)
     _check_metric_max(violations, summary, "same_net_overlap_pair_count", guardrails)
@@ -515,6 +527,9 @@ def _selected_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "net_count",
         "rect_count",
         "raw_metal_area_um2",
+        "union_metal_area_um2",
+        "metal_area_overcount_um2",
+        "metal_area_overcount_ratio",
         "same_net_duplicate_rect_count",
         "same_net_overlap_pair_count",
         "same_net_overlap_pair_count_by_source",
@@ -536,6 +551,9 @@ def _selected_realization_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "net_count",
         "pre_union_rect_count",
         "output_polygon_count",
+        "raw_metal_area_um2",
+        "union_metal_area_um2",
+        "metal_area_overcount_um2",
     )
     return {key: metrics.get(key) for key in keys if key in metrics}
 
@@ -649,6 +667,8 @@ def _markdown_report(summary: Mapping[str, Any]) -> str:
         ("bend_count", _mapping_get(metrics, "bend_count")),
         ("pad_channel_height_um", _mapping_get(metrics, "pad_channel_height_um")),
         ("raw_metal_area_um2", _mapping_get(metrics, "raw_metal_area_um2")),
+        ("union_metal_area_um2", _mapping_get(metrics, "union_metal_area_um2")),
+        ("metal_area_overcount_um2", _mapping_get(metrics, "metal_area_overcount_um2")),
         ("rect_count", _mapping_get(metrics, "rect_count")),
         ("same_net_overlap_pair_count", _mapping_get(metrics, "same_net_overlap_pair_count")),
         (

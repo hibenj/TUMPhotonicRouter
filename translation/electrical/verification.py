@@ -9,7 +9,7 @@ from typing import Any
 
 from .pad_slots import pad_access_bbox
 from .pitch_grid import bbox_to_grid_cells
-from .rect_geometry import clean_rects, wire_rects_for_points
+from .rect_geometry import clean_rects, union_rect_area, wire_rects_for_points
 from .terminal_contacts import terminal_access_path, terminal_contact_bboxes
 from .types import (
     BBox,
@@ -625,6 +625,17 @@ def _quality_metrics(
     same_net_redundant_overlap_pairs = sum(
         same_net_redundant_overlap_pairs_by_source.values()
     )
+    raw_area_by_net = {
+        net.net_id: sum(_rect_area(rect) for rect in net.rects)
+        for net in net_geometries
+    }
+    union_area_by_net = {
+        net.net_id: union_rect_area(net.rects)
+        for net in net_geometries
+    }
+    raw_area = sum(raw_area_by_net.values())
+    union_area = sum(union_area_by_net.values())
+    area_overcount = raw_area - union_area
     min_spacing = _min_cross_net_spacing(net_geometries)
     return {
         "net_count": len(net_geometries),
@@ -633,7 +644,16 @@ def _quality_metrics(
             net_id: len(rects)
             for net_id, rects in sorted(rects_by_net.items())
         },
-        "raw_metal_area_um2": sum(_rect_area(rect) for rect in all_rects),
+        "raw_metal_area_um2": raw_area,
+        "raw_metal_area_by_net_um2": dict(sorted(raw_area_by_net.items())),
+        "union_metal_area_um2": union_area,
+        "union_metal_area_by_net_um2": dict(sorted(union_area_by_net.items())),
+        "metal_area_overcount_um2": area_overcount,
+        "metal_area_overcount_ratio": (
+            area_overcount / raw_area
+            if raw_area > 0.0
+            else 0.0
+        ),
         "same_net_duplicate_rect_count": same_net_duplicate_rects,
         "same_net_overlap_pair_count": same_net_overlap_pairs,
         "same_net_overlap_pair_count_by_source": dict(

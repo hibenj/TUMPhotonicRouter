@@ -42,6 +42,36 @@ def clean_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
     return _drop_contained_rects(tuple(normalized))
 
 
+def rect_area(rect: BBox) -> float:
+    return max(0.0, rect[2] - rect[0]) * max(0.0, rect[3] - rect[1])
+
+
+def union_rect_area(rects: Iterable[BBox]) -> float:
+    """Return the exact area of the union of axis-aligned rectangles."""
+
+    normalized = tuple(
+        normalized_rect
+        for rect in rects
+        if (normalized_rect := _normalize_rect(rect)) is not None
+    )
+    if not normalized:
+        return 0.0
+    x_edges = sorted({rect[0] for rect in normalized} | {rect[2] for rect in normalized})
+    area = 0.0
+    for left, right in zip(x_edges, x_edges[1:]):
+        if right <= left:
+            continue
+        intervals = [
+            (rect[1], rect[3])
+            for rect in normalized
+            if rect[0] < right and rect[2] > left
+        ]
+        if not intervals:
+            continue
+        area += (right - left) * _merged_interval_length(intervals)
+    return area
+
+
 def _drop_contained_rects(rects: tuple[BBox, ...]) -> tuple[BBox, ...]:
     kept: list[BBox] = []
     for index, rect in enumerate(rects):
@@ -52,6 +82,22 @@ def _drop_contained_rects(rects: tuple[BBox, ...]) -> tuple[BBox, ...]:
             continue
         kept.append(rect)
     return tuple(kept)
+
+
+def _merged_interval_length(intervals: Iterable[tuple[float, float]]) -> float:
+    sorted_intervals = sorted(intervals)
+    if not sorted_intervals:
+        return 0.0
+    total = 0.0
+    current_start, current_end = sorted_intervals[0]
+    for start, end in sorted_intervals[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+            continue
+        total += current_end - current_start
+        current_start, current_end = start, end
+    total += current_end - current_start
+    return total
 
 
 def _segment_rects(
