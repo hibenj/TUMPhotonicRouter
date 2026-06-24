@@ -6,6 +6,7 @@ from typing import Any, Protocol, cast
 from gdsfactory.component import Component
 from photonic_router.static_obstacle_builder import _load_rust_backend
 from photonic_router.path_length_graph import (
+    DelayInsertionCandidate,
     MissingLengthRequirement,
     PortRef,
     RoutedEdgeKey,
@@ -22,9 +23,13 @@ from translation.route_rust import (
 )
 from translation.route_rust_analysis import (
     analysis_to_info_dict,
+    build_requirement_delay_candidates,
     compute_group_lifted_requirements,
+    compute_output_matching_requirements,
     format_path_length_acceptance_failure,
     matching_group_diagnostics_to_info,
+    merge_missing_length_requirements,
+    output_matching_diagnostics_to_info,
     path_length_acceptance_summary,
 )
 import translation.route_rust as route_rust
@@ -880,6 +885,54 @@ def test_path_length_acceptance_passes_exactly_realized_group():
     assert summary["max_physical_residual_um"] == pytest.approx(0.0)
 
 
+def test_output_matching_diagnostics_fail_unrealized_output_requirement():
+    edge_info = {
+        "net_name": "out_short",
+        "source": {"instance": "mmi0", "port": "o3"},
+        "target": {"instance": "gc_out0", "port": "o1"},
+    }
+    output_info = {
+        "enabled": True,
+        "target_output_arrival_um": 100.0,
+        "output_count": 2,
+        "outputs": [
+            {
+                "node_name": "gc_out0",
+                "arrival_um": 80.0,
+                "missing_length_um": 20.0,
+                "incoming_count": 1,
+                "status": "requires_delay",
+                "edge": edge_info,
+            },
+            {
+                "node_name": "gc_out1",
+                "arrival_um": 100.0,
+                "missing_length_um": 0.0,
+                "incoming_count": 1,
+                "status": "not_required",
+            },
+        ],
+    }
+    report = {
+        "results": [
+            {
+                "edge": edge_info,
+                "status": "no_candidate",
+                "inserted_extra_length_um": 0.0,
+                "unmatched_length_um": 20.0,
+            }
+        ]
+    }
+
+    diagnostics = output_matching_diagnostics_to_info(output_info, report)
+    summary = path_length_acceptance_summary(diagnostics)
+
+    assert diagnostics[0]["node_name"] == "output_arrivals"
+    assert diagnostics[0]["max_physical_residual_um"] == pytest.approx(20.0)
+    assert summary["passed"] is False
+    assert summary["failed_edge_count"] == 1
+
+
 def _build_two_stage_schematic_for_convergence() -> _SchematicLike:
     class _Bundle:
         def __init__(self, links: dict[str, str]):
@@ -1019,6 +1072,402 @@ def test_missing_length_analysis_without_internal_delay_reduces_to_edge_length_s
     )
     assert result.node_arrival_input_um["gate_z"] == 20.0
     assert result.edge_missing_lengths_um[edge_direct] == 10.0
+
+
+def _build_schematic_from_links(
+    instances: list[str],
+    links_by_net: dict[str, dict[str, str]],
+) -> _SchematicLike:
+    class _Bundle:
+        def __init__(self, links: dict[str, str]):
+            self.links = links
+
+    class _Netlist:
+        def __init__(self):
+            self.instances = {name: object() for name in instances}
+            self.routes = {
+                net_name: _Bundle(links)
+                for net_name, links in links_by_net.items()
+            }
+
+    class _Schematic:
+        def __init__(self):
+            self.netlist = _Netlist()
+            self.placements = {}
+
+    return _Schematic()
+
+
+def test_output_matching_requirements_align_one_input_outputs_after_existing_delays():
+    schematic = _build_schematic_from_links(
+        ["src0", "src1", "out0", "out1"],
+        {
+            "n0": {"src0,o1": "out0,o1"},
+            "n1": {"src1,o1": "out1,o1"},
+        },
+    )
+    edge_short = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="out0", port="o1"),
+    )
+    edge_long = RoutedEdgeKey(
+        net_name="n1",
+        source=PortRef(instance="src1", port="o1"),
+        target=PortRef(instance="out1", port="o1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=edge_short.net_name,
+            source=edge_short.source,
+            target=edge_short.target,
+            route_obj=None,
+            total_length_um=80.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_long.net_name,
+            source=edge_long.source,
+            target=edge_long.target,
+            route_obj=None,
+            total_length_um=100.0,
+        ),
+    ]
+
+    analysis, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types={"src0": "input", "src1": "input", "out0": "output", "out1": "output"},
+        internal_delays_um={},
+    )
+    requirements, info = compute_output_matching_requirements(
+        analysis,
+        existing_requirements=[
+            MissingLengthRequirement(edge_key=edge_short, missing_length_um=5.0)
+        ],
+    )
+
+    assert requirements == [
+        MissingLengthRequirement(edge_key=edge_short, missing_length_um=15.0)
+    ]
+    assert info["target_output_arrival_um"] == pytest.approx(100.0)
+    assert info["output_count"] == 2
+
+
+def test_merge_missing_length_requirements_adds_independent_requirements_per_edge():
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src", port="o1"),
+        target=PortRef(instance="dst", port="o1"),
+    )
+
+    merged = merge_missing_length_requirements(
+        [MissingLengthRequirement(edge_key=edge, missing_length_um=20.0)],
+        [MissingLengthRequirement(edge_key=edge, missing_length_um=5.0)],
+    )
+
+    assert merged == [
+        MissingLengthRequirement(edge_key=edge, missing_length_um=25.0)
+    ]
+
+
+def test_delay_candidates_include_transparent_heater_upstream_edge():
+    schematic = _build_schematic_from_links(
+        ["src0", "src1", "heater0", "mmi0"],
+        {
+            "src_to_heater": {"src0,o1": "heater0,o1"},
+            "heater_to_mmi": {"heater0,o2": "mmi0,i0"},
+            "src_to_mmi": {"src1,o1": "mmi0,i1"},
+        },
+    )
+    edge_upstream = RoutedEdgeKey(
+        net_name="src_to_heater",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="heater0", port="o1"),
+    )
+    edge_via_heater = RoutedEdgeKey(
+        net_name="heater_to_mmi",
+        source=PortRef(instance="heater0", port="o2"),
+        target=PortRef(instance="mmi0", port="i0"),
+    )
+    edge_direct = RoutedEdgeKey(
+        net_name="src_to_mmi",
+        source=PortRef(instance="src1", port="o1"),
+        target=PortRef(instance="mmi0", port="i1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=edge_upstream.net_name,
+            source=edge_upstream.source,
+            target=edge_upstream.target,
+            route_obj=None,
+            total_length_um=50.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_via_heater.net_name,
+            source=edge_via_heater.source,
+            target=edge_via_heater.target,
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_direct.net_name,
+            source=edge_direct.source,
+            target=edge_direct.target,
+            route_obj=None,
+            total_length_um=100.0,
+        ),
+    ]
+
+    analysis, requirements = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types={
+            "src0": "input",
+            "src1": "input",
+            "heater0": "gate",
+            "mmi0": "gate",
+        },
+        internal_delays_um={},
+    )
+    candidates = build_requirement_delay_candidates(analysis, requirements)
+
+    assert requirements == [
+        MissingLengthRequirement(edge_key=edge_via_heater, missing_length_um=40.0)
+    ]
+    assert [candidate.reason for candidate in candidates[edge_via_heater]] == [
+        "direct_edge",
+        "transparent_serial_upstream",
+    ]
+    assert candidates[edge_via_heater][1].edge_keys == (edge_upstream,)
+
+
+def test_delay_candidates_include_common_mode_bundle_only_for_shared_deficit():
+    schematic = _build_schematic_from_links(
+        ["src0", "src1", "mmi0", "out0", "out1"],
+        {
+            "src0_to_mmi": {"src0,o1": "mmi0,i0"},
+            "src1_to_mmi": {"src1,o1": "mmi0,i1"},
+            "mmi_to_out0": {"mmi0,o0": "out0,o1"},
+            "mmi_to_out1": {"mmi0,o1": "out1,o1"},
+        },
+    )
+    edge_in0 = RoutedEdgeKey(
+        net_name="src0_to_mmi",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="mmi0", port="i0"),
+    )
+    edge_in1 = RoutedEdgeKey(
+        net_name="src1_to_mmi",
+        source=PortRef(instance="src1", port="o1"),
+        target=PortRef(instance="mmi0", port="i1"),
+    )
+    edge_out0 = RoutedEdgeKey(
+        net_name="mmi_to_out0",
+        source=PortRef(instance="mmi0", port="o0"),
+        target=PortRef(instance="out0", port="o1"),
+    )
+    edge_out1 = RoutedEdgeKey(
+        net_name="mmi_to_out1",
+        source=PortRef(instance="mmi0", port="o1"),
+        target=PortRef(instance="out1", port="o1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=edge_in0.net_name,
+            source=edge_in0.source,
+            target=edge_in0.target,
+            route_obj=None,
+            total_length_um=50.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_in1.net_name,
+            source=edge_in1.source,
+            target=edge_in1.target,
+            route_obj=None,
+            total_length_um=50.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_out0.net_name,
+            source=edge_out0.source,
+            target=edge_out0.target,
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_out1.net_name,
+            source=edge_out1.source,
+            target=edge_out1.target,
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+    ]
+
+    analysis, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types={
+            "src0": "input",
+            "src1": "input",
+            "mmi0": "gate",
+            "out0": "output",
+            "out1": "output",
+        },
+        internal_delays_um={},
+    )
+    req0 = MissingLengthRequirement(edge_key=edge_out0, missing_length_um=30.0)
+    req1 = MissingLengthRequirement(edge_key=edge_out1, missing_length_um=50.0)
+    candidates = build_requirement_delay_candidates(analysis, [req0, req1])
+
+    assert [candidate.reason for candidate in candidates[edge_out0]] == [
+        "common_mode_upstream_bundle",
+        "direct_edge",
+    ]
+    assert candidates[edge_out0][0].edge_keys == (edge_in0, edge_in1)
+    assert candidates[edge_out0][0].affected_requirement_edge_keys == (
+        edge_out0,
+        edge_out1,
+    )
+    assert [candidate.reason for candidate in candidates[edge_out1]] == [
+        "direct_edge"
+    ]
+
+
+def test_delay_candidates_recursively_push_common_delay_through_heater_and_mmi():
+    schematic = _build_schematic_from_links(
+        ["src0", "src1", "mmi0", "heater0", "mmi1", "out0", "out1"],
+        {
+            "src0_to_mmi0": {"src0,o1": "mmi0,i0"},
+            "src1_to_mmi0": {"src1,o1": "mmi0,i1"},
+            "mmi0_upper_to_heater": {"mmi0,o0": "heater0,o1"},
+            "heater_to_mmi1": {"heater0,o2": "mmi1,i0"},
+            "mmi0_lower_to_mmi1": {"mmi0,o1": "mmi1,i1"},
+            "mmi1_to_out0": {"mmi1,o0": "out0,o1"},
+            "mmi1_to_out1": {"mmi1,o1": "out1,o1"},
+        },
+    )
+    edge_in0 = RoutedEdgeKey(
+        net_name="src0_to_mmi0",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="mmi0", port="i0"),
+    )
+    edge_in1 = RoutedEdgeKey(
+        net_name="src1_to_mmi0",
+        source=PortRef(instance="src1", port="o1"),
+        target=PortRef(instance="mmi0", port="i1"),
+    )
+    edge_mmi0_upper = RoutedEdgeKey(
+        net_name="mmi0_upper_to_heater",
+        source=PortRef(instance="mmi0", port="o0"),
+        target=PortRef(instance="heater0", port="o1"),
+    )
+    edge_heater = RoutedEdgeKey(
+        net_name="heater_to_mmi1",
+        source=PortRef(instance="heater0", port="o2"),
+        target=PortRef(instance="mmi1", port="i0"),
+    )
+    edge_mmi0_lower = RoutedEdgeKey(
+        net_name="mmi0_lower_to_mmi1",
+        source=PortRef(instance="mmi0", port="o1"),
+        target=PortRef(instance="mmi1", port="i1"),
+    )
+    edge_out0 = RoutedEdgeKey(
+        net_name="mmi1_to_out0",
+        source=PortRef(instance="mmi1", port="o0"),
+        target=PortRef(instance="out0", port="o1"),
+    )
+    edge_out1 = RoutedEdgeKey(
+        net_name="mmi1_to_out1",
+        source=PortRef(instance="mmi1", port="o1"),
+        target=PortRef(instance="out1", port="o1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=edge_in0.net_name,
+            source=edge_in0.source,
+            target=edge_in0.target,
+            route_obj=None,
+            total_length_um=20.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_in1.net_name,
+            source=edge_in1.source,
+            target=edge_in1.target,
+            route_obj=None,
+            total_length_um=20.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_mmi0_upper.net_name,
+            source=edge_mmi0_upper.source,
+            target=edge_mmi0_upper.target,
+            route_obj=None,
+            total_length_um=20.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_heater.net_name,
+            source=edge_heater.source,
+            target=edge_heater.target,
+            route_obj=None,
+            total_length_um=20.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_mmi0_lower.net_name,
+            source=edge_mmi0_lower.source,
+            target=edge_mmi0_lower.target,
+            route_obj=None,
+            total_length_um=40.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_out0.net_name,
+            source=edge_out0.source,
+            target=edge_out0.target,
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_out1.net_name,
+            source=edge_out1.source,
+            target=edge_out1.target,
+            route_obj=None,
+            total_length_um=10.0,
+        ),
+    ]
+    analysis, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types={
+            "src0": "input",
+            "src1": "input",
+            "mmi0": "gate",
+            "heater0": "gate",
+            "mmi1": "gate",
+            "out0": "output",
+            "out1": "output",
+        },
+        internal_delays_um={},
+    )
+    req0 = MissingLengthRequirement(edge_key=edge_out0, missing_length_um=50.0)
+    req1 = MissingLengthRequirement(edge_key=edge_out1, missing_length_um=50.0)
+
+    candidates = build_requirement_delay_candidates(analysis, [req0, req1])
+    candidate_edges_by_reason = {
+        candidate.reason: candidate.edge_keys
+        for candidate in candidates[edge_out0]
+    }
+
+    assert candidate_edges_by_reason["common_mode_upstream_bundle"] == (
+        edge_heater,
+        edge_mmi0_lower,
+    )
+    assert candidate_edges_by_reason["recursive_transparent_serial_upstream"] == (
+        edge_mmi0_upper,
+        edge_mmi0_lower,
+    )
+    assert candidate_edges_by_reason["recursive_common_mode_upstream_bundle"] == (
+        edge_in0,
+        edge_in1,
+    )
+
+
 def test_main_flow_flag_enables_path_length_matching(monkeypatch):
     class _Bundle:
         def __init__(self, links):
@@ -1059,6 +1508,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
             target=PortRef(instance="gate0", port="i1"),
         ): 100.0,
     }
+    captured: dict[str, object] = {}
 
     monkeypatch.setattr(routing_flow, "load_benchmark", lambda _: schematic)
     monkeypatch.setattr(
@@ -1070,10 +1520,9 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
         },
     )
     monkeypatch.setattr(routing_flow, "layout_from_schematic", lambda _: _Layout())
-    monkeypatch.setattr(
-        routing_flow,
-        "route_match_and_realize",
-        lambda *args, **kwargs: RouteRustPipelineResult(
+    def _fake_route_match_and_realize(*args: object, **kwargs: object) -> RouteRustPipelineResult:
+        captured.update(kwargs)
+        return RouteRustPipelineResult(
             routed_layout=Component(name="dummy_routed"),
             debug_artifacts=RustRouteDebugArtifacts(
                 obstacle_svg=None,
@@ -1099,14 +1548,21 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
             ),
             path_length_analysis_info={"requirements": [{}]},
             meander_requirements_info=[{"edge": {"net_name": "n0"}, "missing_length_um": 20.0}],
-        ),
+        )
+
+    monkeypatch.setattr(
+        routing_flow,
+        "route_match_and_realize",
+        _fake_route_match_and_realize,
     )
 
     layout = routing_flow.run_routing_flow(
         "DUMMY",
         enable_path_length_matching=True,
+        path_length_match_outputs=True,
     )
 
+    assert captured["path_length_match_outputs"] is True
     assert "path_length_analysis" in layout.info
     assert "meander_requirements" in layout.info
     assert len(layout.info["meander_requirements"]) == 1
@@ -1166,6 +1622,245 @@ def test_main_flow_matching_uses_record_lengths(monkeypatch):
     layout = routing_flow.run_routing_flow("DUMMY", enable_path_length_matching=True)
     assert len(layout.info["meander_requirements"]) == 1
     assert layout.info["meander_requirements"][0]["edge"]["net_name"] == "n0"
+
+
+def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
+    class _RouteObj:
+        def __init__(self, name: str):
+            self.name = name
+            self.cells = [(1, 1), (2, 2)]
+
+    class _FakeRouter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_static_cells(self, _cells: object) -> None:
+            return None
+
+        def add_static_cells(self, _cells: object) -> None:
+            return None
+
+        def plan_auto_analytic_meander_for_route_depth_sweep(
+            self,
+            route_obj: _RouteObj,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            requested = float(cast(float, kwargs["requested_extra_length_um"]))
+            offset = 10 if route_obj.name == "a" else 20
+            return {
+                "inserted_extra_length_um": requested,
+                "effective_bend_radius_um": 4.0,
+                "primitive_bend_radius_um": 4.0,
+                "selected_box": (0.0, 10.0, 0.0, 10.0),
+                "selected_grid_rect": (offset, offset, offset, offset),
+                "bumps": 1,
+                "side": "left",
+                "box_depth_um": 10.0,
+                "selected_run_start_index": 0,
+                "selected_run_end_index": 1,
+                "centerline": [(0.0, 0.0), (1.0, 0.0)],
+                "planning_mode": "fill_box_multi_bump",
+            }
+
+    class _FakeBackend:
+        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
+        PrimitiveLibraryConfig = staticmethod(
+            lambda *args, **kwargs: ("primitive", args, kwargs)
+        )
+        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
+        PyPhotonicRouter = _FakeRouter
+
+    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: _FakeBackend)
+
+    requirement_edge = RoutedEdgeKey(
+        net_name="mmi_to_out",
+        source=PortRef(instance="mmi0", port="o0"),
+        target=PortRef(instance="out0", port="o1"),
+    )
+    edge_a = RoutedEdgeKey(
+        net_name="src_a_to_mmi",
+        source=PortRef(instance="src_a", port="o1"),
+        target=PortRef(instance="mmi0", port="i0"),
+    )
+    edge_b = RoutedEdgeKey(
+        net_name="src_b_to_mmi",
+        source=PortRef(instance="src_b", port="o1"),
+        target=PortRef(instance="mmi0", port="i1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=edge_a.net_name,
+            source=edge_a.source,
+            target=edge_a.target,
+            route_obj=_RouteObj("a"),
+            total_length_um=100.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_b.net_name,
+            source=edge_b.source,
+            target=edge_b.target,
+            route_obj=_RouteObj("b"),
+            total_length_um=100.0,
+        ),
+    ]
+    req = MissingLengthRequirement(
+        edge_key=requirement_edge,
+        missing_length_um=32.0,
+    )
+
+    updated, report = analyze_meander_insertion_for_requirements(
+        records,
+        [req],
+        config=MeanderInsertionConfig(
+            enabled=True,
+            min_candidate_straight_length_um=2.0,
+        ),
+        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=True,
+        bend_radius_cells=4,
+        requirement_delay_candidates={
+            requirement_edge: [
+                DelayInsertionCandidate(
+                    requirement_edge_key=requirement_edge,
+                    edge_keys=(edge_a, edge_b),
+                    extra_length_um=32.0,
+                    reason="common_mode_upstream_bundle",
+                )
+            ]
+        },
+    )
+
+    updated_by_edge = {
+        RoutedEdgeKey(
+            net_name=record.net_name,
+            source=record.source,
+            target=record.target,
+        ): record
+        for record in updated
+    }
+    results = cast(list[dict[str, object]], report["results"])
+    assert results[0]["status"] == "planned"
+    assert results[0]["selected_candidate_reason"] == "common_mode_upstream_bundle"
+    assert results[0]["selected_candidate_edge_count"] == 2
+    assert results[0]["inserted_extra_length_um"] == pytest.approx(32.0)
+    assert results[0]["physical_inserted_extra_length_um"] == pytest.approx(64.0)
+    assert report["planner_calls"] == 2
+    assert updated_by_edge[edge_a].meander_auto_plan is not None
+    assert updated_by_edge[edge_b].meander_auto_plan is not None
+
+
+def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
+    class _RouteObj:
+        def __init__(self, name: str):
+            self.name = name
+            self.cells = [(1, 1), (2, 2)]
+
+    class _FakeRouter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_static_cells(self, _cells: object) -> None:
+            return None
+
+        def add_static_cells(self, _cells: object) -> None:
+            return None
+
+        def plan_auto_analytic_meander_for_route_depth_sweep(
+            self,
+            route_obj: _RouteObj,
+            **kwargs: object,
+        ) -> dict[str, object] | None:
+            if route_obj.name == "b":
+                return None
+            requested = float(cast(float, kwargs["requested_extra_length_um"]))
+            return {
+                "inserted_extra_length_um": requested,
+                "effective_bend_radius_um": 4.0,
+                "primitive_bend_radius_um": 4.0,
+                "selected_box": (0.0, 10.0, 0.0, 10.0),
+                "selected_grid_rect": (10, 10, 10, 10),
+                "bumps": 1,
+                "side": "left",
+                "box_depth_um": 10.0,
+                "selected_run_start_index": 0,
+                "selected_run_end_index": 1,
+                "centerline": [(0.0, 0.0), (1.0, 0.0)],
+                "planning_mode": "fill_box_multi_bump",
+            }
+
+    class _FakeBackend:
+        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
+        PrimitiveLibraryConfig = staticmethod(
+            lambda *args, **kwargs: ("primitive", args, kwargs)
+        )
+        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
+        PyPhotonicRouter = _FakeRouter
+
+    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: _FakeBackend)
+
+    requirement_edge = RoutedEdgeKey(
+        net_name="mmi_to_out",
+        source=PortRef(instance="mmi0", port="o0"),
+        target=PortRef(instance="out0", port="o1"),
+    )
+    edge_a = RoutedEdgeKey(
+        net_name="src_a_to_mmi",
+        source=PortRef(instance="src_a", port="o1"),
+        target=PortRef(instance="mmi0", port="i0"),
+    )
+    edge_b = RoutedEdgeKey(
+        net_name="src_b_to_mmi",
+        source=PortRef(instance="src_b", port="o1"),
+        target=PortRef(instance="mmi0", port="i1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=edge_a.net_name,
+            source=edge_a.source,
+            target=edge_a.target,
+            route_obj=_RouteObj("a"),
+            total_length_um=100.0,
+        ),
+        RoutedNetRecord(
+            net_name=edge_b.net_name,
+            source=edge_b.source,
+            target=edge_b.target,
+            route_obj=_RouteObj("b"),
+            total_length_um=100.0,
+        ),
+    ]
+    req = MissingLengthRequirement(
+        edge_key=requirement_edge,
+        missing_length_um=32.0,
+    )
+
+    updated, report = analyze_meander_insertion_for_requirements(
+        records,
+        [req],
+        config=MeanderInsertionConfig(
+            enabled=True,
+            min_candidate_straight_length_um=2.0,
+        ),
+        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=True,
+        bend_radius_cells=4,
+        requirement_delay_candidates={
+            requirement_edge: [
+                DelayInsertionCandidate(
+                    requirement_edge_key=requirement_edge,
+                    edge_keys=(edge_a, edge_b),
+                    extra_length_um=32.0,
+                    reason="common_mode_upstream_bundle",
+                )
+            ]
+        },
+    )
+
+    results = cast(list[dict[str, object]], report["results"])
+    assert results[0]["status"] == "no_candidate"
+    assert results[0]["inserted_extra_length_um"] == pytest.approx(0.0)
+    assert report["planner_calls"] == 2
+    assert all(record.meander_auto_plan is None for record in updated)
 
 
 def test_main_meander_report_uses_auto_multi_bump_path():

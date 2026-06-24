@@ -39,13 +39,14 @@ DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, 
 
 # Edit these values when running `routing_flow.py` directly from an IDE or file.
 # Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "heater_s"
+SCRIPT_BENCHMARK = "TOY"
 SCRIPT_DEBUG_SVGS: DebugSvgSelector = False  # Examples: True, "all", "5-10", "2,5-10"
 SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
 SCRIPT_SHOW_KLAYOUT = False
 SCRIPT_ALLOW_45_DEGREE_TURNS = False
 SCRIPT_ENABLE_PATH_LENGTH_MATCHING = True
+SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = True
 SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = 20.0
 SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
@@ -306,6 +307,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Enable path-length matching analysis and realization "
             f"(default: {str(SCRIPT_ENABLE_PATH_LENGTH_MATCHING).lower()})."
+        ),
+    )
+    parser.add_argument(
+        "--path-length-match-outputs",
+        type=_parse_bool_flag,
+        default=SCRIPT_PATH_LENGTH_MATCH_OUTPUTS,
+        metavar="BOOL",
+        help=(
+            "Also require all output nodes to have equal arrival delay when "
+            "path-length matching is enabled "
+            f"(default: {str(SCRIPT_PATH_LENGTH_MATCH_OUTPUTS).lower()})."
         ),
     )
     parser.add_argument(
@@ -580,6 +592,7 @@ def main(argv: list[str] | None = None) -> Component:
         heuristic_mode=args.heuristic_mode,
         heap_tie_breaker=args.heap_tie_breaker,
         enable_path_length_matching=args.path_length_matching,
+        path_length_match_outputs=args.path_length_match_outputs,
         path_length_meander_height_um=args.path_length_meander_height_um,
         max_iterations=args.max_iterations,
         routing_window_scale=args.routing_window_scale,
@@ -803,6 +816,7 @@ def run_routing_flow(
     debug_meanders: bool = False,
     show_klayout: bool = False,
     enable_path_length_matching: bool = False,
+    path_length_match_outputs: bool = False,
     path_length_meander_height_um: float = 20.0,
     allow_45_degree_turns: bool = True,
     enable_jps4: bool = False,
@@ -846,6 +860,8 @@ def run_routing_flow(
                populated in-place.
         enable_path_length_matching: If True, run post-route path-length
                       analysis and compute per-edge missing lengths.
+        path_length_match_outputs: If True, add output-arrival equalization
+                      requirements after local path-length matching.
         path_length_meander_height_um: Maximum meander height used when
                       inserting path-length matching meanders.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
@@ -1013,6 +1029,7 @@ def run_routing_flow(
             unrouted_layout,
             schematic,
             enable_path_length_matching=enable_path_length_matching,
+            path_length_match_outputs=path_length_match_outputs,
             node_types=metadata.get("node_types"),
             internal_delays_um=metadata.get("internal_delays_um"),
             debug_dir=debug_dir,

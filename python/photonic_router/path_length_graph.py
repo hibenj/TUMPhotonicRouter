@@ -66,6 +66,15 @@ class MissingLengthRequirement:
     missing_length_um: float
 
 
+@dataclass(frozen=True)
+class DelayInsertionCandidate:
+    requirement_edge_key: RoutedEdgeKey
+    edge_keys: tuple[RoutedEdgeKey, ...]
+    extra_length_um: float
+    reason: str = ""
+    affected_requirement_edge_keys: tuple[RoutedEdgeKey, ...] = ()
+
+
 @dataclass
 class NodeIncomingEdgeTiming:
     edge_key: RoutedEdgeKey

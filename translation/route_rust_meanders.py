@@ -10,6 +10,7 @@ from collections.abc import Iterable, Mapping
 from typing import cast
 
 from photonic_router.path_length_graph import (
+    DelayInsertionCandidate,
     MissingLengthRequirement,
     PortRef,
     RoutedEdgeKey,
@@ -43,6 +44,25 @@ MEANDER_DEPTH_CANDIDATES_UM = (
     2.0,
 )
 EXACT_MEANDER_EPS_UM = 1.0e-6
+GridCell = tuple[int, int]
+PlannedEdgeInsertion = tuple[
+    RoutedEdgeKey,
+    RoutedNetRecord,
+    dict[str, object],
+    bool,
+    int,
+    set[GridCell],
+]
+EdgePlanAttempt = tuple[
+    dict[str, object],
+    dict[str, object] | None,
+    RoutedNetRecord | None,
+    bool,
+    int,
+    set[GridCell],
+    float,
+    Exception | None,
+]
 
 
 def _record_edge_key(record: RoutedNetRecord) -> RoutedEdgeKey:
@@ -169,6 +189,11 @@ def analyze_meander_insertion_for_requirements(
         Iterable[RoutedEdgeKey],
     ]
     | None = None,
+    requirement_delay_candidates: Mapping[
+        RoutedEdgeKey,
+        Iterable[DelayInsertionCandidate],
+    ]
+    | None = None,
 ) -> tuple[list[RoutedNetRecord], dict[str, object]]:
     """Plan meander insertion using auto analytic multi-bump planning."""
     rust_backend = _load_rust_backend()
@@ -216,7 +241,7 @@ def analyze_meander_insertion_for_requirements(
             for y in range(min_y, max_y + 1)
         }
 
-    reserved_meander_cells: set[tuple[int, int]] = set()
+    reserved_meander_cells: set[GridCell] = set()
 
     by_edge = {_record_edge_key(r): r for r in routed_net_records}
     updated = dict(by_edge)
@@ -240,261 +265,55 @@ def analyze_meander_insertion_for_requirements(
         grid_size_um=float(grid_size_um_cfg),
         bend_radius_cells=int(bend_radius_cells),
     )
+    total_requested = sum(
+        float(req.missing_length_um)
+        for req in requirements
+        if float(req.missing_length_um) >= min_insertable_extra_um
+    )
 
-    for req in requirements:
-        requested = float(req.missing_length_um)
-        edge_key = req.edge_key
-        candidate_edge_keys = [edge_key]
+    def _candidates_for_requirement(
+        req: MissingLengthRequirement,
+    ) -> list[DelayInsertionCandidate]:
+        if requirement_delay_candidates is not None:
+            explicit_candidates = list(
+                requirement_delay_candidates.get(req.edge_key, ())
+            )
+            if explicit_candidates:
+                return explicit_candidates
+
+        edge_keys = [req.edge_key]
         if requirement_edge_alternatives is not None:
-            candidate_edge_keys.extend(requirement_edge_alternatives.get(edge_key, ()))
-        deduped_candidate_edge_keys: list[RoutedEdgeKey] = []
-        seen_candidate_edge_keys: set[RoutedEdgeKey] = set()
-        for candidate_edge_key in candidate_edge_keys:
-            if candidate_edge_key in seen_candidate_edge_keys:
-                continue
-            seen_candidate_edge_keys.add(candidate_edge_key)
-            deduped_candidate_edge_keys.append(candidate_edge_key)
-        entry = {
-            "edge": edge_key_to_dict(edge_key),
-            "requested_extra_length_um": requested,
-            "status": "no_candidate",
-            "reason": "no_matching_routed_record",
-            "planning_mode": "fill_box_multi_bump",
-            "inserted_extra_length_um": 0.0,
-            "unmatched_length_um": requested,
-            "effective_bend_radius_um": None,
-            "primitive_bend_radius_um": None,
-            "selected_box": None,
-            "selected_grid_rect": None,
-            "bumps": 0,
-            "side": None,
-            "using_legacy_meander_path": False,
-            "minimum_insertable_extra_length_um": min_insertable_extra_um,
-            "planning_elapsed_s": 0.0,
-        }
-        if requested < min_insertable_extra_um:
-            total_disregarded += requested
-            entry["status"] = "below_minimum_bump"
-            entry["reason"] = (
-                "requested extra length is below the four-90-degree-bend "
-                f"minimum ({min_insertable_extra_um:.6g} um)"
-            )
-            entry["unmatched_length_um"] = 0.0
-            results.append(entry)
-            continue
-        total_requested += requested
-        min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
-        min_seg_um = max(0.5, float(config.min_candidate_straight_length_um))
-        max_height_um = max(0.0, float(config.max_meander_height_um))
-        box_depths_um = [
-            depth
-            for depth in MEANDER_DEPTH_CANDIDATES_UM
-            if depth <= max_height_um + 1.0e-9
-        ]
-        if not box_depths_um:
-            box_depths_um = [max_height_um]
-        entry["box_depth_candidates_um"] = list(box_depths_um)
-        bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
-        endpoint_inset_um = (
-            max(2.0 * bend_radius_um, min_seg_um)
-            if config.auto_meander_endpoint_inset_um is None
-            else max(0.0, float(config.auto_meander_endpoint_inset_um))
-        )
-        best_rr: dict[str, object] | None = None
-        last_exc: Exception | None = None
-        used_reserved_overlay = True
-        selected_record: RoutedNetRecord | None = None
-        selected_edge_key: RoutedEdgeKey | None = None
-        attempted_edges: list[dict[str, object]] = []
-        planning_elapsed_for_entry_s = 0.0
-        max_bumps = 1
-        current_route_open_cells: set[tuple[int, int]] = set()
+            edge_keys.extend(requirement_edge_alternatives.get(req.edge_key, ()))
 
-        for candidate_edge_key in deduped_candidate_edge_keys:
-            record = by_edge.get(candidate_edge_key)
-            attempt_info: dict[str, object] = {
-                "edge": edge_key_to_dict(candidate_edge_key),
-                "status": "no_candidate",
-                "reason": "",
-            }
-            if record is None:
-                attempt_info["reason"] = "no_matching_routed_record"
-                attempted_edges.append(attempt_info)
+        candidates: list[DelayInsertionCandidate] = []
+        seen_edges: set[RoutedEdgeKey] = set()
+        for index, edge_key in enumerate(edge_keys):
+            if edge_key in seen_edges:
                 continue
-
-            candidate_route_open_cells = {
-                cell
-                for cell in route_cells_by_edge.get(candidate_edge_key, set())
-                if route_cell_refcounts.get(cell, 0) == 1
-                and cell not in base_static_cells
-                and cell not in reserved_meander_cells
-            }
-            candidate_max_bumps = _route_geometry_max_meander_bumps(
-                record=record,
-                grid_size_um=float(grid_size_um_cfg),
-                bend_radius_um=bend_radius_um,
-            )
-            candidate_best_rr: dict[str, object] | None = None
-            candidate_last_exc: Exception | None = None
-            candidate_used_reserved_overlay = True
-            t_plan_start = time.perf_counter()
-            try:
-                planner_calls += 1
-                planner_kwargs = dict(
-                    requested_extra_length_um=float(requested),
-                    box_depths_um=box_depths_um,
-                    min_bend_radius_um=None,
-                    min_straight_um=min_straight_um,
-                    max_bumps=candidate_max_bumps,
-                    max_meander_height_um=max_height_um,
-                    min_segment_length_um=min_seg_um,
-                    endpoint_inset_um=endpoint_inset_um,
-                    clearance_radius_cells=0,
-                    side_policy="both",
-                    opened_cells=sorted(candidate_route_open_cells),
-                    planning_mode="fill_box_multi_bump",
-                    extra_blocked_cells=sorted(reserved_meander_cells),
+            seen_edges.add(edge_key)
+            candidates.append(
+                DelayInsertionCandidate(
+                    requirement_edge_key=req.edge_key,
+                    edge_keys=(edge_key,),
+                    extra_length_um=float(req.missing_length_um),
+                    reason="direct_edge" if index == 0 else "legacy_single_edge_alternative",
+                    affected_requirement_edge_keys=(req.edge_key,),
                 )
-                try:
-                    if record.corrected_centerline_um:
-                        candidate_best_rr = cast(
-                            dict[str, object],
-                            router.plan_auto_analytic_meander_for_centerline_depth_sweep(
-                                list(record.corrected_centerline_um),
-                                **planner_kwargs,
-                            ),
-                        )
-                    else:
-                        candidate_best_rr = cast(
-                            dict[str, object],
-                            router.plan_auto_analytic_meander_for_route_depth_sweep(
-                                record.route_obj,
-                                **planner_kwargs,
-                            ),
-                        )
-                except TypeError:
-                    candidate_used_reserved_overlay = False
-                    planner_kwargs.pop("extra_blocked_cells", None)
-                    if record.corrected_centerline_um:
-                        candidate_best_rr = cast(
-                            dict[str, object],
-                            router.plan_auto_analytic_meander_for_centerline_depth_sweep(
-                                list(record.corrected_centerline_um),
-                                **planner_kwargs,
-                            ),
-                        )
-                    else:
-                        candidate_best_rr = cast(
-                            dict[str, object],
-                            router.plan_auto_analytic_meander_for_route_depth_sweep(
-                                record.route_obj,
-                                **planner_kwargs,
-                            ),
-                        )
-            except Exception as exc:
-                candidate_last_exc = exc
-            elapsed_s = time.perf_counter() - t_plan_start
-            planning_elapsed_for_entry_s += elapsed_s
-            planner_elapsed_s += elapsed_s
-
-            if candidate_best_rr is None:
-                attempt_info["reason"] = (
-                    str(candidate_last_exc)
-                    if candidate_last_exc is not None
-                    else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
-                )
-                attempted_edges.append(attempt_info)
-                last_exc = candidate_last_exc
-                continue
-
-            candidate_inserted = _as_float(
-                candidate_best_rr.get("inserted_extra_length_um", 0.0),
-                0.0,
             )
-            if abs(candidate_inserted - requested) > EXACT_MEANDER_EPS_UM:
-                attempt_info["reason"] = (
-                    f"candidate residual {abs(candidate_inserted - requested):.6g} um "
-                    f"exceeds hard limit {EXACT_MEANDER_EPS_UM} um"
-                )
-                attempt_info["inserted_extra_length_um"] = candidate_inserted
-                attempted_edges.append(attempt_info)
-                continue
+        return candidates
 
-            attempt_info["status"] = "planned"
-            attempt_info["reason"] = ""
-            attempt_info["inserted_extra_length_um"] = candidate_inserted
-            attempted_edges.append(attempt_info)
-            best_rr = candidate_best_rr
-            selected_record = record
-            selected_edge_key = candidate_edge_key
-            used_reserved_overlay = candidate_used_reserved_overlay
-            max_bumps = candidate_max_bumps
-            current_route_open_cells = candidate_route_open_cells
-            break
-
-        entry["planning_elapsed_s"] = planning_elapsed_for_entry_s
-        entry["candidate_edges"] = attempted_edges
-        entry["max_bumps"] = max_bumps
-        entry["opened_route_cell_count"] = len(current_route_open_cells)
-
-        if best_rr is None:
-            entry["status"] = "no_candidate"
-            entry["reason"] = (
-                str(last_exc)
-                if last_exc is not None
-                else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
-            )
-            results.append(entry)
-            continue
-        if selected_record is None or selected_edge_key is None:
-            entry["status"] = "no_candidate"
-            entry["reason"] = "internal error: selected candidate missing"
-            results.append(entry)
-            continue
-        rr = best_rr
-        record = selected_record
-        inserted = _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
-        if abs(inserted - requested) > EXACT_MEANDER_EPS_UM:
-            entry["status"] = "no_candidate"
-            entry["reason"] = (
-                f"candidate residual {abs(inserted - requested):.6g} um "
-                f"exceeds hard limit {EXACT_MEANDER_EPS_UM} um"
-            )
-            results.append(entry)
-            continue
-        unmatched = max(0.0, requested - inserted)
-        entry["status"] = "planned"
-        entry["reason"] = ""
-        entry["inserted_extra_length_um"] = inserted
-        entry["unmatched_length_um"] = unmatched
-        entry["effective_bend_radius_um"] = rr.get("effective_bend_radius_um")
-        entry["primitive_bend_radius_um"] = rr.get("primitive_bend_radius_um")
-        entry["selected_box"] = rr.get("selected_box")
-        entry["selected_grid_rect"] = rr.get("selected_grid_rect")
-        entry["bumps"] = rr.get("bumps")
-        entry["side"] = rr.get("side")
-        entry["planning_mode"] = rr.get("planning_mode", "fill_box_multi_bump")
-        entry["candidate_runs"] = rr.get("candidate_runs")
-        entry["candidate_intervals"] = rr.get("candidate_intervals")
-        entry["rejected_box_blocked"] = rr.get("rejected_box_blocked")
-        entry["rejected_planning_failed"] = rr.get("rejected_planning_failed")
-        entry["rejected_exact_length_mismatch"] = rr.get("rejected_exact_length_mismatch")
-        entry["rejected_too_short"] = rr.get("rejected_too_short")
-        entry["selected_interval_length_um"] = rr.get("selected_interval_length_um")
-        entry["endpoint_inset_um"] = endpoint_inset_um
-        entry["requested_probe_length_um"] = requested
-        entry["used_reserved_overlay"] = used_reserved_overlay
-        entry["planned_edge"] = edge_key_to_dict(selected_edge_key)
-        if unmatched > 1.0e-9:
-            entry["status"] = "planned_partial"
-        total_inserted += inserted
-        selected_grid_rect = rr.get("selected_grid_rect")
-        new_reserved_cells = _grid_rect_cells(selected_grid_rect)
-        if new_reserved_cells:
-            reserved_meander_cells.update(new_reserved_cells)
-            if not used_reserved_overlay:
-                router.add_static_cells(list(new_reserved_cells))
-        updated[selected_edge_key] = RoutedNetRecord(
+    def _planned_record(
+        *,
+        record: RoutedNetRecord,
+        requested: float,
+        rr: dict[str, object],
+        min_straight_um: float,
+        max_bumps: int,
+        max_height_um: float,
+        min_seg_um: float,
+        endpoint_inset_um: float,
+    ) -> RoutedNetRecord:
+        return RoutedNetRecord(
             net_name=record.net_name,
             source=record.source,
             target=record.target,
@@ -527,7 +346,428 @@ def analyze_meander_insertion_for_requirements(
             base_total_length_um=record.base_total_length_um,
             corrected_centerline_um=record.corrected_centerline_um,
         )
+
+    def _plan_edge_candidate(
+        *,
+        candidate_edge_key: RoutedEdgeKey,
+        requested: float,
+        extra_reserved_cells: set[GridCell],
+        box_depths_um: list[float],
+        min_straight_um: float,
+        min_seg_um: float,
+        max_height_um: float,
+        bend_radius_um: float,
+        endpoint_inset_um: float,
+    ) -> EdgePlanAttempt:
+        record = by_edge.get(candidate_edge_key)
+        attempt_info: dict[str, object] = {
+            "edge": edge_key_to_dict(candidate_edge_key),
+            "status": "no_candidate",
+            "reason": "",
+        }
+        if record is None:
+            attempt_info["reason"] = "no_matching_routed_record"
+            return attempt_info, None, None, True, 1, set(), 0.0, None
+
+        blocked_by_planned = reserved_meander_cells | extra_reserved_cells
+        candidate_route_open_cells = {
+            cell
+            for cell in route_cells_by_edge.get(candidate_edge_key, set())
+            if route_cell_refcounts.get(cell, 0) == 1
+            and cell not in base_static_cells
+            and cell not in blocked_by_planned
+        }
+        candidate_max_bumps = _route_geometry_max_meander_bumps(
+            record=record,
+            grid_size_um=float(grid_size_um_cfg),
+            bend_radius_um=bend_radius_um,
+        )
+        candidate_best_rr: dict[str, object] | None = None
+        candidate_last_exc: Exception | None = None
+        candidate_used_reserved_overlay = True
+        t_plan_start = time.perf_counter()
+        try:
+            planner_kwargs = dict(
+                requested_extra_length_um=float(requested),
+                box_depths_um=box_depths_um,
+                min_bend_radius_um=None,
+                min_straight_um=min_straight_um,
+                max_bumps=candidate_max_bumps,
+                max_meander_height_um=max_height_um,
+                min_segment_length_um=min_seg_um,
+                endpoint_inset_um=endpoint_inset_um,
+                clearance_radius_cells=0,
+                side_policy="both",
+                opened_cells=sorted(candidate_route_open_cells),
+                planning_mode="fill_box_multi_bump",
+                extra_blocked_cells=sorted(blocked_by_planned),
+            )
+            try:
+                if record.corrected_centerline_um:
+                    candidate_best_rr = cast(
+                        dict[str, object],
+                        router.plan_auto_analytic_meander_for_centerline_depth_sweep(
+                            list(record.corrected_centerline_um),
+                            **planner_kwargs,
+                        ),
+                    )
+                else:
+                    candidate_best_rr = cast(
+                        dict[str, object],
+                        router.plan_auto_analytic_meander_for_route_depth_sweep(
+                            record.route_obj,
+                            **planner_kwargs,
+                        ),
+                    )
+            except TypeError:
+                candidate_used_reserved_overlay = False
+                planner_kwargs.pop("extra_blocked_cells", None)
+                if record.corrected_centerline_um:
+                    candidate_best_rr = cast(
+                        dict[str, object],
+                        router.plan_auto_analytic_meander_for_centerline_depth_sweep(
+                            list(record.corrected_centerline_um),
+                            **planner_kwargs,
+                        ),
+                    )
+                else:
+                    candidate_best_rr = cast(
+                        dict[str, object],
+                        router.plan_auto_analytic_meander_for_route_depth_sweep(
+                            record.route_obj,
+                            **planner_kwargs,
+                        ),
+                    )
+        except Exception as exc:
+            candidate_last_exc = exc
+        elapsed_s = time.perf_counter() - t_plan_start
+
+        if candidate_best_rr is None:
+            attempt_info["reason"] = (
+                str(candidate_last_exc)
+                if candidate_last_exc is not None
+                else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
+            )
+            return (
+                attempt_info,
+                None,
+                record,
+                candidate_used_reserved_overlay,
+                candidate_max_bumps,
+                candidate_route_open_cells,
+                elapsed_s,
+                candidate_last_exc,
+            )
+
+        candidate_inserted = _as_float(
+            candidate_best_rr.get("inserted_extra_length_um", 0.0),
+            0.0,
+        )
+        if abs(candidate_inserted - requested) > EXACT_MEANDER_EPS_UM:
+            attempt_info["reason"] = (
+                f"candidate residual {abs(candidate_inserted - requested):.6g} um "
+                f"exceeds hard limit {EXACT_MEANDER_EPS_UM} um"
+            )
+            attempt_info["inserted_extra_length_um"] = candidate_inserted
+            return (
+                attempt_info,
+                None,
+                record,
+                candidate_used_reserved_overlay,
+                candidate_max_bumps,
+                candidate_route_open_cells,
+                elapsed_s,
+                None,
+            )
+
+        attempt_info["status"] = "planned"
+        attempt_info["reason"] = ""
+        attempt_info["inserted_extra_length_um"] = candidate_inserted
+        return (
+            attempt_info,
+            candidate_best_rr,
+            record,
+            candidate_used_reserved_overlay,
+            candidate_max_bumps,
+            candidate_route_open_cells,
+            elapsed_s,
+            None,
+        )
+
+    requirement_missing_by_edge: dict[RoutedEdgeKey, float] = {}
+    for req in requirements:
+        requirement_missing_by_edge[req.edge_key] = (
+            requirement_missing_by_edge.get(req.edge_key, 0.0)
+            + float(req.missing_length_um)
+        )
+    effective_inserted_by_requirement_edge: dict[RoutedEdgeKey, float] = {}
+    total_physical_inserted = 0.0
+
+    for req in requirements:
+        original_requested = float(req.missing_length_um)
+        edge_key = req.edge_key
+        already_inserted = effective_inserted_by_requirement_edge.get(edge_key, 0.0)
+        requested = max(0.0, original_requested - already_inserted)
+        if requested <= EXACT_MEANDER_EPS_UM:
+            continue
+        candidate_insertions = _candidates_for_requirement(req)
+        entry = {
+            "edge": edge_key_to_dict(edge_key),
+            "requested_extra_length_um": requested,
+            "status": "no_candidate",
+            "reason": "no_matching_routed_record",
+            "planning_mode": "fill_box_multi_bump",
+            "inserted_extra_length_um": 0.0,
+            "unmatched_length_um": requested,
+            "effective_bend_radius_um": None,
+            "primitive_bend_radius_um": None,
+            "selected_box": None,
+            "selected_grid_rect": None,
+            "bumps": 0,
+            "side": None,
+            "using_legacy_meander_path": False,
+            "minimum_insertable_extra_length_um": min_insertable_extra_um,
+            "planning_elapsed_s": 0.0,
+        }
+        if requested < min_insertable_extra_um:
+            total_disregarded += requested
+            entry["status"] = "below_minimum_bump"
+            entry["reason"] = (
+                "requested extra length is below the four-90-degree-bend "
+                f"minimum ({min_insertable_extra_um:.6g} um)"
+            )
+            entry["unmatched_length_um"] = 0.0
+            results.append(entry)
+            continue
+        min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
+        min_seg_um = max(0.5, float(config.min_candidate_straight_length_um))
+        max_height_um = max(0.0, float(config.max_meander_height_um))
+        box_depths_um = [
+            depth
+            for depth in MEANDER_DEPTH_CANDIDATES_UM
+            if depth <= max_height_um + 1.0e-9
+        ]
+        if not box_depths_um:
+            box_depths_um = [max_height_um]
+        entry["box_depth_candidates_um"] = list(box_depths_um)
+        bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
+        endpoint_inset_um = (
+            max(2.0 * bend_radius_um, min_seg_um)
+            if config.auto_meander_endpoint_inset_um is None
+            else max(0.0, float(config.auto_meander_endpoint_inset_um))
+        )
+        last_exc: Exception | None = None
+        selected_plans: list[PlannedEdgeInsertion] = []
+        selected_candidate: DelayInsertionCandidate | None = None
+        selected_candidate_requested = requested
+        selected_affected_edges: tuple[RoutedEdgeKey, ...] = (edge_key,)
+        candidate_attempts: list[dict[str, object]] = []
+        attempted_edges: list[dict[str, object]] = []
+        planning_elapsed_for_entry_s = 0.0
+        max_bumps = 1
+        current_route_open_cells: set[tuple[int, int]] = set()
+
+        for candidate in candidate_insertions:
+            affected_edges = (
+                candidate.affected_requirement_edge_keys
+                if candidate.affected_requirement_edge_keys
+                else (edge_key,)
+            )
+            remaining_for_affected = [
+                max(
+                    0.0,
+                    requirement_missing_by_edge.get(affected_edge, requested)
+                    - effective_inserted_by_requirement_edge.get(affected_edge, 0.0),
+                )
+                for affected_edge in affected_edges
+            ]
+            if not remaining_for_affected:
+                continue
+            candidate_requested = min(
+                float(candidate.extra_length_um),
+                min(remaining_for_affected),
+            )
+            edge_attempts: list[dict[str, object]] = []
+            candidate_info: dict[str, object] = {
+                "candidate_reason": candidate.reason,
+                "requested_extra_length_um": candidate_requested,
+                "edges": [edge_key_to_dict(edge) for edge in candidate.edge_keys],
+                "affected_requirement_edges": [
+                    edge_key_to_dict(edge)
+                    for edge in affected_edges
+                ],
+                "edge_count": len(candidate.edge_keys),
+                "status": "no_candidate",
+                "failure_reason": "",
+                "edge_attempts": edge_attempts,
+            }
+            if candidate_requested <= EXACT_MEANDER_EPS_UM:
+                candidate_info["status"] = "already_satisfied"
+                candidate_attempts.append(candidate_info)
+                continue
+            candidate_plans: list[PlannedEdgeInsertion] = []
+            candidate_reserved_cells: set[GridCell] = set()
+            candidate_open_cells: set[GridCell] = set()
+            candidate_max_bumps_values: list[int] = []
+            candidate_failed = False
+            for candidate_edge_key in candidate.edge_keys:
+                planner_calls += 1
+                (
+                    attempt_info,
+                    rr,
+                    record,
+                    used_reserved_overlay,
+                    candidate_max_bumps,
+                    candidate_route_open_cells,
+                    elapsed_s,
+                    candidate_last_exc,
+                ) = _plan_edge_candidate(
+                    candidate_edge_key=candidate_edge_key,
+                    requested=candidate_requested,
+                    extra_reserved_cells=candidate_reserved_cells,
+                    box_depths_um=box_depths_um,
+                    min_straight_um=min_straight_um,
+                    min_seg_um=min_seg_um,
+                    max_height_um=max_height_um,
+                    bend_radius_um=bend_radius_um,
+                    endpoint_inset_um=endpoint_inset_um,
+                )
+                planning_elapsed_for_entry_s += elapsed_s
+                planner_elapsed_s += elapsed_s
+                edge_attempts.append(attempt_info)
+                attempted_edges.append(attempt_info)
+                last_exc = candidate_last_exc
+                if rr is None or record is None:
+                    candidate_failed = True
+                    candidate_info["failure_reason"] = attempt_info.get("reason", "")
+                    break
+                selected_grid_rect = rr.get("selected_grid_rect")
+                new_reserved_cells = _grid_rect_cells(selected_grid_rect)
+                candidate_reserved_cells.update(new_reserved_cells)
+                candidate_open_cells.update(candidate_route_open_cells)
+                candidate_max_bumps_values.append(candidate_max_bumps)
+                candidate_plans.append(
+                    (
+                        candidate_edge_key,
+                        record,
+                        rr,
+                        used_reserved_overlay,
+                        candidate_max_bumps,
+                        candidate_route_open_cells,
+                    )
+                )
+            if candidate_failed:
+                candidate_info["status"] = "no_candidate"
+                candidate_attempts.append(candidate_info)
+                continue
+            candidate_info["status"] = "planned"
+            candidate_info["failure_reason"] = ""
+            candidate_attempts.append(candidate_info)
+            selected_candidate = candidate
+            selected_candidate_requested = candidate_requested
+            selected_affected_edges = tuple(affected_edges)
+            selected_plans = candidate_plans
+            max_bumps = max(candidate_max_bumps_values, default=1)
+            current_route_open_cells = candidate_open_cells
+            break
+
+        entry["planning_elapsed_s"] = planning_elapsed_for_entry_s
+        entry["candidate_edges"] = attempted_edges
+        entry["candidate_attempts"] = candidate_attempts
+        entry["max_bumps"] = max_bumps
+        entry["opened_route_cell_count"] = len(current_route_open_cells)
+
+        if selected_candidate is None or not selected_plans:
+            entry["status"] = "no_candidate"
+            entry["reason"] = (
+                str(last_exc)
+                if last_exc is not None
+                else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
+            )
+            results.append(entry)
+            continue
+        inserted = selected_candidate_requested
+        physical_inserted = sum(
+            _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+            for _, _, rr, _, _, _ in selected_plans
+        )
+        unmatched = 0.0
+        representative_rr = selected_plans[0][2]
+        entry["status"] = "planned"
+        entry["reason"] = ""
+        entry["inserted_extra_length_um"] = inserted
+        entry["physical_inserted_extra_length_um"] = physical_inserted
+        entry["unmatched_length_um"] = unmatched
+        entry["effective_bend_radius_um"] = representative_rr.get("effective_bend_radius_um")
+        entry["primitive_bend_radius_um"] = representative_rr.get("primitive_bend_radius_um")
+        entry["selected_box"] = representative_rr.get("selected_box")
+        entry["selected_grid_rect"] = representative_rr.get("selected_grid_rect")
+        entry["bumps"] = representative_rr.get("bumps")
+        entry["side"] = representative_rr.get("side")
+        entry["planning_mode"] = representative_rr.get("planning_mode", "fill_box_multi_bump")
+        entry["candidate_runs"] = representative_rr.get("candidate_runs")
+        entry["candidate_intervals"] = representative_rr.get("candidate_intervals")
+        entry["rejected_box_blocked"] = representative_rr.get("rejected_box_blocked")
+        entry["rejected_planning_failed"] = representative_rr.get("rejected_planning_failed")
+        entry["rejected_exact_length_mismatch"] = representative_rr.get("rejected_exact_length_mismatch")
+        entry["rejected_too_short"] = representative_rr.get("rejected_too_short")
+        entry["selected_interval_length_um"] = representative_rr.get("selected_interval_length_um")
+        entry["endpoint_inset_um"] = endpoint_inset_um
+        entry["requested_probe_length_um"] = requested
+        entry["used_reserved_overlay"] = all(plan[3] for plan in selected_plans)
+        entry["selected_candidate_reason"] = selected_candidate.reason
+        entry["selected_candidate_edge_count"] = len(selected_candidate.edge_keys)
+        entry["affected_requirement_edges"] = [
+            edge_key_to_dict(affected_edge)
+            for affected_edge in selected_affected_edges
+        ]
+        entry["planned_edge"] = edge_key_to_dict(selected_plans[0][0])
+        entry["planned_edges"] = [
+            edge_key_to_dict(candidate_edge_key)
+            for candidate_edge_key, *_ in selected_plans
+        ]
+        if unmatched > 1.0e-9:
+            entry["status"] = "planned_partial"
+        for affected_edge in selected_affected_edges:
+            effective_inserted_by_requirement_edge[affected_edge] = (
+                effective_inserted_by_requirement_edge.get(affected_edge, 0.0)
+                + inserted
+            )
+        total_inserted += inserted * len(selected_affected_edges)
+        total_physical_inserted += physical_inserted
+        for (
+            selected_edge_key,
+            record,
+            rr,
+            used_reserved_overlay,
+            candidate_max_bumps,
+            _candidate_route_open_cells,
+        ) in selected_plans:
+            new_reserved_cells = _grid_rect_cells(rr.get("selected_grid_rect"))
+            if new_reserved_cells:
+                reserved_meander_cells.update(new_reserved_cells)
+                if not used_reserved_overlay:
+                    router.add_static_cells(list(new_reserved_cells))
+            updated[selected_edge_key] = _planned_record(
+                record=record,
+                requested=float(selected_candidate_requested),
+                rr=rr,
+                min_straight_um=min_straight_um,
+                max_bumps=candidate_max_bumps,
+                max_height_um=max_height_um,
+                min_seg_um=min_seg_um,
+                endpoint_inset_um=endpoint_inset_um,
+            )
         results.append(entry)
+        for affected_edge in selected_affected_edges:
+            if affected_edge == edge_key:
+                continue
+            virtual_entry = {
+                **entry,
+                "edge": edge_key_to_dict(affected_edge),
+                "satisfied_by_requirement_edge": edge_key_to_dict(edge_key),
+            }
+            results.append(virtual_entry)
 
     total_unmatched = max(0.0, total_requested - total_inserted)
     return (
@@ -536,6 +776,7 @@ def analyze_meander_insertion_for_requirements(
             "results": results,
             "total_requested_extra_length_um": float(total_requested),
             "total_inserted_extra_length_um": float(total_inserted),
+            "total_physical_inserted_extra_length_um": float(total_physical_inserted),
             "total_disregarded_extra_length_um": float(total_disregarded),
             "unmatched_length_um": float(total_unmatched),
             "planner_calls": int(planner_calls),

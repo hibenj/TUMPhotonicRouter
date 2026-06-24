@@ -16,6 +16,7 @@ from photonic_router.routing_layers import (
     get_routing_obstacle_layers,
 )
 from photonic_router.path_length_graph import (
+    DelayInsertionCandidate,
     GraphEdge,
     GraphNode,
     MissingLengthRequirement,
@@ -43,6 +44,7 @@ __all__ = [
     "PhotonicRoutingGraph",
     "PathLengthAnalysisResult",
     "MissingLengthRequirement",
+    "DelayInsertionCandidate",
     "ComponentPortAccessRule",
     "StaticObstacleMapConfig",
     "StaticObstacleMapData",

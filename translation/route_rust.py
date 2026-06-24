@@ -27,13 +27,17 @@ from photonic_router.routing_layers import (
 from translation.route_rust_analysis import (
     analysis_to_info_dict,
     analyze_path_length_matching,
+    build_requirement_delay_candidates,
     compute_group_lifted_requirements,
+    compute_output_matching_requirements,
+    delay_candidate_to_dict,
     format_path_length_acceptance_failure,
     matching_group_diagnostics_to_info,
+    merge_missing_length_requirements,
     minimum_four_bend_extra_length_um,
+    output_matching_diagnostics_to_info,
     path_length_acceptance_summary,
     requirement_to_dict,
-    transparent_node_requirement_alternatives,
 )
 from translation import route_rust_meanders as _meander_impl
 from translation.route_rust_realization import realize_routed_net_records
@@ -149,6 +153,7 @@ def route_match_and_realize(
     schematic: Schematic,
     *,
     enable_path_length_matching: bool = False,
+    path_length_match_outputs: bool = False,
     node_types: dict[str, str] | None = None,
     internal_delays_um: dict[str, float] | None = None,
     obstacle_config: object | None = None,
@@ -239,8 +244,26 @@ def route_match_and_realize(
             minimum_insertable_extra_um=min_insertable_extra_um,
         )
         lifted_requirements = list(requirements)
-        requirement_edge_alternatives = (
-            transparent_node_requirement_alternatives(analysis, requirements)
+        output_requirements: list[Any] = []
+        output_matching_info = {
+            "enabled": bool(path_length_match_outputs),
+            "target_output_arrival_um": 0.0,
+            "output_count": 0,
+            "requirements": [],
+            "outputs": [],
+        }
+        if path_length_match_outputs:
+            output_requirements, output_matching_info = compute_output_matching_requirements(
+                analysis,
+                existing_requirements=lifted_requirements,
+            )
+            requirements = merge_missing_length_requirements(
+                lifted_requirements,
+                output_requirements,
+            )
+        requirement_delay_candidates = build_requirement_delay_candidates(
+            analysis,
+            requirements,
         )
         analysis_info["raw_requirements"] = [
             requirement_to_dict(req)
@@ -250,54 +273,24 @@ def route_match_and_realize(
             requirement_to_dict(req)
             for req in lifted_requirements
         ]
+        analysis_info["output_matching"] = output_matching_info
+        analysis_info["output_requirements"] = [
+            requirement_to_dict(req)
+            for req in output_requirements
+        ]
         analysis_info["requirements"] = [
             requirement_to_dict(req)
             for req in requirements
         ]
-        analysis_info["requirement_edge_alternatives"] = [
+        analysis_info["requirement_delay_candidates"] = [
             {
-                "original": {
-                    "net_name": original[0],
-                    "source": {"instance": original[1], "port": original[2]},
-                    "target": {"instance": original[3], "port": original[4]},
-                },
-                "alternatives": [
-                    {
-                        "net_name": alternative[0],
-                        "source": {
-                            "instance": alternative[1],
-                            "port": alternative[2],
-                        },
-                        "target": {
-                            "instance": alternative[3],
-                            "port": alternative[4],
-                        },
-                    }
-                    for alternative in alternatives
+                "edge": requirement_to_dict(req)["edge"],
+                "candidates": [
+                    delay_candidate_to_dict(candidate)
+                    for candidate in requirement_delay_candidates.get(req.edge_key, [])
                 ],
             }
-            for original_edge, alternative_edges in requirement_edge_alternatives.items()
-            for original, alternatives in [
-                (
-                    (
-                        original_edge.net_name,
-                        original_edge.source.instance,
-                        original_edge.source.port,
-                        original_edge.target.instance,
-                        original_edge.target.port,
-                    ),
-                    [
-                        (
-                            alternative.net_name,
-                            alternative.source.instance,
-                            alternative.source.port,
-                            alternative.target.instance,
-                            alternative.target.port,
-                        )
-                        for alternative in alternative_edges
-                    ],
-                )
-            ]
+            for req in requirements
         ]
         analysis_info["matching_groups"] = lifted_groups
         analysis_info["minimum_insertable_extra_length_um"] = float(
@@ -343,7 +336,7 @@ def route_match_and_realize(
             allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
             static_blocked_cells=meander_static_blocked_cells,
-            requirement_edge_alternatives=requirement_edge_alternatives,
+            requirement_delay_candidates=requirement_delay_candidates,
         )
         pipeline_timings_s["meander_planning"] = (
             time.perf_counter() - t_meander_planning_start
@@ -355,10 +348,15 @@ def route_match_and_realize(
                 adjusted_requirements=requirements,
                 lifted_groups=lifted_groups,
             )
+            output_matching_diagnostics = output_matching_diagnostics_to_info(
+                output_matching_info,
+                meander_report_info,
+            )
             acceptance_summary = path_length_acceptance_summary(
-                matching_group_diagnostics
+                matching_group_diagnostics + output_matching_diagnostics
             )
             analysis_info["matching_group_diagnostics"] = matching_group_diagnostics
+            analysis_info["output_matching_diagnostics"] = output_matching_diagnostics
             analysis_info["path_length_acceptance"] = acceptance_summary
             if not acceptance_summary["passed"]:
                 raise RuntimeError(
