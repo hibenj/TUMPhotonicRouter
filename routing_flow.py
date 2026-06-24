@@ -1244,6 +1244,60 @@ def run_routing_flow(
                 f"unmatched={unmatched:.3f}um"
             )
             if debug_meanders:
+                setup_profile = report.get("setup_profile", {})
+                if isinstance(setup_profile, dict) and setup_profile:
+                    print(
+                        "        Meander setup profile: "
+                        f"total={float(setup_profile.get('total_s', 0.0)):.4f}s, "
+                        f"route_refcounts={float(setup_profile.get('route_cell_refcount_s', 0.0)):.4f}s, "
+                        f"set_static={float(setup_profile.get('set_static_cells_s', 0.0)):.4f}s, "
+                        f"add_route_static={float(setup_profile.get('add_route_static_cells_s', 0.0)):.4f}s, "
+                        f"register_routes={float(setup_profile.get('register_route_cells_s', 0.0)):.4f}s, "
+                        f"unique_route_cells={int(float(setup_profile.get('unique_route_cell_count', 0.0)))}"
+                    )
+                print(
+                    "        Meander overhead profile: "
+                    f"planner={float(report.get('planner_elapsed_s', 0.0)):.4f}s, "
+                    f"candidate_setup={float(report.get('candidate_overhead_s', 0.0)):.4f}s, "
+                    f"commit={float(report.get('commit_elapsed_s', 0.0)):.4f}s, "
+                    f"probe={float(report.get('probe_elapsed_s', 0.0)):.4f}s"
+                )
+                candidate_setup_profile = report.get("candidate_setup_profile", {})
+                if isinstance(candidate_setup_profile, dict) and candidate_setup_profile:
+                    sorted_setup = sorted(
+                        candidate_setup_profile.items(),
+                        key=lambda item: -float(item[1]),
+                    )
+                    setup_parts = [
+                        f"{key[:-2] if key.endswith('_s') else key}={float(value):.4f}s"
+                        for key, value in sorted_setup
+                    ]
+                    print(
+                        "        Candidate setup split: "
+                        + ", ".join(setup_parts)
+                    )
+                candidate_profile = report.get("candidate_profile", {})
+                if isinstance(candidate_profile, dict) and candidate_profile:
+                    print("        Candidate planner profile:")
+                    sorted_profile = sorted(
+                        candidate_profile.items(),
+                        key=lambda item: (
+                            -float(item[1].get("elapsed_s", 0.0))
+                            if isinstance(item[1], dict)
+                            else 0.0
+                        ),
+                    )
+                    for reason, raw_profile in sorted_profile:
+                        if not isinstance(raw_profile, dict):
+                            continue
+                        print(
+                            "          - "
+                            f"{reason}: candidates={int(raw_profile.get('candidate_attempts', 0))}, "
+                            f"edge_calls={int(raw_profile.get('edge_calls', 0))}, "
+                            f"planned={int(raw_profile.get('planned', 0))}, "
+                            f"no_candidate={int(raw_profile.get('no_candidate', 0))}, "
+                            f"elapsed={float(raw_profile.get('elapsed_s', 0.0)):.4f}s"
+                        )
                 for entry in report.get("results", []):
                     edge = entry.get("edge", {})
                     net_name = edge.get("net_name", "<unknown>")

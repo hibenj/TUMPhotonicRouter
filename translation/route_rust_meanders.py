@@ -7,7 +7,8 @@ import math
 import time
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from typing import cast
+from dataclasses import dataclass
+from typing import Any, Protocol, cast
 
 from photonic_router.path_length_graph import (
     DelayInsertionCandidate,
@@ -45,6 +46,52 @@ MEANDER_DEPTH_CANDIDATES_UM = (
 )
 EXACT_MEANDER_EPS_UM = 1.0e-6
 GridCell = tuple[int, int]
+
+
+class _RustBackendProtocol(Protocol):
+    def GridSpec(self, *args: object, **kwargs: object) -> object: ...
+    def PrimitiveLibraryConfig(self, *args: object, **kwargs: object) -> object: ...
+    def AStarConfig(self, *args: object, **kwargs: object) -> object: ...
+    def PyPhotonicRouter(self, *args: object, **kwargs: object) -> "_MeanderRouterProtocol": ...
+
+
+class _MeanderRouterProtocol(Protocol):
+    def set_static_cells(self, cells: list[GridCell]) -> None: ...
+    def add_static_cells(self, cells: list[GridCell]) -> None: ...
+    def add_registered_meander_reserved_cells(self, cells: list[GridCell]) -> int: ...
+    def register_meander_route_cells_as_static(
+        self,
+        routes: list[object],
+        base_static_cells: list[GridCell],
+    ) -> tuple[list[int], list[int], int]: ...
+    def plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
+        self,
+        centerline: list[tuple[float, float]],
+        registered_opened_cells_index: int,
+        **kwargs: Any,
+    ) -> dict[str, object]: ...
+    def plan_auto_analytic_meander_for_centerline_depth_sweep(
+        self,
+        centerline: list[tuple[float, float]],
+        **kwargs: Any,
+    ) -> dict[str, object]: ...
+    def plan_auto_analytic_meander_for_route_depth_sweep(
+        self,
+        route: object,
+        **kwargs: Any,
+    ) -> dict[str, object]: ...
+    def probe_auto_analytic_meander_for_centerline_depth_sweep(
+        self,
+        centerline: list[tuple[float, float]],
+        **kwargs: Any,
+    ) -> dict[str, object]: ...
+    def probe_auto_analytic_meander_for_route_depth_sweep(
+        self,
+        route: object,
+        **kwargs: Any,
+    ) -> dict[str, object]: ...
+
+
 PlannedEdgeInsertion = tuple[
     RoutedEdgeKey,
     RoutedNetRecord,
@@ -61,8 +108,520 @@ EdgePlanAttempt = tuple[
     int,
     set[GridCell],
     float,
+    float,
     Exception | None,
 ]
+
+
+@dataclass(frozen=True)
+class _MeanderSearchConfig:
+    min_straight_um: float
+    min_segment_um: float
+    max_height_um: float
+    box_depths_um: list[float]
+    endpoint_inset_um: float
+
+
+@dataclass
+class _MeanderPlannerContext:
+    router: _MeanderRouterProtocol
+    by_edge: dict[RoutedEdgeKey, RoutedNetRecord]
+    updated: dict[RoutedEdgeKey, RoutedNetRecord]
+    route_cells_by_edge: dict[RoutedEdgeKey, set[GridCell]]
+    route_cell_refcounts: Counter[GridCell]
+    registered_open_cell_index_by_edge: dict[RoutedEdgeKey, int]
+    registered_open_cell_count_by_edge: dict[RoutedEdgeKey, int]
+    base_open_cells_by_edge: dict[RoutedEdgeKey, set[GridCell]]
+    base_open_cell_lists_by_edge: dict[RoutedEdgeKey, list[GridCell]]
+    max_bumps_by_edge: dict[RoutedEdgeKey, int]
+    centerline_lists_by_edge: dict[RoutedEdgeKey, list[tuple[float, float]]]
+    footprint_prefilter_enabled_by_edge: dict[RoutedEdgeKey, bool]
+    base_static_cells: set[GridCell]
+    reserved_meander_cells: set[GridCell]
+    grid_size_um: float
+    bend_radius_um: float
+    setup_profile: dict[str, float]
+    candidate_setup_profile: dict[str, float]
+    candidate_overhead_s: float = 0.0
+    commit_elapsed_s: float = 0.0
+
+    def _add_candidate_setup_time(self, key: str, elapsed_s: float) -> None:
+        self.candidate_setup_profile[key] = (
+            self.candidate_setup_profile.get(key, 0.0) + max(0.0, float(elapsed_s))
+        )
+
+    def base_open_cells_for_edge(
+        self,
+        edge_key: RoutedEdgeKey,
+        record: RoutedNetRecord,
+    ) -> set[GridCell]:
+        cells = self.base_open_cells_by_edge.get(edge_key)
+        if cells is None:
+            route_cells = self.route_cells_by_edge.get(edge_key)
+            if route_cells is None:
+                route_cells = _record_route_cells(record)
+                self.route_cells_by_edge[edge_key] = route_cells
+            cells = {
+                cell
+                for cell in route_cells
+                if self.route_cell_refcounts.get(cell, 0) == 1
+                and cell not in self.base_static_cells
+            }
+            self.base_open_cells_by_edge[edge_key] = cells
+        return cells
+
+    def base_open_cell_list_for_edge(
+        self,
+        edge_key: RoutedEdgeKey,
+        base_open_cells: set[GridCell],
+    ) -> list[GridCell]:
+        cells = self.base_open_cell_lists_by_edge.get(edge_key)
+        if cells is None:
+            cells = sorted(base_open_cells)
+            self.base_open_cell_lists_by_edge[edge_key] = cells
+        return cells
+
+    def max_bumps_for_edge(
+        self,
+        edge_key: RoutedEdgeKey,
+        record: RoutedNetRecord,
+    ) -> int:
+        max_bumps = self.max_bumps_by_edge.get(edge_key)
+        if max_bumps is None:
+            max_bumps = _route_geometry_max_meander_bumps(
+                record=record,
+                grid_size_um=self.grid_size_um,
+                bend_radius_um=self.bend_radius_um,
+            )
+            self.max_bumps_by_edge[edge_key] = max_bumps
+        return max_bumps
+
+    def centerline_list_for_edge(
+        self,
+        edge_key: RoutedEdgeKey,
+        record: RoutedNetRecord,
+    ) -> list[tuple[float, float]] | None:
+        centerline = self.centerline_lists_by_edge.get(edge_key)
+        if centerline is None and record.corrected_centerline_um:
+            centerline = list(record.corrected_centerline_um)
+            self.centerline_lists_by_edge[edge_key] = centerline
+        return centerline
+
+    def footprint_prefilter_enabled_for_edge(
+        self,
+        edge_key: RoutedEdgeKey,
+        record: RoutedNetRecord,
+    ) -> bool:
+        enabled = self.footprint_prefilter_enabled_by_edge.get(edge_key)
+        if enabled is None:
+            enabled = _record_has_prefilter_geometry(record)
+            self.footprint_prefilter_enabled_by_edge[edge_key] = enabled
+        return enabled
+
+    def plan_edge_candidate(
+        self,
+        *,
+        candidate_edge_key: RoutedEdgeKey,
+        requested: float,
+        extra_reserved_cells: set[GridCell],
+        box_depths_um: list[float],
+        min_straight_um: float,
+        min_seg_um: float,
+        max_height_um: float,
+        endpoint_inset_um: float,
+        use_probe: bool,
+    ) -> EdgePlanAttempt:
+        t_candidate_start = time.perf_counter()
+        record = self.by_edge.get(candidate_edge_key)
+        attempt_info: dict[str, object] = {
+            "edge": edge_key_to_dict(candidate_edge_key),
+            "status": "no_candidate",
+            "reason": "",
+        }
+        if record is None:
+            attempt_info["reason"] = "no_matching_routed_record"
+            attempt_info["planner_called"] = False
+            elapsed = time.perf_counter() - t_candidate_start
+            self.candidate_overhead_s += elapsed
+            self._add_candidate_setup_time("missing_record_s", elapsed)
+            return attempt_info, None, None, True, 1, set(), 0.0, 0.0, None
+
+        blocked_by_planned: set[GridCell] | None = None
+        t_centerline_start = time.perf_counter()
+        centerline = self.centerline_list_for_edge(candidate_edge_key, record)
+        self._add_candidate_setup_time(
+            "centerline_s",
+            time.perf_counter() - t_centerline_start,
+        )
+        registered_open_index = self.registered_open_cell_index_by_edge.get(
+            candidate_edge_key,
+        )
+        use_registered_open = (
+            centerline is not None
+            and registered_open_index is not None
+            and hasattr(
+                self.router,
+                "plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened",
+            )
+        )
+        if use_registered_open:
+            candidate_route_open_cells = set()
+            opened_cells_arg: list[GridCell] = []
+            attempt_info["opened_route_cell_count"] = (
+                self.registered_open_cell_count_by_edge.get(candidate_edge_key, 0)
+            )
+        else:
+            blocked_by_planned = self.reserved_meander_cells | extra_reserved_cells
+            t_base_open_start = time.perf_counter()
+            base_open_cells = self.base_open_cells_for_edge(candidate_edge_key, record)
+            self._add_candidate_setup_time(
+                "base_open_cells_s",
+                time.perf_counter() - t_base_open_start,
+            )
+            t_open_arg_start = time.perf_counter()
+            if blocked_by_planned:
+                candidate_route_open_cells = base_open_cells - blocked_by_planned
+                opened_cells_arg = sorted(candidate_route_open_cells)
+            else:
+                candidate_route_open_cells = base_open_cells
+                opened_cells_arg = self.base_open_cell_list_for_edge(
+                    candidate_edge_key,
+                    base_open_cells,
+                )
+            self._add_candidate_setup_time(
+                "opened_cells_arg_s",
+                time.perf_counter() - t_open_arg_start,
+            )
+        t_max_bumps_start = time.perf_counter()
+        candidate_max_bumps = self.max_bumps_for_edge(candidate_edge_key, record)
+        self._add_candidate_setup_time(
+            "max_bumps_s",
+            time.perf_counter() - t_max_bumps_start,
+        )
+        t_footprint_start = time.perf_counter()
+        if self.footprint_prefilter_enabled_for_edge(
+            candidate_edge_key,
+            record,
+        ) and not _meander_request_fits_footprint(
+            requested=requested,
+            bend_radius_um=self.bend_radius_um,
+            min_straight_um=min_straight_um,
+            max_bumps=candidate_max_bumps,
+            max_height_um=max_height_um,
+            box_depths_um=box_depths_um,
+        ):
+            attempt_info["reason"] = (
+                "requested extra length cannot be represented by the configured "
+                "meander footprint"
+            )
+            attempt_info["planner_called"] = False
+            attempt_info["max_bumps"] = candidate_max_bumps
+            self._add_candidate_setup_time(
+                "footprint_prefilter_s",
+                time.perf_counter() - t_footprint_start,
+            )
+            self.candidate_overhead_s += time.perf_counter() - t_candidate_start
+            return (
+                attempt_info,
+                None,
+                record,
+                True,
+                candidate_max_bumps,
+                candidate_route_open_cells,
+                0.0,
+                0.0,
+                None,
+            )
+        self._add_candidate_setup_time(
+            "footprint_prefilter_s",
+            time.perf_counter() - t_footprint_start,
+        )
+        attempt_info["planner_called"] = True
+        candidate_best_rr: dict[str, object] | None = None
+        candidate_last_exc: Exception | None = None
+        candidate_used_reserved_overlay = True
+        probe_elapsed_s = 0.0
+        probe = None
+        full_probe_available = False
+        if use_probe:
+            if blocked_by_planned is None:
+                blocked_by_planned = self.reserved_meander_cells | extra_reserved_cells
+            assert blocked_by_planned is not None
+            t_probe_kwargs_start = time.perf_counter()
+            probe_kwargs = dict(
+                requested_extra_length_um=float(requested),
+                box_depths_um=box_depths_um,
+                min_bend_radius_um=None,
+                min_straight_um=min_straight_um,
+                max_bumps=candidate_max_bumps,
+                max_meander_height_um=max_height_um,
+                min_segment_length_um=min_seg_um,
+                endpoint_inset_um=endpoint_inset_um,
+                clearance_radius_cells=0,
+                side_policy="both",
+                opened_cells=opened_cells_arg,
+                planning_mode="fill_box_multi_bump",
+                extra_blocked_cells=list(blocked_by_planned),
+            )
+            self._add_candidate_setup_time(
+                "probe_kwargs_s",
+                time.perf_counter() - t_probe_kwargs_start,
+            )
+            t_probe_start = time.perf_counter()
+            try:
+                if centerline is not None and hasattr(
+                    self.router,
+                    "probe_auto_analytic_meander_for_centerline_depth_sweep",
+                ):
+                    full_probe_available = True
+                    probe = cast(
+                        dict[str, object],
+                        self.router.probe_auto_analytic_meander_for_centerline_depth_sweep(
+                            centerline,
+                            **probe_kwargs,
+                        ),
+                    )
+                elif centerline is None and hasattr(
+                    self.router,
+                    "probe_auto_analytic_meander_for_route_depth_sweep",
+                ):
+                    full_probe_available = True
+                    probe = cast(
+                        dict[str, object],
+                        self.router.probe_auto_analytic_meander_for_route_depth_sweep(
+                            record.route_obj,
+                            **probe_kwargs,
+                        ),
+                    )
+            except TypeError:
+                probe_kwargs.pop("extra_blocked_cells", None)
+                try:
+                    if centerline is not None and hasattr(
+                        self.router,
+                        "probe_auto_analytic_meander_for_centerline_depth_sweep",
+                    ):
+                        full_probe_available = True
+                        probe = cast(
+                            dict[str, object],
+                            self.router.probe_auto_analytic_meander_for_centerline_depth_sweep(
+                                centerline,
+                                **probe_kwargs,
+                            ),
+                        )
+                    elif centerline is None and hasattr(
+                        self.router,
+                        "probe_auto_analytic_meander_for_route_depth_sweep",
+                    ):
+                        full_probe_available = True
+                        probe = cast(
+                            dict[str, object],
+                            self.router.probe_auto_analytic_meander_for_route_depth_sweep(
+                                record.route_obj,
+                                **probe_kwargs,
+                            ),
+                        )
+                except Exception as exc:
+                    candidate_last_exc = exc
+            except Exception as exc:
+                candidate_last_exc = exc
+            probe_elapsed_s = time.perf_counter() - t_probe_start
+            if isinstance(probe, dict):
+                attempt_info["probe"] = probe
+                attempt_info["probe_feasible"] = bool(probe.get("feasible", False))
+                if not bool(probe.get("feasible", False)):
+                    attempt_info["planner_called"] = False
+                    attempt_info["reason"] = "probe found no legal meander interval"
+                    self.candidate_overhead_s += (
+                        time.perf_counter() - t_candidate_start - probe_elapsed_s
+                    )
+                    return (
+                        attempt_info,
+                        None,
+                        record,
+                        True,
+                        candidate_max_bumps,
+                        candidate_route_open_cells,
+                        0.0,
+                        probe_elapsed_s,
+                        None,
+                    )
+            elif full_probe_available and candidate_last_exc is not None:
+                attempt_info["probe_error"] = str(candidate_last_exc)
+                candidate_last_exc = None
+        t_plan_start = time.perf_counter()
+        try:
+            t_planner_kwargs_start = time.perf_counter()
+            if use_registered_open:
+                extra_blocked_arg = extra_reserved_cells
+            else:
+                if blocked_by_planned is None:
+                    blocked_by_planned = self.reserved_meander_cells | extra_reserved_cells
+                assert blocked_by_planned is not None
+                extra_blocked_arg = blocked_by_planned
+            planner_kwargs = dict(
+                requested_extra_length_um=float(requested),
+                box_depths_um=box_depths_um,
+                min_bend_radius_um=None,
+                min_straight_um=min_straight_um,
+                max_bumps=candidate_max_bumps,
+                max_meander_height_um=max_height_um,
+                min_segment_length_um=min_seg_um,
+                endpoint_inset_um=endpoint_inset_um,
+                clearance_radius_cells=0,
+                side_policy="both",
+                planning_mode="fill_box_multi_bump",
+                extra_blocked_cells=list(extra_blocked_arg),
+            )
+            if not use_registered_open:
+                planner_kwargs["opened_cells"] = opened_cells_arg
+            self._add_candidate_setup_time(
+                "planner_kwargs_s",
+                time.perf_counter() - t_planner_kwargs_start,
+            )
+            t_plan_start = time.perf_counter()
+            try:
+                if use_registered_open:
+                    assert centerline is not None
+                    assert registered_open_index is not None
+                    candidate_best_rr = cast(
+                        dict[str, object],
+                        self.router.plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
+                            centerline,
+                            registered_open_index,
+                            **planner_kwargs,
+                        ),
+                    )
+                elif centerline is not None:
+                    candidate_best_rr = cast(
+                        dict[str, object],
+                        self.router.plan_auto_analytic_meander_for_centerline_depth_sweep(
+                            centerline,
+                            **planner_kwargs,
+                        ),
+                    )
+                else:
+                    candidate_best_rr = cast(
+                        dict[str, object],
+                        self.router.plan_auto_analytic_meander_for_route_depth_sweep(
+                            record.route_obj,
+                            **planner_kwargs,
+                        ),
+                    )
+            except TypeError:
+                candidate_used_reserved_overlay = False
+                planner_kwargs.pop("extra_blocked_cells", None)
+                planner_kwargs["opened_cells"] = opened_cells_arg
+                if centerline is not None:
+                    candidate_best_rr = cast(
+                        dict[str, object],
+                        self.router.plan_auto_analytic_meander_for_centerline_depth_sweep(
+                            centerline,
+                            **planner_kwargs,
+                        ),
+                    )
+                else:
+                    candidate_best_rr = cast(
+                        dict[str, object],
+                        self.router.plan_auto_analytic_meander_for_route_depth_sweep(
+                            record.route_obj,
+                            **planner_kwargs,
+                        ),
+                    )
+        except Exception as exc:
+            candidate_last_exc = exc
+        elapsed_s = time.perf_counter() - t_plan_start
+        self.candidate_overhead_s += (
+            time.perf_counter() - t_candidate_start - elapsed_s - probe_elapsed_s
+        )
+
+        if candidate_best_rr is None:
+            attempt_info["reason"] = (
+                str(candidate_last_exc)
+                if candidate_last_exc is not None
+                else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
+            )
+            return (
+                attempt_info,
+                None,
+                record,
+                candidate_used_reserved_overlay,
+                candidate_max_bumps,
+                candidate_route_open_cells,
+                elapsed_s,
+                probe_elapsed_s,
+                candidate_last_exc,
+            )
+
+        candidate_inserted = _as_float(
+            candidate_best_rr.get("inserted_extra_length_um", 0.0),
+            0.0,
+        )
+        if abs(candidate_inserted - requested) > EXACT_MEANDER_EPS_UM:
+            attempt_info["reason"] = (
+                f"candidate residual {abs(candidate_inserted - requested):.6g} um "
+                f"exceeds hard limit {EXACT_MEANDER_EPS_UM} um"
+            )
+            attempt_info["inserted_extra_length_um"] = candidate_inserted
+            return (
+                attempt_info,
+                None,
+                record,
+                candidate_used_reserved_overlay,
+                candidate_max_bumps,
+                candidate_route_open_cells,
+                elapsed_s,
+                probe_elapsed_s,
+                None,
+            )
+
+        attempt_info["status"] = "planned"
+        attempt_info["reason"] = ""
+        attempt_info["inserted_extra_length_um"] = candidate_inserted
+        return (
+            attempt_info,
+            candidate_best_rr,
+            record,
+            candidate_used_reserved_overlay,
+            candidate_max_bumps,
+            candidate_route_open_cells,
+            elapsed_s,
+            probe_elapsed_s,
+            None,
+        )
+
+    def commit_planned_edge(
+        self,
+        *,
+        selected_edge_key: RoutedEdgeKey,
+        record: RoutedNetRecord,
+        rr: dict[str, object],
+        requested: float,
+        used_reserved_overlay: bool,
+        max_bumps: int,
+        min_straight_um: float,
+        max_height_um: float,
+        min_seg_um: float,
+        endpoint_inset_um: float,
+    ) -> None:
+        t_commit_start = time.perf_counter()
+        new_reserved_cells = _grid_rect_cells(rr.get("selected_grid_rect"))
+        if new_reserved_cells:
+            self.reserved_meander_cells.update(new_reserved_cells)
+            if hasattr(self.router, "add_registered_meander_reserved_cells"):
+                self.router.add_registered_meander_reserved_cells(list(new_reserved_cells))
+            if not used_reserved_overlay:
+                self.router.add_static_cells(list(new_reserved_cells))
+        self.updated[selected_edge_key] = _planned_record(
+            record=record,
+            requested=requested,
+            rr=rr,
+            min_straight_um=min_straight_um,
+            max_bumps=max_bumps,
+            max_height_um=max_height_um,
+            min_seg_um=min_seg_um,
+            endpoint_inset_um=endpoint_inset_um,
+        )
+        self.commit_elapsed_s += time.perf_counter() - t_commit_start
 
 
 def _record_edge_key(record: RoutedNetRecord) -> RoutedEdgeKey:
@@ -71,6 +630,348 @@ def _record_edge_key(record: RoutedNetRecord) -> RoutedEdgeKey:
         source=record.source,
         target=record.target,
     )
+
+
+def _record_route_cells(record: RoutedNetRecord) -> set[GridCell]:
+    cells = getattr(record.route_obj, "cells", None) or []
+    return {(int(x), int(y)) for x, y in cells}
+
+
+def _record_has_prefilter_geometry(record: RoutedNetRecord) -> bool:
+    if len(record.corrected_centerline_um) >= 2:
+        return True
+    waypoints = getattr(record.route_obj, "compressed_waypoints", None) or []
+    return len(waypoints) >= 2
+
+
+def _grid_rect_cells(grid_rect: object) -> set[GridCell]:
+    if not isinstance(grid_rect, (tuple, list)) or len(grid_rect) != 4:
+        return set()
+    min_x = _as_int(grid_rect[0], 0)
+    max_x = _as_int(grid_rect[1], -1)
+    min_y = _as_int(grid_rect[2], 0)
+    max_y = _as_int(grid_rect[3], -1)
+    if max_x < min_x or max_y < min_y:
+        return set()
+    return {
+        (x, y)
+        for x in range(min_x, max_x + 1)
+        for y in range(min_y, max_y + 1)
+    }
+
+
+def _planned_record(
+    *,
+    record: RoutedNetRecord,
+    requested: float,
+    rr: dict[str, object],
+    min_straight_um: float,
+    max_bumps: int,
+    max_height_um: float,
+    min_seg_um: float,
+    endpoint_inset_um: float,
+) -> RoutedNetRecord:
+    return RoutedNetRecord(
+        net_name=record.net_name,
+        source=record.source,
+        target=record.target,
+        route_obj=record.route_obj,
+        total_length_um=record.total_length_um,
+        meander_auto_plan={
+            "requested_extra_length_um": requested,
+            "min_bend_radius_um": None,
+            "min_straight_um": min_straight_um,
+            "max_bumps": max_bumps,
+            "max_meander_height_um": max_height_um,
+            "box_depth_um": _as_float(rr.get("box_depth_um", 20.0), 20.0),
+            "min_segment_length_um": min_seg_um,
+            "endpoint_inset_um": endpoint_inset_um,
+            "clearance_radius_cells": 0,
+            "side_policy": "both",
+            "selected_side": rr.get("side"),
+            "selected_box": rr.get("selected_box"),
+            "selected_grid_rect": rr.get("selected_grid_rect"),
+            "selected_run_start_index": rr.get("selected_run_start_index"),
+            "selected_run_end_index": rr.get("selected_run_end_index"),
+            "selected_meander_centerline": rr.get("centerline"),
+            "planning_mode": "fill_box_multi_bump",
+        },
+        opened_cells=record.opened_cells,
+        source_port_center_um=record.source_port_center_um,
+        target_port_center_um=record.target_port_center_um,
+        source_port_orientation_deg=record.source_port_orientation_deg,
+        target_port_orientation_deg=record.target_port_orientation_deg,
+        base_total_length_um=record.base_total_length_um,
+        corrected_centerline_um=record.corrected_centerline_um,
+    )
+
+
+def _build_planner_context(
+    *,
+    rust_backend: _RustBackendProtocol,
+    routed_net_records: list[RoutedNetRecord],
+    realization_grid_spec: tuple[int, int, float, float, float],
+    allow_45_degree_turns: bool,
+    bend_radius_cells: int,
+    static_blocked_cells: Iterable[tuple[int, int]] | None,
+) -> _MeanderPlannerContext:
+    t_total_start = time.perf_counter()
+    width, height, grid_size_um_cfg, origin_x_um, origin_y_um = realization_grid_spec
+    t_router_start = time.perf_counter()
+    grid_spec = rust_backend.GridSpec(
+        int(width),
+        int(height),
+        float(grid_size_um_cfg),
+        float(origin_x_um),
+        float(origin_y_um),
+    )
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=float(grid_size_um_cfg),
+        bend_radius_cells=int(bend_radius_cells),
+        allow_45_degree_turns=allow_45_degree_turns,
+    )
+    astar_cfg = rust_backend.AStarConfig(max_iterations=1)
+    router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+    router_init_s = time.perf_counter() - t_router_start
+    t_by_edge_start = time.perf_counter()
+    by_edge = {_record_edge_key(r): r for r in routed_net_records}
+    by_edge_s = time.perf_counter() - t_by_edge_start
+    t_refcount_start = time.perf_counter()
+    route_cell_refcounts: Counter[GridCell] = Counter()
+    route_cells_by_edge: dict[RoutedEdgeKey, set[GridCell]] = {}
+    can_use_registered_route_cells = hasattr(
+        router,
+        "register_meander_route_cells_as_static",
+    ) and all(record.corrected_centerline_um for record in by_edge.values())
+    if not can_use_registered_route_cells:
+        for edge_key, record in by_edge.items():
+            route_cells = _record_route_cells(record)
+            route_cells_by_edge[edge_key] = route_cells
+            route_cell_refcounts.update(route_cells)
+    route_cell_refcount_s = time.perf_counter() - t_refcount_start
+    t_base_static_start = time.perf_counter()
+    base_static_cells = {
+        (int(x), int(y))
+        for x, y in (static_blocked_cells or ())
+    }
+    base_static_collect_s = time.perf_counter() - t_base_static_start
+    bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
+    t_set_static_start = time.perf_counter()
+    router.set_static_cells(list(base_static_cells))
+    set_static_s = time.perf_counter() - t_set_static_start
+    add_route_static_s = 0.0
+    register_route_cells_s = 0.0
+    registered_open_cell_index_by_edge: dict[RoutedEdgeKey, int] = {}
+    registered_open_cell_count_by_edge: dict[RoutedEdgeKey, int] = {}
+    registered_unique_route_cell_count: int | None = None
+    if can_use_registered_route_cells:
+        t_register_start = time.perf_counter()
+        edge_order = list(by_edge)
+        route_objects = [by_edge[edge_key].route_obj for edge_key in edge_order]
+        indices, open_counts, unique_count = router.register_meander_route_cells_as_static(
+            route_objects,
+            list(base_static_cells),
+        )
+        register_route_cells_s = time.perf_counter() - t_register_start
+        registered_unique_route_cell_count = int(unique_count)
+        for edge_key, raw_index, raw_count in zip(edge_order, indices, open_counts):
+            registered_open_cell_index_by_edge[edge_key] = int(raw_index)
+            registered_open_cell_count_by_edge[edge_key] = int(raw_count)
+    elif route_cell_refcounts:
+        t_add_route_static_start = time.perf_counter()
+        router.add_static_cells(list(route_cell_refcounts.keys()))
+        add_route_static_s = time.perf_counter() - t_add_route_static_start
+    setup_profile = {
+        "total_s": time.perf_counter() - t_total_start,
+        "router_init_s": router_init_s,
+        "by_edge_s": by_edge_s,
+        "route_cell_refcount_s": route_cell_refcount_s,
+        "base_static_collect_s": base_static_collect_s,
+        "set_static_cells_s": set_static_s,
+        "add_route_static_cells_s": add_route_static_s,
+        "register_route_cells_s": register_route_cells_s,
+        "routed_record_count": float(len(by_edge)),
+        "unique_route_cell_count": float(
+            registered_unique_route_cell_count
+            if registered_unique_route_cell_count is not None
+            else len(route_cell_refcounts)
+        ),
+        "registered_open_cell_count": float(sum(registered_open_cell_count_by_edge.values())),
+        "base_static_cell_count": float(len(base_static_cells)),
+    }
+    return _MeanderPlannerContext(
+        router=router,
+        by_edge=by_edge,
+        updated=dict(by_edge),
+        route_cells_by_edge=route_cells_by_edge,
+        route_cell_refcounts=route_cell_refcounts,
+        registered_open_cell_index_by_edge=registered_open_cell_index_by_edge,
+        registered_open_cell_count_by_edge=registered_open_cell_count_by_edge,
+        base_open_cells_by_edge={},
+        base_open_cell_lists_by_edge={},
+        max_bumps_by_edge={},
+        centerline_lists_by_edge={},
+        footprint_prefilter_enabled_by_edge={},
+        base_static_cells=base_static_cells,
+        reserved_meander_cells=set(),
+        grid_size_um=float(grid_size_um_cfg),
+        bend_radius_um=bend_radius_um,
+        setup_profile=setup_profile,
+        candidate_setup_profile={},
+    )
+
+
+def _meander_search_config(
+    *,
+    config: MeanderInsertionConfig,
+    bend_radius_um: float,
+) -> _MeanderSearchConfig:
+    min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
+    min_segment_um = max(0.5, float(config.min_candidate_straight_length_um))
+    max_height_um = max(0.0, float(config.max_meander_height_um))
+    box_depths_um = [
+        depth
+        for depth in MEANDER_DEPTH_CANDIDATES_UM
+        if depth <= max_height_um + 1.0e-9
+    ]
+    if not box_depths_um:
+        box_depths_um = [max_height_um]
+    endpoint_inset_um = (
+        max(2.0 * bend_radius_um, min_segment_um)
+        if config.auto_meander_endpoint_inset_um is None
+        else max(0.0, float(config.auto_meander_endpoint_inset_um))
+    )
+    return _MeanderSearchConfig(
+        min_straight_um=min_straight_um,
+        min_segment_um=min_segment_um,
+        max_height_um=max_height_um,
+        box_depths_um=box_depths_um,
+        endpoint_inset_um=endpoint_inset_um,
+    )
+
+
+def _meander_request_fits_footprint(
+    *,
+    requested: float,
+    bend_radius_um: float,
+    min_straight_um: float,
+    max_bumps: int,
+    max_height_um: float,
+    box_depths_um: Iterable[float],
+) -> bool:
+    requested = float(requested)
+    radius = float(bend_radius_um)
+    min_straight = max(0.0, float(min_straight_um))
+    max_height = max(0.0, float(max_height_um))
+    if (
+        not math.isfinite(requested)
+        or requested <= 0.0
+        or not math.isfinite(radius)
+        or radius <= 0.0
+        or max_bumps <= 0
+        or not math.isfinite(max_height)
+        or max_height <= 0.0
+    ):
+        return False
+    if not math.isfinite(min_straight):
+        return False
+
+    min_height = 2.0 * radius + min_straight
+    eps = 1.0e-9
+    for depth in box_depths_um:
+        depth = min(float(depth), max_height)
+        if not math.isfinite(depth) or depth + eps < min_height:
+            continue
+        for bumps in range(1, int(max_bumps) + 1, 2):
+            n = float(bumps)
+            bend_term = radius * (((n + 1.0) * math.pi) - (4.0 * n + 3.0))
+            amplitude = (requested - bend_term) / n
+            if amplitude + eps < min_height or amplitude - eps > depth:
+                continue
+            return True
+    return False
+
+
+def _candidates_for_requirement(
+    req: MissingLengthRequirement,
+    *,
+    requirement_edge_alternatives: Mapping[
+        RoutedEdgeKey,
+        Iterable[RoutedEdgeKey],
+    ]
+    | None,
+    requirement_delay_candidates: Mapping[
+        RoutedEdgeKey,
+        Iterable[DelayInsertionCandidate],
+    ]
+    | None,
+) -> list[DelayInsertionCandidate]:
+    if requirement_delay_candidates is not None:
+        explicit_candidates = list(requirement_delay_candidates.get(req.edge_key, ()))
+        if explicit_candidates:
+            return explicit_candidates
+
+    edge_keys = [req.edge_key]
+    if requirement_edge_alternatives is not None:
+        edge_keys.extend(requirement_edge_alternatives.get(req.edge_key, ()))
+
+    candidates: list[DelayInsertionCandidate] = []
+    seen_edges: set[RoutedEdgeKey] = set()
+    for index, edge_key in enumerate(edge_keys):
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        candidates.append(
+            DelayInsertionCandidate(
+                requirement_edge_key=req.edge_key,
+                edge_keys=(edge_key,),
+                extra_length_um=float(req.missing_length_um),
+                reason="direct_edge" if index == 0 else "legacy_single_edge_alternative",
+                affected_requirement_edge_keys=(req.edge_key,),
+            )
+        )
+    return candidates
+
+
+def _requirement_missing_by_edge(
+    requirements: Iterable[MissingLengthRequirement],
+) -> dict[RoutedEdgeKey, float]:
+    missing_by_edge: dict[RoutedEdgeKey, float] = {}
+    for req in requirements:
+        missing_by_edge[req.edge_key] = (
+            missing_by_edge.get(req.edge_key, 0.0)
+            + float(req.missing_length_um)
+        )
+    return missing_by_edge
+
+
+def _record_candidate_profile(
+    profile: dict[str, dict[str, object]],
+    *,
+    reason: str,
+    status: str,
+    edge_count: int,
+    edge_calls: int,
+    elapsed_s: float,
+) -> None:
+    entry = profile.setdefault(
+        reason,
+        {
+            "candidate_attempts": 0,
+            "edge_calls": 0,
+            "elapsed_s": 0.0,
+            "planned": 0,
+            "no_candidate": 0,
+            "already_satisfied": 0,
+            "edge_count_total": 0,
+        },
+    )
+    entry["candidate_attempts"] = _as_int(entry.get("candidate_attempts"), 0) + 1
+    entry["edge_calls"] = _as_int(entry.get("edge_calls"), 0) + int(edge_calls)
+    entry["elapsed_s"] = _as_float(entry.get("elapsed_s"), 0.0) + float(elapsed_s)
+    entry["edge_count_total"] = _as_int(entry.get("edge_count_total"), 0) + int(edge_count)
+    status_key = status if status in {"planned", "no_candidate", "already_satisfied"} else "no_candidate"
+    entry[status_key] = _as_int(entry.get(status_key), 0) + 1
 
 
 def _minimum_four_bend_extra_length_um(
@@ -199,68 +1100,29 @@ def analyze_meander_insertion_for_requirements(
     rust_backend = _load_rust_backend()
     if rust_backend is None:
         raise RuntimeError("Rust router backend unavailable for meander analysis.")
-    width, height, grid_size_um_cfg, origin_x_um, origin_y_um = realization_grid_spec
-    grid_spec = rust_backend.GridSpec(
-        int(width),
-        int(height),
-        float(grid_size_um_cfg),
-        float(origin_x_um),
-        float(origin_y_um),
-    )
-    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
-        grid_size_um=float(grid_size_um_cfg),
-        bend_radius_cells=int(bend_radius_cells),
+    rust_backend = cast(_RustBackendProtocol, rust_backend)
+    grid_size_um_cfg = float(realization_grid_spec[2])
+    context = _build_planner_context(
+        rust_backend=rust_backend,
+        routed_net_records=routed_net_records,
+        realization_grid_spec=realization_grid_spec,
         allow_45_degree_turns=allow_45_degree_turns,
+        bend_radius_cells=bend_radius_cells,
+        static_blocked_cells=static_blocked_cells,
     )
-    astar_cfg = rust_backend.AStarConfig(max_iterations=1)
-    router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
-    if isinstance(static_blocked_cells, set):
-        base_static_cells = static_blocked_cells
-    else:
-        base_static_cells = {
-            (int(x), int(y))
-            for x, y in (static_blocked_cells or ())
-        }
-
-    def _record_route_cells(record: RoutedNetRecord) -> set[tuple[int, int]]:
-        cells = getattr(record.route_obj, "cells", None) or []
-        return {(int(x), int(y)) for x, y in cells}
-
-    def _grid_rect_cells(grid_rect: object) -> set[tuple[int, int]]:
-        if not isinstance(grid_rect, (tuple, list)) or len(grid_rect) != 4:
-            return set()
-        min_x = _as_int(grid_rect[0], 0)
-        max_x = _as_int(grid_rect[1], -1)
-        min_y = _as_int(grid_rect[2], 0)
-        max_y = _as_int(grid_rect[3], -1)
-        if max_x < min_x or max_y < min_y:
-            return set()
-        return {
-            (x, y)
-            for x in range(min_x, max_x + 1)
-            for y in range(min_y, max_y + 1)
-        }
-
-    reserved_meander_cells: set[GridCell] = set()
-
-    by_edge = {_record_edge_key(r): r for r in routed_net_records}
-    updated = dict(by_edge)
-    route_cells_by_edge = {
-        edge: _record_route_cells(record)
-        for edge, record in by_edge.items()
-    }
-    route_cell_refcounts: Counter[tuple[int, int]] = Counter()
-    for cells in route_cells_by_edge.values():
-        route_cell_refcounts.update(cells)
-    router.set_static_cells(list(base_static_cells))
-    if route_cell_refcounts:
-        router.add_static_cells(list(route_cell_refcounts.keys()))
+    search_config = _meander_search_config(
+        config=config,
+        bend_radius_um=context.bend_radius_um,
+    )
     results: list[dict[str, object]] = []
     total_requested = 0.0
     total_inserted = 0.0
     total_disregarded = 0.0
     planner_calls = 0
     planner_elapsed_s = 0.0
+    probe_calls = 0
+    probe_elapsed_s = 0.0
+    candidate_profile: dict[str, dict[str, object]] = {}
     min_insertable_extra_um = _minimum_four_bend_extra_length_um(
         grid_size_um=float(grid_size_um_cfg),
         bend_radius_cells=int(bend_radius_cells),
@@ -271,235 +1133,7 @@ def analyze_meander_insertion_for_requirements(
         if float(req.missing_length_um) >= min_insertable_extra_um
     )
 
-    def _candidates_for_requirement(
-        req: MissingLengthRequirement,
-    ) -> list[DelayInsertionCandidate]:
-        if requirement_delay_candidates is not None:
-            explicit_candidates = list(
-                requirement_delay_candidates.get(req.edge_key, ())
-            )
-            if explicit_candidates:
-                return explicit_candidates
-
-        edge_keys = [req.edge_key]
-        if requirement_edge_alternatives is not None:
-            edge_keys.extend(requirement_edge_alternatives.get(req.edge_key, ()))
-
-        candidates: list[DelayInsertionCandidate] = []
-        seen_edges: set[RoutedEdgeKey] = set()
-        for index, edge_key in enumerate(edge_keys):
-            if edge_key in seen_edges:
-                continue
-            seen_edges.add(edge_key)
-            candidates.append(
-                DelayInsertionCandidate(
-                    requirement_edge_key=req.edge_key,
-                    edge_keys=(edge_key,),
-                    extra_length_um=float(req.missing_length_um),
-                    reason="direct_edge" if index == 0 else "legacy_single_edge_alternative",
-                    affected_requirement_edge_keys=(req.edge_key,),
-                )
-            )
-        return candidates
-
-    def _planned_record(
-        *,
-        record: RoutedNetRecord,
-        requested: float,
-        rr: dict[str, object],
-        min_straight_um: float,
-        max_bumps: int,
-        max_height_um: float,
-        min_seg_um: float,
-        endpoint_inset_um: float,
-    ) -> RoutedNetRecord:
-        return RoutedNetRecord(
-            net_name=record.net_name,
-            source=record.source,
-            target=record.target,
-            route_obj=record.route_obj,
-            total_length_um=record.total_length_um,
-            meander_auto_plan={
-                "requested_extra_length_um": requested,
-                "min_bend_radius_um": None,
-                "min_straight_um": min_straight_um,
-                "max_bumps": max_bumps,
-                "max_meander_height_um": max_height_um,
-                "box_depth_um": _as_float(rr.get("box_depth_um", 20.0), 20.0),
-                "min_segment_length_um": min_seg_um,
-                "endpoint_inset_um": endpoint_inset_um,
-                "clearance_radius_cells": 0,
-                "side_policy": "both",
-                "selected_side": rr.get("side"),
-                "selected_box": rr.get("selected_box"),
-                "selected_grid_rect": rr.get("selected_grid_rect"),
-                "selected_run_start_index": rr.get("selected_run_start_index"),
-                "selected_run_end_index": rr.get("selected_run_end_index"),
-                "selected_meander_centerline": rr.get("centerline"),
-                "planning_mode": "fill_box_multi_bump",
-            },
-            opened_cells=record.opened_cells,
-            source_port_center_um=record.source_port_center_um,
-            target_port_center_um=record.target_port_center_um,
-            source_port_orientation_deg=record.source_port_orientation_deg,
-            target_port_orientation_deg=record.target_port_orientation_deg,
-            base_total_length_um=record.base_total_length_um,
-            corrected_centerline_um=record.corrected_centerline_um,
-        )
-
-    def _plan_edge_candidate(
-        *,
-        candidate_edge_key: RoutedEdgeKey,
-        requested: float,
-        extra_reserved_cells: set[GridCell],
-        box_depths_um: list[float],
-        min_straight_um: float,
-        min_seg_um: float,
-        max_height_um: float,
-        bend_radius_um: float,
-        endpoint_inset_um: float,
-    ) -> EdgePlanAttempt:
-        record = by_edge.get(candidate_edge_key)
-        attempt_info: dict[str, object] = {
-            "edge": edge_key_to_dict(candidate_edge_key),
-            "status": "no_candidate",
-            "reason": "",
-        }
-        if record is None:
-            attempt_info["reason"] = "no_matching_routed_record"
-            return attempt_info, None, None, True, 1, set(), 0.0, None
-
-        blocked_by_planned = reserved_meander_cells | extra_reserved_cells
-        candidate_route_open_cells = {
-            cell
-            for cell in route_cells_by_edge.get(candidate_edge_key, set())
-            if route_cell_refcounts.get(cell, 0) == 1
-            and cell not in base_static_cells
-            and cell not in blocked_by_planned
-        }
-        candidate_max_bumps = _route_geometry_max_meander_bumps(
-            record=record,
-            grid_size_um=float(grid_size_um_cfg),
-            bend_radius_um=bend_radius_um,
-        )
-        candidate_best_rr: dict[str, object] | None = None
-        candidate_last_exc: Exception | None = None
-        candidate_used_reserved_overlay = True
-        t_plan_start = time.perf_counter()
-        try:
-            planner_kwargs = dict(
-                requested_extra_length_um=float(requested),
-                box_depths_um=box_depths_um,
-                min_bend_radius_um=None,
-                min_straight_um=min_straight_um,
-                max_bumps=candidate_max_bumps,
-                max_meander_height_um=max_height_um,
-                min_segment_length_um=min_seg_um,
-                endpoint_inset_um=endpoint_inset_um,
-                clearance_radius_cells=0,
-                side_policy="both",
-                opened_cells=sorted(candidate_route_open_cells),
-                planning_mode="fill_box_multi_bump",
-                extra_blocked_cells=sorted(blocked_by_planned),
-            )
-            try:
-                if record.corrected_centerline_um:
-                    candidate_best_rr = cast(
-                        dict[str, object],
-                        router.plan_auto_analytic_meander_for_centerline_depth_sweep(
-                            list(record.corrected_centerline_um),
-                            **planner_kwargs,
-                        ),
-                    )
-                else:
-                    candidate_best_rr = cast(
-                        dict[str, object],
-                        router.plan_auto_analytic_meander_for_route_depth_sweep(
-                            record.route_obj,
-                            **planner_kwargs,
-                        ),
-                    )
-            except TypeError:
-                candidate_used_reserved_overlay = False
-                planner_kwargs.pop("extra_blocked_cells", None)
-                if record.corrected_centerline_um:
-                    candidate_best_rr = cast(
-                        dict[str, object],
-                        router.plan_auto_analytic_meander_for_centerline_depth_sweep(
-                            list(record.corrected_centerline_um),
-                            **planner_kwargs,
-                        ),
-                    )
-                else:
-                    candidate_best_rr = cast(
-                        dict[str, object],
-                        router.plan_auto_analytic_meander_for_route_depth_sweep(
-                            record.route_obj,
-                            **planner_kwargs,
-                        ),
-                    )
-        except Exception as exc:
-            candidate_last_exc = exc
-        elapsed_s = time.perf_counter() - t_plan_start
-
-        if candidate_best_rr is None:
-            attempt_info["reason"] = (
-                str(candidate_last_exc)
-                if candidate_last_exc is not None
-                else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
-            )
-            return (
-                attempt_info,
-                None,
-                record,
-                candidate_used_reserved_overlay,
-                candidate_max_bumps,
-                candidate_route_open_cells,
-                elapsed_s,
-                candidate_last_exc,
-            )
-
-        candidate_inserted = _as_float(
-            candidate_best_rr.get("inserted_extra_length_um", 0.0),
-            0.0,
-        )
-        if abs(candidate_inserted - requested) > EXACT_MEANDER_EPS_UM:
-            attempt_info["reason"] = (
-                f"candidate residual {abs(candidate_inserted - requested):.6g} um "
-                f"exceeds hard limit {EXACT_MEANDER_EPS_UM} um"
-            )
-            attempt_info["inserted_extra_length_um"] = candidate_inserted
-            return (
-                attempt_info,
-                None,
-                record,
-                candidate_used_reserved_overlay,
-                candidate_max_bumps,
-                candidate_route_open_cells,
-                elapsed_s,
-                None,
-            )
-
-        attempt_info["status"] = "planned"
-        attempt_info["reason"] = ""
-        attempt_info["inserted_extra_length_um"] = candidate_inserted
-        return (
-            attempt_info,
-            candidate_best_rr,
-            record,
-            candidate_used_reserved_overlay,
-            candidate_max_bumps,
-            candidate_route_open_cells,
-            elapsed_s,
-            None,
-        )
-
-    requirement_missing_by_edge: dict[RoutedEdgeKey, float] = {}
-    for req in requirements:
-        requirement_missing_by_edge[req.edge_key] = (
-            requirement_missing_by_edge.get(req.edge_key, 0.0)
-            + float(req.missing_length_um)
-        )
+    requirement_missing_by_edge = _requirement_missing_by_edge(requirements)
     effective_inserted_by_requirement_edge: dict[RoutedEdgeKey, float] = {}
     total_physical_inserted = 0.0
 
@@ -510,7 +1144,6 @@ def analyze_meander_insertion_for_requirements(
         requested = max(0.0, original_requested - already_inserted)
         if requested <= EXACT_MEANDER_EPS_UM:
             continue
-        candidate_insertions = _candidates_for_requirement(req)
         entry = {
             "edge": edge_key_to_dict(edge_key),
             "requested_extra_length_um": requested,
@@ -539,23 +1172,7 @@ def analyze_meander_insertion_for_requirements(
             entry["unmatched_length_um"] = 0.0
             results.append(entry)
             continue
-        min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
-        min_seg_um = max(0.5, float(config.min_candidate_straight_length_um))
-        max_height_um = max(0.0, float(config.max_meander_height_um))
-        box_depths_um = [
-            depth
-            for depth in MEANDER_DEPTH_CANDIDATES_UM
-            if depth <= max_height_um + 1.0e-9
-        ]
-        if not box_depths_um:
-            box_depths_um = [max_height_um]
-        entry["box_depth_candidates_um"] = list(box_depths_um)
-        bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
-        endpoint_inset_um = (
-            max(2.0 * bend_radius_um, min_seg_um)
-            if config.auto_meander_endpoint_inset_um is None
-            else max(0.0, float(config.auto_meander_endpoint_inset_um))
-        )
+        entry["box_depth_candidates_um"] = list(search_config.box_depths_um)
         last_exc: Exception | None = None
         selected_plans: list[PlannedEdgeInsertion] = []
         selected_candidate: DelayInsertionCandidate | None = None
@@ -565,9 +1182,13 @@ def analyze_meander_insertion_for_requirements(
         attempted_edges: list[dict[str, object]] = []
         planning_elapsed_for_entry_s = 0.0
         max_bumps = 1
-        current_route_open_cells: set[tuple[int, int]] = set()
+        current_route_open_cell_count = 0
 
-        for candidate in candidate_insertions:
+        for candidate in _candidates_for_requirement(
+            req,
+            requirement_edge_alternatives=requirement_edge_alternatives,
+            requirement_delay_candidates=requirement_delay_candidates,
+        ):
             affected_edges = (
                 candidate.affected_requirement_edge_keys
                 if candidate.affected_requirement_edge_keys
@@ -604,14 +1225,24 @@ def analyze_meander_insertion_for_requirements(
             if candidate_requested <= EXACT_MEANDER_EPS_UM:
                 candidate_info["status"] = "already_satisfied"
                 candidate_attempts.append(candidate_info)
+                _record_candidate_profile(
+                    candidate_profile,
+                    reason=candidate.reason,
+                    status="already_satisfied",
+                    edge_count=len(candidate.edge_keys),
+                    edge_calls=0,
+                    elapsed_s=0.0,
+                )
                 continue
             candidate_plans: list[PlannedEdgeInsertion] = []
             candidate_reserved_cells: set[GridCell] = set()
             candidate_open_cells: set[GridCell] = set()
+            candidate_open_cell_count = 0
             candidate_max_bumps_values: list[int] = []
             candidate_failed = False
+            candidate_elapsed_s = 0.0
+            candidate_edge_calls = 0
             for candidate_edge_key in candidate.edge_keys:
-                planner_calls += 1
                 (
                     attempt_info,
                     rr,
@@ -620,20 +1251,28 @@ def analyze_meander_insertion_for_requirements(
                     candidate_max_bumps,
                     candidate_route_open_cells,
                     elapsed_s,
+                    edge_probe_elapsed_s,
                     candidate_last_exc,
-                ) = _plan_edge_candidate(
+                ) = context.plan_edge_candidate(
                     candidate_edge_key=candidate_edge_key,
                     requested=candidate_requested,
                     extra_reserved_cells=candidate_reserved_cells,
-                    box_depths_um=box_depths_um,
-                    min_straight_um=min_straight_um,
-                    min_seg_um=min_seg_um,
-                    max_height_um=max_height_um,
-                    bend_radius_um=bend_radius_um,
-                    endpoint_inset_um=endpoint_inset_um,
+                    box_depths_um=search_config.box_depths_um,
+                    min_straight_um=search_config.min_straight_um,
+                    min_seg_um=search_config.min_segment_um,
+                    max_height_um=search_config.max_height_um,
+                    endpoint_inset_um=search_config.endpoint_inset_um,
+                    use_probe=False,
                 )
+                if "probe_feasible" in attempt_info or "probe_error" in attempt_info:
+                    probe_calls += 1
+                    probe_elapsed_s += edge_probe_elapsed_s
+                if bool(attempt_info.get("planner_called", True)):
+                    planner_calls += 1
+                    candidate_edge_calls += 1
                 planning_elapsed_for_entry_s += elapsed_s
                 planner_elapsed_s += elapsed_s
+                candidate_elapsed_s += elapsed_s
                 edge_attempts.append(attempt_info)
                 attempted_edges.append(attempt_info)
                 last_exc = candidate_last_exc
@@ -645,6 +1284,13 @@ def analyze_meander_insertion_for_requirements(
                 new_reserved_cells = _grid_rect_cells(selected_grid_rect)
                 candidate_reserved_cells.update(new_reserved_cells)
                 candidate_open_cells.update(candidate_route_open_cells)
+                if candidate_route_open_cells:
+                    candidate_open_cell_count += len(candidate_route_open_cells)
+                else:
+                    candidate_open_cell_count += _as_int(
+                        attempt_info.get("opened_route_cell_count"),
+                        0,
+                    )
                 candidate_max_bumps_values.append(candidate_max_bumps)
                 candidate_plans.append(
                     (
@@ -659,23 +1305,43 @@ def analyze_meander_insertion_for_requirements(
             if candidate_failed:
                 candidate_info["status"] = "no_candidate"
                 candidate_attempts.append(candidate_info)
+                _record_candidate_profile(
+                    candidate_profile,
+                    reason=candidate.reason,
+                    status="no_candidate",
+                    edge_count=len(candidate.edge_keys),
+                    edge_calls=candidate_edge_calls,
+                    elapsed_s=candidate_elapsed_s,
+                )
                 continue
             candidate_info["status"] = "planned"
             candidate_info["failure_reason"] = ""
             candidate_attempts.append(candidate_info)
+            _record_candidate_profile(
+                candidate_profile,
+                reason=candidate.reason,
+                status="planned",
+                edge_count=len(candidate.edge_keys),
+                edge_calls=candidate_edge_calls,
+                elapsed_s=candidate_elapsed_s,
+            )
             selected_candidate = candidate
             selected_candidate_requested = candidate_requested
             selected_affected_edges = tuple(affected_edges)
             selected_plans = candidate_plans
             max_bumps = max(candidate_max_bumps_values, default=1)
-            current_route_open_cells = candidate_open_cells
+            current_route_open_cell_count = (
+                len(candidate_open_cells)
+                if candidate_open_cells
+                else candidate_open_cell_count
+            )
             break
 
         entry["planning_elapsed_s"] = planning_elapsed_for_entry_s
         entry["candidate_edges"] = attempted_edges
         entry["candidate_attempts"] = candidate_attempts
         entry["max_bumps"] = max_bumps
-        entry["opened_route_cell_count"] = len(current_route_open_cells)
+        entry["opened_route_cell_count"] = current_route_open_cell_count
 
         if selected_candidate is None or not selected_plans:
             entry["status"] = "no_candidate"
@@ -712,7 +1378,7 @@ def analyze_meander_insertion_for_requirements(
         entry["rejected_exact_length_mismatch"] = representative_rr.get("rejected_exact_length_mismatch")
         entry["rejected_too_short"] = representative_rr.get("rejected_too_short")
         entry["selected_interval_length_um"] = representative_rr.get("selected_interval_length_um")
-        entry["endpoint_inset_um"] = endpoint_inset_um
+        entry["endpoint_inset_um"] = search_config.endpoint_inset_um
         entry["requested_probe_length_um"] = requested
         entry["used_reserved_overlay"] = all(plan[3] for plan in selected_plans)
         entry["selected_candidate_reason"] = selected_candidate.reason
@@ -743,20 +1409,17 @@ def analyze_meander_insertion_for_requirements(
             candidate_max_bumps,
             _candidate_route_open_cells,
         ) in selected_plans:
-            new_reserved_cells = _grid_rect_cells(rr.get("selected_grid_rect"))
-            if new_reserved_cells:
-                reserved_meander_cells.update(new_reserved_cells)
-                if not used_reserved_overlay:
-                    router.add_static_cells(list(new_reserved_cells))
-            updated[selected_edge_key] = _planned_record(
+            context.commit_planned_edge(
+                selected_edge_key=selected_edge_key,
                 record=record,
-                requested=float(selected_candidate_requested),
                 rr=rr,
-                min_straight_um=min_straight_um,
+                requested=float(selected_candidate_requested),
+                used_reserved_overlay=used_reserved_overlay,
+                min_straight_um=search_config.min_straight_um,
                 max_bumps=candidate_max_bumps,
-                max_height_um=max_height_um,
-                min_seg_um=min_seg_um,
-                endpoint_inset_um=endpoint_inset_um,
+                max_height_um=search_config.max_height_um,
+                min_seg_um=search_config.min_segment_um,
+                endpoint_inset_um=search_config.endpoint_inset_um,
             )
         results.append(entry)
         for affected_edge in selected_affected_edges:
@@ -771,7 +1434,7 @@ def analyze_meander_insertion_for_requirements(
 
     total_unmatched = max(0.0, total_requested - total_inserted)
     return (
-        [updated.get(_record_edge_key(r), r) for r in routed_net_records],
+        [context.updated.get(_record_edge_key(r), r) for r in routed_net_records],
         {
             "results": results,
             "total_requested_extra_length_um": float(total_requested),
@@ -781,6 +1444,13 @@ def analyze_meander_insertion_for_requirements(
             "unmatched_length_um": float(total_unmatched),
             "planner_calls": int(planner_calls),
             "planner_elapsed_s": float(planner_elapsed_s),
+            "probe_calls": int(probe_calls),
+            "probe_elapsed_s": float(probe_elapsed_s),
+            "setup_profile": context.setup_profile,
+            "candidate_setup_profile": context.candidate_setup_profile,
+            "candidate_overhead_s": float(context.candidate_overhead_s),
+            "commit_elapsed_s": float(context.commit_elapsed_s),
+            "candidate_profile": candidate_profile,
             "minimum_insertable_extra_length_um": float(min_insertable_extra_um),
             "using_legacy_meander_path": False,
         },

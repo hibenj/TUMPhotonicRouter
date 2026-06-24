@@ -1910,6 +1910,90 @@ def test_main_meander_report_uses_auto_multi_bump_path():
     )
 
 
+def test_registered_meander_route_cells_match_legacy_opened_cells():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for registered meander path test.")
+
+    grid = rust_backend.GridSpec(240, 120, 1.0, 0.0, 0.0)
+    primitive = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=2,
+        allow_45_degree_turns=False,
+    )
+    astar = rust_backend.AStarConfig(max_iterations=200_000)
+    router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
+    if not hasattr(
+        router,
+        "plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened",
+    ):
+        pytest.skip("Rust backend lacks registered meander opened-cell API.")
+
+    route_obj = router.route_single_net(
+        rust_backend.State(20, 60, 0),
+        rust_backend.State(180, 60, 0),
+    )
+    centerline = router.route_port_corrected_centerline(route_obj)
+    indices, open_counts, unique_count = router.register_meander_route_cells_as_static(
+        [route_obj],
+        [],
+    )
+
+    assert indices == [0]
+    assert open_counts == [len(route_obj.cells)]
+    assert unique_count == len(route_obj.cells)
+    assert router.registered_meander_open_cell_count(0) == len(route_obj.cells)
+
+    kwargs = {
+        "requested_extra_length_um": 75.311,
+        "box_depths_um": [40.0, 30.0, 24.0, 20.0],
+        "min_bend_radius_um": None,
+        "min_straight_um": 2.0,
+        "max_bumps": 21,
+        "max_meander_height_um": 40.0,
+        "min_segment_length_um": 2.0,
+        "endpoint_inset_um": 0.0,
+        "clearance_radius_cells": 0,
+        "side_policy": "both",
+        "planning_mode": "fill_box_multi_bump",
+    }
+    registered = (
+        router.plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
+            centerline,
+            0,
+            **kwargs,
+        )
+    )
+    legacy = router.plan_auto_analytic_meander_for_centerline_depth_sweep(
+        centerline,
+        opened_cells=route_obj.cells,
+        extra_blocked_cells=None,
+        **kwargs,
+    )
+
+    assert registered["inserted_extra_length_um"] == pytest.approx(
+        legacy["inserted_extra_length_um"]
+    )
+    assert registered["selected_grid_rect"] == legacy["selected_grid_rect"]
+    assert registered["bumps"] == legacy["bumps"]
+
+    selected_rect = cast(tuple[int, int, int, int], registered["selected_grid_rect"])
+    router.add_registered_meander_reserved_cells(
+        [
+            (x, y)
+            for x in range(selected_rect[0], selected_rect[1] + 1)
+            for y in range(selected_rect[2], selected_rect[3] + 1)
+        ]
+    )
+    shifted = router.plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
+        centerline,
+        0,
+        **kwargs,
+    )
+
+    assert shifted["selected_grid_rect"] != selected_rect
+
+
 def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
     rust_backend = _load_rust_backend()
     if rust_backend is None:

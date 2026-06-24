@@ -244,6 +244,32 @@ def _format_status_counts(value: object) -> str:
     return " ".join(parts)
 
 
+def _format_candidate_profile(value: object) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    parts = []
+    for reason, raw_profile in sorted(
+        value.items(),
+        key=lambda item: (
+            -_numeric_float(item[1].get("elapsed_s"))
+            if isinstance(item[1], Mapping)
+            else 0.0
+        ),
+    ):
+        if not isinstance(raw_profile, Mapping):
+            continue
+        parts.append(
+            "{reason}:calls={calls},elapsed={elapsed:.4f}s,planned={planned},miss={miss}".format(
+                reason=reason,
+                calls=_numeric_int(raw_profile.get("edge_calls")),
+                elapsed=_numeric_float(raw_profile.get("elapsed_s")),
+                planned=_numeric_int(raw_profile.get("planned")),
+                miss=_numeric_int(raw_profile.get("no_candidate")),
+            )
+        )
+    return "; ".join(parts)
+
+
 def _numeric_float(value: object, default: float = 0.0) -> float:
     if isinstance(value, bool):
         return default
@@ -396,6 +422,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         debug_timing=False,
         show_klayout=False,
         enable_path_length_matching=args.path_length_matching,
+        path_length_match_outputs=args.path_length_match_outputs,
         allow_45_degree_turns=args.allow_45_degree_turns,
         use_indexed_heap=args.use_indexed_heap,
         primitive_ordering=args.primitive_ordering,
@@ -493,6 +520,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "meander_unmatched_um": meander_report.get("unmatched_length_um"),
         "meander_status_counts": meander_status_counts,
         "meander_planner_elapsed_s": meander_report.get("planner_elapsed_s"),
+        "meander_candidate_profile": meander_report.get("candidate_profile", {}),
         "meander_candidate_runs": _sum_meander_result_int(
             meander_results,
             "candidate_runs",
@@ -592,6 +620,8 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         command.append("--use-indexed-heap")
     if args.path_length_matching:
         command.append("--path-length-matching")
+    if args.path_length_match_outputs:
+        command.append("--path-length-match-outputs")
     if args.allow_45_degree_turns:
         command.append("--allow-45-degree-turns")
     if args.include_heater_obstacles:
@@ -637,6 +667,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Git revision: `{_git_rev()}`",
         f"- Python: `{platform.python_version()}`",
         f"- Path-length matching: `{args.path_length_matching}`",
+        f"- Path-length match outputs: `{getattr(args, 'path_length_match_outputs', False)}`",
         f"- 45-degree turns: `{args.allow_45_degree_turns}`",
         f"- Heater obstacles: `{args.include_heater_obstacles}`",
         f"- Obstacle mode: `{args.obstacle_mode}`",
@@ -771,8 +802,8 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     "",
                     "## Meander Planner Diagnostics",
                     "",
-                    "| Benchmark | Planner elapsed s | Candidate runs | Intervals | Blocked | Plan fail | Exact mismatch | Too short | Max runs | Max intervals | Slowest s | Slowest requested um | Slowest status | Slowest counters |",
-                    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+                    "| Benchmark | Planner elapsed s | Candidate runs | Intervals | Blocked | Plan fail | Exact mismatch | Too short | Max runs | Max intervals | Slowest s | Slowest requested um | Slowest status | Slowest counters | Candidate profile |",
+                    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
                 ]
             )
             for row in diagnostic_rows:
@@ -795,7 +826,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     ),
                 )
                 lines.append(
-                    "| {benchmark} | {planner_elapsed_s} | {candidate_runs} | {candidate_intervals} | {blocked} | {plan_fail} | {exact_mismatch} | {too_short} | {max_runs} | {max_intervals} | {slowest_s} | {slowest_requested} | {slowest_status} | {slowest_counters} |".format(
+                    "| {benchmark} | {planner_elapsed_s} | {candidate_runs} | {candidate_intervals} | {blocked} | {plan_fail} | {exact_mismatch} | {too_short} | {max_runs} | {max_intervals} | {slowest_s} | {slowest_requested} | {slowest_status} | {slowest_counters} | {candidate_profile} |".format(
                         benchmark=row["benchmark"],
                         planner_elapsed_s=_format_seconds(
                             _record_seconds(row, "meander_planner_elapsed_s")
@@ -824,6 +855,9 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                         ),
                         slowest_status=row.get("slowest_meander_status", ""),
                         slowest_counters=slowest_counters,
+                        candidate_profile=_format_candidate_profile(
+                            row.get("meander_candidate_profile")
+                        ),
                     )
                 )
     all_attempts = _flatten_attempt_records(rows)
@@ -974,6 +1008,7 @@ def _parse_args() -> argparse.Namespace:
         help="Write per-route-attempt records as JSON, or CSV when the suffix is .csv.",
     )
     parser.add_argument("--path-length-matching", action="store_true")
+    parser.add_argument("--path-length-match-outputs", action="store_true")
     parser.add_argument("--allow-45-degree-turns", action="store_true")
     parser.add_argument("--max-iterations", type=int, default=5_000_000)
     parser.add_argument("--routing-window-scale", type=float, default=0.05)
