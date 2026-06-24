@@ -59,6 +59,13 @@ class _MeanderRouterProtocol(Protocol):
     def set_static_cells(self, cells: list[GridCell]) -> None: ...
     def add_static_cells(self, cells: list[GridCell]) -> None: ...
     def add_registered_meander_reserved_cells(self, cells: list[GridCell]) -> int: ...
+    def add_registered_meander_reserved_grid_rect(
+        self,
+        min_x: int,
+        max_x: int,
+        min_y: int,
+        max_y: int,
+    ) -> int: ...
     def register_meander_route_cells_as_static(
         self,
         routes: list[object],
@@ -203,12 +210,18 @@ class _MeanderPlannerContext:
     bend_radius_um: float
     setup_profile: dict[str, float]
     candidate_setup_profile: dict[str, float]
+    commit_profile: dict[str, float]
     candidate_overhead_s: float = 0.0
     commit_elapsed_s: float = 0.0
 
     def _add_candidate_setup_time(self, key: str, elapsed_s: float) -> None:
         self.candidate_setup_profile[key] = (
             self.candidate_setup_profile.get(key, 0.0) + max(0.0, float(elapsed_s))
+        )
+
+    def _add_commit_time(self, key: str, elapsed_s: float) -> None:
+        self.commit_profile[key] = (
+            self.commit_profile.get(key, 0.0) + max(0.0, float(elapsed_s))
         )
 
     def base_open_cells_for_edge(
@@ -1137,13 +1150,52 @@ class _MeanderPlannerContext:
         endpoint_inset_um: float,
     ) -> None:
         t_commit_start = time.perf_counter()
-        new_reserved_cells = _grid_rect_cells(rr.get("selected_grid_rect"))
-        if new_reserved_cells:
+        grid_rect = rr.get("selected_grid_rect")
+        parsed_grid_rect = _parse_grid_rect(grid_rect)
+        if parsed_grid_rect is not None:
+            min_x, max_x, min_y, max_y = parsed_grid_rect
+            if hasattr(self.router, "add_registered_meander_reserved_grid_rect"):
+                t_rust_reserved_start = time.perf_counter()
+                self.router.add_registered_meander_reserved_grid_rect(
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                )
+                self._add_commit_time(
+                    "rust_reserved_rect_update_s",
+                    time.perf_counter() - t_rust_reserved_start,
+                )
+            t_grid_rect_start = time.perf_counter()
+            new_reserved_cells = _grid_rect_cells(parsed_grid_rect)
+            self._add_commit_time(
+                "grid_rect_cells_s",
+                time.perf_counter() - t_grid_rect_start,
+            )
+            t_python_reserved_start = time.perf_counter()
             self.reserved_meander_cells.update(new_reserved_cells)
-            if hasattr(self.router, "add_registered_meander_reserved_cells"):
+            self._add_commit_time(
+                "python_reserved_update_s",
+                time.perf_counter() - t_python_reserved_start,
+            )
+            if not hasattr(self.router, "add_registered_meander_reserved_grid_rect") and hasattr(
+                self.router,
+                "add_registered_meander_reserved_cells",
+            ):
+                t_rust_reserved_start = time.perf_counter()
                 self.router.add_registered_meander_reserved_cells(list(new_reserved_cells))
+                self._add_commit_time(
+                    "rust_reserved_update_s",
+                    time.perf_counter() - t_rust_reserved_start,
+                )
             if not used_reserved_overlay:
+                t_static_update_start = time.perf_counter()
                 self.router.add_static_cells(list(new_reserved_cells))
+                self._add_commit_time(
+                    "rust_static_update_s",
+                    time.perf_counter() - t_static_update_start,
+                )
+        t_record_start = time.perf_counter()
         self.updated[selected_edge_key] = _planned_record(
             record=record,
             requested=requested,
@@ -1153,6 +1205,10 @@ class _MeanderPlannerContext:
             max_height_um=max_height_um,
             min_seg_um=min_seg_um,
             endpoint_inset_um=endpoint_inset_um,
+        )
+        self._add_commit_time(
+            "planned_record_s",
+            time.perf_counter() - t_record_start,
         )
         self.commit_elapsed_s += time.perf_counter() - t_commit_start
 
@@ -1178,19 +1234,27 @@ def _record_has_prefilter_geometry(record: RoutedNetRecord) -> bool:
 
 
 def _grid_rect_cells(grid_rect: object) -> set[GridCell]:
-    if not isinstance(grid_rect, (tuple, list)) or len(grid_rect) != 4:
+    parsed = _parse_grid_rect(grid_rect)
+    if parsed is None:
         return set()
-    min_x = _as_int(grid_rect[0], 0)
-    max_x = _as_int(grid_rect[1], -1)
-    min_y = _as_int(grid_rect[2], 0)
-    max_y = _as_int(grid_rect[3], -1)
-    if max_x < min_x or max_y < min_y:
-        return set()
+    min_x, max_x, min_y, max_y = parsed
     return {
         (x, y)
         for x in range(min_x, max_x + 1)
         for y in range(min_y, max_y + 1)
     }
+
+
+def _parse_grid_rect(grid_rect: object) -> tuple[int, int, int, int] | None:
+    if not isinstance(grid_rect, (tuple, list)) or len(grid_rect) != 4:
+        return None
+    min_x = _as_int(grid_rect[0], 0)
+    max_x = _as_int(grid_rect[1], -1)
+    min_y = _as_int(grid_rect[2], 0)
+    max_y = _as_int(grid_rect[3], -1)
+    if max_x < min_x or max_y < min_y:
+        return None
+    return min_x, max_x, min_y, max_y
 
 
 def _planned_record(
@@ -1403,6 +1467,7 @@ def _build_planner_context(
         bend_radius_um=bend_radius_um,
         setup_profile=setup_profile,
         candidate_setup_profile={},
+        commit_profile={},
     )
 
 
@@ -2210,6 +2275,7 @@ def analyze_meander_insertion_for_requirements(
             "setup_profile": context.setup_profile,
             "candidate_setup_profile": context.candidate_setup_profile,
             "candidate_overhead_s": float(context.candidate_overhead_s),
+            "commit_profile": context.commit_profile,
             "commit_elapsed_s": float(context.commit_elapsed_s),
             "candidate_profile": candidate_profile,
             "minimum_insertable_extra_length_um": float(min_insertable_extra_um),

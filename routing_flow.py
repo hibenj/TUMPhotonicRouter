@@ -1263,6 +1263,20 @@ def run_routing_flow(
                     f"commit={float(report.get('commit_elapsed_s', 0.0)):.4f}s, "
                     f"probe={float(report.get('probe_elapsed_s', 0.0)):.4f}s"
                 )
+                commit_profile = report.get("commit_profile", {})
+                if isinstance(commit_profile, dict) and commit_profile:
+                    sorted_commit = sorted(
+                        commit_profile.items(),
+                        key=lambda item: -float(item[1]),
+                    )
+                    commit_parts = [
+                        f"{key[:-2] if key.endswith('_s') else key}={float(value):.4f}s"
+                        for key, value in sorted_commit
+                    ]
+                    print(
+                        "        Meander commit split: "
+                        + ", ".join(commit_parts)
+                    )
                 print(
                     "        Meander candidate execution: "
                     f"requirement_batches={int(report.get('requirement_batch_calls', 0))}, "

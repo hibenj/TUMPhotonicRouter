@@ -923,6 +923,27 @@ impl PyPhotonicRouter {
         reserved.extend(cells.iter().map(|(x, y)| pack_xy(*x, *y)));
         reserved.len().saturating_sub(before)
     }
+    fn add_registered_meander_reserved_grid_rect(
+        &self,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> PyResult<usize> {
+        if max_x < min_x || max_y < min_y {
+            return Err(PyValueError::new_err(
+                "registered meander reserved grid rect must be non-empty",
+            ));
+        }
+        let mut reserved = self.meander_registered_reserved_cells.borrow_mut();
+        let before = reserved.len();
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                reserved.insert(pack_xy(x, y));
+            }
+        }
+        Ok(reserved.len().saturating_sub(before))
+    }
     fn registered_meander_open_cell_count(&self, index: usize) -> PyResult<usize> {
         self.meander_registered_open_cells
             .borrow()
