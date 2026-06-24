@@ -37,8 +37,12 @@ from translation.route_rust_analysis import (
 from translation import route_rust_meanders as _meander_impl
 from translation.route_rust_realization import realize_routed_net_records
 from translation.route_rust_records import (
+    EndpointCorrectionRouter,
     RouteBookkeeping,
+    apply_port_endpoint_corrections,
+    build_port_alignment_diagnostics,
     build_route_debug_artifacts,
+    routed_edge_lengths_from_records,
 )
 from translation.route_rust_types import (
     MeanderInsertionConfig,
@@ -86,6 +90,57 @@ def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
 def insert_meanders_for_requirements(*args: Any, **kwargs: Any):
     _meander_impl._load_rust_backend = _load_rust_backend
     return _meander_impl.insert_meanders_for_requirements(*args, **kwargs)
+
+
+def _build_realization_router(
+    *,
+    realization_grid_spec: tuple[int, int, float, float, float],
+    allow_45_degree_turns: bool,
+    bend_radius_cells: int,
+) -> EndpointCorrectionRouter:
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        raise RuntimeError("Rust router backend unavailable for endpoint correction.")
+    width, height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
+    grid_spec = rust_backend.GridSpec(
+        int(width),
+        int(height),
+        float(grid_size_um),
+        float(origin_x_um),
+        float(origin_y_um),
+    )
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=float(grid_size_um),
+        bend_radius_cells=int(bend_radius_cells),
+        allow_45_degree_turns=allow_45_degree_turns,
+    )
+    astar_cfg = rust_backend.AStarConfig(max_iterations=1)
+    return rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+
+
+def _apply_endpoint_corrections_to_debug_artifacts(
+    debug_artifacts: RustRouteDebugArtifacts,
+) -> RustRouteDebugArtifacts:
+    if debug_artifacts.realization_grid_spec is None:
+        raise RuntimeError("Missing realization grid spec from routing phase.")
+    router = _build_realization_router(
+        realization_grid_spec=debug_artifacts.realization_grid_spec,
+        allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
+        bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+    )
+    records = apply_port_endpoint_corrections(
+        debug_artifacts.routed_net_records,
+        router=router,
+    )
+    return replace(
+        debug_artifacts,
+        routed_net_records=records,
+        routed_edge_lengths_um=routed_edge_lengths_from_records(records),
+        port_alignment_diagnostics=build_port_alignment_diagnostics(
+            records,
+            realization_grid_spec=debug_artifacts.realization_grid_spec,
+        ),
+    )
 
 
 def route_match_and_realize(
@@ -156,6 +211,7 @@ def route_match_and_realize(
     if debug_timing:
         print(f"      - route_nets_rust phase: {pipeline_timings_s['route_nets']:.4f} s")
 
+    debug_artifacts = _apply_endpoint_corrections_to_debug_artifacts(debug_artifacts)
     analysis_info = None
     requirements_info = None
     meander_report_info = None
@@ -164,7 +220,7 @@ def route_match_and_realize(
         t_analysis_start = time.perf_counter()
         analysis, requirements = analyze_path_length_matching(
             schematic,
-            routed_net_records=debug_artifacts.routed_net_records,
+            routed_net_records=records_for_realization,
             node_types=node_types,
             internal_delays_um=internal_delays_um,
         )
@@ -223,7 +279,7 @@ def route_match_and_realize(
 
         t_meander_planning_start = time.perf_counter()
         records_for_realization, meander_report_info = analyze_meander_insertion_for_requirements(
-            debug_artifacts.routed_net_records,
+            records_for_realization,
             requirements,
             config=MeanderInsertionConfig(
                 enabled=True,

@@ -25,6 +25,25 @@ const MITER_LIMIT: f64 = 4.0;
 const DEFAULT_BEND_SAMPLES_PER_90_DEG: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AxisAlignedRunKind {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AxisAlignedRun {
+    start_index: usize,
+    end_index: usize,
+    kind: AxisAlignedRunKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PrimitiveCenterlineReplay {
+    centerline: Vec<(f64, f64)>,
+    straight_runs: Vec<AxisAlignedRun>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GridRect {
     pub min_x: i32,
     pub max_x: i32,
@@ -681,6 +700,14 @@ pub fn route_to_primitive_centerline(
     primitives: &PrimitiveLibrary,
     grid: &GeometryGridSpec,
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
+    Ok(route_to_primitive_centerline_with_runs(route, primitives, grid)?.centerline)
+}
+
+fn route_to_primitive_centerline_with_runs(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+) -> Result<PrimitiveCenterlineReplay, GeometryError> {
     if route.states.is_empty() {
         return Err(GeometryError::EmptyRoute);
     }
@@ -692,6 +719,7 @@ pub fn route_to_primitive_centerline(
     }
 
     let mut centerline = Vec::with_capacity(route.states.len());
+    let mut straight_runs = Vec::new();
     let start = grid.cell_center(route.states[0].x, route.states[0].y);
     if !is_finite_point(start) {
         return Err(GeometryError::NonFiniteCoordinate);
@@ -717,7 +745,27 @@ pub fn route_to_primitive_centerline(
 
         match primitive.geometry {
             PrimitiveGeometry::Straight { .. } => {
+                let start_index = centerline.len() - 1;
                 push_physical_if_different(&mut centerline, expected);
+                let end_index = centerline.len() - 1;
+                if end_index > start_index {
+                    let a = centerline[start_index];
+                    let b = centerline[end_index];
+                    let kind = if is_horizontal_segment(a, b) {
+                        Some(AxisAlignedRunKind::Horizontal)
+                    } else if is_vertical_segment(a, b) {
+                        Some(AxisAlignedRunKind::Vertical)
+                    } else {
+                        None
+                    };
+                    if let Some(kind) = kind {
+                        straight_runs.push(AxisAlignedRun {
+                            start_index,
+                            end_index,
+                            kind,
+                        });
+                    }
+                }
             }
             PrimitiveGeometry::Bend {
                 radius_um,
@@ -758,7 +806,10 @@ pub fn route_to_primitive_centerline(
         return Err(GeometryError::ZeroLengthSegment);
     }
 
-    Ok(centerline)
+    Ok(PrimitiveCenterlineReplay {
+        centerline,
+        straight_runs,
+    })
 }
 
 /// Replace first/last centerline points with explicit source/target physical points.
@@ -795,6 +846,256 @@ pub fn snap_centerline_endpoints(
         return Err(GeometryError::DegenerateRoute);
     }
     Ok(())
+}
+
+/// Replay route primitives, then adjust physical endpoints to real ports.
+///
+/// This keeps the existing primitive-replay centerline and waveguide polygon
+/// generator as the only geometry realization path. For a single straight this
+/// becomes the exact physical straight between ports; for multi-segment routes
+/// it anchors the realized centerline to the physical port coordinates while
+/// preserving the routed interior points for later meander planning/splicing.
+pub fn route_to_port_corrected_centerline(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    let replay = route_to_primitive_centerline_with_runs(route, primitives, grid)?;
+    let mut centerline = replay.centerline;
+    if !try_apply_full_straight_port_correction(&mut centerline, source_port_um, target_port_um)? {
+        absorb_endpoint_delta_into_axis_runs(
+            &mut centerline,
+            &replay.straight_runs,
+            source_port_um,
+            target_port_um,
+        )?;
+    }
+    if centerline.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
+        return Err(GeometryError::ZeroLengthSegment);
+    }
+    Ok(centerline)
+}
+
+fn try_apply_full_straight_port_correction(
+    centerline: &mut [(f64, f64)],
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+) -> Result<bool, GeometryError> {
+    let (Some(source), Some(target)) = (source_port_um, target_port_um) else {
+        return Ok(false);
+    };
+    if !is_finite_point(source) || !is_finite_point(target) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+
+    if is_full_horizontal_centerline(centerline) && (source.1 - target.1).abs() <= EPS {
+        for point in centerline.iter_mut() {
+            point.1 = source.1;
+        }
+        centerline[0] = source;
+        let last = centerline.len() - 1;
+        centerline[last] = target;
+        validate_full_straight_centerline(centerline, AxisAlignedRunKind::Horizontal)?;
+        return Ok(true);
+    }
+
+    if is_full_vertical_centerline(centerline) && (source.0 - target.0).abs() <= EPS {
+        for point in centerline.iter_mut() {
+            point.0 = source.0;
+        }
+        centerline[0] = source;
+        let last = centerline.len() - 1;
+        centerline[last] = target;
+        validate_full_straight_centerline(centerline, AxisAlignedRunKind::Vertical)?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn absorb_endpoint_delta_into_axis_runs(
+    centerline: &mut Vec<(f64, f64)>,
+    straight_runs: &[AxisAlignedRun],
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+) -> Result<(), GeometryError> {
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    if centerline.iter().any(|&p| !is_finite_point(p)) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+
+    if let Some(source) = source_port_um {
+        if !is_finite_point(source) {
+            return Err(GeometryError::NonFiniteCoordinate);
+        }
+        let start = centerline[0];
+        let dx = source.0 - start.0;
+        let dy = source.1 - start.1;
+        absorb_source_x_delta(centerline, straight_runs, dx)?;
+        absorb_source_y_delta(centerline, straight_runs, dy)?;
+    }
+    if let Some(target) = target_port_um {
+        if !is_finite_point(target) {
+            return Err(GeometryError::NonFiniteCoordinate);
+        }
+        let last = centerline[centerline.len() - 1];
+        let dx = target.0 - last.0;
+        let dy = target.1 - last.1;
+        absorb_target_x_delta(centerline, straight_runs, dx)?;
+        absorb_target_y_delta(centerline, straight_runs, dy)?;
+    }
+    Ok(())
+}
+
+fn absorb_source_x_delta(
+    centerline: &mut [(f64, f64)],
+    straight_runs: &[AxisAlignedRun],
+    dx: f64,
+) -> Result<(), GeometryError> {
+    if dx.abs() <= EPS {
+        return Ok(());
+    }
+    let Some(run) = first_run(straight_runs, AxisAlignedRunKind::Horizontal) else {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    };
+    for point in centerline.iter_mut().take(run.start_index + 1) {
+        point.0 += dx;
+    }
+    Ok(())
+}
+
+fn absorb_source_y_delta(
+    centerline: &mut [(f64, f64)],
+    straight_runs: &[AxisAlignedRun],
+    dy: f64,
+) -> Result<(), GeometryError> {
+    if dy.abs() <= EPS {
+        return Ok(());
+    }
+    let Some(run) = first_run(straight_runs, AxisAlignedRunKind::Vertical) else {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    };
+    for point in centerline.iter_mut().take(run.start_index + 1) {
+        point.1 += dy;
+    }
+    Ok(())
+}
+
+fn absorb_target_x_delta(
+    centerline: &mut [(f64, f64)],
+    straight_runs: &[AxisAlignedRun],
+    dx: f64,
+) -> Result<(), GeometryError> {
+    if dx.abs() <= EPS {
+        return Ok(());
+    }
+    let Some(run) = last_run(straight_runs, AxisAlignedRunKind::Horizontal) else {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    };
+    for point in centerline.iter_mut().skip(run.end_index) {
+        point.0 += dx;
+    }
+    Ok(())
+}
+
+fn absorb_target_y_delta(
+    centerline: &mut [(f64, f64)],
+    straight_runs: &[AxisAlignedRun],
+    dy: f64,
+) -> Result<(), GeometryError> {
+    if dy.abs() <= EPS {
+        return Ok(());
+    }
+    let Some(run) = last_run(straight_runs, AxisAlignedRunKind::Vertical) else {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    };
+    for point in centerline.iter_mut().skip(run.end_index) {
+        point.1 += dy;
+    }
+    Ok(())
+}
+
+fn first_run(
+    straight_runs: &[AxisAlignedRun],
+    kind: AxisAlignedRunKind,
+) -> Option<AxisAlignedRun> {
+    straight_runs.iter().copied().find(|run| run.kind == kind)
+}
+
+fn last_run(
+    straight_runs: &[AxisAlignedRun],
+    kind: AxisAlignedRunKind,
+) -> Option<AxisAlignedRun> {
+    straight_runs.iter().copied().rfind(|run| run.kind == kind)
+}
+
+fn is_full_horizontal_centerline(centerline: &[(f64, f64)]) -> bool {
+    centerline
+        .windows(2)
+        .all(|w| is_horizontal_segment(w[0], w[1]))
+}
+
+fn is_full_vertical_centerline(centerline: &[(f64, f64)]) -> bool {
+    centerline
+        .windows(2)
+        .all(|w| is_vertical_segment(w[0], w[1]))
+}
+
+fn validate_full_straight_centerline(
+    centerline: &[(f64, f64)],
+    kind: AxisAlignedRunKind,
+) -> Result<(), GeometryError> {
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    let first_delta = axis_delta(centerline[0], centerline[1], kind);
+    if first_delta.abs() <= EPS {
+        return Err(GeometryError::ZeroLengthSegment);
+    }
+    for window in centerline.windows(2) {
+        let delta = axis_delta(window[0], window[1], kind);
+        if delta.abs() <= EPS {
+            return Err(GeometryError::ZeroLengthSegment);
+        }
+        if first_delta * delta <= 0.0 {
+            return Err(GeometryError::DegenerateRoute);
+        }
+        match kind {
+            AxisAlignedRunKind::Horizontal => {
+                if (window[1].1 - window[0].1).abs() > EPS {
+                    return Err(GeometryError::DegenerateRoute);
+                }
+            }
+            AxisAlignedRunKind::Vertical => {
+                if (window[1].0 - window[0].0).abs() > EPS {
+                    return Err(GeometryError::DegenerateRoute);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn axis_delta(a: (f64, f64), b: (f64, f64), kind: AxisAlignedRunKind) -> f64 {
+    match kind {
+        AxisAlignedRunKind::Horizontal => b.0 - a.0,
+        AxisAlignedRunKind::Vertical => b.1 - a.1,
+    }
+}
+
+fn is_horizontal_segment(a: (f64, f64), b: (f64, f64)) -> bool {
+    (b.1 - a.1).abs() <= EPS && (b.0 - a.0).abs() > EPS
+}
+
+fn is_vertical_segment(a: (f64, f64), b: (f64, f64)) -> bool {
+    (b.0 - a.0).abs() <= EPS && (b.1 - a.1).abs() > EPS
 }
 
 /// Build deterministic local port access from a physical port to a grid anchor.
@@ -961,6 +1262,43 @@ pub fn realize_route_polygon_from_primitives(
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
     let centerline = route_to_primitive_centerline(route, primitives, grid)?;
     generate_waveguide_polygon(&centerline, width_um)
+}
+
+/// Realize route polygon after anchoring endpoints to physical ports.
+pub fn realize_route_polygon_with_endpoint_correction(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    width_um: f64,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    let centerline = route_to_port_corrected_centerline(
+        route,
+        primitives,
+        grid,
+        source_port_um,
+        target_port_um,
+    )?;
+    generate_waveguide_polygon(&centerline, width_um)
+}
+
+pub fn centerline_length_um(centerline: &[(f64, f64)]) -> Result<f64, GeometryError> {
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    if centerline.iter().any(|&p| !is_finite_point(p)) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    let mut total = 0.0;
+    for window in centerline.windows(2) {
+        let segment_length = distance(window[0], window[1]);
+        if segment_length <= EPS {
+            return Err(GeometryError::ZeroLengthSegment);
+        }
+        total += segment_length;
+    }
+    Ok(total)
 }
 
 pub fn meander_box_to_grid_rect(
@@ -1725,6 +2063,27 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep_with_prefix(
     config: &AutoMeanderConfig,
     box_depths_um: &[f64],
 ) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
+    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
+    plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
+        &centerline,
+        grid,
+        base_prefix,
+        opened_cells,
+        extra_blocked_cells,
+        config,
+        box_depths_um,
+    )
+}
+
+pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
+    centerline: &[(f64, f64)],
+    grid: &GeometryGridSpec,
+    base_prefix: &DenseOccupancyPrefix,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    extra_blocked_cells: Option<&FxHashSet<CellKey>>,
+    config: &AutoMeanderConfig,
+    box_depths_um: &[f64],
+) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
     if !config.requested_extra_length_um.is_finite()
         || config.requested_extra_length_um <= 0.0
         || !config.min_bend_radius_um.is_finite()
@@ -1745,13 +2104,13 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep_with_prefix(
     {
         return Err(GeometryError::InvalidMeanderBox);
     }
+    let _ = centerline_length_um(centerline)?;
     for depth_um in box_depths_um {
         if !depth_um.is_finite() || *depth_um <= 0.0 {
             return Err(GeometryError::InvalidMeanderBox);
         }
     }
 
-    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
     let occupancy = OverlayOccupancyQuery::new(base_prefix, opened_cells, extra_blocked_cells);
     let side_order: &[MeanderSide] = match config.side_policy {
         AutoMeanderSidePolicy::Left => &[MeanderSide::Left],
@@ -2983,6 +3342,259 @@ mod tests {
         let mut centerline = vec![(0.5, 0.5), (2.5, 0.5)];
         snap_centerline_endpoints(&mut centerline, Some((0.0, 0.0)), Some((3.0, 0.0))).unwrap();
         assert_eq!(centerline, vec![(0.0, 0.0), (3.0, 0.0)]);
+    }
+
+    #[test]
+    fn port_corrected_single_straight_absorbs_x_offsets_without_new_points() {
+        let lib = test_lib();
+        let route = RouteResult {
+            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
+            primitives: vec![1],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 4.0,
+            total_cost: 4.0,
+            requested_target: State::new(5, 2, 0),
+            reached_target: State::new(5, 2, 0),
+            stats: Default::default(),
+        };
+
+        let centerline = route_to_port_corrected_centerline(
+            &route,
+            &lib,
+            &grid(),
+            Some((1.2, 2.5)),
+            Some((6.0, 2.5)),
+        )
+        .unwrap();
+
+        assert_eq!(centerline, vec![(1.2, 2.5), (6.0, 2.5)]);
+        let polygon = realize_route_polygon_with_endpoint_correction(
+            &route,
+            &lib,
+            &grid(),
+            0.5,
+            Some((1.2, 2.5)),
+            Some((6.0, 2.5)),
+        )
+        .unwrap();
+        assert_eq!(
+            polygon,
+            generate_waveguide_polygon(&centerline, 0.5).unwrap()
+        );
+        assert_eq!(polygon.first(), polygon.last());
+    }
+
+    #[test]
+    fn port_corrected_full_horizontal_straight_shifts_line_and_adjusts_length() {
+        let lib = test_lib();
+        let straight_east = primitive_id_for(&lib, 0, |p| {
+            p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
+        });
+        let primitive_ids = vec![straight_east, straight_east];
+        let states = states_from_primitives(&lib, State::new(1, 2, 0), &primitive_ids);
+        let requested_target = *states.last().unwrap();
+        let route = RouteResult {
+            states,
+            primitives: primitive_ids,
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 8.0,
+            total_cost: 8.0,
+            requested_target,
+            reached_target: requested_target,
+            stats: Default::default(),
+        };
+
+        let corrected = route_to_port_corrected_centerline(
+            &route,
+            &lib,
+            &grid(),
+            Some((1.2, 2.75)),
+            Some((9.9, 2.75)),
+        )
+        .unwrap();
+
+        assert_eq!(corrected, vec![(1.2, 2.75), (5.5, 2.75), (9.9, 2.75)]);
+        assert!((centerline_length_um(&corrected).unwrap() - 8.7).abs() <= 1.0e-9);
+        assert!(corrected
+            .windows(2)
+            .all(|w| is_horizontal_segment(w[0], w[1])));
+    }
+
+    #[test]
+    fn port_corrected_full_vertical_straight_shifts_line_and_adjusts_length() {
+        let lib = test_lib();
+        let straight_north = primitive_id_for(&lib, 2, |p| {
+            p.start_angle == 2 && p.end_angle == 2 && p.dx == 0 && p.dy == 4
+        });
+        let primitive_ids = vec![straight_north, straight_north];
+        let states = states_from_primitives(&lib, State::new(3, 1, 2), &primitive_ids);
+        let requested_target = *states.last().unwrap();
+        let route = RouteResult {
+            states,
+            primitives: primitive_ids,
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 8.0,
+            total_cost: 8.0,
+            requested_target,
+            reached_target: requested_target,
+            stats: Default::default(),
+        };
+
+        let corrected = route_to_port_corrected_centerline(
+            &route,
+            &lib,
+            &grid(),
+            Some((3.25, 1.1)),
+            Some((3.25, 9.8)),
+        )
+        .unwrap();
+
+        assert_eq!(corrected, vec![(3.25, 1.1), (3.25, 5.5), (3.25, 9.8)]);
+        assert!((centerline_length_um(&corrected).unwrap() - 8.7).abs() <= 1.0e-9);
+        assert!(corrected
+            .windows(2)
+            .all(|w| is_vertical_segment(w[0], w[1])));
+    }
+
+    #[test]
+    fn port_corrected_mixed_xy_route_anchors_endpoints_and_keeps_interior() {
+        let lib = test_lib();
+        let straight_east = primitive_id_for(&lib, 0, |p| {
+            p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
+        });
+        let bend_left = primitive_id_for(&lib, 0, |p| p.start_angle == 0 && p.end_angle == 2);
+        let straight_north = primitive_id_for(&lib, 2, |p| {
+            p.start_angle == 2 && p.end_angle == 2 && p.dx == 0 && p.dy == 4
+        });
+        let primitive_ids = vec![straight_east, bend_left, straight_north];
+        let states = states_from_primitives(&lib, State::new(1, 1, 0), &primitive_ids);
+        let requested_target = *states.last().unwrap();
+        let route = RouteResult {
+            states,
+            primitives: primitive_ids,
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target,
+            reached_target: requested_target,
+            stats: Default::default(),
+        };
+
+        let base = route_to_primitive_centerline(&route, &lib, &grid()).unwrap();
+        assert!(base.len() > 2);
+        let source_port = (1.1, 1.25);
+        let target_port = (base.last().unwrap().0 + 0.35, base.last().unwrap().1 - 0.2);
+        let corrected = route_to_port_corrected_centerline(
+            &route,
+            &lib,
+            &grid(),
+            Some(source_port),
+            Some(target_port),
+        )
+        .unwrap();
+
+        assert_eq!(corrected.first().copied(), Some(source_port));
+        assert_eq!(corrected.last().copied(), Some(target_port));
+        assert_eq!(corrected.len(), base.len());
+        assert!(is_horizontal_segment(corrected[0], corrected[1]));
+        assert!(is_vertical_segment(
+            corrected[corrected.len() - 2],
+            corrected[corrected.len() - 1],
+        ));
+        assert!(corrected.windows(2).all(|w| distance(w[0], w[1]) > EPS));
+
+        let polygon = realize_route_polygon_with_endpoint_correction(
+            &route,
+            &lib,
+            &grid(),
+            0.5,
+            Some(source_port),
+            Some(target_port),
+        )
+        .unwrap();
+        assert_eq!(
+            polygon,
+            generate_waveguide_polygon(&corrected, 0.5).unwrap()
+        );
+        assert_eq!(polygon.first(), polygon.last());
+    }
+
+    #[test]
+    fn port_correction_absorbs_xy_offsets_only_in_straight_primitives() {
+        let lib = test_lib();
+        let straight_east = primitive_id_for(&lib, 0, |p| {
+            p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
+        });
+        let bend_left = primitive_id_for(&lib, 0, |p| p.start_angle == 0 && p.end_angle == 2);
+        let straight_north = primitive_id_for(&lib, 2, |p| {
+            p.start_angle == 2 && p.end_angle == 2 && p.dx == 0 && p.dy == 4
+        });
+        let primitive_ids = vec![straight_east, bend_left, straight_north];
+        let states = states_from_primitives(&lib, State::new(1, 1, 0), &primitive_ids);
+        let requested_target = *states.last().unwrap();
+        let route = RouteResult {
+            states,
+            primitives: primitive_ids,
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target,
+            reached_target: requested_target,
+            stats: Default::default(),
+        };
+
+        let replay = route_to_primitive_centerline_with_runs(&route, &lib, &grid()).unwrap();
+        let base = replay.centerline;
+        let horizontal_run = first_run(&replay.straight_runs, AxisAlignedRunKind::Horizontal)
+            .expect("expected horizontal straight primitive");
+        let vertical_run = first_run(&replay.straight_runs, AxisAlignedRunKind::Vertical)
+            .expect("expected vertical straight primitive");
+        assert!(horizontal_run.end_index < vertical_run.start_index);
+
+        let source_dx = 0.2;
+        let source_dy = 0.25;
+        let target_dx = -0.3;
+        let target_dy = -0.15;
+        let source_port = (base[0].0 + source_dx, base[0].1 + source_dy);
+        let target_port = (
+            base[base.len() - 1].0 + target_dx,
+            base[base.len() - 1].1 + target_dy,
+        );
+
+        let corrected = route_to_port_corrected_centerline(
+            &route,
+            &lib,
+            &grid(),
+            Some(source_port),
+            Some(target_port),
+        )
+        .unwrap();
+
+        assert_eq!(corrected.len(), base.len());
+        assert_eq!(corrected.first().copied(), Some(source_port));
+        assert_eq!(corrected.last().copied(), Some(target_port));
+        assert!(is_horizontal_segment(
+            corrected[horizontal_run.start_index],
+            corrected[horizontal_run.end_index],
+        ));
+        assert!(is_vertical_segment(
+            corrected[vertical_run.start_index],
+            corrected[vertical_run.end_index],
+        ));
+
+        for i in horizontal_run.end_index..vertical_run.start_index {
+            let base_delta = sub(base[i + 1], base[i]);
+            let corrected_delta = sub(corrected[i + 1], corrected[i]);
+            assert!((corrected_delta.0 - base_delta.0).abs() <= 1.0e-9);
+            assert!((corrected_delta.1 - base_delta.1).abs() <= 1.0e-9);
+        }
+
+        assert!(corrected.windows(2).all(|w| distance(w[0], w[1]) > EPS));
     }
 
     fn static_grid() -> StaticGridSpec {

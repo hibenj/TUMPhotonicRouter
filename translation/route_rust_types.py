@@ -81,6 +81,7 @@ class RustRouteDebugArtifacts:
     route_attempt_records: list["RouteAttemptRecord"] = field(default_factory=list)
     static_blocked_cells: tuple[tuple[int, int], ...] = ()
     static_obstacle_count: int = 0
+    port_alignment_diagnostics: list[dict[str, object]] = field(default_factory=list)
     realization_grid_spec: tuple[int, int, float, float, float] | None = None
     realization_allow_45_degree_turns: bool = True
     realization_bend_radius_cells: int = 4
@@ -95,6 +96,12 @@ class RoutedNetRecord:
     total_length_um: float
     meander_auto_plan: dict[str, object] | None = None
     opened_cells: tuple[tuple[int, int], ...] = ()
+    source_port_center_um: tuple[float, float] | None = None
+    target_port_center_um: tuple[float, float] | None = None
+    source_port_orientation_deg: float | None = None
+    target_port_orientation_deg: float | None = None
+    base_total_length_um: float | None = None
+    corrected_centerline_um: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True)

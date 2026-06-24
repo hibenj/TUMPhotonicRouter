@@ -65,7 +65,7 @@ def _minimum_four_bend_extra_length_um(
 
 def _route_geometry_max_meander_bumps(
     *,
-    route_obj: object,
+    record: RoutedNetRecord,
     grid_size_um: float,
     bend_radius_um: float,
 ) -> int:
@@ -85,27 +85,74 @@ def _route_geometry_max_meander_bumps(
     ):
         return 1
 
-    waypoints = getattr(route_obj, "compressed_waypoints", None) or []
-    longest_straight_um = 0.0
-    for p0, p1 in zip(waypoints, waypoints[1:]):
-        if (
-            not isinstance(p0, (tuple, list))
-            or not isinstance(p1, (tuple, list))
-            or len(p0) != 2
-            or len(p1) != 2
-        ):
-            continue
-        x0 = _as_int(p0[0], 0)
-        y0 = _as_int(p0[1], 0)
-        x1 = _as_int(p1[0], 0)
-        y1 = _as_int(p1[1], 0)
-        if x0 == x1:
-            longest_straight_um = max(longest_straight_um, abs(y1 - y0) * grid_size)
-        elif y0 == y1:
-            longest_straight_um = max(longest_straight_um, abs(x1 - x0) * grid_size)
+    longest_straight_um = _longest_axis_aligned_centerline_run_um(
+        record.corrected_centerline_um
+    )
+    if longest_straight_um <= 0.0:
+        waypoints = getattr(record.route_obj, "compressed_waypoints", None) or []
+        for p0, p1 in zip(waypoints, waypoints[1:]):
+            if (
+                not isinstance(p0, (tuple, list))
+                or not isinstance(p1, (tuple, list))
+                or len(p0) != 2
+                or len(p1) != 2
+            ):
+                continue
+            x0 = _as_int(p0[0], 0)
+            y0 = _as_int(p0[1], 0)
+            x1 = _as_int(p1[0], 0)
+            y1 = _as_int(p1[1], 0)
+            if x0 == x1:
+                longest_straight_um = max(longest_straight_um, abs(y1 - y0) * grid_size)
+            elif y0 == y1:
+                longest_straight_um = max(longest_straight_um, abs(x1 - x0) * grid_size)
 
     visible_lobes = int(math.floor(longest_straight_um / (4.0 * radius)))
     return max(1, 2 * visible_lobes - 1)
+
+
+def _longest_axis_aligned_centerline_run_um(
+    centerline: tuple[tuple[float, float], ...],
+) -> float:
+    if len(centerline) < 2:
+        return 0.0
+    eps = 1.0e-9
+    longest = 0.0
+    current = 0.0
+    current_axis: str | None = None
+    current_line_coord = 0.0
+    current_dir = 0
+    for p0, p1 in zip(centerline, centerline[1:]):
+        dx = float(p1[0]) - float(p0[0])
+        dy = float(p1[1]) - float(p0[1])
+        if abs(dy) <= eps and abs(dx) > eps:
+            axis = "x"
+            line_coord = float(p0[1])
+            direction = 1 if dx > 0 else -1
+            length = abs(dx)
+        elif abs(dx) <= eps and abs(dy) > eps:
+            axis = "y"
+            line_coord = float(p0[0])
+            direction = 1 if dy > 0 else -1
+            length = abs(dy)
+        else:
+            longest = max(longest, current)
+            current = 0.0
+            current_axis = None
+            continue
+        if (
+            axis == current_axis
+            and direction == current_dir
+            and abs(line_coord - current_line_coord) <= eps
+        ):
+            current += length
+        else:
+            longest = max(longest, current)
+            current = length
+            current_axis = axis
+            current_line_coord = line_coord
+            current_dir = direction
+    return max(longest, current)
 
 
 def analyze_meander_insertion_for_requirements(
@@ -251,7 +298,7 @@ def analyze_meander_insertion_for_requirements(
             else max(0.0, float(config.auto_meander_endpoint_inset_um))
         )
         max_bumps = _route_geometry_max_meander_bumps(
-            route_obj=record.route_obj,
+            record=record,
             grid_size_um=float(grid_size_um_cfg),
             bend_radius_um=bend_radius_um,
         )
@@ -279,23 +326,41 @@ def analyze_meander_insertion_for_requirements(
                 extra_blocked_cells=sorted(reserved_meander_cells),
             )
             try:
-                best_rr = cast(
-                    dict[str, object],
-                    router.plan_auto_analytic_meander_for_route_depth_sweep(
-                        record.route_obj,
-                        **planner_kwargs,
-                    ),
-                )
+                if record.corrected_centerline_um:
+                    best_rr = cast(
+                        dict[str, object],
+                        router.plan_auto_analytic_meander_for_centerline_depth_sweep(
+                            list(record.corrected_centerline_um),
+                            **planner_kwargs,
+                        ),
+                    )
+                else:
+                    best_rr = cast(
+                        dict[str, object],
+                        router.plan_auto_analytic_meander_for_route_depth_sweep(
+                            record.route_obj,
+                            **planner_kwargs,
+                        ),
+                    )
             except TypeError:
                 used_reserved_overlay = False
                 planner_kwargs.pop("extra_blocked_cells", None)
-                best_rr = cast(
-                    dict[str, object],
-                    router.plan_auto_analytic_meander_for_route_depth_sweep(
-                        record.route_obj,
-                        **planner_kwargs,
-                    ),
-                )
+                if record.corrected_centerline_um:
+                    best_rr = cast(
+                        dict[str, object],
+                        router.plan_auto_analytic_meander_for_centerline_depth_sweep(
+                            list(record.corrected_centerline_um),
+                            **planner_kwargs,
+                        ),
+                    )
+                else:
+                    best_rr = cast(
+                        dict[str, object],
+                        router.plan_auto_analytic_meander_for_route_depth_sweep(
+                            record.route_obj,
+                            **planner_kwargs,
+                        ),
+                    )
         except Exception as exc:
             last_exc = exc
         elapsed_s = time.perf_counter() - t_plan_start
@@ -378,6 +443,12 @@ def analyze_meander_insertion_for_requirements(
                 "planning_mode": "fill_box_multi_bump",
             },
             opened_cells=record.opened_cells,
+            source_port_center_um=record.source_port_center_um,
+            target_port_center_um=record.target_port_center_um,
+            source_port_orientation_deg=record.source_port_orientation_deg,
+            target_port_orientation_deg=record.target_port_orientation_deg,
+            base_total_length_um=record.base_total_length_um,
+            corrected_centerline_um=record.corrected_centerline_um,
         )
         results.append(entry)
 

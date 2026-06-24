@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any, Protocol, Sequence, cast
 
 from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
 
@@ -14,6 +15,148 @@ from translation.route_rust_types import (
     RoutedNetRecord,
     RustRouteDebugArtifacts,
 )
+
+
+def _port_center_um(port: object) -> tuple[float, float] | None:
+    center = getattr(port, "center", None)
+    if center is None:
+        center = getattr(port, "dcenter", None)
+    if center is None:
+        return None
+    center_seq = cast(Sequence[Any], center)
+    try:
+        return (float(center_seq[0]), float(center_seq[1]))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _port_orientation_deg(port: object) -> float | None:
+    orientation = getattr(port, "orientation", None)
+    if orientation is None:
+        return None
+    try:
+        return float(cast(float | str, orientation))
+    except (TypeError, ValueError):
+        return None
+
+
+def _route_endpoint_cells(
+    route_obj: object,
+) -> tuple[tuple[int, int] | None, tuple[int, int] | None]:
+    states = getattr(route_obj, "states", None)
+    if not states:
+        return None, None
+    try:
+        first = states[0]
+        last = states[-1]
+        return (int(first.x), int(first.y)), (int(last.x), int(last.y))
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return None, None
+
+
+def _grid_cell_center_um(
+    cell: tuple[int, int] | None,
+    *,
+    grid_size_um: float,
+    origin_x_um: float,
+    origin_y_um: float,
+) -> tuple[float, float] | None:
+    if cell is None:
+        return None
+    return (
+        float(origin_x_um) + (float(cell[0]) + 0.5) * float(grid_size_um),
+        float(origin_y_um) + (float(cell[1]) + 0.5) * float(grid_size_um),
+    )
+
+
+def _alignment_entry(
+    *,
+    port_center_um: tuple[float, float] | None,
+    route_cell: tuple[int, int] | None,
+    route_center_um: tuple[float, float] | None,
+    orientation_deg: float | None,
+) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "port_center_um": list(port_center_um) if port_center_um is not None else None,
+        "route_cell": list(route_cell) if route_cell is not None else None,
+        "route_grid_center_um": (
+            list(route_center_um) if route_center_um is not None else None
+        ),
+        "port_orientation_deg": orientation_deg,
+        "mu_x_um": None,
+        "mu_y_um": None,
+        "offset_abs_um": None,
+    }
+    if port_center_um is None or route_center_um is None:
+        return entry
+    mu_x = float(port_center_um[0]) - float(route_center_um[0])
+    mu_y = float(port_center_um[1]) - float(route_center_um[1])
+    entry["mu_x_um"] = mu_x
+    entry["mu_y_um"] = mu_y
+    entry["offset_abs_um"] = (mu_x * mu_x + mu_y * mu_y) ** 0.5
+    return entry
+
+
+def build_port_alignment_diagnostics(
+    records: list[RoutedNetRecord],
+    *,
+    realization_grid_spec: tuple[int, int, float, float, float],
+) -> list[dict[str, object]]:
+    """Describe current port-to-grid endpoint deltas without changing routes."""
+    _, _, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
+    diagnostics: list[dict[str, object]] = []
+    for record in records:
+        source_cell, target_cell = _route_endpoint_cells(record.route_obj)
+        source_center = _grid_cell_center_um(
+            source_cell,
+            grid_size_um=float(grid_size_um),
+            origin_x_um=float(origin_x_um),
+            origin_y_um=float(origin_y_um),
+        )
+        target_center = _grid_cell_center_um(
+            target_cell,
+            grid_size_um=float(grid_size_um),
+            origin_x_um=float(origin_x_um),
+            origin_y_um=float(origin_y_um),
+        )
+        source = _alignment_entry(
+            port_center_um=record.source_port_center_um,
+            route_cell=source_cell,
+            route_center_um=source_center,
+            orientation_deg=record.source_port_orientation_deg,
+        )
+        target = _alignment_entry(
+            port_center_um=record.target_port_center_um,
+            route_cell=target_cell,
+            route_center_um=target_center,
+            orientation_deg=record.target_port_orientation_deg,
+        )
+        offsets = [
+            value
+            for value in (
+                source.get("offset_abs_um"),
+                target.get("offset_abs_um"),
+            )
+            if isinstance(value, (int, float))
+        ]
+        diagnostics.append(
+            {
+                "net_name": record.net_name,
+                "source": {
+                    "instance": record.source.instance,
+                    "port": record.source.port,
+                    **source,
+                },
+                "target": {
+                    "instance": record.target.instance,
+                    "port": record.target.port,
+                    **target,
+                },
+                "route_total_length_um": float(record.total_length_um),
+                "max_endpoint_offset_abs_um": max(offsets) if offsets else None,
+            }
+        )
+    return diagnostics
 
 
 def route_edge_key(job: RouteJob) -> RoutedEdgeKey:
@@ -35,6 +178,76 @@ def routed_edge_lengths_from_records(
         ): float(record.total_length_um)
         for record in records
     }
+
+
+def _centerline_tuple(points: object) -> tuple[tuple[float, float], ...]:
+    if not isinstance(points, list):
+        return ()
+    out: list[tuple[float, float]] = []
+    for point in points:
+        if not isinstance(point, (tuple, list)) or len(point) != 2:
+            return ()
+        try:
+            out.append((float(point[0]), float(point[1])))
+        except (TypeError, ValueError):
+            return ()
+    return tuple(out)
+
+
+class EndpointCorrectionRouter(Protocol):
+    def route_port_corrected_centerline(
+        self,
+        route: object,
+        *,
+        source_port_um: tuple[float, float] | None = None,
+        target_port_um: tuple[float, float] | None = None,
+    ) -> object:
+        ...
+
+    def centerline_length_um(self, centerline: list[tuple[float, float]]) -> float:
+        ...
+
+
+def apply_port_endpoint_corrections(
+    records: list[RoutedNetRecord],
+    *,
+    router: EndpointCorrectionRouter,
+) -> list[RoutedNetRecord]:
+    """Attach corrected physical centerlines and lengths to routed records."""
+    updated: list[RoutedNetRecord] = []
+    for record in records:
+        source_port = record.source_port_center_um
+        target_port = record.target_port_center_um
+        if source_port is None and target_port is None:
+            updated.append(record)
+            continue
+        try:
+            raw_centerline = router.route_port_corrected_centerline(
+                record.route_obj,
+                source_port_um=source_port,
+                target_port_um=target_port,
+            )
+        except ValueError:
+            updated.append(record)
+            continue
+        centerline = _centerline_tuple(raw_centerline)
+        if not centerline:
+            updated.append(record)
+            continue
+        corrected_length_um = float(router.centerline_length_um(list(centerline)))
+        updated.append(
+            replace(
+                record,
+                total_length_um=corrected_length_um,
+                base_total_length_um=(
+                    record.base_total_length_um
+                    if record.base_total_length_um is not None
+                    else float(record.total_length_um)
+                ),
+                corrected_centerline_um=centerline,
+            )
+        )
+    return updated
 
 
 @dataclass
@@ -62,6 +275,10 @@ class RouteBookkeeping:
             route_obj=route_obj,
             total_length_um=total_length_um,
             opened_cells=tuple(opened_cells),
+            source_port_center_um=_port_center_um(job.source_port),
+            target_port_center_um=_port_center_um(job.target_port),
+            source_port_orientation_deg=_port_orientation_deg(job.source_port),
+            target_port_orientation_deg=_port_orientation_deg(job.target_port),
         )
         self.lengths_by_id[job.net_id] = total_length_um
         if self.diagnostics_enabled and route_cells is not None:
@@ -149,6 +366,10 @@ def build_route_debug_artifacts(
         # block post-route meander box checks.
         static_blocked_cells=tuple(sorted(set(getattr(obstacle_map, "blocked_cells", ())))),
         static_obstacle_count=static_obstacle_count_from_map(obstacle_map),
+        port_alignment_diagnostics=build_port_alignment_diagnostics(
+            routed_net_records,
+            realization_grid_spec=realization_grid_spec,
+        ),
         realization_grid_spec=realization_grid_spec,
         realization_allow_45_degree_turns=allow_45_degree_turns,
         realization_bend_radius_cells=bend_radius_cells,

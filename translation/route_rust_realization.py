@@ -50,6 +50,10 @@ def realize_routed_net_records(
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
     for record in routed_net_records:
+        corrected_centerline = [
+            (float(p[0]), float(p[1]))
+            for p in record.corrected_centerline_um
+        ]
         if record.meander_auto_plan is not None:
             plan = record.meander_auto_plan
             selected_side = plan.get("selected_side")
@@ -68,13 +72,22 @@ def realize_routed_net_records(
                     for p in selected_meander_centerline
                     if isinstance(p, (tuple, list)) and len(p) == 2
                 ]
-                polygon = router.realize_route_polygon_from_planned_auto_meander(
-                    record.route_obj,
-                    float(route_width_um),
-                    selected_run_start_index=_as_int(selected_run_start_index, 0),
-                    selected_run_end_index=_as_int(selected_run_end_index, 0),
-                    meander_centerline=meander_centerline,
-                )
+                if corrected_centerline:
+                    polygon = router.realize_centerline_polygon_from_planned_auto_meander(
+                        corrected_centerline,
+                        float(route_width_um),
+                        selected_run_start_index=_as_int(selected_run_start_index, 0),
+                        selected_run_end_index=_as_int(selected_run_end_index, 0),
+                        meander_centerline=meander_centerline,
+                    )
+                else:
+                    polygon = router.realize_route_polygon_from_planned_auto_meander(
+                        record.route_obj,
+                        float(route_width_um),
+                        selected_run_start_index=_as_int(selected_run_start_index, 0),
+                        selected_run_end_index=_as_int(selected_run_end_index, 0),
+                        meander_centerline=meander_centerline,
+                    )
             elif (
                 isinstance(selected_side, str)
                 and selected_side in {"left", "right"}
@@ -116,6 +129,13 @@ def realize_routed_net_records(
                     opened_cells=[],
                     planning_mode=str(plan["planning_mode"]),
                 )
+            routed_layout.add_polygon(polygon, layer=route_layer)
+            continue
+        if corrected_centerline:
+            polygon = router.realize_centerline_polygon(
+                corrected_centerline,
+                float(route_width_um),
+            )
             routed_layout.add_polygon(polygon, layer=route_layer)
             continue
         polygon = router.realize_route_polygon(record.route_obj, float(route_width_um))

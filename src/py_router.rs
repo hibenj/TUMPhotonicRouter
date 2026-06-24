@@ -11,11 +11,12 @@ use crate::astar::{
 };
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
-    cells_in_grid_rect as cells_in_grid_rect_rs,
+    cells_in_grid_rect as cells_in_grid_rect_rs, centerline_length_um as centerline_length_um_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
     generate_waveguide_polygon as generate_waveguide_polygon_rs,
     meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
+    plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
     plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
     plan_auto_analytic_meander_for_route_depth_sweep_with_prefix as plan_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs,
     realize_route_polygon_from_auto_plan as realize_route_polygon_from_auto_plan_rs,
@@ -23,7 +24,9 @@ use crate::geometry_realization::{
     realize_route_polygon_with_analytic_meander as realize_route_polygon_with_analytic_meander_rs,
     realize_route_polygon_with_auto_checked_analytic_meander as realize_route_polygon_with_auto_checked_analytic_meander_rs,
     realize_route_polygon_with_checked_analytic_meander_box as realize_route_polygon_with_checked_analytic_meander_box_rs,
+    realize_route_polygon_with_endpoint_correction as realize_route_polygon_with_endpoint_correction_rs,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
+    route_to_port_corrected_centerline as route_to_port_corrected_centerline_rs,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
     splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
     AutoMeanderConfig, AutoMeanderSidePolicy, DenseOccupancyPrefix, GeometryError,
@@ -1285,6 +1288,99 @@ impl PyPhotonicRouter {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
+    #[pyo3(signature=(route,source_port_um=None,target_port_um=None))]
+    fn route_port_corrected_centerline(
+        &self,
+        route: &PyRouteResult,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        route_to_port_corrected_centerline_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            source_port_um,
+            target_port_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    #[pyo3(signature=(route,width_um,source_port_um=None,target_port_um=None))]
+    fn realize_route_polygon_with_endpoint_correction(
+        &self,
+        route: &PyRouteResult,
+        width_um: f64,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        realize_route_polygon_with_endpoint_correction_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            width_um,
+            source_port_um,
+            target_port_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    fn centerline_length_um(&self, centerline: Vec<(f64, f64)>) -> PyResult<f64> {
+        centerline_length_um_rs(&centerline).map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    #[pyo3(signature=(centerline,width_um))]
+    fn realize_centerline_polygon(
+        &self,
+        centerline: Vec<(f64, f64)>,
+        width_um: f64,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        generate_waveguide_polygon_rs(&centerline, width_um)
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    #[pyo3(signature=(centerline,width_um,selected_run_start_index,selected_run_end_index,meander_centerline))]
+    fn realize_centerline_polygon_from_planned_auto_meander(
+        &self,
+        centerline: Vec<(f64, f64)>,
+        width_um: f64,
+        selected_run_start_index: usize,
+        selected_run_end_index: usize,
+        meander_centerline: Vec<(f64, f64)>,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        if width_um <= 0.0 {
+            return Err(PyValueError::new_err("width_um must be > 0"));
+        }
+        let _ = centerline_length_um_rs(&centerline)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let meander_points: Vec<PhysicalPoint> = meander_centerline
+            .into_iter()
+            .map(|(x_um, y_um)| PhysicalPoint { x_um, y_um })
+            .collect();
+        let spliced = splice_meander_into_centerline_range_rs(
+            &centerline,
+            selected_run_start_index,
+            selected_run_end_index,
+            &meander_points,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        generate_waveguide_polygon_rs(&spliced, width_um)
+            .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
     #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="fill_box_multi_bump"))]
     fn realize_route_polygon_with_analytic_meander(
         &self,
@@ -1713,6 +1809,127 @@ impl PyPhotonicRouter {
         let plan = plan_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs(
             &r,
             &self.primitives,
+            &grid,
+            base_prefix,
+            opened_ref,
+            extra_blocked_ref,
+            &cfg,
+            &box_depths_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        auto_meander_plan_to_py_object(
+            py,
+            &plan,
+            min_bend_radius_um,
+            effective_radius_um,
+            self.primitive_cfg.bend_radius_cells,
+            primitive_bend_radius_um,
+            mode,
+        )
+    }
+
+    #[pyo3(signature=(centerline,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
+    fn plan_auto_analytic_meander_for_centerline_depth_sweep(
+        &self,
+        py: Python<'_>,
+        centerline: Vec<(f64, f64)>,
+        requested_extra_length_um: f64,
+        box_depths_um: Vec<f64>,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_bumps: usize,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        endpoint_inset_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        opened_cells: Option<Vec<(i32, i32)>>,
+        planning_mode: &str,
+        extra_blocked_cells: Option<Vec<(i32, i32)>>,
+    ) -> PyResult<PyObject> {
+        if requested_extra_length_um <= 0.0 {
+            return Err(PyValueError::new_err(
+                "requested_extra_length_um must be > 0",
+            ));
+        }
+        if box_depths_um.is_empty() {
+            return Err(PyValueError::new_err("box_depths_um must not be empty"));
+        }
+        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(PyValueError::new_err(
+                "box_depths_um values must be finite and > 0",
+            ));
+        }
+        if min_straight_um < 0.0 {
+            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
+        }
+        if max_bumps == 0 {
+            return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        if max_meander_height_um <= 0.0 {
+            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
+        }
+        if min_segment_length_um <= 0.0 {
+            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
+        }
+        if endpoint_inset_um < 0.0 {
+            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
+        }
+        if clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
+        }
+        let _ = centerline_length_um_rs(&centerline)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            self.primitive_cfg.bend_radius_cells,
+            self.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let cfg = AutoMeanderConfig {
+            requested_extra_length_um,
+            min_bend_radius_um: effective_radius_um,
+            min_straight_um,
+            max_bumps,
+            max_meander_height_um,
+            box_depth_um: box_depths_um[0],
+            min_segment_length_um,
+            endpoint_inset_um,
+            clearance_radius_cells,
+            side_policy: policy,
+            mode,
+        };
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let opened_owned;
+        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            Some(&opened_owned)
+        } else {
+            Some(&self.port_open_cells)
+        };
+        let extra_blocked_owned;
+        let extra_blocked_ref: Option<&FxHashSet<CellKey>> =
+            if let Some(cells) = extra_blocked_cells.as_ref() {
+                extra_blocked_owned = pack_cells(cells);
+                Some(&extra_blocked_owned)
+            } else {
+                None
+            };
+        self.ensure_meander_base_prefix();
+        let cached = self.meander_base_prefix.borrow();
+        let base_prefix = cached
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let plan = plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
+            &centerline,
             &grid,
             base_prefix,
             opened_ref,
