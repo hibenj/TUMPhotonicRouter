@@ -206,6 +206,7 @@ class _MeanderPlannerContext:
     footprint_prefilter_enabled_by_edge: dict[RoutedEdgeKey, bool]
     base_static_cells: set[GridCell]
     reserved_meander_cells: set[GridCell]
+    pending_reserved_meander_rects: list[tuple[int, int, int, int]]
     grid_size_um: float
     bend_radius_um: float
     setup_profile: dict[str, float]
@@ -223,6 +224,22 @@ class _MeanderPlannerContext:
         self.commit_profile[key] = (
             self.commit_profile.get(key, 0.0) + max(0.0, float(elapsed_s))
         )
+
+    def reserved_meander_cells_for_python_planning(self) -> set[GridCell]:
+        if not self.pending_reserved_meander_rects:
+            return self.reserved_meander_cells
+
+        t_materialize_start = time.perf_counter()
+        for min_x, max_x, min_y, max_y in self.pending_reserved_meander_rects:
+            for x in range(min_x, max_x + 1):
+                for y in range(min_y, max_y + 1):
+                    self.reserved_meander_cells.add((x, y))
+        self.pending_reserved_meander_rects.clear()
+        self._add_candidate_setup_time(
+            "materialize_reserved_rects_s",
+            time.perf_counter() - t_materialize_start,
+        )
+        return self.reserved_meander_cells
 
     def base_open_cells_for_edge(
         self,
@@ -345,7 +362,10 @@ class _MeanderPlannerContext:
                 self.registered_open_cell_count_by_edge.get(candidate_edge_key, 0)
             )
         else:
-            blocked_by_planned = self.reserved_meander_cells | extra_reserved_cells
+            blocked_by_planned = (
+                self.reserved_meander_cells_for_python_planning()
+                | extra_reserved_cells
+            )
             t_base_open_start = time.perf_counter()
             base_open_cells = self.base_open_cells_for_edge(candidate_edge_key, record)
             self._add_candidate_setup_time(
@@ -419,7 +439,10 @@ class _MeanderPlannerContext:
         full_probe_available = False
         if use_probe:
             if blocked_by_planned is None:
-                blocked_by_planned = self.reserved_meander_cells | extra_reserved_cells
+                blocked_by_planned = (
+                    self.reserved_meander_cells_for_python_planning()
+                    | extra_reserved_cells
+                )
             assert blocked_by_planned is not None
             t_probe_kwargs_start = time.perf_counter()
             probe_kwargs = dict(
@@ -529,7 +552,10 @@ class _MeanderPlannerContext:
                 extra_blocked_arg = extra_reserved_cells
             else:
                 if blocked_by_planned is None:
-                    blocked_by_planned = self.reserved_meander_cells | extra_reserved_cells
+                    blocked_by_planned = (
+                        self.reserved_meander_cells_for_python_planning()
+                        | extra_reserved_cells
+                    )
                 assert blocked_by_planned is not None
                 extra_blocked_arg = blocked_by_planned
             planner_kwargs = dict(
@@ -1154,6 +1180,7 @@ class _MeanderPlannerContext:
         parsed_grid_rect = _parse_grid_rect(grid_rect)
         if parsed_grid_rect is not None:
             min_x, max_x, min_y, max_y = parsed_grid_rect
+            used_rust_reserved_rect = False
             if hasattr(self.router, "add_registered_meander_reserved_grid_rect"):
                 t_rust_reserved_start = time.perf_counter()
                 self.router.add_registered_meander_reserved_grid_rect(
@@ -1166,28 +1193,37 @@ class _MeanderPlannerContext:
                     "rust_reserved_rect_update_s",
                     time.perf_counter() - t_rust_reserved_start,
                 )
-            t_grid_rect_start = time.perf_counter()
-            new_reserved_cells = _grid_rect_cells(parsed_grid_rect)
-            self._add_commit_time(
-                "grid_rect_cells_s",
-                time.perf_counter() - t_grid_rect_start,
+                used_rust_reserved_rect = True
+            needs_python_reserved_cells = (
+                not used_rust_reserved_rect
+                or not used_reserved_overlay
             )
-            t_python_reserved_start = time.perf_counter()
-            self.reserved_meander_cells.update(new_reserved_cells)
-            self._add_commit_time(
-                "python_reserved_update_s",
-                time.perf_counter() - t_python_reserved_start,
-            )
-            if not hasattr(self.router, "add_registered_meander_reserved_grid_rect") and hasattr(
-                self.router,
-                "add_registered_meander_reserved_cells",
-            ):
-                t_rust_reserved_start = time.perf_counter()
-                self.router.add_registered_meander_reserved_cells(list(new_reserved_cells))
+            new_reserved_cells: set[GridCell] = set()
+            if needs_python_reserved_cells:
+                t_grid_rect_start = time.perf_counter()
+                new_reserved_cells = _grid_rect_cells(parsed_grid_rect)
                 self._add_commit_time(
-                    "rust_reserved_update_s",
-                    time.perf_counter() - t_rust_reserved_start,
+                    "grid_rect_cells_s",
+                    time.perf_counter() - t_grid_rect_start,
                 )
+                t_python_reserved_start = time.perf_counter()
+                self.reserved_meander_cells.update(new_reserved_cells)
+                self._add_commit_time(
+                    "python_reserved_update_s",
+                    time.perf_counter() - t_python_reserved_start,
+                )
+                if not used_rust_reserved_rect and hasattr(
+                    self.router,
+                    "add_registered_meander_reserved_cells",
+                ):
+                    t_rust_reserved_start = time.perf_counter()
+                    self.router.add_registered_meander_reserved_cells(list(new_reserved_cells))
+                    self._add_commit_time(
+                        "rust_reserved_update_s",
+                        time.perf_counter() - t_rust_reserved_start,
+                    )
+            else:
+                self.pending_reserved_meander_rects.append(parsed_grid_rect)
             if not used_reserved_overlay:
                 t_static_update_start = time.perf_counter()
                 self.router.add_static_cells(list(new_reserved_cells))
@@ -1463,6 +1499,7 @@ def _build_planner_context(
         footprint_prefilter_enabled_by_edge={},
         base_static_cells=base_static_cells,
         reserved_meander_cells=set(),
+        pending_reserved_meander_rects=[],
         grid_size_um=float(grid_size_um_cfg),
         bend_radius_um=bend_radius_um,
         setup_profile=setup_profile,
