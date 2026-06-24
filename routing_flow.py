@@ -1262,6 +1262,15 @@ def run_routing_flow(
                     f"commit={float(report.get('commit_elapsed_s', 0.0)):.4f}s, "
                     f"probe={float(report.get('probe_elapsed_s', 0.0)):.4f}s"
                 )
+                print(
+                    "        Meander candidate execution: "
+                    f"bundle_candidates={int(report.get('bundle_candidate_calls', 0))}, "
+                    f"bundle_edge_calls={int(report.get('bundle_edge_calls', 0))}, "
+                    f"bundle_planned={int(report.get('bundle_planned', 0))}, "
+                    f"bundle_no_candidate={int(report.get('bundle_no_candidate', 0))}, "
+                    f"fallback_candidates={int(report.get('fallback_candidate_calls', 0))}, "
+                    f"fallback_edge_calls={int(report.get('fallback_edge_calls', 0))}"
+                )
                 candidate_setup_profile = report.get("candidate_setup_profile", {})
                 if isinstance(candidate_setup_profile, dict) and candidate_setup_profile:
                     sorted_setup = sorted(

@@ -1977,6 +1977,20 @@ def test_registered_meander_route_cells_match_legacy_opened_cells():
     assert registered["selected_grid_rect"] == legacy["selected_grid_rect"]
     assert registered["bumps"] == legacy["bumps"]
 
+    bundle = router.plan_auto_analytic_meander_candidate_bundle_registered_opened(
+        [centerline],
+        [0],
+        max_bumps_by_edge=[kwargs["max_bumps"]],
+        **{key: value for key, value in kwargs.items() if key != "max_bumps"},
+    )
+    assert bundle["status"] == "planned"
+    bundle_plans = cast(list[dict[str, object]], bundle["plans"])
+    assert len(bundle_plans) == 1
+    assert bundle_plans[0]["inserted_extra_length_um"] == pytest.approx(
+        legacy["inserted_extra_length_um"]
+    )
+    assert bundle_plans[0]["selected_grid_rect"] == legacy["selected_grid_rect"]
+
     selected_rect = cast(tuple[int, int, int, int], registered["selected_grid_rect"])
     router.add_registered_meander_reserved_cells(
         [
