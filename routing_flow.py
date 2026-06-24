@@ -1253,6 +1253,7 @@ def run_routing_flow(
                         f"set_static={float(setup_profile.get('set_static_cells_s', 0.0)):.4f}s, "
                         f"add_route_static={float(setup_profile.get('add_route_static_cells_s', 0.0)):.4f}s, "
                         f"register_routes={float(setup_profile.get('register_route_cells_s', 0.0)):.4f}s, "
+                        f"register_geometry={float(setup_profile.get('register_route_geometry_s', 0.0)):.4f}s, "
                         f"unique_route_cells={int(float(setup_profile.get('unique_route_cell_count', 0.0)))}"
                     )
                 print(
@@ -1264,6 +1265,9 @@ def run_routing_flow(
                 )
                 print(
                     "        Meander candidate execution: "
+                    f"requirement_batches={int(report.get('requirement_batch_calls', 0))}, "
+                    f"requirement_batch_candidates={int(report.get('requirement_batch_candidate_calls', 0))}, "
+                    f"requirement_batch_edge_calls={int(report.get('requirement_batch_edge_calls', 0))}, "
                     f"bundle_candidates={int(report.get('bundle_candidate_calls', 0))}, "
                     f"bundle_edge_calls={int(report.get('bundle_edge_calls', 0))}, "
                     f"bundle_planned={int(report.get('bundle_planned', 0))}, "

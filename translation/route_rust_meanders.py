@@ -64,6 +64,17 @@ class _MeanderRouterProtocol(Protocol):
         routes: list[object],
         base_static_cells: list[GridCell],
     ) -> tuple[list[int], list[int], int]: ...
+    def set_static_and_register_meander_route_cells_as_static(
+        self,
+        routes: list[object],
+        base_static_cells: list[GridCell],
+    ) -> tuple[list[int], list[int], int]: ...
+    def register_meander_route_geometries(
+        self,
+        centerlines: list[list[tuple[float, float]]],
+        registered_opened_cell_indices: list[int],
+        max_bumps_by_edge: list[int],
+    ) -> list[int]: ...
     def plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
         self,
         centerline: list[tuple[float, float]],
@@ -74,6 +85,19 @@ class _MeanderRouterProtocol(Protocol):
         self,
         centerlines: list[list[tuple[float, float]]],
         registered_opened_cell_indices: list[int],
+        **kwargs: Any,
+    ) -> dict[str, object]: ...
+    def plan_auto_analytic_meander_requirement_candidates_registered_opened(
+        self,
+        candidate_centerlines: list[list[list[tuple[float, float]]]],
+        candidate_registered_opened_cell_indices: list[list[int]],
+        candidate_requested_extra_lengths_um: list[float],
+        **kwargs: Any,
+    ) -> dict[str, object]: ...
+    def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened(
+        self,
+        candidate_geometry_indices: list[list[int]],
+        candidate_requested_extra_lengths_um: list[float],
         **kwargs: Any,
     ) -> dict[str, object]: ...
     def plan_auto_analytic_meander_for_centerline_depth_sweep(
@@ -127,6 +151,26 @@ CandidateBundleAttempt = tuple[
     Exception | None,
     int,
 ]
+RequirementCandidatesAttempt = tuple[
+    int | None,
+    list[PlannedEdgeInsertion],
+    list[list[dict[str, object]]],
+    list[list[int]],
+    list[int],
+    list[int],
+    list[float],
+    Exception | None,
+]
+
+
+@dataclass
+class _CandidateWorkItem:
+    candidate: DelayInsertionCandidate
+    affected_edges: tuple[RoutedEdgeKey, ...]
+    requested: float
+    info: dict[str, object]
+    edge_attempts: list[dict[str, object]]
+    already_satisfied: bool = False
 
 
 @dataclass(frozen=True)
@@ -147,6 +191,7 @@ class _MeanderPlannerContext:
     route_cell_refcounts: Counter[GridCell]
     registered_open_cell_index_by_edge: dict[RoutedEdgeKey, int]
     registered_open_cell_count_by_edge: dict[RoutedEdgeKey, int]
+    registered_geometry_index_by_edge: dict[RoutedEdgeKey, int]
     base_open_cells_by_edge: dict[RoutedEdgeKey, set[GridCell]]
     base_open_cell_lists_by_edge: dict[RoutedEdgeKey, list[GridCell]]
     max_bumps_by_edge: dict[RoutedEdgeKey, int]
@@ -795,6 +840,288 @@ class _MeanderPlannerContext:
             len(edge_attempts),
         )
 
+    def plan_requirement_candidates_registered(
+        self,
+        *,
+        work_items: list[_CandidateWorkItem],
+        box_depths_um: list[float],
+        min_straight_um: float,
+        min_seg_um: float,
+        max_height_um: float,
+        endpoint_inset_um: float,
+    ) -> RequirementCandidatesAttempt | None:
+        use_registered_geometry_indices = (
+            hasattr(
+                self.router,
+                "plan_auto_analytic_meander_requirement_candidate_indices_registered_opened",
+            )
+            and bool(self.registered_geometry_index_by_edge)
+        )
+        use_registered_centerlines = hasattr(
+            self.router,
+            "plan_auto_analytic_meander_requirement_candidates_registered_opened",
+        )
+        if not use_registered_geometry_indices and not use_registered_centerlines:
+            return None
+        edge_attempts_by_work: list[list[dict[str, object]]] = [
+            [] for _ in work_items
+        ]
+        max_bumps_by_work: list[list[int]] = [[] for _ in work_items]
+        open_counts_by_work: list[int] = [0 for _ in work_items]
+        edge_calls_by_work: list[int] = [0 for _ in work_items]
+        elapsed_by_work: list[float] = [0.0 for _ in work_items]
+        rust_work_indices: list[int] = []
+        candidate_geometry_indices: list[list[int]] = []
+        candidate_centerlines: list[list[list[tuple[float, float]]]] = []
+        candidate_registered_indices: list[list[int]] = []
+        candidate_requested: list[float] = []
+        candidate_max_bumps_by_edge: list[list[int]] = []
+
+        for work_index, work_item in enumerate(work_items):
+            if work_item.already_satisfied:
+                continue
+            edge_attempts = edge_attempts_by_work[work_index]
+            geometry_indices: list[int] = []
+            centerlines: list[list[tuple[float, float]]] = []
+            registered_indices: list[int] = []
+            max_bumps_values: list[int] = []
+            prefiltered = False
+            for candidate_edge_key in work_item.candidate.edge_keys:
+                record = self.by_edge.get(candidate_edge_key)
+                attempt_info: dict[str, object] = {
+                    "edge": edge_key_to_dict(candidate_edge_key),
+                    "status": "no_candidate",
+                    "reason": "",
+                }
+                if record is None:
+                    return None
+                edge_max_bumps = self.max_bumps_for_edge(
+                    candidate_edge_key,
+                    record,
+                )
+                if self.footprint_prefilter_enabled_for_edge(
+                    candidate_edge_key,
+                    record,
+                ) and not _meander_request_fits_footprint(
+                    requested=work_item.requested,
+                    bend_radius_um=self.bend_radius_um,
+                    min_straight_um=min_straight_um,
+                    max_bumps=edge_max_bumps,
+                    max_height_um=max_height_um,
+                    box_depths_um=box_depths_um,
+                ):
+                    attempt_info["reason"] = (
+                        "requested extra length cannot be represented by the configured "
+                        "meander footprint"
+                    )
+                    attempt_info["planner_called"] = False
+                    attempt_info["max_bumps"] = edge_max_bumps
+                    edge_attempts.append(attempt_info)
+                    prefiltered = True
+                    break
+                attempt_info["planner_called"] = True
+                attempt_info["max_bumps"] = edge_max_bumps
+                attempt_info["opened_route_cell_count"] = (
+                    self.registered_open_cell_count_by_edge.get(candidate_edge_key, 0)
+                )
+                edge_attempts.append(attempt_info)
+                if use_registered_geometry_indices:
+                    geometry_index = self.registered_geometry_index_by_edge.get(
+                        candidate_edge_key,
+                    )
+                    if geometry_index is None:
+                        return None
+                    geometry_indices.append(geometry_index)
+                else:
+                    centerline = self.centerline_list_for_edge(candidate_edge_key, record)
+                    registered_index = self.registered_open_cell_index_by_edge.get(
+                        candidate_edge_key,
+                    )
+                    if centerline is None or registered_index is None:
+                        return None
+                    centerlines.append(centerline)
+                    registered_indices.append(registered_index)
+                max_bumps_values.append(edge_max_bumps)
+                open_counts_by_work[work_index] += _as_int(
+                    attempt_info.get("opened_route_cell_count"),
+                    0,
+                )
+            max_bumps_by_work[work_index] = max_bumps_values
+            if prefiltered:
+                continue
+            rust_work_indices.append(work_index)
+            if use_registered_geometry_indices:
+                candidate_geometry_indices.append(geometry_indices)
+            else:
+                candidate_centerlines.append(centerlines)
+                candidate_registered_indices.append(registered_indices)
+            candidate_requested.append(work_item.requested)
+            candidate_max_bumps_by_edge.append(max_bumps_values)
+
+        if not rust_work_indices:
+            return (
+                None,
+                [],
+                edge_attempts_by_work,
+                max_bumps_by_work,
+                open_counts_by_work,
+                edge_calls_by_work,
+                elapsed_by_work,
+                None,
+            )
+
+        t_plan_start = time.perf_counter()
+        result: dict[str, object] | None = None
+        last_exc: Exception | None = None
+        try:
+            if use_registered_geometry_indices:
+                result = cast(
+                    dict[str, object],
+                    self.router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened(
+                        candidate_geometry_indices,
+                        candidate_requested,
+                        box_depths_um=box_depths_um,
+                        min_bend_radius_um=None,
+                        min_straight_um=min_straight_um,
+                        max_meander_height_um=max_height_um,
+                        min_segment_length_um=min_seg_um,
+                        endpoint_inset_um=endpoint_inset_um,
+                        clearance_radius_cells=0,
+                        side_policy="both",
+                        planning_mode="fill_box_multi_bump",
+                    ),
+                )
+            else:
+                result = cast(
+                    dict[str, object],
+                    self.router.plan_auto_analytic_meander_requirement_candidates_registered_opened(
+                        candidate_centerlines,
+                        candidate_registered_indices,
+                        candidate_requested,
+                        box_depths_um=box_depths_um,
+                        candidate_max_bumps_by_edge=candidate_max_bumps_by_edge,
+                        min_bend_radius_um=None,
+                        min_straight_um=min_straight_um,
+                        max_meander_height_um=max_height_um,
+                        min_segment_length_um=min_seg_um,
+                        endpoint_inset_um=endpoint_inset_um,
+                        clearance_radius_cells=0,
+                        side_policy="both",
+                        planning_mode="fill_box_multi_bump",
+                    ),
+                )
+        except Exception as exc:
+            last_exc = exc
+        elapsed_s = time.perf_counter() - t_plan_start
+        selected_work_index: int | None = None
+        selected_plans: list[PlannedEdgeInsertion] = []
+        if result is None:
+            if rust_work_indices:
+                first_work = rust_work_indices[0]
+                if edge_attempts_by_work[first_work]:
+                    edge_attempts_by_work[first_work][0]["reason"] = (
+                        str(last_exc)
+                        if last_exc is not None
+                        else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
+                    )
+                elapsed_by_work[first_work] = elapsed_s
+                edge_calls_by_work[first_work] = len(edge_attempts_by_work[first_work])
+            return (
+                None,
+                [],
+                edge_attempts_by_work,
+                max_bumps_by_work,
+                open_counts_by_work,
+                edge_calls_by_work,
+                elapsed_by_work,
+                last_exc,
+            )
+
+        raw_candidate_results = result.get("candidate_results", [])
+        if isinstance(raw_candidate_results, list):
+            for rust_index, raw_candidate_result in enumerate(raw_candidate_results):
+                if rust_index >= len(rust_work_indices) or not isinstance(
+                    raw_candidate_result,
+                    dict,
+                ):
+                    continue
+                work_index = rust_work_indices[rust_index]
+                edge_attempts = edge_attempts_by_work[work_index]
+                failed_edge_index = _as_int(
+                    raw_candidate_result.get("failed_edge_index"),
+                    0,
+                )
+                status = str(raw_candidate_result.get("status", "no_candidate"))
+                if status == "planned":
+                    for attempt_info in edge_attempts:
+                        attempt_info["status"] = "planned"
+                        attempt_info["reason"] = ""
+                    edge_calls_by_work[work_index] = len(edge_attempts)
+                else:
+                    if 0 <= failed_edge_index < len(edge_attempts):
+                        edge_attempts[failed_edge_index]["reason"] = str(
+                            raw_candidate_result.get("reason", "")
+                        )
+                    edge_calls_by_work[work_index] = min(
+                        len(edge_attempts),
+                        failed_edge_index + 1,
+                    )
+        if rust_work_indices:
+            elapsed_by_work[rust_work_indices[0]] = elapsed_s
+
+        if result.get("status") == "planned":
+            selected_rust_index = _as_int(result.get("selected_candidate_index"), -1)
+            if not (0 <= selected_rust_index < len(rust_work_indices)):
+                return None
+            selected_work_index_value = rust_work_indices[selected_rust_index]
+            selected_work_index = selected_work_index_value
+            raw_plans = result.get("plans", [])
+            if not isinstance(raw_plans, list):
+                return None
+            work_item = work_items[selected_work_index_value]
+            records = [
+                self.by_edge.get(candidate_edge_key)
+                for candidate_edge_key in work_item.candidate.edge_keys
+            ]
+            if any(record is None for record in records) or len(raw_plans) != len(records):
+                return None
+            for edge_key, record, rr_obj, candidate_max_bumps in zip(
+                work_item.candidate.edge_keys,
+                records,
+                raw_plans,
+                max_bumps_by_work[selected_work_index_value],
+            ):
+                if record is None or not isinstance(rr_obj, dict):
+                    return None
+                rr = cast(dict[str, object], rr_obj)
+                candidate_inserted = _as_float(
+                    rr.get("inserted_extra_length_um", 0.0),
+                    0.0,
+                )
+                if abs(candidate_inserted - work_item.requested) > EXACT_MEANDER_EPS_UM:
+                    return None
+                selected_plans.append(
+                    (
+                        edge_key,
+                        record,
+                        rr,
+                        True,
+                        candidate_max_bumps,
+                        set(),
+                    )
+                )
+
+        return (
+            selected_work_index,
+            selected_plans,
+            edge_attempts_by_work,
+            max_bumps_by_work,
+            open_counts_by_work,
+            edge_calls_by_work,
+            elapsed_by_work,
+            None,
+        )
+
     def commit_planned_edge(
         self,
         *,
@@ -949,6 +1276,14 @@ def _build_planner_context(
         router,
         "register_meander_route_cells_as_static",
     ) and all(record.corrected_centerline_um for record in by_edge.values())
+    can_set_static_and_register_route_cells = hasattr(
+        router,
+        "set_static_and_register_meander_route_cells_as_static",
+    ) and all(record.corrected_centerline_um for record in by_edge.values())
+    can_use_registered_route_cells = (
+        can_use_registered_route_cells
+        or can_set_static_and_register_route_cells
+    )
     if not can_use_registered_route_cells:
         for edge_key, record in by_edge.items():
             route_cells = _record_route_cells(record)
@@ -962,27 +1297,68 @@ def _build_planner_context(
     }
     base_static_collect_s = time.perf_counter() - t_base_static_start
     bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
-    t_set_static_start = time.perf_counter()
-    router.set_static_cells(list(base_static_cells))
-    set_static_s = time.perf_counter() - t_set_static_start
+    set_static_s = 0.0
+    if not can_set_static_and_register_route_cells:
+        t_set_static_start = time.perf_counter()
+        router.set_static_cells(list(base_static_cells))
+        set_static_s = time.perf_counter() - t_set_static_start
     add_route_static_s = 0.0
     register_route_cells_s = 0.0
+    register_route_geometry_s = 0.0
     registered_open_cell_index_by_edge: dict[RoutedEdgeKey, int] = {}
     registered_open_cell_count_by_edge: dict[RoutedEdgeKey, int] = {}
+    registered_geometry_index_by_edge: dict[RoutedEdgeKey, int] = {}
+    registered_centerline_lists_by_edge: dict[RoutedEdgeKey, list[tuple[float, float]]] = {}
+    registered_max_bumps_by_edge: dict[RoutedEdgeKey, int] = {}
     registered_unique_route_cell_count: int | None = None
+    edge_order: list[RoutedEdgeKey] = []
     if can_use_registered_route_cells:
         t_register_start = time.perf_counter()
         edge_order = list(by_edge)
         route_objects = [by_edge[edge_key].route_obj for edge_key in edge_order]
-        indices, open_counts, unique_count = router.register_meander_route_cells_as_static(
-            route_objects,
-            list(base_static_cells),
-        )
+        if can_set_static_and_register_route_cells:
+            indices, open_counts, unique_count = (
+                router.set_static_and_register_meander_route_cells_as_static(
+                    route_objects,
+                    list(base_static_cells),
+                )
+            )
+        else:
+            indices, open_counts, unique_count = router.register_meander_route_cells_as_static(
+                route_objects,
+                list(base_static_cells),
+            )
         register_route_cells_s = time.perf_counter() - t_register_start
         registered_unique_route_cell_count = int(unique_count)
         for edge_key, raw_index, raw_count in zip(edge_order, indices, open_counts):
             registered_open_cell_index_by_edge[edge_key] = int(raw_index)
             registered_open_cell_count_by_edge[edge_key] = int(raw_count)
+        if hasattr(router, "register_meander_route_geometries"):
+            t_geometry_start = time.perf_counter()
+            geometry_centerlines: list[list[tuple[float, float]]] = []
+            geometry_open_indices: list[int] = []
+            geometry_max_bumps: list[int] = []
+            for edge_key in edge_order:
+                record = by_edge[edge_key]
+                centerline = list(record.corrected_centerline_um)
+                max_bumps = _route_geometry_max_meander_bumps(
+                    record=record,
+                    grid_size_um=float(grid_size_um_cfg),
+                    bend_radius_um=bend_radius_um,
+                )
+                registered_centerline_lists_by_edge[edge_key] = centerline
+                registered_max_bumps_by_edge[edge_key] = max_bumps
+                geometry_centerlines.append(centerline)
+                geometry_open_indices.append(registered_open_cell_index_by_edge[edge_key])
+                geometry_max_bumps.append(max_bumps)
+            geometry_indices = router.register_meander_route_geometries(
+                geometry_centerlines,
+                geometry_open_indices,
+                geometry_max_bumps,
+            )
+            register_route_geometry_s = time.perf_counter() - t_geometry_start
+            for edge_key, raw_index in zip(edge_order, geometry_indices):
+                registered_geometry_index_by_edge[edge_key] = int(raw_index)
     elif route_cell_refcounts:
         t_add_route_static_start = time.perf_counter()
         router.add_static_cells(list(route_cell_refcounts.keys()))
@@ -996,6 +1372,8 @@ def _build_planner_context(
         "set_static_cells_s": set_static_s,
         "add_route_static_cells_s": add_route_static_s,
         "register_route_cells_s": register_route_cells_s,
+        "combined_static_route_registration": float(can_set_static_and_register_route_cells),
+        "register_route_geometry_s": register_route_geometry_s,
         "routed_record_count": float(len(by_edge)),
         "unique_route_cell_count": float(
             registered_unique_route_cell_count
@@ -1013,10 +1391,11 @@ def _build_planner_context(
         route_cell_refcounts=route_cell_refcounts,
         registered_open_cell_index_by_edge=registered_open_cell_index_by_edge,
         registered_open_cell_count_by_edge=registered_open_cell_count_by_edge,
+        registered_geometry_index_by_edge=registered_geometry_index_by_edge,
         base_open_cells_by_edge={},
         base_open_cell_lists_by_edge={},
-        max_bumps_by_edge={},
-        centerline_lists_by_edge={},
+        max_bumps_by_edge=registered_max_bumps_by_edge,
+        centerline_lists_by_edge=registered_centerline_lists_by_edge,
         footprint_prefilter_enabled_by_edge={},
         base_static_cells=base_static_cells,
         reserved_meander_cells=set(),
@@ -1332,6 +1711,11 @@ def analyze_meander_insertion_for_requirements(
     bundle_edge_calls = 0
     bundle_planned = 0
     bundle_no_candidate = 0
+    requirement_batch_calls = 0
+    requirement_batch_candidate_calls = 0
+    requirement_batch_edge_calls = 0
+    requirement_batch_planned = 0
+    requirement_batch_no_candidate = 0
     fallback_candidate_calls = 0
     fallback_edge_calls = 0
     candidate_profile: dict[str, dict[str, object]] = {}
@@ -1396,6 +1780,7 @@ def analyze_meander_insertion_for_requirements(
         max_bumps = 1
         current_route_open_cell_count = 0
 
+        work_items: list[_CandidateWorkItem] = []
         for candidate in _candidates_for_requirement(
             req,
             requirement_edge_alternatives=requirement_edge_alternatives,
@@ -1436,120 +1821,103 @@ def analyze_meander_insertion_for_requirements(
             }
             if candidate_requested <= EXACT_MEANDER_EPS_UM:
                 candidate_info["status"] = "already_satisfied"
-                candidate_attempts.append(candidate_info)
-                _record_candidate_profile(
-                    candidate_profile,
-                    reason=candidate.reason,
-                    status="already_satisfied",
-                    edge_count=len(candidate.edge_keys),
-                    edge_calls=0,
-                    elapsed_s=0.0,
+                work_items.append(
+                    _CandidateWorkItem(
+                        candidate=candidate,
+                        affected_edges=tuple(affected_edges),
+                        requested=candidate_requested,
+                        info=candidate_info,
+                        edge_attempts=edge_attempts,
+                        already_satisfied=True,
+                    )
                 )
                 continue
-            candidate_plans: list[PlannedEdgeInsertion] = []
-            candidate_reserved_cells: set[GridCell] = set()
-            candidate_open_cells: set[GridCell] = set()
-            candidate_open_cell_count = 0
-            candidate_max_bumps_values: list[int] = []
-            candidate_failed = False
-            candidate_elapsed_s = 0.0
-            candidate_edge_calls = 0
-            bundle_attempt = context.plan_candidate_bundle_registered(
-                candidate_edge_keys=tuple(candidate.edge_keys),
-                requested=candidate_requested,
-                box_depths_um=search_config.box_depths_um,
-                min_straight_um=search_config.min_straight_um,
-                min_seg_um=search_config.min_segment_um,
-                max_height_um=search_config.max_height_um,
-                endpoint_inset_um=search_config.endpoint_inset_um,
+            work_items.append(
+                _CandidateWorkItem(
+                    candidate=candidate,
+                    affected_edges=tuple(affected_edges),
+                    requested=candidate_requested,
+                    info=candidate_info,
+                    edge_attempts=edge_attempts,
+                )
             )
-            if bundle_attempt is not None:
-                bundle_candidate_calls += 1
-                (
-                    candidate_failed,
-                    candidate_plans,
-                    edge_attempts,
-                    candidate_max_bumps_values,
-                    candidate_open_cell_count,
-                    candidate_elapsed_s,
-                    last_exc,
-                    candidate_edge_calls,
-                ) = bundle_attempt
+
+        requirement_attempt = context.plan_requirement_candidates_registered(
+            work_items=work_items,
+            box_depths_um=search_config.box_depths_um,
+            min_straight_um=search_config.min_straight_um,
+            min_seg_um=search_config.min_segment_um,
+            max_height_um=search_config.max_height_um,
+            endpoint_inset_um=search_config.endpoint_inset_um,
+        )
+        if requirement_attempt is not None:
+            (
+                selected_work_index,
+                requirement_selected_plans,
+                edge_attempts_by_work,
+                max_bumps_by_work,
+                open_counts_by_work,
+                edge_calls_by_work,
+                elapsed_by_work,
+                requirement_last_exc,
+            ) = requirement_attempt
+            if requirement_last_exc is not None:
+                last_exc = requirement_last_exc
+            requirement_batch_was_called = any(elapsed > 0.0 for elapsed in elapsed_by_work)
+            if requirement_batch_was_called:
+                requirement_batch_calls += 1
+            for work_index, work_item in enumerate(work_items):
+                candidate = work_item.candidate
+                candidate_info = work_item.info
+                edge_attempts = edge_attempts_by_work[work_index]
+                candidate_info["edge_attempts"] = edge_attempts
+                if work_item.already_satisfied:
+                    candidate_attempts.append(candidate_info)
+                    _record_candidate_profile(
+                        candidate_profile,
+                        reason=candidate.reason,
+                        status="already_satisfied",
+                        edge_count=len(candidate.edge_keys),
+                        edge_calls=0,
+                        elapsed_s=0.0,
+                    )
+                    continue
+                candidate_elapsed_s = elapsed_by_work[work_index]
+                candidate_edge_calls = edge_calls_by_work[work_index]
                 planning_elapsed_for_entry_s += candidate_elapsed_s
                 planner_elapsed_s += candidate_elapsed_s
                 planner_calls += candidate_edge_calls
+                bundle_candidate_calls += 1
                 bundle_edge_calls += candidate_edge_calls
+                if requirement_batch_was_called:
+                    requirement_batch_candidate_calls += 1
+                    requirement_batch_edge_calls += candidate_edge_calls
                 attempted_edges.extend(edge_attempts)
-                if candidate_failed and edge_attempts:
-                    bundle_no_candidate += 1
-                    candidate_info["failure_reason"] = edge_attempts[-1].get("reason", "")
-                else:
+                if selected_work_index == work_index:
+                    candidate_info["status"] = "planned"
+                    candidate_info["failure_reason"] = ""
+                    candidate_attempts.append(candidate_info)
+                    _record_candidate_profile(
+                        candidate_profile,
+                        reason=candidate.reason,
+                        status="planned",
+                        edge_count=len(candidate.edge_keys),
+                        edge_calls=candidate_edge_calls,
+                        elapsed_s=candidate_elapsed_s,
+                    )
                     bundle_planned += 1
-            else:
-                fallback_candidate_calls += 1
-                for candidate_edge_key in candidate.edge_keys:
-                    (
-                        attempt_info,
-                        rr,
-                        record,
-                        used_reserved_overlay,
-                        candidate_max_bumps,
-                        candidate_route_open_cells,
-                        elapsed_s,
-                        edge_probe_elapsed_s,
-                        candidate_last_exc,
-                    ) = context.plan_edge_candidate(
-                        candidate_edge_key=candidate_edge_key,
-                        requested=candidate_requested,
-                        extra_reserved_cells=candidate_reserved_cells,
-                        box_depths_um=search_config.box_depths_um,
-                        min_straight_um=search_config.min_straight_um,
-                        min_seg_um=search_config.min_segment_um,
-                        max_height_um=search_config.max_height_um,
-                        endpoint_inset_um=search_config.endpoint_inset_um,
-                        use_probe=False,
-                    )
-                    if "probe_feasible" in attempt_info or "probe_error" in attempt_info:
-                        probe_calls += 1
-                        probe_elapsed_s += edge_probe_elapsed_s
-                    if bool(attempt_info.get("planner_called", True)):
-                        planner_calls += 1
-                        candidate_edge_calls += 1
-                        fallback_edge_calls += 1
-                    planning_elapsed_for_entry_s += elapsed_s
-                    planner_elapsed_s += elapsed_s
-                    candidate_elapsed_s += elapsed_s
-                    edge_attempts.append(attempt_info)
-                    attempted_edges.append(attempt_info)
-                    last_exc = candidate_last_exc
-                    if rr is None or record is None:
-                        candidate_failed = True
-                        candidate_info["failure_reason"] = attempt_info.get("reason", "")
-                        break
-                    selected_grid_rect = rr.get("selected_grid_rect")
-                    new_reserved_cells = _grid_rect_cells(selected_grid_rect)
-                    candidate_reserved_cells.update(new_reserved_cells)
-                    candidate_open_cells.update(candidate_route_open_cells)
-                    if candidate_route_open_cells:
-                        candidate_open_cell_count += len(candidate_route_open_cells)
-                    else:
-                        candidate_open_cell_count += _as_int(
-                            attempt_info.get("opened_route_cell_count"),
-                            0,
-                        )
-                    candidate_max_bumps_values.append(candidate_max_bumps)
-                    candidate_plans.append(
-                        (
-                            candidate_edge_key,
-                            record,
-                            rr,
-                            used_reserved_overlay,
-                            candidate_max_bumps,
-                            candidate_route_open_cells,
-                        )
-                    )
-            if candidate_failed:
+                    if requirement_batch_was_called:
+                        requirement_batch_planned += 1
+                    selected_candidate = candidate
+                    selected_candidate_requested = work_item.requested
+                    selected_affected_edges = work_item.affected_edges
+                    selected_plans = requirement_selected_plans
+                    max_bumps = max(max_bumps_by_work[work_index], default=1)
+                    current_route_open_cell_count = open_counts_by_work[work_index]
+                    break
                 candidate_info["status"] = "no_candidate"
+                if edge_attempts:
+                    candidate_info["failure_reason"] = edge_attempts[-1].get("reason", "")
                 candidate_attempts.append(candidate_info)
                 _record_candidate_profile(
                     candidate_profile,
@@ -1559,29 +1927,165 @@ def analyze_meander_insertion_for_requirements(
                     edge_calls=candidate_edge_calls,
                     elapsed_s=candidate_elapsed_s,
                 )
-                continue
-            candidate_info["status"] = "planned"
-            candidate_info["failure_reason"] = ""
-            candidate_attempts.append(candidate_info)
-            _record_candidate_profile(
-                candidate_profile,
-                reason=candidate.reason,
-                status="planned",
-                edge_count=len(candidate.edge_keys),
-                edge_calls=candidate_edge_calls,
-                elapsed_s=candidate_elapsed_s,
-            )
-            selected_candidate = candidate
-            selected_candidate_requested = candidate_requested
-            selected_affected_edges = tuple(affected_edges)
-            selected_plans = candidate_plans
-            max_bumps = max(candidate_max_bumps_values, default=1)
-            current_route_open_cell_count = (
-                len(candidate_open_cells)
-                if candidate_open_cells
-                else candidate_open_cell_count
-            )
-            break
+                bundle_no_candidate += 1
+                if requirement_batch_was_called:
+                    requirement_batch_no_candidate += 1
+            if selected_candidate is None:
+                last_exc = requirement_last_exc
+        else:
+            for work_item in work_items:
+                candidate = work_item.candidate
+                affected_edges = work_item.affected_edges
+                candidate_requested = work_item.requested
+                candidate_info = work_item.info
+                edge_attempts = work_item.edge_attempts
+                if work_item.already_satisfied:
+                    candidate_attempts.append(candidate_info)
+                    _record_candidate_profile(
+                        candidate_profile,
+                        reason=candidate.reason,
+                        status="already_satisfied",
+                        edge_count=len(candidate.edge_keys),
+                        edge_calls=0,
+                        elapsed_s=0.0,
+                    )
+                    continue
+                candidate_plans: list[PlannedEdgeInsertion] = []
+                candidate_reserved_cells: set[GridCell] = set()
+                candidate_open_cells: set[GridCell] = set()
+                candidate_open_cell_count = 0
+                candidate_max_bumps_values: list[int] = []
+                candidate_failed = False
+                candidate_elapsed_s = 0.0
+                candidate_edge_calls = 0
+                bundle_attempt = context.plan_candidate_bundle_registered(
+                    candidate_edge_keys=tuple(candidate.edge_keys),
+                    requested=candidate_requested,
+                    box_depths_um=search_config.box_depths_um,
+                    min_straight_um=search_config.min_straight_um,
+                    min_seg_um=search_config.min_segment_um,
+                    max_height_um=search_config.max_height_um,
+                    endpoint_inset_um=search_config.endpoint_inset_um,
+                )
+                if bundle_attempt is not None:
+                    bundle_candidate_calls += 1
+                    (
+                        candidate_failed,
+                        candidate_plans,
+                        edge_attempts,
+                        candidate_max_bumps_values,
+                        candidate_open_cell_count,
+                        candidate_elapsed_s,
+                        last_exc,
+                        candidate_edge_calls,
+                    ) = bundle_attempt
+                    planning_elapsed_for_entry_s += candidate_elapsed_s
+                    planner_elapsed_s += candidate_elapsed_s
+                    planner_calls += candidate_edge_calls
+                    bundle_edge_calls += candidate_edge_calls
+                    attempted_edges.extend(edge_attempts)
+                    if candidate_failed and edge_attempts:
+                        bundle_no_candidate += 1
+                        candidate_info["failure_reason"] = edge_attempts[-1].get("reason", "")
+                    else:
+                        bundle_planned += 1
+                else:
+                    fallback_candidate_calls += 1
+                    for candidate_edge_key in candidate.edge_keys:
+                        (
+                            attempt_info,
+                            rr,
+                            record,
+                            used_reserved_overlay,
+                            candidate_max_bumps,
+                            candidate_route_open_cells,
+                            elapsed_s,
+                            edge_probe_elapsed_s,
+                            candidate_last_exc,
+                        ) = context.plan_edge_candidate(
+                            candidate_edge_key=candidate_edge_key,
+                            requested=candidate_requested,
+                            extra_reserved_cells=candidate_reserved_cells,
+                            box_depths_um=search_config.box_depths_um,
+                            min_straight_um=search_config.min_straight_um,
+                            min_seg_um=search_config.min_segment_um,
+                            max_height_um=search_config.max_height_um,
+                            endpoint_inset_um=search_config.endpoint_inset_um,
+                            use_probe=False,
+                        )
+                        if "probe_feasible" in attempt_info or "probe_error" in attempt_info:
+                            probe_calls += 1
+                            probe_elapsed_s += edge_probe_elapsed_s
+                        if bool(attempt_info.get("planner_called", True)):
+                            planner_calls += 1
+                            candidate_edge_calls += 1
+                            fallback_edge_calls += 1
+                        planning_elapsed_for_entry_s += elapsed_s
+                        planner_elapsed_s += elapsed_s
+                        candidate_elapsed_s += elapsed_s
+                        edge_attempts.append(attempt_info)
+                        attempted_edges.append(attempt_info)
+                        last_exc = candidate_last_exc
+                        if rr is None or record is None:
+                            candidate_failed = True
+                            candidate_info["failure_reason"] = attempt_info.get("reason", "")
+                            break
+                        selected_grid_rect = rr.get("selected_grid_rect")
+                        new_reserved_cells = _grid_rect_cells(selected_grid_rect)
+                        candidate_reserved_cells.update(new_reserved_cells)
+                        candidate_open_cells.update(candidate_route_open_cells)
+                        if candidate_route_open_cells:
+                            candidate_open_cell_count += len(candidate_route_open_cells)
+                        else:
+                            candidate_open_cell_count += _as_int(
+                                attempt_info.get("opened_route_cell_count"),
+                                0,
+                            )
+                        candidate_max_bumps_values.append(candidate_max_bumps)
+                        candidate_plans.append(
+                            (
+                                candidate_edge_key,
+                                record,
+                                rr,
+                                used_reserved_overlay,
+                                candidate_max_bumps,
+                                candidate_route_open_cells,
+                            )
+                        )
+                if candidate_failed:
+                    candidate_info["status"] = "no_candidate"
+                    candidate_attempts.append(candidate_info)
+                    _record_candidate_profile(
+                        candidate_profile,
+                        reason=candidate.reason,
+                        status="no_candidate",
+                        edge_count=len(candidate.edge_keys),
+                        edge_calls=candidate_edge_calls,
+                        elapsed_s=candidate_elapsed_s,
+                    )
+                    continue
+                candidate_info["status"] = "planned"
+                candidate_info["failure_reason"] = ""
+                candidate_attempts.append(candidate_info)
+                _record_candidate_profile(
+                    candidate_profile,
+                    reason=candidate.reason,
+                    status="planned",
+                    edge_count=len(candidate.edge_keys),
+                    edge_calls=candidate_edge_calls,
+                    elapsed_s=candidate_elapsed_s,
+                )
+                selected_candidate = candidate
+                selected_candidate_requested = candidate_requested
+                selected_affected_edges = tuple(affected_edges)
+                selected_plans = candidate_plans
+                max_bumps = max(candidate_max_bumps_values, default=1)
+                current_route_open_cell_count = (
+                    len(candidate_open_cells)
+                    if candidate_open_cells
+                    else candidate_open_cell_count
+                )
+                break
 
         entry["planning_elapsed_s"] = planning_elapsed_for_entry_s
         entry["candidate_edges"] = attempted_edges
@@ -1636,7 +2140,7 @@ def analyze_meander_insertion_for_requirements(
         entry["planned_edge"] = edge_key_to_dict(selected_plans[0][0])
         entry["planned_edges"] = [
             edge_key_to_dict(candidate_edge_key)
-            for candidate_edge_key, *_ in selected_plans
+                for candidate_edge_key, *_ in selected_plans
         ]
         if unmatched > 1.0e-9:
             entry["status"] = "planned_partial"
@@ -1696,6 +2200,11 @@ def analyze_meander_insertion_for_requirements(
             "bundle_edge_calls": int(bundle_edge_calls),
             "bundle_planned": int(bundle_planned),
             "bundle_no_candidate": int(bundle_no_candidate),
+            "requirement_batch_calls": int(requirement_batch_calls),
+            "requirement_batch_candidate_calls": int(requirement_batch_candidate_calls),
+            "requirement_batch_edge_calls": int(requirement_batch_edge_calls),
+            "requirement_batch_planned": int(requirement_batch_planned),
+            "requirement_batch_no_candidate": int(requirement_batch_no_candidate),
             "fallback_candidate_calls": int(fallback_candidate_calls),
             "fallback_edge_calls": int(fallback_edge_calls),
             "setup_profile": context.setup_profile,

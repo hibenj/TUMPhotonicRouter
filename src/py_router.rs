@@ -433,6 +433,12 @@ impl PyPortAccess {
     }
 }
 
+struct RegisteredMeanderGeometry {
+    centerline: Vec<(f64, f64)>,
+    registered_open_index: usize,
+    max_bumps: usize,
+}
+
 #[pyclass(name = "PyPhotonicRouter")]
 pub struct PyPhotonicRouter {
     grid: PyGridSpec,
@@ -444,6 +450,7 @@ pub struct PyPhotonicRouter {
     port_open_cells: FxHashSet<CellKey>,
     meander_base_prefix: RefCell<Option<DenseOccupancyPrefix>>,
     meander_registered_open_cells: RefCell<Vec<FxHashSet<CellKey>>>,
+    meander_registered_geometries: RefCell<Vec<RegisteredMeanderGeometry>>,
     meander_registered_reserved_cells: RefCell<FxHashSet<CellKey>>,
 }
 
@@ -866,6 +873,7 @@ impl PyPhotonicRouter {
             port_open_cells: FxHashSet::default(),
             meander_base_prefix: RefCell::new(None),
             meander_registered_open_cells: RefCell::new(Vec::new()),
+            meander_registered_geometries: RefCell::new(Vec::new()),
             meander_registered_reserved_cells: RefCell::new(FxHashSet::default()),
         }
     }
@@ -895,6 +903,7 @@ impl PyPhotonicRouter {
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.static_cells.clear();
         self.meander_registered_open_cells.borrow_mut().clear();
+        self.meander_registered_geometries.borrow_mut().clear();
         self.meander_registered_reserved_cells.borrow_mut().clear();
     }
     fn set_static_cells(&mut self, cells: Vec<(i32, i32)>) {
@@ -903,6 +912,7 @@ impl PyPhotonicRouter {
     }
     fn clear_registered_meander_route_cells(&self) {
         self.meander_registered_open_cells.borrow_mut().clear();
+        self.meander_registered_geometries.borrow_mut().clear();
     }
     fn clear_registered_meander_reserved_cells(&self) {
         self.meander_registered_reserved_cells.borrow_mut().clear();
@@ -919,6 +929,47 @@ impl PyPhotonicRouter {
             .get(index)
             .map(FxHashSet::len)
             .ok_or_else(|| PyValueError::new_err("registered meander route index is out of range"))
+    }
+    fn register_meander_route_geometries(
+        &self,
+        centerlines: Vec<Vec<(f64, f64)>>,
+        registered_opened_cell_indices: Vec<usize>,
+        max_bumps_by_edge: Vec<usize>,
+    ) -> PyResult<Vec<usize>> {
+        let count = centerlines.len();
+        if count != registered_opened_cell_indices.len() || count != max_bumps_by_edge.len() {
+            return Err(PyValueError::new_err(
+                "registered meander geometry inputs must have matching lengths",
+            ));
+        }
+        let open_cell_count = self.meander_registered_open_cells.borrow().len();
+        let mut geometries = Vec::with_capacity(count);
+        for ((centerline, registered_open_index), max_bumps) in centerlines
+            .into_iter()
+            .zip(registered_opened_cell_indices.into_iter())
+            .zip(max_bumps_by_edge.into_iter())
+        {
+            if registered_open_index >= open_cell_count {
+                return Err(PyValueError::new_err(
+                    "registered meander route index is out of range",
+                ));
+            }
+            if max_bumps == 0 {
+                return Err(PyValueError::new_err(
+                    "registered meander max bump values must be > 0",
+                ));
+            }
+            let _ = centerline_length_um_rs(&centerline)
+                .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            geometries.push(RegisteredMeanderGeometry {
+                centerline,
+                registered_open_index,
+                max_bumps,
+            });
+        }
+        let indices: Vec<usize> = (0..geometries.len()).collect();
+        *self.meander_registered_geometries.borrow_mut() = geometries;
+        Ok(indices)
     }
     fn register_meander_route_cells_as_static(
         &mut self,
@@ -964,6 +1015,66 @@ impl PyPhotonicRouter {
         let unique_route_cell_count = route_cell_list.len();
         if !route_cell_list.is_empty() {
             self.add_static_cells(route_cell_list);
+        }
+
+        let indices: Vec<usize> = (0..registered_open_sets.len()).collect();
+        *self.meander_registered_open_cells.borrow_mut() = registered_open_sets;
+        Ok((indices, open_counts, unique_route_cell_count))
+    }
+    fn set_static_and_register_meander_route_cells_as_static(
+        &mut self,
+        routes: &Bound<'_, PyList>,
+        base_static_cells: Vec<(i32, i32)>,
+    ) -> PyResult<(Vec<usize>, Vec<usize>, usize)> {
+        self.invalidate_meander_base_prefix();
+        self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
+        let base_static_keys = pack_cells(&base_static_cells);
+        self.static_cells = base_static_keys.clone();
+        self.meander_registered_open_cells.borrow_mut().clear();
+        self.meander_registered_geometries.borrow_mut().clear();
+        self.meander_registered_reserved_cells.borrow_mut().clear();
+        if !base_static_cells.is_empty() {
+            self.obstacle_map.add_static_cells(&base_static_cells);
+        }
+
+        let mut route_cell_sets: Vec<FxHashSet<CellKey>> = Vec::with_capacity(routes.len());
+        let mut route_cell_refcounts: FxHashMap<CellKey, u32> = FxHashMap::default();
+        let mut unique_route_cells: FxHashSet<CellKey> = FxHashSet::default();
+
+        for item in routes.iter() {
+            let route = item.extract::<PyRef<'_, PyRouteResult>>()?;
+            let mut route_cells = FxHashSet::default();
+            for &(x, y) in &route.cells {
+                let key = pack_xy(x, y);
+                if route_cells.insert(key) {
+                    unique_route_cells.insert(key);
+                    *route_cell_refcounts.entry(key).or_insert(0) += 1;
+                }
+            }
+            route_cell_sets.push(route_cells);
+        }
+
+        let mut registered_open_sets: Vec<FxHashSet<CellKey>> =
+            Vec::with_capacity(route_cell_sets.len());
+        let mut open_counts = Vec::with_capacity(route_cell_sets.len());
+        for route_cells in route_cell_sets {
+            let open_cells: FxHashSet<CellKey> = route_cells
+                .into_iter()
+                .filter(|key| {
+                    route_cell_refcounts.get(key).copied().unwrap_or(0) == 1
+                        && !base_static_keys.contains(key)
+                })
+                .collect();
+            open_counts.push(open_cells.len());
+            registered_open_sets.push(open_cells);
+        }
+
+        let route_cell_list: Vec<(i32, i32)> =
+            unique_route_cells.iter().copied().map(unpack_xy).collect();
+        let unique_route_cell_count = route_cell_list.len();
+        self.static_cells.extend(unique_route_cells);
+        if !route_cell_list.is_empty() {
+            self.obstacle_map.add_static_cells(&route_cell_list);
         }
 
         let indices: Vec<usize> = (0..registered_open_sets.len()).collect();
@@ -2480,6 +2591,475 @@ impl PyPhotonicRouter {
             total_rejected_exact_length_mismatch,
         )?;
         d.set_item("rejected_too_short", total_rejected_too_short)?;
+        Ok(d.into())
+    }
+
+    #[pyo3(signature=(candidate_centerlines,candidate_registered_opened_cell_indices,candidate_requested_extra_lengths_um,box_depths_um,candidate_max_bumps_by_edge,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_auto_analytic_meander_requirement_candidates_registered_opened(
+        &self,
+        py: Python<'_>,
+        candidate_centerlines: Vec<Vec<Vec<(f64, f64)>>>,
+        candidate_registered_opened_cell_indices: Vec<Vec<usize>>,
+        candidate_requested_extra_lengths_um: Vec<f64>,
+        box_depths_um: Vec<f64>,
+        candidate_max_bumps_by_edge: Vec<Vec<usize>>,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        endpoint_inset_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        let candidate_count = candidate_centerlines.len();
+        if candidate_count != candidate_registered_opened_cell_indices.len()
+            || candidate_count != candidate_requested_extra_lengths_um.len()
+            || candidate_count != candidate_max_bumps_by_edge.len()
+        {
+            return Err(PyValueError::new_err(
+                "candidate inputs must have matching lengths",
+            ));
+        }
+        if candidate_count == 0 {
+            return Err(PyValueError::new_err("candidate list must not be empty"));
+        }
+        if box_depths_um.is_empty() {
+            return Err(PyValueError::new_err("box_depths_um must not be empty"));
+        }
+        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(PyValueError::new_err(
+                "box_depths_um values must be finite and > 0",
+            ));
+        }
+        if candidate_requested_extra_lengths_um
+            .iter()
+            .any(|value| *value <= 0.0)
+        {
+            return Err(PyValueError::new_err(
+                "candidate requested lengths must be > 0",
+            ));
+        }
+        if min_straight_um < 0.0 {
+            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
+        }
+        if max_meander_height_um <= 0.0 {
+            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
+        }
+        if min_segment_length_um <= 0.0 {
+            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
+        }
+        if endpoint_inset_um < 0.0 {
+            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
+        }
+        if clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
+        }
+        for ((centerlines, registered_indices), max_bumps_by_edge) in candidate_centerlines
+            .iter()
+            .zip(candidate_registered_opened_cell_indices.iter())
+            .zip(candidate_max_bumps_by_edge.iter())
+        {
+            if centerlines.is_empty() {
+                return Err(PyValueError::new_err("candidate bundles must not be empty"));
+            }
+            if centerlines.len() != registered_indices.len()
+                || centerlines.len() != max_bumps_by_edge.len()
+            {
+                return Err(PyValueError::new_err(
+                    "candidate bundle edge inputs must have matching lengths",
+                ));
+            }
+            if max_bumps_by_edge.iter().any(|bumps| *bumps == 0) {
+                return Err(PyValueError::new_err(
+                    "candidate max bump values must be > 0",
+                ));
+            }
+            for centerline in centerlines {
+                let _ = centerline_length_um_rs(centerline)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            }
+        }
+
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            self.primitive_cfg.bend_radius_cells,
+            self.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        self.ensure_meander_base_prefix();
+        let cached = self.meander_base_prefix.borrow();
+        let base_prefix = cached
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let registered_open_cells = self.meander_registered_open_cells.borrow();
+        let base_reserved_cells = self.meander_registered_reserved_cells.borrow().clone();
+        let candidate_results = PyList::empty_bound(py);
+        let mut selected_plans: Option<PyObject> = None;
+        let mut selected_candidate_index: Option<usize> = None;
+
+        for candidate_index in 0..candidate_count {
+            let centerlines = &candidate_centerlines[candidate_index];
+            let registered_indices = &candidate_registered_opened_cell_indices[candidate_index];
+            let max_bumps_by_edge = &candidate_max_bumps_by_edge[candidate_index];
+            let requested_extra_length_um = candidate_requested_extra_lengths_um[candidate_index];
+            let plans = PyList::empty_bound(py);
+            let mut candidate_reserved_cells = FxHashSet::default();
+            let mut total_candidate_runs = 0usize;
+            let mut total_candidate_intervals = 0usize;
+            let mut total_rejected_box_blocked = 0usize;
+            let mut total_rejected_planning_failed = 0usize;
+            let mut total_rejected_exact_length_mismatch = 0usize;
+            let mut total_rejected_too_short = 0usize;
+            let mut failed_reason: Option<String> = None;
+            let mut failed_edge_index: Option<usize> = None;
+
+            for (edge_index, ((centerline, registered_index), max_bumps)) in centerlines
+                .iter()
+                .zip(registered_indices.iter())
+                .zip(max_bumps_by_edge.iter())
+                .enumerate()
+            {
+                let opened_ref = registered_open_cells
+                    .get(*registered_index)
+                    .ok_or_else(|| {
+                        PyValueError::new_err("registered meander route index is out of range")
+                    })?;
+                let mut extra_blocked_owned = base_reserved_cells.clone();
+                extra_blocked_owned.extend(candidate_reserved_cells.iter().copied());
+                let extra_blocked_ref = if extra_blocked_owned.is_empty() {
+                    None
+                } else {
+                    Some(&extra_blocked_owned)
+                };
+                let cfg = AutoMeanderConfig {
+                    requested_extra_length_um,
+                    min_bend_radius_um: effective_radius_um,
+                    min_straight_um,
+                    max_bumps: *max_bumps,
+                    max_meander_height_um,
+                    box_depth_um: box_depths_um[0],
+                    min_segment_length_um,
+                    endpoint_inset_um,
+                    clearance_radius_cells,
+                    side_policy: policy,
+                    mode,
+                };
+                let plan =
+                    match plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
+                        centerline,
+                        &grid,
+                        base_prefix,
+                        Some(opened_ref),
+                        extra_blocked_ref,
+                        &cfg,
+                        &box_depths_um,
+                    ) {
+                        Ok(plan) => plan,
+                        Err(err) => {
+                            failed_reason = Some(err.to_string());
+                            failed_edge_index = Some(edge_index);
+                            break;
+                        }
+                    };
+                total_candidate_runs += plan.candidate_runs;
+                total_candidate_intervals += plan.candidate_intervals;
+                total_rejected_box_blocked += plan.rejected_box_blocked;
+                total_rejected_planning_failed += plan.rejected_planning_failed;
+                total_rejected_exact_length_mismatch += plan.rejected_exact_length_mismatch;
+                total_rejected_too_short += plan.rejected_too_short;
+                candidate_reserved_cells.extend(
+                    cells_in_grid_rect_rs(plan.selected_grid_rect)
+                        .into_iter()
+                        .map(|(x, y)| pack_xy(x, y)),
+                );
+                plans.append(auto_meander_plan_to_py_object(
+                    py,
+                    &plan,
+                    min_bend_radius_um,
+                    effective_radius_um,
+                    self.primitive_cfg.bend_radius_cells,
+                    primitive_bend_radius_um,
+                    mode,
+                )?)?;
+            }
+
+            let candidate_entry = PyDict::new_bound(py);
+            candidate_entry.set_item("candidate_index", candidate_index)?;
+            candidate_entry.set_item("candidate_runs", total_candidate_runs)?;
+            candidate_entry.set_item("candidate_intervals", total_candidate_intervals)?;
+            candidate_entry.set_item("rejected_box_blocked", total_rejected_box_blocked)?;
+            candidate_entry.set_item("rejected_planning_failed", total_rejected_planning_failed)?;
+            candidate_entry.set_item(
+                "rejected_exact_length_mismatch",
+                total_rejected_exact_length_mismatch,
+            )?;
+            candidate_entry.set_item("rejected_too_short", total_rejected_too_short)?;
+            if let Some(reason) = failed_reason {
+                candidate_entry.set_item("status", "no_candidate")?;
+                candidate_entry.set_item("reason", reason)?;
+                candidate_entry.set_item("failed_edge_index", failed_edge_index.unwrap_or(0))?;
+                candidate_entry.set_item("plans", plans)?;
+                candidate_results.append(candidate_entry)?;
+                continue;
+            }
+            candidate_entry.set_item("status", "planned")?;
+            candidate_entry.set_item("reason", "")?;
+            candidate_entry.set_item("failed_edge_index", Option::<usize>::None)?;
+            candidate_entry.set_item("plans", &plans)?;
+            candidate_results.append(candidate_entry)?;
+            selected_candidate_index = Some(candidate_index);
+            selected_plans = Some(plans.into());
+            break;
+        }
+
+        let d = PyDict::new_bound(py);
+        if let Some(index) = selected_candidate_index {
+            d.set_item("status", "planned")?;
+            d.set_item("selected_candidate_index", index)?;
+            d.set_item(
+                "plans",
+                selected_plans.expect("selected plans exist for planned candidate"),
+            )?;
+            d.set_item("reason", "")?;
+        } else {
+            d.set_item("status", "no_candidate")?;
+            d.set_item("selected_candidate_index", Option::<usize>::None)?;
+            d.set_item("plans", PyList::empty_bound(py))?;
+            d.set_item("reason", "no registered requirement candidate planned")?;
+        }
+        d.set_item("candidate_results", candidate_results)?;
+        Ok(d.into())
+    }
+
+    #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_auto_analytic_meander_requirement_candidate_indices_registered_opened(
+        &self,
+        py: Python<'_>,
+        candidate_geometry_indices: Vec<Vec<usize>>,
+        candidate_requested_extra_lengths_um: Vec<f64>,
+        box_depths_um: Vec<f64>,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        endpoint_inset_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        let candidate_count = candidate_geometry_indices.len();
+        if candidate_count != candidate_requested_extra_lengths_um.len() {
+            return Err(PyValueError::new_err(
+                "candidate geometry and requested length inputs must have matching lengths",
+            ));
+        }
+        if candidate_count == 0 {
+            return Err(PyValueError::new_err("candidate list must not be empty"));
+        }
+        if box_depths_um.is_empty() {
+            return Err(PyValueError::new_err("box_depths_um must not be empty"));
+        }
+        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(PyValueError::new_err(
+                "box_depths_um values must be finite and > 0",
+            ));
+        }
+        if candidate_requested_extra_lengths_um
+            .iter()
+            .any(|value| *value <= 0.0)
+        {
+            return Err(PyValueError::new_err(
+                "candidate requested lengths must be > 0",
+            ));
+        }
+        if min_straight_um < 0.0 {
+            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
+        }
+        if max_meander_height_um <= 0.0 {
+            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
+        }
+        if min_segment_length_um <= 0.0 {
+            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
+        }
+        if endpoint_inset_um < 0.0 {
+            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
+        }
+        if clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
+        }
+        if candidate_geometry_indices
+            .iter()
+            .any(|candidate| candidate.is_empty())
+        {
+            return Err(PyValueError::new_err("candidate bundles must not be empty"));
+        }
+
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            self.primitive_cfg.bend_radius_cells,
+            self.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        self.ensure_meander_base_prefix();
+        let cached = self.meander_base_prefix.borrow();
+        let base_prefix = cached
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let registered_open_cells = self.meander_registered_open_cells.borrow();
+        let registered_geometries = self.meander_registered_geometries.borrow();
+        let base_reserved_cells = self.meander_registered_reserved_cells.borrow().clone();
+        let candidate_results = PyList::empty_bound(py);
+        let mut selected_plans: Option<PyObject> = None;
+        let mut selected_candidate_index: Option<usize> = None;
+
+        for candidate_index in 0..candidate_count {
+            let geometry_indices = &candidate_geometry_indices[candidate_index];
+            let requested_extra_length_um = candidate_requested_extra_lengths_um[candidate_index];
+            let plans = PyList::empty_bound(py);
+            let mut candidate_reserved_cells = FxHashSet::default();
+            let mut total_candidate_runs = 0usize;
+            let mut total_candidate_intervals = 0usize;
+            let mut total_rejected_box_blocked = 0usize;
+            let mut total_rejected_planning_failed = 0usize;
+            let mut total_rejected_exact_length_mismatch = 0usize;
+            let mut total_rejected_too_short = 0usize;
+            let mut failed_reason: Option<String> = None;
+            let mut failed_edge_index: Option<usize> = None;
+
+            for (edge_index, geometry_index) in geometry_indices.iter().enumerate() {
+                let geometry = registered_geometries.get(*geometry_index).ok_or_else(|| {
+                    PyValueError::new_err("registered meander geometry index is out of range")
+                })?;
+                let opened_ref = registered_open_cells
+                    .get(geometry.registered_open_index)
+                    .ok_or_else(|| {
+                        PyValueError::new_err("registered meander route index is out of range")
+                    })?;
+                let mut extra_blocked_owned = base_reserved_cells.clone();
+                extra_blocked_owned.extend(candidate_reserved_cells.iter().copied());
+                let extra_blocked_ref = if extra_blocked_owned.is_empty() {
+                    None
+                } else {
+                    Some(&extra_blocked_owned)
+                };
+                let cfg = AutoMeanderConfig {
+                    requested_extra_length_um,
+                    min_bend_radius_um: effective_radius_um,
+                    min_straight_um,
+                    max_bumps: geometry.max_bumps,
+                    max_meander_height_um,
+                    box_depth_um: box_depths_um[0],
+                    min_segment_length_um,
+                    endpoint_inset_um,
+                    clearance_radius_cells,
+                    side_policy: policy,
+                    mode,
+                };
+                let plan =
+                    match plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
+                        &geometry.centerline,
+                        &grid,
+                        base_prefix,
+                        Some(opened_ref),
+                        extra_blocked_ref,
+                        &cfg,
+                        &box_depths_um,
+                    ) {
+                        Ok(plan) => plan,
+                        Err(err) => {
+                            failed_reason = Some(err.to_string());
+                            failed_edge_index = Some(edge_index);
+                            break;
+                        }
+                    };
+                total_candidate_runs += plan.candidate_runs;
+                total_candidate_intervals += plan.candidate_intervals;
+                total_rejected_box_blocked += plan.rejected_box_blocked;
+                total_rejected_planning_failed += plan.rejected_planning_failed;
+                total_rejected_exact_length_mismatch += plan.rejected_exact_length_mismatch;
+                total_rejected_too_short += plan.rejected_too_short;
+                candidate_reserved_cells.extend(
+                    cells_in_grid_rect_rs(plan.selected_grid_rect)
+                        .into_iter()
+                        .map(|(x, y)| pack_xy(x, y)),
+                );
+                plans.append(auto_meander_plan_to_py_object(
+                    py,
+                    &plan,
+                    min_bend_radius_um,
+                    effective_radius_um,
+                    self.primitive_cfg.bend_radius_cells,
+                    primitive_bend_radius_um,
+                    mode,
+                )?)?;
+            }
+
+            let candidate_entry = PyDict::new_bound(py);
+            candidate_entry.set_item("candidate_index", candidate_index)?;
+            candidate_entry.set_item("candidate_runs", total_candidate_runs)?;
+            candidate_entry.set_item("candidate_intervals", total_candidate_intervals)?;
+            candidate_entry.set_item("rejected_box_blocked", total_rejected_box_blocked)?;
+            candidate_entry.set_item("rejected_planning_failed", total_rejected_planning_failed)?;
+            candidate_entry.set_item(
+                "rejected_exact_length_mismatch",
+                total_rejected_exact_length_mismatch,
+            )?;
+            candidate_entry.set_item("rejected_too_short", total_rejected_too_short)?;
+            if let Some(reason) = failed_reason {
+                candidate_entry.set_item("status", "no_candidate")?;
+                candidate_entry.set_item("reason", reason)?;
+                candidate_entry.set_item("failed_edge_index", failed_edge_index.unwrap_or(0))?;
+                candidate_entry.set_item("plans", plans)?;
+                candidate_results.append(candidate_entry)?;
+                continue;
+            }
+            candidate_entry.set_item("status", "planned")?;
+            candidate_entry.set_item("reason", "")?;
+            candidate_entry.set_item("failed_edge_index", Option::<usize>::None)?;
+            candidate_entry.set_item("plans", &plans)?;
+            candidate_results.append(candidate_entry)?;
+            selected_candidate_index = Some(candidate_index);
+            selected_plans = Some(plans.into());
+            break;
+        }
+
+        let d = PyDict::new_bound(py);
+        if let Some(index) = selected_candidate_index {
+            d.set_item("status", "planned")?;
+            d.set_item("selected_candidate_index", index)?;
+            d.set_item(
+                "plans",
+                selected_plans.expect("selected plans exist for planned candidate"),
+            )?;
+            d.set_item("reason", "")?;
+        } else {
+            d.set_item("status", "no_candidate")?;
+            d.set_item("selected_candidate_index", Option::<usize>::None)?;
+            d.set_item("plans", PyList::empty_bound(py))?;
+            d.set_item("reason", "no registered requirement candidate planned")?;
+        }
+        d.set_item("candidate_results", candidate_results)?;
         Ok(d.into())
     }
 
