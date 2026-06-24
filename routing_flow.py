@@ -1371,6 +1371,18 @@ def run_routing_flow(
                     f"fallback_candidates={int(report.get('fallback_candidate_calls', 0))}, "
                     f"fallback_edge_calls={int(report.get('fallback_edge_calls', 0))}"
                 )
+                candidate_engine_counts = report.get("candidate_engine_counts", {})
+                if isinstance(candidate_engine_counts, dict) and candidate_engine_counts:
+                    formatted_engine_counts = ", ".join(
+                        f"{key}={int(value)}"
+                        for key, value in sorted(candidate_engine_counts.items())
+                        if isinstance(key, str) and isinstance(value, (int, float))
+                    )
+                    if formatted_engine_counts:
+                        print(
+                            "        Meander candidate engines: "
+                            f"{formatted_engine_counts}"
+                        )
                 candidate_setup_profile = report.get("candidate_setup_profile", {})
                 if isinstance(candidate_setup_profile, dict) and candidate_setup_profile:
                     sorted_setup = sorted(
