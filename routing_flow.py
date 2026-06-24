@@ -39,7 +39,7 @@ DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, 
 
 # Edit these values when running `routing_flow.py` directly from an IDE or file.
 # Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "TOY"
+SCRIPT_BENCHMARK = "heater_s"
 SCRIPT_DEBUG_SVGS: DebugSvgSelector = False  # Examples: True, "all", "5-10", "2,5-10"
 SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
@@ -1131,7 +1131,35 @@ def run_routing_flow(
                 route_attempt_records.append(dict(record))
         stats.route_attempt_records = route_attempt_records
     if debug_timing:
-        print(f"      - Routing time: {t_route_end - t_route_start:.4f} s")
+        route_time = t_route_end - t_route_start
+        timings = getattr(route_result, "pipeline_timings_s", {})
+        route_nets_time = float(timings.get("route_nets", 0.0))
+        plm_analysis_time = float(timings.get("path_length_analysis", 0.0))
+        plm_obstacle_time = float(timings.get("meander_obstacle_map", 0.0))
+        plm_planning_time = float(timings.get("meander_planning", 0.0))
+        realization_time = float(timings.get("route_realization", 0.0))
+        plm_total = plm_analysis_time + plm_obstacle_time + plm_planning_time
+        known_substage_time = route_nets_time + plm_total + realization_time
+        overhead_time = max(0.0, route_time - known_substage_time)
+        print(
+            "      - Optical routing stage time "
+            f"(net routing + PLM + realization): {route_time:.4f} s"
+        )
+        print(
+            "        - net routing phase "
+            f"(obstacles + A* + repairs): {route_nets_time:.4f} s"
+        )
+        if plm_total > 0.0:
+            print(
+                "        - path-length matching phase: "
+                f"{plm_total:.4f} s "
+                f"(analysis={plm_analysis_time:.4f}s, "
+                f"meander_obstacles={plm_obstacle_time:.4f}s, "
+                f"meander_planning={plm_planning_time:.4f}s)"
+            )
+        print(f"        - route realization phase: {realization_time:.4f} s")
+        if overhead_time > 1.0e-3:
+            print(f"        - stage overhead/reporting: {overhead_time:.4f} s")
     print(f"      ✓ Routed layout generated: {routed_layout.name}")
     electrical_result: ElectricalRoutingResult | None = None
 
@@ -1215,15 +1243,6 @@ def run_routing_flow(
                 f"inserted={total_inserted:.3f}um, "
                 f"unmatched={unmatched:.3f}um"
             )
-            if debug_timing:
-                timings = getattr(route_result, "pipeline_timings_s", {})
-                if timings:
-                    print(
-                        "      - Path-length timing: "
-                        f"analysis={float(timings.get('path_length_analysis', 0.0)):.4f}s, "
-                        f"obstacles={float(timings.get('meander_obstacle_map', 0.0)):.4f}s, "
-                        f"planning={float(timings.get('meander_planning', 0.0)):.4f}s"
-                    )
             if debug_meanders:
                 for entry in report.get("results", []):
                     edge = entry.get("edge", {})

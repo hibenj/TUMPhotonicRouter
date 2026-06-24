@@ -215,7 +215,10 @@ def route_match_and_realize(
         "route_nets": time.perf_counter() - t_route_nets_start,
     }
     if debug_timing:
-        print(f"      - route_nets_rust phase: {pipeline_timings_s['route_nets']:.4f} s")
+        print(
+            "      - Optical net routing phase "
+            f"(obstacle map + A* + repairs): {pipeline_timings_s['route_nets']:.4f} s"
+        )
 
     debug_artifacts = _apply_endpoint_corrections_to_debug_artifacts(debug_artifacts)
     analysis_info = None
@@ -378,7 +381,10 @@ def route_match_and_realize(
     t_realization_end = time.perf_counter()
     pipeline_timings_s["route_realization"] = t_realization_end - t_realization_start
     if debug_timing:
-        print(f"      - route realization phase: {pipeline_timings_s['route_realization']:.4f} s")
+        print(
+            "      - Optical route realization phase: "
+            f"{pipeline_timings_s['route_realization']:.4f} s"
+        )
 
     return RouteRustPipelineResult(
         routed_layout=routed_layout,
@@ -1936,14 +1942,14 @@ def route_nets_rust(
         astar_elapsed_s = time.perf_counter() - t_astar_start
 
     if debug_timing:
-        print(f"      - Astar time: {astar_elapsed_s:.4f} s")
+        print(f"      - A* route-search loop time: {astar_elapsed_s:.4f} s")
         print(
             "      - Route search stats: "
             f"simple={simple_route_count}/{len(route_jobs)}, "
             f"expanded_states={total_expanded_states}, "
             f"repairs={repair_count}"
         )
-        print("      - Route timing breakdown:")
+        print("      - A* timing breakdown by operation:")
         for bucket_name in (
             "normal_route",
             "probe_route",
