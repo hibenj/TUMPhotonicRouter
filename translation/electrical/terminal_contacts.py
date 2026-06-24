@@ -160,11 +160,10 @@ def port_contact_bbox(
     port: ElectricalPortRef,
     fallback_width_um: float,
 ) -> BBox:
-    """Return a compact contact box centered on one physical port."""
+    """Return a contact box centered on one physical port."""
 
     width = float(port.width or 0.0)
-    if width <= 0.0:
-        width = fallback_width_um
+    width = max(width, fallback_width_um)
     half_width = max(width / 2.0, 0.0)
     x, y = port.center
     return (x - half_width, y - half_width, x + half_width, y + half_width)
@@ -329,7 +328,7 @@ def _contact_access_width(
 ) -> float:
     if port is None or port.width is None or port.width <= 0.0:
         return fallback_width_um
-    return min(float(port.width), fallback_width_um)
+    return max(float(port.width), fallback_width_um)
 
 
 def _orientation_distance(left: float | None, right: float) -> float:

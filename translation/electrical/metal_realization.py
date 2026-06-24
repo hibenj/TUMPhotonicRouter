@@ -6,6 +6,8 @@ from gdsfactory.component import Component
 import klayout.db as kdb
 
 from .rect_geometry import (
+    clip_manhattan_path_at_first_bbox_entry,
+    clip_manhattan_path_start_at_bbox,
     disjoint_union_rects,
     rect_area,
     union_rect_area,
@@ -63,8 +65,10 @@ def realize_electrical_metal(
             route.terminal,
             route.path,
             obstacle_map,
-            width_um=config.bus_width_um,
+            width_um=config.wire_width_um,
+            contact_width_um=config.terminal_contact_width_um,
             trim_route_tail_bends=False,
+            entry_clip_bbox=common_bus.bus.bbox,
             access=_common_bus_access(obstacle_map, route.terminal),
         )
 
@@ -74,6 +78,7 @@ def realize_electrical_metal(
             common_bus_escape.path,
             obstacle_map,
             width_um=config.bus_width_um,
+            start_clip_bbox=common_bus.bus.bbox,
         )
 
     if detailed_bundle_routes is not None:
@@ -91,13 +96,16 @@ def realize_electrical_metal(
                 route.offset_path,
                 obstacle_map,
                 width_um=config.wire_width_um,
+                contact_width_um=config.terminal_contact_width_um,
                 trim_route_tail_bends=True,
                 access=_individual_access(obstacle_map, route.terminal),
             )
 
+    pad_marker_rects: list[BBox] = []
     if pad_plan is not None:
         for assignment in pad_plan.assignments:
             rects_by_net.setdefault(assignment.net_id, []).append(assignment.slot.bbox)
+            pad_marker_rects.append(assignment.slot.bbox)
 
     rects_by_net = {
         net_id: list(disjoint_union_rects(rects))
@@ -109,6 +117,13 @@ def realize_electrical_metal(
             routed,
             rects_by_net[net_id],
             config.metal_layer,
+        )
+    pad_marker_polygon_count = 0
+    if config.pad_marker_layer is not None and pad_marker_rects:
+        pad_marker_polygon_count = _append_merged_rects(
+            routed,
+            pad_marker_rects,
+            config.pad_marker_layer,
         )
     raw_area_by_net = {
         net_id: sum(rect_area(rect) for rect in rects)
@@ -134,6 +149,8 @@ def realize_electrical_metal(
         "raw_metal_area_by_net_um2": raw_area_by_net,
         "union_metal_area_by_net_um2": union_area_by_net,
         "polygon_count_by_net": dict(sorted(polygon_count_by_net.items())),
+        "pad_marker_layer": config.pad_marker_layer,
+        "pad_marker_polygon_count": pad_marker_polygon_count,
     }
 
     return routed
@@ -146,18 +163,23 @@ def _append_terminal_grid_route(
     obstacle_map: ElectricalObstacleMap,
     *,
     width_um: float,
+    contact_width_um: float,
     trim_route_tail_bends: bool,
+    entry_clip_bbox: BBox | None = None,
     access: ElectricalPortAccess | None = None,
 ) -> None:
     points = tuple(
         _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
         for cell in path
     )
+    if entry_clip_bbox is not None:
+        points = clip_manhattan_path_at_first_bbox_entry(points, entry_clip_bbox)
     _append_terminal_um_route(
         rects,
         terminal,
         points,
         width_um=width_um,
+        contact_width_um=contact_width_um,
         trim_route_tail_bends=trim_route_tail_bends,
         access=access,
     )
@@ -170,6 +192,7 @@ def _append_terminal_point_route(
     obstacle_map: ElectricalObstacleMap,
     *,
     width_um: float,
+    contact_width_um: float,
     trim_route_tail_bends: bool,
     access: ElectricalPortAccess | None = None,
 ) -> None:
@@ -179,6 +202,7 @@ def _append_terminal_point_route(
         terminal,
         points,
         width_um=width_um,
+        contact_width_um=contact_width_um,
         trim_route_tail_bends=trim_route_tail_bends,
         access=access,
     )
@@ -190,6 +214,7 @@ def _append_terminal_um_route(
     route_points_um: tuple[tuple[float, float], ...],
     *,
     width_um: float,
+    contact_width_um: float,
     trim_route_tail_bends: bool,
     access: ElectricalPortAccess | None = None,
 ) -> None:
@@ -198,7 +223,7 @@ def _append_terminal_um_route(
     access = terminal_access_path(
         terminal,
         route_points_um,
-        fallback_width_um=width_um,
+        fallback_width_um=contact_width_um,
         preferred_port_name=access.port_name if access is not None else None,
     )
     _append_rect(rects, access.contact_bbox)
@@ -235,19 +260,14 @@ def _append_grid_wire_path(
     obstacle_map: ElectricalObstacleMap,
     *,
     width_um: float,
+    start_clip_bbox: BBox | None = None,
 ) -> None:
-    points = tuple((cell[0] + 0.5, cell[1] + 0.5) for cell in path)
-    _append_point_wire_path(rects, points, obstacle_map, width_um=width_um)
-
-
-def _append_point_wire_path(
-    rects: RectList,
-    points_grid: tuple[GridPoint, ...],
-    obstacle_map: ElectricalObstacleMap,
-    *,
-    width_um: float,
-) -> None:
-    points_um = tuple(_grid_point_to_um(point, obstacle_map) for point in points_grid)
+    points_um = tuple(
+        _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
+        for cell in path
+    )
+    if start_clip_bbox is not None:
+        points_um = clip_manhattan_path_start_at_bbox(points_um, start_clip_bbox)
     _append_um_wire_path(rects, points_um, width_um=width_um)
 
 

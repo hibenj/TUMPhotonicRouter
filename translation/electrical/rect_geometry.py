@@ -48,6 +48,46 @@ def wire_rects_for_points(
     return clean_rects(rects)
 
 
+def clip_manhattan_path_at_first_bbox_entry(
+    points: tuple[Point, ...],
+    bbox: BBox,
+) -> tuple[Point, ...]:
+    """Trim a path to stop where it first enters ``bbox``."""
+
+    if len(points) < 2:
+        return points
+    if _point_in_bbox(points[0], bbox):
+        return clip_manhattan_path_start_at_bbox(points, bbox)
+    for index, (start, end) in enumerate(zip(points, points[1:])):
+        if _point_in_bbox(start, bbox):
+            return points[: index + 1]
+        if _point_in_bbox(end, bbox):
+            boundary = _manhattan_segment_bbox_intersection(start, end, bbox)
+            return (*points[: index + 1], boundary)
+    return points
+
+
+def clip_manhattan_path_start_at_bbox(
+    points: tuple[Point, ...],
+    bbox: BBox,
+) -> tuple[Point, ...]:
+    """Trim a path starting inside ``bbox`` to the first bbox boundary exit."""
+
+    if len(points) < 2 or not _point_in_bbox(points[0], bbox):
+        return points
+    index = 1
+    while index < len(points) and _point_in_bbox(points[index], bbox):
+        index += 1
+    if index >= len(points):
+        return points[-1:]
+    boundary = _manhattan_segment_bbox_intersection(
+        points[index],
+        points[index - 1],
+        bbox,
+    )
+    return (boundary, *points[index:])
+
+
 def clean_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
     """Normalize and compact an equivalent same-net rectangle set."""
 
@@ -60,6 +100,35 @@ def clean_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
     )
     without_contained = _drop_contained_rects(tuple(normalized))
     return _drop_union_redundant_rects(without_contained)
+
+
+def _point_in_bbox(point: Point, bbox: BBox) -> bool:
+    x, y = point
+    xmin, ymin, xmax, ymax = bbox
+    return xmin <= x <= xmax and ymin <= y <= ymax
+
+
+def _manhattan_segment_bbox_intersection(
+    outside: Point,
+    inside: Point,
+    bbox: BBox,
+) -> Point:
+    """Return where a Manhattan segment from outside to inside crosses bbox."""
+
+    x0, y0 = outside
+    x1, y1 = inside
+    xmin, ymin, xmax, ymax = bbox
+    if x0 == x1:
+        if y0 < ymin <= y1:
+            return (x0, ymin)
+        if y0 > ymax >= y1:
+            return (x0, ymax)
+    if y0 == y1:
+        if x0 < xmin <= x1:
+            return (xmin, y0)
+        if x0 > xmax >= x1:
+            return (xmax, y0)
+    return inside
 
 
 def disjoint_union_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:

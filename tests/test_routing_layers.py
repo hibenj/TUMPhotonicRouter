@@ -21,7 +21,7 @@ def test_get_routing_obstacle_layers_can_include_heaters():
     layers = get_routing_obstacle_layers(include_heaters=True)
 
     assert layers == OPTICAL_OBSTACLE_LAYERS + HEATER_METAL_OBSTACLE_LAYERS
-    assert layers == ((1, 0), (47, 0), (45, 0), (49, 0), (44, 0), (43, 0))
+    assert layers == ((1, 0), (47, 0), (45, 0), (49, 0), (125, 0), (44, 0), (43, 0))
 
 
 def test_straight_heater_optical_ports_match_access_rule():

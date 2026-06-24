@@ -9,7 +9,13 @@ from typing import Any
 
 from .pad_slots import pad_access_bbox
 from .pitch_grid import bbox_to_grid_cells
-from .rect_geometry import disjoint_union_rects, union_rect_area, wire_rects_for_points
+from .rect_geometry import (
+    clip_manhattan_path_at_first_bbox_entry,
+    clip_manhattan_path_start_at_bbox,
+    disjoint_union_rects,
+    union_rect_area,
+    wire_rects_for_points,
+)
 from .terminal_contacts import terminal_access_path, terminal_contact_bboxes
 from .types import (
     BBox,
@@ -152,12 +158,16 @@ def verify_electrical_routing(
                     (),
                 )
             )
-            access = _terminal_route_access(route, obstacle_map, config.wire_width_um)
+            access = _terminal_route_access(
+                route,
+                obstacle_map,
+                contact_width_um=config.terminal_contact_width_um,
+            )
             allowed_cells.update(
                 _terminal_contact_cells(
                     route.terminal,
                     obstacle_map,
-                    config.wire_width_um,
+                    config.terminal_contact_width_um,
                     route_start_um=route_start_um,
                 )
             )
@@ -231,8 +241,10 @@ def _common_bus_tagged_rects(
                 route.terminal,
                 route.path,
                 obstacle_map,
-                config.bus_width_um,
+                route_width_um=config.wire_width_um,
+                contact_width_um=config.terminal_contact_width_um,
                 route_source="bus_route",
+                entry_clip_bbox=common_bus.bus.bbox,
                 access=_common_bus_access(obstacle_map, route.terminal),
             )
         )
@@ -243,6 +255,7 @@ def _common_bus_tagged_rects(
                 obstacle_map,
                 config.bus_width_um,
                 "bus_escape",
+                start_clip_bbox=common_bus.bus.bbox,
             )
         )
     return tuple(rects)
@@ -263,7 +276,7 @@ def _common_bus_allowed_cells(
             _terminal_contact_cells(
                 route.terminal,
                 obstacle_map,
-                config.bus_width_um,
+                config.terminal_contact_width_um,
                 route_start_um=(
                     _grid_cell_center_um(route.path[0], obstacle_map)
                     if route.path
@@ -287,7 +300,7 @@ def _common_bus_allowed_physical_bboxes(
             route.terminal,
             route.path,
             obstacle_map,
-            config.bus_width_um,
+            config.terminal_contact_width_um,
             access=_common_bus_access(obstacle_map, route.terminal),
         ).contact_bbox
         for route in common_bus.routes
@@ -849,7 +862,8 @@ def _detailed_route_tagged_rects(
         route.terminal,
         route.offset_path,
         obstacle_map,
-        config.wire_width_um,
+        route_width_um=config.wire_width_um,
+        contact_width_um=config.terminal_contact_width_um,
         route_source="route_tail",
         access=_individual_access(obstacle_map, route.terminal),
     )
@@ -860,11 +874,15 @@ def _tagged_grid_wire_rects(
     obstacle_map: ElectricalObstacleMap,
     width_um: float,
     source: str,
+    *,
+    start_clip_bbox: BBox | None = None,
 ) -> tuple[_TaggedRect, ...]:
     points = tuple(
         _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
         for cell in path
     )
+    if start_clip_bbox is not None:
+        points = clip_manhattan_path_start_at_bbox(points, start_clip_bbox)
     return _tagged_point_wire_rects(points, width_um, source)
 
 
@@ -872,9 +890,11 @@ def _terminal_grid_route_tagged_rects(
     terminal: ElectricalTerminal,
     path: tuple[GridCell, ...],
     obstacle_map: ElectricalObstacleMap,
-    width_um: float,
+    route_width_um: float,
+    contact_width_um: float,
     *,
     route_source: str,
+    entry_clip_bbox: BBox | None = None,
     access: ElectricalPortAccess | None = None,
 ) -> tuple[_TaggedRect, ...]:
     return _terminal_access_tagged_rects(
@@ -882,10 +902,11 @@ def _terminal_grid_route_tagged_rects(
             terminal,
             path,
             obstacle_map,
-            width_um,
+            contact_width_um,
+            entry_clip_bbox=entry_clip_bbox,
             access=access,
         ),
-        width_um,
+        route_width_um,
         route_source=route_source,
     )
 
@@ -894,7 +915,8 @@ def _terminal_point_route_tagged_rects(
     terminal: ElectricalTerminal,
     points_grid: tuple[GridPoint, ...],
     obstacle_map: ElectricalObstacleMap,
-    width_um: float,
+    route_width_um: float,
+    contact_width_um: float,
     *,
     route_source: str,
     access: ElectricalPortAccess | None = None,
@@ -904,10 +926,10 @@ def _terminal_point_route_tagged_rects(
             terminal,
             points_grid,
             obstacle_map,
-            width_um,
+            contact_width_um,
             access=access,
         ),
-        width_um,
+        route_width_um,
         route_source=route_source,
     )
 
@@ -916,18 +938,21 @@ def _terminal_grid_route_access(
     terminal: ElectricalTerminal,
     path: tuple[GridCell, ...],
     obstacle_map: ElectricalObstacleMap,
-    width_um: float,
+    contact_width_um: float,
     *,
+    entry_clip_bbox: BBox | None = None,
     access: ElectricalPortAccess | None = None,
 ) -> Any:
     points_um = tuple(
         _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
         for cell in path
     )
+    if entry_clip_bbox is not None:
+        points_um = clip_manhattan_path_at_first_bbox_entry(points_um, entry_clip_bbox)
     return terminal_access_path(
         terminal,
         points_um,
-        fallback_width_um=width_um,
+        fallback_width_um=contact_width_um,
         preferred_port_name=access.port_name if access is not None else None,
     )
 
@@ -935,13 +960,14 @@ def _terminal_grid_route_access(
 def _terminal_route_access(
     route: DetailedBundleRoute,
     obstacle_map: ElectricalObstacleMap,
-    width_um: float,
+    *,
+    contact_width_um: float,
 ) -> Any:
     return _terminal_point_route_access(
         route.terminal,
         route.offset_path,
         obstacle_map,
-        width_um,
+        contact_width_um,
         access=_individual_access(obstacle_map, route.terminal),
     )
 

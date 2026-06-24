@@ -176,9 +176,15 @@ def _bus_bbox(layout_bbox: BBox, config: ElectricalRoutingConfig) -> BBox:
     xmin, ymin, xmax, ymax = layout_bbox
     x0 = xmin - config.bus_x_margin_um
     x1 = xmax + config.bus_x_margin_um
-    half_width = config.bus_width_um / 2.0
-    if config.bus_side == "bottom":
-        center_y = ymin - config.bus_offset_um
+    pad_side_extension = config.pad_pitch_um + config.bondpad_width_um
+    if config.common_bus_pad_position == "left":
+        x0 -= pad_side_extension
     else:
-        center_y = ymax + config.bus_offset_um
-    return (x0, center_y - half_width, x1, center_y + half_width)
+        x1 += pad_side_extension
+    if config.bus_side == "bottom":
+        y1 = ymin - config.bus_offset_um
+        y0 = y1 - config.bus_width_um
+    else:
+        y0 = ymax + config.bus_offset_um
+        y1 = y0 + config.bus_width_um
+    return (x0, y0, x1, y1)

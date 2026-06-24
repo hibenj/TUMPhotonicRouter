@@ -38,14 +38,16 @@ class ElectricalRoutingConfig:
     pad_extra_slots_right: int = 0
     common_bus_pad_position: Literal["left", "right"] = "right"
     routing_grid_pitch_um: float = 10.0
-    metal_layer: Layer = (49, 0)
+    metal_layer: Layer = (125, 0)
+    pad_marker_layer: Layer | None = (150, 0)
     heater_layers: tuple[Layer, ...] = ((47, 0),)
     metal_obstacle_layers: tuple[Layer, ...] = HEATER_METAL_OBSTACLE_LAYERS
     obstacle_clearance_um: float = 10.0
     terminal_open_radius_um: float = 15.0
+    terminal_contact_width_um: float = 10.0
     layout_margin_um: float = 80.0
     bus_offset_um: float = 60.0
-    bus_width_um: float = 20.0
+    bus_width_um: float = 60.0
     bus_x_margin_um: float = 80.0
     common_bus_routing_strategy: Literal["greedy_tree", "local_trunk_then_greedy"] = (
         "local_trunk_then_greedy"
@@ -97,6 +99,8 @@ class ElectricalRoutingConfig:
             raise ValueError("routing_grid_pitch_um must be positive")
         if self.obstacle_clearance_um < 0 or self.terminal_open_radius_um < 0:
             raise ValueError("clearances must be non-negative")
+        if self.terminal_contact_width_um <= 0:
+            raise ValueError("terminal_contact_width_um must be positive")
         if self.layout_margin_um < 0 or self.bus_offset_um < 0:
             raise ValueError("layout margins and offsets must be non-negative")
         if self.bus_width_um <= 0:

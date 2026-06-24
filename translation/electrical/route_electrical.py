@@ -16,7 +16,7 @@ from .metal_realization import realize_electrical_metal
 from .obstacle_extraction import build_electrical_obstacle_map
 from .pad_slots import plan_pad_slots
 from .terminal_extraction import extract_heater_terminal_pairs
-from .types import ElectricalRoutingConfig, ElectricalRoutingResult
+from .types import CommonBusRoutingResult, ElectricalRoutingConfig, ElectricalRoutingResult
 from .verification import verify_electrical_routing
 
 
@@ -41,6 +41,23 @@ def route_electrical_heaters(
 
     terminal_groups = extract_heater_terminal_pairs(component, schematic, config)
     obstacle_map = build_electrical_obstacle_map(component, terminal_groups, config)
+    if not terminal_groups:
+        routed_component = component.copy()
+        return ElectricalRoutingResult(
+            terminal_groups=terminal_groups,
+            obstacle_map=obstacle_map,
+            common_bus=CommonBusRoutingResult(
+                bus_side=config.bus_side,
+                bus=obstacle_map.bus,
+                selected_terminals={},
+                unselected_terminals={},
+                routes=(),
+                tree_cells=frozenset(),
+                failed_heaters=(),
+            ),
+            routed_component=routed_component,
+        )
+
     common_bus = route_common_bus(terminal_groups, obstacle_map, config)
     individual_topology = (
         compute_individual_escape_topology(obstacle_map, common_bus, config)

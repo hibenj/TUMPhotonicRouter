@@ -83,8 +83,12 @@ def test_routing_flow_routes_single_heater_electrical_metal_end_to_end():
     assert summary["config"]["pad_side"] == "top"
     assert summary["config"]["bus_side"] == "bottom"
     assert summary["config"]["wire_width_um"] == 20.0
-    assert summary["config"]["bus_width_um"] == 20.0
-    assert routed.get_polygons(by="tuple").get((49, 0), [])
+    assert summary["config"]["bus_width_um"] == 60.0
+    assert summary["config"]["terminal_contact_width_um"] == 10.0
+    assert summary["config"]["metal_layer"] == (125, 0)
+    assert summary["config"]["pad_marker_layer"] == (150, 0)
+    assert routed.get_polygons(by="tuple").get((125, 0), [])
+    assert routed.get_polygons(by="tuple").get((150, 0), [])
 
 
 def test_debug_svg_selector_parses_boolean_and_all_modes():
@@ -120,6 +124,8 @@ def test_electrical_cli_flags_parse_into_namespace():
             "18",
             "--electrical-bus-width-um",
             "24",
+            "--electrical-terminal-contact-width-um",
+            "32",
             "--electrical-pad-pitch-um",
             "160",
         ]
@@ -132,6 +138,7 @@ def test_electrical_cli_flags_parse_into_namespace():
     assert args.electrical_obstacle_clearance_um == 5.0
     assert args.electrical_wire_width_um == 18.0
     assert args.electrical_bus_width_um == 24.0
+    assert args.electrical_terminal_contact_width_um == 32.0
     assert args.electrical_pad_pitch_um == 160.0
 
 

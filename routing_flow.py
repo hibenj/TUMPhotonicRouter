@@ -39,7 +39,7 @@ DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, 
 
 # Edit these values when running `routing_flow.py` directly from an IDE or file.
 # Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "mmi_heater"
+SCRIPT_BENCHMARK = "mmi_heater_8x4_ripup_reroute"
 SCRIPT_DEBUG_SVGS: DebugSvgSelector = False  # Examples: True, "all", "5-10", "2,5-10"
 SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
@@ -66,7 +66,8 @@ SCRIPT_ELECTRICAL_PAD_SIDE = "top"
 SCRIPT_ELECTRICAL_GRID_PITCH_UM = 10.0
 SCRIPT_ELECTRICAL_OBSTACLE_CLEARANCE_UM = 10.0
 SCRIPT_ELECTRICAL_WIRE_WIDTH_UM = 20.0
-SCRIPT_ELECTRICAL_BUS_WIDTH_UM = 20.0
+SCRIPT_ELECTRICAL_BUS_WIDTH_UM = 60.0
+SCRIPT_ELECTRICAL_TERMINAL_CONTACT_WIDTH_UM = 10.0
 SCRIPT_ELECTRICAL_PAD_PITCH_UM = 130.0
 
 
@@ -501,6 +502,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--electrical-terminal-contact-width-um",
+        type=float,
+        default=SCRIPT_ELECTRICAL_TERMINAL_CONTACT_WIDTH_UM,
+        metavar="UM",
+        help=(
+            "Minimum electrical terminal contact width "
+            f"(default: {SCRIPT_ELECTRICAL_TERMINAL_CONTACT_WIDTH_UM})."
+        ),
+    )
+    parser.add_argument(
         "--electrical-pad-pitch-um",
         type=float,
         default=SCRIPT_ELECTRICAL_PAD_PITCH_UM,
@@ -588,6 +599,7 @@ def main(argv: list[str] | None = None) -> Component:
             obstacle_clearance_um=args.electrical_obstacle_clearance_um,
             wire_width_um=args.electrical_wire_width_um,
             bus_width_um=args.electrical_bus_width_um,
+            terminal_contact_width_um=args.electrical_terminal_contact_width_um,
             pad_pitch_um=args.electrical_pad_pitch_um,
         ),
         static_obstacle_config=StaticObstacleMapConfig(
@@ -666,6 +678,7 @@ def _electrical_config_summary(
         "obstacle_clearance_um",
         "wire_width_um",
         "bus_width_um",
+        "terminal_contact_width_um",
         "pad_pitch_um",
         "bondpad_width_um",
         "bondpad_length_um",
@@ -676,6 +689,7 @@ def _electrical_config_summary(
         "obstacle_mode",
         "clearance_metric",
         "metal_layer",
+        "pad_marker_layer",
         "heater_layers",
         "metal_obstacle_layers",
     )
@@ -1264,7 +1278,10 @@ def run_routing_flow(
             if current_electrical_result.pad_plan
             else 0
         )
-        print(f"      ✓ Electrical layout generated: {routed_layout.name}")
+        if current_electrical_result.terminal_groups:
+            print(f"      ✓ Electrical layout generated: {routed_layout.name}")
+        else:
+            print("      ✓ No heater electrical terminals found; electrical routing skipped")
         print(
             "      - Electrical routes: "
             f"heaters={len(current_electrical_result.terminal_groups)}, "

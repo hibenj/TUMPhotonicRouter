@@ -144,7 +144,7 @@ def electrical_metal_snapshot_svg(
     contact_bboxes = tuple(
         bbox
         for terminal in terminals
-        for bbox in _terminal_contact_bboxes(terminal, config.wire_width_um)
+        for bbox in _terminal_contact_bboxes(terminal, config.terminal_contact_width_um)
     )
     port_accesses = _all_port_accesses(obstacle_map)
 

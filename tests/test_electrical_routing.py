@@ -19,6 +19,7 @@ from benchmarks.mmi_heater_8x4 import build_schematic as build_multi_heater_sche
 from benchmarks.mmi_heater_8x4_ripup_reroute import (
     build_schematic as build_ripup_reroute_schematic,
 )
+from benchmarks.TOY import build_schematic as build_toy_schematic
 from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
 from translation.electrical.bundle_detail_router import (
     _offset_path_by_local_normals,
@@ -48,6 +49,7 @@ from translation.electrical.types import (
     TerminalBusRoute,
 )
 from translation.electrical.verification import verify_electrical_routing
+from translation.electrical.verification import _common_bus_tagged_rects
 from translation.layout_from_schematic import layout_from_schematic
 
 
@@ -173,6 +175,7 @@ def test_verifier_models_terminal_landing_contact():
         routing_grid_pitch_um=10.0,
         wire_width_um=4.0,
         bus_width_um=4.0,
+        terminal_contact_width_um=4.0,
     )
     terminal = _terminal("heater_0:l", (5.0, 120.0))
     common_bus = CommonBusRoutingResult(
@@ -244,7 +247,7 @@ def test_terminal_contact_selects_physical_port_not_logical_center():
 
     assert contact_center == (40.0, 50.0)
     assert contact_center != terminal.center
-    assert contact_bbox == (38.0, 48.0, 42.0, 52.0)
+    assert contact_bbox == (30.0, 40.0, 50.0, 60.0)
 
 
 def test_terminal_access_path_trims_snapped_points_inside_terminal():
@@ -267,7 +270,7 @@ def test_terminal_access_path_trims_snapped_points_inside_terminal():
     )
 
     assert access.contact_center == (50.0, 60.0)
-    assert access.access_width_um == 4.0
+    assert access.access_width_um == 10.0
     assert access.adapter_points == ((50.0, 60.0), (50.0, 67.0), (50.0, 90.0))
     assert access.route_tail_points == ((50.0, 90.0),)
 
@@ -294,7 +297,7 @@ def test_terminal_access_path_can_pin_selected_physical_port():
     )
 
     assert access.contact_center == (40.0, 50.0)
-    assert access.contact_bbox == (38.0, 48.0, 42.0, 52.0)
+    assert access.contact_bbox == (35.0, 45.0, 45.0, 55.0)
 
 
 def test_build_terminal_port_access_skips_blocked_candidate_cell():
@@ -372,6 +375,7 @@ def test_verifier_flags_cross_net_metal_overlap():
         routing_grid_pitch_um=10.0,
         wire_width_um=10.0,
         bus_width_um=10.0,
+        terminal_contact_width_um=10.0,
     )
     terminal = _terminal("heater_0:r", (20.0, 20.0))
     pad_slot = PadSlot(
@@ -655,6 +659,124 @@ def test_obstacle_map_uses_role_specific_terminal_openings():
 def test_pad_side_derives_opposite_common_bus_side():
     assert ElectricalRoutingConfig(pad_side="top").bus_side == "bottom"
     assert ElectricalRoutingConfig(pad_side="bottom").bus_side == "top"
+
+
+def test_common_bus_rail_extends_toward_common_bus_pad_side():
+    schematic = build_single_heater_schematic()
+    component = layout_from_schematic(schematic)
+    config = ElectricalRoutingConfig(
+        common_bus_pad_position="right",
+        bus_x_margin_um=80.0,
+        pad_pitch_um=150.0,
+        bondpad_width_um=80.0,
+    )
+    terminal_groups = extract_heater_terminal_pairs(component, schematic, config)
+    obstacle_map = build_electrical_obstacle_map(component, terminal_groups, config)
+
+    assert obstacle_map.bus.bbox[2] == pytest.approx(
+        obstacle_map.layout_bbox[2]
+        + config.bus_x_margin_um
+        + config.pad_pitch_um
+        + config.bondpad_width_um
+    )
+
+
+def test_common_bus_rail_and_pad_escape_use_bus_width_only():
+    schematic = build_multi_heater_schematic()
+    component = layout_from_schematic(schematic)
+    config = ElectricalRoutingConfig(
+        bus_width_um=60.0,
+        wire_width_um=20.0,
+        terminal_contact_width_um=10.0,
+    )
+
+    result = route_electrical_heaters(component, schematic, config)
+
+    tagged_rects = _common_bus_tagged_rects(
+        result.common_bus,
+        result.common_bus_escape,
+        result.obstacle_map,
+        config,
+    )
+    bus_stripes = [tagged.bbox for tagged in tagged_rects if tagged.source == "bus_stripe"]
+    assert bus_stripes
+    assert max(ymax - ymin for _, ymin, _, ymax in bus_stripes) == pytest.approx(
+        config.bus_width_um
+    )
+
+    bus_escape_segments = [
+        tagged.bbox
+        for tagged in tagged_rects
+        if tagged.source == "bus_escape"
+    ]
+    assert bus_escape_segments
+    assert any(
+        min(xmax - xmin, ymax - ymin) == pytest.approx(config.bus_width_um)
+        for xmin, ymin, xmax, ymax in bus_escape_segments
+    )
+    if result.common_bus.bus_side == "bottom":
+        assert all(
+            ymin >= result.common_bus.bus.bbox[1]
+            for _, ymin, _, _ in bus_escape_segments
+        )
+    else:
+        assert all(
+            ymax <= result.common_bus.bus.bbox[3]
+            for _, _, _, ymax in bus_escape_segments
+        )
+
+    bus_route_segments = [
+        tagged.bbox
+        for tagged in tagged_rects
+        if tagged.source == "bus_route"
+    ]
+    assert bus_route_segments
+    for xmin, ymin, xmax, ymax in bus_route_segments:
+        assert min(xmax - xmin, ymax - ymin) <= config.wire_width_um
+    if result.common_bus.bus_side == "bottom":
+        assert all(
+            ymin >= result.common_bus.bus.bbox[1]
+            for _, ymin, _, _ in bus_route_segments
+        )
+    else:
+        assert all(
+            ymax <= result.common_bus.bus.bbox[3]
+            for _, _, _, ymax in bus_route_segments
+        )
+
+
+def test_electrical_routing_is_noop_without_heater_terminals(tmp_path):
+    schematic = build_toy_schematic()
+    component = layout_from_schematic(schematic)
+    config = ElectricalRoutingConfig()
+    before_metal = _polygon_bboxes_by_layer(component, config.metal_layer)
+
+    result = route_electrical_heaters(
+        component,
+        schematic,
+        config,
+        debug_dir=tmp_path,
+        debug_prefix="toy",
+    )
+
+    assert result.terminal_groups == ()
+    assert result.common_bus.success
+    assert result.common_bus.routes == ()
+    assert result.common_bus.tree_cells == frozenset()
+    assert result.pad_plan is None
+    assert result.common_bus_escape is None
+    assert result.detailed_bundle_routes is None
+    assert result.verification is None
+    assert result.debug_artifacts == {}
+    assert result.routed_component is not None
+    assert (
+        _polygon_bboxes_by_layer(result.routed_component, config.metal_layer)
+        == before_metal
+    )
+    assert config.pad_marker_layer is not None
+    assert not _polygon_bboxes_by_layer(result.routed_component, config.pad_marker_layer)
+    assert "electrical_metal_realization" not in result.routed_component.info
+    assert not (tmp_path / "electrical" / "toy_common_bus.svg").exists()
 
 
 def test_common_bus_router_selects_exactly_one_terminal_per_heater(tmp_path):
@@ -1033,7 +1155,7 @@ def test_auto_pad_channel_height_uses_widest_topology_bundle():
     assert result.verification.metrics["cross_net_min_spacing_um"] >= (
         result.verification.metrics["required_cross_net_clearance_um"]
     )
-    assert result.verification.metrics["centerline_length_um"] < 20_000.0
+    assert result.verification.metrics["centerline_length_um"] < 21_000.0
 
 
 def test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps():
@@ -1350,12 +1472,16 @@ def test_metal_realization_creates_assigned_pads_but_not_empty_slots():
     routed_component = result.routed_component
     assert routed_component is not None
     metal_region = _polygon_region_by_layer(routed_component, config.metal_layer)
+    assert config.pad_marker_layer is not None
+    marker_region = _polygon_region_by_layer(routed_component, config.pad_marker_layer)
 
     assert result.pad_plan.assignments
     for assignment in result.pad_plan.assignments:
         assert _region_covers_bbox(metal_region, assignment.slot.bbox)
+        assert _region_covers_bbox(marker_region, assignment.slot.bbox)
     for slot in result.pad_plan.empty_slots:
         assert not _region_covers_bbox(metal_region, slot.bbox)
+        assert not _region_covers_bbox(marker_region, slot.bbox)
 
 
 def test_metal_realization_adds_wire_polygons_for_bus_and_individual_routes():

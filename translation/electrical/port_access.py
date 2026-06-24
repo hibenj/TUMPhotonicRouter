@@ -58,7 +58,10 @@ def build_electrical_port_accesses(
                 opened_cells=common_bus_open_cells.get(terminal.id, frozenset()),
                 blocked_cells=blocked_cells,
                 grid=grid,
-                fallback_width_um=config.bus_width_um,
+                fallback_width_um=max(
+                    config.bus_width_um,
+                    config.terminal_contact_width_um,
+                ),
             )
             individual_accesses[terminal.id] = build_terminal_port_access(
                 terminal,
@@ -67,7 +70,7 @@ def build_electrical_port_accesses(
                 opened_cells=individual_open_cells.get(terminal.id, frozenset()),
                 blocked_cells=blocked_cells,
                 grid=grid,
-                fallback_width_um=config.wire_width_um,
+                fallback_width_um=config.terminal_contact_width_um,
             )
     return common_bus_accesses, individual_accesses
 

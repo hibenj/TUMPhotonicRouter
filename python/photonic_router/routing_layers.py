@@ -14,6 +14,7 @@ HEATER_METAL_OBSTACLE_LAYERS: tuple[Layer, ...] = (
     (47, 0),  # HEATER
     (45, 0),  # M2
     (49, 0),  # M3 / MTOP
+    (125, 0),  # Routed electrical metal
     (44, 0),  # VIA1
     (43, 0),  # VIA2
 )
