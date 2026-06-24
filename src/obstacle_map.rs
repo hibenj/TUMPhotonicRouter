@@ -171,6 +171,22 @@ impl ObstacleMap {
         added
     }
 
+    /// Add many packed static obstacle references. Returns the number of in-bounds cells added.
+    pub fn add_static_keys(&mut self, keys: &FxHashSet<CellKey>) -> usize {
+        let mut added = 0;
+        for &key in keys {
+            let (x, y) = unpack_xy(key);
+            if !self.in_bounds(x, y) {
+                continue;
+            }
+            if Self::increment_ref(&mut self.static_obstacles, key) {
+                self.set_occupancy_bit(x, y, STATIC_BIT);
+            }
+            added += 1;
+        }
+        added
+    }
+
     /// Remove all compact static rectangles.
     pub fn clear_static_rects(&mut self) {
         self.static_rects.clear();

@@ -135,6 +135,75 @@ pub struct StaticObstacleBuildResult {
     pub stats: StaticObstacleBuildStats,
 }
 
+/// Python-visible handle for passing packed static cells back into Rust without
+/// rematerializing a Python list of `(x, y)` tuples.
+#[pyclass(name = "PyStaticCellSet")]
+#[derive(Clone)]
+pub struct PyStaticCellSet {
+    keys: FxHashSet<CellKey>,
+}
+
+impl PyStaticCellSet {
+    pub fn from_cells(cells: &[GridCell]) -> Self {
+        Self {
+            keys: cells.iter().map(|&(x, y)| pack_xy(x, y)).collect(),
+        }
+    }
+
+    pub fn keys(&self) -> &FxHashSet<CellKey> {
+        &self.keys
+    }
+}
+
+#[pymethods]
+impl PyStaticCellSet {
+    #[new]
+    fn new(cells: Vec<GridCell>) -> Self {
+        Self::from_cells(&cells)
+    }
+
+    fn __len__(&self) -> usize {
+        self.keys.len()
+    }
+
+    fn cells(&self) -> Vec<GridCell> {
+        let mut cells: Vec<GridCell> = self.keys.iter().copied().map(unpack_xy).collect();
+        cells.sort_unstable();
+        cells
+    }
+
+    fn merged_with(&self, other: PyRef<'_, PyStaticCellSet>) -> Self {
+        let mut keys = self.keys.clone();
+        keys.extend(other.keys.iter().copied());
+        Self { keys }
+    }
+
+    fn merged_with_cells(&self, cells: Vec<GridCell>) -> Self {
+        let mut keys = self.keys.clone();
+        keys.extend(cells.into_iter().map(|(x, y)| pack_xy(x, y)));
+        Self { keys }
+    }
+
+    fn merged_with_rects(&self, rects: Vec<(i32, i32, i32, i32)>, width: i32, height: i32) -> Self {
+        let mut keys = self.keys.clone();
+        for (x_min, y_min, x_max, y_max) in rects {
+            let x0 = x_min.min(x_max).max(0);
+            let y0 = y_min.min(y_max).max(0);
+            let x1 = x_min.max(x_max).min(width.saturating_sub(1));
+            let y1 = y_min.max(y_max).min(height.saturating_sub(1));
+            if x0 > x1 || y0 > y1 {
+                continue;
+            }
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    keys.insert(pack_xy(x, y));
+                }
+            }
+        }
+        Self { keys }
+    }
+}
+
 /// Build the static obstacle map from extracted physical polygons and ports.
 pub fn build_static_obstacle_map_from_geometry(
     polygons: &[Polygon],
@@ -758,7 +827,8 @@ where
     obstacle_mode="bounding_boxes",
     clear_port_open_cells_from_static=false,
     materialize_bbox_cells=true,
-    populate_obstacle_map=true
+    populate_obstacle_map=true,
+    materialize_cell_sets=true
 ))]
 #[allow(clippy::too_many_arguments)]
 fn build_static_obstacle_map_rs(
@@ -775,6 +845,7 @@ fn build_static_obstacle_map_rs(
     clear_port_open_cells_from_static: bool,
     materialize_bbox_cells: bool,
     populate_obstacle_map: bool,
+    materialize_cell_sets: bool,
 ) -> PyResult<PyObject> {
     let metric = parse_clearance_metric(&clearance_metric).map_err(pyo3_value_error)?;
     let mode = parse_obstacle_mode(&obstacle_mode).map_err(pyo3_value_error)?;
@@ -797,18 +868,23 @@ fn build_static_obstacle_map_rs(
 
     let result = build_static_obstacle_map_from_geometry(&polygons, &port_inputs, &config)
         .map_err(pyo3_value_error)?;
-    build_py_result(py, &result)
+    build_py_result(py, &result, materialize_cell_sets)
 }
 
 /// Python extension module used by `python/photonic_router/static_obstacle_builder.py`.
 #[pymodule]
 pub fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     register_py_router(m)?;
+    m.add_class::<PyStaticCellSet>()?;
     m.add_function(wrap_pyfunction!(build_static_obstacle_map_rs, m)?)?;
     Ok(())
 }
 
-fn build_py_result(py: Python<'_>, result: &StaticObstacleBuildResult) -> PyResult<PyObject> {
+fn build_py_result(
+    py: Python<'_>,
+    result: &StaticObstacleBuildResult,
+    materialize_cell_sets: bool,
+) -> PyResult<PyObject> {
     let dict = PyDict::new_bound(py);
     dict.set_item(
         "grid",
@@ -820,9 +896,19 @@ fn build_py_result(py: Python<'_>, result: &StaticObstacleBuildResult) -> PyResu
             result.grid.die_bbox,
         ),
     )?;
-    dict.set_item("raw_blocked_cells", &result.raw_blocked_cells)?;
-    dict.set_item("blocked_cells", &result.blocked_cells)?;
-    dict.set_item("port_open_cells", &result.port_open_cells)?;
+    if materialize_cell_sets {
+        dict.set_item("raw_blocked_cells", &result.raw_blocked_cells)?;
+        dict.set_item("blocked_cells", &result.blocked_cells)?;
+        dict.set_item("port_open_cells", &result.port_open_cells)?;
+    } else {
+        dict.set_item("raw_blocked_cells", Vec::<GridCell>::new())?;
+        dict.set_item("blocked_cells", Vec::<GridCell>::new())?;
+        dict.set_item("port_open_cells", Vec::<GridCell>::new())?;
+    }
+    dict.set_item(
+        "blocked_cell_handle",
+        Py::new(py, PyStaticCellSet::from_cells(&result.blocked_cells))?,
+    )?;
     let raw_static_rects: Vec<(i32, i32, i32, i32)> = result
         .raw_static_rects
         .iter()

@@ -60,6 +60,23 @@ pub struct DenseOccupancyPrefix {
 }
 
 impl DenseOccupancyPrefix {
+    pub fn from_blocked_keys(width: i32, height: i32, blocked_keys: &FxHashSet<CellKey>) -> Self {
+        let w = usize::try_from(width).unwrap_or(0);
+        let h = usize::try_from(height).unwrap_or(0);
+        let mut occupancy = vec![0u8; w.saturating_mul(h)];
+
+        for &key in blocked_keys {
+            let (x, y) = unpack_xy(key);
+            if x >= 0 && y >= 0 && x < width && y < height {
+                let xu = usize::try_from(x).expect("non-negative x fits usize");
+                let yu = usize::try_from(y).expect("non-negative y fits usize");
+                occupancy[yu * w + xu] = 1;
+            }
+        }
+
+        Self::from_occupancy(width, height, &occupancy)
+    }
+
     pub fn from_obstacle_map(
         obstacle_map: &ObstacleMap,
         opened_cells: Option<&FxHashSet<CellKey>>,
@@ -76,7 +93,6 @@ impl DenseOccupancyPrefix {
         let height = obstacle_map.height();
         let w = usize::try_from(width).unwrap_or(0);
         let h = usize::try_from(height).unwrap_or(0);
-        let stride = w + 1;
         let mut occupancy = vec![0u8; w.saturating_mul(h)];
 
         for y in 0..h {
@@ -111,6 +127,13 @@ impl DenseOccupancyPrefix {
             }
         }
 
+        Self::from_occupancy(width, height, &occupancy)
+    }
+
+    fn from_occupancy(width: i32, height: i32, occupancy: &[u8]) -> Self {
+        let w = usize::try_from(width).unwrap_or(0);
+        let h = usize::try_from(height).unwrap_or(0);
+        let stride = w + 1;
         let mut prefix = vec![0u32; (w + 1) * (h + 1)];
 
         for y in 0..h {

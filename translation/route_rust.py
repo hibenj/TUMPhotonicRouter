@@ -317,12 +317,22 @@ def route_match_and_realize(
             obstacle_mode="rasterized_polygons",
             clear_port_open_cells_from_static=False,
             populate_obstacle_map=False,
+            materialize_cell_sets=False,
         )
         meander_obstacle_map = build_static_obstacle_map(
             unrouted_layout,
             config=meander_obstacle_config,
         )
-        meander_static_blocked_cells = meander_obstacle_map.blocked_cells
+        meander_static_blocked_cell_handle = getattr(
+            meander_obstacle_map,
+            "rust_blocked_cell_handle",
+            None,
+        )
+        meander_static_blocked_cells = (
+            None
+            if meander_static_blocked_cell_handle is not None
+            else meander_obstacle_map.blocked_cells
+        )
         pipeline_timings_s["meander_obstacle_map"] = (
             time.perf_counter() - t_meander_obstacle_start
         )
@@ -339,6 +349,7 @@ def route_match_and_realize(
             allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
             static_blocked_cells=meander_static_blocked_cells,
+            static_blocked_cell_handle=meander_static_blocked_cell_handle,
             requirement_delay_candidates=requirement_delay_candidates,
         )
         pipeline_timings_s["meander_planning"] = (
@@ -551,12 +562,15 @@ def _with_obstacle_mode(
     obstacle_mode: str,
     clear_port_open_cells_from_static: bool | None = None,
     populate_obstacle_map: bool | None = None,
+    materialize_cell_sets: bool | None = None,
 ) -> object | None:
     updates: dict[str, object] = {"obstacle_mode": obstacle_mode}
     if clear_port_open_cells_from_static is not None:
         updates["clear_port_open_cells_from_static"] = clear_port_open_cells_from_static
     if populate_obstacle_map is not None:
         updates["populate_obstacle_map"] = populate_obstacle_map
+    if materialize_cell_sets is not None:
+        updates["materialize_cell_sets"] = materialize_cell_sets
 
     if obstacle_config is None:
         return updates

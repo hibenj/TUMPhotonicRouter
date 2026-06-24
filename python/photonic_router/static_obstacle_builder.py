@@ -30,6 +30,7 @@ class StaticObstacleMapConfig:
     obstacle_mode: str = "bounding_boxes"
     clear_port_open_cells_from_static: bool = False
     materialize_bbox_cells: bool = True
+    materialize_cell_sets: bool = True
     populate_obstacle_map: bool = True
     die_bbox: Optional[BBox] = None
     obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = None
@@ -62,6 +63,7 @@ class StaticObstacleMapData:
     blocked_static_rects: tuple[GridRect, ...] = ()
     backend: str = "python"
     build_stats: dict[str, Any] | None = None
+    rust_blocked_cell_handle: Any | None = None
 
     def rust_static_cells(self) -> List[GridCell]:
         """Return deterministic `(x, y)` cells suitable for `ObstacleMap.add_static_cells`."""
@@ -196,6 +198,7 @@ def _build_static_obstacle_map_split_by_heater_clearance(
         waveguide_data,
         heater_data,
         backend="rust-split" if rust_backend is not None else "python-split",
+        rust_backend=rust_backend,
     )
 
 
@@ -244,6 +247,7 @@ def _apply_perpendicular_heater_clearance(
             benchmark=data.benchmark,
             backend=data.backend,
             build_stats=data.build_stats,
+            rust_blocked_cell_handle=data.rust_blocked_cell_handle,
         )
 
     blocked_rects = tuple(
@@ -288,6 +292,7 @@ def _merge_static_obstacle_data(
     benchmark: ExtractedBenchmark,
     *data_items: StaticObstacleMapData,
     backend: str,
+    rust_backend: Any | None = None,
 ) -> StaticObstacleMapData:
     if not data_items:
         raise ValueError("at least one static obstacle map is required")
@@ -298,11 +303,14 @@ def _merge_static_obstacle_data(
             raise ValueError("split static obstacle maps produced different grids")
 
     build_stats = _merge_build_stats(data_items)
+    raw_blocked_cells = set().union(*(data.raw_blocked_cells for data in data_items))
+    blocked_cells = set().union(*(data.blocked_cells for data in data_items))
+    port_open_cells = set().union(*(data.port_open_cells for data in data_items))
     return StaticObstacleMapData(
         grid=grid,
-        raw_blocked_cells=set().union(*(data.raw_blocked_cells for data in data_items)),
-        blocked_cells=set().union(*(data.blocked_cells for data in data_items)),
-        port_open_cells=set().union(*(data.port_open_cells for data in data_items)),
+        raw_blocked_cells=raw_blocked_cells,
+        blocked_cells=blocked_cells,
+        port_open_cells=port_open_cells,
         raw_static_rects=tuple(
             rect for data in data_items for rect in data.raw_static_rects
         ),
@@ -312,7 +320,40 @@ def _merge_static_obstacle_data(
         benchmark=benchmark,
         backend=backend,
         build_stats=build_stats,
+        rust_blocked_cell_handle=_merge_rust_static_cell_handles(
+            data_items,
+            blocked_cells=blocked_cells,
+            rust_backend=rust_backend,
+        ),
     )
+
+
+def _merge_rust_static_cell_handles(
+    data_items: Iterable[StaticObstacleMapData],
+    *,
+    blocked_cells: Set[GridCell],
+    rust_backend: Any | None,
+) -> Any | None:
+    handle_cls = getattr(rust_backend, "PyStaticCellSet", None) if rust_backend is not None else None
+    if handle_cls is None:
+        return None
+    handle = None
+    for data in data_items:
+        data_handle = data.rust_blocked_cell_handle
+        if data_handle is not None:
+            handle = data_handle if handle is None else handle.merged_with(data_handle)
+        elif handle is not None and data.blocked_static_rects:
+            handle = handle.merged_with_rects(
+                list(data.blocked_static_rects),
+                int(data.grid.width),
+                int(data.grid.height),
+            )
+        elif data.blocked_cells:
+            if handle is None:
+                handle = handle_cls(list(data.blocked_cells))
+            else:
+                handle = handle.merged_with_cells(list(data.blocked_cells))
+    return handle if handle is not None else handle_cls(list(blocked_cells))
 
 
 def _merge_build_stats(data_items: Iterable[StaticObstacleMapData]) -> dict[str, Any] | None:
@@ -430,6 +471,7 @@ def _build_static_obstacle_map_rust(
                 config.clear_port_open_cells_from_static,
                 config.materialize_bbox_cells,
                 config.populate_obstacle_map,
+                config.materialize_cell_sets,
             )
             return result_obj
         except TypeError as exc:
@@ -526,8 +568,16 @@ def _build_static_obstacle_map_rust(
         float(die_bbox_raw[2]),
         float(die_bbox_raw[3]),
     )
-    blocked_cells = set(map(tuple, result["blocked_cells"]))
-    port_open_cells = set(map(tuple, result["port_open_cells"]))
+    blocked_cells = (
+        set(map(tuple, result.get("blocked_cells", ())))
+        if config.materialize_cell_sets
+        else set()
+    )
+    port_open_cells = (
+        set(map(tuple, result.get("port_open_cells", ())))
+        if config.materialize_cell_sets
+        else set()
+    )
 
     def _coerce_grid_rects(rects: Iterable[Sequence[Any]]) -> tuple[GridRect, ...]:
         coerced: list[GridRect] = []
@@ -568,10 +618,29 @@ def _build_static_obstacle_map_rust(
         )
 
     if fallback_without_clear_port_flag and not config.clear_port_open_cells_from_static:
+        if not config.materialize_cell_sets:
+            raise RuntimeError(
+                "The loaded photonic_router._rust extension cannot build a strict "
+                "handle-only obstacle map with port openings preserved in static cells. "
+                "Rebuild the extension or enable materialize_cell_sets."
+            )
         # Older builders always clear port opening cells from static blockers.
         # Emulate the strict-per-net mode by re-adding those cells on the Python
         # side to keep routing behavior usable with stale backends.
         blocked_cells |= port_open_cells
+        rust_blocked_cell_handle = None
+    else:
+        rust_blocked_cell_handle = result.get("blocked_cell_handle")
+        if not config.materialize_cell_sets and rust_blocked_cell_handle is None:
+            extension_path = getattr(rust_backend, "__file__", "<unknown>")
+            raise RuntimeError(
+                "Handle-only static obstacle mode requested, but the Rust obstacle "
+                "builder returned no blocked_cell_handle. "
+                f"Loaded extension: {extension_path}. "
+                "Rebuild photonic_router._rust with "
+                "`python3 -m maturin develop --release` or enable "
+                "materialize_cell_sets."
+            )
 
     stats_raw = result.get("stats")
     if fallback_without_clear_port_flag:
@@ -591,7 +660,11 @@ def _build_static_obstacle_map_rust(
             origin=origin,
             die_bbox=die_bbox,
         ),
-        raw_blocked_cells=set(map(tuple, result["raw_blocked_cells"])),
+        raw_blocked_cells=(
+            set(map(tuple, result.get("raw_blocked_cells", ())))
+            if config.materialize_cell_sets
+            else set()
+        ),
         blocked_cells=blocked_cells,
         port_open_cells=port_open_cells,
         raw_static_rects=raw_static_rects,
@@ -599,6 +672,7 @@ def _build_static_obstacle_map_rust(
         benchmark=benchmark,
         backend="rust",
         build_stats=build_stats,
+        rust_blocked_cell_handle=rust_blocked_cell_handle,
     )
 
 

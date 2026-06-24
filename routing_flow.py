@@ -1249,13 +1249,56 @@ def run_routing_flow(
                     print(
                         "        Meander setup profile: "
                         f"total={float(setup_profile.get('total_s', 0.0)):.4f}s, "
+                        f"router_init={float(setup_profile.get('router_init_s', 0.0)):.4f}s, "
+                        f"by_edge={float(setup_profile.get('by_edge_s', 0.0)):.4f}s, "
                         f"route_refcounts={float(setup_profile.get('route_cell_refcount_s', 0.0)):.4f}s, "
+                        f"base_static_collect={float(setup_profile.get('base_static_collect_s', 0.0)):.4f}s, "
+                        f"base_static_reused={int(float(setup_profile.get('base_static_reused', 0.0)))}, "
+                        f"static_handle={int(float(setup_profile.get('combined_static_route_registration_handle', 0.0)))}, "
                         f"set_static={float(setup_profile.get('set_static_cells_s', 0.0)):.4f}s, "
                         f"add_route_static={float(setup_profile.get('add_route_static_cells_s', 0.0)):.4f}s, "
                         f"register_routes={float(setup_profile.get('register_route_cells_s', 0.0)):.4f}s, "
                         f"register_geometry={float(setup_profile.get('register_route_geometry_s', 0.0)):.4f}s, "
                         f"unique_route_cells={int(float(setup_profile.get('unique_route_cell_count', 0.0)))}"
                     )
+                    print(
+                        "        Meander route-registration setup split: "
+                        f"edge_order={float(setup_profile.get('edge_order_s', 0.0)):.4f}s, "
+                        f"route_objects={float(setup_profile.get('route_object_list_s', 0.0)):.4f}s, "
+                        f"base_static_list={float(setup_profile.get('base_static_registration_list_s', 0.0)):.4f}s, "
+                        f"rust_call={float(setup_profile.get('register_route_cells_call_s', 0.0)):.4f}s, "
+                        f"result_map={float(setup_profile.get('registration_result_map_s', 0.0)):.4f}s"
+                    )
+                    print(
+                        "        Meander geometry-registration setup split: "
+                        f"prepare={float(setup_profile.get('geometry_prepare_s', 0.0)):.4f}s, "
+                        f"centerline_copy={float(setup_profile.get('geometry_centerline_copy_s', 0.0)):.4f}s, "
+                        f"max_bumps={float(setup_profile.get('geometry_max_bumps_s', 0.0)):.4f}s, "
+                        f"rust_call={float(setup_profile.get('geometry_call_s', 0.0)):.4f}s, "
+                        f"result_map={float(setup_profile.get('geometry_result_map_s', 0.0)):.4f}s"
+                    )
+                    if any(
+                        key.startswith("rust_registration_")
+                        for key in setup_profile
+                    ):
+                        print(
+                            "        Rust route-registration split: "
+                            f"total={float(setup_profile.get('rust_registration_total_s', 0.0)):.4f}s, "
+                            f"reset={float(setup_profile.get('rust_registration_reset_s', 0.0)):.4f}s, "
+                            f"base_pack={float(setup_profile.get('rust_registration_base_static_pack_s', 0.0)):.4f}s, "
+                            f"base_obstacles={float(setup_profile.get('rust_registration_base_static_obstacle_add_s', 0.0)):.4f}s, "
+                            f"base_prefix={float(setup_profile.get('rust_registration_base_prefix_build_s', 0.0)):.4f}s, "
+                            f"route_extract={float(setup_profile.get('rust_registration_route_extract_s', 0.0)):.4f}s, "
+                            f"route_cells={float(setup_profile.get('rust_registration_route_cell_collect_s', 0.0)):.4f}s, "
+                            f"open_sets={float(setup_profile.get('rust_registration_open_set_build_s', 0.0)):.4f}s, "
+                            f"route_list={float(setup_profile.get('rust_registration_route_cell_list_s', 0.0)):.4f}s, "
+                            f"route_static={float(setup_profile.get('rust_registration_route_static_add_s', 0.0)):.4f}s, "
+                            f"store={float(setup_profile.get('rust_registration_registered_store_s', 0.0)):.4f}s, "
+                            f"routes={int(float(setup_profile.get('rust_registration_route_count', 0.0)))}, "
+                            f"base_static={int(float(setup_profile.get('rust_registration_base_static_cell_count', 0.0)))}, "
+                            f"unique_route={int(float(setup_profile.get('rust_registration_unique_route_cell_count', 0.0)))}, "
+                            f"open_cells={int(float(setup_profile.get('rust_registration_registered_open_cell_count', 0.0)))}"
+                        )
                 print(
                     "        Meander overhead profile: "
                     f"planner={float(report.get('planner_elapsed_s', 0.0)):.4f}s, "
@@ -1278,6 +1321,24 @@ def run_routing_flow(
                         f"run_side_checks={int(float(rust_planner_profile.get('run_side_checks', 0.0)))}, "
                         f"box_checks={int(float(rust_planner_profile.get('box_checks', 0.0)))}, "
                         f"analytic_calls={int(float(rust_planner_profile.get('analytic_plan_calls', 0.0)))}"
+                    )
+                rust_wrapper_profile = report.get("rust_wrapper_profile", {})
+                if isinstance(rust_wrapper_profile, dict) and rust_wrapper_profile:
+                    print(
+                        "        Rust meander wrapper split: "
+                        f"planner_call={float(rust_wrapper_profile.get('planner_call_s', 0.0)):.4f}s, "
+                        f"reserved_snapshot={float(rust_wrapper_profile.get('reserved_snapshot_s', 0.0)):.4f}s, "
+                        f"extra_blocked_clone={float(rust_wrapper_profile.get('extra_blocked_base_clone_s', 0.0)):.4f}s, "
+                        f"extra_blocked_extend={float(rust_wrapper_profile.get('extra_blocked_candidate_extend_s', 0.0)):.4f}s, "
+                        f"rect_cells={float(rust_wrapper_profile.get('selected_rect_cells_s', 0.0)):.4f}s, "
+                        f"reserved_update={float(rust_wrapper_profile.get('candidate_reserved_update_s', 0.0)):.4f}s, "
+                        f"py_plan={float(rust_wrapper_profile.get('py_plan_conversion_s', 0.0)):.4f}s, "
+                        f"py_candidate_result={float(rust_wrapper_profile.get('py_candidate_result_build_s', 0.0)):.4f}s, "
+                        f"py_result={float(rust_wrapper_profile.get('py_result_build_s', 0.0)):.4f}s, "
+                        f"prepare_calls={int(float(rust_wrapper_profile.get('extra_blocked_prepare_calls', 0.0)))}, "
+                        f"rect_cells_count={int(float(rust_wrapper_profile.get('selected_rect_cell_count', 0.0)))}, "
+                        f"py_plans={int(float(rust_wrapper_profile.get('py_plan_count', 0.0)))}, "
+                        f"candidate_results={int(float(rust_wrapper_profile.get('candidate_result_count', 0.0)))}"
                     )
                 commit_profile = report.get("commit_profile", {})
                 if isinstance(commit_profile, dict) and commit_profile:
