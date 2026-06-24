@@ -5,6 +5,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::time::Instant;
 
 use rustc_hash::FxHashSet;
 
@@ -1408,6 +1409,21 @@ pub struct AutoRouteAnalyticMeanderPlan {
     pub selected_box: MeanderBox,
     pub selected_grid_rect: GridRect,
     pub plan: AnalyticMeanderPlan,
+    pub profile: AutoMeanderPlanningProfile,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AutoMeanderPlanningProfile {
+    pub total_s: f64,
+    pub run_extraction_s: f64,
+    pub footprint_s: f64,
+    pub free_interval_s: f64,
+    pub box_check_s: f64,
+    pub analytic_plan_s: f64,
+    pub depth_count: usize,
+    pub run_side_checks: usize,
+    pub box_checks: usize,
+    pub analytic_plan_calls: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1861,6 +1877,8 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
     config: &AutoMeanderConfig,
     box_depths_um: &[f64],
 ) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
+    let total_start = Instant::now();
+    let mut profile = AutoMeanderPlanningProfile::default();
     if !config.requested_extra_length_um.is_finite()
         || config.requested_extra_length_um <= 0.0
         || !config.min_bend_radius_um.is_finite()
@@ -1895,7 +1913,9 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
         AutoMeanderSidePolicy::Both => &[MeanderSide::Left, MeanderSide::Right],
     };
 
+    let run_extraction_start = Instant::now();
     let runs = extract_axis_aligned_straight_runs(&centerline, config.min_segment_length_um);
+    profile.run_extraction_s += run_extraction_start.elapsed().as_secs_f64();
     if runs.is_empty() {
         return Err(GeometryError::NoMeanderCandidateSegment);
     }
@@ -1918,6 +1938,8 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
     let mut selected_run: Option<CenterlineStraightRun> = None;
     let mut selected_segment: Option<StraightSegment> = None;
     'outer: for &box_depth_um in box_depths_um {
+        profile.depth_count += 1;
+        let footprint_start = Instant::now();
         let footprint = match plan_fill_box_multi_bump_footprint(
             config.requested_extra_length_um,
             config.min_bend_radius_um,
@@ -1927,16 +1949,20 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
         ) {
             Ok(v) => v,
             Err(_) => {
+                profile.footprint_s += footprint_start.elapsed().as_secs_f64();
                 rejected_planning_failed += 1;
                 continue;
             }
         };
+        profile.footprint_s += footprint_start.elapsed().as_secs_f64();
         let actual_depth_um = footprint.amplitude_um;
         let required_interval_length_um = footprint
             .insertion_width_um
             .max(config.min_segment_length_um);
         for run in run_order.iter().copied() {
             for &side in side_order {
+                profile.run_side_checks += 1;
+                let free_interval_start = Instant::now();
                 let free_segments = match projected_free_interval_segments(
                     run,
                     side,
@@ -1949,10 +1975,12 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                 ) {
                     Ok(v) => v,
                     Err(_) => {
+                        profile.free_interval_s += free_interval_start.elapsed().as_secs_f64();
                         rejected_planning_failed += 1;
                         continue;
                     }
                 };
+                profile.free_interval_s += free_interval_start.elapsed().as_secs_f64();
                 if free_segments.is_empty() {
                     rejected_box_blocked += 1;
                     continue;
@@ -1980,6 +2008,8 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                             continue;
                         }
                     };
+                    profile.box_checks += 1;
+                    let box_check_start = Instant::now();
                     let rect = match check_meander_box_free_with_prefix(
                         box_um,
                         grid,
@@ -1988,10 +2018,12 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                     ) {
                         Ok(v) => v,
                         Err(_) => {
+                            profile.box_check_s += box_check_start.elapsed().as_secs_f64();
                             rejected_box_blocked += 1;
                             continue;
                         }
                     };
+                    profile.box_check_s += box_check_start.elapsed().as_secs_f64();
                     let plan_cfg = AnalyticMeanderConfig {
                         requested_extra_length_um: config.requested_extra_length_um,
                         min_bend_radius_um: config.min_bend_radius_um,
@@ -2001,13 +2033,17 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                         side,
                         mode: config.mode,
                     };
+                    profile.analytic_plan_calls += 1;
+                    let analytic_plan_start = Instant::now();
                     let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
                         Ok(v) => v,
                         Err(_) => {
+                            profile.analytic_plan_s += analytic_plan_start.elapsed().as_secs_f64();
                             rejected_planning_failed += 1;
                             continue;
                         }
                     };
+                    profile.analytic_plan_s += analytic_plan_start.elapsed().as_secs_f64();
                     if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs()
                         > 1.0e-6
                     {
@@ -2036,6 +2072,7 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
     let run = selected_run.ok_or_else(no_auto_err)?;
     let segment = selected_segment.ok_or_else(no_auto_err)?;
     let replacement_centerline = build_run_replacement_centerline(run, &plan.centerline);
+    profile.total_s = total_start.elapsed().as_secs_f64();
     Ok(AutoRouteAnalyticMeanderPlan {
         selected_segment_index: run.start_index,
         selected_run_start_index: run.start_index,
@@ -2057,6 +2094,7 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
         selected_box,
         selected_grid_rect,
         plan,
+        profile,
     })
 }
 
@@ -2091,6 +2129,8 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
     config: &AutoMeanderConfig,
     box_depths_um: &[f64],
 ) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
+    let total_start = Instant::now();
+    let mut profile = AutoMeanderPlanningProfile::default();
     if !config.requested_extra_length_um.is_finite()
         || config.requested_extra_length_um <= 0.0
         || !config.min_bend_radius_um.is_finite()
@@ -2125,7 +2165,9 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         AutoMeanderSidePolicy::Both => &[MeanderSide::Left, MeanderSide::Right],
     };
 
+    let run_extraction_start = Instant::now();
     let runs = extract_axis_aligned_straight_runs(&centerline, config.min_segment_length_um);
+    profile.run_extraction_s += run_extraction_start.elapsed().as_secs_f64();
     if runs.is_empty() {
         return Err(GeometryError::NoMeanderCandidateSegment);
     }
@@ -2148,6 +2190,8 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
     let mut selected_run: Option<CenterlineStraightRun> = None;
     let mut selected_segment: Option<StraightSegment> = None;
     'outer: for &box_depth_um in box_depths_um {
+        profile.depth_count += 1;
+        let footprint_start = Instant::now();
         let footprint = match plan_fill_box_multi_bump_footprint(
             config.requested_extra_length_um,
             config.min_bend_radius_um,
@@ -2157,16 +2201,20 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         ) {
             Ok(v) => v,
             Err(_) => {
+                profile.footprint_s += footprint_start.elapsed().as_secs_f64();
                 rejected_planning_failed += 1;
                 continue;
             }
         };
+        profile.footprint_s += footprint_start.elapsed().as_secs_f64();
         let actual_depth_um = footprint.amplitude_um;
         let required_interval_length_um = footprint
             .insertion_width_um
             .max(config.min_segment_length_um);
         for run in run_order.iter().copied() {
             for &side in side_order {
+                profile.run_side_checks += 1;
+                let free_interval_start = Instant::now();
                 let free_segments = match projected_free_interval_segments(
                     run,
                     side,
@@ -2179,10 +2227,12 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                 ) {
                     Ok(v) => v,
                     Err(_) => {
+                        profile.free_interval_s += free_interval_start.elapsed().as_secs_f64();
                         rejected_planning_failed += 1;
                         continue;
                     }
                 };
+                profile.free_interval_s += free_interval_start.elapsed().as_secs_f64();
                 if free_segments.is_empty() {
                     rejected_box_blocked += 1;
                     continue;
@@ -2210,6 +2260,8 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                             continue;
                         }
                     };
+                    profile.box_checks += 1;
+                    let box_check_start = Instant::now();
                     let rect = match check_meander_box_free_with_occupancy(
                         box_um,
                         grid,
@@ -2218,10 +2270,12 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                     ) {
                         Ok(v) => v,
                         Err(_) => {
+                            profile.box_check_s += box_check_start.elapsed().as_secs_f64();
                             rejected_box_blocked += 1;
                             continue;
                         }
                     };
+                    profile.box_check_s += box_check_start.elapsed().as_secs_f64();
                     let plan_cfg = AnalyticMeanderConfig {
                         requested_extra_length_um: config.requested_extra_length_um,
                         min_bend_radius_um: config.min_bend_radius_um,
@@ -2231,13 +2285,17 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                         side,
                         mode: config.mode,
                     };
+                    profile.analytic_plan_calls += 1;
+                    let analytic_plan_start = Instant::now();
                     let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
                         Ok(v) => v,
                         Err(_) => {
+                            profile.analytic_plan_s += analytic_plan_start.elapsed().as_secs_f64();
                             rejected_planning_failed += 1;
                             continue;
                         }
                     };
+                    profile.analytic_plan_s += analytic_plan_start.elapsed().as_secs_f64();
                     if (plan.inserted_extra_length_um - config.requested_extra_length_um).abs()
                         > 1.0e-6
                     {
@@ -2266,6 +2324,7 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
     let run = selected_run.ok_or_else(no_auto_err)?;
     let segment = selected_segment.ok_or_else(no_auto_err)?;
     let replacement_centerline = build_run_replacement_centerline(run, &plan.centerline);
+    profile.total_s = total_start.elapsed().as_secs_f64();
     Ok(AutoRouteAnalyticMeanderPlan {
         selected_segment_index: run.start_index,
         selected_run_start_index: run.start_index,
@@ -2287,6 +2346,7 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         selected_box,
         selected_grid_rect,
         plan,
+        profile,
     })
 }
 

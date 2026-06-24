@@ -31,8 +31,8 @@ use crate::geometry_realization::{
     route_to_port_corrected_centerline as route_to_port_corrected_centerline_rs,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
     splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
-    AutoMeanderConfig, AutoMeanderSidePolicy, DenseOccupancyPrefix, GeometryError,
-    GeometryGridSpec, PortAccess, PortAccessConfig,
+    AutoMeanderConfig, AutoMeanderPlanningProfile, AutoMeanderSidePolicy, DenseOccupancyPrefix,
+    GeometryError, GeometryGridSpec, PortAccess, PortAccessConfig,
 };
 use crate::meander::{
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
@@ -658,6 +658,73 @@ fn add_bend_radius_debug_metadata(
     Ok(())
 }
 
+#[derive(Default)]
+struct MeanderPlanningProfileTotals {
+    total_s: f64,
+    run_extraction_s: f64,
+    footprint_s: f64,
+    free_interval_s: f64,
+    box_check_s: f64,
+    analytic_plan_s: f64,
+    depth_count: usize,
+    run_side_checks: usize,
+    box_checks: usize,
+    analytic_plan_calls: usize,
+    plan_calls: usize,
+}
+
+impl MeanderPlanningProfileTotals {
+    fn add(&mut self, profile: &AutoMeanderPlanningProfile) {
+        self.total_s += profile.total_s;
+        self.run_extraction_s += profile.run_extraction_s;
+        self.footprint_s += profile.footprint_s;
+        self.free_interval_s += profile.free_interval_s;
+        self.box_check_s += profile.box_check_s;
+        self.analytic_plan_s += profile.analytic_plan_s;
+        self.depth_count += profile.depth_count;
+        self.run_side_checks += profile.run_side_checks;
+        self.box_checks += profile.box_checks;
+        self.analytic_plan_calls += profile.analytic_plan_calls;
+        self.plan_calls += 1;
+    }
+
+    fn set_item(&self, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<()> {
+        let profile = PyDict::new_bound(dict.py());
+        profile.set_item("total_s", self.total_s)?;
+        profile.set_item("run_extraction_s", self.run_extraction_s)?;
+        profile.set_item("footprint_s", self.footprint_s)?;
+        profile.set_item("free_interval_s", self.free_interval_s)?;
+        profile.set_item("box_check_s", self.box_check_s)?;
+        profile.set_item("analytic_plan_s", self.analytic_plan_s)?;
+        profile.set_item("depth_count", self.depth_count)?;
+        profile.set_item("run_side_checks", self.run_side_checks)?;
+        profile.set_item("box_checks", self.box_checks)?;
+        profile.set_item("analytic_plan_calls", self.analytic_plan_calls)?;
+        profile.set_item("plan_calls", self.plan_calls)?;
+        dict.set_item(key, profile)?;
+        Ok(())
+    }
+}
+
+fn auto_meander_planning_profile_to_py_object(
+    py: Python<'_>,
+    profile: &AutoMeanderPlanningProfile,
+) -> PyResult<PyObject> {
+    let d = PyDict::new_bound(py);
+    d.set_item("total_s", profile.total_s)?;
+    d.set_item("run_extraction_s", profile.run_extraction_s)?;
+    d.set_item("footprint_s", profile.footprint_s)?;
+    d.set_item("free_interval_s", profile.free_interval_s)?;
+    d.set_item("box_check_s", profile.box_check_s)?;
+    d.set_item("analytic_plan_s", profile.analytic_plan_s)?;
+    d.set_item("depth_count", profile.depth_count)?;
+    d.set_item("run_side_checks", profile.run_side_checks)?;
+    d.set_item("box_checks", profile.box_checks)?;
+    d.set_item("analytic_plan_calls", profile.analytic_plan_calls)?;
+    d.set_item("plan_calls", 1usize)?;
+    Ok(d.into())
+}
+
 fn auto_meander_plan_to_py_object(
     py: Python<'_>,
     plan: &crate::geometry_realization::AutoRouteAnalyticMeanderPlan,
@@ -686,6 +753,10 @@ fn auto_meander_plan_to_py_object(
         plan.rejected_exact_length_mismatch,
     )?;
     d.set_item("rejected_too_short", plan.rejected_too_short)?;
+    d.set_item(
+        "planner_profile",
+        auto_meander_planning_profile_to_py_object(py, &plan.profile)?,
+    )?;
     d.set_item(
         "selected_segment",
         (
@@ -2517,6 +2588,7 @@ impl PyPhotonicRouter {
         let mut total_rejected_planning_failed = 0usize;
         let mut total_rejected_exact_length_mismatch = 0usize;
         let mut total_rejected_too_short = 0usize;
+        let mut profile_totals = MeanderPlanningProfileTotals::default();
 
         for (edge_index, ((centerline, registered_index), max_bumps)) in centerlines
             .iter()
@@ -2574,9 +2646,11 @@ impl PyPhotonicRouter {
                         total_rejected_exact_length_mismatch,
                     )?;
                     d.set_item("rejected_too_short", total_rejected_too_short)?;
+                    profile_totals.set_item(&d, "planner_profile_total")?;
                     return Ok(d.into());
                 }
             };
+            profile_totals.add(&plan.profile);
             total_candidate_runs += plan.candidate_runs;
             total_candidate_intervals += plan.candidate_intervals;
             total_rejected_box_blocked += plan.rejected_box_blocked;
@@ -2612,6 +2686,7 @@ impl PyPhotonicRouter {
             total_rejected_exact_length_mismatch,
         )?;
         d.set_item("rejected_too_short", total_rejected_too_short)?;
+        profile_totals.set_item(&d, "planner_profile_total")?;
         Ok(d.into())
     }
 
@@ -2728,6 +2803,7 @@ impl PyPhotonicRouter {
         let candidate_results = PyList::empty_bound(py);
         let mut selected_plans: Option<PyObject> = None;
         let mut selected_candidate_index: Option<usize> = None;
+        let mut call_profile_totals = MeanderPlanningProfileTotals::default();
 
         for candidate_index in 0..candidate_count {
             let centerlines = &candidate_centerlines[candidate_index];
@@ -2742,6 +2818,7 @@ impl PyPhotonicRouter {
             let mut total_rejected_planning_failed = 0usize;
             let mut total_rejected_exact_length_mismatch = 0usize;
             let mut total_rejected_too_short = 0usize;
+            let mut candidate_profile_totals = MeanderPlanningProfileTotals::default();
             let mut failed_reason: Option<String> = None;
             let mut failed_edge_index: Option<usize> = None;
 
@@ -2793,6 +2870,8 @@ impl PyPhotonicRouter {
                             break;
                         }
                     };
+                candidate_profile_totals.add(&plan.profile);
+                call_profile_totals.add(&plan.profile);
                 total_candidate_runs += plan.candidate_runs;
                 total_candidate_intervals += plan.candidate_intervals;
                 total_rejected_box_blocked += plan.rejected_box_blocked;
@@ -2826,6 +2905,7 @@ impl PyPhotonicRouter {
                 total_rejected_exact_length_mismatch,
             )?;
             candidate_entry.set_item("rejected_too_short", total_rejected_too_short)?;
+            candidate_profile_totals.set_item(&candidate_entry, "planner_profile_total")?;
             if let Some(reason) = failed_reason {
                 candidate_entry.set_item("status", "no_candidate")?;
                 candidate_entry.set_item("reason", reason)?;
@@ -2860,6 +2940,7 @@ impl PyPhotonicRouter {
             d.set_item("reason", "no registered requirement candidate planned")?;
         }
         d.set_item("candidate_results", candidate_results)?;
+        call_profile_totals.set_item(&d, "planner_profile_total")?;
         Ok(d.into())
     }
 
@@ -2953,6 +3034,7 @@ impl PyPhotonicRouter {
         let candidate_results = PyList::empty_bound(py);
         let mut selected_plans: Option<PyObject> = None;
         let mut selected_candidate_index: Option<usize> = None;
+        let mut call_profile_totals = MeanderPlanningProfileTotals::default();
 
         for candidate_index in 0..candidate_count {
             let geometry_indices = &candidate_geometry_indices[candidate_index];
@@ -2965,6 +3047,7 @@ impl PyPhotonicRouter {
             let mut total_rejected_planning_failed = 0usize;
             let mut total_rejected_exact_length_mismatch = 0usize;
             let mut total_rejected_too_short = 0usize;
+            let mut candidate_profile_totals = MeanderPlanningProfileTotals::default();
             let mut failed_reason: Option<String> = None;
             let mut failed_edge_index: Option<usize> = None;
 
@@ -3014,6 +3097,8 @@ impl PyPhotonicRouter {
                             break;
                         }
                     };
+                candidate_profile_totals.add(&plan.profile);
+                call_profile_totals.add(&plan.profile);
                 total_candidate_runs += plan.candidate_runs;
                 total_candidate_intervals += plan.candidate_intervals;
                 total_rejected_box_blocked += plan.rejected_box_blocked;
@@ -3047,6 +3132,7 @@ impl PyPhotonicRouter {
                 total_rejected_exact_length_mismatch,
             )?;
             candidate_entry.set_item("rejected_too_short", total_rejected_too_short)?;
+            candidate_profile_totals.set_item(&candidate_entry, "planner_profile_total")?;
             if let Some(reason) = failed_reason {
                 candidate_entry.set_item("status", "no_candidate")?;
                 candidate_entry.set_item("reason", reason)?;
@@ -3081,6 +3167,7 @@ impl PyPhotonicRouter {
             d.set_item("reason", "no registered requirement candidate planned")?;
         }
         d.set_item("candidate_results", candidate_results)?;
+        call_profile_totals.set_item(&d, "planner_profile_total")?;
         Ok(d.into())
     }
 

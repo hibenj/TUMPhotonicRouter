@@ -2252,6 +2252,7 @@ def test_meander_commit_defers_python_reserved_cells_until_fallback_planning():
         setup_profile={},
         candidate_setup_profile={},
         commit_profile={},
+        rust_planner_profile={},
     )
 
     context.commit_planned_edge(

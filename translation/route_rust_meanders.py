@@ -212,6 +212,7 @@ class _MeanderPlannerContext:
     setup_profile: dict[str, float]
     candidate_setup_profile: dict[str, float]
     commit_profile: dict[str, float]
+    rust_planner_profile: dict[str, float]
     candidate_overhead_s: float = 0.0
     commit_elapsed_s: float = 0.0
 
@@ -224,6 +225,20 @@ class _MeanderPlannerContext:
         self.commit_profile[key] = (
             self.commit_profile.get(key, 0.0) + max(0.0, float(elapsed_s))
         )
+
+    def add_rust_planner_profile(self, profile: object) -> None:
+        if not isinstance(profile, Mapping):
+            return
+        for key, value in profile.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            self.rust_planner_profile[key] = (
+                self.rust_planner_profile.get(key, 0.0) + numeric_value
+            )
 
     def reserved_meander_cells_for_python_planning(self) -> set[GridCell]:
         if not self.pending_reserved_meander_rects:
@@ -656,6 +671,7 @@ class _MeanderPlannerContext:
             candidate_best_rr.get("inserted_extra_length_um", 0.0),
             0.0,
         )
+        self.add_rust_planner_profile(candidate_best_rr.get("planner_profile"))
         if abs(candidate_inserted - requested) > EXACT_MEANDER_EPS_UM:
             attempt_info["reason"] = (
                 f"candidate residual {abs(candidate_inserted - requested):.6g} um "
@@ -814,6 +830,7 @@ class _MeanderPlannerContext:
                 )
             return bundle_failure(elapsed_s=elapsed_s, last_exc=last_exc)
 
+        self.add_rust_planner_profile(bundle_result.get("planner_profile_total"))
         if bundle_result.get("status") != "planned":
             failed_index = _as_int(bundle_result.get("failed_edge_index"), 0)
             if 0 <= failed_index < len(edge_attempts):
@@ -1076,6 +1093,7 @@ class _MeanderPlannerContext:
                 last_exc,
             )
 
+        self.add_rust_planner_profile(result.get("planner_profile_total"))
         raw_candidate_results = result.get("candidate_results", [])
         if isinstance(raw_candidate_results, list):
             for rust_index, raw_candidate_result in enumerate(raw_candidate_results):
@@ -1505,6 +1523,7 @@ def _build_planner_context(
         setup_profile=setup_profile,
         candidate_setup_profile={},
         commit_profile={},
+        rust_planner_profile={},
     )
 
 
@@ -2314,6 +2333,7 @@ def analyze_meander_insertion_for_requirements(
             "candidate_overhead_s": float(context.candidate_overhead_s),
             "commit_profile": context.commit_profile,
             "commit_elapsed_s": float(context.commit_elapsed_s),
+            "rust_planner_profile": context.rust_planner_profile,
             "candidate_profile": candidate_profile,
             "minimum_insertable_extra_length_um": float(min_insertable_extra_um),
             "using_legacy_meander_path": False,

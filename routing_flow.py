@@ -1263,6 +1263,22 @@ def run_routing_flow(
                     f"commit={float(report.get('commit_elapsed_s', 0.0)):.4f}s, "
                     f"probe={float(report.get('probe_elapsed_s', 0.0)):.4f}s"
                 )
+                rust_planner_profile = report.get("rust_planner_profile", {})
+                if isinstance(rust_planner_profile, dict) and rust_planner_profile:
+                    print(
+                        "        Rust meander planner split: "
+                        f"total={float(rust_planner_profile.get('total_s', 0.0)):.4f}s, "
+                        f"free_interval={float(rust_planner_profile.get('free_interval_s', 0.0)):.4f}s, "
+                        f"box_check={float(rust_planner_profile.get('box_check_s', 0.0)):.4f}s, "
+                        f"analytic_plan={float(rust_planner_profile.get('analytic_plan_s', 0.0)):.4f}s, "
+                        f"footprint={float(rust_planner_profile.get('footprint_s', 0.0)):.4f}s, "
+                        f"run_extraction={float(rust_planner_profile.get('run_extraction_s', 0.0)):.4f}s, "
+                        f"plan_calls={int(float(rust_planner_profile.get('plan_calls', 0.0)))}, "
+                        f"depths={int(float(rust_planner_profile.get('depth_count', 0.0)))}, "
+                        f"run_side_checks={int(float(rust_planner_profile.get('run_side_checks', 0.0)))}, "
+                        f"box_checks={int(float(rust_planner_profile.get('box_checks', 0.0)))}, "
+                        f"analytic_calls={int(float(rust_planner_profile.get('analytic_plan_calls', 0.0)))}"
+                    )
                 commit_profile = report.get("commit_profile", {})
                 if isinstance(commit_profile, dict) and commit_profile:
                     sorted_commit = sorted(
