@@ -176,6 +176,38 @@ def compute_group_lifted_requirements(
     return requirements, groups
 
 
+def transparent_node_requirement_alternatives(
+    analysis: PathLengthAnalysisResult,
+    requirements: list[MissingLengthRequirement],
+    *,
+    transparent_prefixes: tuple[str, ...] = ("heater",),
+) -> dict[RoutedEdgeKey, list[RoutedEdgeKey]]:
+    """Return upstream insertion alternatives through one-in/one-out devices."""
+    incoming_by_node: dict[str, list[RoutedEdgeKey]] = {}
+    outgoing_by_node: dict[str, list[RoutedEdgeKey]] = {}
+    for timing in analysis.node_timings.values():
+        for edge_timing in timing.incoming_edges:
+            edge_key = edge_timing.edge_key
+            incoming_by_node.setdefault(edge_key.target.instance, []).append(edge_key)
+            outgoing_by_node.setdefault(edge_key.source.instance, []).append(edge_key)
+
+    alternatives: dict[RoutedEdgeKey, list[RoutedEdgeKey]] = {}
+    for req in requirements:
+        edge_key = req.edge_key
+        source_instance = edge_key.source.instance
+        if not source_instance.startswith(transparent_prefixes):
+            continue
+
+        incoming = incoming_by_node.get(source_instance, [])
+        outgoing = outgoing_by_node.get(source_instance, [])
+        if len(incoming) != 1 or len(outgoing) != 1 or outgoing[0] != edge_key:
+            continue
+
+        alternatives[edge_key] = [incoming[0]]
+
+    return alternatives
+
+
 def edge_key_to_dict(edge_key: RoutedEdgeKey) -> dict[str, object]:
     return {
         "net_name": edge_key.net_name,

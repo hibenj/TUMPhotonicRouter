@@ -33,6 +33,7 @@ from translation.route_rust_analysis import (
     minimum_four_bend_extra_length_um,
     path_length_acceptance_summary,
     requirement_to_dict,
+    transparent_node_requirement_alternatives,
 )
 from translation import route_rust_meanders as _meander_impl
 from translation.route_rust_realization import realize_routed_net_records
@@ -237,13 +238,66 @@ def route_match_and_realize(
             analysis,
             minimum_insertable_extra_um=min_insertable_extra_um,
         )
+        lifted_requirements = list(requirements)
+        requirement_edge_alternatives = (
+            transparent_node_requirement_alternatives(analysis, requirements)
+        )
         analysis_info["raw_requirements"] = [
             requirement_to_dict(req)
             for req in raw_requirements
         ]
+        analysis_info["lifted_requirements"] = [
+            requirement_to_dict(req)
+            for req in lifted_requirements
+        ]
         analysis_info["requirements"] = [
             requirement_to_dict(req)
             for req in requirements
+        ]
+        analysis_info["requirement_edge_alternatives"] = [
+            {
+                "original": {
+                    "net_name": original[0],
+                    "source": {"instance": original[1], "port": original[2]},
+                    "target": {"instance": original[3], "port": original[4]},
+                },
+                "alternatives": [
+                    {
+                        "net_name": alternative[0],
+                        "source": {
+                            "instance": alternative[1],
+                            "port": alternative[2],
+                        },
+                        "target": {
+                            "instance": alternative[3],
+                            "port": alternative[4],
+                        },
+                    }
+                    for alternative in alternatives
+                ],
+            }
+            for original_edge, alternative_edges in requirement_edge_alternatives.items()
+            for original, alternatives in [
+                (
+                    (
+                        original_edge.net_name,
+                        original_edge.source.instance,
+                        original_edge.source.port,
+                        original_edge.target.instance,
+                        original_edge.target.port,
+                    ),
+                    [
+                        (
+                            alternative.net_name,
+                            alternative.source.instance,
+                            alternative.source.port,
+                            alternative.target.instance,
+                            alternative.target.port,
+                        )
+                        for alternative in alternative_edges
+                    ],
+                )
+            ]
         ]
         analysis_info["matching_groups"] = lifted_groups
         analysis_info["minimum_insertable_extra_length_um"] = float(
@@ -289,6 +343,7 @@ def route_match_and_realize(
             allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
             static_blocked_cells=meander_static_blocked_cells,
+            requirement_edge_alternatives=requirement_edge_alternatives,
         )
         pipeline_timings_s["meander_planning"] = (
             time.perf_counter() - t_meander_planning_start
