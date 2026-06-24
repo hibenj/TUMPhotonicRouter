@@ -998,8 +998,12 @@ def run_routing_flow(
         stats.net_count = len(schematic.netlist.routes)
         stats.step_times_s["load_benchmark"] = step_load_end - step_load_start
     print("      ✓ Schematic loaded")
-    print(f"      - Instances: {list(schematic.netlist.instances.keys())}")
-    print(f"      - Placements: {list(schematic.placements.keys())}")
+    if debug_meanders:
+        print(f"      - Instances: {list(schematic.netlist.instances.keys())}")
+        print(f"      - Placements: {list(schematic.placements.keys())}")
+    else:
+        print(f"      - Instances: {len(schematic.netlist.instances)}")
+        print(f"      - Placements: {len(schematic.placements)}")
 
     # Step 2: Translate schematic to layout
     step_layout_start = time.perf_counter()
@@ -1036,6 +1040,7 @@ def run_routing_flow(
             debug_prefix=benchmark_name.lower(),
             debug_route_indices=debug_route_indices,
             debug_timing=debug_timing,
+            verbose_route_diagnostics=debug_meanders,
             allow_45_degree_turns=allow_45_degree_turns,
             enable_jps4=enable_jps4,
             use_indexed_heap=use_indexed_heap,

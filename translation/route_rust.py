@@ -171,6 +171,7 @@ def route_match_and_realize(
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
+    verbose_route_diagnostics: bool = False,
     collect_route_stats: bool = False,
     collect_attempt_diagnostics: bool = False,
     include_heater_obstacles: bool = False,
@@ -205,6 +206,7 @@ def route_match_and_realize(
         max_iterations=max_iterations,
         routing_window_scale=routing_window_scale,
         debug_timing=debug_timing,
+        verbose_route_diagnostics=verbose_route_diagnostics,
         collect_route_stats=collect_route_stats,
         collect_attempt_diagnostics=collect_attempt_diagnostics,
         include_heater_obstacles=include_heater_obstacles,
@@ -214,7 +216,7 @@ def route_match_and_realize(
     pipeline_timings_s: dict[str, float] = {
         "route_nets": time.perf_counter() - t_route_nets_start,
     }
-    if debug_timing:
+    if debug_timing and verbose_route_diagnostics:
         print(
             "      - Optical net routing phase "
             f"(obstacle map + A* + repairs): {pipeline_timings_s['route_nets']:.4f} s"
@@ -391,7 +393,7 @@ def route_match_and_realize(
     )
     t_realization_end = time.perf_counter()
     pipeline_timings_s["route_realization"] = t_realization_end - t_realization_start
-    if debug_timing:
+    if debug_timing and verbose_route_diagnostics:
         print(
             "      - Optical route realization phase: "
             f"{pipeline_timings_s['route_realization']:.4f} s"
@@ -641,6 +643,7 @@ def route_nets_rust(
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
+    verbose_route_diagnostics: bool = False,
     collect_route_stats: bool = False,
     collect_attempt_diagnostics: bool = False,
     include_heater_obstacles: bool = False,
@@ -675,6 +678,8 @@ def route_nets_rust(
         heuristic_mode: Dense A* heuristic. Supported values: "distance",
             "heading_aware".
         max_iterations: Maximum A* state expansions per route attempt.
+        verbose_route_diagnostics: If True, print per-net route progress and
+            detailed A* timing buckets. Failures are always printed.
         defer_realization: If True, keep routed RouteResult objects but skip
             polygon realization. This is used for pre-realization transforms
             such as path-length matching/meander insertion.
@@ -707,7 +712,7 @@ def route_nets_rust(
         include_heater_obstacles=include_heater_obstacles,
     )
     obstacle_map = build_static_obstacle_map(unrouted_layout, config=resolved_obstacle_config)
-    if debug_timing:
+    if debug_timing and verbose_route_diagnostics:
         t_obstacle_end = time.perf_counter()
         print(f"      - Obstacle Map time: {t_obstacle_end - t_obstacle_start:.4f} s")
     grid = obstacle_map.grid
@@ -1865,12 +1870,15 @@ def route_nets_rust(
         source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
             _states_and_openings(job)
         )
-        should_print_route = (
+        route_selected_for_debug = (
             debug_route_indices is None or job.route_index in debug_route_indices
         )
+        should_print_route = verbose_route_diagnostics and route_selected_for_debug
+        if debug_route_indices is not None and route_selected_for_debug:
+            should_print_route = True
         should_export_route_debug = (
             debug_path is not None
-            and (debug_route_indices is None or job.route_index in debug_route_indices)
+            and route_selected_for_debug
         )
         route_progress_text = (
             f"  Routing [{job.route_index}/{len(route_jobs)}] "
@@ -1955,7 +1963,7 @@ def route_nets_rust(
     if collect_timing:
         astar_elapsed_s = time.perf_counter() - t_astar_start
 
-    if debug_timing:
+    if debug_timing and verbose_route_diagnostics:
         print(f"      - A* route-search loop time: {astar_elapsed_s:.4f} s")
         print(
             "      - Route search stats: "
