@@ -3,6 +3,7 @@
 //! This module converts a routed state/primitive sequence into one closed
 //! waveguide polygon in physical coordinates.
 
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
 use std::time::Instant;
@@ -195,13 +196,13 @@ impl RectOccupancyQuery for DenseOccupancyPrefix {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SparseCellIndex {
+pub struct SparseCellIndex {
     rows: Vec<Vec<i32>>,
     is_empty: bool,
 }
 
 impl SparseCellIndex {
-    fn from_cells<I>(width: i32, height: i32, cells: I) -> Self
+    pub(crate) fn from_cells<I>(width: i32, height: i32, cells: I) -> Self
     where
         I: IntoIterator<Item = CellKey>,
     {
@@ -227,6 +228,21 @@ impl SparseCellIndex {
         self.is_empty
     }
 
+    pub(crate) fn from_opened_cells(
+        base: &DenseOccupancyPrefix,
+        opened_cells: &FxHashSet<CellKey>,
+    ) -> Self {
+        Self::from_cells(
+            base.width,
+            base.height,
+            opened_cells.iter().copied().filter(|&key| {
+                let (x, y) = unpack_xy(key);
+                base.blocked_count_in_rect(x, x, y, y)
+                    .is_some_and(|count| count > 0)
+            }),
+        )
+    }
+
     fn count_in_rect(&self, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u32 {
         if min_x > max_x || min_y > max_y || self.is_empty() {
             return 0;
@@ -249,7 +265,7 @@ impl SparseCellIndex {
 
 struct OverlayOccupancyQuery<'a> {
     base: &'a DenseOccupancyPrefix,
-    opened_index: SparseCellIndex,
+    opened_index: Cow<'a, SparseCellIndex>,
     extra_blocked_index: SparseCellIndex,
 }
 
@@ -257,19 +273,25 @@ impl<'a> OverlayOccupancyQuery<'a> {
     fn new(
         base: &'a DenseOccupancyPrefix,
         opened_cells: Option<&'a FxHashSet<CellKey>>,
+        opened_index: Option<&'a SparseCellIndex>,
         extra_blocked_cells: Option<&'a FxHashSet<CellKey>>,
     ) -> Self {
-        let opened_index = SparseCellIndex::from_cells(
-            base.width,
-            base.height,
-            opened_cells
-                .into_iter()
-                .flat_map(|cells| cells.iter().copied())
-                .filter(|&key| {
-                    let (x, y) = unpack_xy(key);
-                    base.blocked_count_in_rect(x, x, y, y)
-                        .is_some_and(|count| count > 0)
-                }),
+        let opened_index = opened_index.map_or_else(
+            || {
+                Cow::Owned(SparseCellIndex::from_cells(
+                    base.width,
+                    base.height,
+                    opened_cells
+                        .into_iter()
+                        .flat_map(|cells| cells.iter().copied())
+                        .filter(|&key| {
+                            let (x, y) = unpack_xy(key);
+                            base.blocked_count_in_rect(x, x, y, y)
+                                .is_some_and(|count| count > 0)
+                        }),
+                ))
+            },
+            Cow::Borrowed,
         );
         let extra_blocked_index = SparseCellIndex::from_cells(
             base.width,
@@ -278,8 +300,8 @@ impl<'a> OverlayOccupancyQuery<'a> {
                 .into_iter()
                 .flat_map(|cells| cells.iter().copied())
                 .filter(|&key| {
-                    let opened = opened_cells.is_some_and(|cells| cells.contains(&key));
                     let (x, y) = unpack_xy(key);
+                    let opened = opened_index.count_in_rect(x, x, y, y) > 0;
                     let base_blocked = base
                         .blocked_count_in_rect(x, x, y, y)
                         .is_some_and(|count| count > 0);
@@ -2127,6 +2149,7 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep_with_prefix(
     grid: &GeometryGridSpec,
     base_prefix: &DenseOccupancyPrefix,
     opened_cells: Option<&FxHashSet<CellKey>>,
+    opened_index: Option<&SparseCellIndex>,
     extra_blocked_cells: Option<&FxHashSet<CellKey>>,
     config: &AutoMeanderConfig,
     box_depths_um: &[f64],
@@ -2137,6 +2160,7 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep_with_prefix(
         grid,
         base_prefix,
         opened_cells,
+        opened_index,
         extra_blocked_cells,
         config,
         box_depths_um,
@@ -2148,6 +2172,7 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
     grid: &GeometryGridSpec,
     base_prefix: &DenseOccupancyPrefix,
     opened_cells: Option<&FxHashSet<CellKey>>,
+    opened_index: Option<&SparseCellIndex>,
     extra_blocked_cells: Option<&FxHashSet<CellKey>>,
     config: &AutoMeanderConfig,
     box_depths_um: &[f64],
@@ -2181,7 +2206,8 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         }
     }
 
-    let occupancy = OverlayOccupancyQuery::new(base_prefix, opened_cells, extra_blocked_cells);
+    let occupancy =
+        OverlayOccupancyQuery::new(base_prefix, opened_cells, opened_index, extra_blocked_cells);
     let side_order: &[MeanderSide] = match config.side_policy {
         AutoMeanderSidePolicy::Left => &[MeanderSide::Left],
         AutoMeanderSidePolicy::Right => &[MeanderSide::Right],
@@ -2431,7 +2457,8 @@ pub fn probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         }
     }
 
-    let occupancy = OverlayOccupancyQuery::new(base_prefix, opened_cells, extra_blocked_cells);
+    let occupancy =
+        OverlayOccupancyQuery::new(base_prefix, opened_cells, None, extra_blocked_cells);
     let side_order: &[MeanderSide] = match config.side_policy {
         AutoMeanderSidePolicy::Left => &[MeanderSide::Left],
         AutoMeanderSidePolicy::Right => &[MeanderSide::Right],
