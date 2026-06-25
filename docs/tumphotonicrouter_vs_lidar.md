@@ -252,20 +252,40 @@ The placer should:
 
 This is better than treating crossing insertion only as a local repair when a route hits another route. A crossing-aware placer can reduce the problem before A* sees it.
 
-## Updated Comparison Table
+## Core Functionality Comparison
 
-| Capability | TUMPhotonicRouter | LiDAR | Why this is faster or better here |
+These are framework-level capabilities, not just A* implementation details.
+
+| Capability | TUMPhotonicRouter | LiDAR | Why this is better here |
 | --- | --- | --- | --- |
-| Native performance backend | Yes, Rust/PyO3 | No, Python router | Search expansion, legality checks, route commitment, rip-up, and reconstruction run in compiled Rust instead of the Python interpreter. |
-| Dense grid acceleration | Dense A* arrays, bitsets, packed keys, prefix-sum obstacle/history tables | Python objects, dicts, numpy object bitmap | The hot loop avoids Python objects and can accept/reject many footprints with O(1) table queries. |
-| Straight/L/Z fast paths | Yes | No equivalent found | Easy nets can finish without A*, heap traffic, or large state expansion. |
-| Curvy/primitive-aware routing | Yes, via primitive footprints and physical realization | Yes, via parametric Python neighbor/DRC logic | This repo keeps curvy-aware legality but moves footprint checking and route geometry helpers into Rust-backed structures. |
-| Crossing handling | Planned through placer/router co-design | Implemented reactively in detailed routing | A placer can reduce or reserve crossings before routing, which is cleaner than discovering crossings only when a route collides. |
-| Cost objective | Length, bend cost, dynamic conflicts, history cost, PLM | Propagation, bend, crossing, congestion weights | The important physical goals are still optimized, but this repo also validates and fixes timing/path-length after routing. |
-| Path-length matching + meanders | Integrated analysis and obstacle-aware analytic meander insertion | Not found | Routed designs can be corrected for arrival/edge length requirements instead of stopping at shortest legal routes. |
-| Heater electrical routing | Yes | Not found as a routing flow | Optical and heater-metal concerns can be handled in one layout pipeline. |
-| Detailed route diagnostics | Yes, per attempt | More limited | Performance and failures are measurable through counters, timing buckets, SVGs, and route-attempt records. |
-| Benchmark publication | Local baseline | Published ISPD 2025 baseline | LiDAR is stronger here today, but this repo is set up to import those benchmarks and compare with deeper profiling. |
+| Native router backend | Rust/PyO3 backend behind Python orchestration | Python router | Keeps gdsfactory flexibility while compiling the expensive search, legality, commitment, rip-up, and geometry helper loops. |
+| Full routing pipeline | Optical routing + PLM + meanders + heater electrical routing | Optical detailed routing | This repository is becoming a PIC routing framework, not only a single optical router. |
+| Path-length matching + meanders | Integrated graph analysis and obstacle-aware analytic meander insertion | Not found | Routed designs can be corrected for arrival/edge length requirements instead of stopping at shortest legal routes. |
+| Electrical heater routing | Heater terminal extraction, pad planning, metal realization, verification | Not found as a routing flow | Optical and heater-metal concerns can be handled in one layout pipeline. |
+| Debug/profiling artifacts | SVGs, failed-route logs, route-attempt records, timing buckets, per-class counters | More limited logging/evaluation output | Failures and performance regressions can be diagnosed at the route-attempt and primitive-class level. |
+| Crossing strategy | Planned placer + intentional crossing reservation before detailed routing | Reactive detailed-route crossing insertion | Handling crossings during placement can reduce conflicts before A* sees them, instead of discovering crossings only after route collision. |
+| Benchmark publication | Local baselines today | Published ISPD 2025 baseline | LiDAR is stronger here today; this repository is set up to import those benchmarks and compare with deeper profiling. |
+
+## Shared Router Features, Better Kernel
+
+Both projects have grid-based A* concepts, oriented routing states, curvy/bend-aware movement, costs, DRC-style legality, history/congestion ideas, and rip-up/reroute behavior. The difference is how those ideas are implemented.
+
+| Shared feature | TUMPhotonicRouter implementation | LiDAR implementation | Which is better here and why |
+| --- | --- | --- | --- |
+| A* runtime | Rust dense A* kernel | Python A* over `GridAstarNode` objects | TUMPhotonicRouter is better for speed because expansion, queue work, cost updates, legality checks, and reconstruction avoid interpreter overhead. |
+| State storage | Direct dense index: `((local_y * width) + local_x) * 8 + angle` | Python node objects stored in dictionaries/heapdict | Dense arrays improve locality and avoid object allocation/hash lookup in the hot path. |
+| Closed/open bookkeeping | Closed-state bitset, generation counters, optional indexed heap | Python custom `heapdict` and node flags | Bitsets and generation counters are cheaper and make stale-entry handling measurable. |
+| Obstacle map | Sparse packed `u64` keys plus dense blocked bitsets | `numpy` object array of `bitmapNode` instances | Packed keys and bitsets are much more compact than per-cell Python objects. |
+| Footprint legality | Primitive footprint profiles with fast rectangle/segment paths | Python DRC walks candidate cells through bitmap checks | TUMPhotonicRouter avoids many per-cell checks by recognizing simple footprints once. |
+| Prefix-sum checks | Blocked-cell and history summed-area tables | No equivalent found | Rectangular/segment checks become O(1), which directly speeds repeated legality queries. |
+| Routing windows | Configurable source-target search windows with growth and fallback | Net bounding regions | TUMPhotonicRouter exposes detailed window counters and can tune search area without losing fallback behavior. |
+| Simple-route bypass | Straight, L, and Z candidates before A* | No equivalent found | Easy nets finish with zero A* expanded states, no heap traffic, and no broad search. |
+| Heuristic | Distance or heading-aware lower bound with target-angle handling | Manhattan/custom heuristic with bend terms | Heading-aware mode keeps admissible distance behavior while adding unavoidable bend lower bounds. |
+| Primitive ordering | Library, long-straight-first, target-biased experiments | Python `nextSteps` order | TUMPhotonicRouter can benchmark ordering changes without changing route semantics. |
+| Cost drivers | Length, bend cost, dynamic conflicts, history cost, PLM validation | Propagation, bend, crossing, congestion weights | The same physical goals are covered, plus timing/path-length is analyzed and repaired after routing. |
+| Rip-up/reroute | Probe route, blocker discovery, victim rip-up, history update, rollback | Failed-net rip-up and local crossing-net rip-up | TUMPhotonicRouter's repair is more instrumented and transactional. |
+| Curvy/bend awareness | Primitive footprints checked against obstacles, then physically realized | Parametric bend/neighbor DRC in Python | Both are curvy-aware; TUMPhotonicRouter has the stronger compiled legality and realization path. |
+| Diagnostics | Per-attempt counters for expansions, heap, rejects, footprint checks, dense memory, timing | Logs and final evaluations | TUMPhotonicRouter makes algorithmic improvements measurable instead of relying mainly on wall time or final success. |
 
 ## Bottom Line
 
