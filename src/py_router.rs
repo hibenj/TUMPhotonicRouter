@@ -22,6 +22,7 @@ use crate::geometry_realization::{
     plan_auto_analytic_meander_for_route_depth_sweep_with_prefix as plan_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs,
     probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
     probe_auto_analytic_meander_for_route_depth_sweep_with_prefix as probe_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs,
+    realize_centerline_polygon_with_terminal_tangents as realize_centerline_polygon_with_terminal_tangents_rs,
     realize_route_polygon_from_auto_plan as realize_route_polygon_from_auto_plan_rs,
     realize_route_polygon_from_primitives as realize_route_polygon_from_primitives_rs,
     realize_route_polygon_with_analytic_meander as realize_route_polygon_with_analytic_meander_rs,
@@ -580,6 +581,47 @@ fn inflate_route_cells(
         }
     }
     inflated
+}
+
+fn route_commit_cells(
+    center_cells: &[(i32, i32)],
+    core_radius_cells: i32,
+    clearance_radius_cells: i32,
+    clearance_exempt_cells: Option<&[(i32, i32)]>,
+    width: i32,
+    height: i32,
+) -> Vec<(i32, i32)> {
+    let core_cells = inflate_route_cells(center_cells, core_radius_cells, width, height);
+    let core_keys: FxHashSet<CellKey> = core_cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
+    let mut blocked_cells = inflate_route_cells(
+        center_cells,
+        clearance_radius_cells.max(core_radius_cells),
+        width,
+        height,
+    );
+
+    let Some(exempt_cells) = clearance_exempt_cells else {
+        return blocked_cells;
+    };
+    if exempt_cells.is_empty() {
+        return blocked_cells;
+    }
+
+    let exempt_keys = pack_cells(exempt_cells);
+    blocked_cells.retain(|(x, y)| {
+        let key = pack_xy(*x, *y);
+        core_keys.contains(&key) || !exempt_keys.contains(&key)
+    });
+    blocked_cells
+}
+
+fn route_core_cells(
+    center_cells: &[(i32, i32)],
+    core_radius_cells: i32,
+    width: i32,
+    height: i32,
+) -> Vec<(i32, i32)> {
+    inflate_route_cells(center_cells, core_radius_cells, width, height)
 }
 
 fn primitive_kind(p: &Primitive) -> String {
@@ -1495,7 +1537,7 @@ impl PyPhotonicRouter {
         Py::new(py, convert_result(py, &self.primitives, &result)?)
     }
 
-    #[pyo3(signature=(net_id,source,target,block_radius_cells=0,opened_cells=None))]
+    #[pyo3(signature=(net_id,source,target,block_radius_cells=0,opened_cells=None,commit_radius_cells=None,clearance_exempt_cells=None,core_radius_cells=None))]
     fn route_single_net_and_commit(
         &mut self,
         py: Python<'_>,
@@ -1504,6 +1546,9 @@ impl PyPhotonicRouter {
         target: PyState,
         block_radius_cells: i32,
         opened_cells: Option<Vec<(i32, i32)>>,
+        commit_radius_cells: Option<i32>,
+        clearance_exempt_cells: Option<Vec<(i32, i32)>>,
+        core_radius_cells: Option<i32>,
     ) -> PyResult<Py<PyRouteResult>> {
         if self.astar_cfg.target_tolerance_cells < 0 {
             return Err(PyValueError::new_err("target_tolerance_cells must be >= 0"));
@@ -1525,13 +1570,25 @@ impl PyPhotonicRouter {
                 Some(opened_ref),
                 &cfg,
             ) {
-                let route_cells = inflate_route_cells(
+                let route_cells = route_commit_cells(
                     &result.cells,
                     block_radius_cells,
+                    commit_radius_cells.unwrap_or(block_radius_cells),
+                    clearance_exempt_cells.as_deref(),
                     self.grid.width as i32,
                     self.grid.height as i32,
                 );
-                if self.obstacle_map.commit_route(net_id, &route_cells) {
+                let core_cells = route_core_cells(
+                    &result.cells,
+                    core_radius_cells.unwrap_or(block_radius_cells),
+                    self.grid.width as i32,
+                    self.grid.height as i32,
+                );
+                if self.obstacle_map.commit_route_with_clearance_overlap(
+                    net_id,
+                    &core_cells,
+                    &route_cells,
+                ) {
                     self.invalidate_meander_base_prefix();
                     return Py::new(py, convert_result(py, &self.primitives, &result)?);
                 }
@@ -1556,13 +1613,24 @@ impl PyPhotonicRouter {
         )
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
 
-        let route_cells = inflate_route_cells(
+        let route_cells = route_commit_cells(
             &result.cells,
             block_radius_cells,
+            commit_radius_cells.unwrap_or(block_radius_cells),
+            clearance_exempt_cells.as_deref(),
             self.grid.width as i32,
             self.grid.height as i32,
         );
-        if !self.obstacle_map.commit_route(net_id, &route_cells) {
+        let core_cells = route_core_cells(
+            &result.cells,
+            core_radius_cells.unwrap_or(block_radius_cells),
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        if !self
+            .obstacle_map
+            .commit_route_with_clearance_overlap(net_id, &core_cells, &route_cells)
+        {
             return Err(PyRuntimeError::new_err(
                 "Failed to commit routed cells to obstacle map",
             ));
@@ -1701,7 +1769,7 @@ impl PyPhotonicRouter {
         Py::new(py, convert_result(py, &self.primitives, &result)?)
     }
 
-    #[pyo3(signature=(net_id,source,target,block_radius_cells=0,opened_cells=None,history_weight=1.0))]
+    #[pyo3(signature=(net_id,source,target,block_radius_cells=0,opened_cells=None,history_weight=1.0,commit_radius_cells=None,clearance_exempt_cells=None,core_radius_cells=None))]
     fn route_single_net_and_commit_repair(
         &mut self,
         py: Python<'_>,
@@ -1711,6 +1779,9 @@ impl PyPhotonicRouter {
         block_radius_cells: i32,
         opened_cells: Option<Vec<(i32, i32)>>,
         history_weight: f64,
+        commit_radius_cells: Option<i32>,
+        clearance_exempt_cells: Option<Vec<(i32, i32)>>,
+        core_radius_cells: Option<i32>,
     ) -> PyResult<Py<PyRouteResult>> {
         if self.astar_cfg.target_tolerance_cells < 0 {
             return Err(PyValueError::new_err("target_tolerance_cells must be >= 0"));
@@ -1748,13 +1819,24 @@ impl PyPhotonicRouter {
         )
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
 
-        let route_cells = inflate_route_cells(
+        let route_cells = route_commit_cells(
             &result.cells,
             block_radius_cells,
+            commit_radius_cells.unwrap_or(block_radius_cells),
+            clearance_exempt_cells.as_deref(),
             self.grid.width as i32,
             self.grid.height as i32,
         );
-        if !self.obstacle_map.commit_route(net_id, &route_cells) {
+        let core_cells = route_core_cells(
+            &result.cells,
+            core_radius_cells.unwrap_or(block_radius_cells),
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        if !self
+            .obstacle_map
+            .commit_route_with_clearance_overlap(net_id, &core_cells, &route_cells)
+        {
             return Err(PyRuntimeError::new_err(
                 "Failed to commit routed cells to obstacle map",
             ));
@@ -1936,6 +2018,26 @@ impl PyPhotonicRouter {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
+    #[pyo3(signature=(centerline,width_um,route,source_enabled=true,target_enabled=true))]
+    fn realize_centerline_polygon_with_terminal_tangents(
+        &self,
+        centerline: Vec<(f64, f64)>,
+        width_um: f64,
+        route: &PyRouteResult,
+        source_enabled: bool,
+        target_enabled: bool,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        let r = to_route_result(route);
+        realize_centerline_polygon_with_terminal_tangents_rs(
+            &centerline,
+            &r,
+            width_um,
+            source_enabled,
+            target_enabled,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
     #[pyo3(signature=(centerline,width_um,selected_run_start_index,selected_run_end_index,meander_centerline))]
     fn realize_centerline_polygon_from_planned_auto_meander(
         &self,
@@ -1963,6 +2065,45 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
         generate_waveguide_polygon_rs(&spliced, width_um)
             .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    #[pyo3(signature=(centerline,width_um,route,selected_run_start_index,selected_run_end_index,meander_centerline,source_enabled=true,target_enabled=true))]
+    fn realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents(
+        &self,
+        centerline: Vec<(f64, f64)>,
+        width_um: f64,
+        route: &PyRouteResult,
+        selected_run_start_index: usize,
+        selected_run_end_index: usize,
+        meander_centerline: Vec<(f64, f64)>,
+        source_enabled: bool,
+        target_enabled: bool,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        if width_um <= 0.0 {
+            return Err(PyValueError::new_err("width_um must be > 0"));
+        }
+        let _ = centerline_length_um_rs(&centerline)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let meander_points: Vec<PhysicalPoint> = meander_centerline
+            .into_iter()
+            .map(|(x_um, y_um)| PhysicalPoint { x_um, y_um })
+            .collect();
+        let spliced = splice_meander_into_centerline_range_rs(
+            &centerline,
+            selected_run_start_index,
+            selected_run_end_index,
+            &meander_points,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        realize_centerline_polygon_with_terminal_tangents_rs(
+            &spliced,
+            &r,
+            width_um,
+            source_enabled,
+            target_enabled,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
     #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="fill_box_multi_bump"))]
@@ -4430,6 +4571,21 @@ mod tests {
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
+    }
+
+    #[test]
+    fn route_commit_cells_exempts_clearance_but_keeps_core() {
+        let center_cells = vec![(4, 4), (5, 4)];
+        let exempt_cells = vec![(4, 3), (4, 4), (4, 5)];
+        let committed = route_commit_cells(&center_cells, 0, 1, Some(&exempt_cells), 10, 10);
+        let committed_keys: FxHashSet<CellKey> =
+            committed.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
+
+        assert!(committed_keys.contains(&pack_xy(4, 4)));
+        assert!(committed_keys.contains(&pack_xy(5, 4)));
+        assert!(!committed_keys.contains(&pack_xy(4, 3)));
+        assert!(!committed_keys.contains(&pack_xy(4, 5)));
+        assert!(committed_keys.contains(&pack_xy(5, 3)));
     }
 
     #[test]

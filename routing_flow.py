@@ -39,7 +39,7 @@ DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, 
 
 # Edit these values when running `routing_flow.py` directly from an IDE or file.
 # Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "heater_s"
+SCRIPT_BENCHMARK = "heater_s_compact"
 SCRIPT_DEBUG_SVGS: DebugSvgSelector = False  # Examples: True, "all", "5-10", "2,5-10"
 SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
@@ -52,7 +52,7 @@ SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
 SCRIPT_OBSTACLE_MODE = "bounding_boxes"
-SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.5
+SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.3
 SCRIPT_HEATER_CLEARANCE_UM = 5.0
 SCRIPT_OBSTACLE_CLEARANCE_UM = SCRIPT_WAVEGUIDE_CLEARANCE_UM
 SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC = False

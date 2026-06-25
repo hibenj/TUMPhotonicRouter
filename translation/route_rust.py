@@ -771,10 +771,21 @@ def route_nets_rust(
     block_radius_cells = max(
         0, math.ceil((float(route_width_um) / 2.0) / float(grid.grid_size_um))
     )
+    route_clearance_um = max(
+        0.0,
+        _as_float(getattr(resolved_obstacle_config, "clearance_um", 0.0), 0.0),
+    )
+    commit_radius_cells = max(
+        block_radius_cells,
+        math.ceil(
+            ((float(route_width_um) / 2.0) + route_clearance_um)
+            / float(grid.grid_size_um)
+        ),
+    )
     port_entry_length_cells = max(2, bend_radius_cells + 2)
-    port_entry_half_width_cells = max(1, bend_radius_cells + block_radius_cells + 1)
+    port_entry_half_width_cells = max(1, bend_radius_cells + commit_radius_cells + 1)
     port_lane_length_cells = max(3, 2 * bend_radius_cells + 2)
-    port_lane_half_width_cells = max(1, block_radius_cells + 1)
+    port_lane_half_width_cells = max(1, commit_radius_cells + 1)
     def _orientation_to_angle(orientation: float | None, *, flip: bool = False) -> int:
         if orientation is None:
             angle = 0
@@ -1003,6 +1014,34 @@ def route_nets_rust(
             half_width_cells=port_open_radius_cells,
         )
 
+    raw_blocked_obj: object
+    if hasattr(obstacle_map, "raw_blocked_cells"):
+        raw_blocked_obj = getattr(obstacle_map, "raw_blocked_cells")
+    else:
+        raw_blocked_obj = obstacle_map.blocked_cells
+    raw_blocked_cells = cast(Iterable[tuple[int, int]], raw_blocked_obj)
+    raw_static_cells = {(int(cell[0]), int(cell[1])) for cell in raw_blocked_cells}
+    static_blocked_cells_before_port_reservations = raw_static_cells
+    raw_static_rects_for_openings: list[tuple[int, int, int, int]] = []
+    if hasattr(obstacle_map, "raw_static_rects"):
+        for rect in cast(
+            Iterable[tuple[int, int, int, int]],
+            getattr(obstacle_map, "raw_static_rects"),
+        ):
+            if len(rect) == 4:
+                raw_static_rects_for_openings.append(
+                    (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+                )
+
+    def _cell_in_raw_static(cell: tuple[int, int]) -> bool:
+        if cell in raw_static_cells:
+            return True
+        x, y = cell
+        return any(
+            rect_min_x <= x <= rect_max_x and rect_min_y <= y <= rect_max_y
+            for rect_min_x, rect_min_y, rect_max_x, rect_max_y in raw_static_rects_for_openings
+        )
+
     def build_keyed_port_access_cells(
         *,
         instance_name: str,
@@ -1032,7 +1071,16 @@ def route_nets_rust(
             return set(), set(), None
 
         candidate_cells = build_port_access_cells(port)
-        effective_cells = candidate_cells & build_base_port_open_cells(port)
+        base_open_cells = build_base_port_open_cells(port)
+        if route_clearance_um <= 0.0:
+            effective_cells = candidate_cells & base_open_cells
+            return effective_cells, candidate_cells, None
+
+        clearance_access_cells = {
+            cell for cell in candidate_cells
+            if not _cell_in_raw_static(cell)
+        }
+        effective_cells = clearance_access_cells | (candidate_cells & base_open_cells)
         return effective_cells, candidate_cells, None
 
     route_jobs: list[RouteJob] = []
@@ -1080,16 +1128,6 @@ def route_nets_rust(
                 port_access_candidate_cells_by_spec[port2_spec] = candidate_cells
                 port_access_rule_by_spec[port2_spec] = rule_name
 
-    # Use raw static geometry as the baseline truth for "real component body"
-    # checks. `blocked_cells` may exclude port-open carve-outs.
-    raw_blocked_obj: object
-    if hasattr(obstacle_map, "raw_blocked_cells"):
-        raw_blocked_obj = getattr(obstacle_map, "raw_blocked_cells")
-    else:
-        raw_blocked_obj = obstacle_map.blocked_cells
-    raw_blocked_cells = cast(Iterable[tuple[int, int]], raw_blocked_obj)
-    raw_static_cells = {(int(cell[0]), int(cell[1])) for cell in raw_blocked_cells}
-    static_blocked_cells_before_port_reservations = raw_static_cells
     blocked_static_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
     if hasattr(obstacle_map, "blocked_static_rects"):
         blocked_static_rects: list[tuple[int, int, int, int]] = []
@@ -1591,7 +1629,10 @@ def route_nets_rust(
         candidate_blockers: list[int] | None = None,
         ripup_ids: list[int] | None = None,
     ) -> tuple[Any, list[tuple[int, int]]]:
-        source_state, target_state, _, _, opened_cells = _states_and_openings(job)
+        source_state, target_state, opened_candidate_cells, _, opened_cells = (
+            _states_and_openings(job)
+        )
+        clearance_exempt_cells = sorted(opened_candidate_cells)
         route_start = _timing_start()
         if repair:
             try:
@@ -1602,6 +1643,9 @@ def route_nets_rust(
                     block_radius_cells,
                     opened_cells,
                     float(repair_config.history_weight),
+                    commit_radius_cells,
+                    clearance_exempt_cells,
+                    block_radius_cells,
                 )
             except RuntimeError as exc:
                 _record_route_attempt(
@@ -1623,6 +1667,9 @@ def route_nets_rust(
                     target_state,
                     block_radius_cells,
                     opened_cells,
+                    commit_radius_cells,
+                    clearance_exempt_cells,
+                    block_radius_cells,
                 )
             except RuntimeError as exc:
                 _record_route_attempt(

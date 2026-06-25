@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Iterable
+from typing import Protocol
 
 from gdsfactory.component import Component
 
@@ -10,6 +12,50 @@ from translation.route_rust_types import RoutedNetRecord, _as_float, _as_int
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 _load_rust_backend = _sob._load_rust_backend
+
+
+class _EndpointCorrectionRouter(Protocol):
+    def route_port_corrected_centerline(
+        self,
+        route: object,
+        *,
+        source_port_um: tuple[float, float] | None = None,
+        target_port_um: tuple[float, float] | None = None,
+    ) -> Iterable[object]:
+        ...
+
+
+def _physical_port_centerline(
+    router: _EndpointCorrectionRouter,
+    record: RoutedNetRecord,
+) -> list[tuple[float, float]]:
+    corrected_centerline = [
+        (float(p[0]), float(p[1]))
+        for p in record.corrected_centerline_um
+    ]
+    if corrected_centerline:
+        return corrected_centerline
+
+    source_port_um = record.source_port_center_um
+    target_port_um = record.target_port_center_um
+    if source_port_um is None and target_port_um is None:
+        return []
+
+    try:
+        raw_centerline = router.route_port_corrected_centerline(
+            record.route_obj,
+            source_port_um=source_port_um,
+            target_port_um=target_port_um,
+        )
+    except (TypeError, ValueError):
+        return []
+
+    centerline: list[tuple[float, float]] = []
+    for point in raw_centerline:
+        if not isinstance(point, (tuple, list)) or len(point) != 2:
+            return []
+        centerline.append((float(point[0]), float(point[1])))
+    return centerline
 
 
 def realize_routed_net_records(
@@ -50,10 +96,7 @@ def realize_routed_net_records(
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
     for record in routed_net_records:
-        corrected_centerline = [
-            (float(p[0]), float(p[1]))
-            for p in record.corrected_centerline_um
-        ]
+        corrected_centerline = _physical_port_centerline(router, record)
         if record.meander_auto_plan is not None:
             plan = record.meander_auto_plan
             selected_side = plan.get("selected_side")
@@ -73,12 +116,19 @@ def realize_routed_net_records(
                     if isinstance(p, (tuple, list)) and len(p) == 2
                 ]
                 if corrected_centerline:
-                    polygon = router.realize_centerline_polygon_from_planned_auto_meander(
+                    realize_with_tangents = getattr(
+                        router,
+                        "realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents",
+                    )
+                    polygon = realize_with_tangents(
                         corrected_centerline,
                         float(route_width_um),
+                        record.route_obj,
                         selected_run_start_index=_as_int(selected_run_start_index, 0),
                         selected_run_end_index=_as_int(selected_run_end_index, 0),
                         meander_centerline=meander_centerline,
+                        source_enabled=record.source_port_center_um is not None,
+                        target_enabled=record.target_port_center_um is not None,
                     )
                 else:
                     polygon = router.realize_route_polygon_from_planned_auto_meander(
@@ -132,9 +182,12 @@ def realize_routed_net_records(
             routed_layout.add_polygon(polygon, layer=route_layer)
             continue
         if corrected_centerline:
-            polygon = router.realize_centerline_polygon(
+            polygon = router.realize_centerline_polygon_with_terminal_tangents(
                 corrected_centerline,
                 float(route_width_um),
+                record.route_obj,
+                source_enabled=record.source_port_center_um is not None,
+                target_enabled=record.target_port_center_um is not None,
             )
             routed_layout.add_polygon(polygon, layer=route_layer)
             continue

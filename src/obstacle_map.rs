@@ -322,6 +322,65 @@ impl ObstacleMap {
         true
     }
 
+    /// Commit a route with separate core and clearance cells.
+    ///
+    /// The core footprint must not overlap another committed dynamic obstacle.
+    /// Clearance cells may overlap other clearance reservations: the search has
+    /// already checked the new core against existing reservations.
+    pub fn commit_route_with_clearance_overlap(
+        &mut self,
+        net_id: NetId,
+        core_cells: &[(i32, i32)],
+        blocked_cells: &[(i32, i32)],
+    ) -> bool {
+        let mut keys = Vec::with_capacity(blocked_cells.len());
+        let mut seen = FxHashSet::default();
+        for &(x, y) in blocked_cells {
+            if !self.in_bounds(x, y) {
+                return false;
+            }
+
+            let key = pack_xy(x, y);
+            if seen.insert(key) {
+                keys.push(key);
+            }
+        }
+
+        let old_route_keys: FxHashSet<CellKey> = self
+            .net_routes
+            .get(&net_id)
+            .map(|route| route.iter().copied().collect())
+            .unwrap_or_default();
+        let mut seen_core = FxHashSet::default();
+        for &(x, y) in core_cells {
+            if !self.in_bounds(x, y) {
+                return false;
+            }
+
+            let key = pack_xy(x, y);
+            if !seen_core.insert(key) {
+                continue;
+            }
+
+            let existing_refs = self.dynamic_obstacles.get(&key).copied().unwrap_or(0);
+            let same_net_refs = u16::from(old_route_keys.contains(&key));
+            if existing_refs > same_net_refs {
+                return false;
+            }
+        }
+
+        self.ripup_route(net_id);
+
+        for &key in &keys {
+            let (x, y) = unpack_xy(key);
+            if Self::increment_ref(&mut self.dynamic_obstacles, key) {
+                self.set_occupancy_bit(x, y, DYNAMIC_BIT);
+            }
+        }
+        self.net_routes.insert(net_id, keys);
+        true
+    }
+
     /// Rip up a previously committed route. Returns true when a route existed.
     pub fn ripup_route(&mut self, net_id: NetId) -> bool {
         let Some(keys) = self.net_routes.remove(&net_id) else {
@@ -823,6 +882,16 @@ mod tests {
         assert!(map.is_dynamic_blocked(3, 2));
         assert!(!map.is_dynamic_blocked(4, 2));
         assert!(map.get_net_cells(2).is_none());
+    }
+
+    #[test]
+    fn commit_route_with_clearance_overlap_allows_halo_but_rejects_core() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route(1, &[(2, 2), (2, 3)]));
+
+        assert!(map.commit_route_with_clearance_overlap(2, &[(4, 2)], &[(4, 2), (2, 3)],));
+        assert!(!map.commit_route_with_clearance_overlap(3, &[(2, 2)], &[(2, 2), (5, 5)],));
+        assert!(map.get_net_cells(3).is_none());
     }
 
     #[test]
