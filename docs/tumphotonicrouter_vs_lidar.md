@@ -254,20 +254,18 @@ This is better than treating crossing insertion only as a local repair when a ro
 
 ## Updated Comparison Table
 
-| Capability | TUMPhotonicRouter | LiDAR |
-| --- | --- | --- |
-| Native performance backend | Yes, Rust/PyO3 | No, Python router |
-| Dense A* storage | Yes | No equivalent found |
-| Prefix-sum obstacle checks | Yes | No equivalent found |
-| Straight/L/Z fast paths | Yes | No equivalent found |
-| Curvy/primitive-aware routing | Yes, via primitive footprints and physical realization | Yes, via parametric Python neighbor/DRC logic |
-| Crossing insertion | Planned through placer/router co-design | Implemented reactively in detailed routing |
-| Path-length matching | Yes | Not found |
-| Meander insertion | Yes | Not found |
-| Heater electrical routing | Yes | Not found |
-| Detailed route diagnostics | Yes, per attempt | More limited |
-| Benchmark publication | Local baseline | Published ISPD 2025 baseline |
-| Framework breadth | Optical + PLM + electrical + profiling | Optical detailed routing |
+| Capability | TUMPhotonicRouter | LiDAR | Why this is faster or better here |
+| --- | --- | --- | --- |
+| Native performance backend | Yes, Rust/PyO3 | No, Python router | Search expansion, legality checks, route commitment, rip-up, and reconstruction run in compiled Rust instead of the Python interpreter. |
+| Dense grid acceleration | Dense A* arrays, bitsets, packed keys, prefix-sum obstacle/history tables | Python objects, dicts, numpy object bitmap | The hot loop avoids Python objects and can accept/reject many footprints with O(1) table queries. |
+| Straight/L/Z fast paths | Yes | No equivalent found | Easy nets can finish without A*, heap traffic, or large state expansion. |
+| Curvy/primitive-aware routing | Yes, via primitive footprints and physical realization | Yes, via parametric Python neighbor/DRC logic | This repo keeps curvy-aware legality but moves footprint checking and route geometry helpers into Rust-backed structures. |
+| Crossing handling | Planned through placer/router co-design | Implemented reactively in detailed routing | A placer can reduce or reserve crossings before routing, which is cleaner than discovering crossings only when a route collides. |
+| Cost objective | Length, bend cost, dynamic conflicts, history cost, PLM | Propagation, bend, crossing, congestion weights | The important physical goals are still optimized, but this repo also validates and fixes timing/path-length after routing. |
+| Path-length matching + meanders | Integrated analysis and obstacle-aware analytic meander insertion | Not found | Routed designs can be corrected for arrival/edge length requirements instead of stopping at shortest legal routes. |
+| Heater electrical routing | Yes | Not found as a routing flow | Optical and heater-metal concerns can be handled in one layout pipeline. |
+| Detailed route diagnostics | Yes, per attempt | More limited | Performance and failures are measurable through counters, timing buckets, SVGs, and route-attempt records. |
+| Benchmark publication | Local baseline | Published ISPD 2025 baseline | LiDAR is stronger here today, but this repo is set up to import those benchmarks and compare with deeper profiling. |
 
 ## Bottom Line
 
