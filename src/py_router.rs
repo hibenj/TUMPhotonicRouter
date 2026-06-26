@@ -1161,7 +1161,6 @@ fn annotate_auto_meander_search_policy(
     fixed_endpoint_inset: bool,
 ) -> PyResult<()> {
     let d = result.bind(py).downcast::<PyDict>()?;
-    let endpoint_inset_um = endpoint_insets_um.first().copied().unwrap_or(0.0);
     let endpoint_inset_policy = if fixed_endpoint_inset {
         "fixed"
     } else {
@@ -1171,6 +1170,34 @@ fn annotate_auto_meander_search_policy(
     d.set_item("endpoint_insets_um", endpoint_insets_um)?;
     d.set_item("endpoint_inset_policy", endpoint_inset_policy)?;
 
+    let search_config = auto_meander_search_config_to_py_dict(
+        py,
+        min_straight_um,
+        min_segment_length_um,
+        max_meander_height_um,
+        box_depths_um,
+        endpoint_insets_um,
+        fixed_endpoint_inset,
+    )?;
+    d.set_item("search_config", search_config)?;
+    Ok(())
+}
+
+fn auto_meander_search_config_to_py_dict<'py>(
+    py: Python<'py>,
+    min_straight_um: f64,
+    min_segment_length_um: f64,
+    max_meander_height_um: f64,
+    box_depths_um: &[f64],
+    endpoint_insets_um: &[f64],
+    fixed_endpoint_inset: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let endpoint_inset_um = endpoint_insets_um.first().copied().unwrap_or(0.0);
+    let endpoint_inset_policy = if fixed_endpoint_inset {
+        "fixed"
+    } else {
+        "adaptive"
+    };
     let search_config = PyDict::new_bound(py);
     search_config.set_item("min_straight_um", min_straight_um)?;
     search_config.set_item("min_segment_um", min_segment_length_um)?;
@@ -1179,8 +1206,7 @@ fn annotate_auto_meander_search_policy(
     search_config.set_item("endpoint_inset_um", endpoint_inset_um)?;
     search_config.set_item("endpoint_insets_um", endpoint_insets_um)?;
     search_config.set_item("endpoint_inset_policy", endpoint_inset_policy)?;
-    d.set_item("search_config", search_config)?;
-    Ok(())
+    Ok(search_config)
 }
 
 fn validate_endpoint_inset_candidates(endpoint_insets_um: &[f64]) -> PyResult<()> {
@@ -1198,6 +1224,40 @@ fn validate_endpoint_inset_candidates(endpoint_insets_um: &[f64]) -> PyResult<()
         ));
     }
     Ok(())
+}
+
+#[pyfunction]
+#[pyo3(signature=(effective_bend_radius_um,min_candidate_straight_length_um=1.0,max_meander_height_um=20.0,auto_endpoint_inset_um=None))]
+fn auto_meander_search_config_rs(
+    py: Python<'_>,
+    effective_bend_radius_um: f64,
+    min_candidate_straight_length_um: f64,
+    max_meander_height_um: f64,
+    auto_endpoint_inset_um: Option<f64>,
+) -> PyResult<PyObject> {
+    if !min_candidate_straight_length_um.is_finite() {
+        return Err(PyValueError::new_err(
+            "min_candidate_straight_length_um must be finite",
+        ));
+    }
+    let min_straight_um = min_candidate_straight_length_um.max(0.0);
+    let min_segment_length_um = min_candidate_straight_length_um.max(0.5);
+    let box_depths_um = default_meander_box_depths_um(max_meander_height_um)?;
+    let endpoint_insets_um = default_endpoint_insets_um(
+        effective_bend_radius_um,
+        min_segment_length_um,
+        auto_endpoint_inset_um,
+    )?;
+    Ok(auto_meander_search_config_to_py_dict(
+        py,
+        min_straight_um,
+        min_segment_length_um,
+        max_meander_height_um,
+        &box_depths_um,
+        &endpoint_insets_um,
+        auto_endpoint_inset_um.is_some(),
+    )?
+    .into())
 }
 
 #[pymethods]
@@ -4763,6 +4823,7 @@ pub fn register_py_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRouteResult>()?;
     m.add_class::<PyPortAccess>()?;
     m.add_class::<PyPhotonicRouter>()?;
+    m.add_function(wrap_pyfunction!(auto_meander_search_config_rs, m)?)?;
     Ok(())
 }
 

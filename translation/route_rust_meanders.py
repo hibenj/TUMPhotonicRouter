@@ -31,20 +31,6 @@ from translation.route_rust_types import (
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 _load_rust_backend = _sob._load_rust_backend
 
-MEANDER_DEPTH_CANDIDATES_UM = (
-    40.0,
-    30.0,
-    24.0,
-    20.0,
-    16.0,
-    12.0,
-    10.0,
-    8.0,
-    6.0,
-    4.0,
-    3.0,
-    2.0,
-)
 EXACT_MEANDER_EPS_UM = 1.0e-6
 GridCell = tuple[int, int]
 
@@ -53,6 +39,11 @@ class _RustBackendProtocol(Protocol):
     def GridSpec(self, *args: object, **kwargs: object) -> object: ...
     def PrimitiveLibraryConfig(self, *args: object, **kwargs: object) -> object: ...
     def AStarConfig(self, *args: object, **kwargs: object) -> object: ...
+    def auto_meander_search_config_rs(
+        self,
+        *args: object,
+        **kwargs: object,
+    ) -> dict[str, object]: ...
     def PyPhotonicRouter(self, *args: object, **kwargs: object) -> "_MeanderRouterProtocol": ...
 
 
@@ -2070,39 +2061,48 @@ def _meander_search_config(
     *,
     config: MeanderInsertionConfig,
     bend_radius_um: float,
+    rust_backend: _RustBackendProtocol | None = None,
 ) -> _MeanderSearchConfig:
-    min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
-    min_segment_um = max(0.5, float(config.min_candidate_straight_length_um))
-    max_height_um = max(0.0, float(config.max_meander_height_um))
-    box_depths_um = [
-        depth
-        for depth in MEANDER_DEPTH_CANDIDATES_UM
-        if depth <= max_height_um + 1.0e-9
-    ]
-    if (
-        max_height_um > 0.0
-        and (not box_depths_um or max_height_um > max(box_depths_um) + 1.0e-9)
-    ):
-        box_depths_um.insert(0, max_height_um)
-    if not box_depths_um:
-        box_depths_um = [max_height_um]
-    if config.auto_meander_endpoint_inset_um is None:
-        base_endpoint_inset_um = max(bend_radius_um, min_segment_um)
-        raw_endpoint_insets = [
-            base_endpoint_inset_um,
-            0.75 * bend_radius_um,
-            0.5 * bend_radius_um,
-            0.25 * bend_radius_um,
-            0.0,
-        ]
+    backend = rust_backend if rust_backend is not None else _load_rust_backend()
+    if backend is not None and hasattr(backend, "auto_meander_search_config_rs"):
+        raw_config = backend.auto_meander_search_config_rs(
+            float(bend_radius_um),
+            min_candidate_straight_length_um=float(
+                config.min_candidate_straight_length_um,
+            ),
+            max_meander_height_um=float(config.max_meander_height_um),
+            auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
+        )
+        min_straight_um = _as_float(raw_config.get("min_straight_um"), 0.0)
+        min_segment_um = _as_float(raw_config.get("min_segment_um"), 0.5)
+        max_height_um = _as_float(
+            raw_config.get("max_height_um"),
+            float(config.max_meander_height_um),
+        )
+        box_depths_um = _float_list_from_mapping_value(
+            raw_config.get("box_depths_um"),
+        )
+        endpoint_insets_um = _float_list_from_mapping_value(
+            raw_config.get("endpoint_insets_um"),
+        )
+        if box_depths_um is None or endpoint_insets_um is None:
+            raise RuntimeError("Rust PLM search config returned malformed candidate lists")
+        endpoint_inset_um = _as_float(
+            raw_config.get("endpoint_inset_um"),
+            endpoint_insets_um[0] if endpoint_insets_um else 0.0,
+        )
     else:
-        raw_endpoint_insets = [max(0.0, float(config.auto_meander_endpoint_inset_um))]
-    endpoint_insets_um: list[float] = []
-    for inset in raw_endpoint_insets:
-        inset = max(0.0, float(inset))
-        if all(abs(inset - existing) > 1.0e-9 for existing in endpoint_insets_um):
-            endpoint_insets_um.append(inset)
-    endpoint_inset_um = endpoint_insets_um[0] if endpoint_insets_um else 0.0
+        min_straight_um = max(0.0, float(config.min_candidate_straight_length_um))
+        min_segment_um = max(0.5, float(config.min_candidate_straight_length_um))
+        max_height_um = max(0.0, float(config.max_meander_height_um))
+        box_depths_um = [max_height_um] if max_height_um > 0.0 else [1.0]
+        if config.auto_meander_endpoint_inset_um is None:
+            endpoint_insets_um = [max(float(bend_radius_um), min_segment_um), 0.0]
+        else:
+            endpoint_insets_um = [
+                max(0.0, float(config.auto_meander_endpoint_inset_um)),
+            ]
+        endpoint_inset_um = endpoint_insets_um[0] if endpoint_insets_um else 0.0
     return _MeanderSearchConfig(
         min_straight_um=min_straight_um,
         min_segment_um=min_segment_um,
@@ -2590,6 +2590,7 @@ def analyze_meander_insertion_for_requirements(
     search_config = _meander_search_config(
         config=config,
         bend_radius_um=context.bend_radius_um,
+        rust_backend=rust_backend,
     )
     results: list[dict[str, object]] = []
     total_requested = 0.0
