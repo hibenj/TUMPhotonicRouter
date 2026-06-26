@@ -191,18 +191,12 @@ class _MeanderPlannerContext:
     router: _MeanderRouterProtocol
     by_edge: dict[RoutedEdgeKey, RoutedNetRecord]
     updated: dict[RoutedEdgeKey, RoutedNetRecord]
-    route_cells_by_edge: dict[RoutedEdgeKey, set[GridCell]]
-    route_cell_refcounts: Counter[GridCell]
     registered_open_cell_index_by_edge: dict[RoutedEdgeKey, int]
     registered_open_cell_count_by_edge: dict[RoutedEdgeKey, int]
     registered_geometry_index_by_edge: dict[RoutedEdgeKey, int]
-    base_open_cells_by_edge: dict[RoutedEdgeKey, set[GridCell]]
-    base_open_cell_lists_by_edge: dict[RoutedEdgeKey, list[GridCell]]
     max_bumps_by_edge: dict[RoutedEdgeKey, int]
     centerline_lists_by_edge: dict[RoutedEdgeKey, list[tuple[float, float]]]
     base_static_cells: set[GridCell]
-    reserved_meander_cells: set[GridCell]
-    pending_reserved_meander_rects: list[tuple[int, int, int, int]]
     grid_size_um: float
     bend_radius_um: float
     setup_profile: dict[str, float]
@@ -275,54 +269,6 @@ class _MeanderPlannerContext:
                 continue
             target[key] = target.get(key, 0.0) + numeric_value
 
-    def reserved_meander_cells_for_python_planning(self) -> set[GridCell]:
-        if not self.pending_reserved_meander_rects:
-            return self.reserved_meander_cells
-
-        t_materialize_start = time.perf_counter()
-        for min_x, max_x, min_y, max_y in self.pending_reserved_meander_rects:
-            for x in range(min_x, max_x + 1):
-                for y in range(min_y, max_y + 1):
-                    self.reserved_meander_cells.add((x, y))
-        self.pending_reserved_meander_rects.clear()
-        self._add_candidate_setup_time(
-            "materialize_reserved_rects_s",
-            time.perf_counter() - t_materialize_start,
-        )
-        return self.reserved_meander_cells
-
-    def _reserved_rects_overlap_grid_rect(
-        self,
-        parsed_grid_rect: tuple[int, int, int, int],
-    ) -> bool:
-        for reserved_rect in self.pending_reserved_meander_rects:
-            if _grid_rects_overlap(parsed_grid_rect, reserved_rect):
-                return True
-        return False
-
-    def ensure_route_cell_refcounts(self) -> None:
-        if self.route_cell_refcounts:
-            return
-
-        t_refcount_start = time.perf_counter()
-        for edge_key, record in self.by_edge.items():
-            route_cells = self.route_cells_by_edge.get(edge_key)
-            if route_cells is None:
-                route_cells = _record_route_cells(record)
-                if self.route_occupancy_radius_cells > 0:
-                    route_cells = _inflate_grid_cells(
-                        route_cells,
-                        radius_cells=self.route_occupancy_radius_cells,
-                        width_cells=self.grid_width_cells,
-                        height_cells=self.grid_height_cells,
-                    )
-                self.route_cells_by_edge[edge_key] = route_cells
-            self.route_cell_refcounts.update(route_cells)
-        self._add_candidate_setup_time(
-            "lazy_route_cell_refcount_s",
-            time.perf_counter() - t_refcount_start,
-        )
-
     def _candidate_grid_rect_overlaps_blocked(
         self,
         parsed_grid_rect: tuple[int, int, int, int],
@@ -336,15 +282,6 @@ class _MeanderPlannerContext:
         )
         if base_overlap_count > 0:
             return True, base_overlap_count
-        if self._reserved_rects_overlap_grid_rect(parsed_grid_rect):
-            return True, 1
-        reserved_overlap_count = _grid_rect_cell_set_overlap_count(
-            parsed_grid_rect,
-            self.reserved_meander_cells,
-            stop_after_first=True,
-        )
-        if reserved_overlap_count > 0:
-            return True, reserved_overlap_count
         if extra_blocked_cells:
             extra_overlap_count = _grid_rect_cell_set_overlap_count(
                 parsed_grid_rect,
@@ -354,39 +291,6 @@ class _MeanderPlannerContext:
             if extra_overlap_count > 0:
                 return True, extra_overlap_count
         return False, 0
-
-    def base_open_cells_for_edge(
-        self,
-        edge_key: RoutedEdgeKey,
-        record: RoutedNetRecord,
-    ) -> set[GridCell]:
-        cells = self.base_open_cells_by_edge.get(edge_key)
-        if cells is None:
-            if not self.route_cell_refcounts:
-                self.ensure_route_cell_refcounts()
-            route_cells = self.route_cells_by_edge.get(edge_key)
-            if route_cells is None:
-                route_cells = _record_route_cells(record)
-                self.route_cells_by_edge[edge_key] = route_cells
-            cells = {
-                cell
-                for cell in route_cells
-                if self.route_cell_refcounts.get(cell, 0) == 1
-                and cell not in self.base_static_cells
-            }
-            self.base_open_cells_by_edge[edge_key] = cells
-        return cells
-
-    def base_open_cell_list_for_edge(
-        self,
-        edge_key: RoutedEdgeKey,
-        base_open_cells: set[GridCell],
-    ) -> list[GridCell]:
-        cells = self.base_open_cell_lists_by_edge.get(edge_key)
-        if cells is None:
-            cells = sorted(base_open_cells)
-            self.base_open_cell_lists_by_edge[edge_key] = cells
-        return cells
 
     def max_bumps_for_edge(
         self,
@@ -832,39 +736,32 @@ class _MeanderPlannerContext:
                 time.perf_counter() - t_rust_reserved_start,
             )
             used_rust_reserved_rect = True
-        needs_python_reserved_cells = (
-            not used_rust_reserved_rect
-            or not used_reserved_overlay
-        )
-        new_reserved_cells: set[GridCell] = set()
-        if needs_python_reserved_cells:
+        if not used_rust_reserved_rect:
             t_grid_rect_start = time.perf_counter()
-            new_reserved_cells = _grid_rect_cells(parsed_grid_rect)
+            reserved_cells = _grid_rect_cells(parsed_grid_rect)
             self._add_commit_time(
                 "grid_rect_cells_s",
                 time.perf_counter() - t_grid_rect_start,
             )
-            t_python_reserved_start = time.perf_counter()
-            self.reserved_meander_cells.update(new_reserved_cells)
-            self._add_commit_time(
-                "python_reserved_update_s",
-                time.perf_counter() - t_python_reserved_start,
-            )
-            if not used_rust_reserved_rect and hasattr(
+            if hasattr(
                 self.router,
                 "add_registered_meander_reserved_cells",
             ):
                 t_rust_reserved_start = time.perf_counter()
-                self.router.add_registered_meander_reserved_cells(list(new_reserved_cells))
+                self.router.add_registered_meander_reserved_cells(list(reserved_cells))
                 self._add_commit_time(
                     "rust_reserved_update_s",
                     time.perf_counter() - t_rust_reserved_start,
                 )
-        else:
-            self.pending_reserved_meander_rects.append(parsed_grid_rect)
         if not used_reserved_overlay:
+            t_grid_rect_start = time.perf_counter()
+            static_cells = _grid_rect_cells(parsed_grid_rect)
+            self._add_commit_time(
+                "static_grid_rect_cells_s",
+                time.perf_counter() - t_grid_rect_start,
+            )
             t_static_update_start = time.perf_counter()
-            self.router.add_static_cells(list(new_reserved_cells))
+            self.router.add_static_cells(list(static_cells))
             self._add_commit_time(
                 "rust_static_update_s",
                 time.perf_counter() - t_static_update_start,
@@ -969,13 +866,6 @@ def _grid_rect_cells(grid_rect: object) -> set[GridCell]:
 def _grid_rect_area(parsed_grid_rect: tuple[int, int, int, int]) -> int:
     min_x, max_x, min_y, max_y = parsed_grid_rect
     return max(0, max_x - min_x + 1) * max(0, max_y - min_y + 1)
-
-
-def _grid_rects_overlap(
-    a: tuple[int, int, int, int],
-    b: tuple[int, int, int, int],
-) -> bool:
-    return a[0] <= b[1] and b[0] <= a[1] and a[2] <= b[3] and b[2] <= a[3]
 
 
 def _grid_rect_cell_set_overlap_count(
@@ -1100,9 +990,6 @@ def _build_planner_context(
     t_by_edge_start = time.perf_counter()
     by_edge = {_record_edge_key(r): r for r in routed_net_records}
     by_edge_s = time.perf_counter() - t_by_edge_start
-    t_refcount_start = time.perf_counter()
-    route_cell_refcounts: Counter[GridCell] = Counter()
-    route_cells_by_edge: dict[RoutedEdgeKey, set[GridCell]] = {}
     if route_occupancy_radius_cells is None:
         route_occupancy_radius_cells = (
             0
@@ -1145,19 +1032,6 @@ def _build_planner_context(
         or can_set_static_and_register_route_cells
         or can_set_static_and_register_route_cells_with_handle
     )
-    if not can_use_registered_route_cells:
-        for edge_key, record in by_edge.items():
-            route_cells = _record_route_cells(record)
-            if route_occupancy_radius_cells > 0:
-                route_cells = _inflate_grid_cells(
-                    route_cells,
-                    radius_cells=route_occupancy_radius_cells,
-                    width_cells=int(width),
-                    height_cells=int(height),
-                )
-            route_cells_by_edge[edge_key] = route_cells
-            route_cell_refcounts.update(route_cells)
-    route_cell_refcount_s = time.perf_counter() - t_refcount_start
     t_base_static_start = time.perf_counter()
     base_static_reused = False
     base_static_from_handle = False
@@ -1186,8 +1060,8 @@ def _build_planner_context(
         }
     base_static_collect_s = time.perf_counter() - t_base_static_start
     bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
-    t_fallback_static_start = time.perf_counter()
-    fallback_route_static_cells: set[GridCell] = set()
+    t_unregistered_static_start = time.perf_counter()
+    unregistered_route_static_cells: set[GridCell] = set()
     if can_use_registered_route_cells:
         for edge_key in unregistered_edge_keys:
             record = by_edge[edge_key]
@@ -1199,12 +1073,13 @@ def _build_planner_context(
                     width_cells=int(width),
                     height_cells=int(height),
                 )
-            route_cells_by_edge[edge_key] = route_cells
-            fallback_route_static_cells.update(route_cells)
-    fallback_route_static_collect_s = time.perf_counter() - t_fallback_static_start
+            unregistered_route_static_cells.update(route_cells)
+    unregistered_route_static_collect_s = (
+        time.perf_counter() - t_unregistered_static_start
+    )
     base_static_for_router = (
-        base_static_cells | fallback_route_static_cells
-        if fallback_route_static_cells
+        base_static_cells | unregistered_route_static_cells
+        if unregistered_route_static_cells
         else base_static_cells
     )
     set_static_s = 0.0
@@ -1215,7 +1090,6 @@ def _build_planner_context(
         t_set_static_start = time.perf_counter()
         router.set_static_cells(list(base_static_for_router))
         set_static_s = time.perf_counter() - t_set_static_start
-    add_route_static_s = 0.0
     register_route_cells_s = 0.0
     register_route_geometry_s = 0.0
     edge_order_s = 0.0
@@ -1331,21 +1205,15 @@ def _build_planner_context(
             for edge_key, raw_index in zip(edge_order, geometry_indices):
                 registered_geometry_index_by_edge[edge_key] = int(raw_index)
             geometry_result_map_s = time.perf_counter() - t_geometry_result_map_start
-    elif route_cell_refcounts:
-        t_add_route_static_start = time.perf_counter()
-        router.add_static_cells(list(route_cell_refcounts.keys()))
-        add_route_static_s = time.perf_counter() - t_add_route_static_start
     setup_profile = {
         "total_s": time.perf_counter() - t_total_start,
         "router_init_s": router_init_s,
         "by_edge_s": by_edge_s,
-        "route_cell_refcount_s": route_cell_refcount_s,
         "base_static_collect_s": base_static_collect_s,
-        "fallback_route_static_collect_s": fallback_route_static_collect_s,
+        "unregistered_route_static_collect_s": unregistered_route_static_collect_s,
         "base_static_reused": float(base_static_reused),
         "base_static_from_handle": float(base_static_from_handle),
         "set_static_cells_s": set_static_s,
-        "add_route_static_cells_s": add_route_static_s,
         "register_route_cells_s": register_route_cells_s,
         "edge_order_s": edge_order_s,
         "route_object_list_s": route_object_list_s,
@@ -1364,7 +1232,9 @@ def _build_planner_context(
         ),
         "registered_record_count": float(len(registerable_edge_keys)),
         "unregistered_record_count": float(len(unregistered_edge_keys)),
-        "fallback_route_static_cell_count": float(len(fallback_route_static_cells)),
+        "unregistered_route_static_cell_count": float(
+            len(unregistered_route_static_cells)
+        ),
         "register_route_geometry_s": register_route_geometry_s,
         "geometry_prepare_s": geometry_prepare_s,
         "geometry_centerline_copy_s": geometry_centerline_copy_s,
@@ -1375,7 +1245,7 @@ def _build_planner_context(
         "unique_route_cell_count": float(
             registered_unique_route_cell_count
             if registered_unique_route_cell_count is not None
-            else len(route_cell_refcounts)
+            else 0
         ),
         "registered_open_cell_count": float(sum(registered_open_cell_count_by_edge.values())),
         "base_static_cell_count": float(len(base_static_cells)),
@@ -1387,18 +1257,12 @@ def _build_planner_context(
         router=router,
         by_edge=by_edge,
         updated=dict(by_edge),
-        route_cells_by_edge=route_cells_by_edge,
-        route_cell_refcounts=route_cell_refcounts,
         registered_open_cell_index_by_edge=registered_open_cell_index_by_edge,
         registered_open_cell_count_by_edge=registered_open_cell_count_by_edge,
         registered_geometry_index_by_edge=registered_geometry_index_by_edge,
-        base_open_cells_by_edge={},
-        base_open_cell_lists_by_edge={},
         max_bumps_by_edge=registered_max_bumps_by_edge,
         centerline_lists_by_edge=registered_centerline_lists_by_edge,
         base_static_cells=base_static_cells,
-        reserved_meander_cells=set(),
-        pending_reserved_meander_rects=[],
         grid_width_cells=int(width),
         grid_height_cells=int(height),
         grid_size_um=float(grid_size_um_cfg),

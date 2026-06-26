@@ -1,7 +1,6 @@
 from benchmark_metadata import load_benchmark_metadata
 from benchmarks.TOY import build_schematic
 import pytest
-from collections import Counter
 from dataclasses import replace
 from typing import Any, Protocol, cast
 from gdsfactory.component import Component
@@ -130,7 +129,7 @@ def test_planner_context_uses_static_handle_when_registration_fast_path_is_unava
     assert context.setup_profile["base_static_cell_count"] == 2.0
 
 
-def test_planner_context_inflates_route_cells_for_meander_clearance():
+def test_planner_context_avoids_python_route_cell_bookkeeping_without_registration():
     class _RouteObj:
         cells = [(4, 4)]
 
@@ -175,22 +174,13 @@ def test_planner_context_inflates_route_cells_for_meander_clearance():
         route_clearance_radius_cells=1,
     )
 
-    expected_route_corridor = {
-        (x, y)
-        for x in range(3, 6)
-        for y in range(3, 6)
-    }
-    assert context.route_cells_by_edge[edge] == expected_route_corridor
-    assert set(cast(Any, context.router).static_cells) == (
-        {(3, 3)} | expected_route_corridor
-    )
-    assert context.base_open_cells_for_edge(edge, record) == (
-        expected_route_corridor - {(3, 3)}
-    )
+    assert set(cast(Any, context.router).static_cells) == {(3, 3)}
     assert context.setup_profile["route_occupancy_radius_cells"] == 1.0
     assert context.setup_profile["meander_box_clearance_radius_cells"] == 0.0
     assert context.setup_profile["route_clearance_radius_cells"] == 1.0
     assert context.setup_profile["registered_route_cell_acceleration_enabled"] == 0.0
+    assert not hasattr(context, "route_cells_by_edge")
+    assert not hasattr(context, "base_open_cells_for_edge")
 
 
 def test_build_graph_from_schematic_tracks_port_directions_and_fanout_shape():
@@ -2395,7 +2385,7 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
     assert report["candidate_engine_counts"] == {"rust_registered_unavailable": 1}
 
 
-def test_meander_commit_defers_python_reserved_cells_when_rust_rect_used():
+def test_meander_commit_uses_rust_reserved_rect_without_python_cells():
     captured: dict[str, object] = {}
 
     class _RouteObj:
@@ -2433,18 +2423,12 @@ def test_meander_commit_defers_python_reserved_cells_when_rust_rect_used():
         updated={
             committed_edge: committed_record,
         },
-        route_cells_by_edge={},
-        route_cell_refcounts=Counter({(1, 1): 1, (2, 2): 1}),
         registered_open_cell_index_by_edge={},
         registered_open_cell_count_by_edge={},
         registered_geometry_index_by_edge={},
-        base_open_cells_by_edge={},
-        base_open_cell_lists_by_edge={},
         max_bumps_by_edge={},
         centerline_lists_by_edge={},
         base_static_cells=set(),
-        reserved_meander_cells=set(),
-        pending_reserved_meander_rects=[],
         grid_size_um=1.0,
         bend_radius_um=4.0,
         setup_profile={},
@@ -2472,8 +2456,8 @@ def test_meander_commit_defers_python_reserved_cells_when_rust_rect_used():
     )
 
     assert captured["registered_rect"] == (3, 4, 5, 6)
-    assert context.reserved_meander_cells == set()
-    assert context.pending_reserved_meander_rects == [(3, 4, 5, 6)]
+    assert not hasattr(context, "reserved_meander_cells")
+    assert not hasattr(context, "pending_reserved_meander_rects")
     assert "grid_rect_cells_s" not in context.commit_profile
     assert "python_reserved_update_s" not in context.commit_profile
 
