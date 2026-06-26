@@ -160,7 +160,7 @@ def test_route_nets_rust_applies_heater_opening_only_to_connected_endpoint(
             port_type="optical",
         ),
         ("sink", "o1"): SimpleNamespace(
-            center=(55.0, 10.0),
+            center=(75.0, 10.0),
             orientation=180.0,
             port_type="optical",
         ),
@@ -240,7 +240,7 @@ def test_route_nets_rust_does_not_apply_heater_rule_to_electrical_port(
             port_type="electrical",
         ),
         ("sink", "o1"): SimpleNamespace(
-            center=(55.0, 10.0),
+            center=(75.0, 10.0),
             orientation=180.0,
             port_type="optical",
         ),

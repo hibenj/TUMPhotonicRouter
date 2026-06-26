@@ -39,20 +39,22 @@ DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, 
 
 # Edit these values when running `routing_flow.py` directly from an IDE or file.
 # Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "heater_s_compact"
+SCRIPT_BENCHMARK = "heater_s"
 SCRIPT_DEBUG_SVGS: DebugSvgSelector = False  # Examples: True, "all", "5-10", "2,5-10"
 SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
+SCRIPT_VERBOSE_ROUTES = False
 SCRIPT_SHOW_KLAYOUT = False
 SCRIPT_ALLOW_45_DEGREE_TURNS = False
+SCRIPT_BEND_RADIUS_UM = 10.0
 SCRIPT_ENABLE_PATH_LENGTH_MATCHING = True
-SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = True
-SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = 20.0
+SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = False
+SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = 80.0
 SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
 SCRIPT_OBSTACLE_MODE = "bounding_boxes"
-SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.3
+SCRIPT_WAVEGUIDE_CLEARANCE_UM = 3.0
 SCRIPT_HEATER_CLEARANCE_UM = 5.0
 SCRIPT_OBSTACLE_CLEARANCE_UM = SCRIPT_WAVEGUIDE_CLEARANCE_UM
 SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC = False
@@ -62,7 +64,7 @@ SCRIPT_RIPUP_MAX_VICTIMS = 8
 SCRIPT_RIPUP_HISTORY_WEIGHT = 2.0
 SCRIPT_RIPUP_HISTORY_INCREMENT = 1
 SCRIPT_ATTEMPT_DIAGNOSTICS = False
-SCRIPT_ENABLE_ELECTRICAL_ROUTING = True
+SCRIPT_ENABLE_ELECTRICAL_ROUTING = False
 SCRIPT_ELECTRICAL_PAD_SIDE = "top"
 SCRIPT_ELECTRICAL_GRID_PITCH_UM = 10.0
 SCRIPT_ELECTRICAL_OBSTACLE_CLEARANCE_UM = 10.0
@@ -284,6 +286,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Print verbose path-length and meander details.",
     )
     parser.add_argument(
+        "--verbose-routes",
+        action="store_true",
+        default=SCRIPT_VERBOSE_ROUTES,
+        help="Print per-net routing details, including simple vs A* route type.",
+    )
+    parser.add_argument(
         "--show-klayout",
         action="store_true",
         default=SCRIPT_SHOW_KLAYOUT,
@@ -297,6 +305,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Allow 45-degree routing primitives "
             f"(default: {str(SCRIPT_ALLOW_45_DEGREE_TURNS).lower()})."
+        ),
+    )
+    parser.add_argument(
+        "--bend-radius-um",
+        type=float,
+        default=SCRIPT_BEND_RADIUS_UM,
+        metavar="UM",
+        help=(
+            "Minimum optical waveguide bend radius in micrometers. The router "
+            "rounds this up to an integer number of grid cells "
+            f"(default: {SCRIPT_BEND_RADIUS_UM})."
         ),
     )
     parser.add_argument(
@@ -584,6 +603,7 @@ def main(argv: list[str] | None = None) -> Component:
         debug_svgs=args.debug_svgs,
         debug_timing=args.debug_timing,
         debug_meanders=args.debug_meanders,
+        verbose_routes=args.verbose_routes,
         show_klayout=args.show_klayout,
         allow_45_degree_turns=args.allow_45_degree_turns,
         enable_jps4=args.enable_jps4,
@@ -591,6 +611,7 @@ def main(argv: list[str] | None = None) -> Component:
         primitive_ordering=args.primitive_ordering,
         heuristic_mode=args.heuristic_mode,
         heap_tie_breaker=args.heap_tie_breaker,
+        bend_radius_um=args.bend_radius_um,
         enable_path_length_matching=args.path_length_matching,
         path_length_match_outputs=args.path_length_match_outputs,
         path_length_meander_height_um=args.path_length_meander_height_um,
@@ -814,11 +835,13 @@ def run_routing_flow(
     show_static_obstacles_svg: bool | None = None,
     debug_timing: bool = False,
     debug_meanders: bool = False,
+    verbose_routes: bool = False,
     show_klayout: bool = False,
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
     path_length_meander_height_um: float = 20.0,
     allow_45_degree_turns: bool = True,
+    bend_radius_um: float = SCRIPT_BEND_RADIUS_UM,
     enable_jps4: bool = False,
     use_indexed_heap: bool = False,
     primitive_ordering: str = "library",
@@ -850,6 +873,8 @@ def run_routing_flow(
         debug_timing: If True, print timing information for each stage.
         debug_meanders: If True, print verbose path-length and meander
                       insertion details when path-length matching is enabled.
+        verbose_routes: If True, print per-net routing progress and whether
+                      each route used the simple router or A*.
         show_klayout: If True, open the final routed layout in KLayout via
                       `Component.show()`.
         show_unrouted: Legacy alias. Currently unused (kept for compatibility).
@@ -865,6 +890,8 @@ def run_routing_flow(
         path_length_meander_height_um: Maximum meander height used when
                       inserting path-length matching meanders.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
+        bend_radius_um: Minimum optical waveguide bend radius. Rounded up to
+                      the active routing grid before primitive generation.
         use_indexed_heap: Benchmark-only indexed-heap experiment. Pass 8E
             measured it slower than duplicate-entry BinaryHeap queueing, so
             the default remains False.
@@ -1040,8 +1067,9 @@ def run_routing_flow(
             debug_prefix=benchmark_name.lower(),
             debug_route_indices=debug_route_indices,
             debug_timing=debug_timing,
-            verbose_route_diagnostics=debug_meanders,
+            verbose_route_diagnostics=verbose_routes or debug_meanders,
             allow_45_degree_turns=allow_45_degree_turns,
+            bend_radius_um=bend_radius_um,
             enable_jps4=enable_jps4,
             use_indexed_heap=use_indexed_heap,
             primitive_ordering=primitive_ordering,

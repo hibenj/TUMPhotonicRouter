@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,25 @@ PRIMITIVE_TRANSITION_CLASSES = (
     "bend45",
     "bend90",
 )
+
+DEFAULT_BEND_RADIUS_UM = 10.0
+
+
+def bend_radius_cells_from_um(
+    bend_radius_um: float | None,
+    *,
+    grid_size_um: float,
+) -> int:
+    """Convert a minimum bend radius in micrometers to grid cells."""
+    if bend_radius_um is None:
+        bend_radius_um = DEFAULT_BEND_RADIUS_UM
+    bend_radius_um = float(bend_radius_um)
+    grid_size_um = float(grid_size_um)
+    if not math.isfinite(bend_radius_um) or bend_radius_um <= 0.0:
+        raise ValueError("bend_radius_um must be finite and > 0")
+    if not math.isfinite(grid_size_um) or grid_size_um <= 0.0:
+        raise ValueError("grid_size_um must be finite and > 0")
+    return max(1, math.ceil(bend_radius_um / grid_size_um))
 
 
 def _empty_primitive_counter_dict() -> dict[str, int]:
@@ -726,10 +746,13 @@ def summarize_route_search(
     )
 
 
+DEFAULT_MEANDER_MIN_STRAIGHT_UM = 1.0
+
+
 @dataclass(frozen=True)
 class MeanderInsertionConfig:
     enabled: bool = True
-    min_candidate_straight_length_um: float = 2.0
+    min_candidate_straight_length_um: float = DEFAULT_MEANDER_MIN_STRAIGHT_UM
     max_extra_length_per_region_um: float = 200.0
     conservative_legal_check: bool = True
     max_meander_height_um: float = 20.0

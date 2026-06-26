@@ -1744,6 +1744,23 @@ fn simple_candidate_to_route_result(
     }
 
     let bend_radius_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
+    let min_bend_adjacent_len = bend_radius_cells;
+    if bend_radius_cells > 0 {
+        for (idx, &length) in segment_lengths.iter().enumerate() {
+            let has_prev_bend = idx > 0 && headings[idx - 1] != headings[idx];
+            let has_next_bend = idx + 1 < segment_count && headings[idx] != headings[idx + 1];
+            let required_len = if has_prev_bend && has_next_bend {
+                2 * min_bend_adjacent_len
+            } else if has_prev_bend || has_next_bend {
+                min_bend_adjacent_len
+            } else {
+                0
+            };
+            if length < required_len {
+                return None;
+            }
+        }
+    }
     let mut trimmed_lengths = Vec::with_capacity(segment_count);
     for (idx, &length) in segment_lengths.iter().enumerate() {
         let mut trimmed = length;
@@ -3231,12 +3248,12 @@ mod tests {
 
     #[test]
     fn simple_z_route_used_before_astar() {
-        let map = ObstacleMap::new(10, 10);
+        let map = ObstacleMap::new(20, 20);
         let result = route_single_net_with_config(
             &map,
             &primitive_library(),
             State::new(1, 1, 0),
-            State::new(5, 4, 0),
+            State::new(10, 10, 0),
             None,
             &AStarConfig {
                 enable_simple_routes: true,
@@ -3246,9 +3263,28 @@ mod tests {
         .expect("simple Z route should exist");
         assert_eq!(
             result.compressed_waypoints,
-            vec![(1, 1), (2, 1), (2, 4), (5, 4)]
+            vec![(1, 1), (2, 1), (2, 10), (10, 10)]
         );
         assert_eq!(result.stats.expanded_states, 0);
+    }
+
+    #[test]
+    fn simple_z_route_rejects_too_short_middle_leg() {
+        let map = ObstacleMap::new(20, 20);
+        let library = primitive_library_no45_bend2();
+        let mut config = AStarConfig::default();
+        config.enable_simple_routes = true;
+
+        let result = try_simple_route_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(10, 4, 0),
+            None,
+            &config,
+        );
+
+        assert!(result.is_none());
     }
 
     #[test]
@@ -3603,6 +3639,61 @@ mod tests {
             },
         )
         .expect("simple route should allow opened endpoint cells");
+        assert_eq!(result.stats.expanded_states, 0);
+    }
+
+    #[test]
+    fn simple_route_handles_same_heading_turnaround() {
+        let map = ObstacleMap::new(220, 140);
+        let library = create_photonic_primitive_library(PrimitiveLibraryConfig {
+            grid_size_um: 1.0,
+            straight_short_cells: 1,
+            straight_long_cells: 8,
+            bend_radius_cells: 20,
+            allow_45_degree_turns: false,
+        });
+        let mut config = AStarConfig::default();
+        config.simple_route_max_offset_cells = 120;
+
+        let result = try_simple_route_with_config(
+            &map,
+            &library,
+            State::new(120, 70, 0),
+            State::new(40, 40, 0),
+            None,
+            &config,
+        )
+        .expect("turnaround simple route should be generated");
+
+        assert_eq!(result.states.first().copied(), Some(State::new(120, 70, 0)));
+        assert_eq!(result.states.last().copied(), Some(State::new(40, 40, 0)));
+    }
+
+    #[test]
+    fn simple_route_accepts_two_bend_z_with_minimum_middle_leg() {
+        let map = ObstacleMap::new(360, 180);
+        let library = create_photonic_primitive_library(PrimitiveLibraryConfig {
+            grid_size_um: 0.5,
+            straight_short_cells: 1,
+            straight_long_cells: 4,
+            bend_radius_cells: 20,
+            allow_45_degree_turns: false,
+        });
+        let mut config = AStarConfig::default();
+        config.simple_route_max_offset_cells = 240;
+
+        let result = try_simple_route_with_config(
+            &map,
+            &library,
+            State::new(121, 65, 0),
+            State::new(301, 106, 0),
+            None,
+            &config,
+        )
+        .expect("two-bend Z route with a 2R+1 middle leg should be simple");
+
+        assert_eq!(result.states.first().copied(), Some(State::new(121, 65, 0)));
+        assert_eq!(result.states.last().copied(), Some(State::new(301, 106, 0)));
         assert_eq!(result.stats.expanded_states, 0);
     }
 

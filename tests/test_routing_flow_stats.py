@@ -9,9 +9,21 @@ from routing_flow import (
 import benchmark_metadata
 from pathlib import Path
 from translation.electrical import ElectricalRoutingConfig
-from translation.route_rust_types import RouteAttemptRecord, RouteSearchSummary
+from translation.route_rust_types import (
+    DEFAULT_BEND_RADIUS_UM,
+    RouteAttemptRecord,
+    RouteSearchSummary,
+    bend_radius_cells_from_um,
+)
 from types import SimpleNamespace
 from typing import cast
+
+
+def test_default_bend_radius_is_ten_um_on_routing_grid():
+    assert DEFAULT_BEND_RADIUS_UM == 10.0
+    assert bend_radius_cells_from_um(None, grid_size_um=0.5) == 20
+    assert bend_radius_cells_from_um(10.0, grid_size_um=0.5) == 20
+    assert bend_radius_cells_from_um(3.0, grid_size_um=0.5) == 6
 
 
 def test_routing_flow_populates_stats():
@@ -128,6 +140,7 @@ def test_electrical_cli_flags_parse_into_namespace():
             "32",
             "--electrical-pad-pitch-um",
             "160",
+            "--verbose-routes",
         ]
     )
 
@@ -140,6 +153,7 @@ def test_electrical_cli_flags_parse_into_namespace():
     assert args.electrical_bus_width_um == 24.0
     assert args.electrical_terminal_contact_width_um == 32.0
     assert args.electrical_pad_pitch_um == 160.0
+    assert args.verbose_routes is True
 
 
 def test_resolve_auto_internal_delay_markers_per_instance(monkeypatch):
@@ -208,6 +222,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
         captured["obstacle_config"] = obstacle_config
         captured["ripup_reroute_config"] = ripup_reroute_config
         captured["collect_route_stats"] = _kwargs.get("collect_route_stats")
+        captured["bend_radius_um"] = _kwargs.get("bend_radius_um")
         routed_layout = SimpleNamespace(name="routed_layout_rust")
         routed_layout.write_gds = lambda *_args, **_kwargs: None
         return SimpleNamespace(
@@ -263,6 +278,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
         "MMI8x4",
         debug_timing=False,
         show_klayout=False,
+        bend_radius_um=3.0,
         ripup_reroute_config=ripup_config,
     )
 
@@ -273,6 +289,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
     assert config.clear_port_open_cells_from_static is False
     assert captured.get("ripup_reroute_config") is ripup_config
     assert captured.get("collect_route_stats") is False
+    assert captured.get("bend_radius_um") == 3.0
 
 
 def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatch):

@@ -19,6 +19,7 @@ from photonic_router.path_length_graph import (
 
 from translation.route_rust_analysis import edge_key_to_dict
 from translation.route_rust_types import (
+    DEFAULT_MEANDER_MIN_STRAIGHT_UM,
     MeanderInsertionConfig,
     MeanderInsertionReport,
     MeanderInsertionResult,
@@ -70,16 +71,19 @@ class _MeanderRouterProtocol(Protocol):
         self,
         routes: list[object],
         base_static_cells: list[GridCell],
+        route_clearance_radius_cells: int = 0,
     ) -> tuple[list[int], list[int], int]: ...
     def set_static_and_register_meander_route_cells_as_static(
         self,
         routes: list[object],
         base_static_cells: list[GridCell],
+        route_clearance_radius_cells: int = 0,
     ) -> tuple[list[int], list[int], int]: ...
     def set_static_and_register_meander_route_cells_as_static_handle(
         self,
         routes: list[object],
         base_static_cell_handle: object,
+        route_clearance_radius_cells: int = 0,
     ) -> tuple[list[int], list[int], int]: ...
     def last_meander_registration_profile(self) -> dict[str, int | float]: ...
     def register_meander_route_geometries(
@@ -246,6 +250,9 @@ class _MeanderPlannerContext:
     rust_wrapper_profile: dict[str, float]
     candidate_overhead_s: float = 0.0
     commit_elapsed_s: float = 0.0
+    grid_width_cells: int = 0
+    grid_height_cells: int = 0
+    route_clearance_radius_cells: int = 0
 
     def _add_candidate_setup_time(self, key: str, elapsed_s: float) -> None:
         self.candidate_setup_profile[key] = (
@@ -307,6 +314,20 @@ class _MeanderPlannerContext:
             time.perf_counter() - t_materialize_start,
         )
         return self.reserved_meander_cells
+
+    def _candidate_grid_rect_overlaps_blocked(
+        self,
+        parsed_grid_rect: tuple[int, int, int, int],
+        *,
+        extra_blocked_cells: set[GridCell] | None = None,
+    ) -> tuple[bool, set[GridCell]]:
+        blocked_cells = set(self.base_static_cells)
+        blocked_cells.update(self.reserved_meander_cells_for_python_planning())
+        if extra_blocked_cells:
+            blocked_cells.update(extra_blocked_cells)
+        rect_cells = _grid_rect_cells(parsed_grid_rect)
+        overlap = rect_cells & blocked_cells
+        return bool(overlap), overlap
 
     def base_open_cells_for_edge(
         self,
@@ -731,6 +752,44 @@ class _MeanderPlannerContext:
                 f"exceeds hard limit {EXACT_MEANDER_EPS_UM} um"
             )
             attempt_info["inserted_extra_length_um"] = candidate_inserted
+            attempt_info["rejected_exact_length_mismatch"] = True
+            return (
+                attempt_info,
+                None,
+                record,
+                candidate_used_reserved_overlay,
+                candidate_max_bumps,
+                candidate_route_open_cells,
+                elapsed_s,
+                probe_elapsed_s,
+                None,
+            )
+
+        selected_grid_rect = candidate_best_rr.get("selected_grid_rect")
+        candidate_selected_grid_rect = _parse_grid_rect(selected_grid_rect)
+        if candidate_selected_grid_rect is None:
+            attempt_info["reason"] = "candidate selected_grid_rect is missing or invalid"
+            return (
+                attempt_info,
+                None,
+                record,
+                candidate_used_reserved_overlay,
+                candidate_max_bumps,
+                candidate_route_open_cells,
+                elapsed_s,
+                probe_elapsed_s,
+                None,
+            )
+        blocked, overlap_cells = self._candidate_grid_rect_overlaps_blocked(
+            candidate_selected_grid_rect,
+            extra_blocked_cells=extra_reserved_cells,
+        )
+        if blocked:
+            attempt_info["reason"] = (
+                f"candidate selected_grid_rect overlaps blocked cells ({len(overlap_cells)} cells)"
+            )
+            attempt_info["rejected_box_blocked"] = True
+            attempt_info["blocked_overlap_count"] = len(overlap_cells)
             return (
                 attempt_info,
                 None,
@@ -746,6 +805,7 @@ class _MeanderPlannerContext:
         attempt_info["status"] = "planned"
         attempt_info["reason"] = ""
         attempt_info["inserted_extra_length_um"] = candidate_inserted
+        candidate_best_rr["rejected_box_blocked"] = False
         return (
             attempt_info,
             candidate_best_rr,
@@ -903,6 +963,7 @@ class _MeanderPlannerContext:
             return bundle_failure(elapsed_s=elapsed_s)
 
         candidate_plans: list[PlannedEdgeInsertion] = []
+        candidate_reserved_cells: set[GridCell] = set()
         for edge_key, record, rr_obj, attempt_info, candidate_max_bumps in zip(
             candidate_edge_keys,
             records,
@@ -914,6 +975,22 @@ class _MeanderPlannerContext:
                 attempt_info["reason"] = "registered bundle planner returned invalid plan"
                 return bundle_failure(elapsed_s=elapsed_s)
             rr = cast(dict[str, object], rr_obj)
+            selected_grid_rect = rr.get("selected_grid_rect")
+            parsed_grid_rect = _parse_grid_rect(selected_grid_rect)
+            if parsed_grid_rect is None:
+                attempt_info["reason"] = "registered bundle planner returned invalid selected_grid_rect"
+                return bundle_failure(elapsed_s=elapsed_s)
+            blocked, overlap_cells = self._candidate_grid_rect_overlaps_blocked(
+                parsed_grid_rect,
+                extra_blocked_cells=candidate_reserved_cells,
+            )
+            if blocked:
+                attempt_info["reason"] = (
+                    "registered bundle planner selected_grid_rect overlaps blocked cells"
+                )
+                attempt_info["blocked_overlap_count"] = len(overlap_cells)
+                attempt_info["rejected_box_blocked"] = True
+                return bundle_failure(elapsed_s=elapsed_s)
             candidate_inserted = _as_float(
                 rr.get("inserted_extra_length_um", 0.0),
                 0.0,
@@ -925,6 +1002,8 @@ class _MeanderPlannerContext:
                 )
                 attempt_info["inserted_extra_length_um"] = candidate_inserted
                 return bundle_failure(elapsed_s=elapsed_s)
+            candidate_reserved_cells.update(_grid_rect_cells(parsed_grid_rect))
+            rr["rejected_box_blocked"] = False
             attempt_info["status"] = "planned"
             attempt_info["reason"] = ""
             attempt_info["inserted_extra_length_um"] = candidate_inserted
@@ -1143,6 +1222,7 @@ class _MeanderPlannerContext:
         self.add_rust_planner_profile(result.get("planner_profile_total"))
         self.add_rust_wrapper_profile(result.get("wrapper_profile_total"))
         raw_candidate_results = result.get("candidate_results", [])
+        validated_plans_by_candidate: dict[int, list[PlannedEdgeInsertion]] = {}
         if isinstance(raw_candidate_results, list):
             for rust_index, raw_candidate_result in enumerate(raw_candidate_results):
                 if rust_index >= len(rust_work_indices) or not isinstance(
@@ -1152,16 +1232,107 @@ class _MeanderPlannerContext:
                     continue
                 work_index = rust_work_indices[rust_index]
                 edge_attempts = edge_attempts_by_work[work_index]
+                work_item = work_items[work_index]
+                candidate_edge_keys = work_item.candidate.edge_keys
+                work_item_requested = work_item.requested
+                candidate_max_bumps = max_bumps_by_work[work_index]
+                candidate_records = [
+                    self.by_edge.get(candidate_edge_key)
+                    for candidate_edge_key in candidate_edge_keys
+                ]
                 failed_edge_index = _as_int(
                     raw_candidate_result.get("failed_edge_index"),
                     0,
                 )
                 status = str(raw_candidate_result.get("status", "no_candidate"))
                 if status == "planned":
-                    for attempt_info in edge_attempts:
-                        attempt_info["status"] = "planned"
-                        attempt_info["reason"] = ""
-                    edge_calls_by_work[work_index] = len(edge_attempts)
+                    raw_plans = raw_candidate_result.get("plans")
+                    candidate_failed = False
+                    candidate_plans: list[PlannedEdgeInsertion] = []
+                    candidate_reserved_cells: set[GridCell] = set()
+                    if (
+                        not isinstance(raw_plans, list)
+                        or any(record is None for record in candidate_records)
+                        or len(raw_plans) != len(candidate_records)
+                    ):
+                        candidate_failed = True
+                    else:
+                        for (
+                            candidate_edge_key,
+                            rr_obj,
+                            candidate_record,
+                            candidate_max_bumps_value,
+                        ) in zip(
+                            candidate_edge_keys,
+                            raw_plans,
+                            candidate_records,
+                            candidate_max_bumps,
+                        ):
+                            if not isinstance(rr_obj, dict) or candidate_record is None:
+                                candidate_failed = True
+                                break
+                            rr = cast(dict[str, object], rr_obj)
+                            selected_grid_rect = rr.get("selected_grid_rect")
+                            parsed_grid_rect = _parse_grid_rect(selected_grid_rect)
+                            if parsed_grid_rect is None:
+                                candidate_failed = True
+                                break
+                            blocked, overlap_cells = self._candidate_grid_rect_overlaps_blocked(
+                                parsed_grid_rect,
+                                extra_blocked_cells=candidate_reserved_cells,
+                            )
+                            if blocked:
+                                raw_candidate_result["rejected_box_blocked"] = True
+                                attempt_reason = str(
+                                    raw_candidate_result.get("reason", "")
+                                )
+                                if not attempt_reason:
+                                    attempt_reason = (
+                                        f"candidate selected_grid_rect overlaps blocked cells "
+                                        f"({len(overlap_cells)} cells)"
+                                    )
+                                raw_candidate_result["reason"] = attempt_reason
+                                candidate_failed = True
+                                break
+                            candidate_inserted = _as_float(
+                                rr.get("inserted_extra_length_um", 0.0),
+                                0.0,
+                            )
+                            if abs(candidate_inserted - work_item_requested) > EXACT_MEANDER_EPS_UM:
+                                raw_candidate_result["rejected_exact_length_mismatch"] = True
+                                candidate_failed = True
+                                break
+                            candidate_plans.append(
+                                (
+                                    candidate_edge_key,
+                                    candidate_record,
+                                    rr,
+                                    True,
+                                    candidate_max_bumps_value,
+                                    set(),
+                                )
+                            )
+                            candidate_reserved_cells.update(_grid_rect_cells(parsed_grid_rect))
+                    if candidate_failed:
+                        for attempt_info in edge_attempts:
+                            attempt_info["status"] = "no_candidate"
+                            attempt_info["reason"] = str(
+                                raw_candidate_result.get("reason", "")
+                            )
+                        edge_calls_by_work[work_index] = min(
+                            len(edge_attempts),
+                            failed_edge_index + 1,
+                        )
+                    else:
+                        for attempt_info in edge_attempts:
+                            attempt_info["status"] = "planned"
+                            attempt_info["reason"] = ""
+                            attempt_info["rejected_box_blocked"] = False
+                        edge_calls_by_work[work_index] = len(edge_attempts)
+                        validated_plans_by_candidate[rust_index] = candidate_plans
+                        for _, _, candidate_rr, *_ in candidate_plans:
+                            if isinstance(candidate_rr, dict):
+                                candidate_rr["rejected_box_blocked"] = False
                 else:
                     if 0 <= failed_edge_index < len(edge_attempts):
                         edge_attempts[failed_edge_index]["reason"] = str(
@@ -1176,45 +1347,15 @@ class _MeanderPlannerContext:
 
         if result.get("status") == "planned":
             selected_rust_index = _as_int(result.get("selected_candidate_index"), -1)
+            if selected_rust_index not in validated_plans_by_candidate:
+                candidate_indices = sorted(validated_plans_by_candidate.keys())
+                if candidate_indices:
+                    selected_rust_index = candidate_indices[0]
             if not (0 <= selected_rust_index < len(rust_work_indices)):
                 return None
-            selected_work_index_value = rust_work_indices[selected_rust_index]
-            selected_work_index = selected_work_index_value
-            raw_plans = result.get("plans", [])
-            if not isinstance(raw_plans, list):
-                return None
-            work_item = work_items[selected_work_index_value]
-            records = [
-                self.by_edge.get(candidate_edge_key)
-                for candidate_edge_key in work_item.candidate.edge_keys
-            ]
-            if any(record is None for record in records) or len(raw_plans) != len(records):
-                return None
-            for edge_key, record, rr_obj, candidate_max_bumps in zip(
-                work_item.candidate.edge_keys,
-                records,
-                raw_plans,
-                max_bumps_by_work[selected_work_index_value],
-            ):
-                if record is None or not isinstance(rr_obj, dict):
-                    return None
-                rr = cast(dict[str, object], rr_obj)
-                candidate_inserted = _as_float(
-                    rr.get("inserted_extra_length_um", 0.0),
-                    0.0,
-                )
-                if abs(candidate_inserted - work_item.requested) > EXACT_MEANDER_EPS_UM:
-                    return None
-                selected_plans.append(
-                    (
-                        edge_key,
-                        record,
-                        rr,
-                        True,
-                        candidate_max_bumps,
-                        set(),
-                    )
-                )
+            if selected_rust_index in validated_plans_by_candidate:
+                selected_work_index = rust_work_indices[selected_rust_index]
+                selected_plans = validated_plans_by_candidate[selected_rust_index]
 
         return (
             selected_work_index,
@@ -1244,59 +1385,66 @@ class _MeanderPlannerContext:
         t_commit_start = time.perf_counter()
         grid_rect = rr.get("selected_grid_rect")
         parsed_grid_rect = _parse_grid_rect(grid_rect)
-        if parsed_grid_rect is not None:
-            min_x, max_x, min_y, max_y = parsed_grid_rect
-            used_rust_reserved_rect = False
-            if hasattr(self.router, "add_registered_meander_reserved_grid_rect"):
+        if parsed_grid_rect is None:
+            return
+        blocked, _overlap_cells = self._candidate_grid_rect_overlaps_blocked(
+            parsed_grid_rect,
+            extra_blocked_cells=set(),
+        )
+        if blocked:
+            return
+        min_x, max_x, min_y, max_y = parsed_grid_rect
+        used_rust_reserved_rect = False
+        if hasattr(self.router, "add_registered_meander_reserved_grid_rect"):
+            t_rust_reserved_start = time.perf_counter()
+            self.router.add_registered_meander_reserved_grid_rect(
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+            )
+            self._add_commit_time(
+                "rust_reserved_rect_update_s",
+                time.perf_counter() - t_rust_reserved_start,
+            )
+            used_rust_reserved_rect = True
+        needs_python_reserved_cells = (
+            not used_rust_reserved_rect
+            or not used_reserved_overlay
+        )
+        new_reserved_cells: set[GridCell] = set()
+        if needs_python_reserved_cells:
+            t_grid_rect_start = time.perf_counter()
+            new_reserved_cells = _grid_rect_cells(parsed_grid_rect)
+            self._add_commit_time(
+                "grid_rect_cells_s",
+                time.perf_counter() - t_grid_rect_start,
+            )
+            t_python_reserved_start = time.perf_counter()
+            self.reserved_meander_cells.update(new_reserved_cells)
+            self._add_commit_time(
+                "python_reserved_update_s",
+                time.perf_counter() - t_python_reserved_start,
+            )
+            if not used_rust_reserved_rect and hasattr(
+                self.router,
+                "add_registered_meander_reserved_cells",
+            ):
                 t_rust_reserved_start = time.perf_counter()
-                self.router.add_registered_meander_reserved_grid_rect(
-                    min_x,
-                    max_x,
-                    min_y,
-                    max_y,
-                )
+                self.router.add_registered_meander_reserved_cells(list(new_reserved_cells))
                 self._add_commit_time(
-                    "rust_reserved_rect_update_s",
+                    "rust_reserved_update_s",
                     time.perf_counter() - t_rust_reserved_start,
                 )
-                used_rust_reserved_rect = True
-            needs_python_reserved_cells = (
-                not used_rust_reserved_rect
-                or not used_reserved_overlay
+        else:
+            self.pending_reserved_meander_rects.append(parsed_grid_rect)
+        if not used_reserved_overlay:
+            t_static_update_start = time.perf_counter()
+            self.router.add_static_cells(list(new_reserved_cells))
+            self._add_commit_time(
+                "rust_static_update_s",
+                time.perf_counter() - t_static_update_start,
             )
-            new_reserved_cells: set[GridCell] = set()
-            if needs_python_reserved_cells:
-                t_grid_rect_start = time.perf_counter()
-                new_reserved_cells = _grid_rect_cells(parsed_grid_rect)
-                self._add_commit_time(
-                    "grid_rect_cells_s",
-                    time.perf_counter() - t_grid_rect_start,
-                )
-                t_python_reserved_start = time.perf_counter()
-                self.reserved_meander_cells.update(new_reserved_cells)
-                self._add_commit_time(
-                    "python_reserved_update_s",
-                    time.perf_counter() - t_python_reserved_start,
-                )
-                if not used_rust_reserved_rect and hasattr(
-                    self.router,
-                    "add_registered_meander_reserved_cells",
-                ):
-                    t_rust_reserved_start = time.perf_counter()
-                    self.router.add_registered_meander_reserved_cells(list(new_reserved_cells))
-                    self._add_commit_time(
-                        "rust_reserved_update_s",
-                        time.perf_counter() - t_rust_reserved_start,
-                    )
-            else:
-                self.pending_reserved_meander_rects.append(parsed_grid_rect)
-            if not used_reserved_overlay:
-                t_static_update_start = time.perf_counter()
-                self.router.add_static_cells(list(new_reserved_cells))
-                self._add_commit_time(
-                    "rust_static_update_s",
-                    time.perf_counter() - t_static_update_start,
-                )
         t_record_start = time.perf_counter()
         self.updated[selected_edge_key] = _planned_record(
             record=record,
@@ -1326,6 +1474,31 @@ def _record_edge_key(record: RoutedNetRecord) -> RoutedEdgeKey:
 def _record_route_cells(record: RoutedNetRecord) -> set[GridCell]:
     cells = getattr(record.route_obj, "cells", None) or []
     return {(int(x), int(y)) for x, y in cells}
+
+
+def _inflate_grid_cells(
+    cells: Iterable[GridCell],
+    *,
+    radius_cells: int,
+    width_cells: int,
+    height_cells: int,
+) -> set[GridCell]:
+    radius = max(0, int(radius_cells))
+    width = max(0, int(width_cells))
+    height = max(0, int(height_cells))
+    inflated: set[GridCell] = set()
+    for x, y in cells:
+        ix = int(x)
+        iy = int(y)
+        for dx in range(-radius, radius + 1):
+            nx = ix + dx
+            if nx < 0 or nx >= width:
+                continue
+            for dy in range(-radius, radius + 1):
+                ny = iy + dy
+                if 0 <= ny < height:
+                    inflated.add((nx, ny))
+    return inflated
 
 
 def _record_has_prefilter_geometry(record: RoutedNetRecord) -> bool:
@@ -1414,6 +1587,7 @@ def _build_planner_context(
     bend_radius_cells: int,
     static_blocked_cells: Iterable[tuple[int, int]] | None,
     static_blocked_cell_handle: object | None = None,
+    route_clearance_radius_cells: int = 0,
 ) -> _MeanderPlannerContext:
     t_total_start = time.perf_counter()
     width, height, grid_size_um_cfg, origin_x_um, origin_y_um = realization_grid_spec
@@ -1439,6 +1613,7 @@ def _build_planner_context(
     t_refcount_start = time.perf_counter()
     route_cell_refcounts: Counter[GridCell] = Counter()
     route_cells_by_edge: dict[RoutedEdgeKey, set[GridCell]] = {}
+    route_clearance_radius_cells = max(0, int(route_clearance_radius_cells))
     can_use_registered_route_cells = hasattr(
         router,
         "register_meander_route_cells_as_static",
@@ -1463,13 +1638,34 @@ def _build_planner_context(
     if not can_use_registered_route_cells:
         for edge_key, record in by_edge.items():
             route_cells = _record_route_cells(record)
+            if route_clearance_radius_cells > 0:
+                route_cells = _inflate_grid_cells(
+                    route_cells,
+                    radius_cells=route_clearance_radius_cells,
+                    width_cells=int(width),
+                    height_cells=int(height),
+                )
             route_cells_by_edge[edge_key] = route_cells
             route_cell_refcounts.update(route_cells)
     route_cell_refcount_s = time.perf_counter() - t_refcount_start
     t_base_static_start = time.perf_counter()
     base_static_reused = False
+    base_static_from_handle = False
     if static_blocked_cells is None:
-        base_static_cells: set[GridCell] = set()
+        if static_blocked_cell_handle is not None and hasattr(
+            static_blocked_cell_handle,
+            "cells",
+        ):
+            base_static_cells: set[GridCell] = {
+                (int(x), int(y))
+                for x, y in cast(
+                    Iterable[tuple[int, int]],
+                    static_blocked_cell_handle.cells(),
+                )
+            }
+            base_static_from_handle = True
+        else:
+            base_static_cells = set()
     elif isinstance(static_blocked_cells, set):
         base_static_cells = cast(set[GridCell], static_blocked_cells)
         base_static_reused = True
@@ -1523,6 +1719,7 @@ def _build_planner_context(
                 router.set_static_and_register_meander_route_cells_as_static_handle(
                     route_objects,
                     static_blocked_cell_handle,
+                    route_clearance_radius_cells,
                 )
             )
         else:
@@ -1536,6 +1733,7 @@ def _build_planner_context(
                     router.set_static_and_register_meander_route_cells_as_static(
                         route_objects,
                         base_static_registration_cells,
+                        route_clearance_radius_cells,
                     )
                 )
             else:
@@ -1543,6 +1741,7 @@ def _build_planner_context(
                     router.register_meander_route_cells_as_static(
                         route_objects,
                         base_static_registration_cells,
+                        route_clearance_radius_cells,
                     )
                 )
         register_route_cells_call_s = time.perf_counter() - t_register_call_start
@@ -1610,6 +1809,7 @@ def _build_planner_context(
         "route_cell_refcount_s": route_cell_refcount_s,
         "base_static_collect_s": base_static_collect_s,
         "base_static_reused": float(base_static_reused),
+        "base_static_from_handle": float(base_static_from_handle),
         "set_static_cells_s": set_static_s,
         "add_route_static_cells_s": add_route_static_s,
         "register_route_cells_s": register_route_cells_s,
@@ -1621,6 +1821,10 @@ def _build_planner_context(
         "combined_static_route_registration": float(can_set_static_and_register_route_cells),
         "combined_static_route_registration_handle": float(
             can_set_static_and_register_route_cells_with_handle
+        ),
+        "route_clearance_radius_cells": float(route_clearance_radius_cells),
+        "registered_route_cell_acceleration_enabled": float(
+            can_use_registered_route_cells
         ),
         "register_route_geometry_s": register_route_geometry_s,
         "geometry_prepare_s": geometry_prepare_s,
@@ -1656,8 +1860,11 @@ def _build_planner_context(
         base_static_cells=base_static_cells,
         reserved_meander_cells=set(),
         pending_reserved_meander_rects=[],
+        grid_width_cells=int(width),
+        grid_height_cells=int(height),
         grid_size_um=float(grid_size_um_cfg),
         bend_radius_um=bend_radius_um,
+        route_clearance_radius_cells=route_clearance_radius_cells,
         setup_profile=setup_profile,
         candidate_setup_profile={},
         commit_profile={},
@@ -1679,6 +1886,11 @@ def _meander_search_config(
         for depth in MEANDER_DEPTH_CANDIDATES_UM
         if depth <= max_height_um + 1.0e-9
     ]
+    if (
+        max_height_um > 0.0
+        and (not box_depths_um or max_height_um > max(box_depths_um) + 1.0e-9)
+    ):
+        box_depths_um.insert(0, max_height_um)
     if not box_depths_um:
         box_depths_um = [max_height_um]
     endpoint_inset_um = (
@@ -1823,10 +2035,27 @@ def _minimum_four_bend_extra_length_um(
     *,
     grid_size_um: float,
     bend_radius_cells: int,
+    min_straight_um: float = DEFAULT_MEANDER_MIN_STRAIGHT_UM,
 ) -> float:
-    """Minimum practical matching request: one bump needs four 90-degree bends."""
+    """Minimum practical matching request for the analytic fill-box meander."""
     bend_radius_um = max(0.0, float(grid_size_um) * float(bend_radius_cells))
-    return 2.0 * math.pi * bend_radius_um
+    min_straight = max(0.0, float(min_straight_um))
+    return max(0.0, bend_radius_um * (2.0 * math.pi - 5.0) + min_straight)
+
+
+def _normalize_minimum_insertable_request(
+    requested: float,
+    *,
+    minimum_insertable_extra_um: float,
+    tolerance_um: float = EXACT_MEANDER_EPS_UM,
+) -> float:
+    """Snap roundoff-sized deficits up to the minimum insertable request."""
+    requested = float(requested)
+    minimum = max(0.0, float(minimum_insertable_extra_um))
+    tolerance = max(0.0, float(tolerance_um))
+    if requested > 0.0 and requested < minimum and minimum - requested <= tolerance:
+        return minimum
+    return requested
 
 
 def _route_geometry_max_meander_bumps(
@@ -2141,6 +2370,7 @@ def analyze_meander_insertion_for_requirements(
     bend_radius_cells: int,
     static_blocked_cells: Iterable[tuple[int, int]] | None = None,
     static_blocked_cell_handle: object | None = None,
+    route_clearance_radius_cells: int = 0,
     requirement_edge_alternatives: Mapping[
         RoutedEdgeKey,
         Iterable[RoutedEdgeKey],
@@ -2166,6 +2396,7 @@ def analyze_meander_insertion_for_requirements(
         bend_radius_cells=bend_radius_cells,
         static_blocked_cells=static_blocked_cells,
         static_blocked_cell_handle=static_blocked_cell_handle,
+        route_clearance_radius_cells=route_clearance_radius_cells,
     )
     search_config = _meander_search_config(
         config=config,
@@ -2195,11 +2426,19 @@ def analyze_meander_insertion_for_requirements(
     min_insertable_extra_um = _minimum_four_bend_extra_length_um(
         grid_size_um=float(grid_size_um_cfg),
         bend_radius_cells=int(bend_radius_cells),
+        min_straight_um=search_config.min_straight_um,
     )
-    total_requested = sum(
-        float(req.missing_length_um)
+    normalized_requested_values = [
+        _normalize_minimum_insertable_request(
+            float(req.missing_length_um),
+            minimum_insertable_extra_um=min_insertable_extra_um,
+        )
         for req in requirements
-        if float(req.missing_length_um) >= min_insertable_extra_um
+    ]
+    total_requested = sum(
+        requested
+        for requested in normalized_requested_values
+        if requested >= min_insertable_extra_um
     )
 
     requirement_missing_by_edge = _requirement_missing_by_edge(requirements)
@@ -2211,6 +2450,10 @@ def analyze_meander_insertion_for_requirements(
         edge_key = req.edge_key
         already_inserted = effective_inserted_by_requirement_edge.get(edge_key, 0.0)
         requested = max(0.0, original_requested - already_inserted)
+        requested = _normalize_minimum_insertable_request(
+            requested,
+            minimum_insertable_extra_um=min_insertable_extra_um,
+        )
         if requested <= EXACT_MEANDER_EPS_UM:
             continue
         entry = {
@@ -2278,6 +2521,10 @@ def analyze_meander_insertion_for_requirements(
             candidate_requested = min(
                 float(candidate.extra_length_um),
                 min(remaining_for_affected),
+            )
+            candidate_requested = _normalize_minimum_insertable_request(
+                candidate_requested,
+                minimum_insertable_extra_um=min_insertable_extra_um,
             )
             edge_attempts: list[dict[str, object]] = []
             candidate_info: dict[str, object] = {

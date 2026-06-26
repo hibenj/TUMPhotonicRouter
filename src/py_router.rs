@@ -483,6 +483,9 @@ fn pack_cells(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
 
 fn collect_meander_route_cell_sets(
     routes: &Bound<'_, PyList>,
+    route_clearance_radius_cells: i32,
+    width: i32,
+    height: i32,
     profile: &mut MeanderRegistrationProfile,
 ) -> PyResult<(
     Vec<FxHashSet<CellKey>>,
@@ -499,7 +502,17 @@ fn collect_meander_route_cell_sets(
         profile.route_extract_s += route_extract_start.elapsed().as_secs_f64();
         let mut route_cells = FxHashSet::default();
         let route_cell_collect_start = Instant::now();
-        for &(x, y) in &route.cells {
+        let route_cells_for_registration = if route_clearance_radius_cells > 0 {
+            inflate_route_cells(
+                &route.cells,
+                route_clearance_radius_cells,
+                width,
+                height,
+            )
+        } else {
+            route.cells.clone()
+        };
+        for &(x, y) in &route_cells_for_registration {
             let key = pack_xy(x, y);
             if route_cells.insert(key) {
                 unique_route_cells.insert(key);
@@ -1297,11 +1310,18 @@ impl PyPhotonicRouter {
         *self.meander_registered_geometries.borrow_mut() = geometries;
         Ok(indices)
     }
+    #[pyo3(signature=(routes,base_static_cells,route_clearance_radius_cells=0))]
     fn register_meander_route_cells_as_static(
         &mut self,
         routes: &Bound<'_, PyList>,
         base_static_cells: Vec<(i32, i32)>,
+        route_clearance_radius_cells: i32,
     ) -> PyResult<(Vec<usize>, Vec<usize>, usize)> {
+        if route_clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err(
+                "route_clearance_radius_cells must be >= 0",
+            ));
+        }
         let total_start = Instant::now();
         let mut profile = MeanderRegistrationProfile {
             route_count: routes.len(),
@@ -1315,7 +1335,13 @@ impl PyPhotonicRouter {
         let base_static_keys = pack_cells(&base_static_cells);
         profile.base_static_pack_s += base_static_pack_start.elapsed().as_secs_f64();
         let (route_cell_sets, route_cell_refcounts, unique_route_cells) =
-            collect_meander_route_cell_sets(routes, &mut profile)?;
+            collect_meander_route_cell_sets(
+                routes,
+                route_clearance_radius_cells,
+                self.grid.width as i32,
+                self.grid.height as i32,
+                &mut profile,
+            )?;
         let (registered_open_sets, open_counts) = build_registered_open_sets(
             route_cell_sets,
             &route_cell_refcounts,
@@ -1353,11 +1379,18 @@ impl PyPhotonicRouter {
         *self.last_meander_registration_profile.borrow_mut() = Some(profile);
         Ok((indices, open_counts, unique_route_cell_count))
     }
+    #[pyo3(signature=(routes,base_static_cells,route_clearance_radius_cells=0))]
     fn set_static_and_register_meander_route_cells_as_static(
         &mut self,
         routes: &Bound<'_, PyList>,
         base_static_cells: Vec<(i32, i32)>,
+        route_clearance_radius_cells: i32,
     ) -> PyResult<(Vec<usize>, Vec<usize>, usize)> {
+        if route_clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err(
+                "route_clearance_radius_cells must be >= 0",
+            ));
+        }
         let total_start = Instant::now();
         let mut profile = MeanderRegistrationProfile {
             route_count: routes.len(),
@@ -1383,7 +1416,13 @@ impl PyPhotonicRouter {
         }
 
         let (route_cell_sets, route_cell_refcounts, unique_route_cells) =
-            collect_meander_route_cell_sets(routes, &mut profile)?;
+            collect_meander_route_cell_sets(
+                routes,
+                route_clearance_radius_cells,
+                self.grid.width as i32,
+                self.grid.height as i32,
+                &mut profile,
+            )?;
         let (registered_open_sets, open_counts) = build_registered_open_sets(
             route_cell_sets,
             &route_cell_refcounts,
@@ -1422,11 +1461,18 @@ impl PyPhotonicRouter {
         *self.last_meander_registration_profile.borrow_mut() = Some(profile);
         Ok((indices, open_counts, unique_route_cell_count))
     }
+    #[pyo3(signature=(routes,base_static_cell_handle,route_clearance_radius_cells=0))]
     fn set_static_and_register_meander_route_cells_as_static_handle(
         &mut self,
         routes: &Bound<'_, PyList>,
         base_static_cell_handle: PyRef<'_, PyStaticCellSet>,
+        route_clearance_radius_cells: i32,
     ) -> PyResult<(Vec<usize>, Vec<usize>, usize)> {
+        if route_clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err(
+                "route_clearance_radius_cells must be >= 0",
+            ));
+        }
         let total_start = Instant::now();
         let base_static_keys = base_static_cell_handle.keys();
         let mut profile = MeanderRegistrationProfile {
@@ -1445,7 +1491,13 @@ impl PyPhotonicRouter {
         profile.reset_s += reset_start.elapsed().as_secs_f64();
 
         let (route_cell_sets, route_cell_refcounts, unique_route_cells) =
-            collect_meander_route_cell_sets(routes, &mut profile)?;
+            collect_meander_route_cell_sets(
+                routes,
+                route_clearance_radius_cells,
+                self.grid.width as i32,
+                self.grid.height as i32,
+                &mut profile,
+            )?;
         let (registered_open_sets, open_counts) = build_registered_open_sets(
             route_cell_sets,
             &route_cell_refcounts,
@@ -1561,9 +1613,24 @@ impl PyPhotonicRouter {
             &self.port_open_cells
         };
         let cfg = astar_config_from_py(&self.astar_cfg, &self.primitive_cfg, None, None, None)?;
+        let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.as_deref().unwrap_or(&[]);
+        let mut opened_dynamic_obstacle_map;
+        let search_obstacle_map = if block_radius_cells > 0 {
+            opened_dynamic_obstacle_map = self
+                .obstacle_map
+                .clone_with_expanded_dynamic_obstacles(block_radius_cells);
+            opened_dynamic_obstacle_map
+                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
+            &opened_dynamic_obstacle_map
+        } else {
+            opened_dynamic_obstacle_map = self.obstacle_map.clone();
+            opened_dynamic_obstacle_map
+                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
+            &opened_dynamic_obstacle_map
+        };
         if block_radius_cells > 0 {
             if let Some(result) = try_simple_route_with_config(
-                &self.obstacle_map,
+                search_obstacle_map,
                 &self.primitives,
                 State::new(source.x, source.y, source.angle),
                 State::new(target.x, target.y, target.angle),
@@ -1588,20 +1655,23 @@ impl PyPhotonicRouter {
                     net_id,
                     &core_cells,
                     &route_cells,
+                    clearance_exempt_cells.as_deref().unwrap_or(&[]),
                 ) {
                     self.invalidate_meander_base_prefix();
                     return Py::new(py, convert_result(py, &self.primitives, &result)?);
                 }
             }
         }
-        let expanded_obstacle_map;
-        let search_obstacle_map = if block_radius_cells > 0 {
-            expanded_obstacle_map = self
-                .obstacle_map
-                .clone_with_expanded_dynamic_obstacles(block_radius_cells);
-            &expanded_obstacle_map
+        let search_cfg = if block_radius_cells > 0 {
+            astar_config_from_py(
+                &self.astar_cfg,
+                &self.primitive_cfg,
+                None,
+                Some(false),
+                None,
+            )?
         } else {
-            &self.obstacle_map
+            cfg
         };
         let result = route_single_net_with_config(
             search_obstacle_map,
@@ -1609,7 +1679,7 @@ impl PyPhotonicRouter {
             State::new(source.x, source.y, source.angle),
             State::new(target.x, target.y, target.angle),
             Some(opened_ref),
-            &cfg,
+            &search_cfg,
         )
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
 
@@ -1627,10 +1697,12 @@ impl PyPhotonicRouter {
             self.grid.width as i32,
             self.grid.height as i32,
         );
-        if !self
-            .obstacle_map
-            .commit_route_with_clearance_overlap(net_id, &core_cells, &route_cells)
-        {
+        if !self.obstacle_map.commit_route_with_clearance_overlap(
+            net_id,
+            &core_cells,
+            &route_cells,
+            clearance_exempt_cells.as_deref().unwrap_or(&[]),
+        ) {
             return Err(PyRuntimeError::new_err(
                 "Failed to commit routed cells to obstacle map",
             ));
@@ -1757,8 +1829,10 @@ impl PyPhotonicRouter {
             Some(0.0),
         )?;
         let _ = block_radius_cells;
+        let mut static_only_obstacle_map = self.obstacle_map.clone();
+        static_only_obstacle_map.clear_dynamic();
         let result = route_single_net_with_config(
-            &self.obstacle_map,
+            &static_only_obstacle_map,
             &self.primitives,
             State::new(source.x, source.y, source.angle),
             State::new(target.x, target.y, target.angle),
@@ -1800,14 +1874,20 @@ impl PyPhotonicRouter {
             Some(false),
             Some(history_weight),
         )?;
-        let expanded_obstacle_map;
+        let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.as_deref().unwrap_or(&[]);
+        let mut opened_dynamic_obstacle_map;
         let search_obstacle_map = if block_radius_cells > 0 {
-            expanded_obstacle_map = self
+            opened_dynamic_obstacle_map = self
                 .obstacle_map
                 .clone_with_expanded_dynamic_obstacles(block_radius_cells);
-            &expanded_obstacle_map
+            opened_dynamic_obstacle_map
+                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
+            &opened_dynamic_obstacle_map
         } else {
-            &self.obstacle_map
+            opened_dynamic_obstacle_map = self.obstacle_map.clone();
+            opened_dynamic_obstacle_map
+                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
+            &opened_dynamic_obstacle_map
         };
         let result = route_single_net_with_config(
             search_obstacle_map,
@@ -1833,10 +1913,12 @@ impl PyPhotonicRouter {
             self.grid.width as i32,
             self.grid.height as i32,
         );
-        if !self
-            .obstacle_map
-            .commit_route_with_clearance_overlap(net_id, &core_cells, &route_cells)
-        {
+        if !self.obstacle_map.commit_route_with_clearance_overlap(
+            net_id,
+            &core_cells,
+            &route_cells,
+            clearance_exempt_cells.as_deref().unwrap_or(&[]),
+        ) {
             return Err(PyRuntimeError::new_err(
                 "Failed to commit routed cells to obstacle map",
             ));

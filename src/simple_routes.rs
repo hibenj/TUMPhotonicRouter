@@ -88,6 +88,7 @@ pub enum SimpleRouteKind {
     Straight,
     LShape,
     ZShape,
+    Turnaround,
 }
 
 /// Configuration for deterministic Z-shape exploration.
@@ -247,6 +248,17 @@ pub fn try_l_candidate(
     obstacle_map: &ObstacleMap,
     opened_cells: Option<&FxHashSet<CellKey>>,
 ) -> Option<SimpleRouteCandidate> {
+    try_l_candidate_with_min_leg_len(source, target, obstacle_map, opened_cells, 1)
+}
+
+/// Try constructing a deterministic one-bend L-route candidate.
+pub fn try_l_candidate_with_min_leg_len(
+    source: State,
+    target: State,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    min_leg_len_cells: i32,
+) -> Option<SimpleRouteCandidate> {
     if !is_cardinal_heading(source.angle) || !is_cardinal_heading(target.angle) {
         return None;
     }
@@ -286,7 +298,14 @@ pub fn try_l_candidate(
             SimpleRouteKind::LShape,
             vec![source_point, bend, target_point],
         );
-        if !check_simple_candidate(&candidate, obstacle_map, opened_cells) {
+        if !is_valid_l_candidate(
+            &candidate,
+            source.angle % 8,
+            target.angle % 8,
+            min_leg_len_cells.max(1),
+            obstacle_map,
+            opened_cells,
+        ) {
             continue;
         }
 
@@ -410,6 +429,109 @@ pub fn try_z_candidate_with_config(
     None
 }
 
+/// Try constructing a deterministic four-bend route for same-heading ports
+/// where the target lies behind the source direction.
+pub fn try_turnaround_candidate_with_config(
+    source: State,
+    target: State,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    config: &SimpleZRouteConfig,
+) -> Option<SimpleRouteCandidate> {
+    let source_heading = source.angle % 8;
+    let target_heading = target.angle % 8;
+    if !is_cardinal_heading(source_heading) || source_heading != target_heading {
+        return None;
+    }
+
+    let source_point = grid_point_from_state(source);
+    let target_point = grid_point_from_state(target);
+    if source_point == target_point {
+        return None;
+    }
+
+    let min_leg_len = config.min_leg_len_cells.max(0);
+    let offsets = compact_offset_order(config.max_offset_cells, config.include_zero_offset);
+    let distances = distances_from_offsets(min_leg_len, &offsets);
+    if distances.is_empty() {
+        return None;
+    }
+
+    match source_heading {
+        0 | 4 => {
+            let direction = if source_heading == 0 { 1 } else { -1 };
+            if (target_point.x - source_point.x) * direction >= 0 {
+                return None;
+            }
+            let lanes = turnaround_lanes(source_point.y, target_point.y, &distances, min_leg_len);
+            for distance in &distances {
+                let source_turn_x = source_point.x + direction * *distance;
+                let target_turn_x = target_point.x - direction * *distance;
+                for lane_y in &lanes {
+                    let candidate = SimpleRouteCandidate::new(
+                        SimpleRouteKind::Turnaround,
+                        vec![
+                            source_point,
+                            GridPoint::new(source_turn_x, source_point.y),
+                            GridPoint::new(source_turn_x, *lane_y),
+                            GridPoint::new(target_turn_x, *lane_y),
+                            GridPoint::new(target_turn_x, target_point.y),
+                            target_point,
+                        ],
+                    );
+                    if is_valid_turnaround_candidate(
+                        &candidate,
+                        source_heading,
+                        target_heading,
+                        min_leg_len,
+                        obstacle_map,
+                        opened_cells,
+                    ) {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        2 | 6 => {
+            let direction = if source_heading == 2 { 1 } else { -1 };
+            if (target_point.y - source_point.y) * direction >= 0 {
+                return None;
+            }
+            let lanes = turnaround_lanes(source_point.x, target_point.x, &distances, min_leg_len);
+            for distance in &distances {
+                let source_turn_y = source_point.y + direction * *distance;
+                let target_turn_y = target_point.y - direction * *distance;
+                for lane_x in &lanes {
+                    let candidate = SimpleRouteCandidate::new(
+                        SimpleRouteKind::Turnaround,
+                        vec![
+                            source_point,
+                            GridPoint::new(source_point.x, source_turn_y),
+                            GridPoint::new(*lane_x, source_turn_y),
+                            GridPoint::new(*lane_x, target_turn_y),
+                            GridPoint::new(target_point.x, target_turn_y),
+                            target_point,
+                        ],
+                    );
+                    if is_valid_turnaround_candidate(
+                        &candidate,
+                        source_heading,
+                        target_heading,
+                        min_leg_len,
+                        obstacle_map,
+                        opened_cells,
+                    ) {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        _ => return None,
+    }
+
+    None
+}
+
 /// Try constructing a deterministic two-bend Z-route candidate with defaults.
 pub fn try_z_candidate(
     source: State,
@@ -435,9 +557,26 @@ pub fn try_straight_l_or_z_candidate_with_config(
     z_config: &SimpleZRouteConfig,
 ) -> Option<SimpleRouteCandidate> {
     try_straight_candidate(source, target, obstacle_map, opened_cells)
-        .or_else(|| try_l_candidate(source, target, obstacle_map, opened_cells))
+        .or_else(|| {
+            try_l_candidate_with_min_leg_len(
+                source,
+                target,
+                obstacle_map,
+                opened_cells,
+                z_config.min_leg_len_cells,
+            )
+        })
         .or_else(|| {
             try_z_candidate_with_config(source, target, obstacle_map, opened_cells, z_config)
+        })
+        .or_else(|| {
+            try_turnaround_candidate_with_config(
+                source,
+                target,
+                obstacle_map,
+                opened_cells,
+                z_config,
+            )
         })
 }
 
@@ -626,12 +765,145 @@ fn is_valid_z_candidate(
         return false;
     }
 
-    let too_short = candidate
+    let segments = candidate.segments();
+    for (idx, segment) in segments.iter().enumerate() {
+        let required_len = if idx == 1 {
+            2 * min_leg_len
+        } else {
+            min_leg_len
+        };
+        if segment.manhattan_len() < required_len {
+            return false;
+        }
+    }
+
+    check_simple_candidate(candidate, obstacle_map, opened_cells)
+}
+
+fn is_valid_l_candidate(
+    candidate: &SimpleRouteCandidate,
+    source_heading: u8,
+    target_heading: u8,
+    min_leg_len: i32,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> bool {
+    if candidate.kind != SimpleRouteKind::LShape || candidate.points.len() != 3 {
+        return false;
+    }
+    if candidate.has_duplicate_consecutive_points() || !candidate.is_axis_aligned() {
+        return false;
+    }
+
+    let p0 = candidate.points[0];
+    let p1 = candidate.points[1];
+    let p2 = candidate.points[2];
+    let Some(h01) = direction_between(p0, p1) else {
+        return false;
+    };
+    let Some(h12) = direction_between(p1, p2) else {
+        return false;
+    };
+
+    if h01 != source_heading || h12 != target_heading {
+        return false;
+    }
+    if !heading_delta_is_perpendicular(h01, h12) {
+        return false;
+    }
+    if candidate
         .segments()
         .iter()
-        .any(|segment| segment.manhattan_len() < min_leg_len);
-    if too_short {
+        .any(|segment| segment.manhattan_len() < min_leg_len)
+    {
         return false;
+    }
+
+    check_simple_candidate(candidate, obstacle_map, opened_cells)
+}
+
+fn turnaround_lanes(
+    source_orthogonal: i32,
+    target_orthogonal: i32,
+    distances: &[i32],
+    min_leg_len: i32,
+) -> Vec<i32> {
+    let low = source_orthogonal.min(target_orthogonal);
+    let high = source_orthogonal.max(target_orthogonal);
+    let mut lanes = Vec::new();
+
+    for &distance in distances {
+        push_unique(&mut lanes, high + distance);
+        push_unique(&mut lanes, low - distance);
+    }
+
+    let min_separation = 2 * min_leg_len.max(0);
+    if high - low >= 2 * min_separation {
+        let middle = low + (high - low) / 2;
+        push_unique(&mut lanes, middle);
+        for &distance in distances {
+            push_unique(&mut lanes, middle + distance);
+            push_unique(&mut lanes, middle - distance);
+        }
+    }
+
+    lanes
+}
+
+fn push_unique(values: &mut Vec<i32>, value: i32) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn is_valid_turnaround_candidate(
+    candidate: &SimpleRouteCandidate,
+    source_heading: u8,
+    target_heading: u8,
+    min_leg_len: i32,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> bool {
+    if candidate.kind != SimpleRouteKind::Turnaround || candidate.points.len() != 6 {
+        return false;
+    }
+    if candidate.has_duplicate_consecutive_points() || !candidate.is_axis_aligned() {
+        return false;
+    }
+
+    let segments = candidate.segments();
+    if segments.len() != 5 {
+        return false;
+    }
+    let mut headings = Vec::with_capacity(segments.len());
+    for segment in &segments {
+        let Some(heading) = direction_between(segment.start, segment.end) else {
+            return false;
+        };
+        headings.push(heading);
+    }
+
+    if headings[0] != source_heading || headings[4] != target_heading {
+        return false;
+    }
+    for pair in headings.windows(2) {
+        if !heading_delta_is_perpendicular(pair[0], pair[1]) {
+            return false;
+        }
+    }
+    if headings[2] != opposite_heading(source_heading) {
+        return false;
+    }
+
+    for (idx, segment) in segments.iter().enumerate() {
+        let required_len = if idx == 0 || idx + 1 == segments.len() {
+            min_leg_len
+        } else {
+            2 * min_leg_len
+        };
+        if segment.manhattan_len() < required_len {
+            return false;
+        }
     }
 
     check_simple_candidate(candidate, obstacle_map, opened_cells)

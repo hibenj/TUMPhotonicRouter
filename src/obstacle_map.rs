@@ -72,8 +72,10 @@ pub struct ObstacleMap {
     static_rects: Vec<GridRect>,
     static_obstacles: FxHashMap<CellKey, u16>,
     dynamic_obstacles: FxHashMap<CellKey, u16>,
+    dynamic_core_obstacles: FxHashMap<CellKey, u16>,
     dynamic_cell_owner: FxHashMap<CellKey, NetId>,
     net_routes: FxHashMap<NetId, Vec<CellKey>>,
+    net_core_routes: FxHashMap<NetId, Vec<CellKey>>,
     history_cost: FxHashMap<CellKey, u32>,
 }
 
@@ -99,8 +101,10 @@ impl ObstacleMap {
             static_rects: Vec::new(),
             static_obstacles: FxHashMap::default(),
             dynamic_obstacles: FxHashMap::default(),
+            dynamic_core_obstacles: FxHashMap::default(),
             dynamic_cell_owner: FxHashMap::default(),
             net_routes: FxHashMap::default(),
+            net_core_routes: FxHashMap::default(),
             history_cost: FxHashMap::default(),
         }
     }
@@ -317,7 +321,9 @@ impl ObstacleMap {
             if Self::increment_ref(&mut self.dynamic_obstacles, key) {
                 self.set_occupancy_bit(x, y, DYNAMIC_BIT);
             }
+            Self::increment_ref(&mut self.dynamic_core_obstacles, key);
         }
+        self.net_core_routes.insert(net_id, keys.clone());
         self.net_routes.insert(net_id, keys);
         true
     }
@@ -332,6 +338,7 @@ impl ObstacleMap {
         net_id: NetId,
         core_cells: &[(i32, i32)],
         blocked_cells: &[(i32, i32)],
+        clearance_exempt_cells: &[(i32, i32)],
     ) -> bool {
         let mut keys = Vec::with_capacity(blocked_cells.len());
         let mut seen = FxHashSet::default();
@@ -351,6 +358,11 @@ impl ObstacleMap {
             .get(&net_id)
             .map(|route| route.iter().copied().collect())
             .unwrap_or_default();
+        let clearance_exempt_keys: FxHashSet<CellKey> = clearance_exempt_cells
+            .iter()
+            .filter_map(|&(x, y)| self.in_bounds(x, y).then_some(pack_xy(x, y)))
+            .collect();
+        let mut core_keys = Vec::with_capacity(core_cells.len());
         let mut seen_core = FxHashSet::default();
         for &(x, y) in core_cells {
             if !self.in_bounds(x, y) {
@@ -361,10 +373,14 @@ impl ObstacleMap {
             if !seen_core.insert(key) {
                 continue;
             }
+            core_keys.push(key);
 
             let existing_refs = self.dynamic_obstacles.get(&key).copied().unwrap_or(0);
             let same_net_refs = u16::from(old_route_keys.contains(&key));
-            if existing_refs > same_net_refs {
+            let existing_core_refs = self.dynamic_core_obstacles.get(&key).copied().unwrap_or(0);
+            let allowed_clearance_overlap =
+                clearance_exempt_keys.contains(&key) && existing_core_refs == 0;
+            if existing_refs > same_net_refs && !allowed_clearance_overlap {
                 return false;
             }
         }
@@ -377,6 +393,10 @@ impl ObstacleMap {
                 self.set_occupancy_bit(x, y, DYNAMIC_BIT);
             }
         }
+        for &key in &core_keys {
+            Self::increment_ref(&mut self.dynamic_core_obstacles, key);
+        }
+        self.net_core_routes.insert(net_id, core_keys);
         self.net_routes.insert(net_id, keys);
         true
     }
@@ -394,16 +414,41 @@ impl ObstacleMap {
                 self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
             }
         }
+        if let Some(core_keys) = self.net_core_routes.remove(&net_id) {
+            for key in core_keys {
+                Self::decrement_ref(&mut self.dynamic_core_obstacles, key);
+            }
+        }
         true
     }
 
     /// Clear every dynamic route and routed-net owner entry.
     pub fn clear_dynamic(&mut self) {
         self.dynamic_obstacles.clear();
+        self.dynamic_core_obstacles.clear();
         self.dynamic_cell_owner.clear();
         self.net_routes.clear();
+        self.net_core_routes.clear();
         for cell in &mut self.occupancy {
             *cell &= !DYNAMIC_BIT;
+        }
+    }
+
+    /// Clear dynamic clearance reservations in `cells`, keeping dynamic core
+    /// cells blocked. This is used for port access where neighboring route
+    /// clearance may overlap but core geometry must remain hard blockage.
+    pub fn clear_dynamic_clearance_in_cells(&mut self, cells: &[(i32, i32)]) {
+        for &(x, y) in cells {
+            if !self.in_bounds(x, y) {
+                continue;
+            }
+            let key = pack_xy(x, y);
+            if self.dynamic_core_obstacles.contains_key(&key) {
+                continue;
+            }
+            if self.dynamic_obstacles.remove(&key).is_some() {
+                self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
+            }
         }
     }
 
@@ -462,11 +507,13 @@ impl ObstacleMap {
             static_rects: self.static_rects.clone(),
             static_obstacles: self.static_obstacles.clone(),
             dynamic_obstacles: self.dynamic_obstacles.clone(),
+            dynamic_core_obstacles: self.dynamic_core_obstacles.clone(),
             // Expanded search maps only need dynamic occupancy, not ownership
             // or per-net route records. Keeping these empty avoids copying and
             // updating large owner maps on every normal route.
             dynamic_cell_owner: FxHashMap::default(),
             net_routes: FxHashMap::default(),
+            net_core_routes: FxHashMap::default(),
             history_cost: self.history_cost.clone(),
         };
         let source_keys: Vec<CellKey> = self.dynamic_obstacles.keys().copied().collect();
@@ -889,9 +936,17 @@ mod tests {
         let mut map = ObstacleMap::new(8, 8);
         assert!(map.commit_route(1, &[(2, 2), (2, 3)]));
 
-        assert!(map.commit_route_with_clearance_overlap(2, &[(4, 2)], &[(4, 2), (2, 3)],));
-        assert!(!map.commit_route_with_clearance_overlap(3, &[(2, 2)], &[(2, 2), (5, 5)],));
+        assert!(map.commit_route_with_clearance_overlap(2, &[(4, 2)], &[(4, 2), (2, 3)], &[],));
+        assert!(!map.commit_route_with_clearance_overlap(3, &[(2, 2)], &[(2, 2), (5, 5)], &[],));
         assert!(map.get_net_cells(3).is_none());
+    }
+
+    #[test]
+    fn commit_route_allows_core_over_exempt_clearance_but_not_core() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route_with_clearance_overlap(1, &[(2, 2)], &[(2, 2), (3, 2)], &[],));
+        assert!(map.commit_route_with_clearance_overlap(2, &[(3, 2)], &[(3, 2)], &[(3, 2)],));
+        assert!(!map.commit_route_with_clearance_overlap(3, &[(2, 2)], &[(2, 2)], &[(2, 2)],));
     }
 
     #[test]

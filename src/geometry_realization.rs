@@ -19,7 +19,7 @@ use crate::meander::{
 use crate::obstacle_map::{unpack_xy, CellKey, ObstacleMap};
 use crate::primitives::{PrimitiveGeometry, PrimitiveLibrary};
 use crate::static_obstacle_builder::{
-    grid_cell_center, physical_to_grid, PortInput, StaticGridSpec,
+    grid_cell_center, physical_to_grid, rasterize_polygon, PortInput, StaticGridSpec,
 };
 
 const EPS: f64 = 1.0e-9;
@@ -186,10 +186,20 @@ impl DenseOccupancyPrefix {
 }
 
 trait RectOccupancyQuery {
+    fn grid_width(&self) -> i32;
+    fn grid_height(&self) -> i32;
     fn blocked_count_in_rect(&self, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> Option<u32>;
 }
 
 impl RectOccupancyQuery for DenseOccupancyPrefix {
+    fn grid_width(&self) -> i32 {
+        self.width
+    }
+
+    fn grid_height(&self) -> i32 {
+        self.height
+    }
+
     fn blocked_count_in_rect(&self, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> Option<u32> {
         DenseOccupancyPrefix::blocked_count_in_rect(self, min_x, max_x, min_y, max_y)
     }
@@ -326,6 +336,14 @@ impl<'a> OverlayOccupancyQuery<'a> {
 }
 
 impl RectOccupancyQuery for OverlayOccupancyQuery<'_> {
+    fn grid_width(&self) -> i32 {
+        self.base.width
+    }
+
+    fn grid_height(&self) -> i32 {
+        self.base.height
+    }
+
     fn blocked_count_in_rect(&self, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> Option<u32> {
         let base = self
             .base
@@ -1539,6 +1557,53 @@ fn check_meander_box_free_with_occupancy<Q: RectOccupancyQuery>(
     Ok(rect)
 }
 
+fn check_meander_replacement_polygon_free<Q: RectOccupancyQuery>(
+    replacement_centerline: &[PhysicalPoint],
+    grid: &GeometryGridSpec,
+    occupancy: &Q,
+) -> Result<(), GeometryError> {
+    if replacement_centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    let centerline: Vec<(f64, f64)> = replacement_centerline
+        .iter()
+        .map(|p| (p.x_um, p.y_um))
+        .collect();
+    let footprint_width_um = grid.grid_size_um.min(0.5);
+    let polygon = generate_waveguide_polygon(&centerline, footprint_width_um)?;
+    let static_grid = StaticGridSpec {
+        width: occupancy.grid_width(),
+        height: occupancy.grid_height(),
+        grid_size_um: grid.grid_size_um,
+        origin: (grid.origin_x_um, grid.origin_y_um),
+        die_bbox: (
+            grid.origin_x_um,
+            grid.origin_y_um,
+            grid.origin_x_um + f64::from(occupancy.grid_width()) * grid.grid_size_um,
+            grid.origin_y_um + f64::from(occupancy.grid_height()) * grid.grid_size_um,
+        ),
+    };
+    let polygon_cells = rasterize_polygon(&polygon, &static_grid);
+    for key in polygon_cells {
+        let (x, y) = unpack_xy(key);
+        if occupancy
+            .blocked_count_in_rect(x, x, y, y)
+            .is_some_and(|count| count > 0)
+        {
+            return Err(GeometryError::MeanderBoxBlocked {
+                rect: GridRect {
+                    min_x: x,
+                    max_x: x,
+                    min_y: y,
+                    max_y: y,
+                },
+                blocked_count: 1,
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn check_meander_box_free(
     box_um: MeanderBox,
     grid: &GeometryGridSpec,
@@ -2252,6 +2317,12 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                         rejected_exact_length_mismatch += 1;
                         continue;
                     }
+                    if check_meander_replacement_polygon_free(&plan.centerline, grid, &prefix)
+                        .is_err()
+                    {
+                        rejected_box_blocked += 1;
+                        continue;
+                    }
                     selected_run = Some(run);
                     selected_segment = Some(segment);
                     selected = Some((box_um, rect, plan, actual_depth_um));
@@ -2506,6 +2577,12 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                         > 1.0e-6
                     {
                         rejected_exact_length_mismatch += 1;
+                        continue;
+                    }
+                    if check_meander_replacement_polygon_free(&plan.centerline, grid, &occupancy)
+                        .is_err()
+                    {
+                        rejected_box_blocked += 1;
                         continue;
                     }
                     selected_run = Some(run);
@@ -4681,6 +4758,30 @@ mod tests {
         let prefix = DenseOccupancyPrefix::from_obstacle_map(&map, None);
         assert!(prefix.blocked_count_in_rect(1, 3, 2, 4).unwrap() > 0);
         assert_eq!(prefix.blocked_count_in_rect(0, 1, 0, 1).unwrap(), 0);
+    }
+
+    #[test]
+    fn meander_replacement_polygon_rejects_blocked_footprint_cell() {
+        let g = GeometryGridSpec::new(1.0, 0.0, 0.0).unwrap();
+        let replacement = vec![
+            PhysicalPoint {
+                x_um: 1.0,
+                y_um: 1.5,
+            },
+            PhysicalPoint {
+                x_um: 4.0,
+                y_um: 1.5,
+            },
+        ];
+
+        let empty = ObstacleMap::new(8, 4);
+        let empty_prefix = DenseOccupancyPrefix::from_obstacle_map(&empty, None);
+        assert!(check_meander_replacement_polygon_free(&replacement, &g, &empty_prefix).is_ok());
+
+        let mut blocked = ObstacleMap::new(8, 4);
+        assert!(blocked.add_static_cell(2, 1));
+        let blocked_prefix = DenseOccupancyPrefix::from_obstacle_map(&blocked, None);
+        assert!(check_meander_replacement_polygon_free(&replacement, &g, &blocked_prefix).is_err());
     }
 
     #[test]

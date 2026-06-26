@@ -30,10 +30,16 @@ from translation.route_rust_analysis import (
     format_path_length_acceptance_failure,
     matching_group_diagnostics_to_info,
     merge_missing_length_requirements,
+    minimum_four_bend_extra_length_um,
     output_matching_diagnostics_to_info,
     path_length_acceptance_summary,
 )
-from translation.route_rust_meanders import _MeanderPlannerContext
+from translation.route_rust_meanders import (
+    _MeanderPlannerContext,
+    _build_planner_context,
+    _meander_search_config,
+    _normalize_minimum_insertable_request,
+)
 import translation.route_rust as route_rust
 import routing_flow
 
@@ -58,6 +64,122 @@ def _build_real_route_obj_for_test(x0: int, y0: int, x1: int, y1: int):
     source = rust_backend.State(x0, y0, 0)
     target = rust_backend.State(x1, y1, 0)
     return router.route_single_net(source, target)
+
+
+def test_planner_context_uses_static_handle_when_registration_fast_path_is_unavailable():
+    class _RouteObj:
+        cells = [(4, 4)]
+
+    class _StaticHandle:
+        def cells(self) -> list[tuple[int, int]]:
+            return [(1, 2), (3, 4)]
+
+    class _FakeRouter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.static_cells: list[tuple[int, int]] = []
+
+        def set_static_cells(self, cells: list[tuple[int, int]]) -> None:
+            self.static_cells = cells
+
+        def add_static_cells(self, _cells: list[tuple[int, int]]) -> None:
+            return None
+
+    class _FakeBackend:
+        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
+        PrimitiveLibraryConfig = staticmethod(
+            lambda *args, **kwargs: ("primitive", args, kwargs)
+        )
+        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
+        PyPhotonicRouter = _FakeRouter
+
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src", port="o1"),
+        target=PortRef(instance="dst", port="o1"),
+    )
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=_RouteObj(),
+        total_length_um=10.0,
+    )
+
+    context = _build_planner_context(
+        rust_backend=cast(Any, _FakeBackend),
+        routed_net_records=[record],
+        realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=False,
+        bend_radius_cells=4,
+        static_blocked_cells=None,
+        static_blocked_cell_handle=_StaticHandle(),
+    )
+
+    assert context.base_static_cells == {(1, 2), (3, 4)}
+    assert set(cast(Any, context.router).static_cells) == {(1, 2), (3, 4)}
+    assert context.setup_profile["base_static_from_handle"] == 1.0
+    assert context.setup_profile["base_static_cell_count"] == 2.0
+
+
+def test_planner_context_inflates_route_cells_for_meander_clearance():
+    class _RouteObj:
+        cells = [(4, 4)]
+
+    class _FakeRouter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.static_cells: list[tuple[int, int]] = []
+
+        def set_static_cells(self, cells: list[tuple[int, int]]) -> None:
+            self.static_cells = list(cells)
+
+        def add_static_cells(self, cells: list[tuple[int, int]]) -> None:
+            self.static_cells.extend(cells)
+
+    class _FakeBackend:
+        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
+        PrimitiveLibraryConfig = staticmethod(
+            lambda *args, **kwargs: ("primitive", args, kwargs)
+        )
+        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
+        PyPhotonicRouter = _FakeRouter
+
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src", port="o1"),
+        target=PortRef(instance="dst", port="o1"),
+    )
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=_RouteObj(),
+        total_length_um=10.0,
+    )
+
+    context = _build_planner_context(
+        rust_backend=cast(Any, _FakeBackend),
+        routed_net_records=[record],
+        realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=False,
+        bend_radius_cells=4,
+        static_blocked_cells=[(3, 3)],
+        route_clearance_radius_cells=1,
+    )
+
+    expected_route_corridor = {
+        (x, y)
+        for x in range(3, 6)
+        for y in range(3, 6)
+    }
+    assert context.route_cells_by_edge[edge] == expected_route_corridor
+    assert set(cast(Any, context.router).static_cells) == (
+        {(3, 3)} | expected_route_corridor
+    )
+    assert context.base_open_cells_for_edge(edge, record) == (
+        expected_route_corridor - {(3, 3)}
+    )
+    assert context.setup_profile["route_clearance_radius_cells"] == 1.0
+    assert context.setup_profile["registered_route_cell_acceleration_enabled"] == 0.0
 
 
 def test_build_graph_from_schematic_tracks_port_directions_and_fanout_shape():
@@ -1906,10 +2028,8 @@ def test_main_meander_report_uses_auto_multi_bump_path():
     assert isinstance(bumps_obj, (int, float))
     assert int(bumps_obj) >= 1
     assert entry.get("using_legacy_meander_path") is False
-    assert (
-        entry.get("effective_bend_radius_um")
-        == entry.get("primitive_bend_radius_um")
-    )
+    assert entry.get("effective_bend_radius_um") == pytest.approx(4.0)
+    assert entry.get("primitive_bend_radius_um") == pytest.approx(4.0)
 
 
 def test_registered_meander_route_cells_match_legacy_opened_cells():
@@ -1936,15 +2056,22 @@ def test_registered_meander_route_cells_match_legacy_opened_cells():
         rust_backend.State(180, 60, 0),
     )
     centerline = router.route_port_corrected_centerline(route_obj)
+    inflated_route_cells = {
+        (int(x) + dx, int(y) + dy)
+        for x, y in route_obj.cells
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+    }
     indices, open_counts, unique_count = router.register_meander_route_cells_as_static(
         [route_obj],
         [],
+        route_clearance_radius_cells=1,
     )
 
     assert indices == [0]
-    assert open_counts == [len(route_obj.cells)]
-    assert unique_count == len(route_obj.cells)
-    assert router.registered_meander_open_cell_count(0) == len(route_obj.cells)
+    assert open_counts == [len(inflated_route_cells)]
+    assert unique_count == len(inflated_route_cells)
+    assert router.registered_meander_open_cell_count(0) == len(inflated_route_cells)
 
     kwargs = {
         "requested_extra_length_um": 75.311,
@@ -1968,7 +2095,7 @@ def test_registered_meander_route_cells_match_legacy_opened_cells():
     )
     legacy = router.plan_auto_analytic_meander_for_centerline_depth_sweep(
         centerline,
-        opened_cells=route_obj.cells,
+        opened_cells=sorted(inflated_route_cells),
         extra_blocked_cells=None,
         **kwargs,
     )
@@ -2301,6 +2428,232 @@ def test_meander_commit_defers_python_reserved_cells_until_fallback_planning():
     assert context.candidate_setup_profile["materialize_reserved_rects_s"] >= 0.0
 
 
+def test_plan_edge_candidate_rejects_blocked_selected_grid_rect():
+    class _RouteObj:
+        def __init__(self) -> None:
+            self.cells: list[tuple[int, int]] = []
+
+    class _FakeRouter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_static_cells(self, _cells: object) -> None:
+            return None
+
+        def add_static_cells(self, _cells: object) -> None:
+            return None
+
+        def plan_auto_analytic_meander_for_route_depth_sweep(
+            self,
+            route: _RouteObj,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            requested = float(cast(float, kwargs["requested_extra_length_um"]))
+            return {
+                "inserted_extra_length_um": requested,
+                "selected_grid_rect": (1, 1, 1, 1),
+                "selected_box": (0.0, 10.0, 0.0, 10.0),
+                "bumps": 1,
+                "side": "left",
+                "box_depth_um": 10.0,
+            }
+
+    class _FakeBackend:
+        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
+        PrimitiveLibraryConfig = staticmethod(
+            lambda *args, **kwargs: ("primitive", args, kwargs)
+        )
+        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
+        PyPhotonicRouter = _FakeRouter
+
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="gate0", port="i0"),
+    )
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=_RouteObj(),
+        total_length_um=30.0,
+    )
+    context = _MeanderPlannerContext(
+        router=cast(Any, _FakeBackend.PyPhotonicRouter()),
+        by_edge={edge: record},
+        updated={edge: record},
+        route_cells_by_edge={},
+        route_cell_refcounts=Counter(),
+        registered_open_cell_index_by_edge={},
+        registered_open_cell_count_by_edge={},
+        registered_geometry_index_by_edge={},
+        base_open_cells_by_edge={},
+        base_open_cell_lists_by_edge={},
+        max_bumps_by_edge={},
+        centerline_lists_by_edge={},
+        footprint_prefilter_enabled_by_edge={},
+        base_static_cells={(1, 1)},
+        reserved_meander_cells=set(),
+        pending_reserved_meander_rects=[],
+        grid_size_um=1.0,
+        bend_radius_um=4.0,
+        setup_profile={},
+        candidate_setup_profile={},
+        commit_profile={},
+        rust_planner_profile={},
+        rust_wrapper_profile={},
+    )
+    attempt, rr, returned_record, _used_reserved_overlay, *_rest = context.plan_edge_candidate(
+        candidate_edge_key=edge,
+        requested=10.0,
+        extra_reserved_cells=set(),
+        box_depths_um=[10.0],
+        min_straight_um=5.0,
+        min_seg_um=5.0,
+        max_height_um=40.0,
+        endpoint_inset_um=0.0,
+        use_probe=False,
+    )
+
+    assert attempt["status"] == "no_candidate"
+    assert rr is None
+    assert returned_record is record
+    assert attempt["rejected_box_blocked"] is True
+
+
+def test_plan_candidate_bundle_registered_rejects_blocked_rect_overlap():
+    class _RouteObj:
+        def __init__(self, name: str):
+            self.name = name
+            self.corrected_centerline_um = [(0.0, 0.0), (10.0, 0.0)]
+
+    class _FakeRouter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_static_cells(self, _cells: object) -> None:
+            return None
+
+        def add_static_cells(self, _cells: object) -> None:
+            return None
+
+        def plan_auto_analytic_meander_candidate_bundle_registered_opened(
+            self,
+            centerlines: list[list[tuple[float, float]]],
+            registered_indices: list[int],
+            requested_extra_length_um: float,
+            box_depths_um: list[float],
+            max_bumps_by_edge: list[int],
+            **kwargs: object,
+        ) -> dict[str, object]:
+            return {
+                "status": "planned",
+                "plans": [
+                    {
+                        "inserted_extra_length_um": requested_extra_length_um,
+                        "selected_grid_rect": (5, 5, 5, 5),
+                        "selected_box": (0.0, 10.0, 0.0, 10.0),
+                        "bumps": 1,
+                        "side": "left",
+                        "box_depth_um": 10.0,
+                    },
+                    {
+                        "inserted_extra_length_um": requested_extra_length_um,
+                        "selected_grid_rect": (5, 5, 5, 5),
+                        "selected_box": (0.0, 10.0, 0.0, 10.0),
+                        "bumps": 1,
+                        "side": "right",
+                        "box_depth_um": 10.0,
+                    },
+                ],
+                "candidate_runs": 1,
+                "candidate_intervals": 1,
+            }
+
+    class _FakeBackend:
+        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
+        PrimitiveLibraryConfig = staticmethod(
+            lambda *args, **kwargs: ("primitive", args, kwargs)
+        )
+        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
+        PyPhotonicRouter = _FakeRouter
+
+    route_a = RoutedEdgeKey(
+        net_name="a",
+        source=PortRef(instance="src_a", port="o1"),
+        target=PortRef(instance="dst_a", port="i0"),
+    )
+    route_b = RoutedEdgeKey(
+        net_name="b",
+        source=PortRef(instance="src_b", port="o1"),
+        target=PortRef(instance="dst_b", port="i0"),
+    )
+    context = _MeanderPlannerContext(
+        router=cast(Any, _FakeBackend.PyPhotonicRouter()),
+        by_edge={
+            route_a: RoutedNetRecord(
+                net_name=route_a.net_name,
+                source=route_a.source,
+                target=route_a.target,
+                route_obj=_RouteObj("a"),
+                total_length_um=30.0,
+                corrected_centerline_um=((0.0, 0.0), (10.0, 0.0)),
+            ),
+            route_b: RoutedNetRecord(
+                net_name=route_b.net_name,
+                source=route_b.source,
+                target=route_b.target,
+                route_obj=_RouteObj("b"),
+                total_length_um=30.0,
+                corrected_centerline_um=((0.0, 0.0), (10.0, 0.0)),
+            ),
+        },
+        updated={},
+        route_cells_by_edge={},
+        route_cell_refcounts=Counter(),
+        registered_open_cell_index_by_edge={
+            route_a: 0,
+            route_b: 1,
+        },
+        registered_open_cell_count_by_edge={
+            route_a: 2,
+            route_b: 2,
+        },
+        registered_geometry_index_by_edge={},
+        base_open_cells_by_edge={},
+        base_open_cell_lists_by_edge={},
+        max_bumps_by_edge={},
+        centerline_lists_by_edge={},
+        footprint_prefilter_enabled_by_edge={route_a: False, route_b: False},
+        base_static_cells={(1, 1)},
+        reserved_meander_cells=set(),
+        pending_reserved_meander_rects=[],
+        grid_size_um=1.0,
+        bend_radius_um=4.0,
+        setup_profile={},
+        candidate_setup_profile={},
+        commit_profile={},
+        rust_planner_profile={},
+        rust_wrapper_profile={},
+    )
+
+    failed, plans, edge_attempts, *_rest = context.plan_candidate_bundle_registered(
+        candidate_edge_keys=(route_a, route_b),
+        requested=10.0,
+        box_depths_um=[10.0],
+        min_straight_um=5.0,
+        min_seg_um=5.0,
+        max_height_um=40.0,
+        endpoint_inset_um=0.0,
+    )
+
+    assert failed is True
+    assert plans == []
+    assert edge_attempts
+    assert edge_attempts[1]["status"] == "no_candidate"
+    assert edge_attempts[1]["rejected_box_blocked"] is True
+
+
 def test_m2_skeleton_reports_no_candidate_when_too_short():
     edge = RoutedEdgeKey(
         net_name="n0",
@@ -2332,3 +2685,46 @@ def test_m2_skeleton_reports_no_candidate_when_too_short():
         "no_candidate",
         "insufficient_space",
     }
+
+
+def test_near_minimum_meander_request_normalizes_roundoff():
+    minimum = 2.0 * 3.141592653589793 * 8.0
+
+    assert _normalize_minimum_insertable_request(
+        minimum - 1.0e-13,
+        minimum_insertable_extra_um=minimum,
+    ) == pytest.approx(minimum)
+
+    assert _normalize_minimum_insertable_request(
+        minimum - 1.0e-3,
+        minimum_insertable_extra_um=minimum,
+    ) == pytest.approx(minimum - 1.0e-3)
+
+
+def test_minimum_insertable_uses_fill_box_meander_lower_bound():
+    minimum = minimum_four_bend_extra_length_um(
+        grid_size_um=1.0,
+        bend_radius_cells=8,
+    )
+
+    assert minimum == pytest.approx(8.0 * (2.0 * 3.141592653589793 - 5.0) + 1.0)
+    assert minimum < 46.75
+
+
+def test_meander_search_config_uses_one_um_default_internal_straight():
+    search = _meander_search_config(
+        config=MeanderInsertionConfig(enabled=True, max_meander_height_um=80.0),
+        bend_radius_um=10.0,
+    )
+
+    assert search.min_straight_um == pytest.approx(1.0)
+
+
+def test_meander_search_config_includes_large_user_height():
+    search = _meander_search_config(
+        config=MeanderInsertionConfig(enabled=True, max_meander_height_um=1000.0),
+        bend_radius_um=8.0,
+    )
+
+    assert search.box_depths_um[0] == pytest.approx(1000.0)
+    assert 40.0 in search.box_depths_um
