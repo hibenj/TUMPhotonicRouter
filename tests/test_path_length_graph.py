@@ -1775,26 +1775,65 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
         def add_static_cells(self, _cells: object) -> None:
             return None
 
-        def plan_auto_analytic_meander_for_route_depth_sweep(
+        def route_port_corrected_centerline(
             self,
             route_obj: _RouteObj,
-            **kwargs: object,
+        ) -> list[tuple[float, float]]:
+            y = 10.0 if route_obj.name == "a" else 20.0
+            return [(0.0, y), (100.0, y)]
+
+        def register_meander_route_cells_as_static(
+            self,
+            routes: list[_RouteObj],
+            _base_static_cells: list[tuple[int, int]],
+            _route_occupancy_radius_cells: int = 0,
+        ) -> tuple[list[int], list[int], int]:
+            return list(range(len(routes))), [len(route.cells) for route in routes], 0
+
+        def plan_auto_analytic_meander_requirement_candidates_registered_opened_auto_config(
+            self,
+            candidate_centerlines: list[list[list[tuple[float, float]]]],
+            _candidate_registered_opened_cell_indices: list[list[int]],
+            candidate_requested_extra_lengths_um: list[float],
+            _candidate_max_bumps_by_edge: list[list[int]],
+            **_kwargs: object,
         ) -> dict[str, object]:
-            requested = float(cast(float, kwargs["requested_extra_length_um"]))
-            offset = 10 if route_obj.name == "a" else 20
+            requested = float(candidate_requested_extra_lengths_um[0])
+            plans = []
+            for edge_index, _centerline in enumerate(candidate_centerlines[0]):
+                offset = 10 if edge_index == 0 else 20
+                plans.append(
+                    {
+                        "inserted_extra_length_um": requested,
+                        "effective_bend_radius_um": 4.0,
+                        "primitive_bend_radius_um": 4.0,
+                        "selected_box": (0.0, 10.0, 0.0, 10.0),
+                        "selected_grid_rect": (offset, offset, offset, offset),
+                        "bumps": 1,
+                        "side": "left",
+                        "box_depth_um": 10.0,
+                        "selected_run_start_index": 0,
+                        "selected_run_end_index": 1,
+                        "centerline": [(0.0, 0.0), (1.0, 0.0)],
+                        "planning_mode": "fill_box_multi_bump",
+                    }
+                )
             return {
-                "inserted_extra_length_um": requested,
-                "effective_bend_radius_um": 4.0,
-                "primitive_bend_radius_um": 4.0,
-                "selected_box": (0.0, 10.0, 0.0, 10.0),
-                "selected_grid_rect": (offset, offset, offset, offset),
-                "bumps": 1,
-                "side": "left",
-                "box_depth_um": 10.0,
-                "selected_run_start_index": 0,
-                "selected_run_end_index": 1,
-                "centerline": [(0.0, 0.0), (1.0, 0.0)],
-                "planning_mode": "fill_box_multi_bump",
+                "status": "planned",
+                "selected_candidate_index": 0,
+                "plans": plans,
+                "candidate_results": [
+                    {
+                        "candidate_index": 0,
+                        "status": "planned",
+                        "reason": "",
+                        "failed_edge_index": None,
+                        "plans": plans,
+                    }
+                ],
+                "endpoint_inset_um": 4.0,
+                "endpoint_insets_um": [4.0],
+                "box_depths_um": [10.0],
             }
 
     class _FakeBackend:
@@ -1901,27 +1940,46 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
         def add_static_cells(self, _cells: object) -> None:
             return None
 
-        def plan_auto_analytic_meander_for_route_depth_sweep(
+        def route_port_corrected_centerline(
             self,
             route_obj: _RouteObj,
-            **kwargs: object,
-        ) -> dict[str, object] | None:
-            if route_obj.name == "b":
-                return None
-            requested = float(cast(float, kwargs["requested_extra_length_um"]))
+        ) -> list[tuple[float, float]]:
+            y = 10.0 if route_obj.name == "a" else 20.0
+            return [(0.0, y), (100.0, y)]
+
+        def register_meander_route_cells_as_static(
+            self,
+            routes: list[_RouteObj],
+            _base_static_cells: list[tuple[int, int]],
+            _route_occupancy_radius_cells: int = 0,
+        ) -> tuple[list[int], list[int], int]:
+            return list(range(len(routes))), [len(route.cells) for route in routes], 0
+
+        def plan_auto_analytic_meander_requirement_candidates_registered_opened_auto_config(
+            self,
+            candidate_centerlines: list[list[list[tuple[float, float]]]],
+            _candidate_registered_opened_cell_indices: list[list[int]],
+            candidate_requested_extra_lengths_um: list[float],
+            _candidate_max_bumps_by_edge: list[list[int]],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            requested = float(candidate_requested_extra_lengths_um[0])
             return {
-                "inserted_extra_length_um": requested,
-                "effective_bend_radius_um": 4.0,
-                "primitive_bend_radius_um": 4.0,
-                "selected_box": (0.0, 10.0, 0.0, 10.0),
-                "selected_grid_rect": (10, 10, 10, 10),
-                "bumps": 1,
-                "side": "left",
-                "box_depth_um": 10.0,
-                "selected_run_start_index": 0,
-                "selected_run_end_index": 1,
-                "centerline": [(0.0, 0.0), (1.0, 0.0)],
-                "planning_mode": "fill_box_multi_bump",
+                "status": "no_candidate",
+                "selected_candidate_index": None,
+                "plans": [],
+                "candidate_results": [
+                    {
+                        "candidate_index": 0,
+                        "status": "no_candidate",
+                        "reason": f"no exact meander candidate for {requested}",
+                        "failed_edge_index": len(candidate_centerlines[0]) - 1,
+                        "plans": [],
+                    }
+                ],
+                "endpoint_inset_um": 4.0,
+                "endpoint_insets_um": [4.0],
+                "box_depths_um": [10.0],
             }
 
     class _FakeBackend:
@@ -2275,7 +2333,7 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
     assert float(cast(float, report["planner_elapsed_s"])) >= 0.0
 
 
-def test_meander_planning_does_not_open_port_or_static_cells(monkeypatch):
+def test_meander_planning_requires_registered_rust_planner(monkeypatch):
     captured: dict[str, object] = {}
 
     class _FakeRouter:
@@ -2347,23 +2405,16 @@ def test_meander_planning_does_not_open_port_or_static_cells(monkeypatch):
         static_blocked_cells=[(1, 1)],
     )
 
-    opened_cells = cast(list[tuple[int, int]], captured["opened_cells"])
     static_cells = set(cast(list[tuple[int, int]], captured["static_cells"]))
-    added_static_cells = set(
-        cast(list[tuple[int, int]], captured["added_static_cells"])
-    )
-    assert set(opened_cells) == {(2, 2), (3, 3)}
-    assert (1, 1) not in opened_cells
-    assert (7, 8) not in opened_cells
-    assert (9, 10) not in opened_cells
     assert (1, 1) in static_cells
-    assert (2, 2) in added_static_cells
-    assert (3, 3) in added_static_cells
     assert (7, 8) not in static_cells
     assert (9, 10) not in static_cells
+    assert "opened_cells" not in captured
     assert updated[0].opened_cells == record.opened_cells
     results = cast(list[dict[str, object]], report["results"])
-    assert results[0]["status"] == "planned"
+    assert results[0]["status"] == "no_candidate"
+    assert "Rust registered PLM planner is required" in str(results[0]["reason"])
+    assert report["candidate_engine_counts"] == {"rust_registered_unavailable": 1}
 
 
 def test_meander_commit_defers_python_reserved_cells_until_fallback_planning():
