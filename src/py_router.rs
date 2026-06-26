@@ -3298,6 +3298,10 @@ impl PyPhotonicRouter {
                         primitive_bend_radius_um,
                         mode,
                     )?;
+                    let py_plan_dict = py_plan.bind(py).downcast::<PyDict>()?;
+                    py_plan_dict.set_item("endpoint_inset_um", *endpoint_inset_um)?;
+                    py_plan_dict.set_item("box_depths_um", &box_depths_um)?;
+                    py_plan_dict.set_item("endpoint_insets_um", &endpoint_insets_um)?;
                     candidate_wrapper_profile.py_plan_conversion_s +=
                         py_plan_conversion_start.elapsed().as_secs_f64();
                     candidate_wrapper_profile.py_plan_count += 1;

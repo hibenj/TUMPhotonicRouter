@@ -266,7 +266,6 @@ class _MeanderPlannerContext:
         min_straight_um: float,
         min_seg_um: float,
         max_height_um: float,
-        endpoint_insets_um: list[float],
         auto_endpoint_inset_um: float | None,
     ) -> RequirementCandidatesAttempt | None:
         candidate_engine = self.registered_requirement_candidate_engine()
@@ -384,146 +383,65 @@ class _MeanderPlannerContext:
 
         self.add_rust_planner_profile(result.get("planner_profile_total"))
         self.add_rust_wrapper_profile(result.get("wrapper_profile_total"))
-        rust_box_depths_um = _float_list_from_mapping_value(
-            result.get("box_depths_um"),
+        raw_candidate_results = cast(
+            list[dict[str, object]],
+            result["candidate_results"],
         )
-        rust_endpoint_insets_um = _float_list_from_mapping_value(
-            result.get("endpoint_insets_um"),
-        )
-        if rust_endpoint_insets_um is None:
-            rust_endpoint_insets_um = _float_list_from_mapping_value(
-                result.get("endpoint_insets_attempted_um"),
-            )
-        selected_endpoint_inset_from_rust = _as_float(
-            result.get("endpoint_inset_um"),
-            (rust_endpoint_insets_um or endpoint_insets_um or [0.0])[0],
-        )
-        raw_candidate_results = result.get("candidate_results", [])
         validated_plans_by_candidate: dict[int, list[PlannedEdgeInsertion]] = {}
-        if isinstance(raw_candidate_results, list):
-            for rust_index, raw_candidate_result in enumerate(raw_candidate_results):
-                if rust_index >= len(rust_work_indices) or not isinstance(
-                    raw_candidate_result,
-                    dict,
-                ):
-                    continue
-                work_index = rust_work_indices[rust_index]
-                edge_attempts = edge_attempts_by_work[work_index]
-                work_item = work_items[work_index]
-                candidate_edge_keys = work_item.candidate.edge_keys
-                work_item_requested = work_item.requested
-                candidate_max_bumps = max_bumps_by_work[work_index]
-                candidate_records = [
-                    self.by_edge.get(candidate_edge_key)
-                    for candidate_edge_key in candidate_edge_keys
-                ]
-                failed_edge_index = _as_int(
-                    raw_candidate_result.get("failed_edge_index"),
-                    0,
-                )
-                status = str(raw_candidate_result.get("status", "no_candidate"))
-                if status == "planned":
-                    raw_plans = raw_candidate_result.get("plans")
-                    candidate_failed = False
-                    candidate_plans: list[PlannedEdgeInsertion] = []
-                    candidate_reserved_cells: set[GridCell] = set()
-                    if (
-                        not isinstance(raw_plans, list)
-                        or any(record is None for record in candidate_records)
-                        or len(raw_plans) != len(candidate_records)
-                    ):
-                        candidate_failed = True
-                    else:
-                        for (
-                            candidate_edge_key,
-                            rr_obj,
-                            candidate_record,
-                            candidate_max_bumps_value,
-                        ) in zip(
-                            candidate_edge_keys,
-                            raw_plans,
-                            candidate_records,
-                            candidate_max_bumps,
-                        ):
-                            if not isinstance(rr_obj, dict) or candidate_record is None:
-                                candidate_failed = True
-                                break
-                            rr = cast(dict[str, object], rr_obj)
-                            rr["endpoint_inset_um"] = selected_endpoint_inset_from_rust
-                            if rust_box_depths_um is not None:
-                                rr["box_depths_um"] = rust_box_depths_um
-                            if rust_endpoint_insets_um is not None:
-                                rr["endpoint_insets_um"] = rust_endpoint_insets_um
-                            selected_grid_rect = rr.get("selected_grid_rect")
-                            parsed_grid_rect = _parse_grid_rect(selected_grid_rect)
-                            if parsed_grid_rect is None:
-                                candidate_failed = True
-                                break
-                            blocked, overlap_count = self._candidate_grid_rect_overlaps_blocked(
-                                parsed_grid_rect,
-                                extra_blocked_cells=candidate_reserved_cells,
-                            )
-                            if blocked:
-                                raw_candidate_result["rejected_box_blocked"] = True
-                                attempt_reason = str(
-                                    raw_candidate_result.get("reason", "")
-                                )
-                                if not attempt_reason:
-                                    attempt_reason = (
-                                        f"candidate selected_grid_rect overlaps blocked cells "
-                                        f"({overlap_count} cells)"
-                                    )
-                                raw_candidate_result["reason"] = attempt_reason
-                                candidate_failed = True
-                                break
-                            candidate_inserted = _as_float(
-                                rr.get("inserted_extra_length_um", 0.0),
-                                0.0,
-                            )
-                            if abs(candidate_inserted - work_item_requested) > EXACT_MEANDER_EPS_UM:
-                                raw_candidate_result["rejected_exact_length_mismatch"] = True
-                                candidate_failed = True
-                                break
-                            candidate_plans.append(
-                                (
-                                    candidate_edge_key,
-                                    candidate_record,
-                                    rr,
-                                    True,
-                                    candidate_max_bumps_value,
-                                    set(),
-                                )
-                            )
-                            candidate_reserved_cells.update(_grid_rect_cells(parsed_grid_rect))
-                    if candidate_failed:
-                        for attempt_info in edge_attempts:
-                            attempt_info["status"] = "no_candidate"
-                            attempt_info["reason"] = str(
-                                raw_candidate_result.get("reason", "")
-                            )
-                        edge_calls_by_work[work_index] = min(
-                            len(edge_attempts),
-                            failed_edge_index + 1,
-                        )
-                    else:
-                        for attempt_info in edge_attempts:
-                            attempt_info["status"] = "planned"
-                            attempt_info["reason"] = ""
-                            attempt_info["rejected_box_blocked"] = False
-                        edge_calls_by_work[work_index] = len(edge_attempts)
-                        validated_plans_by_candidate[rust_index] = candidate_plans
-                        for _, _, candidate_rr, *_ in candidate_plans:
-                            if isinstance(candidate_rr, dict):
-                                candidate_rr["rejected_box_blocked"] = False
-                else:
-                    if 0 <= failed_edge_index < len(edge_attempts):
-                        edge_attempts[failed_edge_index]["reason"] = str(
-                            raw_candidate_result.get("reason", "")
-                        )
-                    edge_calls_by_work[work_index] = min(
-                        len(edge_attempts),
-                        failed_edge_index + 1,
+        for rust_index, raw_candidate_result in enumerate(raw_candidate_results):
+            work_index = rust_work_indices[rust_index]
+            edge_attempts = edge_attempts_by_work[work_index]
+            work_item = work_items[work_index]
+            candidate_edge_keys = work_item.candidate.edge_keys
+            candidate_max_bumps = max_bumps_by_work[work_index]
+            candidate_records = [
+                self.by_edge[candidate_edge_key]
+                for candidate_edge_key in candidate_edge_keys
+            ]
+            failed_edge_index = _as_int(
+                raw_candidate_result.get("failed_edge_index"),
+                0,
+            )
+            status = str(raw_candidate_result["status"])
+            if status == "planned":
+                raw_plans = cast(list[dict[str, object]], raw_candidate_result["plans"])
+                candidate_plans: list[PlannedEdgeInsertion] = [
+                    (
+                        candidate_edge_key,
+                        candidate_record,
+                        rr,
+                        True,
+                        candidate_max_bumps_value,
+                        set(),
                     )
+                    for (
+                        candidate_edge_key,
+                        rr,
+                        candidate_record,
+                        candidate_max_bumps_value,
+                    ) in zip(
+                        candidate_edge_keys,
+                        raw_plans,
+                        candidate_records,
+                        candidate_max_bumps,
+                    )
+                ]
+                for attempt_info in edge_attempts:
+                    attempt_info["status"] = "planned"
+                    attempt_info["reason"] = ""
+                    attempt_info["rejected_box_blocked"] = False
+                edge_calls_by_work[work_index] = len(edge_attempts)
+                validated_plans_by_candidate[rust_index] = candidate_plans
+                continue
+
+            if 0 <= failed_edge_index < len(edge_attempts):
+                edge_attempts[failed_edge_index]["reason"] = str(
+                    raw_candidate_result.get("reason", "")
+                )
+            edge_calls_by_work[work_index] = min(
+                len(edge_attempts),
+                failed_edge_index + 1,
+            )
         if rust_work_indices:
             elapsed_by_work[rust_work_indices[0]] = elapsed_s
 
@@ -1629,7 +1547,6 @@ def analyze_meander_insertion_for_requirements(
             min_straight_um=search_config.min_straight_um,
             min_seg_um=search_config.min_segment_um,
             max_height_um=search_config.max_height_um,
-            endpoint_insets_um=attempted_endpoint_insets_um,
             auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
         )
         if requirement_attempt is not None:
@@ -1795,21 +1712,14 @@ def analyze_meander_insertion_for_requirements(
         )
         unmatched = 0.0
         representative_rr = selected_plans[0][2]
-        selected_endpoint_inset_um = _as_float(
-            representative_rr.get("endpoint_inset_um"),
-            selected_endpoint_inset_um,
+        selected_endpoint_inset_um = _as_float(representative_rr["endpoint_inset_um"])
+        entry["box_depth_candidates_um"] = list(
+            cast(list[float], representative_rr["box_depths_um"])
         )
-        rust_box_depths_um = _float_list_from_mapping_value(
-            representative_rr.get("box_depths_um"),
+        attempted_endpoint_insets_um = list(
+            cast(list[float], representative_rr["endpoint_insets_um"])
         )
-        if rust_box_depths_um is not None:
-            entry["box_depth_candidates_um"] = rust_box_depths_um
-        rust_endpoint_insets_um = _float_list_from_mapping_value(
-            representative_rr.get("endpoint_insets_um"),
-        )
-        if rust_endpoint_insets_um is not None:
-            attempted_endpoint_insets_um = rust_endpoint_insets_um
-            entry["endpoint_inset_candidates_um"] = attempted_endpoint_insets_um
+        entry["endpoint_inset_candidates_um"] = attempted_endpoint_insets_um
         entry["status"] = "planned"
         entry["reason"] = ""
         entry["inserted_extra_length_um"] = inserted
