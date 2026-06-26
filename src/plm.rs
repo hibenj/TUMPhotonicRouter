@@ -8,13 +8,106 @@ use crate::geometry_realization::{
     AutoRouteAnalyticMeanderPlan, DenseOccupancyPrefix, GeometryGridSpec, SparseCellIndex,
 };
 use crate::meander::MeanderPlanningMode;
-use crate::obstacle_map::CellKey;
+use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 
 #[derive(Clone)]
 pub struct RegisteredMeanderGeometry {
     pub centerline: Vec<(f64, f64)>,
     pub registered_open_index: usize,
     pub max_bumps: usize,
+}
+
+#[derive(Default)]
+pub struct RegisteredPlmContext {
+    pub base_prefix: Option<DenseOccupancyPrefix>,
+    pub open_cells: Vec<FxHashSet<CellKey>>,
+    pub open_indices: Vec<SparseCellIndex>,
+    pub geometries: Vec<RegisteredMeanderGeometry>,
+    pub reserved_cells: FxHashSet<CellKey>,
+    pub reserved_index: Option<SparseCellIndex>,
+}
+
+impl RegisteredPlmContext {
+    pub fn invalidate_base_prefix(&mut self) {
+        self.base_prefix = None;
+    }
+
+    pub fn ensure_base_prefix_from_obstacle_map(&mut self, obstacle_map: &ObstacleMap) {
+        if self.base_prefix.is_none() {
+            self.base_prefix = Some(DenseOccupancyPrefix::from_obstacle_map(obstacle_map, None));
+        }
+    }
+
+    pub fn set_base_prefix_from_keys(
+        &mut self,
+        width: i32,
+        height: i32,
+        keys: &FxHashSet<CellKey>,
+    ) {
+        self.base_prefix = Some(DenseOccupancyPrefix::from_blocked_keys(width, height, keys));
+    }
+
+    pub fn clear_registered_routes(&mut self) {
+        self.open_cells.clear();
+        self.open_indices.clear();
+        self.geometries.clear();
+    }
+
+    pub fn clear_reserved_cells(&mut self, grid_height: i32) {
+        self.reserved_cells.clear();
+        self.reserved_index = Some(SparseCellIndex::empty(grid_height));
+    }
+
+    pub fn clear_reserved_cells_and_invalidate_index(&mut self) {
+        self.reserved_cells.clear();
+        self.reserved_index = None;
+    }
+
+    pub fn invalidate_reserved_index(&mut self) {
+        self.reserved_index = None;
+    }
+
+    pub fn ensure_reserved_index(&mut self, width: i32, height: i32) {
+        if self.reserved_index.is_none() {
+            self.reserved_index = Some(SparseCellIndex::from_cells(
+                width,
+                height,
+                self.reserved_cells.iter().copied(),
+            ));
+        }
+    }
+
+    pub fn add_reserved_cells(&mut self, cells: &[(i32, i32)], width: i32) -> usize {
+        let before = self.reserved_cells.len();
+        let packed_cells: Vec<CellKey> = cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
+        self.reserved_cells.extend(packed_cells.iter().copied());
+        let added = self.reserved_cells.len().saturating_sub(before);
+        if let Some(index) = self.reserved_index.as_mut() {
+            index.insert_cells(width, packed_cells);
+        }
+        added
+    }
+
+    pub fn add_reserved_grid_rect(
+        &mut self,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+        width: i32,
+    ) -> usize {
+        let before = self.reserved_cells.len();
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                self.reserved_cells.insert(pack_xy(x, y));
+            }
+        }
+        let added = self.reserved_cells.len().saturating_sub(before);
+        if let Some(index) = self.reserved_index.as_mut() {
+            index.insert_rect(min_x, max_x, min_y, max_y, width);
+        }
+        added
+    }
 }
 
 #[derive(Clone, Default)]

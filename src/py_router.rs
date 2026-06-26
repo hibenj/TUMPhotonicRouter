@@ -44,7 +44,8 @@ use crate::meander::{
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
 use crate::plm::{
     plan_registered_geometry_requirement_candidates, MeanderPlanningProfileTotals,
-    MeanderWrapperProfileTotals, RegisteredMeanderGeometry, RegisteredRequirementResult,
+    MeanderWrapperProfileTotals, RegisteredMeanderGeometry, RegisteredPlmContext,
+    RegisteredRequirementResult,
 };
 use crate::primitives::{
     create_grid4_unit_grid_primitive_library, create_jps4_unit_grid_primitive_library,
@@ -467,12 +468,7 @@ pub struct PyPhotonicRouter {
     primitives: PrimitiveLibrary,
     static_cells: FxHashSet<CellKey>,
     port_open_cells: FxHashSet<CellKey>,
-    meander_base_prefix: RefCell<Option<DenseOccupancyPrefix>>,
-    meander_registered_open_cells: RefCell<Vec<FxHashSet<CellKey>>>,
-    meander_registered_open_indices: RefCell<Vec<SparseCellIndex>>,
-    meander_registered_geometries: RefCell<Vec<RegisteredMeanderGeometry>>,
-    meander_registered_reserved_cells: RefCell<FxHashSet<CellKey>>,
-    meander_registered_reserved_index: RefCell<Option<SparseCellIndex>>,
+    registered_plm: RefCell<RegisteredPlmContext>,
     last_meander_registration_profile: RefCell<Option<MeanderRegistrationProfile>>,
 }
 
@@ -1404,45 +1400,28 @@ impl PyPhotonicRouter {
             primitives,
             static_cells: FxHashSet::default(),
             port_open_cells: FxHashSet::default(),
-            meander_base_prefix: RefCell::new(None),
-            meander_registered_open_cells: RefCell::new(Vec::new()),
-            meander_registered_open_indices: RefCell::new(Vec::new()),
-            meander_registered_geometries: RefCell::new(Vec::new()),
-            meander_registered_reserved_cells: RefCell::new(FxHashSet::default()),
-            meander_registered_reserved_index: RefCell::new(None),
+            registered_plm: RefCell::new(RegisteredPlmContext::default()),
             last_meander_registration_profile: RefCell::new(None),
         }
     }
     fn invalidate_meander_base_prefix(&self) {
-        self.meander_base_prefix.borrow_mut().take();
+        self.registered_plm.borrow_mut().invalidate_base_prefix();
     }
 
     fn ensure_meander_base_prefix(&self) {
-        let mut cached = self.meander_base_prefix.borrow_mut();
-        if cached.is_none() {
-            *cached = Some(DenseOccupancyPrefix::from_obstacle_map(
-                &self.obstacle_map,
-                None,
-            ));
-        }
+        self.registered_plm
+            .borrow_mut()
+            .ensure_base_prefix_from_obstacle_map(&self.obstacle_map);
     }
 
     fn invalidate_meander_registered_reserved_index(&self) {
-        self.meander_registered_reserved_index.borrow_mut().take();
+        self.registered_plm.borrow_mut().invalidate_reserved_index();
     }
 
     fn ensure_meander_registered_reserved_index(&self) {
-        let mut cached = self.meander_registered_reserved_index.borrow_mut();
-        if cached.is_none() {
-            *cached = Some(SparseCellIndex::from_cells(
-                self.grid.width as i32,
-                self.grid.height as i32,
-                self.meander_registered_reserved_cells
-                    .borrow()
-                    .iter()
-                    .copied(),
-            ));
-        }
+        self.registered_plm
+            .borrow_mut()
+            .ensure_reserved_index(self.grid.width as i32, self.grid.height as i32);
     }
 
     fn add_static_cells(&mut self, cells: Vec<(i32, i32)>) {
@@ -1456,37 +1435,26 @@ impl PyPhotonicRouter {
         self.invalidate_meander_base_prefix();
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.static_cells.clear();
-        self.meander_registered_open_cells.borrow_mut().clear();
-        self.meander_registered_open_indices.borrow_mut().clear();
-        self.meander_registered_geometries.borrow_mut().clear();
-        self.meander_registered_reserved_cells.borrow_mut().clear();
-        self.invalidate_meander_registered_reserved_index();
+        let mut plm = self.registered_plm.borrow_mut();
+        plm.clear_registered_routes();
+        plm.clear_reserved_cells_and_invalidate_index();
     }
     fn set_static_cells(&mut self, cells: Vec<(i32, i32)>) {
         self.clear_static_cells();
         self.add_static_cells(cells);
     }
     fn clear_registered_meander_route_cells(&self) {
-        self.meander_registered_open_cells.borrow_mut().clear();
-        self.meander_registered_open_indices.borrow_mut().clear();
-        self.meander_registered_geometries.borrow_mut().clear();
+        self.registered_plm.borrow_mut().clear_registered_routes();
     }
     fn clear_registered_meander_reserved_cells(&self) {
-        self.meander_registered_reserved_cells.borrow_mut().clear();
-        *self.meander_registered_reserved_index.borrow_mut() =
-            Some(SparseCellIndex::empty(self.grid.height as i32));
+        self.registered_plm
+            .borrow_mut()
+            .clear_reserved_cells(self.grid.height as i32);
     }
     fn add_registered_meander_reserved_cells(&self, cells: Vec<(i32, i32)>) -> usize {
-        let mut reserved = self.meander_registered_reserved_cells.borrow_mut();
-        let before = reserved.len();
-        let packed_cells: Vec<CellKey> = cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
-        reserved.extend(packed_cells.iter().copied());
-        let added = reserved.len().saturating_sub(before);
-        drop(reserved);
-        if let Some(index) = self.meander_registered_reserved_index.borrow_mut().as_mut() {
-            index.insert_cells(self.grid.width as i32, packed_cells);
-        }
-        added
+        self.registered_plm
+            .borrow_mut()
+            .add_reserved_cells(&cells, self.grid.width as i32)
     }
     fn add_registered_meander_reserved_grid_rect(
         &self,
@@ -1500,23 +1468,18 @@ impl PyPhotonicRouter {
                 "registered meander reserved grid rect must be non-empty",
             ));
         }
-        let mut reserved = self.meander_registered_reserved_cells.borrow_mut();
-        let before = reserved.len();
-        for x in min_x..=max_x {
-            for y in min_y..=max_y {
-                reserved.insert(pack_xy(x, y));
-            }
-        }
-        let added = reserved.len().saturating_sub(before);
-        drop(reserved);
-        if let Some(index) = self.meander_registered_reserved_index.borrow_mut().as_mut() {
-            index.insert_rect(min_x, max_x, min_y, max_y, self.grid.width as i32);
-        }
-        Ok(added)
+        Ok(self.registered_plm.borrow_mut().add_reserved_grid_rect(
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+            self.grid.width as i32,
+        ))
     }
     fn registered_meander_open_cell_count(&self, index: usize) -> PyResult<usize> {
-        self.meander_registered_open_cells
+        self.registered_plm
             .borrow()
+            .open_cells
             .get(index)
             .map(FxHashSet::len)
             .ok_or_else(|| PyValueError::new_err("registered meander route index is out of range"))
@@ -1560,7 +1523,7 @@ impl PyPhotonicRouter {
                 "registered meander geometry inputs must have matching lengths",
             ));
         }
-        let open_cell_count = self.meander_registered_open_cells.borrow().len();
+        let open_cell_count = self.registered_plm.borrow().open_cells.len();
         let mut geometries = Vec::with_capacity(count);
         for ((centerline, registered_open_index), max_bumps) in centerlines
             .into_iter()
@@ -1586,7 +1549,7 @@ impl PyPhotonicRouter {
             });
         }
         let indices: Vec<usize> = (0..geometries.len()).collect();
-        *self.meander_registered_geometries.borrow_mut() = geometries;
+        self.registered_plm.borrow_mut().geometries = geometries;
         Ok(indices)
     }
     #[pyo3(signature=(routes,base_static_cells,route_clearance_radius_cells=0))]
@@ -1608,8 +1571,9 @@ impl PyPhotonicRouter {
             ..MeanderRegistrationProfile::default()
         };
         let reset_start = Instant::now();
-        self.meander_registered_reserved_cells.borrow_mut().clear();
-        self.invalidate_meander_registered_reserved_index();
+        self.registered_plm
+            .borrow_mut()
+            .clear_reserved_cells_and_invalidate_index();
         profile.reset_s += reset_start.elapsed().as_secs_f64();
         let base_static_pack_start = Instant::now();
         let base_static_keys = pack_cells(&base_static_cells);
@@ -1646,14 +1610,18 @@ impl PyPhotonicRouter {
         let registered_store_start = Instant::now();
         self.ensure_meander_base_prefix();
         let registered_open_indices = {
-            let cached = self.meander_base_prefix.borrow();
-            let base_prefix = cached
+            let plm = self.registered_plm.borrow();
+            let base_prefix = plm
+                .base_prefix
                 .as_ref()
                 .expect("meander base prefix should be initialized");
             build_registered_open_indices(base_prefix, &registered_open_sets)
         };
-        *self.meander_registered_open_cells.borrow_mut() = registered_open_sets;
-        *self.meander_registered_open_indices.borrow_mut() = registered_open_indices;
+        {
+            let mut plm = self.registered_plm.borrow_mut();
+            plm.open_cells = registered_open_sets;
+            plm.open_indices = registered_open_indices;
+        }
         profile.registered_store_s += registered_store_start.elapsed().as_secs_f64();
         profile.total_s = total_start.elapsed().as_secs_f64();
         *self.last_meander_registration_profile.borrow_mut() = Some(profile);
@@ -1685,11 +1653,11 @@ impl PyPhotonicRouter {
         let base_static_keys = pack_cells(&base_static_cells);
         profile.base_static_pack_s += base_static_pack_start.elapsed().as_secs_f64();
         self.static_cells = base_static_keys.clone();
-        self.meander_registered_open_cells.borrow_mut().clear();
-        self.meander_registered_open_indices.borrow_mut().clear();
-        self.meander_registered_geometries.borrow_mut().clear();
-        self.meander_registered_reserved_cells.borrow_mut().clear();
-        self.invalidate_meander_registered_reserved_index();
+        {
+            let mut plm = self.registered_plm.borrow_mut();
+            plm.clear_registered_routes();
+            plm.clear_reserved_cells_and_invalidate_index();
+        }
         if !base_static_cells.is_empty() {
             let base_static_add_start = Instant::now();
             self.obstacle_map.add_static_cells(&base_static_cells);
@@ -1729,14 +1697,18 @@ impl PyPhotonicRouter {
         let registered_store_start = Instant::now();
         self.ensure_meander_base_prefix();
         let registered_open_indices = {
-            let cached = self.meander_base_prefix.borrow();
-            let base_prefix = cached
+            let plm = self.registered_plm.borrow();
+            let base_prefix = plm
+                .base_prefix
                 .as_ref()
                 .expect("meander base prefix should be initialized");
             build_registered_open_indices(base_prefix, &registered_open_sets)
         };
-        *self.meander_registered_open_cells.borrow_mut() = registered_open_sets;
-        *self.meander_registered_open_indices.borrow_mut() = registered_open_indices;
+        {
+            let mut plm = self.registered_plm.borrow_mut();
+            plm.open_cells = registered_open_sets;
+            plm.open_indices = registered_open_indices;
+        }
         profile.registered_store_s += registered_store_start.elapsed().as_secs_f64();
         profile.total_s = total_start.elapsed().as_secs_f64();
         *self.last_meander_registration_profile.borrow_mut() = Some(profile);
@@ -1765,11 +1737,11 @@ impl PyPhotonicRouter {
         self.invalidate_meander_base_prefix();
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.static_cells = base_static_keys.clone();
-        self.meander_registered_open_cells.borrow_mut().clear();
-        self.meander_registered_open_indices.borrow_mut().clear();
-        self.meander_registered_geometries.borrow_mut().clear();
-        self.meander_registered_reserved_cells.borrow_mut().clear();
-        self.invalidate_meander_registered_reserved_index();
+        {
+            let mut plm = self.registered_plm.borrow_mut();
+            plm.clear_registered_routes();
+            plm.clear_reserved_cells_and_invalidate_index();
+        }
         profile.reset_s += reset_start.elapsed().as_secs_f64();
 
         let (route_cell_sets, route_cell_refcounts, unique_route_cells) =
@@ -1796,24 +1768,28 @@ impl PyPhotonicRouter {
         let mut base_prefix_keys = base_static_keys.clone();
         base_prefix_keys.extend(unique_route_cells);
         self.static_cells = base_prefix_keys.clone();
-        *self.meander_base_prefix.borrow_mut() = Some(DenseOccupancyPrefix::from_blocked_keys(
+        self.registered_plm.borrow_mut().set_base_prefix_from_keys(
             self.grid.width as i32,
             self.grid.height as i32,
             &base_prefix_keys,
-        ));
+        );
         profile.base_prefix_build_s += base_prefix_build_start.elapsed().as_secs_f64();
 
         let indices: Vec<usize> = (0..registered_open_sets.len()).collect();
         let registered_store_start = Instant::now();
         let registered_open_indices = {
-            let cached = self.meander_base_prefix.borrow();
-            let base_prefix = cached
+            let plm = self.registered_plm.borrow();
+            let base_prefix = plm
+                .base_prefix
                 .as_ref()
                 .expect("meander base prefix should be initialized");
             build_registered_open_indices(base_prefix, &registered_open_sets)
         };
-        *self.meander_registered_open_cells.borrow_mut() = registered_open_sets;
-        *self.meander_registered_open_indices.borrow_mut() = registered_open_indices;
+        {
+            let mut plm = self.registered_plm.borrow_mut();
+            plm.open_cells = registered_open_sets;
+            plm.open_indices = registered_open_indices;
+        }
         profile.registered_store_s += registered_store_start.elapsed().as_secs_f64();
         profile.total_s = total_start.elapsed().as_secs_f64();
         *self.last_meander_registration_profile.borrow_mut() = Some(profile);
@@ -2891,8 +2867,9 @@ impl PyPhotonicRouter {
                 None
             };
         self.ensure_meander_base_prefix();
-        let cached = self.meander_base_prefix.borrow();
-        let base_prefix = cached
+        let plm = self.registered_plm.borrow();
+        let base_prefix = plm
+            .base_prefix
             .as_ref()
             .expect("meander base prefix should be initialized");
         let plan = plan_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs(
@@ -3010,8 +2987,9 @@ impl PyPhotonicRouter {
                 None
             };
         self.ensure_meander_base_prefix();
-        let cached = self.meander_base_prefix.borrow();
-        let base_prefix = cached
+        let plm = self.registered_plm.borrow();
+        let base_prefix = plm
+            .base_prefix
             .as_ref()
             .expect("meander base prefix should be initialized");
         let probe = probe_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs(
@@ -3123,8 +3101,9 @@ impl PyPhotonicRouter {
                 None
             };
         self.ensure_meander_base_prefix();
-        let cached = self.meander_base_prefix.borrow();
-        let base_prefix = cached
+        let plm = self.registered_plm.borrow();
+        let base_prefix = plm
+            .base_prefix
             .as_ref()
             .expect("meander base prefix should be initialized");
         let plan = plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
@@ -3190,23 +3169,20 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
 
         self.ensure_meander_base_prefix();
-        let cached = self.meander_base_prefix.borrow();
-        let base_prefix = cached
+        self.ensure_meander_registered_reserved_index();
+        let plm = self.registered_plm.borrow();
+        let base_prefix = plm
+            .base_prefix
             .as_ref()
             .expect("meander base prefix should be initialized");
-        let registered_open_cells = self.meander_registered_open_cells.borrow();
-        let registered_open_indices = self.meander_registered_open_indices.borrow();
-        let registered_geometries = self.meander_registered_geometries.borrow();
-        self.ensure_meander_registered_reserved_index();
-        let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
         let result = plan_registered_geometry_requirement_candidates(
             &candidate_geometry_indices,
             &candidate_requested_extra_lengths_um,
-            &registered_geometries,
-            &registered_open_cells,
-            &registered_open_indices,
+            &plm.geometries,
+            &plm.open_cells,
+            &plm.open_indices,
             base_prefix,
-            reserved_index_borrow.as_ref(),
+            plm.reserved_index.as_ref(),
             &grid,
             self.grid.width as i32,
             self.grid.height as i32,
@@ -3327,8 +3303,9 @@ impl PyPhotonicRouter {
                 None
             };
         self.ensure_meander_base_prefix();
-        let cached = self.meander_base_prefix.borrow();
-        let base_prefix = cached
+        let plm = self.registered_plm.borrow();
+        let base_prefix = plm
+            .base_prefix
             .as_ref()
             .expect("meander base prefix should be initialized");
         let probe = probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
