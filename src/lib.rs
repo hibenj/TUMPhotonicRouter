@@ -7,6 +7,7 @@ pub mod astar;
 pub mod geometry_realization;
 pub mod meander;
 pub mod obstacle_map;
+pub mod plm;
 pub mod primitives;
 pub mod py_router;
 pub mod simple_routes;
