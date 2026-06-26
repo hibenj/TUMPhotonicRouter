@@ -25,7 +25,6 @@ use crate::static_obstacle_builder::{
 };
 
 const EPS: f64 = 1.0e-9;
-const PORT_CORRECTION_GRID_TOLERANCE_CELLS: f64 = 2.0;
 const MITER_LIMIT: f64 = 4.0;
 const DEFAULT_BEND_SAMPLES_PER_90_DEG: usize = 16;
 
@@ -42,10 +41,32 @@ struct AxisAlignedRun {
     kind: AxisAlignedRunKind,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DoglegAbsorber {
+    transition_index: usize,
+    kind: AxisAlignedRunKind,
+    dir: i8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EndpointDeltaMutation {
+    Unchanged,
+    CoordinatesOnly,
+    InsertedPoint { after_index: usize },
+    RebuiltCenterline,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OffsetBumpPlacement {
+    Start,
+    End,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct PrimitiveCenterlineReplay {
     centerline: Vec<(f64, f64)>,
     straight_runs: Vec<AxisAlignedRun>,
+    dogleg_absorbers: Vec<DoglegAbsorber>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -513,6 +534,7 @@ pub enum GeometryError {
         first_rejection: Option<AutoMeanderRejectionDetail>,
     },
     NoMeanderCandidateSegment,
+    PortEndpointCorrectionRequiresUnsupportedStub,
     MeanderPlanningFailed(MeanderPlanningError),
     PortAccess(PortAccessError),
 }
@@ -613,6 +635,10 @@ impl fmt::Display for GeometryError {
             GeometryError::NoMeanderCandidateSegment => {
                 write!(f, "no axis-aligned centerline segment is suitable for meander insertion")
             }
+            GeometryError::PortEndpointCorrectionRequiresUnsupportedStub => write!(
+                f,
+                "port endpoint correction would require an unsupported terminal stub"
+            ),
             GeometryError::MeanderPlanningFailed(err) => {
                 write!(f, "analytic meander planning failed: {err:?}")
             }
@@ -866,6 +892,8 @@ fn route_to_primitive_centerline_with_runs(
 
     let mut centerline = Vec::with_capacity(route.states.len());
     let mut straight_runs = Vec::new();
+    let mut dogleg_absorbers = Vec::new();
+    let mut previous_was_bend = false;
     let start = grid.cell_center(route.states[0].x, route.states[0].y);
     if !is_finite_point(start) {
         return Err(GeometryError::NonFiniteCoordinate);
@@ -887,6 +915,17 @@ fn route_to_primitive_centerline_with_runs(
         let expected = grid.cell_center(next_state.x, next_state.y);
         if !is_finite_point(expected) {
             return Err(GeometryError::NonFiniteCoordinate);
+        }
+
+        let current_is_bend = matches!(primitive.geometry, PrimitiveGeometry::Bend { .. });
+        if previous_was_bend && current_is_bend {
+            if let Some((kind, dir)) = dogleg_absorber_for_angle(state.angle) {
+                dogleg_absorbers.push(DoglegAbsorber {
+                    transition_index: centerline.len() - 1,
+                    kind,
+                    dir,
+                });
+            }
         }
 
         match primitive.geometry {
@@ -943,6 +982,7 @@ fn route_to_primitive_centerline_with_runs(
             return Err(GeometryError::NonFiniteCoordinate);
         }
         push_physical_if_different(&mut centerline, actual);
+        previous_was_bend = current_is_bend;
     }
 
     if centerline.len() < 2 {
@@ -955,7 +995,18 @@ fn route_to_primitive_centerline_with_runs(
     Ok(PrimitiveCenterlineReplay {
         centerline,
         straight_runs,
+        dogleg_absorbers,
     })
+}
+
+fn dogleg_absorber_for_angle(angle: u8) -> Option<(AxisAlignedRunKind, i8)> {
+    match angle % 8 {
+        0 => Some((AxisAlignedRunKind::Horizontal, 1)),
+        2 => Some((AxisAlignedRunKind::Vertical, 1)),
+        4 => Some((AxisAlignedRunKind::Horizontal, -1)),
+        6 => Some((AxisAlignedRunKind::Vertical, -1)),
+        _ => None,
+    }
 }
 
 /// Replace first/last centerline points with explicit source/target physical points.
@@ -1010,20 +1061,32 @@ pub fn route_to_port_corrected_centerline(
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
     let replay = route_to_primitive_centerline_with_runs(route, primitives, grid)?;
     let mut centerline = replay.centerline;
-    if !try_apply_full_straight_port_correction(
-        &mut centerline,
-        source_port_um,
-        target_port_um,
-        PORT_CORRECTION_GRID_TOLERANCE_CELLS * grid.grid_size_um,
-    )? {
-        try_apply_shared_axis_port_shift(&mut centerline, source_port_um, target_port_um)?;
-        absorb_endpoint_delta_into_axis_runs(
+    if !try_apply_full_straight_port_correction(&mut centerline, source_port_um, target_port_um)? {
+        if !try_apply_full_straight_offset_bump_correction(
             &mut centerline,
-            &replay.straight_runs,
+            route,
+            primitives,
             source_port_um,
             target_port_um,
-            PORT_CORRECTION_GRID_TOLERANCE_CELLS * grid.grid_size_um,
-        )?;
+        )? {
+            try_apply_shared_axis_port_shift(&mut centerline, source_port_um, target_port_um)?;
+            absorb_endpoint_delta_into_axis_runs(
+                &mut centerline,
+                &replay.straight_runs,
+                &replay.dogleg_absorbers,
+                primitives,
+                source_port_um,
+                target_port_um,
+            )?;
+        }
+    }
+    let mut deduped = Vec::with_capacity(centerline.len());
+    for point in centerline.iter().copied() {
+        push_physical_if_different(&mut deduped, point);
+    }
+    centerline = deduped;
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
     }
     if centerline.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
         return Err(GeometryError::ZeroLengthSegment);
@@ -1071,7 +1134,6 @@ fn try_apply_full_straight_port_correction(
     centerline: &mut [(f64, f64)],
     source_port_um: Option<(f64, f64)>,
     target_port_um: Option<(f64, f64)>,
-    max_perpendicular_delta_um: f64,
 ) -> Result<bool, GeometryError> {
     let (Some(source), Some(target)) = (source_port_um, target_port_um) else {
         return Ok(false);
@@ -1094,16 +1156,6 @@ fn try_apply_full_straight_port_correction(
         return Ok(true);
     }
 
-    if is_full_horizontal_centerline(centerline)
-        && centerline.len() > 2
-        && (source.1 - target.1).abs() <= max_perpendicular_delta_um
-    {
-        centerline[0] = source;
-        let last = centerline.len() - 1;
-        centerline[last] = target;
-        return Ok(true);
-    }
-
     if is_full_vertical_centerline(centerline) && (source.0 - target.0).abs() <= EPS {
         for point in centerline.iter_mut() {
             point.0 = source.0;
@@ -1115,25 +1167,294 @@ fn try_apply_full_straight_port_correction(
         return Ok(true);
     }
 
-    if is_full_vertical_centerline(centerline)
-        && centerline.len() > 2
-        && (source.0 - target.0).abs() <= max_perpendicular_delta_um
-    {
-        centerline[0] = source;
-        let last = centerline.len() - 1;
-        centerline[last] = target;
-        return Ok(true);
+    Ok(false)
+}
+
+fn try_apply_full_straight_offset_bump_correction(
+    centerline: &mut Vec<(f64, f64)>,
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+) -> Result<bool, GeometryError> {
+    let (Some(source), Some(target)) = (source_port_um, target_port_um) else {
+        return Ok(false);
+    };
+    if !is_finite_point(source) || !is_finite_point(target) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    if centerline.len() < 2 || route.states.is_empty() {
+        return Err(GeometryError::DegenerateRoute);
     }
 
-    Ok(false)
+    let start_angle = route.states[0].angle % 8;
+    let end_angle = route.states[route.states.len() - 1].angle % 8;
+    if start_angle != end_angle {
+        return Ok(false);
+    }
+
+    let radius_um = infer_90_bend_radius_um(primitives)?;
+    let corrected = if is_full_horizontal_centerline(centerline)
+        && matches!(start_angle, 0 | 4)
+        && (source.1 - target.1).abs() > EPS
+    {
+        build_preferred_compact_offset_bump(source, target, start_angle, radius_um)?
+    } else if is_full_vertical_centerline(centerline)
+        && matches!(start_angle, 2 | 6)
+        && (source.0 - target.0).abs() > EPS
+    {
+        build_preferred_compact_offset_bump(source, target, start_angle, radius_um)?
+    } else {
+        return Ok(false);
+    };
+
+    *centerline = corrected;
+    Ok(true)
+}
+
+fn infer_90_bend_radius_um(primitives: &PrimitiveLibrary) -> Result<f64, GeometryError> {
+    for angle in 0..8u8 {
+        for primitive in primitives.get_primitives_for_angle(angle) {
+            if let PrimitiveGeometry::Bend {
+                radius_um,
+                angle_delta,
+            } = primitive.geometry
+            {
+                if angle_delta.unsigned_abs() == 2 && radius_um.is_finite() && radius_um > 0.0 {
+                    return Ok(radius_um);
+                }
+            }
+        }
+    }
+    Err(GeometryError::NoMeanderCandidateSegment)
+}
+
+fn build_preferred_compact_offset_bump(
+    source: (f64, f64),
+    target: (f64, f64),
+    route_angle: u8,
+    radius_um: f64,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    for placement in [OffsetBumpPlacement::Start, OffsetBumpPlacement::End] {
+        if let Ok(centerline) = build_compact_offset_bump_with_side_retry(
+            source,
+            target,
+            route_angle,
+            radius_um,
+            placement,
+        ) {
+            return Ok(centerline);
+        }
+    }
+
+    Err(GeometryError::NoMeanderCandidateSegment)
+}
+
+fn build_compact_offset_bump_with_side_retry(
+    source: (f64, f64),
+    target: (f64, f64),
+    route_angle: u8,
+    radius_um: f64,
+    placement: OffsetBumpPlacement,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    let route_dir = angle_to_unit_vector(route_angle);
+    let left_angle = ((route_angle + 2) % 8) as u8;
+    let right_angle = ((route_angle + 6) % 8) as u8;
+    let left_dir = angle_to_unit_vector(left_angle);
+    let required_offset = dot(sub(target, source), left_dir);
+    let primary_offset_angle = if required_offset >= 0.0 {
+        left_angle
+    } else {
+        right_angle
+    };
+    let secondary_offset_angle = ((primary_offset_angle + 4) % 8) as u8;
+
+    for offset_angle in [primary_offset_angle, secondary_offset_angle] {
+        if let Ok(centerline) = build_compact_four_bend_offset_bump(
+            source,
+            target,
+            route_angle,
+            offset_angle,
+            radius_um,
+            placement,
+        ) {
+            validate_bump_endpoint_tangents(&centerline, route_dir)?;
+            return Ok(centerline);
+        }
+    }
+
+    Err(GeometryError::NoMeanderCandidateSegment)
+}
+
+fn build_compact_four_bend_offset_bump(
+    source: (f64, f64),
+    target: (f64, f64),
+    route_angle: u8,
+    first_offset_angle: u8,
+    radius_um: f64,
+    placement: OffsetBumpPlacement,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    if !radius_um.is_finite() || radius_um <= 0.0 {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    let route_dir = angle_to_unit_vector(route_angle);
+    let offset_dir = angle_to_unit_vector(first_offset_angle);
+    if dot(route_dir, offset_dir).abs() > EPS {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+
+    let source_to_target = sub(target, source);
+    let forward_len = dot(source_to_target, route_dir);
+    let offset_len = dot(source_to_target, offset_dir);
+    let residual = sub(
+        source_to_target,
+        add(scale(route_dir, forward_len), scale(offset_dir, offset_len)),
+    );
+    if forward_len <= EPS || offset_len.abs() <= EPS || length(residual) > 1.0e-6 {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+
+    let tail_len = forward_len - 4.0 * radius_um;
+    if tail_len < -EPS {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+    let first_leg_len = offset_len.max(0.0);
+    let second_leg_len = (-offset_len).max(0.0);
+    let opposite_offset_angle = ((first_offset_angle + 4) % 8) as u8;
+    let bump_start = match placement {
+        OffsetBumpPlacement::Start => source,
+        OffsetBumpPlacement::End => sub(
+            sub(target, scale(route_dir, 4.0 * radius_um)),
+            scale(offset_dir, offset_len),
+        ),
+    };
+    let bump_end = add(
+        add(bump_start, scale(route_dir, 4.0 * radius_um)),
+        scale(offset_dir, offset_len),
+    );
+
+    let mut out = Vec::new();
+    if matches!(placement, OffsetBumpPlacement::End) {
+        push_physical_if_different(&mut out, source);
+    }
+    push_physical_if_different(&mut out, bump_start);
+
+    let p1 = add(
+        add(bump_start, scale(route_dir, radius_um)),
+        scale(offset_dir, radius_um),
+    );
+    append_bump_bend(
+        &mut out,
+        bump_start,
+        route_angle,
+        p1,
+        first_offset_angle,
+        radius_um,
+    )?;
+
+    let p2 = add(p1, scale(offset_dir, first_leg_len));
+    push_physical_if_different(&mut out, p2);
+
+    let p3 = add(
+        add(p2, scale(offset_dir, radius_um)),
+        scale(route_dir, radius_um),
+    );
+    append_bump_bend(&mut out, p2, first_offset_angle, p3, route_angle, radius_um)?;
+
+    let p4 = add(
+        add(p3, scale(route_dir, radius_um)),
+        scale(offset_dir, -radius_um),
+    );
+    append_bump_bend(
+        &mut out,
+        p3,
+        route_angle,
+        p4,
+        opposite_offset_angle,
+        radius_um,
+    )?;
+
+    let p5 = add(p4, scale(offset_dir, -second_leg_len));
+    push_physical_if_different(&mut out, p5);
+
+    let p6 = add(
+        add(p5, scale(offset_dir, -radius_um)),
+        scale(route_dir, radius_um),
+    );
+    append_bump_bend(
+        &mut out,
+        p5,
+        opposite_offset_angle,
+        p6,
+        route_angle,
+        radius_um,
+    )?;
+
+    if distance(p6, bump_end) > 1.0e-6 {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+    if matches!(placement, OffsetBumpPlacement::Start) {
+        push_physical_if_different(&mut out, target);
+    } else {
+        push_physical_if_different(&mut out, bump_end);
+    }
+    validate_bump_endpoint_tangents(&out, route_dir)?;
+    if out.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
+        return Err(GeometryError::ZeroLengthSegment);
+    }
+    Ok(out)
+}
+
+fn append_bump_bend(
+    out: &mut Vec<(f64, f64)>,
+    start_point: (f64, f64),
+    start_angle: u8,
+    end_point: (f64, f64),
+    end_angle: u8,
+    radius_um: f64,
+) -> Result<(), GeometryError> {
+    append_circular_bend_centerline(
+        out,
+        start_point,
+        start_angle,
+        end_point,
+        end_angle,
+        radius_um,
+        signed_angle_delta(start_angle, end_angle)?,
+        DEFAULT_BEND_SAMPLES_PER_90_DEG,
+    )
+}
+
+fn signed_angle_delta(start_angle: u8, end_angle: u8) -> Result<i8, GeometryError> {
+    let mut delta = (end_angle % 8) as i8 - (start_angle % 8) as i8;
+    while delta > 4 {
+        delta -= 8;
+    }
+    while delta <= -4 {
+        delta += 8;
+    }
+    if delta == 0 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    Ok(delta)
+}
+
+fn validate_bump_endpoint_tangents(
+    centerline: &[(f64, f64)],
+    route_dir: (f64, f64),
+) -> Result<(), GeometryError> {
+    validate_source_tangent(centerline, route_dir)?;
+    validate_target_tangent(centerline, route_dir)?;
+    Ok(())
 }
 
 fn absorb_endpoint_delta_into_axis_runs(
     centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
+    dogleg_absorbers: &[DoglegAbsorber],
+    primitives: &PrimitiveLibrary,
     source_port_um: Option<(f64, f64)>,
     target_port_um: Option<(f64, f64)>,
-    max_terminal_endpoint_delta_um: f64,
 ) -> Result<(), GeometryError> {
     if centerline.len() < 2 {
         return Err(GeometryError::DegenerateRoute);
@@ -1142,6 +1463,9 @@ fn absorb_endpoint_delta_into_axis_runs(
         return Err(GeometryError::NonFiniteCoordinate);
     }
 
+    let mut runs = straight_runs.to_vec();
+    let mut doglegs = dogleg_absorbers.to_vec();
+
     if let Some(source) = source_port_um {
         if !is_finite_point(source) {
             return Err(GeometryError::NonFiniteCoordinate);
@@ -1149,24 +1473,10 @@ fn absorb_endpoint_delta_into_axis_runs(
         let start = centerline[0];
         let dx = source.0 - start.0;
         let dy = source.1 - start.1;
-        if let Err(err) = absorb_source_x_delta(centerline, straight_runs, dx) {
-            if matches!(err, GeometryError::NoMeanderCandidateSegment)
-                && dx.abs() <= max_terminal_endpoint_delta_um
-            {
-                centerline[0].0 = source.0;
-            } else {
-                return Err(err);
-            }
-        }
-        if let Err(err) = absorb_source_y_delta(centerline, straight_runs, dy) {
-            if matches!(err, GeometryError::NoMeanderCandidateSegment)
-                && dy.abs() <= max_terminal_endpoint_delta_um
-            {
-                centerline[0].1 = source.1;
-            } else {
-                return Err(err);
-            }
-        }
+        let mutation = absorb_source_x_delta(centerline, &runs, &mut doglegs, primitives, dx)?;
+        apply_endpoint_delta_mutation(centerline, &mut runs, &mut doglegs, mutation);
+        let mutation = absorb_source_y_delta(centerline, &runs, &mut doglegs, primitives, dy)?;
+        apply_endpoint_delta_mutation(centerline, &mut runs, &mut doglegs, mutation);
     }
     if let Some(target) = target_port_um {
         if !is_finite_point(target) {
@@ -1175,26 +1485,10 @@ fn absorb_endpoint_delta_into_axis_runs(
         let last = centerline[centerline.len() - 1];
         let dx = target.0 - last.0;
         let dy = target.1 - last.1;
-        if let Err(err) = absorb_target_x_delta(centerline, straight_runs, dx) {
-            if matches!(err, GeometryError::NoMeanderCandidateSegment)
-                && dx.abs() <= max_terminal_endpoint_delta_um
-            {
-                let last_index = centerline.len() - 1;
-                centerline[last_index].0 = target.0;
-            } else {
-                return Err(err);
-            }
-        }
-        if let Err(err) = absorb_target_y_delta(centerline, straight_runs, dy) {
-            if matches!(err, GeometryError::NoMeanderCandidateSegment)
-                && dy.abs() <= max_terminal_endpoint_delta_um
-            {
-                let last_index = centerline.len() - 1;
-                centerline[last_index].1 = target.1;
-            } else {
-                return Err(err);
-            }
-        }
+        let mutation = absorb_target_x_delta(centerline, &runs, &mut doglegs, primitives, dx)?;
+        apply_endpoint_delta_mutation(centerline, &mut runs, &mut doglegs, mutation);
+        let mutation = absorb_target_y_delta(centerline, &runs, &mut doglegs, primitives, dy)?;
+        apply_endpoint_delta_mutation(centerline, &mut runs, &mut doglegs, mutation);
     }
     Ok(())
 }
@@ -1202,23 +1496,41 @@ fn absorb_endpoint_delta_into_axis_runs(
 fn insert_terminal_tangent_stubs(
     centerline: &mut Vec<(f64, f64)>,
     route: &RouteResult,
-    stub_len_um: f64,
+    _stub_len_um: f64,
     source_enabled: bool,
     target_enabled: bool,
 ) -> Result<(), GeometryError> {
-    if centerline.len() < 2 || route.states.is_empty() || !stub_len_um.is_finite() {
+    if centerline.len() < 2 || route.states.is_empty() || !_stub_len_um.is_finite() {
         return Err(GeometryError::DegenerateRoute);
     }
 
     if source_enabled {
         let dir = angle_to_unit_vector(route.states[0].angle);
-        insert_source_tangent_stub(centerline, dir, stub_len_um);
+        validate_source_tangent(centerline, dir)?;
     }
     if target_enabled {
         let dir = angle_to_unit_vector(route.states[route.states.len() - 1].angle);
-        insert_target_tangent_stub(centerline, dir, stub_len_um);
+        validate_target_tangent(centerline, dir)?;
     }
     Ok(())
+}
+
+fn apply_endpoint_delta_mutation(
+    centerline: &[(f64, f64)],
+    runs: &mut Vec<AxisAlignedRun>,
+    doglegs: &mut Vec<DoglegAbsorber>,
+    mutation: EndpointDeltaMutation,
+) {
+    match mutation {
+        EndpointDeltaMutation::Unchanged | EndpointDeltaMutation::CoordinatesOnly => {}
+        EndpointDeltaMutation::InsertedPoint { after_index } => {
+            update_axis_runs_after_insert(runs, after_index);
+        }
+        EndpointDeltaMutation::RebuiltCenterline => {
+            *runs = axis_runs_from_centerline(centerline);
+            doglegs.clear();
+        }
+    }
 }
 
 fn terminal_tangent_stub_len_um(width_um: f64) -> Result<f64, GeometryError> {
@@ -1228,61 +1540,52 @@ fn terminal_tangent_stub_len_um(width_um: f64) -> Result<f64, GeometryError> {
     Ok((width_um * 0.25).max(EPS))
 }
 
-fn insert_source_tangent_stub(
-    centerline: &mut Vec<(f64, f64)>,
+fn validate_source_tangent(
+    centerline: &[(f64, f64)],
     dir: (f64, f64),
-    max_stub_len_um: f64,
-) {
+) -> Result<(), GeometryError> {
     if centerline.len() < 2 {
-        return;
+        return Err(GeometryError::DegenerateRoute);
     }
     let start = centerline[0];
     let next = centerline[1];
     let delta = sub(next, start);
     if segment_is_aligned_with_dir(delta, dir) {
-        return;
+        return Ok(());
     }
-    let projection = dot(delta, dir);
-    if projection <= EPS {
-        return;
+    if centerline.len() >= 3
+        && sampled_arc_endpoint_tangent_aligned(centerline[0], centerline[1], centerline[2], dir)
+    {
+        return Ok(());
     }
-    let stub_len = max_stub_len_um.min((projection - EPS).max(0.0));
-    if stub_len <= EPS {
-        return;
-    }
-    let stub = add(start, scale(dir, stub_len));
-    if distance(start, stub) > EPS && distance(stub, next) > EPS {
-        centerline.insert(1, stub);
-    }
+    Err(GeometryError::PortEndpointCorrectionRequiresUnsupportedStub)
 }
 
-fn insert_target_tangent_stub(
-    centerline: &mut Vec<(f64, f64)>,
+fn validate_target_tangent(
+    centerline: &[(f64, f64)],
     dir: (f64, f64),
-    max_stub_len_um: f64,
-) {
+) -> Result<(), GeometryError> {
     if centerline.len() < 2 {
-        return;
+        return Err(GeometryError::DegenerateRoute);
     }
     let last_index = centerline.len() - 1;
     let prev = centerline[last_index - 1];
     let end = centerline[last_index];
     let delta = sub(end, prev);
     if segment_is_aligned_with_dir(delta, dir) {
-        return;
+        return Ok(());
     }
-    let projection = dot(delta, dir);
-    if projection <= EPS {
-        return;
+    if centerline.len() >= 3
+        && sampled_arc_endpoint_tangent_aligned(
+            centerline[last_index],
+            centerline[last_index - 1],
+            centerline[last_index - 2],
+            scale(dir, -1.0),
+        )
+    {
+        return Ok(());
     }
-    let stub_len = max_stub_len_um.min((projection - EPS).max(0.0));
-    if stub_len <= EPS {
-        return;
-    }
-    let stub = sub(end, scale(dir, stub_len));
-    if distance(prev, stub) > EPS && distance(stub, end) > EPS {
-        centerline.insert(last_index, stub);
-    }
+    Err(GeometryError::PortEndpointCorrectionRequiresUnsupportedStub)
 }
 
 fn segment_is_aligned_with_dir(delta: (f64, f64), dir: (f64, f64)) -> bool {
@@ -1294,72 +1597,182 @@ fn segment_is_aligned_with_dir(delta: (f64, f64), dir: (f64, f64)) -> bool {
     projection > EPS && cross(delta, dir).abs() <= EPS * len.max(1.0)
 }
 
+fn sampled_arc_endpoint_tangent_aligned(
+    endpoint: (f64, f64),
+    next: (f64, f64),
+    next_next: (f64, f64),
+    dir: (f64, f64),
+) -> bool {
+    let Some(center) = circumcenter(endpoint, next, next_next) else {
+        return false;
+    };
+    let radius_vec = sub(endpoint, center);
+    let radius_len = length(radius_vec);
+    if radius_len <= EPS {
+        return false;
+    }
+    let chord = sub(next, endpoint);
+    let tangent_left = scale(rotate_left(radius_vec), 1.0 / radius_len);
+    let tangent_right = scale(rotate_right(radius_vec), 1.0 / radius_len);
+    let tangent = if dot(tangent_left, chord) >= dot(tangent_right, chord) {
+        tangent_left
+    } else {
+        tangent_right
+    };
+    dot(tangent, dir) > 0.0 && cross(tangent, dir).abs() <= 1.0e-6
+}
+
+fn circumcenter(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> Option<(f64, f64)> {
+    let d = 2.0 * (a.0 * (b.1 - c.1) + b.0 * (c.1 - a.1) + c.0 * (a.1 - b.1));
+    if !d.is_finite() || d.abs() <= EPS {
+        return None;
+    }
+    let aa = a.0 * a.0 + a.1 * a.1;
+    let bb = b.0 * b.0 + b.1 * b.1;
+    let cc = c.0 * c.0 + c.1 * c.1;
+    let ux = (aa * (b.1 - c.1) + bb * (c.1 - a.1) + cc * (a.1 - b.1)) / d;
+    let uy = (aa * (c.0 - b.0) + bb * (a.0 - c.0) + cc * (b.0 - a.0)) / d;
+    if ux.is_finite() && uy.is_finite() {
+        Some((ux, uy))
+    } else {
+        None
+    }
+}
+
 fn absorb_source_x_delta(
-    centerline: &mut [(f64, f64)],
+    centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
+    dogleg_absorbers: &mut Vec<DoglegAbsorber>,
+    primitives: &PrimitiveLibrary,
     dx: f64,
-) -> Result<(), GeometryError> {
+) -> Result<EndpointDeltaMutation, GeometryError> {
     if dx.abs() <= EPS {
-        return Ok(());
+        return Ok(EndpointDeltaMutation::Unchanged);
     }
     let Some(run) = first_run(straight_runs, AxisAlignedRunKind::Horizontal) else {
-        return Err(GeometryError::NoMeanderCandidateSegment);
+        if let Ok(after_index) = insert_source_delta_dogleg(
+            centerline,
+            dogleg_absorbers,
+            AxisAlignedRunKind::Horizontal,
+            dx,
+        ) {
+            return Ok(EndpointDeltaMutation::InsertedPoint { after_index });
+        }
+        insert_source_delta_bump(
+            centerline,
+            straight_runs,
+            primitives,
+            AxisAlignedRunKind::Vertical,
+            dx,
+        )?;
+        return Ok(EndpointDeltaMutation::RebuiltCenterline);
     };
     for point in centerline.iter_mut().take(run.start_index + 1) {
         point.0 += dx;
     }
-    Ok(())
+    Ok(EndpointDeltaMutation::CoordinatesOnly)
 }
 
 fn absorb_source_y_delta(
-    centerline: &mut [(f64, f64)],
+    centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
+    dogleg_absorbers: &mut Vec<DoglegAbsorber>,
+    primitives: &PrimitiveLibrary,
     dy: f64,
-) -> Result<(), GeometryError> {
+) -> Result<EndpointDeltaMutation, GeometryError> {
     if dy.abs() <= EPS {
-        return Ok(());
+        return Ok(EndpointDeltaMutation::Unchanged);
     }
     let Some(run) = first_run(straight_runs, AxisAlignedRunKind::Vertical) else {
-        return Err(GeometryError::NoMeanderCandidateSegment);
+        if let Ok(after_index) = insert_source_delta_dogleg(
+            centerline,
+            dogleg_absorbers,
+            AxisAlignedRunKind::Vertical,
+            dy,
+        ) {
+            return Ok(EndpointDeltaMutation::InsertedPoint { after_index });
+        }
+        insert_source_delta_bump(
+            centerline,
+            straight_runs,
+            primitives,
+            AxisAlignedRunKind::Horizontal,
+            dy,
+        )?;
+        return Ok(EndpointDeltaMutation::RebuiltCenterline);
     };
     for point in centerline.iter_mut().take(run.start_index + 1) {
         point.1 += dy;
     }
-    Ok(())
+    Ok(EndpointDeltaMutation::CoordinatesOnly)
 }
 
 fn absorb_target_x_delta(
-    centerline: &mut [(f64, f64)],
+    centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
+    dogleg_absorbers: &mut Vec<DoglegAbsorber>,
+    primitives: &PrimitiveLibrary,
     dx: f64,
-) -> Result<(), GeometryError> {
+) -> Result<EndpointDeltaMutation, GeometryError> {
     if dx.abs() <= EPS {
-        return Ok(());
+        return Ok(EndpointDeltaMutation::Unchanged);
     }
     let Some(run) = last_run(straight_runs, AxisAlignedRunKind::Horizontal) else {
-        return Err(GeometryError::NoMeanderCandidateSegment);
+        if let Ok(after_index) = insert_target_delta_dogleg(
+            centerline,
+            dogleg_absorbers,
+            AxisAlignedRunKind::Horizontal,
+            dx,
+        ) {
+            return Ok(EndpointDeltaMutation::InsertedPoint { after_index });
+        }
+        insert_target_delta_bump(
+            centerline,
+            straight_runs,
+            primitives,
+            AxisAlignedRunKind::Vertical,
+            dx,
+        )?;
+        return Ok(EndpointDeltaMutation::RebuiltCenterline);
     };
     for point in centerline.iter_mut().skip(run.end_index) {
         point.0 += dx;
     }
-    Ok(())
+    Ok(EndpointDeltaMutation::CoordinatesOnly)
 }
 
 fn absorb_target_y_delta(
-    centerline: &mut [(f64, f64)],
+    centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
+    dogleg_absorbers: &mut Vec<DoglegAbsorber>,
+    primitives: &PrimitiveLibrary,
     dy: f64,
-) -> Result<(), GeometryError> {
+) -> Result<EndpointDeltaMutation, GeometryError> {
     if dy.abs() <= EPS {
-        return Ok(());
+        return Ok(EndpointDeltaMutation::Unchanged);
     }
     let Some(run) = last_run(straight_runs, AxisAlignedRunKind::Vertical) else {
-        return Err(GeometryError::NoMeanderCandidateSegment);
+        if let Ok(after_index) = insert_target_delta_dogleg(
+            centerline,
+            dogleg_absorbers,
+            AxisAlignedRunKind::Vertical,
+            dy,
+        ) {
+            return Ok(EndpointDeltaMutation::InsertedPoint { after_index });
+        }
+        insert_target_delta_bump(
+            centerline,
+            straight_runs,
+            primitives,
+            AxisAlignedRunKind::Horizontal,
+            dy,
+        )?;
+        return Ok(EndpointDeltaMutation::RebuiltCenterline);
     };
     for point in centerline.iter_mut().skip(run.end_index) {
         point.1 += dy;
     }
-    Ok(())
+    Ok(EndpointDeltaMutation::CoordinatesOnly)
 }
 
 fn first_run(straight_runs: &[AxisAlignedRun], kind: AxisAlignedRunKind) -> Option<AxisAlignedRun> {
@@ -1368,6 +1781,399 @@ fn first_run(straight_runs: &[AxisAlignedRun], kind: AxisAlignedRunKind) -> Opti
 
 fn last_run(straight_runs: &[AxisAlignedRun], kind: AxisAlignedRunKind) -> Option<AxisAlignedRun> {
     straight_runs.iter().copied().rfind(|run| run.kind == kind)
+}
+
+fn insert_source_delta_dogleg(
+    centerline: &mut Vec<(f64, f64)>,
+    dogleg_absorbers: &mut Vec<DoglegAbsorber>,
+    kind: AxisAlignedRunKind,
+    delta: f64,
+) -> Result<usize, GeometryError> {
+    if delta.abs() <= EPS {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+    let required_dir = direction_sign(-delta);
+    let Some(pos) = dogleg_absorbers
+        .iter()
+        .position(|absorber| absorber.kind == kind && absorber.dir == required_dir)
+    else {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    };
+    let transition_index = dogleg_absorbers[pos].transition_index;
+    if transition_index >= centerline.len() {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+
+    let original_transition = centerline[transition_index];
+    match kind {
+        AxisAlignedRunKind::Horizontal => {
+            for point in centerline.iter_mut().take(transition_index + 1) {
+                point.0 += delta;
+            }
+        }
+        AxisAlignedRunKind::Vertical => {
+            for point in centerline.iter_mut().take(transition_index + 1) {
+                point.1 += delta;
+            }
+        }
+    }
+    centerline.insert(transition_index + 1, original_transition);
+    update_dogleg_absorbers_after_insert(dogleg_absorbers, transition_index);
+    Ok(transition_index)
+}
+
+fn insert_target_delta_dogleg(
+    centerline: &mut Vec<(f64, f64)>,
+    dogleg_absorbers: &mut Vec<DoglegAbsorber>,
+    kind: AxisAlignedRunKind,
+    delta: f64,
+) -> Result<usize, GeometryError> {
+    if delta.abs() <= EPS {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+    let required_dir = direction_sign(delta);
+    let Some(pos) = dogleg_absorbers
+        .iter()
+        .rposition(|absorber| absorber.kind == kind && absorber.dir == required_dir)
+    else {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    };
+    let transition_index = dogleg_absorbers[pos].transition_index;
+    if transition_index >= centerline.len() {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+
+    let shifted_transition = match kind {
+        AxisAlignedRunKind::Horizontal => {
+            for point in centerline.iter_mut().skip(transition_index + 1) {
+                point.0 += delta;
+            }
+            (
+                centerline[transition_index].0 + delta,
+                centerline[transition_index].1,
+            )
+        }
+        AxisAlignedRunKind::Vertical => {
+            for point in centerline.iter_mut().skip(transition_index + 1) {
+                point.1 += delta;
+            }
+            (
+                centerline[transition_index].0,
+                centerline[transition_index].1 + delta,
+            )
+        }
+    };
+    centerline.insert(transition_index + 1, shifted_transition);
+    update_dogleg_absorbers_after_insert(dogleg_absorbers, transition_index);
+    Ok(transition_index)
+}
+
+fn direction_sign(delta: f64) -> i8 {
+    if delta >= 0.0 {
+        1
+    } else {
+        -1
+    }
+}
+
+fn update_dogleg_absorbers_after_insert(
+    dogleg_absorbers: &mut Vec<DoglegAbsorber>,
+    transition_index: usize,
+) {
+    dogleg_absorbers.retain(|absorber| absorber.transition_index != transition_index);
+    for absorber in dogleg_absorbers.iter_mut() {
+        if absorber.transition_index > transition_index {
+            absorber.transition_index += 1;
+        }
+    }
+}
+
+fn update_axis_runs_after_insert(runs: &mut [AxisAlignedRun], after_index: usize) {
+    for run in runs.iter_mut() {
+        if run.start_index > after_index {
+            run.start_index += 1;
+        }
+        if run.end_index > after_index {
+            run.end_index += 1;
+        }
+    }
+}
+
+fn axis_runs_from_centerline(centerline: &[(f64, f64)]) -> Vec<AxisAlignedRun> {
+    let mut runs = Vec::new();
+    let mut active: Option<(AxisAlignedRun, i8, f64)> = None;
+    for (idx, window) in centerline.windows(2).enumerate() {
+        let segment = if is_horizontal_segment(window[0], window[1]) {
+            let dx = window[1].0 - window[0].0;
+            Some((
+                AxisAlignedRunKind::Horizontal,
+                if dx > 0.0 { 1 } else { -1 },
+                window[0].1,
+            ))
+        } else if is_vertical_segment(window[0], window[1]) {
+            let dy = window[1].1 - window[0].1;
+            Some((
+                AxisAlignedRunKind::Vertical,
+                if dy > 0.0 { 1 } else { -1 },
+                window[0].0,
+            ))
+        } else {
+            None
+        };
+
+        let Some((kind, dir, line_coord)) = segment else {
+            if let Some((run, _, _)) = active.take() {
+                runs.push(run);
+            }
+            continue;
+        };
+
+        if let Some((mut run, active_dir, active_line_coord)) = active.take() {
+            if run.kind == kind
+                && active_dir == dir
+                && (active_line_coord - line_coord).abs() <= EPS
+            {
+                run.end_index = idx + 1;
+                active = Some((run, active_dir, active_line_coord));
+            } else {
+                runs.push(run);
+                active = Some((
+                    AxisAlignedRun {
+                        start_index: idx,
+                        end_index: idx + 1,
+                        kind,
+                    },
+                    dir,
+                    line_coord,
+                ));
+            }
+        } else {
+            active = Some((
+                AxisAlignedRun {
+                    start_index: idx,
+                    end_index: idx + 1,
+                    kind,
+                },
+                dir,
+                line_coord,
+            ));
+        }
+    }
+    if let Some((run, _, _)) = active {
+        runs.push(run);
+    }
+    runs
+}
+
+fn insert_source_delta_bump(
+    centerline: &mut Vec<(f64, f64)>,
+    straight_runs: &[AxisAlignedRun],
+    primitives: &PrimitiveLibrary,
+    carrier_kind: AxisAlignedRunKind,
+    delta: f64,
+) -> Result<(), GeometryError> {
+    let Some(run) = first_viable_delta_bump_run(
+        centerline,
+        straight_runs,
+        primitives,
+        carrier_kind,
+        delta,
+        true,
+    )?
+    else {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    };
+
+    let bump = delta_bump_for_run(centerline, run, primitives, carrier_kind, delta, true)?;
+
+    match carrier_kind {
+        AxisAlignedRunKind::Horizontal => {
+            for point in centerline.iter_mut().take(run.start_index + 1) {
+                point.1 += delta;
+            }
+        }
+        AxisAlignedRunKind::Vertical => {
+            for point in centerline.iter_mut().take(run.start_index + 1) {
+                point.0 += delta;
+            }
+        }
+    }
+    splice_precomputed_delta_bump(centerline, run, bump)
+}
+
+fn insert_target_delta_bump(
+    centerline: &mut Vec<(f64, f64)>,
+    straight_runs: &[AxisAlignedRun],
+    primitives: &PrimitiveLibrary,
+    carrier_kind: AxisAlignedRunKind,
+    delta: f64,
+) -> Result<(), GeometryError> {
+    let Some(run) = last_viable_delta_bump_run(
+        centerline,
+        straight_runs,
+        primitives,
+        carrier_kind,
+        delta,
+        false,
+    )?
+    else {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    };
+
+    let bump = delta_bump_for_run(centerline, run, primitives, carrier_kind, delta, false)?;
+
+    match carrier_kind {
+        AxisAlignedRunKind::Horizontal => {
+            for point in centerline.iter_mut().skip(run.end_index) {
+                point.1 += delta;
+            }
+        }
+        AxisAlignedRunKind::Vertical => {
+            for point in centerline.iter_mut().skip(run.end_index) {
+                point.0 += delta;
+            }
+        }
+    }
+    splice_precomputed_delta_bump(centerline, run, bump)
+}
+
+fn first_viable_delta_bump_run(
+    centerline: &[(f64, f64)],
+    straight_runs: &[AxisAlignedRun],
+    primitives: &PrimitiveLibrary,
+    carrier_kind: AxisAlignedRunKind,
+    delta: f64,
+    source_side: bool,
+) -> Result<Option<AxisAlignedRun>, GeometryError> {
+    for run in straight_runs
+        .iter()
+        .copied()
+        .filter(|run| run.kind == carrier_kind)
+    {
+        if delta_bump_for_run(
+            centerline,
+            run,
+            primitives,
+            carrier_kind,
+            delta,
+            source_side,
+        )
+        .is_ok()
+        {
+            return Ok(Some(run));
+        }
+    }
+    Ok(None)
+}
+
+fn last_viable_delta_bump_run(
+    centerline: &[(f64, f64)],
+    straight_runs: &[AxisAlignedRun],
+    primitives: &PrimitiveLibrary,
+    carrier_kind: AxisAlignedRunKind,
+    delta: f64,
+    source_side: bool,
+) -> Result<Option<AxisAlignedRun>, GeometryError> {
+    for run in straight_runs
+        .iter()
+        .copied()
+        .rev()
+        .filter(|run| run.kind == carrier_kind)
+    {
+        if delta_bump_for_run(
+            centerline,
+            run,
+            primitives,
+            carrier_kind,
+            delta,
+            source_side,
+        )
+        .is_ok()
+        {
+            return Ok(Some(run));
+        }
+    }
+    Ok(None)
+}
+
+fn splice_precomputed_delta_bump(
+    centerline: &mut Vec<(f64, f64)>,
+    run: AxisAlignedRun,
+    bump: Vec<(f64, f64)>,
+) -> Result<(), GeometryError> {
+    let mut replacement = Vec::with_capacity(centerline.len() + bump.len());
+    replacement.extend_from_slice(&centerline[..run.start_index]);
+    replacement.extend(bump);
+    replacement.extend_from_slice(&centerline[(run.end_index + 1)..]);
+    *centerline = replacement;
+    Ok(())
+}
+
+fn delta_bump_for_run(
+    centerline: &[(f64, f64)],
+    run: AxisAlignedRun,
+    primitives: &PrimitiveLibrary,
+    carrier_kind: AxisAlignedRunKind,
+    delta: f64,
+    source_side: bool,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    if run.end_index >= centerline.len() || delta.abs() <= EPS {
+        return Err(GeometryError::NoMeanderCandidateSegment);
+    }
+    let start = centerline[run.start_index];
+    let end = centerline[run.end_index];
+    let shifted_start = match carrier_kind {
+        AxisAlignedRunKind::Horizontal => (start.0, start.1 + delta),
+        AxisAlignedRunKind::Vertical => (start.0 + delta, start.1),
+    };
+    let shifted_end = match carrier_kind {
+        AxisAlignedRunKind::Horizontal => (end.0, end.1 + delta),
+        AxisAlignedRunKind::Vertical => (end.0 + delta, end.1),
+    };
+    let (bump_start, bump_end) = if source_side {
+        (shifted_start, end)
+    } else {
+        (start, shifted_end)
+    };
+    let route_angle = route_angle_for_axis_segment(start, end, carrier_kind)?;
+    build_compact_offset_bump_with_side_retry(
+        bump_start,
+        bump_end,
+        route_angle,
+        infer_90_bend_radius_um(primitives)?,
+        if source_side {
+            OffsetBumpPlacement::Start
+        } else {
+            OffsetBumpPlacement::End
+        },
+    )
+}
+
+fn route_angle_for_axis_segment(
+    start: (f64, f64),
+    end: (f64, f64),
+    kind: AxisAlignedRunKind,
+) -> Result<u8, GeometryError> {
+    match kind {
+        AxisAlignedRunKind::Horizontal => {
+            if end.0 > start.0 + EPS {
+                Ok(0)
+            } else if end.0 < start.0 - EPS {
+                Ok(4)
+            } else {
+                Err(GeometryError::ZeroLengthSegment)
+            }
+        }
+        AxisAlignedRunKind::Vertical => {
+            if end.1 > start.1 + EPS {
+                Ok(2)
+            } else if end.1 < start.1 - EPS {
+                Ok(6)
+            } else {
+                Err(GeometryError::ZeroLengthSegment)
+            }
+        }
+    }
 }
 
 fn is_full_horizontal_centerline(centerline: &[(f64, f64)]) -> bool {
@@ -4009,7 +4815,7 @@ fn append_circular_bend_centerline(
     let turn_abs = (angle_delta as f64).abs() * (std::f64::consts::PI / 4.0);
     let trim = radius_um * (turn_abs / 2.0).tan();
 
-    let trim_eff = trim.min(in_len - EPS).min(out_len - EPS);
+    let trim_eff = trim.min(in_len).min(out_len);
     if !trim_eff.is_finite() || trim_eff <= EPS {
         push_physical_if_different(out, end_point);
         return Ok(());
@@ -4409,7 +5215,7 @@ mod tests {
     }
 
     #[test]
-    fn port_corrected_near_horizontal_straight_anchors_quantized_ports() {
+    fn port_corrected_near_horizontal_straight_inserts_four_bend_offset_bump() {
         let lib = test_lib();
         let straight_east = primitive_id_for(&lib, 0, |p| {
             p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
@@ -4440,11 +5246,94 @@ mod tests {
 
         assert_eq!(corrected.first().copied(), Some((1.0, 2.5)));
         assert_eq!(corrected.last().copied(), Some((13.5, 2.0)));
-        assert!(corrected.len() > 2);
-        assert!(corrected[1..corrected.len() - 1]
-            .windows(2)
-            .all(|w| is_horizontal_segment(w[0], w[1])));
-        assert!(centerline_length_um(&corrected).unwrap() > 12.0);
+        assert!(corrected.len() > 8);
+        validate_source_tangent(&corrected, angle_to_unit_vector(0)).unwrap();
+        validate_target_tangent(&corrected, angle_to_unit_vector(0)).unwrap();
+        assert!(corrected
+            .iter()
+            .any(|point| point.1 < 2.0 - EPS || point.1 > 2.5 + EPS));
+        assert!(corrected.windows(2).all(|w| distance(w[0], w[1]) > EPS));
+    }
+
+    #[test]
+    fn port_corrected_near_vertical_straight_inserts_four_bend_offset_bump() {
+        let lib = test_lib();
+        let straight_north = primitive_id_for(&lib, 2, |p| {
+            p.start_angle == 2 && p.end_angle == 2 && p.dx == 0 && p.dy == 4
+        });
+        let primitive_ids = vec![straight_north, straight_north, straight_north];
+        let states = states_from_primitives(&lib, State::new(2, 1, 2), &primitive_ids);
+        let requested_target = *states.last().unwrap();
+        let route = RouteResult {
+            states,
+            primitives: primitive_ids,
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 12.0,
+            total_cost: 12.0,
+            requested_target,
+            reached_target: requested_target,
+            stats: Default::default(),
+        };
+
+        let corrected = route_to_port_corrected_centerline(
+            &route,
+            &lib,
+            &grid(),
+            Some((2.5, 1.0)),
+            Some((3.0, 13.5)),
+        )
+        .unwrap();
+
+        assert_eq!(corrected.first().copied(), Some((2.5, 1.0)));
+        assert_eq!(corrected.last().copied(), Some((3.0, 13.5)));
+        assert!(corrected.len() > 8);
+        validate_source_tangent(&corrected, angle_to_unit_vector(2)).unwrap();
+        validate_target_tangent(&corrected, angle_to_unit_vector(2)).unwrap();
+        assert!(corrected
+            .iter()
+            .any(|point| point.0 < 2.5 - EPS || point.0 > 3.0 + EPS));
+        assert!(corrected.windows(2).all(|w| distance(w[0], w[1]) > EPS));
+    }
+
+    #[test]
+    fn compact_offset_bump_has_minimal_length() {
+        let radius_um = 1.0;
+        let forward_len = 20.0;
+        let offset_len = 0.5;
+        let centerline = build_compact_four_bend_offset_bump(
+            (0.0, 0.0),
+            (forward_len, offset_len),
+            0,
+            2,
+            radius_um,
+            OffsetBumpPlacement::Start,
+        )
+        .unwrap();
+
+        validate_source_tangent(&centerline, angle_to_unit_vector(0)).unwrap();
+        validate_target_tangent(&centerline, angle_to_unit_vector(0)).unwrap();
+        assert_eq!(centerline.first().copied(), Some((0.0, 0.0)));
+        assert_eq!(centerline.last().copied(), Some((forward_len, offset_len)));
+
+        let sampled_quarter_arc_len = DEFAULT_BEND_SAMPLES_PER_90_DEG as f64
+            * 2.0
+            * radius_um
+            * (std::f64::consts::PI / (4.0 * DEFAULT_BEND_SAMPLES_PER_90_DEG as f64)).sin();
+        let expected_len =
+            (forward_len - 4.0 * radius_um) + offset_len + 4.0 * sampled_quarter_arc_len;
+        assert!((centerline_length_um(&centerline).unwrap() - expected_len).abs() < 1.0e-6);
+
+        let mirrored = build_compact_four_bend_offset_bump(
+            (0.0, 0.0),
+            (forward_len, offset_len),
+            0,
+            6,
+            radius_um,
+            OffsetBumpPlacement::Start,
+        )
+        .unwrap();
+        assert!((centerline_length_um(&mirrored).unwrap() - expected_len).abs() < 1.0e-3);
     }
 
     #[test]
@@ -4549,7 +5438,7 @@ mod tests {
     }
 
     #[test]
-    fn port_corrected_dogleg_accepts_small_terminal_perpendicular_offsets() {
+    fn port_corrected_dogleg_inserts_absorber_straight_instead_of_terminal_diagonal() {
         let lib = test_lib();
         let straight_east_0 = primitive_id_for(&lib, 0, |p| {
             p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
@@ -4587,7 +5476,12 @@ mod tests {
 
         assert_eq!(corrected.first().copied(), Some(source_port));
         assert_eq!(corrected.last().copied(), Some(target_port));
-        assert!(corrected.len() > 2);
+        validate_source_tangent(&corrected, angle_to_unit_vector(0)).unwrap();
+        validate_target_tangent(&corrected, angle_to_unit_vector(0)).unwrap();
+        assert!(corrected.len() > route.primitives.len() + 1);
+        assert!(corrected.windows(2).any(|w| {
+            is_vertical_segment(w[0], w[1]) && (distance(w[0], w[1]) - 0.5).abs() <= 1.0e-9
+        }));
         assert!(corrected.windows(2).all(|w| distance(w[0], w[1]) > EPS));
     }
 
@@ -4643,25 +5537,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(corrected.len(), base.len());
         assert_eq!(corrected.first().copied(), Some(source_port));
         assert_eq!(corrected.last().copied(), Some(target_port));
-        assert!(is_horizontal_segment(
-            corrected[horizontal_run.start_index],
-            corrected[horizontal_run.end_index],
-        ));
-        assert!(is_vertical_segment(
-            corrected[vertical_run.start_index],
-            corrected[vertical_run.end_index],
-        ));
-
-        for i in horizontal_run.end_index..vertical_run.start_index {
-            let base_delta = sub(base[i + 1], base[i]);
-            let corrected_delta = sub(corrected[i + 1], corrected[i]);
-            assert!((corrected_delta.0 - base_delta.0).abs() <= 1.0e-9);
-            assert!((corrected_delta.1 - base_delta.1).abs() <= 1.0e-9);
-        }
-
+        validate_source_tangent(&corrected, angle_to_unit_vector(0)).unwrap();
+        validate_target_tangent(&corrected, angle_to_unit_vector(2)).unwrap();
+        assert!(corrected.len() >= base.len());
+        assert!(horizontal_run.end_index < vertical_run.start_index);
         assert!(corrected.windows(2).all(|w| distance(w[0], w[1]) > EPS));
     }
 
@@ -4740,7 +5621,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tangent_realization_adds_straight_after_final_bend() {
+    fn terminal_tangent_realization_rejects_unsupported_stub() {
         let route = RouteResult {
             states: vec![State::new(0, 0, 0), State::new(1, 0, 0)],
             primitives: vec![],
@@ -4757,18 +5638,18 @@ mod tests {
             realized_centerline[realized_centerline.len() - 2],
             realized_centerline[realized_centerline.len() - 1]
         ));
-        insert_terminal_tangent_stubs(
+        let err = insert_terminal_tangent_stubs(
             &mut realized_centerline,
             &route,
             terminal_tangent_stub_len_um(0.5).unwrap(),
             false,
             true,
         )
-        .unwrap();
-        let last = realized_centerline[realized_centerline.len() - 1];
-        let before_last = realized_centerline[realized_centerline.len() - 2];
-        assert!(is_horizontal_segment(before_last, last));
-        assert!(distance(before_last, last) > EPS);
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            GeometryError::PortEndpointCorrectionRequiresUnsupportedStub
+        ));
     }
 
     fn static_grid() -> StaticGridSpec {

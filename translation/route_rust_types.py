@@ -210,6 +210,7 @@ class RoutedNetRecord:
     target_port_orientation_deg: float | None = None
     base_total_length_um: float | None = None
     corrected_centerline_um: tuple[tuple[float, float], ...] = ()
+    endpoint_correction_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -283,6 +284,11 @@ class RouteTimingBucket:
     dense_grid_build_failures: int = 0
     dense_grid_cells: int = 0
     dense_grid_build_time_us: int = 0
+    search_loop_time_us: int = 0
+    obstacle_map_prepare_time_us: int = 0
+    simple_route_time_us: int = 0
+    commit_prepare_time_us: int = 0
+    commit_time_us: int = 0
     neighbor_generation_time_us: int = 0
     heap_operation_time_us: int = 0
     legality_check_time_us: int = 0
@@ -394,6 +400,26 @@ class RouteTimingBucket:
             route_obj,
             "dense_grid_build_time_us",
         )
+        self.search_loop_time_us += _get_route_int_stat(
+            route_obj,
+            "search_loop_time_us",
+        )
+        self.obstacle_map_prepare_time_us += _get_route_int_stat(
+            route_obj,
+            "obstacle_map_prepare_time_us",
+        )
+        self.simple_route_time_us += _get_route_int_stat(
+            route_obj,
+            "simple_route_time_us",
+        )
+        self.commit_prepare_time_us += _get_route_int_stat(
+            route_obj,
+            "commit_prepare_time_us",
+        )
+        self.commit_time_us += _get_route_int_stat(
+            route_obj,
+            "commit_time_us",
+        )
         self.neighbor_generation_time_us += _get_route_int_stat(
             route_obj,
             "neighbor_generation_time_us",
@@ -477,6 +503,11 @@ class RouteAttemptRecord:
     footprint_rect_checks: int = 0
     dense_grid_build_time_us: int = 0
     dense_grid_cells: int = 0
+    search_loop_time_us: int = 0
+    obstacle_map_prepare_time_us: int = 0
+    simple_route_time_us: int = 0
+    commit_prepare_time_us: int = 0
+    commit_time_us: int = 0
     neighbor_generation_time_us: int = 0
     heap_operation_time_us: int = 0
     legality_check_time_us: int = 0
@@ -543,6 +574,13 @@ class RouteAttemptRecord:
             "footprint_rect_checks": self.footprint_rect_checks,
             "dense_grid_build_time_s": self.dense_grid_build_time_us / 1_000_000.0,
             "dense_grid_cells": self.dense_grid_cells,
+            "search_loop_time_s": self.search_loop_time_us / 1_000_000.0,
+            "obstacle_map_prepare_time_s": (
+                self.obstacle_map_prepare_time_us / 1_000_000.0
+            ),
+            "simple_route_time_s": self.simple_route_time_us / 1_000_000.0,
+            "commit_prepare_time_s": self.commit_prepare_time_us / 1_000_000.0,
+            "commit_time_s": self.commit_time_us / 1_000_000.0,
             "neighbor_generation_time_s": self.neighbor_generation_time_us / 1_000_000.0,
             "heap_operation_time_s": self.heap_operation_time_us / 1_000_000.0,
             "legality_check_time_s": self.legality_check_time_us / 1_000_000.0,
@@ -661,6 +699,26 @@ def route_attempt_record_from_route(
             "dense_grid_build_time_us",
         ),
         dense_grid_cells=_get_route_int_stat(route_obj, "dense_grid_cells"),
+        search_loop_time_us=_get_route_int_stat(
+            route_obj,
+            "search_loop_time_us",
+        ),
+        obstacle_map_prepare_time_us=_get_route_int_stat(
+            route_obj,
+            "obstacle_map_prepare_time_us",
+        ),
+        simple_route_time_us=_get_route_int_stat(
+            route_obj,
+            "simple_route_time_us",
+        ),
+        commit_prepare_time_us=_get_route_int_stat(
+            route_obj,
+            "commit_prepare_time_us",
+        ),
+        commit_time_us=_get_route_int_stat(
+            route_obj,
+            "commit_time_us",
+        ),
         neighbor_generation_time_us=_get_route_int_stat(
             route_obj,
             "neighbor_generation_time_us",
@@ -734,6 +792,11 @@ class RouteSearchSummary:
     footprint_rect_rejects: int = 0
     dense_grid_build_time_us: int = 0
     dense_grid_cells: int = 0
+    search_loop_time_us: int = 0
+    obstacle_map_prepare_time_us: int = 0
+    simple_route_time_us: int = 0
+    commit_prepare_time_us: int = 0
+    commit_time_us: int = 0
     neighbor_generation_time_us: int = 0
     heap_operation_time_us: int = 0
     legality_check_time_us: int = 0
@@ -820,6 +883,13 @@ def summarize_route_search(
         footprint_rect_rejects=sum(bucket.footprint_rect_rejects for bucket in buckets),
         dense_grid_build_time_us=sum(bucket.dense_grid_build_time_us for bucket in buckets),
         dense_grid_cells=sum(bucket.dense_grid_cells for bucket in buckets),
+        search_loop_time_us=sum(bucket.search_loop_time_us for bucket in buckets),
+        obstacle_map_prepare_time_us=sum(
+            bucket.obstacle_map_prepare_time_us for bucket in buckets
+        ),
+        simple_route_time_us=sum(bucket.simple_route_time_us for bucket in buckets),
+        commit_prepare_time_us=sum(bucket.commit_prepare_time_us for bucket in buckets),
+        commit_time_us=sum(bucket.commit_time_us for bucket in buckets),
         neighbor_generation_time_us=sum(
             bucket.neighbor_generation_time_us for bucket in buckets
         ),

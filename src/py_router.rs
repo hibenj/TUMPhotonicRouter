@@ -7,8 +7,9 @@ use pyo3::types::{PyDict, PyList};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::astar::{
-    export_route_svg, route_single_net_with_config, try_simple_route_with_config, AStarConfig,
-    HeapTieBreaker, HeuristicMode, PrimitiveOrdering, RouteResult, RouteSearchStats, State,
+    export_route_svg, route_single_net_with_config, route_single_net_with_dynamic_expansion_config,
+    try_simple_route_with_dynamic_expansion_config, AStarConfig, HeapTieBreaker, HeuristicMode,
+    PrimitiveOrdering, RouteResult, RouteSearchStats, State,
 };
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
@@ -374,6 +375,16 @@ pub struct PyRouteResult {
     #[pyo3(get)]
     pub dense_grid_build_time_us: u64,
     #[pyo3(get)]
+    pub search_loop_time_us: u64,
+    #[pyo3(get)]
+    pub obstacle_map_prepare_time_us: u64,
+    #[pyo3(get)]
+    pub simple_route_time_us: u64,
+    #[pyo3(get)]
+    pub commit_prepare_time_us: u64,
+    #[pyo3(get)]
+    pub commit_time_us: u64,
+    #[pyo3(get)]
     pub neighbor_generation_time_us: u64,
     #[pyo3(get)]
     pub heap_operation_time_us: u64,
@@ -728,6 +739,7 @@ fn astar_config_from_py(
         primitive_ordering,
         heuristic_mode,
         heap_tie_breaker,
+        require_terminal_straights: false,
     })
 }
 
@@ -1870,31 +1882,59 @@ impl PyPhotonicRouter {
         } else {
             &self.port_open_cells
         };
-        let cfg = astar_config_from_py(&self.astar_cfg, &self.primitive_cfg, None, None, None)?;
+        let mut cfg = astar_config_from_py(&self.astar_cfg, &self.primitive_cfg, None, None, None)?;
+        cfg.require_terminal_straights = true;
         let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.as_deref().unwrap_or(&[]);
+        let collect_timing = self.astar_cfg.collect_detailed_timing;
+        let mut obstacle_map_prepare_time_us = 0u128;
+        let mut simple_route_time_us = 0u128;
+        let mut commit_prepare_time_us = 0u128;
+        let mut commit_time_us = 0u128;
+        let prepare_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let dynamic_clearance_exempt_keys;
         let mut opened_dynamic_obstacle_map;
         let search_obstacle_map = if block_radius_cells > 0 {
-            opened_dynamic_obstacle_map = self
-                .obstacle_map
-                .clone_with_expanded_dynamic_obstacles(block_radius_cells);
-            opened_dynamic_obstacle_map
-                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
-            &opened_dynamic_obstacle_map
+            dynamic_clearance_exempt_keys = (!dynamic_clearance_exempt_cell_vec.is_empty())
+                .then(|| pack_cells(dynamic_clearance_exempt_cell_vec));
+            None
         } else {
+            dynamic_clearance_exempt_keys = None;
             opened_dynamic_obstacle_map = self.obstacle_map.clone();
             opened_dynamic_obstacle_map
                 .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
-            &opened_dynamic_obstacle_map
+            Some(&opened_dynamic_obstacle_map)
         };
+        if let Some(prepare_start) = prepare_start.as_ref() {
+            obstacle_map_prepare_time_us += prepare_start.elapsed().as_micros();
+        }
         if block_radius_cells > 0 {
-            if let Some(result) = try_simple_route_with_config(
-                search_obstacle_map,
+            let simple_start = if collect_timing {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            if let Some(mut result) = try_simple_route_with_dynamic_expansion_config(
+                &self.obstacle_map,
                 &self.primitives,
                 State::new(source.x, source.y, source.angle),
                 State::new(target.x, target.y, target.angle),
                 Some(opened_ref),
                 &cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys.as_ref(),
             ) {
+                if let Some(simple_start) = simple_start.as_ref() {
+                    simple_route_time_us += simple_start.elapsed().as_micros();
+                }
+                let commit_prepare_start = if collect_timing {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
                 let route_cells = route_commit_cells(
                     &result.cells,
                     block_radius_cells,
@@ -1909,38 +1949,82 @@ impl PyPhotonicRouter {
                     self.grid.width as i32,
                     self.grid.height as i32,
                 );
-                if self.obstacle_map.commit_route_with_clearance_overlap(
+                if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
+                    commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
+                }
+                let commit_start = if collect_timing {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
+                let committed = self.obstacle_map.commit_route_with_clearance_overlap(
                     net_id,
                     &core_cells,
                     &route_cells,
                     clearance_exempt_cells.as_deref().unwrap_or(&[]),
-                ) {
+                );
+                if let Some(commit_start) = commit_start.as_ref() {
+                    commit_time_us += commit_start.elapsed().as_micros();
+                }
+                if committed {
+                    if collect_timing {
+                        result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
+                        result.stats.simple_route_time_us += simple_route_time_us;
+                        result.stats.commit_prepare_time_us += commit_prepare_time_us;
+                        result.stats.commit_time_us += commit_time_us;
+                    }
                     self.invalidate_meander_base_prefix();
                     return Py::new(py, convert_result(py, &self.primitives, &result)?);
                 }
+            } else if let Some(simple_start) = simple_start.as_ref() {
+                simple_route_time_us += simple_start.elapsed().as_micros();
             }
         }
         let search_cfg = if block_radius_cells > 0 {
-            astar_config_from_py(
+            let mut search_cfg = astar_config_from_py(
                 &self.astar_cfg,
                 &self.primitive_cfg,
                 None,
                 Some(false),
                 None,
-            )?
+            )?;
+            search_cfg.require_terminal_straights = true;
+            search_cfg
         } else {
             cfg
         };
-        let result = route_single_net_with_config(
-            search_obstacle_map,
-            &self.primitives,
-            State::new(source.x, source.y, source.angle),
-            State::new(target.x, target.y, target.angle),
-            Some(opened_ref),
-            &search_cfg,
-        )
+        let mut result = if block_radius_cells > 0 {
+            route_single_net_with_dynamic_expansion_config(
+                &self.obstacle_map,
+                &self.primitives,
+                State::new(source.x, source.y, source.angle),
+                State::new(target.x, target.y, target.angle),
+                Some(opened_ref),
+                &search_cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys.as_ref(),
+            )
+        } else {
+            route_single_net_with_config(
+                search_obstacle_map.expect("zero-radius search map should be prepared"),
+                &self.primitives,
+                State::new(source.x, source.y, source.angle),
+                State::new(target.x, target.y, target.angle),
+                Some(opened_ref),
+                &search_cfg,
+            )
+        }
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
 
+        if collect_timing {
+            result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
+            result.stats.simple_route_time_us += simple_route_time_us;
+        }
+        let commit_prepare_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let route_cells = route_commit_cells(
             &result.cells,
             block_radius_cells,
@@ -1955,12 +2039,24 @@ impl PyPhotonicRouter {
             self.grid.width as i32,
             self.grid.height as i32,
         );
-        if !self.obstacle_map.commit_route_with_clearance_overlap(
+        if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
+            result.stats.commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
+        }
+        let commit_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
             net_id,
             &core_cells,
             &route_cells,
             clearance_exempt_cells.as_deref().unwrap_or(&[]),
-        ) {
+        );
+        if let Some(commit_start) = commit_start.as_ref() {
+            result.stats.commit_time_us += commit_start.elapsed().as_micros();
+        }
+        if !committed {
             return Err(PyRuntimeError::new_err(
                 "Failed to commit routed cells to obstacle map",
             ));
@@ -2125,38 +2221,68 @@ impl PyPhotonicRouter {
         } else {
             &self.port_open_cells
         };
-        let cfg = astar_config_from_py(
+        let mut cfg = astar_config_from_py(
             &self.astar_cfg,
             &self.primitive_cfg,
             Some(false),
             Some(false),
             Some(history_weight),
         )?;
+        cfg.require_terminal_straights = true;
         let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.as_deref().unwrap_or(&[]);
+        let collect_timing = self.astar_cfg.collect_detailed_timing;
+        let prepare_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let dynamic_clearance_exempt_keys;
         let mut opened_dynamic_obstacle_map;
         let search_obstacle_map = if block_radius_cells > 0 {
-            opened_dynamic_obstacle_map = self
-                .obstacle_map
-                .clone_with_expanded_dynamic_obstacles(block_radius_cells);
-            opened_dynamic_obstacle_map
-                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
-            &opened_dynamic_obstacle_map
+            dynamic_clearance_exempt_keys = (!dynamic_clearance_exempt_cell_vec.is_empty())
+                .then(|| pack_cells(dynamic_clearance_exempt_cell_vec));
+            None
         } else {
+            dynamic_clearance_exempt_keys = None;
             opened_dynamic_obstacle_map = self.obstacle_map.clone();
             opened_dynamic_obstacle_map
                 .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
-            &opened_dynamic_obstacle_map
+            Some(&opened_dynamic_obstacle_map)
         };
-        let result = route_single_net_with_config(
-            search_obstacle_map,
-            &self.primitives,
-            State::new(source.x, source.y, source.angle),
-            State::new(target.x, target.y, target.angle),
-            Some(opened_ref),
-            &cfg,
-        )
+        let obstacle_map_prepare_time_us = prepare_start
+            .as_ref()
+            .map_or(0, |start| start.elapsed().as_micros());
+        let mut result = if block_radius_cells > 0 {
+            route_single_net_with_dynamic_expansion_config(
+                &self.obstacle_map,
+                &self.primitives,
+                State::new(source.x, source.y, source.angle),
+                State::new(target.x, target.y, target.angle),
+                Some(opened_ref),
+                &cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys.as_ref(),
+            )
+        } else {
+            route_single_net_with_config(
+                search_obstacle_map.expect("zero-radius search map should be prepared"),
+                &self.primitives,
+                State::new(source.x, source.y, source.angle),
+                State::new(target.x, target.y, target.angle),
+                Some(opened_ref),
+                &cfg,
+            )
+        }
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
 
+        if collect_timing {
+            result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
+        }
+        let commit_prepare_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let route_cells = route_commit_cells(
             &result.cells,
             block_radius_cells,
@@ -2171,12 +2297,24 @@ impl PyPhotonicRouter {
             self.grid.width as i32,
             self.grid.height as i32,
         );
-        if !self.obstacle_map.commit_route_with_clearance_overlap(
+        if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
+            result.stats.commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
+        }
+        let commit_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
             net_id,
             &core_cells,
             &route_cells,
             clearance_exempt_cells.as_deref().unwrap_or(&[]),
-        ) {
+        );
+        if let Some(commit_start) = commit_start.as_ref() {
+            result.stats.commit_time_us += commit_start.elapsed().as_micros();
+        }
+        if !committed {
             return Err(PyRuntimeError::new_err(
                 "Failed to commit routed cells to obstacle map",
             ));
@@ -3907,6 +4045,26 @@ fn convert_result(
             let clamped = r.stats.dense_grid_build_time_us.min(u64::MAX as u128);
             clamped as u64
         },
+        search_loop_time_us: {
+            let clamped = r.stats.search_loop_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
+        obstacle_map_prepare_time_us: {
+            let clamped = r.stats.obstacle_map_prepare_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
+        simple_route_time_us: {
+            let clamped = r.stats.simple_route_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
+        commit_prepare_time_us: {
+            let clamped = r.stats.commit_prepare_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
+        commit_time_us: {
+            let clamped = r.stats.commit_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
         neighbor_generation_time_us: {
             let clamped = r.stats.neighbor_generation_time_us.min(u64::MAX as u128);
             clamped as u64
@@ -4013,6 +4171,11 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             primitive_footprint_rect_rejects: route.primitive_footprint_rect_rejects,
             dense_grid_cells: route.dense_grid_cells,
             dense_grid_build_time_us: u128::from(route.dense_grid_build_time_us),
+            search_loop_time_us: u128::from(route.search_loop_time_us),
+            obstacle_map_prepare_time_us: u128::from(route.obstacle_map_prepare_time_us),
+            simple_route_time_us: u128::from(route.simple_route_time_us),
+            commit_prepare_time_us: u128::from(route.commit_prepare_time_us),
+            commit_time_us: u128::from(route.commit_time_us),
             neighbor_generation_time_us: u128::from(route.neighbor_generation_time_us),
             heap_operation_time_us: u128::from(route.heap_operation_time_us),
             legality_check_time_us: u128::from(route.legality_check_time_us),
@@ -4162,6 +4325,11 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            search_loop_time_us: 0,
+            obstacle_map_prepare_time_us: 0,
+            simple_route_time_us: 0,
+            commit_prepare_time_us: 0,
+            commit_time_us: 0,
             neighbor_generation_time_us: 0,
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
@@ -4263,6 +4431,11 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            search_loop_time_us: 0,
+            obstacle_map_prepare_time_us: 0,
+            simple_route_time_us: 0,
+            commit_prepare_time_us: 0,
+            commit_time_us: 0,
             neighbor_generation_time_us: 0,
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
@@ -4381,6 +4554,11 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            search_loop_time_us: 0,
+            obstacle_map_prepare_time_us: 0,
+            simple_route_time_us: 0,
+            commit_prepare_time_us: 0,
+            commit_time_us: 0,
             neighbor_generation_time_us: 0,
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
@@ -4491,6 +4669,11 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            search_loop_time_us: 0,
+            obstacle_map_prepare_time_us: 0,
+            simple_route_time_us: 0,
+            commit_prepare_time_us: 0,
+            commit_time_us: 0,
             neighbor_generation_time_us: 0,
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
@@ -4635,6 +4818,11 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            search_loop_time_us: 0,
+            obstacle_map_prepare_time_us: 0,
+            simple_route_time_us: 0,
+            commit_prepare_time_us: 0,
+            commit_time_us: 0,
             neighbor_generation_time_us: 0,
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
@@ -4753,6 +4941,11 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            search_loop_time_us: 0,
+            obstacle_map_prepare_time_us: 0,
+            simple_route_time_us: 0,
+            commit_prepare_time_us: 0,
+            commit_time_us: 0,
             neighbor_generation_time_us: 0,
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
@@ -4860,6 +5053,11 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            search_loop_time_us: 0,
+            obstacle_map_prepare_time_us: 0,
+            simple_route_time_us: 0,
+            commit_prepare_time_us: 0,
+            commit_time_us: 0,
             neighbor_generation_time_us: 0,
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
@@ -5077,6 +5275,11 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            search_loop_time_us: 0,
+            obstacle_map_prepare_time_us: 0,
+            simple_route_time_us: 0,
+            commit_prepare_time_us: 0,
+            commit_time_us: 0,
             neighbor_generation_time_us: 0,
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
@@ -5230,6 +5433,11 @@ mod tests {
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
             dense_grid_build_time_us: 0,
+            search_loop_time_us: 0,
+            obstacle_map_prepare_time_us: 0,
+            simple_route_time_us: 0,
+            commit_prepare_time_us: 0,
+            commit_time_us: 0,
             neighbor_generation_time_us: 0,
             heap_operation_time_us: 0,
             legality_check_time_us: 0,

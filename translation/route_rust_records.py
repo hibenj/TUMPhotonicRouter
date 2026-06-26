@@ -54,6 +54,10 @@ def _route_endpoint_cells(
         return None, None
 
 
+def _port_ref_label(ref: PortRef) -> str:
+    return f"{ref.instance}.{ref.port}"
+
+
 def _grid_cell_center_um(
     cell: tuple[int, int] | None,
     *,
@@ -95,6 +99,42 @@ def _alignment_entry(
     entry["mu_y_um"] = mu_y
     entry["offset_abs_um"] = (mu_x * mu_x + mu_y * mu_y) ** 0.5
     return entry
+
+
+def format_port_endpoint_correction_error(
+    record: RoutedNetRecord,
+    reason: object,
+    *,
+    realization_grid_spec: tuple[int, int, float, float, float] | None = None,
+) -> str:
+    source_cell, target_cell = _route_endpoint_cells(record.route_obj)
+    source_center = None
+    target_center = None
+    if realization_grid_spec is not None:
+        _, _, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
+        source_center = _grid_cell_center_um(
+            source_cell,
+            grid_size_um=float(grid_size_um),
+            origin_x_um=float(origin_x_um),
+            origin_y_um=float(origin_y_um),
+        )
+        target_center = _grid_cell_center_um(
+            target_cell,
+            grid_size_um=float(grid_size_um),
+            origin_x_um=float(origin_x_um),
+            origin_y_um=float(origin_y_um),
+        )
+
+    return (
+        "Grid-to-port endpoint correction failed for net "
+        f"{record.net_name!r} ({_port_ref_label(record.source)} -> "
+        f"{_port_ref_label(record.target)}): {reason}. "
+        f"source_port_um={record.source_port_center_um}, "
+        f"target_port_um={record.target_port_center_um}, "
+        f"source_route_cell={source_cell}, target_route_cell={target_cell}, "
+        f"source_route_center_um={source_center}, "
+        f"target_route_center_um={target_center}."
+    )
 
 
 def build_port_alignment_diagnostics(
@@ -212,6 +252,7 @@ def apply_port_endpoint_corrections(
     records: list[RoutedNetRecord],
     *,
     router: EndpointCorrectionRouter,
+    realization_grid_spec: tuple[int, int, float, float, float] | None = None,
 ) -> list[RoutedNetRecord]:
     """Attach corrected physical centerlines and lengths to routed records."""
     updated: list[RoutedNetRecord] = []
@@ -227,12 +268,24 @@ def apply_port_endpoint_corrections(
                 source_port_um=source_port,
                 target_port_um=target_port,
             )
-        except ValueError:
-            updated.append(record)
+        except (TypeError, ValueError) as exc:
+            message = format_port_endpoint_correction_error(
+                record,
+                exc,
+                realization_grid_spec=realization_grid_spec,
+            )
+            print("ERROR: " + message)
+            updated.append(replace(record, endpoint_correction_error=message))
             continue
         centerline = _centerline_tuple(raw_centerline)
         if not centerline:
-            updated.append(record)
+            message = format_port_endpoint_correction_error(
+                record,
+                "router returned an empty or invalid corrected centerline",
+                realization_grid_spec=realization_grid_spec,
+            )
+            print("ERROR: " + message)
+            updated.append(replace(record, endpoint_correction_error=message))
             continue
         corrected_length_um = float(router.centerline_length_um(list(centerline)))
         updated.append(
@@ -245,6 +298,7 @@ def apply_port_endpoint_corrections(
                     else float(record.total_length_um)
                 ),
                 corrected_centerline_um=centerline,
+                endpoint_correction_error=None,
             )
         )
     return updated

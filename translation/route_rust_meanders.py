@@ -730,6 +730,7 @@ def _planned_record(
         target_port_orientation_deg=record.target_port_orientation_deg,
         base_total_length_um=record.base_total_length_um,
         corrected_centerline_um=record.corrected_centerline_um,
+        endpoint_correction_error=record.endpoint_correction_error,
     )
 
 

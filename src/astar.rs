@@ -14,7 +14,9 @@ use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
 use crate::simple_routes::{
     direction_between as simple_direction_between, expand_candidate_to_grid_points,
-    try_straight_l_or_z_candidate_with_config, GridPoint, SimpleRouteCandidate, SimpleZRouteConfig,
+    try_straight_l_or_z_candidate_with_config,
+    try_straight_l_or_z_candidate_with_dynamic_expansion_config, GridPoint, SimpleRouteCandidate,
+    SimpleZRouteConfig,
 };
 
 /// Router search state: grid position plus 45-degree heading index.
@@ -62,6 +64,7 @@ pub struct AStarConfig {
     pub primitive_ordering: PrimitiveOrdering,
     pub heuristic_mode: HeuristicMode,
     pub heap_tie_breaker: HeapTieBreaker,
+    pub require_terminal_straights: bool,
 }
 
 impl Default for AStarConfig {
@@ -91,6 +94,7 @@ impl Default for AStarConfig {
             primitive_ordering: PrimitiveOrdering::Library,
             heuristic_mode: HeuristicMode::HeadingAware,
             heap_tie_breaker: HeapTieBreaker::SmallerG,
+            require_terminal_straights: false,
         }
     }
 }
@@ -191,6 +195,11 @@ pub struct RouteSearchStats {
     pub max_window_area_cells: i64,
     pub dense_grid_cells: usize,
     pub dense_grid_build_time_us: u128,
+    pub search_loop_time_us: u128,
+    pub obstacle_map_prepare_time_us: u128,
+    pub simple_route_time_us: u128,
+    pub commit_prepare_time_us: u128,
+    pub commit_time_us: u128,
     pub neighbor_generation_time_us: u128,
     pub heap_operation_time_us: u128,
     pub legality_check_time_us: u128,
@@ -483,6 +492,28 @@ impl DenseRoutingGrid {
         ignore_dynamic_obstacles: bool,
         build_history: bool,
     ) -> Option<Self> {
+        Self::from_obstacle_map_with_dynamic_expansion(
+            obstacle_map,
+            bounds,
+            opened_cells,
+            max_dense_obstacle_cells,
+            ignore_dynamic_obstacles,
+            build_history,
+            0,
+            None,
+        )
+    }
+
+    fn from_obstacle_map_with_dynamic_expansion(
+        obstacle_map: &ObstacleMap,
+        bounds: RoutingBounds,
+        opened_cells: Option<&FxHashSet<CellKey>>,
+        max_dense_obstacle_cells: usize,
+        ignore_dynamic_obstacles: bool,
+        build_history: bool,
+        dynamic_expansion_radius_cells: i32,
+        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+    ) -> Option<Self> {
         let start = Instant::now();
         let width = bounds.max_x.checked_sub(bounds.min_x)?.checked_add(1)?;
         let height = bounds.max_y.checked_sub(bounds.min_y)?.checked_add(1)?;
@@ -522,6 +553,12 @@ impl DenseRoutingGrid {
             opened_cells
                 .map(|cells| cells.contains(&pack_xy(x, y)))
                 .unwrap_or(false)
+        };
+        let dynamic_clearance_exempt_contains = |x: i32, y: i32| -> bool {
+            dynamic_clearance_exempt_cells
+                .map(|cells| cells.contains(&pack_xy(x, y)))
+                .unwrap_or(false)
+                && !obstacle_map.is_dynamic_core_blocked(x, y)
         };
 
         let mark_blocked = |idx: usize,
@@ -574,17 +611,31 @@ impl DenseRoutingGrid {
         }
 
         if !ignore_dynamic_obstacles {
+            let dynamic_expansion_radius_cells = dynamic_expansion_radius_cells.max(0);
             for key in obstacle_map.dynamic_obstacle_keys() {
                 let (x, y) = unpack_xy(key);
-                let Some(idx) = local_idx(x, y) else {
-                    continue;
-                };
-                mark_blocked(
-                    idx,
-                    &mut blocked_cells,
-                    &mut blocked_bits,
-                    &mut blocked_count,
-                )?;
+                for dx in -dynamic_expansion_radius_cells..=dynamic_expansion_radius_cells {
+                    for dy in -dynamic_expansion_radius_cells..=dynamic_expansion_radius_cells {
+                        let Some(nx) = x.checked_add(dx) else {
+                            continue;
+                        };
+                        let Some(ny) = y.checked_add(dy) else {
+                            continue;
+                        };
+                        if dynamic_clearance_exempt_contains(nx, ny) {
+                            continue;
+                        }
+                        let Some(idx) = local_idx(nx, ny) else {
+                            continue;
+                        };
+                        mark_blocked(
+                            idx,
+                            &mut blocked_cells,
+                            &mut blocked_bits,
+                            &mut blocked_count,
+                        )?;
+                    }
+                }
             }
         }
 
@@ -1168,10 +1219,17 @@ pub fn try_simple_route_with_config(
     anchor_open_cells.insert(pack_xy(target.x, target.y));
 
     let bend_radius_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
+    let terminal_straight_cells = if config.require_terminal_straights && bend_radius_cells > 0 {
+        1
+    } else {
+        0
+    };
     let z_config = SimpleZRouteConfig {
         max_offset_cells: config.simple_route_max_offset_cells,
         include_zero_offset: true,
-        min_leg_len_cells: config.simple_route_min_leg_len_cells.max(bend_radius_cells),
+        min_leg_len_cells: config
+            .simple_route_min_leg_len_cells
+            .max(bend_radius_cells + terminal_straight_cells),
     };
     let candidate = try_straight_l_or_z_candidate_with_config(
         source,
@@ -1186,6 +1244,74 @@ pub fn try_simple_route_with_config(
         target,
         primitives,
         RouteSearchStats::default(),
+        config.require_terminal_straights,
+    )
+}
+
+pub fn try_simple_route_with_dynamic_expansion_config(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    dynamic_expansion_radius_cells: i32,
+    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<RouteResult> {
+    if !config.enable_simple_routes {
+        return None;
+    }
+    if config.target_tolerance_cells < 0 {
+        return None;
+    }
+    if let Some(mask) = config.allowed_target_angles_mask {
+        if mask == 0 {
+            return None;
+        }
+    }
+    if target.angle > 7 {
+        return None;
+    }
+    if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
+        return None;
+    }
+
+    let mut anchor_open_cells = FxHashSet::default();
+    if let Some(port_open_cells) = port_open_cells {
+        anchor_open_cells.extend(port_open_cells.iter().copied());
+    }
+    anchor_open_cells.insert(pack_xy(source.x, source.y));
+    anchor_open_cells.insert(pack_xy(target.x, target.y));
+
+    let bend_radius_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
+    let terminal_straight_cells = if config.require_terminal_straights && bend_radius_cells > 0 {
+        1
+    } else {
+        0
+    };
+    let z_config = SimpleZRouteConfig {
+        max_offset_cells: config.simple_route_max_offset_cells,
+        include_zero_offset: true,
+        min_leg_len_cells: config
+            .simple_route_min_leg_len_cells
+            .max(bend_radius_cells + terminal_straight_cells),
+    };
+    let candidate = try_straight_l_or_z_candidate_with_dynamic_expansion_config(
+        source,
+        target,
+        obstacle_map,
+        Some(&anchor_open_cells),
+        &z_config,
+        dynamic_expansion_radius_cells,
+        dynamic_clearance_exempt_cells,
+    )?;
+    simple_candidate_to_route_result(
+        &candidate,
+        source,
+        target,
+        primitives,
+        RouteSearchStats::default(),
+        config.require_terminal_straights,
     )
 }
 
@@ -1319,6 +1445,123 @@ pub fn route_single_net_with_config(
             config,
             None,
             &mut stats,
+        );
+    }
+
+    None
+}
+
+pub fn route_single_net_with_dynamic_expansion_config(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    dynamic_expansion_radius_cells: i32,
+    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<RouteResult> {
+    if config.target_tolerance_cells < 0 {
+        return None;
+    }
+    if let Some(mask) = config.allowed_target_angles_mask {
+        if mask == 0 {
+            return None;
+        }
+    }
+    if target.angle > 7 {
+        return None;
+    }
+    if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
+        return None;
+    }
+    let mut anchor_open_cells = FxHashSet::default();
+    if let Some(port_open_cells) = port_open_cells {
+        anchor_open_cells.extend(port_open_cells.iter().copied());
+    }
+    anchor_open_cells.insert(pack_xy(source.x, source.y));
+    anchor_open_cells.insert(pack_xy(target.x, target.y));
+
+    let mut stats = RouteSearchStats::default();
+    stats.jps4_requested = config.enable_jps4;
+    stats.jps4_eligible = false;
+    stats.jps4_fallback_reason = "dynamic expansion overlay uses dense A*".to_string();
+    if config.enable_jps4 {
+        stats.jps4_fallbacks += 1;
+    }
+
+    if !config.use_routing_window {
+        return route_single_net_with_bounds_dynamic_expansion(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            None,
+            &mut stats,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+        );
+    }
+
+    let mut last_bounds: Option<RoutingBounds> = None;
+    for expansion_idx in 0..=config.routing_window_max_expansions {
+        let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
+        if last_bounds == Some(bounds) {
+            continue;
+        }
+        last_bounds = Some(bounds);
+        stats.window_attempts += 1;
+        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(bounds));
+        stats.last_window_min_x = bounds.min_x;
+        stats.last_window_max_x = bounds.max_x;
+        stats.last_window_min_y = bounds.min_y;
+        stats.last_window_max_y = bounds.max_y;
+        stats.last_window_area_cells = window_area(bounds);
+
+        if let Some(route) = route_single_net_with_bounds_dynamic_expansion(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            Some(bounds),
+            &mut stats,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+        ) {
+            return Some(route);
+        }
+    }
+
+    if config.routing_window_fallback_full_grid {
+        stats.window_attempts += 1;
+        stats.used_full_grid_fallback = true;
+        let full_bounds = RoutingBounds {
+            min_x: 0,
+            max_x: obstacle_map.width() - 1,
+            min_y: 0,
+            max_y: obstacle_map.height() - 1,
+        };
+        stats.last_window_min_x = full_bounds.min_x;
+        stats.last_window_max_x = full_bounds.max_x;
+        stats.last_window_min_y = full_bounds.min_y;
+        stats.last_window_max_y = full_bounds.max_y;
+        stats.last_window_area_cells = window_area(full_bounds);
+        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
+        return route_single_net_with_bounds_dynamic_expansion(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            None,
+            &mut stats,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
         );
     }
 
@@ -1721,6 +1964,7 @@ fn simple_candidate_to_route_result(
     target: State,
     primitives: &PrimitiveLibrary,
     stats: RouteSearchStats,
+    require_terminal_straights: bool,
 ) -> Option<RouteResult> {
     let expanded = expand_candidate_to_grid_points(candidate);
     if expanded.len() < 2 || candidate.points.len() < 2 {
@@ -1774,6 +2018,13 @@ fn simple_candidate_to_route_result(
             return None;
         }
         trimmed_lengths.push(trimmed);
+    }
+    if require_terminal_straights && segment_count > 1 {
+        if trimmed_lengths.first().copied().unwrap_or(0) == 0
+            || trimmed_lengths.last().copied().unwrap_or(0) == 0
+        {
+            return None;
+        }
     }
 
     if segment_count == 3 && bend_radius_cells > 0 {
@@ -2044,6 +2295,11 @@ fn primitive_class_order_rank(class: usize) -> usize {
     }
 }
 
+#[inline]
+fn primitive_class_is_straight(class: usize) -> bool {
+    matches!(class, PRIMITIVE_STRAIGHT_SHORT | PRIMITIVE_STRAIGHT_LONG)
+}
+
 fn target_biased_primitive_score(
     primitive: &Primitive,
     metadata: PrimitiveSearchMetadata,
@@ -2119,6 +2375,32 @@ fn route_single_net_with_bounds(
     routing_bounds: Option<RoutingBounds>,
     stats: &mut RouteSearchStats,
 ) -> Option<RouteResult> {
+    route_single_net_with_bounds_dynamic_expansion(
+        obstacle_map,
+        primitives,
+        source,
+        target,
+        port_open_cells,
+        config,
+        routing_bounds,
+        stats,
+        0,
+        None,
+    )
+}
+
+fn route_single_net_with_bounds_dynamic_expansion(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    routing_bounds: Option<RoutingBounds>,
+    stats: &mut RouteSearchStats,
+    dynamic_expansion_radius_cells: i32,
+    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<RouteResult> {
     let bounds = if let Some(bounds) = routing_bounds {
         if !bounds.contains(source.x, source.y) || !bounds.contains(target.x, target.y) {
             return None;
@@ -2136,13 +2418,15 @@ fn route_single_net_with_bounds(
     let mut storage = DenseSearchStorage::new(bounds, config.max_dense_states)?;
     stats.dense_search_states = storage.state_count();
     stats.dense_search_storage_bytes = storage.allocated_bytes();
-    let dense_grid = match DenseRoutingGrid::from_obstacle_map(
+    let dense_grid = match DenseRoutingGrid::from_obstacle_map_with_dynamic_expansion(
         obstacle_map,
         bounds,
         port_open_cells,
         config.max_dense_obstacle_cells,
         config.ignore_dynamic_obstacles,
         config.history_weight > 0.0,
+        dynamic_expansion_radius_cells,
+        dynamic_clearance_exempt_cells,
     ) {
         Some(grid) => grid,
         None => {
@@ -2212,6 +2496,11 @@ fn route_single_net_with_bounds(
         }
     }
     let mut iterations = 0usize;
+    let search_loop_start = if collect_detailed_timing {
+        Some(Instant::now())
+    } else {
+        None
+    };
     loop {
         let entry = if collect_detailed_timing {
             let heap_start = Instant::now();
@@ -2227,6 +2516,9 @@ fn route_single_net_with_bounds(
         stats.heap_pops += 1;
         iterations += 1;
         if iterations > config.max_iterations {
+            if let Some(search_loop_start) = search_loop_start.as_ref() {
+                stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
+            }
             return None;
         }
 
@@ -2246,6 +2538,9 @@ fn route_single_net_with_bounds(
             && (state.y - target.y).abs() <= target_tolerance
             && accepted_target_angles[state.angle as usize]
         {
+            if let Some(search_loop_start) = search_loop_start.as_ref() {
+                stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
+            }
             if collect_detailed_timing {
                 let reconstruction_start = Instant::now();
                 let mut route = reconstruct_route_dense(
@@ -2300,9 +2595,23 @@ fn route_single_net_with_bounds(
             let primitive_class = metadata.transition_class;
             stats.generated_neighbors += 1;
             stats.primitive_generated_by_class[primitive_class] += 1;
+            if config.require_terminal_straights
+                && state == source
+                && !primitive_class_is_straight(primitive_class)
+            {
+                continue;
+            }
             let next_x = state.x.checked_add(primitive.dx)?;
             let next_y = state.y.checked_add(primitive.dy)?;
             let next_angle = primitive.end_angle % 8;
+            if config.require_terminal_straights
+                && (next_x - target.x).abs() <= target_tolerance
+                && (next_y - target.y).abs() <= target_tolerance
+                && accepted_target_angles[next_angle as usize]
+                && !primitive_class_is_straight(primitive_class)
+            {
+                continue;
+            }
 
             if !bounds.contains(next_x, next_y) {
                 stats.window_rejects += 1;
@@ -2422,6 +2731,9 @@ fn route_single_net_with_bounds(
         }
     }
 
+    if let Some(search_loop_start) = search_loop_start.as_ref() {
+        stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
+    }
     None
 }
 
@@ -2781,6 +3093,90 @@ mod tests {
             bend_radius_cells: 2,
             allow_45_degree_turns: false,
         })
+    }
+
+    #[test]
+    fn simple_dynamic_expansion_overlay_matches_materialized_map() {
+        let mut map = ObstacleMap::new(24, 12);
+        assert!(map.commit_route_with_clearance_overlap(1, &[(9, 4)], &[(9, 4)], &[],));
+        let mut expanded = map.clone_with_expanded_dynamic_obstacles(2);
+        let exemptions = vec![(9, 2)];
+        expanded.clear_dynamic_clearance_in_cells(&exemptions);
+        let exemption_keys = pack_cells_for_test(&exemptions);
+        let library = primitive_library_no45_bend2();
+        let source = State::new(1, 1, 0);
+        let target = State::new(18, 1, 0);
+        let config = AStarConfig {
+            require_target_angle: true,
+            ..AStarConfig::default()
+        };
+
+        let materialized =
+            try_simple_route_with_config(&expanded, &library, source, target, None, &config);
+        let overlay = try_simple_route_with_dynamic_expansion_config(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &config,
+            2,
+            Some(&exemption_keys),
+        );
+
+        assert_eq!(overlay.is_some(), materialized.is_some());
+        if let (Some(overlay), Some(materialized)) = (overlay, materialized) {
+            assert_eq!(overlay.primitives, materialized.primitives);
+            assert_eq!(overlay.cells, materialized.cells);
+            assert_eq!(overlay.reached_target, materialized.reached_target);
+        }
+    }
+
+    #[test]
+    fn dense_dynamic_expansion_overlay_matches_materialized_map() {
+        let mut map = ObstacleMap::new(40, 16);
+        assert!(map.commit_route_with_clearance_overlap(
+            1,
+            &[(16, 7), (17, 7), (18, 7)],
+            &[(16, 7), (17, 7), (18, 7)],
+            &[],
+        ));
+        let mut expanded = map.clone_with_expanded_dynamic_obstacles(2);
+        let exemptions = vec![(16, 5)];
+        expanded.clear_dynamic_clearance_in_cells(&exemptions);
+        let exemption_keys = pack_cells_for_test(&exemptions);
+        let library = primitive_library_no45_bend2();
+        let source = State::new(3, 7, 0);
+        let target = State::new(34, 7, 0);
+        let config = AStarConfig {
+            max_iterations: 500_000,
+            require_target_angle: false,
+            enable_simple_routes: false,
+            routing_window_fallback_full_grid: true,
+            ..AStarConfig::default()
+        };
+
+        let materialized =
+            route_single_net_with_config(&expanded, &library, source, target, None, &config)
+                .expect("materialized expanded map should route");
+        let overlay = route_single_net_with_dynamic_expansion_config(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &config,
+            2,
+            Some(&exemption_keys),
+        )
+        .expect("overlay expanded map should route");
+
+        assert_eq!(overlay.reached_target, materialized.reached_target);
+        assert!((overlay.total_cost - materialized.total_cost).abs() < 1.0e-9);
+    }
+
+    fn pack_cells_for_test(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
+        cells.iter().map(|&(x, y)| pack_xy(x, y)).collect()
     }
 
     fn plain_jps4_primitive_library() -> PrimitiveLibrary {
@@ -3164,6 +3560,46 @@ mod tests {
         assert!((reached.x - 5).abs() <= 1);
         assert!((reached.y - 3).abs() <= 1);
         assert_eq!(result.reached_target, reached);
+    }
+
+    #[test]
+    fn terminal_straight_requirement_rejects_immediate_port_bends() {
+        let map = ObstacleMap::new(8, 8);
+        let library = primitive_library();
+        let result = route_single_net_with_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(3, 3, 2),
+            None,
+            &AStarConfig {
+                enable_simple_routes: false,
+                require_terminal_straights: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("route should exist with straight launch and landing");
+
+        let first_primitive = library
+            .get_primitives_for_angle(result.states[0].angle)
+            .iter()
+            .find(|p| p.id == result.primitives[0])
+            .expect("first primitive should exist");
+        let last_start_angle = result.states[result.states.len() - 2].angle;
+        let last_primitive = library
+            .get_primitives_for_angle(last_start_angle)
+            .iter()
+            .find(|p| p.id == *result.primitives.last().unwrap())
+            .expect("last primitive should exist");
+
+        assert!(matches!(
+            first_primitive.geometry,
+            PrimitiveGeometry::Straight { .. }
+        ));
+        assert!(matches!(
+            last_primitive.geometry,
+            PrimitiveGeometry::Straight { .. }
+        ));
     }
 
     #[test]

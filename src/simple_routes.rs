@@ -109,6 +109,124 @@ impl Default for SimpleZRouteConfig {
     }
 }
 
+pub trait SimpleRouteObstacleQuery {
+    fn rect_free(&self, rect: GridRect, opened_cells: Option<&FxHashSet<CellKey>>) -> bool;
+    fn check_cells_free(
+        &self,
+        cells: &[(i32, i32)],
+        opened_cells: Option<&FxHashSet<CellKey>>,
+    ) -> bool;
+}
+
+impl SimpleRouteObstacleQuery for ObstacleMap {
+    fn rect_free(&self, rect: GridRect, opened_cells: Option<&FxHashSet<CellKey>>) -> bool {
+        ObstacleMap::rect_free(self, rect, opened_cells)
+    }
+
+    fn check_cells_free(
+        &self,
+        cells: &[(i32, i32)],
+        opened_cells: Option<&FxHashSet<CellKey>>,
+    ) -> bool {
+        ObstacleMap::check_cells_free(self, cells, opened_cells)
+    }
+}
+
+pub struct ExpandedDynamicObstacleQuery<'a> {
+    obstacle_map: &'a ObstacleMap,
+    dynamic_expansion_radius_cells: i32,
+    clearance_exempt_cells: Option<&'a FxHashSet<CellKey>>,
+}
+
+impl<'a> ExpandedDynamicObstacleQuery<'a> {
+    pub fn new(
+        obstacle_map: &'a ObstacleMap,
+        dynamic_expansion_radius_cells: i32,
+        clearance_exempt_cells: Option<&'a FxHashSet<CellKey>>,
+    ) -> Self {
+        Self {
+            obstacle_map,
+            dynamic_expansion_radius_cells: dynamic_expansion_radius_cells.max(0),
+            clearance_exempt_cells,
+        }
+    }
+
+    #[inline]
+    fn is_clearance_exempt(&self, x: i32, y: i32) -> bool {
+        self.clearance_exempt_cells
+            .map(|cells| cells.contains(&crate::obstacle_map::pack_xy(x, y)))
+            .unwrap_or(false)
+            && !self.obstacle_map.is_dynamic_core_blocked(x, y)
+    }
+
+    fn expanded_dynamic_blocked_at(&self, x: i32, y: i32) -> bool {
+        if !self.obstacle_map.in_bounds(x, y) {
+            return true;
+        }
+        if self.is_clearance_exempt(x, y) {
+            return false;
+        }
+
+        let radius = self.dynamic_expansion_radius_cells;
+        for dx in -radius..=radius {
+            for dy in -radius..=radius {
+                let Some(nx) = x.checked_add(dx) else {
+                    continue;
+                };
+                let Some(ny) = y.checked_add(dy) else {
+                    continue;
+                };
+                if self.obstacle_map.in_bounds(nx, ny)
+                    && self.obstacle_map.is_dynamic_blocked(nx, ny)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[inline]
+    fn cell_free(&self, x: i32, y: i32, opened_cells: Option<&FxHashSet<CellKey>>) -> bool {
+        if !self.obstacle_map.in_bounds(x, y) || self.expanded_dynamic_blocked_at(x, y) {
+            return false;
+        }
+        if opened_cells
+            .map(|cells| cells.contains(&crate::obstacle_map::pack_xy(x, y)))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        !self.obstacle_map.is_static_blocked(x, y)
+    }
+}
+
+impl SimpleRouteObstacleQuery for ExpandedDynamicObstacleQuery<'_> {
+    fn rect_free(&self, rect: GridRect, opened_cells: Option<&FxHashSet<CellKey>>) -> bool {
+        if rect.x_min > rect.x_max || rect.y_min > rect.y_max {
+            return true;
+        }
+        for y in rect.y_min..=rect.y_max {
+            for x in rect.x_min..=rect.x_max {
+                if !self.cell_free(x, y, opened_cells) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn check_cells_free(
+        &self,
+        cells: &[(i32, i32)],
+        opened_cells: Option<&FxHashSet<CellKey>>,
+    ) -> bool {
+        cells
+            .iter()
+            .all(|&(x, y)| self.cell_free(x, y, opened_cells))
+    }
+}
+
 /// Polyline candidate for deterministic pre-routing checks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SimpleRouteCandidate {
@@ -217,6 +335,15 @@ pub fn try_straight_candidate(
     obstacle_map: &ObstacleMap,
     opened_cells: Option<&FxHashSet<CellKey>>,
 ) -> Option<SimpleRouteCandidate> {
+    try_straight_candidate_with_query(source, target, obstacle_map, opened_cells)
+}
+
+fn try_straight_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    source: State,
+    target: State,
+    obstacle_query: &Q,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<SimpleRouteCandidate> {
     if !is_cardinal_heading(source.angle) || !is_cardinal_heading(target.angle) {
         return None;
     }
@@ -234,7 +361,7 @@ pub fn try_straight_candidate(
 
     let candidate =
         SimpleRouteCandidate::new(SimpleRouteKind::Straight, vec![source_point, target_point]);
-    if check_simple_candidate(&candidate, obstacle_map, opened_cells) {
+    if check_simple_candidate_with_query(&candidate, obstacle_query, opened_cells) {
         Some(candidate)
     } else {
         None
@@ -256,6 +383,22 @@ pub fn try_l_candidate_with_min_leg_len(
     source: State,
     target: State,
     obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    min_leg_len_cells: i32,
+) -> Option<SimpleRouteCandidate> {
+    try_l_candidate_with_min_leg_len_query(
+        source,
+        target,
+        obstacle_map,
+        opened_cells,
+        min_leg_len_cells,
+    )
+}
+
+fn try_l_candidate_with_min_leg_len_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    source: State,
+    target: State,
+    obstacle_query: &Q,
     opened_cells: Option<&FxHashSet<CellKey>>,
     min_leg_len_cells: i32,
 ) -> Option<SimpleRouteCandidate> {
@@ -303,7 +446,7 @@ pub fn try_l_candidate_with_min_leg_len(
             source.angle % 8,
             target.angle % 8,
             min_leg_len_cells.max(1),
-            obstacle_map,
+            obstacle_query,
             opened_cells,
         ) {
             continue;
@@ -355,6 +498,16 @@ pub fn try_z_candidate_with_config(
     source: State,
     target: State,
     obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    config: &SimpleZRouteConfig,
+) -> Option<SimpleRouteCandidate> {
+    try_z_candidate_with_config_query(source, target, obstacle_map, opened_cells, config)
+}
+
+fn try_z_candidate_with_config_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    source: State,
+    target: State,
+    obstacle_query: &Q,
     opened_cells: Option<&FxHashSet<CellKey>>,
     config: &SimpleZRouteConfig,
 ) -> Option<SimpleRouteCandidate> {
@@ -418,7 +571,7 @@ pub fn try_z_candidate_with_config(
             source_heading,
             target_heading,
             min_leg_len,
-            obstacle_map,
+            obstacle_query,
             opened_cells,
         ) {
             continue;
@@ -435,6 +588,16 @@ pub fn try_turnaround_candidate_with_config(
     source: State,
     target: State,
     obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    config: &SimpleZRouteConfig,
+) -> Option<SimpleRouteCandidate> {
+    try_turnaround_candidate_with_config_query(source, target, obstacle_map, opened_cells, config)
+}
+
+fn try_turnaround_candidate_with_config_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    source: State,
+    target: State,
+    obstacle_query: &Q,
     opened_cells: Option<&FxHashSet<CellKey>>,
     config: &SimpleZRouteConfig,
 ) -> Option<SimpleRouteCandidate> {
@@ -484,7 +647,7 @@ pub fn try_turnaround_candidate_with_config(
                         source_heading,
                         target_heading,
                         min_leg_len,
-                        obstacle_map,
+                        obstacle_query,
                         opened_cells,
                     ) {
                         return Some(candidate);
@@ -518,7 +681,7 @@ pub fn try_turnaround_candidate_with_config(
                         source_heading,
                         target_heading,
                         min_leg_len,
-                        obstacle_map,
+                        obstacle_query,
                         opened_cells,
                     ) {
                         return Some(candidate);
@@ -556,24 +719,57 @@ pub fn try_straight_l_or_z_candidate_with_config(
     opened_cells: Option<&FxHashSet<CellKey>>,
     z_config: &SimpleZRouteConfig,
 ) -> Option<SimpleRouteCandidate> {
-    try_straight_candidate(source, target, obstacle_map, opened_cells)
+    try_straight_l_or_z_candidate_with_query(source, target, obstacle_map, opened_cells, z_config)
+}
+
+pub fn try_straight_l_or_z_candidate_with_dynamic_expansion_config(
+    source: State,
+    target: State,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    z_config: &SimpleZRouteConfig,
+    dynamic_expansion_radius_cells: i32,
+    clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<SimpleRouteCandidate> {
+    let query = ExpandedDynamicObstacleQuery::new(
+        obstacle_map,
+        dynamic_expansion_radius_cells,
+        clearance_exempt_cells,
+    );
+    try_straight_l_or_z_candidate_with_query(source, target, &query, opened_cells, z_config)
+}
+
+fn try_straight_l_or_z_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    source: State,
+    target: State,
+    obstacle_query: &Q,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    z_config: &SimpleZRouteConfig,
+) -> Option<SimpleRouteCandidate> {
+    try_straight_candidate_with_query(source, target, obstacle_query, opened_cells)
         .or_else(|| {
-            try_l_candidate_with_min_leg_len(
+            try_l_candidate_with_min_leg_len_query(
                 source,
                 target,
-                obstacle_map,
+                obstacle_query,
                 opened_cells,
                 z_config.min_leg_len_cells,
             )
         })
         .or_else(|| {
-            try_z_candidate_with_config(source, target, obstacle_map, opened_cells, z_config)
-        })
-        .or_else(|| {
-            try_turnaround_candidate_with_config(
+            try_z_candidate_with_config_query(
                 source,
                 target,
-                obstacle_map,
+                obstacle_query,
+                opened_cells,
+                z_config,
+            )
+        })
+        .or_else(|| {
+            try_turnaround_candidate_with_config_query(
+                source,
+                target,
+                obstacle_query,
                 opened_cells,
                 z_config,
             )
@@ -623,6 +819,14 @@ pub fn check_simple_candidate(
     obstacle_map: &ObstacleMap,
     opened_cells: Option<&FxHashSet<CellKey>>,
 ) -> bool {
+    check_simple_candidate_with_query(candidate, obstacle_map, opened_cells)
+}
+
+fn check_simple_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    candidate: &SimpleRouteCandidate,
+    obstacle_query: &Q,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> bool {
     if candidate.points.len() < 2 {
         return false;
     }
@@ -633,7 +837,7 @@ pub fn check_simple_candidate(
         if let Some(rects) = candidate_segment_rects(candidate, 0) {
             return rects
                 .into_iter()
-                .all(|rect| obstacle_map.rect_free(rect, opened_cells));
+                .all(|rect| obstacle_query.rect_free(rect, opened_cells));
         }
     }
 
@@ -642,7 +846,7 @@ pub fn check_simple_candidate(
             return false;
         };
         let seg_cells: Vec<(i32, i32)> = seg_points.into_iter().map(|p| (p.x, p.y)).collect();
-        if !obstacle_map.check_cells_free(&seg_cells, opened_cells) {
+        if !obstacle_query.check_cells_free(&seg_cells, opened_cells) {
             return false;
         }
     }
@@ -730,7 +934,7 @@ fn is_valid_z_candidate(
     source_heading: u8,
     target_heading: u8,
     min_leg_len: i32,
-    obstacle_map: &ObstacleMap,
+    obstacle_query: &(impl SimpleRouteObstacleQuery + ?Sized),
     opened_cells: Option<&FxHashSet<CellKey>>,
 ) -> bool {
     if candidate.kind != SimpleRouteKind::ZShape || candidate.points.len() != 4 {
@@ -777,7 +981,7 @@ fn is_valid_z_candidate(
         }
     }
 
-    check_simple_candidate(candidate, obstacle_map, opened_cells)
+    check_simple_candidate_with_query(candidate, obstacle_query, opened_cells)
 }
 
 fn is_valid_l_candidate(
@@ -785,7 +989,7 @@ fn is_valid_l_candidate(
     source_heading: u8,
     target_heading: u8,
     min_leg_len: i32,
-    obstacle_map: &ObstacleMap,
+    obstacle_query: &(impl SimpleRouteObstacleQuery + ?Sized),
     opened_cells: Option<&FxHashSet<CellKey>>,
 ) -> bool {
     if candidate.kind != SimpleRouteKind::LShape || candidate.points.len() != 3 {
@@ -819,7 +1023,7 @@ fn is_valid_l_candidate(
         return false;
     }
 
-    check_simple_candidate(candidate, obstacle_map, opened_cells)
+    check_simple_candidate_with_query(candidate, obstacle_query, opened_cells)
 }
 
 fn turnaround_lanes(
@@ -861,7 +1065,7 @@ fn is_valid_turnaround_candidate(
     source_heading: u8,
     target_heading: u8,
     min_leg_len: i32,
-    obstacle_map: &ObstacleMap,
+    obstacle_query: &(impl SimpleRouteObstacleQuery + ?Sized),
     opened_cells: Option<&FxHashSet<CellKey>>,
 ) -> bool {
     if candidate.kind != SimpleRouteKind::Turnaround || candidate.points.len() != 6 {
@@ -906,7 +1110,7 @@ fn is_valid_turnaround_candidate(
         }
     }
 
-    check_simple_candidate(candidate, obstacle_map, opened_cells)
+    check_simple_candidate_with_query(candidate, obstacle_query, opened_cells)
 }
 
 #[cfg(test)]

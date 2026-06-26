@@ -140,6 +140,7 @@ def _apply_endpoint_corrections_to_debug_artifacts(
     records = apply_port_endpoint_corrections(
         debug_artifacts.routed_net_records,
         router=router,
+        realization_grid_spec=debug_artifacts.realization_grid_spec,
     )
     return replace(
         debug_artifacts,
@@ -2516,6 +2517,11 @@ def route_nets_rust(
                     f"rect_checks={bucket.footprint_rect_checks}, "
                     f"dense_cells={bucket.dense_grid_cells}, "
                     f"dense_build={bucket.dense_grid_build_time_us / 1_000_000.0:.4f}s, "
+                    f"search_loop={bucket.search_loop_time_us / 1_000_000.0:.4f}s, "
+                    f"obstacle_prepare={bucket.obstacle_map_prepare_time_us / 1_000_000.0:.4f}s, "
+                    f"simple_probe={bucket.simple_route_time_us / 1_000_000.0:.4f}s, "
+                    f"commit_prepare={bucket.commit_prepare_time_us / 1_000_000.0:.4f}s, "
+                    f"commit={bucket.commit_time_us / 1_000_000.0:.4f}s, "
                     f"neighbor_time={bucket.neighbor_generation_time_us / 1_000_000.0:.4f}s, "
                     f"heap_time={bucket.heap_operation_time_us / 1_000_000.0:.4f}s, "
                     f"legality_time={bucket.legality_check_time_us / 1_000_000.0:.4f}s, "

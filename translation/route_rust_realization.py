@@ -14,6 +14,7 @@ from translation.route_rust_types import (
     _as_float,
     _as_int,
 )
+from translation.route_rust_records import format_port_endpoint_correction_error
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 _load_rust_backend = _sob._load_rust_backend
@@ -33,6 +34,8 @@ class _EndpointCorrectionRouter(Protocol):
 def _physical_port_centerline(
     router: _EndpointCorrectionRouter,
     record: RoutedNetRecord,
+    *,
+    realization_grid_spec: tuple[int, int, float, float, float] | None = None,
 ) -> list[tuple[float, float]]:
     corrected_centerline = [
         (float(p[0]), float(p[1]))
@@ -45,6 +48,8 @@ def _physical_port_centerline(
     target_port_um = record.target_port_center_um
     if source_port_um is None and target_port_um is None:
         return []
+    if record.endpoint_correction_error is not None:
+        return []
 
     try:
         raw_centerline = router.route_port_corrected_centerline(
@@ -52,14 +57,40 @@ def _physical_port_centerline(
             source_port_um=source_port_um,
             target_port_um=target_port_um,
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        print(
+            "ERROR: "
+            + format_port_endpoint_correction_error(
+                record,
+                exc,
+                realization_grid_spec=realization_grid_spec,
+            )
+        )
         return []
 
     centerline: list[tuple[float, float]] = []
     for point in raw_centerline:
         if not isinstance(point, (tuple, list)) or len(point) != 2:
+            print(
+                "ERROR: "
+                + format_port_endpoint_correction_error(
+                    record,
+                    "router returned an invalid corrected centerline point",
+                    realization_grid_spec=realization_grid_spec,
+                )
+            )
             return []
         centerline.append((float(point[0]), float(point[1])))
+    if not centerline:
+        print(
+            "ERROR: "
+            + format_port_endpoint_correction_error(
+                record,
+                "router returned an empty corrected centerline",
+                realization_grid_spec=realization_grid_spec,
+            )
+        )
+        return []
     return centerline
 
 
@@ -101,7 +132,11 @@ def realize_routed_net_records(
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
     for record in routed_net_records:
-        corrected_centerline = _physical_port_centerline(router, record)
+        corrected_centerline = _physical_port_centerline(
+            router,
+            record,
+            realization_grid_spec=realization_grid_spec,
+        )
         if record.meander_auto_plan is not None:
             plan = record.meander_auto_plan
             selected_side = plan.get("selected_side")
@@ -125,16 +160,25 @@ def realize_routed_net_records(
                         router,
                         "realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents",
                     )
-                    polygon = realize_with_tangents(
-                        corrected_centerline,
-                        float(route_width_um),
-                        record.route_obj,
-                        selected_run_start_index=_as_int(selected_run_start_index, 0),
-                        selected_run_end_index=_as_int(selected_run_end_index, 0),
-                        meander_centerline=meander_centerline,
-                        source_enabled=record.source_port_center_um is not None,
-                        target_enabled=record.target_port_center_um is not None,
-                    )
+                    try:
+                        polygon = realize_with_tangents(
+                            corrected_centerline,
+                            float(route_width_um),
+                            record.route_obj,
+                            selected_run_start_index=_as_int(selected_run_start_index, 0),
+                            selected_run_end_index=_as_int(selected_run_end_index, 0),
+                            meander_centerline=meander_centerline,
+                            source_enabled=record.source_port_center_um is not None,
+                            target_enabled=record.target_port_center_um is not None,
+                        )
+                    except ValueError as exc:
+                        raise RuntimeError(
+                            format_port_endpoint_correction_error(
+                                record,
+                                exc,
+                                realization_grid_spec=realization_grid_spec,
+                            )
+                        ) from exc
                 else:
                     polygon = router.realize_route_polygon_from_planned_auto_meander(
                         record.route_obj,
@@ -190,13 +234,22 @@ def realize_routed_net_records(
             routed_layout.add_polygon(polygon, layer=route_layer)
             continue
         if corrected_centerline:
-            polygon = router.realize_centerline_polygon_with_terminal_tangents(
-                corrected_centerline,
-                float(route_width_um),
-                record.route_obj,
-                source_enabled=record.source_port_center_um is not None,
-                target_enabled=record.target_port_center_um is not None,
-            )
+            try:
+                polygon = router.realize_centerline_polygon_with_terminal_tangents(
+                    corrected_centerline,
+                    float(route_width_um),
+                    record.route_obj,
+                    source_enabled=record.source_port_center_um is not None,
+                    target_enabled=record.target_port_center_um is not None,
+                )
+            except ValueError as exc:
+                raise RuntimeError(
+                    format_port_endpoint_correction_error(
+                        record,
+                        exc,
+                        realization_grid_spec=realization_grid_spec,
+                    )
+                ) from exc
             routed_layout.add_polygon(polygon, layer=route_layer)
             continue
         polygon = router.realize_route_polygon(record.route_obj, float(route_width_um))

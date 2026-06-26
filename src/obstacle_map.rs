@@ -257,6 +257,14 @@ impl ObstacleMap {
         self.read_occupancy_bit(x, y, DYNAMIC_BIT)
     }
 
+    /// Return true if a committed route core blocks this in-bounds cell.
+    pub fn is_dynamic_core_blocked(&self, x: i32, y: i32) -> bool {
+        if !self.in_bounds(x, y) {
+            return false;
+        }
+        self.dynamic_core_obstacles.contains_key(&pack_xy(x, y))
+    }
+
     /// Return true if the cell is unavailable for routing.
     ///
     /// Out-of-bounds cells are treated as blocked.
@@ -516,8 +524,7 @@ impl ObstacleMap {
             net_core_routes: FxHashMap::default(),
             history_cost: self.history_cost.clone(),
         };
-        let source_keys: Vec<CellKey> = self.dynamic_obstacles.keys().copied().collect();
-        for key in source_keys {
+        for key in self.dynamic_obstacles.keys().copied() {
             let (x, y) = unpack_xy(key);
             for dx in -radius_cells..=radius_cells {
                 for dy in -radius_cells..=radius_cells {

@@ -1,3 +1,4 @@
+import math
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -5,8 +6,69 @@ import pytest
 
 from photonic_router.path_length_graph import PortRef
 from photonic_router.static_obstacle_builder import _load_rust_backend
-from translation.route_rust_records import build_port_alignment_diagnostics
+from translation.route_rust_records import (
+    apply_port_endpoint_corrections,
+    build_port_alignment_diagnostics,
+)
 from translation.route_rust_types import RoutedNetRecord
+
+
+def _centerline_length_um(centerline: tuple[tuple[float, float], ...]) -> float:
+    return sum(
+        math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+        for p0, p1 in zip(centerline, centerline[1:])
+    )
+
+
+def _unit_from_orientation_deg(
+    orientation_deg: float | None,
+    *,
+    as_target: bool,
+) -> tuple[float, float] | None:
+    if orientation_deg is None:
+        return None
+    angle_rad = math.radians(float(orientation_deg) + (180.0 if as_target else 0.0))
+    return (math.cos(angle_rad), math.sin(angle_rad))
+
+
+def _assert_segment_aligned_with_dir(
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    direction: tuple[float, float],
+) -> None:
+    dx = p1[0] - p0[0]
+    dy = p1[1] - p0[1]
+    length = math.hypot(dx, dy)
+    assert length > 0.0
+    dot = dx * direction[0] + dy * direction[1]
+    cross = dx * direction[1] - dy * direction[0]
+    assert dot > 0.0
+    assert abs(cross) <= 1.0e-6 * max(length, 1.0)
+
+
+def _assert_record_uses_corrected_centerline(record: RoutedNetRecord) -> None:
+    centerline = record.corrected_centerline_um
+    assert len(centerline) >= 2
+    assert record.endpoint_correction_error is None
+    assert record.source_port_center_um is not None
+    assert record.target_port_center_um is not None
+    assert centerline[0] == pytest.approx(record.source_port_center_um)
+    assert centerline[-1] == pytest.approx(record.target_port_center_um)
+    assert record.total_length_um == pytest.approx(_centerline_length_um(centerline))
+
+    source_dir = _unit_from_orientation_deg(
+        record.source_port_orientation_deg,
+        as_target=False,
+    )
+    if source_dir is not None:
+        _assert_segment_aligned_with_dir(centerline[0], centerline[1], source_dir)
+
+    target_dir = _unit_from_orientation_deg(
+        record.target_port_orientation_deg,
+        as_target=True,
+    )
+    if target_dir is not None:
+        _assert_segment_aligned_with_dir(centerline[-2], centerline[-1], target_dir)
 
 
 def test_port_alignment_diagnostics_reports_endpoint_mu_values():
@@ -47,6 +109,51 @@ def test_port_alignment_diagnostics_reports_endpoint_mu_values():
     assert target["route_grid_center_um"] == [15.25, 20.25]
     assert target["mu_x_um"] == pytest.approx(0.55)
     assert target["mu_y_um"] == pytest.approx(-0.15)
+
+
+def test_endpoint_correction_failure_prints_net_and_endpoints(capsys):
+    class FailingRouter:
+        def route_port_corrected_centerline(self, route, **kwargs):
+            raise ValueError("port endpoint correction would require an unsupported terminal stub")
+
+        def centerline_length_um(self, centerline):
+            return 0.0
+
+    route_obj = SimpleNamespace(
+        states=[
+            SimpleNamespace(x=10, y=20),
+            SimpleNamespace(x=30, y=40),
+        ]
+    )
+    record = RoutedNetRecord(
+        net_name="bad_net",
+        source=PortRef(instance="src", port="o1"),
+        target=PortRef(instance="dst", port="o2"),
+        route_obj=route_obj,
+        total_length_um=12.5,
+        source_port_center_um=(5.2, 10.4),
+        target_port_center_um=(15.8, 20.1),
+    )
+
+    updated = apply_port_endpoint_corrections(
+        [record],
+        router=FailingRouter(),
+        realization_grid_spec=(100, 100, 0.5, 0.0, 0.0),
+    )
+
+    assert len(updated) == 1
+    assert updated[0].endpoint_correction_error is not None
+    message = capsys.readouterr().out
+    assert "ERROR:" in message
+    assert "Grid-to-port endpoint correction failed" in message
+    assert "bad_net" in message
+    assert "src.o1 -> dst.o2" in message
+    assert "source_port_um=(5.2, 10.4)" in message
+    assert "target_port_um=(15.8, 20.1)" in message
+    assert "source_route_cell=(10, 20)" in message
+    assert "target_route_cell=(30, 40)" in message
+    assert "source_route_center_um=(5.25, 10.25)" in message
+    assert "target_route_center_um=(15.25, 20.25)" in message
 
 
 def test_mmi_heater_pass0_characterizes_current_port_alignment():
@@ -129,12 +236,13 @@ def test_mmi_heater_route_match_uses_corrected_records_for_realization():
         and abs(float(record.total_length_um) - float(record.base_total_length_um)) > 1.0e-6
         for record in records
     )
-    assert records_by_name["gc0_to_mmi0_in1"].total_length_um == pytest.approx(
-        records_by_name["gc1_to_mmi0_in2"].total_length_um
-    )
-    assert records_by_name["mmi1_out1_to_gc2"].total_length_um == pytest.approx(
-        records_by_name["mmi1_out2_to_gc3"].total_length_um
-    )
+    for net_name in (
+        "gc0_to_mmi0_in1",
+        "gc1_to_mmi0_in2",
+        "mmi1_out1_to_gc2",
+        "mmi1_out2_to_gc3",
+    ):
+        _assert_record_uses_corrected_centerline(records_by_name[net_name])
     assert result.path_length_analysis_info is None
     assert result.meander_insertion_report_info is None
 

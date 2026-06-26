@@ -55,7 +55,7 @@ SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
 SCRIPT_OBSTACLE_MODE = "bounding_boxes"
-SCRIPT_WAVEGUIDE_CLEARANCE_UM = 3.0
+SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.0
 SCRIPT_HEATER_CLEARANCE_UM = 5.0
 SCRIPT_OBSTACLE_CLEARANCE_UM = SCRIPT_WAVEGUIDE_CLEARANCE_UM
 SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC = False
@@ -109,6 +109,11 @@ class RoutingFlowStats:
     footprint_checks: int = 0
     footprint_rect_checks: int = 0
     full_grid_fallbacks: int = 0
+    search_loop_time_s: float = 0.0
+    obstacle_map_prepare_time_s: float = 0.0
+    simple_route_time_s: float = 0.0
+    commit_prepare_time_s: float = 0.0
+    commit_time_s: float = 0.0
     neighbor_generation_time_s: float = 0.0
     heap_operation_time_s: float = 0.0
     legality_check_time_s: float = 0.0
@@ -152,6 +157,11 @@ class RoutingFlowStats:
             "footprint_checks": self.footprint_checks,
             "footprint_rect_checks": self.footprint_rect_checks,
             "full_grid_fallbacks": self.full_grid_fallbacks,
+            "search_loop_time_s": self.search_loop_time_s,
+            "obstacle_map_prepare_time_s": self.obstacle_map_prepare_time_s,
+            "simple_route_time_s": self.simple_route_time_s,
+            "commit_prepare_time_s": self.commit_prepare_time_s,
+            "commit_time_s": self.commit_time_s,
             "neighbor_generation_time_s": self.neighbor_generation_time_s,
             "heap_operation_time_s": self.heap_operation_time_s,
             "legality_check_time_s": self.legality_check_time_s,
@@ -240,6 +250,179 @@ def _format_debug_route_indices(indices: set[int]) -> str:
         previous = index
     ranges.append(f"{start}" if start == previous else f"{start}-{previous}")
     return ",".join(ranges)
+
+
+def _route_attempt_as_dict(record: object) -> dict[str, object]:
+    as_dict = getattr(record, "as_dict", None)
+    if callable(as_dict):
+        result = as_dict()
+        if isinstance(result, dict):
+            return dict(result)
+    if isinstance(record, dict):
+        return dict(record)
+    return {}
+
+
+def _route_attempt_float(record: dict[str, object], key: str) -> float:
+    value = record.get(key, 0.0)
+    try:
+        if isinstance(value, (int, float, str, bytes, bytearray)):
+            return float(value)
+    except (TypeError, ValueError):
+        pass
+    return 0.0
+
+
+def _route_attempt_int(record: dict[str, object], key: str) -> int:
+    value = record.get(key, 0)
+    try:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float, str, bytes, bytearray)):
+            return int(value)
+    except (TypeError, ValueError):
+        pass
+    return 0
+
+
+def _format_slowest_route_attempt_lines(
+    records: list[dict[str, object]],
+    *,
+    limit: int = 8,
+) -> list[str]:
+    timed_records = [
+        record
+        for record in records
+        if _route_attempt_float(record, "elapsed_s") > 0.0
+    ]
+    if not timed_records:
+        return []
+
+    slowest = sorted(
+        timed_records,
+        key=lambda record: _route_attempt_float(record, "elapsed_s"),
+        reverse=True,
+    )[: max(1, int(limit))]
+    lines: list[str] = []
+    for record in slowest:
+        elapsed_s = _route_attempt_float(record, "elapsed_s")
+        route_index = _route_attempt_int(record, "route_index")
+        attempt_index = _route_attempt_int(record, "attempt_index")
+        expanded_states = _route_attempt_int(record, "expanded_states")
+        generated_neighbors = _route_attempt_int(record, "generated_neighbors")
+        window_attempts = _route_attempt_int(record, "window_attempts")
+        dense_grid_cells = _route_attempt_int(record, "dense_grid_cells")
+        search_loop_time_s = _route_attempt_float(record, "search_loop_time_s")
+        simple_route_time_s = _route_attempt_float(record, "simple_route_time_s")
+        commit_time_s = _route_attempt_float(record, "commit_time_s")
+        full_grid = bool(record.get("used_full_grid_fallback", False))
+        status = "failed" if bool(record.get("failed", False)) else "ok"
+        route_kind = (
+            "simple" if bool(record.get("used_simple_route", False)) else "astar"
+        )
+        parts = [
+            f"#{attempt_index}",
+            f"route[{route_index}]",
+            str(record.get("net_name", "<unknown>")),
+            str(record.get("bucket_name", "<unknown>")),
+            f"{elapsed_s:.4f}s",
+            status,
+            route_kind,
+            f"expanded={expanded_states}",
+            f"generated={generated_neighbors}",
+            f"windows={window_attempts}",
+        ]
+        if dense_grid_cells:
+            parts.append(f"dense_cells={dense_grid_cells}")
+        if search_loop_time_s > 0.0:
+            parts.append(f"search_loop={search_loop_time_s:.4f}s")
+        if simple_route_time_s > 0.0:
+            parts.append(f"simple_probe={simple_route_time_s:.4f}s")
+        if commit_time_s > 0.0:
+            parts.append(f"commit={commit_time_s:.4f}s")
+        if full_grid:
+            parts.append("full_grid")
+        lines.append("            - " + ", ".join(parts))
+    return lines
+
+
+def _format_slowest_route_net_lines(
+    records: list[dict[str, object]],
+    *,
+    limit: int = 8,
+) -> list[str]:
+    grouped: dict[tuple[int, str], dict[str, object]] = {}
+    for record in records:
+        elapsed_s = _route_attempt_float(record, "elapsed_s")
+        if elapsed_s <= 0.0:
+            continue
+        route_index = _route_attempt_int(record, "route_index")
+        net_name = str(record.get("net_name", "<unknown>"))
+        key = (route_index, net_name)
+        group = grouped.setdefault(
+            key,
+            {
+                "route_index": route_index,
+                "net_name": net_name,
+                "elapsed_s": 0.0,
+                "attempts": 0,
+                "failures": 0,
+                "expanded_states": 0,
+                "generated_neighbors": 0,
+                "buckets": set(),
+            },
+        )
+        group["elapsed_s"] = _route_attempt_float(group, "elapsed_s") + elapsed_s
+        group["attempts"] = _route_attempt_int(group, "attempts") + 1
+        group["failures"] = _route_attempt_int(group, "failures") + int(
+            bool(record.get("failed", False))
+        )
+        group["expanded_states"] = _route_attempt_int(
+            group,
+            "expanded_states",
+        ) + _route_attempt_int(
+            record,
+            "expanded_states",
+        )
+        group["generated_neighbors"] = _route_attempt_int(
+            group,
+            "generated_neighbors",
+        ) + _route_attempt_int(
+            record,
+            "generated_neighbors",
+        )
+        buckets = group["buckets"]
+        if isinstance(buckets, set):
+            buckets.add(str(record.get("bucket_name", "<unknown>")))
+
+    if not grouped:
+        return []
+
+    slowest = sorted(
+        grouped.values(),
+        key=lambda group: _route_attempt_float(group, "elapsed_s"),
+        reverse=True,
+    )[: max(1, int(limit))]
+    lines: list[str] = []
+    for group in slowest:
+        buckets = group.get("buckets", set())
+        bucket_text = (
+            "/".join(sorted(buckets))
+            if isinstance(buckets, set) and buckets
+            else "<unknown>"
+        )
+        parts = [
+            f"route[{_route_attempt_int(group, 'route_index')}]",
+            str(group["net_name"]),
+            f"{_route_attempt_float(group, 'elapsed_s'):.4f}s",
+            f"attempts={_route_attempt_int(group, 'attempts')}",
+            f"failures={_route_attempt_int(group, 'failures')}",
+            f"expanded={_route_attempt_int(group, 'expanded_states')}",
+            f"generated={_route_attempt_int(group, 'generated_neighbors')}",
+            f"buckets={bucket_text}",
+        ]
+        lines.append("            - " + ", ".join(parts))
+    return lines
 
 
 def _parse_bool_flag(value: str) -> bool:
@@ -841,7 +1024,7 @@ def run_routing_flow(
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
-    allow_45_degree_turns: bool = True,
+    allow_45_degree_turns: bool = SCRIPT_ALLOW_45_DEGREE_TURNS,
     bend_radius_um: float = SCRIPT_BEND_RADIUS_UM,
     enable_jps4: bool = False,
     use_indexed_heap: bool = False,
@@ -1092,6 +1275,12 @@ def run_routing_flow(
     routed_layout = route_result.routed_layout
     debug_artifacts = route_result.debug_artifacts
     t_route_end = time.perf_counter()
+    route_summary = debug_artifacts.route_search_summary
+    route_attempt_records = [
+        record_dict
+        for record in getattr(debug_artifacts, "route_attempt_records", ())
+        if (record_dict := _route_attempt_as_dict(record))
+    ]
     if stats is not None:
         route_time = t_route_end - t_route_start
         stats.step_times_s["baseline_gdsfactory_routing"] = route_time
@@ -1113,7 +1302,6 @@ def run_routing_flow(
                 getattr(debug_artifacts, "static_port_open_count", 0) or 0
             )
             stats.port_open_cells = port_open_count
-        route_summary = debug_artifacts.route_search_summary
         stats.astar_time_s = float(route_summary.astar_elapsed_s)
         stats.route_attempts = int(route_summary.route_attempts)
         stats.route_failures = int(route_summary.route_failures)
@@ -1153,15 +1341,19 @@ def run_routing_flow(
         stats.reconstruction_time_s = (
             float(route_summary.reconstruction_time_us) / 1_000_000.0
         )
-        route_attempt_records: list[dict[str, object]] = []
-        for record in getattr(debug_artifacts, "route_attempt_records", ()):
-            as_dict = getattr(record, "as_dict", None)
-            if callable(as_dict):
-                record_dict = as_dict()
-                if isinstance(record_dict, dict):
-                    route_attempt_records.append(dict(record_dict))
-            elif isinstance(record, dict):
-                route_attempt_records.append(dict(record))
+        stats.search_loop_time_s = (
+            float(route_summary.search_loop_time_us) / 1_000_000.0
+        )
+        stats.obstacle_map_prepare_time_s = (
+            float(route_summary.obstacle_map_prepare_time_us) / 1_000_000.0
+        )
+        stats.simple_route_time_s = (
+            float(route_summary.simple_route_time_us) / 1_000_000.0
+        )
+        stats.commit_prepare_time_s = (
+            float(route_summary.commit_prepare_time_us) / 1_000_000.0
+        )
+        stats.commit_time_s = float(route_summary.commit_time_us) / 1_000_000.0
         stats.route_attempt_records = route_attempt_records
     if debug_timing:
         route_time = t_route_end - t_route_start
@@ -1182,6 +1374,73 @@ def run_routing_flow(
             "        - net routing phase "
             f"(obstacles + A* + repairs): {route_nets_time:.4f} s"
         )
+        print(
+            "          route search: "
+            f"astar_loop={float(route_summary.astar_elapsed_s):.4f}s, "
+            f"attempts={int(route_summary.route_attempts)}, "
+            f"failures={int(route_summary.route_failures)}, "
+            f"simple={int(route_summary.simple_route_count)}/"
+            f"{int(route_summary.route_count)}, "
+            f"repairs={int(route_summary.repair_count)}"
+        )
+        print(
+            "          A* counters: "
+            f"expanded={int(route_summary.expanded_states)}, "
+            f"generated={int(route_summary.generated_neighbors)}, "
+            f"heap_pushes={int(route_summary.heap_pushes)}, "
+            f"heap_pops={int(route_summary.heap_pops)}, "
+            f"footprint_checks={int(route_summary.footprint_checks)}, "
+            f"rect_checks={int(route_summary.footprint_rect_checks)}, "
+            f"full_grid_fallbacks={int(route_summary.full_grid_fallbacks)}"
+        )
+        print(
+            "          A* timed ops: "
+            f"dense_build={float(route_summary.dense_grid_build_time_us) / 1_000_000.0:.4f}s, "
+            f"search_loop={float(route_summary.search_loop_time_us) / 1_000_000.0:.4f}s, "
+            f"obstacle_prepare={float(route_summary.obstacle_map_prepare_time_us) / 1_000_000.0:.4f}s, "
+            f"simple_probe={float(route_summary.simple_route_time_us) / 1_000_000.0:.4f}s, "
+            f"commit_prepare={float(route_summary.commit_prepare_time_us) / 1_000_000.0:.4f}s, "
+            f"commit={float(route_summary.commit_time_us) / 1_000_000.0:.4f}s, "
+            f"neighbor={float(route_summary.neighbor_generation_time_us) / 1_000_000.0:.4f}s, "
+            f"heap={float(route_summary.heap_operation_time_us) / 1_000_000.0:.4f}s, "
+            f"legality={float(route_summary.legality_check_time_us) / 1_000_000.0:.4f}s, "
+            f"reconstruction={float(route_summary.reconstruction_time_us) / 1_000_000.0:.4f}s"
+        )
+        timed_search_s = float(route_summary.search_loop_time_us) / 1_000_000.0
+        measured_inner_s = (
+            float(route_summary.neighbor_generation_time_us)
+            + float(route_summary.heap_operation_time_us)
+            + float(route_summary.legality_check_time_us)
+        ) / 1_000_000.0
+        route_overhead_s = (
+            float(route_summary.obstacle_map_prepare_time_us)
+            + float(route_summary.simple_route_time_us)
+            + float(route_summary.commit_prepare_time_us)
+            + float(route_summary.commit_time_us)
+        ) / 1_000_000.0
+        if timed_search_s > 0.0:
+            print(
+                "          A* loop attribution: "
+                f"measured_inner={measured_inner_s:.4f}s, "
+                f"other={max(0.0, timed_search_s - measured_inner_s):.4f}s, "
+                f"route_overhead={route_overhead_s:.4f}s"
+            )
+        slowest_net_lines = _format_slowest_route_net_lines(
+            route_attempt_records,
+            limit=8,
+        )
+        if slowest_net_lines:
+            print("          slowest route nets:")
+            for line in slowest_net_lines:
+                print(line)
+        slowest_attempt_lines = _format_slowest_route_attempt_lines(
+            route_attempt_records,
+            limit=8,
+        )
+        if slowest_attempt_lines:
+            print("          slowest route attempts:")
+            for line in slowest_attempt_lines:
+                print(line)
         if plm_total > 0.0:
             print(
                 "        - path-length matching phase: "
