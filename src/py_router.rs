@@ -3089,1110 +3089,6 @@ impl PyPhotonicRouter {
         )
     }
 
-    #[pyo3(signature=(centerline,registered_opened_cells_index,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
-    fn plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
-        &self,
-        py: Python<'_>,
-        centerline: Vec<(f64, f64)>,
-        registered_opened_cells_index: usize,
-        requested_extra_length_um: f64,
-        box_depths_um: Vec<f64>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        endpoint_inset_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        planning_mode: &str,
-        extra_blocked_cells: Option<Vec<(i32, i32)>>,
-    ) -> PyResult<PyObject> {
-        if requested_extra_length_um <= 0.0 {
-            return Err(PyValueError::new_err(
-                "requested_extra_length_um must be > 0",
-            ));
-        }
-        if box_depths_um.is_empty() {
-            return Err(PyValueError::new_err("box_depths_um must not be empty"));
-        }
-        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return Err(PyValueError::new_err(
-                "box_depths_um values must be finite and > 0",
-            ));
-        }
-        if min_straight_um < 0.0 {
-            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
-        }
-        if max_bumps == 0 {
-            return Err(PyValueError::new_err("max_bumps must be > 0"));
-        }
-        if max_meander_height_um <= 0.0 {
-            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
-        }
-        if min_segment_length_um <= 0.0 {
-            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
-        }
-        if endpoint_inset_um < 0.0 {
-            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
-        }
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        let _ = centerline_length_um_rs(&centerline)
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
-            self.primitive_cfg.bend_radius_cells,
-            self.grid.grid_size_um,
-        )
-        .map_err(PyValueError::new_err)?;
-        let cfg = AutoMeanderConfig {
-            requested_extra_length_um,
-            min_bend_radius_um: effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            max_meander_height_um,
-            box_depth_um: box_depths_um[0],
-            min_segment_length_um,
-            endpoint_inset_um,
-            clearance_radius_cells,
-            side_policy: policy,
-            mode,
-        };
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let registered_open_cells = self.meander_registered_open_cells.borrow();
-        let registered_open_indices = self.meander_registered_open_indices.borrow();
-        let opened_ref = registered_open_cells
-            .get(registered_opened_cells_index)
-            .ok_or_else(|| {
-                PyValueError::new_err("registered meander route index is out of range")
-            })?;
-        let opened_index_ref = registered_open_indices
-            .get(registered_opened_cells_index)
-            .ok_or_else(|| {
-                PyValueError::new_err("registered meander route index is out of range")
-            })?;
-        self.ensure_meander_base_prefix();
-        let cached = self.meander_base_prefix.borrow();
-        let base_prefix = cached
-            .as_ref()
-            .expect("meander base prefix should be initialized");
-        self.ensure_meander_registered_reserved_index();
-        let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
-        let extra_blocked_owned;
-        let extra_blocked_ref: Option<&FxHashSet<CellKey>> =
-            if let Some(cells) = extra_blocked_cells.as_ref() {
-                extra_blocked_owned = pack_cells(cells);
-                Some(&extra_blocked_owned)
-            } else {
-                None
-            };
-        let plan = plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
-            &centerline,
-            &grid,
-            base_prefix,
-            Some(opened_ref),
-            Some(opened_index_ref),
-            extra_blocked_ref,
-            reserved_index_borrow.as_ref(),
-            None,
-            &cfg,
-            &box_depths_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-
-        auto_meander_plan_to_py_object(
-            py,
-            &plan,
-            min_bend_radius_um,
-            effective_radius_um,
-            self.primitive_cfg.bend_radius_cells,
-            primitive_bend_radius_um,
-            mode,
-        )
-    }
-
-    #[pyo3(signature=(centerlines,registered_opened_cell_indices,requested_extra_length_um,box_depths_um,max_bumps_by_edge,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
-    #[allow(clippy::too_many_arguments)]
-    fn plan_auto_analytic_meander_candidate_bundle_registered_opened(
-        &self,
-        py: Python<'_>,
-        centerlines: Vec<Vec<(f64, f64)>>,
-        registered_opened_cell_indices: Vec<usize>,
-        requested_extra_length_um: f64,
-        box_depths_um: Vec<f64>,
-        max_bumps_by_edge: Vec<usize>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        endpoint_inset_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        planning_mode: &str,
-    ) -> PyResult<PyObject> {
-        if centerlines.len() != registered_opened_cell_indices.len()
-            || centerlines.len() != max_bumps_by_edge.len()
-        {
-            return Err(PyValueError::new_err(
-                "centerlines, registered_opened_cell_indices, and max_bumps_by_edge must have matching lengths",
-            ));
-        }
-        if centerlines.is_empty() {
-            return Err(PyValueError::new_err("candidate bundle must not be empty"));
-        }
-        if requested_extra_length_um <= 0.0 {
-            return Err(PyValueError::new_err(
-                "requested_extra_length_um must be > 0",
-            ));
-        }
-        if box_depths_um.is_empty() {
-            return Err(PyValueError::new_err("box_depths_um must not be empty"));
-        }
-        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return Err(PyValueError::new_err(
-                "box_depths_um values must be finite and > 0",
-            ));
-        }
-        if min_straight_um < 0.0 {
-            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
-        }
-        if max_bumps_by_edge.iter().any(|bumps| *bumps == 0) {
-            return Err(PyValueError::new_err(
-                "max_bumps_by_edge values must be > 0",
-            ));
-        }
-        if max_meander_height_um <= 0.0 {
-            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
-        }
-        if min_segment_length_um <= 0.0 {
-            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
-        }
-        if endpoint_inset_um < 0.0 {
-            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
-        }
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        for centerline in &centerlines {
-            let _ = centerline_length_um_rs(centerline)
-                .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        }
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
-            self.primitive_cfg.bend_radius_cells,
-            self.grid.grid_size_um,
-        )
-        .map_err(PyValueError::new_err)?;
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-
-        self.ensure_meander_base_prefix();
-        let cached = self.meander_base_prefix.borrow();
-        let base_prefix = cached
-            .as_ref()
-            .expect("meander base prefix should be initialized");
-        let registered_open_cells = self.meander_registered_open_cells.borrow();
-        let registered_open_indices = self.meander_registered_open_indices.borrow();
-        let mut candidate_reserved_index = SparseCellIndex::empty(self.grid.height as i32);
-        let mut candidate_reserved_has_cells = false;
-        let mut wrapper_profile = MeanderWrapperProfileTotals::default();
-        let reserved_snapshot_start = Instant::now();
-        self.ensure_meander_registered_reserved_index();
-        let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
-        wrapper_profile.reserved_snapshot_s += reserved_snapshot_start.elapsed().as_secs_f64();
-        let plans = PyList::empty_bound(py);
-        let mut total_candidate_runs = 0usize;
-        let mut total_candidate_intervals = 0usize;
-        let mut total_rejected_box_blocked = 0usize;
-        let mut total_rejected_planning_failed = 0usize;
-        let mut total_rejected_exact_length_mismatch = 0usize;
-        let mut total_rejected_too_short = 0usize;
-        let mut profile_totals = MeanderPlanningProfileTotals::default();
-
-        for (edge_index, ((centerline, registered_index), max_bumps)) in centerlines
-            .iter()
-            .zip(registered_opened_cell_indices.iter())
-            .zip(max_bumps_by_edge.iter())
-            .enumerate()
-        {
-            let opened_ref = registered_open_cells
-                .get(*registered_index)
-                .ok_or_else(|| {
-                    PyValueError::new_err("registered meander route index is out of range")
-                })?;
-            let opened_index_ref =
-                registered_open_indices
-                    .get(*registered_index)
-                    .ok_or_else(|| {
-                        PyValueError::new_err("registered meander route index is out of range")
-                    })?;
-            wrapper_profile.extra_blocked_prepare_calls += 1;
-            let candidate_reserved_index_ref =
-                candidate_reserved_has_cells.then_some(&candidate_reserved_index);
-            let cfg = AutoMeanderConfig {
-                requested_extra_length_um,
-                min_bend_radius_um: effective_radius_um,
-                min_straight_um,
-                max_bumps: *max_bumps,
-                max_meander_height_um,
-                box_depth_um: box_depths_um[0],
-                min_segment_length_um,
-                endpoint_inset_um,
-                clearance_radius_cells,
-                side_policy: policy,
-                mode,
-            };
-            let planner_call_start = Instant::now();
-            let plan = match plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
-                centerline,
-                &grid,
-                base_prefix,
-                Some(opened_ref),
-                Some(opened_index_ref),
-                None,
-                reserved_index_borrow.as_ref(),
-                candidate_reserved_index_ref,
-                &cfg,
-                &box_depths_um,
-            ) {
-                Ok(plan) => {
-                    wrapper_profile.planner_call_s += planner_call_start.elapsed().as_secs_f64();
-                    plan
-                }
-                Err(err) => {
-                    wrapper_profile.planner_call_s += planner_call_start.elapsed().as_secs_f64();
-                    let d = PyDict::new_bound(py);
-                    d.set_item("status", "no_candidate")?;
-                    d.set_item("reason", err.to_string())?;
-                    d.set_item("failed_edge_index", edge_index)?;
-                    d.set_item("plans", plans)?;
-                    d.set_item("candidate_runs", total_candidate_runs)?;
-                    d.set_item("candidate_intervals", total_candidate_intervals)?;
-                    d.set_item("rejected_box_blocked", total_rejected_box_blocked)?;
-                    d.set_item("rejected_planning_failed", total_rejected_planning_failed)?;
-                    d.set_item(
-                        "rejected_exact_length_mismatch",
-                        total_rejected_exact_length_mismatch,
-                    )?;
-                    d.set_item("rejected_too_short", total_rejected_too_short)?;
-                    profile_totals.set_item(&d, "planner_profile_total")?;
-                    wrapper_profile.set_item(&d, "wrapper_profile_total")?;
-                    return Ok(d.into());
-                }
-            };
-            profile_totals.add(&plan.profile);
-            total_candidate_runs += plan.candidate_runs;
-            total_candidate_intervals += plan.candidate_intervals;
-            total_rejected_box_blocked += plan.rejected_box_blocked;
-            total_rejected_planning_failed += plan.rejected_planning_failed;
-            total_rejected_exact_length_mismatch += plan.rejected_exact_length_mismatch;
-            total_rejected_too_short += plan.rejected_too_short;
-            let selected_rect_start = Instant::now();
-            let selected_rect_cell_count = cell_count_in_grid_rect_rs(plan.selected_grid_rect);
-            wrapper_profile.selected_rect_cells_s += selected_rect_start.elapsed().as_secs_f64();
-            wrapper_profile.selected_rect_cell_count += selected_rect_cell_count;
-            let candidate_reserved_update_start = Instant::now();
-            candidate_reserved_index.insert_rect(
-                plan.selected_grid_rect.min_x,
-                plan.selected_grid_rect.max_x,
-                plan.selected_grid_rect.min_y,
-                plan.selected_grid_rect.max_y,
-                self.grid.width as i32,
-            );
-            candidate_reserved_has_cells = true;
-            wrapper_profile.candidate_reserved_update_s +=
-                candidate_reserved_update_start.elapsed().as_secs_f64();
-            let py_plan_conversion_start = Instant::now();
-            let py_plan = auto_meander_plan_to_py_object(
-                py,
-                &plan,
-                min_bend_radius_um,
-                effective_radius_um,
-                self.primitive_cfg.bend_radius_cells,
-                primitive_bend_radius_um,
-                mode,
-            )?;
-            wrapper_profile.py_plan_conversion_s +=
-                py_plan_conversion_start.elapsed().as_secs_f64();
-            wrapper_profile.py_plan_count += 1;
-            let py_plan_append_start = Instant::now();
-            plans.append(py_plan)?;
-            wrapper_profile.py_plan_append_s += py_plan_append_start.elapsed().as_secs_f64();
-        }
-
-        let py_result_build_start = Instant::now();
-        let d = PyDict::new_bound(py);
-        d.set_item("status", "planned")?;
-        d.set_item("reason", "")?;
-        d.set_item("plans", plans)?;
-        d.set_item("candidate_runs", total_candidate_runs)?;
-        d.set_item("candidate_intervals", total_candidate_intervals)?;
-        d.set_item("rejected_box_blocked", total_rejected_box_blocked)?;
-        d.set_item("rejected_planning_failed", total_rejected_planning_failed)?;
-        d.set_item(
-            "rejected_exact_length_mismatch",
-            total_rejected_exact_length_mismatch,
-        )?;
-        d.set_item("rejected_too_short", total_rejected_too_short)?;
-        profile_totals.set_item(&d, "planner_profile_total")?;
-        wrapper_profile.py_result_build_s += py_result_build_start.elapsed().as_secs_f64();
-        wrapper_profile.set_item(&d, "wrapper_profile_total")?;
-        Ok(d.into())
-    }
-
-    #[pyo3(signature=(candidate_centerlines,candidate_registered_opened_cell_indices,candidate_requested_extra_lengths_um,box_depths_um,candidate_max_bumps_by_edge,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
-    #[allow(clippy::too_many_arguments)]
-    fn plan_auto_analytic_meander_requirement_candidates_registered_opened(
-        &self,
-        py: Python<'_>,
-        candidate_centerlines: Vec<Vec<Vec<(f64, f64)>>>,
-        candidate_registered_opened_cell_indices: Vec<Vec<usize>>,
-        candidate_requested_extra_lengths_um: Vec<f64>,
-        box_depths_um: Vec<f64>,
-        candidate_max_bumps_by_edge: Vec<Vec<usize>>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        endpoint_inset_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        planning_mode: &str,
-    ) -> PyResult<PyObject> {
-        let candidate_count = candidate_centerlines.len();
-        if candidate_count != candidate_registered_opened_cell_indices.len()
-            || candidate_count != candidate_requested_extra_lengths_um.len()
-            || candidate_count != candidate_max_bumps_by_edge.len()
-        {
-            return Err(PyValueError::new_err(
-                "candidate inputs must have matching lengths",
-            ));
-        }
-        if candidate_count == 0 {
-            return Err(PyValueError::new_err("candidate list must not be empty"));
-        }
-        if box_depths_um.is_empty() {
-            return Err(PyValueError::new_err("box_depths_um must not be empty"));
-        }
-        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return Err(PyValueError::new_err(
-                "box_depths_um values must be finite and > 0",
-            ));
-        }
-        if candidate_requested_extra_lengths_um
-            .iter()
-            .any(|value| *value <= 0.0)
-        {
-            return Err(PyValueError::new_err(
-                "candidate requested lengths must be > 0",
-            ));
-        }
-        if min_straight_um < 0.0 {
-            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
-        }
-        if max_meander_height_um <= 0.0 {
-            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
-        }
-        if min_segment_length_um <= 0.0 {
-            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
-        }
-        if endpoint_inset_um < 0.0 {
-            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
-        }
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        for ((centerlines, registered_indices), max_bumps_by_edge) in candidate_centerlines
-            .iter()
-            .zip(candidate_registered_opened_cell_indices.iter())
-            .zip(candidate_max_bumps_by_edge.iter())
-        {
-            if centerlines.is_empty() {
-                return Err(PyValueError::new_err("candidate bundles must not be empty"));
-            }
-            if centerlines.len() != registered_indices.len()
-                || centerlines.len() != max_bumps_by_edge.len()
-            {
-                return Err(PyValueError::new_err(
-                    "candidate bundle edge inputs must have matching lengths",
-                ));
-            }
-            if max_bumps_by_edge.iter().any(|bumps| *bumps == 0) {
-                return Err(PyValueError::new_err(
-                    "candidate max bump values must be > 0",
-                ));
-            }
-            for centerline in centerlines {
-                let _ = centerline_length_um_rs(centerline)
-                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
-            }
-        }
-
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
-            self.primitive_cfg.bend_radius_cells,
-            self.grid.grid_size_um,
-        )
-        .map_err(PyValueError::new_err)?;
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-
-        self.ensure_meander_base_prefix();
-        let cached = self.meander_base_prefix.borrow();
-        let base_prefix = cached
-            .as_ref()
-            .expect("meander base prefix should be initialized");
-        let registered_open_cells = self.meander_registered_open_cells.borrow();
-        let registered_open_indices = self.meander_registered_open_indices.borrow();
-        let mut call_wrapper_profile = MeanderWrapperProfileTotals::default();
-        let reserved_snapshot_start = Instant::now();
-        self.ensure_meander_registered_reserved_index();
-        let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
-        call_wrapper_profile.reserved_snapshot_s += reserved_snapshot_start.elapsed().as_secs_f64();
-        let candidate_results = PyList::empty_bound(py);
-        let mut selected_plans: Option<PyObject> = None;
-        let mut selected_candidate_index: Option<usize> = None;
-        let mut call_profile_totals = MeanderPlanningProfileTotals::default();
-
-        for candidate_index in 0..candidate_count {
-            let centerlines = &candidate_centerlines[candidate_index];
-            let registered_indices = &candidate_registered_opened_cell_indices[candidate_index];
-            let max_bumps_by_edge = &candidate_max_bumps_by_edge[candidate_index];
-            let requested_extra_length_um = candidate_requested_extra_lengths_um[candidate_index];
-            let plans = PyList::empty_bound(py);
-            let mut candidate_reserved_index = SparseCellIndex::empty(self.grid.height as i32);
-            let mut candidate_reserved_has_cells = false;
-            let mut total_candidate_runs = 0usize;
-            let mut total_candidate_intervals = 0usize;
-            let mut total_rejected_box_blocked = 0usize;
-            let mut total_rejected_planning_failed = 0usize;
-            let mut total_rejected_exact_length_mismatch = 0usize;
-            let mut total_rejected_too_short = 0usize;
-            let mut candidate_profile_totals = MeanderPlanningProfileTotals::default();
-            let mut candidate_wrapper_profile = MeanderWrapperProfileTotals::default();
-            let mut failed_reason: Option<String> = None;
-            let mut failed_edge_index: Option<usize> = None;
-
-            for (edge_index, ((centerline, registered_index), max_bumps)) in centerlines
-                .iter()
-                .zip(registered_indices.iter())
-                .zip(max_bumps_by_edge.iter())
-                .enumerate()
-            {
-                let opened_ref = registered_open_cells
-                    .get(*registered_index)
-                    .ok_or_else(|| {
-                        PyValueError::new_err("registered meander route index is out of range")
-                    })?;
-                let opened_index_ref =
-                    registered_open_indices
-                        .get(*registered_index)
-                        .ok_or_else(|| {
-                            PyValueError::new_err("registered meander route index is out of range")
-                        })?;
-                candidate_wrapper_profile.extra_blocked_prepare_calls += 1;
-                let candidate_reserved_index_ref =
-                    candidate_reserved_has_cells.then_some(&candidate_reserved_index);
-                let cfg = AutoMeanderConfig {
-                    requested_extra_length_um,
-                    min_bend_radius_um: effective_radius_um,
-                    min_straight_um,
-                    max_bumps: *max_bumps,
-                    max_meander_height_um,
-                    box_depth_um: box_depths_um[0],
-                    min_segment_length_um,
-                    endpoint_inset_um,
-                    clearance_radius_cells,
-                    side_policy: policy,
-                    mode,
-                };
-                let planner_call_start = Instant::now();
-                let plan =
-                    match plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
-                        centerline,
-                        &grid,
-                        base_prefix,
-                        Some(opened_ref),
-                        Some(opened_index_ref),
-                        None,
-                        reserved_index_borrow.as_ref(),
-                        candidate_reserved_index_ref,
-                        &cfg,
-                        &box_depths_um,
-                    ) {
-                        Ok(plan) => {
-                            candidate_wrapper_profile.planner_call_s +=
-                                planner_call_start.elapsed().as_secs_f64();
-                            plan
-                        }
-                        Err(err) => {
-                            candidate_wrapper_profile.planner_call_s +=
-                                planner_call_start.elapsed().as_secs_f64();
-                            failed_reason = Some(err.to_string());
-                            failed_edge_index = Some(edge_index);
-                            break;
-                        }
-                    };
-                candidate_profile_totals.add(&plan.profile);
-                call_profile_totals.add(&plan.profile);
-                total_candidate_runs += plan.candidate_runs;
-                total_candidate_intervals += plan.candidate_intervals;
-                total_rejected_box_blocked += plan.rejected_box_blocked;
-                total_rejected_planning_failed += plan.rejected_planning_failed;
-                total_rejected_exact_length_mismatch += plan.rejected_exact_length_mismatch;
-                total_rejected_too_short += plan.rejected_too_short;
-                let selected_rect_start = Instant::now();
-                let selected_rect_cell_count = cell_count_in_grid_rect_rs(plan.selected_grid_rect);
-                candidate_wrapper_profile.selected_rect_cells_s +=
-                    selected_rect_start.elapsed().as_secs_f64();
-                candidate_wrapper_profile.selected_rect_cell_count += selected_rect_cell_count;
-                let candidate_reserved_update_start = Instant::now();
-                candidate_reserved_index.insert_rect(
-                    plan.selected_grid_rect.min_x,
-                    plan.selected_grid_rect.max_x,
-                    plan.selected_grid_rect.min_y,
-                    plan.selected_grid_rect.max_y,
-                    self.grid.width as i32,
-                );
-                candidate_reserved_has_cells = true;
-                candidate_wrapper_profile.candidate_reserved_update_s +=
-                    candidate_reserved_update_start.elapsed().as_secs_f64();
-                let py_plan_conversion_start = Instant::now();
-                let py_plan = auto_meander_plan_to_py_object(
-                    py,
-                    &plan,
-                    min_bend_radius_um,
-                    effective_radius_um,
-                    self.primitive_cfg.bend_radius_cells,
-                    primitive_bend_radius_um,
-                    mode,
-                )?;
-                candidate_wrapper_profile.py_plan_conversion_s +=
-                    py_plan_conversion_start.elapsed().as_secs_f64();
-                candidate_wrapper_profile.py_plan_count += 1;
-                let py_plan_append_start = Instant::now();
-                plans.append(py_plan)?;
-                candidate_wrapper_profile.py_plan_append_s +=
-                    py_plan_append_start.elapsed().as_secs_f64();
-            }
-
-            let py_candidate_result_build_start = Instant::now();
-            let candidate_entry = PyDict::new_bound(py);
-            candidate_entry.set_item("candidate_index", candidate_index)?;
-            candidate_entry.set_item("candidate_runs", total_candidate_runs)?;
-            candidate_entry.set_item("candidate_intervals", total_candidate_intervals)?;
-            candidate_entry.set_item("rejected_box_blocked", total_rejected_box_blocked)?;
-            candidate_entry.set_item("rejected_planning_failed", total_rejected_planning_failed)?;
-            candidate_entry.set_item(
-                "rejected_exact_length_mismatch",
-                total_rejected_exact_length_mismatch,
-            )?;
-            candidate_entry.set_item("rejected_too_short", total_rejected_too_short)?;
-            candidate_profile_totals.set_item(&candidate_entry, "planner_profile_total")?;
-            candidate_wrapper_profile.py_candidate_result_build_s +=
-                py_candidate_result_build_start.elapsed().as_secs_f64();
-            candidate_wrapper_profile.candidate_result_count += 1;
-            call_wrapper_profile.add(&candidate_wrapper_profile);
-            candidate_wrapper_profile.set_item(&candidate_entry, "wrapper_profile_total")?;
-            if let Some(reason) = failed_reason {
-                candidate_entry.set_item("status", "no_candidate")?;
-                candidate_entry.set_item("reason", reason)?;
-                candidate_entry.set_item("failed_edge_index", failed_edge_index.unwrap_or(0))?;
-                candidate_entry.set_item("plans", plans)?;
-                candidate_results.append(candidate_entry)?;
-                continue;
-            }
-            candidate_entry.set_item("status", "planned")?;
-            candidate_entry.set_item("reason", "")?;
-            candidate_entry.set_item("failed_edge_index", Option::<usize>::None)?;
-            candidate_entry.set_item("plans", &plans)?;
-            candidate_results.append(candidate_entry)?;
-            selected_candidate_index = Some(candidate_index);
-            selected_plans = Some(plans.into());
-            break;
-        }
-
-        let py_result_build_start = Instant::now();
-        let d = PyDict::new_bound(py);
-        if let Some(index) = selected_candidate_index {
-            d.set_item("status", "planned")?;
-            d.set_item("selected_candidate_index", index)?;
-            d.set_item(
-                "plans",
-                selected_plans.expect("selected plans exist for planned candidate"),
-            )?;
-            d.set_item("reason", "")?;
-        } else {
-            d.set_item("status", "no_candidate")?;
-            d.set_item("selected_candidate_index", Option::<usize>::None)?;
-            d.set_item("plans", PyList::empty_bound(py))?;
-            d.set_item("reason", "no registered requirement candidate planned")?;
-        }
-        d.set_item("candidate_results", candidate_results)?;
-        call_profile_totals.set_item(&d, "planner_profile_total")?;
-        call_wrapper_profile.py_result_build_s += py_result_build_start.elapsed().as_secs_f64();
-        call_wrapper_profile.set_item(&d, "wrapper_profile_total")?;
-        Ok(d.into())
-    }
-
-    #[pyo3(signature=(candidate_centerlines,candidate_registered_opened_cell_indices,candidate_requested_extra_lengths_um,box_depths_um,candidate_max_bumps_by_edge,endpoint_insets_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
-    #[allow(clippy::too_many_arguments)]
-    fn plan_auto_analytic_meander_requirement_candidates_registered_opened_endpoint_sweep(
-        &self,
-        py: Python<'_>,
-        candidate_centerlines: Vec<Vec<Vec<(f64, f64)>>>,
-        candidate_registered_opened_cell_indices: Vec<Vec<usize>>,
-        candidate_requested_extra_lengths_um: Vec<f64>,
-        box_depths_um: Vec<f64>,
-        candidate_max_bumps_by_edge: Vec<Vec<usize>>,
-        endpoint_insets_um: Vec<f64>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        planning_mode: &str,
-    ) -> PyResult<PyObject> {
-        validate_endpoint_inset_candidates(&endpoint_insets_um)?;
-        let mut last_result: Option<PyObject> = None;
-        let mut attempted_endpoint_insets_um: Vec<f64> =
-            Vec::with_capacity(endpoint_insets_um.len());
-        for endpoint_inset_um in &endpoint_insets_um {
-            attempted_endpoint_insets_um.push(*endpoint_inset_um);
-            let result = self.plan_auto_analytic_meander_requirement_candidates_registered_opened(
-                py,
-                candidate_centerlines.clone(),
-                candidate_registered_opened_cell_indices.clone(),
-                candidate_requested_extra_lengths_um.clone(),
-                box_depths_um.clone(),
-                candidate_max_bumps_by_edge.clone(),
-                min_bend_radius_um,
-                min_straight_um,
-                max_meander_height_um,
-                min_segment_length_um,
-                *endpoint_inset_um,
-                clearance_radius_cells,
-                side_policy,
-                planning_mode,
-            )?;
-            let status = annotate_endpoint_inset_sweep_result(
-                py,
-                &result,
-                *endpoint_inset_um,
-                &attempted_endpoint_insets_um,
-            )?;
-            if status == "planned" {
-                return Ok(result);
-            }
-            last_result = Some(result);
-        }
-        last_result
-            .ok_or_else(|| PyRuntimeError::new_err("endpoint inset sweep produced no result"))
-    }
-
-    #[pyo3(signature=(candidate_centerlines,candidate_registered_opened_cell_indices,candidate_requested_extra_lengths_um,candidate_max_bumps_by_edge,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,auto_endpoint_inset_um=None,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
-    #[allow(clippy::too_many_arguments)]
-    fn plan_auto_analytic_meander_requirement_candidates_registered_opened_auto_config(
-        &self,
-        py: Python<'_>,
-        candidate_centerlines: Vec<Vec<Vec<(f64, f64)>>>,
-        candidate_registered_opened_cell_indices: Vec<Vec<usize>>,
-        candidate_requested_extra_lengths_um: Vec<f64>,
-        candidate_max_bumps_by_edge: Vec<Vec<usize>>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        auto_endpoint_inset_um: Option<f64>,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        planning_mode: &str,
-    ) -> PyResult<PyObject> {
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let box_depths_um = default_meander_box_depths_um(max_meander_height_um)?;
-        let endpoint_insets_um = default_endpoint_insets_um(
-            effective_radius_um,
-            min_segment_length_um,
-            auto_endpoint_inset_um,
-        )?;
-        let result = self
-            .plan_auto_analytic_meander_requirement_candidates_registered_opened_endpoint_sweep(
-                py,
-                candidate_centerlines,
-                candidate_registered_opened_cell_indices,
-                candidate_requested_extra_lengths_um,
-                box_depths_um.clone(),
-                candidate_max_bumps_by_edge,
-                endpoint_insets_um.clone(),
-                min_bend_radius_um,
-                min_straight_um,
-                max_meander_height_um,
-                min_segment_length_um,
-                clearance_radius_cells,
-                side_policy,
-                planning_mode,
-            )?;
-        annotate_auto_meander_search_policy(
-            py,
-            &result,
-            min_straight_um,
-            min_segment_length_um,
-            max_meander_height_um,
-            &box_depths_um,
-            &endpoint_insets_um,
-            auto_endpoint_inset_um.is_some(),
-        )?;
-        Ok(result)
-    }
-
-    #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
-    #[allow(clippy::too_many_arguments)]
-    fn plan_auto_analytic_meander_requirement_candidate_indices_registered_opened(
-        &self,
-        py: Python<'_>,
-        candidate_geometry_indices: Vec<Vec<usize>>,
-        candidate_requested_extra_lengths_um: Vec<f64>,
-        box_depths_um: Vec<f64>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        endpoint_inset_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        planning_mode: &str,
-    ) -> PyResult<PyObject> {
-        let candidate_count = candidate_geometry_indices.len();
-        if candidate_count != candidate_requested_extra_lengths_um.len() {
-            return Err(PyValueError::new_err(
-                "candidate geometry and requested length inputs must have matching lengths",
-            ));
-        }
-        if candidate_count == 0 {
-            return Err(PyValueError::new_err("candidate list must not be empty"));
-        }
-        if box_depths_um.is_empty() {
-            return Err(PyValueError::new_err("box_depths_um must not be empty"));
-        }
-        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return Err(PyValueError::new_err(
-                "box_depths_um values must be finite and > 0",
-            ));
-        }
-        if candidate_requested_extra_lengths_um
-            .iter()
-            .any(|value| *value <= 0.0)
-        {
-            return Err(PyValueError::new_err(
-                "candidate requested lengths must be > 0",
-            ));
-        }
-        if min_straight_um < 0.0 {
-            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
-        }
-        if max_meander_height_um <= 0.0 {
-            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
-        }
-        if min_segment_length_um <= 0.0 {
-            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
-        }
-        if endpoint_inset_um < 0.0 {
-            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
-        }
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        if candidate_geometry_indices
-            .iter()
-            .any(|candidate| candidate.is_empty())
-        {
-            return Err(PyValueError::new_err("candidate bundles must not be empty"));
-        }
-
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
-            self.primitive_cfg.bend_radius_cells,
-            self.grid.grid_size_um,
-        )
-        .map_err(PyValueError::new_err)?;
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-
-        self.ensure_meander_base_prefix();
-        let cached = self.meander_base_prefix.borrow();
-        let base_prefix = cached
-            .as_ref()
-            .expect("meander base prefix should be initialized");
-        let registered_open_cells = self.meander_registered_open_cells.borrow();
-        let registered_open_indices = self.meander_registered_open_indices.borrow();
-        let registered_geometries = self.meander_registered_geometries.borrow();
-        let mut call_wrapper_profile = MeanderWrapperProfileTotals::default();
-        let reserved_snapshot_start = Instant::now();
-        self.ensure_meander_registered_reserved_index();
-        let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
-        call_wrapper_profile.reserved_snapshot_s += reserved_snapshot_start.elapsed().as_secs_f64();
-        let candidate_results = PyList::empty_bound(py);
-        let mut selected_plans: Option<PyObject> = None;
-        let mut selected_candidate_index: Option<usize> = None;
-        let mut call_profile_totals = MeanderPlanningProfileTotals::default();
-
-        for candidate_index in 0..candidate_count {
-            let geometry_indices = &candidate_geometry_indices[candidate_index];
-            let requested_extra_length_um = candidate_requested_extra_lengths_um[candidate_index];
-            let plans = PyList::empty_bound(py);
-            let mut candidate_reserved_index = SparseCellIndex::empty(self.grid.height as i32);
-            let mut candidate_reserved_has_cells = false;
-            let mut total_candidate_runs = 0usize;
-            let mut total_candidate_intervals = 0usize;
-            let mut total_rejected_box_blocked = 0usize;
-            let mut total_rejected_planning_failed = 0usize;
-            let mut total_rejected_exact_length_mismatch = 0usize;
-            let mut total_rejected_too_short = 0usize;
-            let mut candidate_profile_totals = MeanderPlanningProfileTotals::default();
-            let mut candidate_wrapper_profile = MeanderWrapperProfileTotals::default();
-            let mut failed_reason: Option<String> = None;
-            let mut failed_edge_index: Option<usize> = None;
-
-            for (edge_index, geometry_index) in geometry_indices.iter().enumerate() {
-                let geometry = registered_geometries.get(*geometry_index).ok_or_else(|| {
-                    PyValueError::new_err("registered meander geometry index is out of range")
-                })?;
-                let opened_ref = registered_open_cells
-                    .get(geometry.registered_open_index)
-                    .ok_or_else(|| {
-                        PyValueError::new_err("registered meander route index is out of range")
-                    })?;
-                let opened_index_ref = registered_open_indices
-                    .get(geometry.registered_open_index)
-                    .ok_or_else(|| {
-                        PyValueError::new_err("registered meander route index is out of range")
-                    })?;
-                candidate_wrapper_profile.extra_blocked_prepare_calls += 1;
-                let candidate_reserved_index_ref =
-                    candidate_reserved_has_cells.then_some(&candidate_reserved_index);
-                let cfg = AutoMeanderConfig {
-                    requested_extra_length_um,
-                    min_bend_radius_um: effective_radius_um,
-                    min_straight_um,
-                    max_bumps: geometry.max_bumps,
-                    max_meander_height_um,
-                    box_depth_um: box_depths_um[0],
-                    min_segment_length_um,
-                    endpoint_inset_um,
-                    clearance_radius_cells,
-                    side_policy: policy,
-                    mode,
-                };
-                let planner_call_start = Instant::now();
-                let plan =
-                    match plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
-                        &geometry.centerline,
-                        &grid,
-                        base_prefix,
-                        Some(opened_ref),
-                        Some(opened_index_ref),
-                        None,
-                        reserved_index_borrow.as_ref(),
-                        candidate_reserved_index_ref,
-                        &cfg,
-                        &box_depths_um,
-                    ) {
-                        Ok(plan) => {
-                            candidate_wrapper_profile.planner_call_s +=
-                                planner_call_start.elapsed().as_secs_f64();
-                            plan
-                        }
-                        Err(err) => {
-                            candidate_wrapper_profile.planner_call_s +=
-                                planner_call_start.elapsed().as_secs_f64();
-                            failed_reason = Some(err.to_string());
-                            failed_edge_index = Some(edge_index);
-                            break;
-                        }
-                    };
-                candidate_profile_totals.add(&plan.profile);
-                call_profile_totals.add(&plan.profile);
-                total_candidate_runs += plan.candidate_runs;
-                total_candidate_intervals += plan.candidate_intervals;
-                total_rejected_box_blocked += plan.rejected_box_blocked;
-                total_rejected_planning_failed += plan.rejected_planning_failed;
-                total_rejected_exact_length_mismatch += plan.rejected_exact_length_mismatch;
-                total_rejected_too_short += plan.rejected_too_short;
-                let selected_rect_start = Instant::now();
-                let selected_rect_cell_count = cell_count_in_grid_rect_rs(plan.selected_grid_rect);
-                candidate_wrapper_profile.selected_rect_cells_s +=
-                    selected_rect_start.elapsed().as_secs_f64();
-                candidate_wrapper_profile.selected_rect_cell_count += selected_rect_cell_count;
-                let candidate_reserved_update_start = Instant::now();
-                candidate_reserved_index.insert_rect(
-                    plan.selected_grid_rect.min_x,
-                    plan.selected_grid_rect.max_x,
-                    plan.selected_grid_rect.min_y,
-                    plan.selected_grid_rect.max_y,
-                    self.grid.width as i32,
-                );
-                candidate_reserved_has_cells = true;
-                candidate_wrapper_profile.candidate_reserved_update_s +=
-                    candidate_reserved_update_start.elapsed().as_secs_f64();
-                let py_plan_conversion_start = Instant::now();
-                let py_plan = auto_meander_plan_to_py_object(
-                    py,
-                    &plan,
-                    min_bend_radius_um,
-                    effective_radius_um,
-                    self.primitive_cfg.bend_radius_cells,
-                    primitive_bend_radius_um,
-                    mode,
-                )?;
-                candidate_wrapper_profile.py_plan_conversion_s +=
-                    py_plan_conversion_start.elapsed().as_secs_f64();
-                candidate_wrapper_profile.py_plan_count += 1;
-                let py_plan_append_start = Instant::now();
-                plans.append(py_plan)?;
-                candidate_wrapper_profile.py_plan_append_s +=
-                    py_plan_append_start.elapsed().as_secs_f64();
-            }
-
-            let py_candidate_result_build_start = Instant::now();
-            let candidate_entry = PyDict::new_bound(py);
-            candidate_entry.set_item("candidate_index", candidate_index)?;
-            candidate_entry.set_item("candidate_runs", total_candidate_runs)?;
-            candidate_entry.set_item("candidate_intervals", total_candidate_intervals)?;
-            candidate_entry.set_item("rejected_box_blocked", total_rejected_box_blocked)?;
-            candidate_entry.set_item("rejected_planning_failed", total_rejected_planning_failed)?;
-            candidate_entry.set_item(
-                "rejected_exact_length_mismatch",
-                total_rejected_exact_length_mismatch,
-            )?;
-            candidate_entry.set_item("rejected_too_short", total_rejected_too_short)?;
-            candidate_profile_totals.set_item(&candidate_entry, "planner_profile_total")?;
-            candidate_wrapper_profile.py_candidate_result_build_s +=
-                py_candidate_result_build_start.elapsed().as_secs_f64();
-            candidate_wrapper_profile.candidate_result_count += 1;
-            call_wrapper_profile.add(&candidate_wrapper_profile);
-            candidate_wrapper_profile.set_item(&candidate_entry, "wrapper_profile_total")?;
-            if let Some(reason) = failed_reason {
-                candidate_entry.set_item("status", "no_candidate")?;
-                candidate_entry.set_item("reason", reason)?;
-                candidate_entry.set_item("failed_edge_index", failed_edge_index.unwrap_or(0))?;
-                candidate_entry.set_item("plans", plans)?;
-                candidate_results.append(candidate_entry)?;
-                continue;
-            }
-            candidate_entry.set_item("status", "planned")?;
-            candidate_entry.set_item("reason", "")?;
-            candidate_entry.set_item("failed_edge_index", Option::<usize>::None)?;
-            candidate_entry.set_item("plans", &plans)?;
-            candidate_results.append(candidate_entry)?;
-            selected_candidate_index = Some(candidate_index);
-            selected_plans = Some(plans.into());
-            break;
-        }
-
-        let py_result_build_start = Instant::now();
-        let d = PyDict::new_bound(py);
-        if let Some(index) = selected_candidate_index {
-            d.set_item("status", "planned")?;
-            d.set_item("selected_candidate_index", index)?;
-            d.set_item(
-                "plans",
-                selected_plans.expect("selected plans exist for planned candidate"),
-            )?;
-            d.set_item("reason", "")?;
-        } else {
-            d.set_item("status", "no_candidate")?;
-            d.set_item("selected_candidate_index", Option::<usize>::None)?;
-            d.set_item("plans", PyList::empty_bound(py))?;
-            d.set_item("reason", "no registered requirement candidate planned")?;
-        }
-        d.set_item("candidate_results", candidate_results)?;
-        call_profile_totals.set_item(&d, "planner_profile_total")?;
-        call_wrapper_profile.py_result_build_s += py_result_build_start.elapsed().as_secs_f64();
-        call_wrapper_profile.set_item(&d, "wrapper_profile_total")?;
-        Ok(d.into())
-    }
-
-    #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,box_depths_um,endpoint_insets_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
-    #[allow(clippy::too_many_arguments)]
-    fn plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_endpoint_sweep(
-        &self,
-        py: Python<'_>,
-        candidate_geometry_indices: Vec<Vec<usize>>,
-        candidate_requested_extra_lengths_um: Vec<f64>,
-        box_depths_um: Vec<f64>,
-        endpoint_insets_um: Vec<f64>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        planning_mode: &str,
-    ) -> PyResult<PyObject> {
-        validate_endpoint_inset_candidates(&endpoint_insets_um)?;
-        let mut last_result: Option<PyObject> = None;
-        let mut attempted_endpoint_insets_um: Vec<f64> =
-            Vec::with_capacity(endpoint_insets_um.len());
-        for endpoint_inset_um in &endpoint_insets_um {
-            attempted_endpoint_insets_um.push(*endpoint_inset_um);
-            let result = self
-                .plan_auto_analytic_meander_requirement_candidate_indices_registered_opened(
-                    py,
-                    candidate_geometry_indices.clone(),
-                    candidate_requested_extra_lengths_um.clone(),
-                    box_depths_um.clone(),
-                    min_bend_radius_um,
-                    min_straight_um,
-                    max_meander_height_um,
-                    min_segment_length_um,
-                    *endpoint_inset_um,
-                    clearance_radius_cells,
-                    side_policy,
-                    planning_mode,
-                )?;
-            let status = annotate_endpoint_inset_sweep_result(
-                py,
-                &result,
-                *endpoint_inset_um,
-                &attempted_endpoint_insets_um,
-            )?;
-            if status == "planned" {
-                return Ok(result);
-            }
-            last_result = Some(result);
-        }
-        last_result
-            .ok_or_else(|| PyRuntimeError::new_err("endpoint inset sweep produced no result"))
-    }
-
     #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,auto_endpoint_inset_um=None,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
     #[allow(clippy::too_many_arguments)]
     fn plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
@@ -4216,21 +3112,284 @@ impl PyPhotonicRouter {
             min_segment_length_um,
             auto_endpoint_inset_um,
         )?;
-        let result = self
-            .plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_endpoint_sweep(
+        validate_endpoint_inset_candidates(&endpoint_insets_um)?;
+        let candidate_count = candidate_geometry_indices.len();
+        if candidate_count != candidate_requested_extra_lengths_um.len() {
+            return Err(PyValueError::new_err(
+                "candidate geometry and requested length inputs must have matching lengths",
+            ));
+        }
+        if candidate_count == 0 {
+            return Err(PyValueError::new_err("candidate list must not be empty"));
+        }
+        if candidate_requested_extra_lengths_um
+            .iter()
+            .any(|value| *value <= 0.0)
+        {
+            return Err(PyValueError::new_err(
+                "candidate requested lengths must be > 0",
+            ));
+        }
+        if min_straight_um < 0.0 {
+            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
+        }
+        if max_meander_height_um <= 0.0 {
+            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
+        }
+        if min_segment_length_um <= 0.0 {
+            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
+        }
+        if clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
+        }
+        if candidate_geometry_indices
+            .iter()
+            .any(|candidate| candidate.is_empty())
+        {
+            return Err(PyValueError::new_err("candidate bundles must not be empty"));
+        }
+
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            self.primitive_cfg.bend_radius_cells,
+            self.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        self.ensure_meander_base_prefix();
+        let cached = self.meander_base_prefix.borrow();
+        let base_prefix = cached
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let registered_open_cells = self.meander_registered_open_cells.borrow();
+        let registered_open_indices = self.meander_registered_open_indices.borrow();
+        let registered_geometries = self.meander_registered_geometries.borrow();
+        let mut attempted_endpoint_insets_um: Vec<f64> =
+            Vec::with_capacity(endpoint_insets_um.len());
+        let mut last_result: Option<PyObject> = None;
+
+        for endpoint_inset_um in &endpoint_insets_um {
+            attempted_endpoint_insets_um.push(*endpoint_inset_um);
+            let mut call_wrapper_profile = MeanderWrapperProfileTotals::default();
+            let reserved_snapshot_start = Instant::now();
+            self.ensure_meander_registered_reserved_index();
+            let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
+            call_wrapper_profile.reserved_snapshot_s +=
+                reserved_snapshot_start.elapsed().as_secs_f64();
+            let candidate_results = PyList::empty_bound(py);
+            let mut selected_plans: Option<PyObject> = None;
+            let mut selected_candidate_index: Option<usize> = None;
+            let mut call_profile_totals = MeanderPlanningProfileTotals::default();
+
+            for candidate_index in 0..candidate_count {
+                let geometry_indices = &candidate_geometry_indices[candidate_index];
+                let requested_extra_length_um =
+                    candidate_requested_extra_lengths_um[candidate_index];
+                let plans = PyList::empty_bound(py);
+                let mut candidate_reserved_index = SparseCellIndex::empty(self.grid.height as i32);
+                let mut candidate_reserved_has_cells = false;
+                let mut total_candidate_runs = 0usize;
+                let mut total_candidate_intervals = 0usize;
+                let mut total_rejected_box_blocked = 0usize;
+                let mut total_rejected_planning_failed = 0usize;
+                let mut total_rejected_exact_length_mismatch = 0usize;
+                let mut total_rejected_too_short = 0usize;
+                let mut candidate_profile_totals = MeanderPlanningProfileTotals::default();
+                let mut candidate_wrapper_profile = MeanderWrapperProfileTotals::default();
+                let mut failed_reason: Option<String> = None;
+                let mut failed_edge_index: Option<usize> = None;
+
+                for (edge_index, geometry_index) in geometry_indices.iter().enumerate() {
+                    let geometry = registered_geometries.get(*geometry_index).ok_or_else(|| {
+                        PyValueError::new_err("registered meander geometry index is out of range")
+                    })?;
+                    let opened_ref = registered_open_cells
+                        .get(geometry.registered_open_index)
+                        .ok_or_else(|| {
+                            PyValueError::new_err("registered meander route index is out of range")
+                        })?;
+                    let opened_index_ref = registered_open_indices
+                        .get(geometry.registered_open_index)
+                        .ok_or_else(|| {
+                            PyValueError::new_err("registered meander route index is out of range")
+                        })?;
+                    candidate_wrapper_profile.extra_blocked_prepare_calls += 1;
+                    let candidate_reserved_index_ref =
+                        candidate_reserved_has_cells.then_some(&candidate_reserved_index);
+                    let cfg = AutoMeanderConfig {
+                        requested_extra_length_um,
+                        min_bend_radius_um: effective_radius_um,
+                        min_straight_um,
+                        max_bumps: geometry.max_bumps,
+                        max_meander_height_um,
+                        box_depth_um: box_depths_um[0],
+                        min_segment_length_um,
+                        endpoint_inset_um: *endpoint_inset_um,
+                        clearance_radius_cells,
+                        side_policy: policy,
+                        mode,
+                    };
+                    let planner_call_start = Instant::now();
+                    let plan =
+                        match plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
+                            &geometry.centerline,
+                            &grid,
+                            base_prefix,
+                            Some(opened_ref),
+                            Some(opened_index_ref),
+                            None,
+                            reserved_index_borrow.as_ref(),
+                            candidate_reserved_index_ref,
+                            &cfg,
+                            &box_depths_um,
+                        ) {
+                            Ok(plan) => {
+                                candidate_wrapper_profile.planner_call_s +=
+                                    planner_call_start.elapsed().as_secs_f64();
+                                plan
+                            }
+                            Err(err) => {
+                                candidate_wrapper_profile.planner_call_s +=
+                                    planner_call_start.elapsed().as_secs_f64();
+                                failed_reason = Some(err.to_string());
+                                failed_edge_index = Some(edge_index);
+                                break;
+                            }
+                        };
+                    candidate_profile_totals.add(&plan.profile);
+                    call_profile_totals.add(&plan.profile);
+                    total_candidate_runs += plan.candidate_runs;
+                    total_candidate_intervals += plan.candidate_intervals;
+                    total_rejected_box_blocked += plan.rejected_box_blocked;
+                    total_rejected_planning_failed += plan.rejected_planning_failed;
+                    total_rejected_exact_length_mismatch += plan.rejected_exact_length_mismatch;
+                    total_rejected_too_short += plan.rejected_too_short;
+                    let selected_rect_start = Instant::now();
+                    let selected_rect_cell_count =
+                        cell_count_in_grid_rect_rs(plan.selected_grid_rect);
+                    candidate_wrapper_profile.selected_rect_cells_s +=
+                        selected_rect_start.elapsed().as_secs_f64();
+                    candidate_wrapper_profile.selected_rect_cell_count += selected_rect_cell_count;
+                    let candidate_reserved_update_start = Instant::now();
+                    candidate_reserved_index.insert_rect(
+                        plan.selected_grid_rect.min_x,
+                        plan.selected_grid_rect.max_x,
+                        plan.selected_grid_rect.min_y,
+                        plan.selected_grid_rect.max_y,
+                        self.grid.width as i32,
+                    );
+                    candidate_reserved_has_cells = true;
+                    candidate_wrapper_profile.candidate_reserved_update_s +=
+                        candidate_reserved_update_start.elapsed().as_secs_f64();
+                    let py_plan_conversion_start = Instant::now();
+                    let py_plan = auto_meander_plan_to_py_object(
+                        py,
+                        &plan,
+                        min_bend_radius_um,
+                        effective_radius_um,
+                        self.primitive_cfg.bend_radius_cells,
+                        primitive_bend_radius_um,
+                        mode,
+                    )?;
+                    candidate_wrapper_profile.py_plan_conversion_s +=
+                        py_plan_conversion_start.elapsed().as_secs_f64();
+                    candidate_wrapper_profile.py_plan_count += 1;
+                    let py_plan_append_start = Instant::now();
+                    plans.append(py_plan)?;
+                    candidate_wrapper_profile.py_plan_append_s +=
+                        py_plan_append_start.elapsed().as_secs_f64();
+                }
+
+                let py_candidate_result_build_start = Instant::now();
+                let candidate_entry = PyDict::new_bound(py);
+                candidate_entry.set_item("candidate_index", candidate_index)?;
+                candidate_entry.set_item("candidate_runs", total_candidate_runs)?;
+                candidate_entry.set_item("candidate_intervals", total_candidate_intervals)?;
+                candidate_entry.set_item("rejected_box_blocked", total_rejected_box_blocked)?;
+                candidate_entry
+                    .set_item("rejected_planning_failed", total_rejected_planning_failed)?;
+                candidate_entry.set_item(
+                    "rejected_exact_length_mismatch",
+                    total_rejected_exact_length_mismatch,
+                )?;
+                candidate_entry.set_item("rejected_too_short", total_rejected_too_short)?;
+                candidate_profile_totals.set_item(&candidate_entry, "planner_profile_total")?;
+                candidate_wrapper_profile.py_candidate_result_build_s +=
+                    py_candidate_result_build_start.elapsed().as_secs_f64();
+                candidate_wrapper_profile.candidate_result_count += 1;
+                call_wrapper_profile.add(&candidate_wrapper_profile);
+                candidate_wrapper_profile.set_item(&candidate_entry, "wrapper_profile_total")?;
+                if let Some(reason) = failed_reason {
+                    candidate_entry.set_item("status", "no_candidate")?;
+                    candidate_entry.set_item("reason", reason)?;
+                    candidate_entry
+                        .set_item("failed_edge_index", failed_edge_index.unwrap_or(0))?;
+                    candidate_entry.set_item("plans", plans)?;
+                    candidate_results.append(candidate_entry)?;
+                    continue;
+                }
+                candidate_entry.set_item("status", "planned")?;
+                candidate_entry.set_item("reason", "")?;
+                candidate_entry.set_item("failed_edge_index", Option::<usize>::None)?;
+                candidate_entry.set_item("plans", &plans)?;
+                candidate_results.append(candidate_entry)?;
+                selected_candidate_index = Some(candidate_index);
+                selected_plans = Some(plans.into());
+                break;
+            }
+
+            let py_result_build_start = Instant::now();
+            let d = PyDict::new_bound(py);
+            if let Some(index) = selected_candidate_index {
+                d.set_item("status", "planned")?;
+                d.set_item("selected_candidate_index", index)?;
+                d.set_item(
+                    "plans",
+                    selected_plans.expect("selected plans exist for planned candidate"),
+                )?;
+                d.set_item("reason", "")?;
+            } else {
+                d.set_item("status", "no_candidate")?;
+                d.set_item("selected_candidate_index", Option::<usize>::None)?;
+                d.set_item("plans", PyList::empty_bound(py))?;
+                d.set_item("reason", "no registered requirement candidate planned")?;
+            }
+            d.set_item("candidate_results", candidate_results)?;
+            call_profile_totals.set_item(&d, "planner_profile_total")?;
+            call_wrapper_profile.py_result_build_s += py_result_build_start.elapsed().as_secs_f64();
+            call_wrapper_profile.set_item(&d, "wrapper_profile_total")?;
+            let result: PyObject = d.into();
+            let status = annotate_endpoint_inset_sweep_result(
                 py,
-                candidate_geometry_indices,
-                candidate_requested_extra_lengths_um,
-                box_depths_um.clone(),
-                endpoint_insets_um.clone(),
-                min_bend_radius_um,
-                min_straight_um,
-                max_meander_height_um,
-                min_segment_length_um,
-                clearance_radius_cells,
-                side_policy,
-                planning_mode,
+                &result,
+                *endpoint_inset_um,
+                &attempted_endpoint_insets_um,
             )?;
+            if status == "planned" {
+                annotate_auto_meander_search_policy(
+                    py,
+                    &result,
+                    min_straight_um,
+                    min_segment_length_um,
+                    max_meander_height_um,
+                    &box_depths_um,
+                    &endpoint_insets_um,
+                    auto_endpoint_inset_um.is_some(),
+                )?;
+                return Ok(result);
+            }
+            last_result = Some(result);
+        }
+
+        let result = last_result
+            .ok_or_else(|| PyRuntimeError::new_err("endpoint inset sweep produced no result"))?;
         annotate_auto_meander_search_policy(
             py,
             &result,

@@ -2172,7 +2172,7 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
     assert updated[0].meander_auto_plan is not None
 
 
-def test_registered_meander_route_cells_match_legacy_opened_cells():
+def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
     rust_backend = _load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for registered meander path test.")
@@ -2187,9 +2187,9 @@ def test_registered_meander_route_cells_match_legacy_opened_cells():
     router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
     if not hasattr(
         router,
-        "plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened",
+        "plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config",
     ):
-        pytest.skip("Rust backend lacks registered meander opened-cell API.")
+        pytest.skip("Rust backend lacks registered geometry requirement PLM API.")
 
     route_obj = router.route_single_net(
         rust_backend.State(20, 60, 0),
@@ -2212,6 +2212,12 @@ def test_registered_meander_route_cells_match_legacy_opened_cells():
     assert open_counts == [len(inflated_route_cells)]
     assert unique_count == len(inflated_route_cells)
     assert router.registered_meander_open_cell_count(0) == len(inflated_route_cells)
+    geometry_indices = router.register_meander_route_geometries(
+        [centerline],
+        [0],
+        [21],
+    )
+    assert geometry_indices == [0]
 
     kwargs = {
         "requested_extra_length_um": 75.311,
@@ -2226,11 +2232,18 @@ def test_registered_meander_route_cells_match_legacy_opened_cells():
         "side_policy": "both",
         "planning_mode": "fill_box_multi_bump",
     }
-    registered = (
-        router.plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
-            centerline,
-            0,
-            **kwargs,
+    registered_result = (
+        router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+            [geometry_indices],
+            [kwargs["requested_extra_length_um"]],
+            min_bend_radius_um=kwargs["min_bend_radius_um"],
+            min_straight_um=kwargs["min_straight_um"],
+            max_meander_height_um=kwargs["max_meander_height_um"],
+            min_segment_length_um=kwargs["min_segment_length_um"],
+            auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
+            clearance_radius_cells=kwargs["clearance_radius_cells"],
+            side_policy=kwargs["side_policy"],
+            planning_mode=kwargs["planning_mode"],
         )
     )
     legacy = router.plan_auto_analytic_meander_for_centerline_depth_sweep(
@@ -2239,6 +2252,10 @@ def test_registered_meander_route_cells_match_legacy_opened_cells():
         extra_blocked_cells=None,
         **kwargs,
     )
+    assert registered_result["status"] == "planned"
+    registered_plans = cast(list[dict[str, object]], registered_result["plans"])
+    assert len(registered_plans) == 1
+    registered = registered_plans[0]
 
     assert registered["inserted_extra_length_um"] == pytest.approx(
         legacy["inserted_extra_length_um"]
@@ -2246,34 +2263,31 @@ def test_registered_meander_route_cells_match_legacy_opened_cells():
     assert registered["selected_grid_rect"] == legacy["selected_grid_rect"]
     assert registered["bumps"] == legacy["bumps"]
 
-    bundle = router.plan_auto_analytic_meander_candidate_bundle_registered_opened(
-        [centerline],
-        [0],
-        max_bumps_by_edge=[kwargs["max_bumps"]],
-        **{key: value for key, value in kwargs.items() if key != "max_bumps"},
-    )
-    assert bundle["status"] == "planned"
-    bundle_plans = cast(list[dict[str, object]], bundle["plans"])
-    assert len(bundle_plans) == 1
-    assert bundle_plans[0]["inserted_extra_length_um"] == pytest.approx(
-        legacy["inserted_extra_length_um"]
-    )
-    assert bundle_plans[0]["selected_grid_rect"] == legacy["selected_grid_rect"]
-
     selected_rect = cast(tuple[int, int, int, int], registered["selected_grid_rect"])
-    router.add_registered_meander_reserved_cells(
-        [
-            (x, y)
-            for x in range(selected_rect[0], selected_rect[1] + 1)
-            for y in range(selected_rect[2], selected_rect[3] + 1)
-        ]
+    router.add_registered_meander_reserved_grid_rect(
+        selected_rect[0],
+        selected_rect[1],
+        selected_rect[2],
+        selected_rect[3],
     )
-    shifted = router.plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
-        centerline,
-        0,
-        **kwargs,
+    shifted_result = (
+        router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+            [geometry_indices],
+            [kwargs["requested_extra_length_um"]],
+            min_bend_radius_um=kwargs["min_bend_radius_um"],
+            min_straight_um=kwargs["min_straight_um"],
+            max_meander_height_um=kwargs["max_meander_height_um"],
+            min_segment_length_um=kwargs["min_segment_length_um"],
+            auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
+            clearance_radius_cells=kwargs["clearance_radius_cells"],
+            side_policy=kwargs["side_policy"],
+            planning_mode=kwargs["planning_mode"],
+        )
     )
 
+    assert shifted_result["status"] == "planned"
+    shifted_plans = cast(list[dict[str, object]], shifted_result["plans"])
+    shifted = shifted_plans[0]
     assert shifted["selected_grid_rect"] != selected_rect
 
 
