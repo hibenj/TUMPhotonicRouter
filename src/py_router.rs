@@ -1083,6 +1083,106 @@ fn annotate_endpoint_inset_sweep_result(
         .extract::<String>()
 }
 
+const DEFAULT_MEANDER_DEPTH_CANDIDATES_UM: [f64; 12] = [
+    40.0, 30.0, 24.0, 20.0, 16.0, 12.0, 10.0, 8.0, 6.0, 4.0, 3.0, 2.0,
+];
+const MEANDER_POLICY_DEDUPE_EPS_UM: f64 = 1.0e-9;
+
+fn default_meander_box_depths_um(max_meander_height_um: f64) -> PyResult<Vec<f64>> {
+    if !max_meander_height_um.is_finite() || max_meander_height_um <= 0.0 {
+        return Err(PyValueError::new_err(
+            "max_meander_height_um must be finite and > 0",
+        ));
+    }
+    let mut depths: Vec<f64> = DEFAULT_MEANDER_DEPTH_CANDIDATES_UM
+        .iter()
+        .copied()
+        .filter(|depth| *depth <= max_meander_height_um + MEANDER_POLICY_DEDUPE_EPS_UM)
+        .collect();
+    let largest_depth = depths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if depths.is_empty() || max_meander_height_um > largest_depth + MEANDER_POLICY_DEDUPE_EPS_UM {
+        depths.insert(0, max_meander_height_um);
+    }
+    Ok(depths)
+}
+
+fn default_endpoint_insets_um(
+    effective_radius_um: f64,
+    min_segment_length_um: f64,
+    auto_endpoint_inset_um: Option<f64>,
+) -> PyResult<Vec<f64>> {
+    if let Some(endpoint_inset_um) = auto_endpoint_inset_um {
+        if !endpoint_inset_um.is_finite() {
+            return Err(PyValueError::new_err(
+                "auto_endpoint_inset_um must be finite when provided",
+            ));
+        }
+        return Ok(vec![endpoint_inset_um.max(0.0)]);
+    }
+    if !effective_radius_um.is_finite() || effective_radius_um <= 0.0 {
+        return Err(PyValueError::new_err(
+            "effective bend radius must be finite and > 0",
+        ));
+    }
+    if !min_segment_length_um.is_finite() || min_segment_length_um <= 0.0 {
+        return Err(PyValueError::new_err(
+            "min_segment_length_um must be finite and > 0",
+        ));
+    }
+    let base_endpoint_inset_um = effective_radius_um.max(min_segment_length_um);
+    let raw_endpoint_insets = [
+        base_endpoint_inset_um,
+        0.75 * effective_radius_um,
+        0.5 * effective_radius_um,
+        0.25 * effective_radius_um,
+        0.0,
+    ];
+    let mut endpoint_insets_um: Vec<f64> = Vec::with_capacity(raw_endpoint_insets.len());
+    for inset in raw_endpoint_insets {
+        let inset = inset.max(0.0);
+        if endpoint_insets_um
+            .iter()
+            .all(|existing| (inset - *existing).abs() > MEANDER_POLICY_DEDUPE_EPS_UM)
+        {
+            endpoint_insets_um.push(inset);
+        }
+    }
+    Ok(endpoint_insets_um)
+}
+
+fn annotate_auto_meander_search_policy(
+    py: Python<'_>,
+    result: &PyObject,
+    min_straight_um: f64,
+    min_segment_length_um: f64,
+    max_meander_height_um: f64,
+    box_depths_um: &[f64],
+    endpoint_insets_um: &[f64],
+    fixed_endpoint_inset: bool,
+) -> PyResult<()> {
+    let d = result.bind(py).downcast::<PyDict>()?;
+    let endpoint_inset_um = endpoint_insets_um.first().copied().unwrap_or(0.0);
+    let endpoint_inset_policy = if fixed_endpoint_inset {
+        "fixed"
+    } else {
+        "adaptive"
+    };
+    d.set_item("box_depths_um", box_depths_um)?;
+    d.set_item("endpoint_insets_um", endpoint_insets_um)?;
+    d.set_item("endpoint_inset_policy", endpoint_inset_policy)?;
+
+    let search_config = PyDict::new_bound(py);
+    search_config.set_item("min_straight_um", min_straight_um)?;
+    search_config.set_item("min_segment_um", min_segment_length_um)?;
+    search_config.set_item("max_height_um", max_meander_height_um)?;
+    search_config.set_item("box_depths_um", box_depths_um)?;
+    search_config.set_item("endpoint_inset_um", endpoint_inset_um)?;
+    search_config.set_item("endpoint_insets_um", endpoint_insets_um)?;
+    search_config.set_item("endpoint_inset_policy", endpoint_inset_policy)?;
+    d.set_item("search_config", search_config)?;
+    Ok(())
+}
+
 fn validate_endpoint_inset_candidates(endpoint_insets_um: &[f64]) -> PyResult<()> {
     if endpoint_insets_um.is_empty() {
         return Err(PyValueError::new_err(
@@ -3652,6 +3752,61 @@ impl PyPhotonicRouter {
             .ok_or_else(|| PyRuntimeError::new_err("endpoint inset sweep produced no result"))
     }
 
+    #[pyo3(signature=(candidate_centerlines,candidate_registered_opened_cell_indices,candidate_requested_extra_lengths_um,candidate_max_bumps_by_edge,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,auto_endpoint_inset_um=None,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_auto_analytic_meander_requirement_candidates_registered_opened_auto_config(
+        &self,
+        py: Python<'_>,
+        candidate_centerlines: Vec<Vec<Vec<(f64, f64)>>>,
+        candidate_registered_opened_cell_indices: Vec<Vec<usize>>,
+        candidate_requested_extra_lengths_um: Vec<f64>,
+        candidate_max_bumps_by_edge: Vec<Vec<usize>>,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        auto_endpoint_inset_um: Option<f64>,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
+        let box_depths_um = default_meander_box_depths_um(max_meander_height_um)?;
+        let endpoint_insets_um = default_endpoint_insets_um(
+            effective_radius_um,
+            min_segment_length_um,
+            auto_endpoint_inset_um,
+        )?;
+        let result = self
+            .plan_auto_analytic_meander_requirement_candidates_registered_opened_endpoint_sweep(
+                py,
+                candidate_centerlines,
+                candidate_registered_opened_cell_indices,
+                candidate_requested_extra_lengths_um,
+                box_depths_um.clone(),
+                candidate_max_bumps_by_edge,
+                endpoint_insets_um.clone(),
+                min_bend_radius_um,
+                min_straight_um,
+                max_meander_height_um,
+                min_segment_length_um,
+                clearance_radius_cells,
+                side_policy,
+                planning_mode,
+            )?;
+        annotate_auto_meander_search_policy(
+            py,
+            &result,
+            min_straight_um,
+            min_segment_length_um,
+            max_meander_height_um,
+            &box_depths_um,
+            &endpoint_insets_um,
+            auto_endpoint_inset_um.is_some(),
+        )?;
+        Ok(result)
+    }
+
     #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
     #[allow(clippy::too_many_arguments)]
     fn plan_auto_analytic_meander_requirement_candidate_indices_registered_opened(
@@ -3976,6 +4131,57 @@ impl PyPhotonicRouter {
         }
         last_result
             .ok_or_else(|| PyRuntimeError::new_err("endpoint inset sweep produced no result"))
+    }
+
+    #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,auto_endpoint_inset_um=None,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+        &self,
+        py: Python<'_>,
+        candidate_geometry_indices: Vec<Vec<usize>>,
+        candidate_requested_extra_lengths_um: Vec<f64>,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        auto_endpoint_inset_um: Option<f64>,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
+        let box_depths_um = default_meander_box_depths_um(max_meander_height_um)?;
+        let endpoint_insets_um = default_endpoint_insets_um(
+            effective_radius_um,
+            min_segment_length_um,
+            auto_endpoint_inset_um,
+        )?;
+        let result = self
+            .plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_endpoint_sweep(
+                py,
+                candidate_geometry_indices,
+                candidate_requested_extra_lengths_um,
+                box_depths_um.clone(),
+                endpoint_insets_um.clone(),
+                min_bend_radius_um,
+                min_straight_um,
+                max_meander_height_um,
+                min_segment_length_um,
+                clearance_radius_cells,
+                side_policy,
+                planning_mode,
+            )?;
+        annotate_auto_meander_search_policy(
+            py,
+            &result,
+            min_straight_um,
+            min_segment_length_um,
+            max_meander_height_um,
+            &box_depths_um,
+            &endpoint_insets_um,
+            auto_endpoint_inset_um.is_some(),
+        )?;
+        Ok(result)
     }
 
     #[pyo3(signature=(centerline,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
