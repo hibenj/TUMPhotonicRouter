@@ -2346,27 +2346,6 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
         def add_static_cells(self, cells: object) -> None:
             captured["added_static_cells"] = cells
 
-        def plan_auto_analytic_meander_for_route_depth_sweep(
-            self,
-            _route_obj: object,
-            **kwargs: object,
-        ) -> dict[str, object]:
-            captured["opened_cells"] = kwargs.get("opened_cells")
-            return {
-                "inserted_extra_length_um": kwargs["requested_extra_length_um"],
-                "effective_bend_radius_um": 4.0,
-                "primitive_bend_radius_um": 4.0,
-                "selected_box": (0.0, 10.0, 0.0, 10.0),
-                "selected_grid_rect": (1, 2, 3, 4),
-                "bumps": 1,
-                "side": "left",
-                "box_depth_um": 10.0,
-                "selected_run_start_index": 0,
-                "selected_run_end_index": 1,
-                "centerline": [(0.0, 0.0), (1.0, 0.0)],
-                "planning_mode": "fill_box_multi_bump",
-            }
-
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
         PrimitiveLibraryConfig = staticmethod(
@@ -2409,7 +2388,6 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
     assert (1, 1) in static_cells
     assert (7, 8) not in static_cells
     assert (9, 10) not in static_cells
-    assert "opened_cells" not in captured
     assert updated[0].opened_cells == record.opened_cells
     results = cast(list[dict[str, object]], report["results"])
     assert results[0]["status"] == "no_candidate"
@@ -2417,7 +2395,7 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
     assert report["candidate_engine_counts"] == {"rust_registered_unavailable": 1}
 
 
-def test_meander_commit_defers_python_reserved_cells_until_fallback_planning():
+def test_meander_commit_defers_python_reserved_cells_when_rust_rect_used():
     captured: dict[str, object] = {}
 
     class _RouteObj:
@@ -2435,36 +2413,10 @@ def test_meander_commit_defers_python_reserved_cells_until_fallback_planning():
             captured["registered_rect"] = (min_x, max_x, min_y, max_y)
             return (max_x - min_x + 1) * (max_y - min_y + 1)
 
-        def plan_auto_analytic_meander_for_route_depth_sweep(
-            self,
-            _route_obj: object,
-            **kwargs: object,
-        ) -> dict[str, object]:
-            captured["extra_blocked_cells"] = kwargs.get("extra_blocked_cells")
-            return {
-                "inserted_extra_length_um": kwargs["requested_extra_length_um"],
-                "effective_bend_radius_um": 4.0,
-                "primitive_bend_radius_um": 4.0,
-                "selected_box": (0.0, 10.0, 0.0, 10.0),
-                "selected_grid_rect": (10, 10, 10, 10),
-                "bumps": 1,
-                "side": "left",
-                "box_depth_um": 10.0,
-                "selected_run_start_index": 0,
-                "selected_run_end_index": 1,
-                "centerline": [(0.0, 0.0), (1.0, 0.0)],
-                "planning_mode": "fill_box_multi_bump",
-            }
-
     committed_edge = RoutedEdgeKey(
         net_name="committed",
         source=PortRef(instance="src0", port="o1"),
         target=PortRef(instance="gate0", port="i0"),
-    )
-    fallback_edge = RoutedEdgeKey(
-        net_name="fallback",
-        source=PortRef(instance="src1", port="o1"),
-        target=PortRef(instance="gate1", port="i0"),
     )
     committed_record = RoutedNetRecord(
         net_name=committed_edge.net_name,
@@ -2473,26 +2425,15 @@ def test_meander_commit_defers_python_reserved_cells_until_fallback_planning():
         route_obj=_RouteObj(),
         total_length_um=30.0,
     )
-    fallback_record = RoutedNetRecord(
-        net_name=fallback_edge.net_name,
-        source=fallback_edge.source,
-        target=fallback_edge.target,
-        route_obj=_RouteObj(),
-        total_length_um=30.0,
-    )
     context = _MeanderPlannerContext(
         router=cast(Any, _FakeRouter()),
         by_edge={
             committed_edge: committed_record,
-            fallback_edge: fallback_record,
         },
         updated={
             committed_edge: committed_record,
-            fallback_edge: fallback_record,
         },
-        route_cells_by_edge={
-            fallback_edge: {(1, 1), (2, 2)},
-        },
+        route_cells_by_edge={},
         route_cell_refcounts=Counter({(1, 1): 1, (2, 2): 1}),
         registered_open_cell_index_by_edge={},
         registered_open_cell_count_by_edge={},
@@ -2535,119 +2476,6 @@ def test_meander_commit_defers_python_reserved_cells_until_fallback_planning():
     assert context.pending_reserved_meander_rects == [(3, 4, 5, 6)]
     assert "grid_rect_cells_s" not in context.commit_profile
     assert "python_reserved_update_s" not in context.commit_profile
-
-    attempt, rr, _record, used_reserved_overlay, *_rest = context.plan_edge_candidate(
-        candidate_edge_key=fallback_edge,
-        requested=10.0,
-        extra_reserved_cells=set(),
-        box_depths_um=[10.0],
-        min_straight_um=5.0,
-        min_seg_um=5.0,
-        max_height_um=40.0,
-        endpoint_inset_um=0.0,
-        use_probe=False,
-    )
-
-    blocked_cells = set(cast(list[tuple[int, int]], captured["extra_blocked_cells"]))
-    assert attempt["status"] == "planned"
-    assert rr is not None
-    assert used_reserved_overlay is True
-    assert {(3, 5), (4, 5), (3, 6), (4, 6)} <= blocked_cells
-    assert context.pending_reserved_meander_rects == []
-    assert {(3, 5), (4, 5), (3, 6), (4, 6)} <= context.reserved_meander_cells
-    assert context.candidate_setup_profile["materialize_reserved_rects_s"] >= 0.0
-
-
-def test_plan_edge_candidate_rejects_blocked_selected_grid_rect():
-    class _RouteObj:
-        def __init__(self) -> None:
-            self.cells: list[tuple[int, int]] = []
-
-    class _FakeRouter:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        def set_static_cells(self, _cells: object) -> None:
-            return None
-
-        def add_static_cells(self, _cells: object) -> None:
-            return None
-
-        def plan_auto_analytic_meander_for_route_depth_sweep(
-            self,
-            route: _RouteObj,
-            **kwargs: object,
-        ) -> dict[str, object]:
-            requested = float(cast(float, kwargs["requested_extra_length_um"]))
-            return {
-                "inserted_extra_length_um": requested,
-                "selected_grid_rect": (1, 1, 1, 1),
-                "selected_box": (0.0, 10.0, 0.0, 10.0),
-                "bumps": 1,
-                "side": "left",
-                "box_depth_um": 10.0,
-            }
-
-    class _FakeBackend:
-        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
-        PrimitiveLibraryConfig = staticmethod(
-            lambda *args, **kwargs: ("primitive", args, kwargs)
-        )
-        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
-        PyPhotonicRouter = _FakeRouter
-
-    edge = RoutedEdgeKey(
-        net_name="n0",
-        source=PortRef(instance="src0", port="o1"),
-        target=PortRef(instance="gate0", port="i0"),
-    )
-    record = RoutedNetRecord(
-        net_name=edge.net_name,
-        source=edge.source,
-        target=edge.target,
-        route_obj=_RouteObj(),
-        total_length_um=30.0,
-    )
-    context = _MeanderPlannerContext(
-        router=cast(Any, _FakeBackend.PyPhotonicRouter()),
-        by_edge={edge: record},
-        updated={edge: record},
-        route_cells_by_edge={},
-        route_cell_refcounts=Counter(),
-        registered_open_cell_index_by_edge={},
-        registered_open_cell_count_by_edge={},
-        registered_geometry_index_by_edge={},
-        base_open_cells_by_edge={},
-        base_open_cell_lists_by_edge={},
-        max_bumps_by_edge={},
-        centerline_lists_by_edge={},
-        base_static_cells={(1, 1)},
-        reserved_meander_cells=set(),
-        pending_reserved_meander_rects=[],
-        grid_size_um=1.0,
-        bend_radius_um=4.0,
-        setup_profile={},
-        candidate_setup_profile={},
-        commit_profile={},
-        rust_planner_profile={},
-        rust_wrapper_profile={},
-    )
-    attempt, rr, returned_record, _used_reserved_overlay, *_rest = context.plan_edge_candidate(
-        candidate_edge_key=edge,
-        requested=10.0,
-        extra_reserved_cells=set(),
-        box_depths_um=[10.0],
-        min_straight_um=5.0,
-        min_seg_um=5.0,
-        max_height_um=40.0,
-        endpoint_inset_um=0.0,
-        use_probe=False,
-    )
-
-    assert attempt["status"] == "no_candidate"
-    assert rr is None
-    assert returned_record is record
-    assert attempt["rejected_box_blocked"] is True
 
 
 def test_m2_skeleton_reports_no_candidate_when_too_short():

@@ -129,31 +129,11 @@ class _MeanderRouterProtocol(Protocol):
         candidate_requested_extra_lengths_um: list[float],
         **kwargs: Any,
     ) -> dict[str, object]: ...
-    def plan_auto_analytic_meander_for_centerline_depth_sweep(
-        self,
-        centerline: list[tuple[float, float]],
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
-    def plan_auto_analytic_meander_for_route_depth_sweep(
-        self,
-        route: object,
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
     def route_port_corrected_centerline(
         self,
         route: object,
         **kwargs: Any,
     ) -> list[tuple[float, float]]: ...
-    def probe_auto_analytic_meander_for_centerline_depth_sweep(
-        self,
-        centerline: list[tuple[float, float]],
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
-    def probe_auto_analytic_meander_for_route_depth_sweep(
-        self,
-        route: object,
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
 
 
 PlannedEdgeInsertion = tuple[
@@ -163,17 +143,6 @@ PlannedEdgeInsertion = tuple[
     bool,
     int,
     set[GridCell],
-]
-EdgePlanAttempt = tuple[
-    dict[str, object],
-    dict[str, object] | None,
-    RoutedNetRecord | None,
-    bool,
-    int,
-    set[GridCell],
-    float,
-    float,
-    Exception | None,
 ]
 RequirementCandidatesAttempt = tuple[
     int | None,
@@ -444,389 +413,6 @@ class _MeanderPlannerContext:
             centerline = list(record.corrected_centerline_um)
             self.centerline_lists_by_edge[edge_key] = centerline
         return centerline
-
-    def plan_edge_candidate(
-        self,
-        *,
-        candidate_edge_key: RoutedEdgeKey,
-        requested: float,
-        extra_reserved_cells: set[GridCell],
-        box_depths_um: list[float],
-        min_straight_um: float,
-        min_seg_um: float,
-        max_height_um: float,
-        endpoint_inset_um: float,
-        use_probe: bool,
-    ) -> EdgePlanAttempt:
-        t_candidate_start = time.perf_counter()
-        record = self.by_edge.get(candidate_edge_key)
-        attempt_info: dict[str, object] = {
-            "edge": edge_key_to_dict(candidate_edge_key),
-            "status": "no_candidate",
-            "reason": "",
-        }
-        if record is None:
-            attempt_info["reason"] = "no_matching_routed_record"
-            attempt_info["planner_called"] = False
-            elapsed = time.perf_counter() - t_candidate_start
-            self.candidate_overhead_s += elapsed
-            self._add_candidate_setup_time("missing_record_s", elapsed)
-            return attempt_info, None, None, True, 1, set(), 0.0, 0.0, None
-
-        blocked_by_planned: set[GridCell] | None = None
-        t_centerline_start = time.perf_counter()
-        centerline = self.centerline_list_for_edge(candidate_edge_key, record)
-        self._add_candidate_setup_time(
-            "centerline_s",
-            time.perf_counter() - t_centerline_start,
-        )
-        registered_open_index = self.registered_open_cell_index_by_edge.get(
-            candidate_edge_key,
-        )
-        use_registered_open = (
-            centerline is not None
-            and registered_open_index is not None
-            and hasattr(
-                self.router,
-                "plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened",
-            )
-        )
-        if use_registered_open:
-            candidate_route_open_cells = set()
-            opened_cells_arg: list[GridCell] = []
-            attempt_info["opened_route_cell_count"] = (
-                self.registered_open_cell_count_by_edge.get(candidate_edge_key, 0)
-            )
-        else:
-            blocked_by_planned = (
-                self.reserved_meander_cells_for_python_planning()
-                | extra_reserved_cells
-            )
-            t_base_open_start = time.perf_counter()
-            base_open_cells = self.base_open_cells_for_edge(candidate_edge_key, record)
-            self._add_candidate_setup_time(
-                "base_open_cells_s",
-                time.perf_counter() - t_base_open_start,
-            )
-            t_open_arg_start = time.perf_counter()
-            if blocked_by_planned:
-                candidate_route_open_cells = base_open_cells - blocked_by_planned
-                opened_cells_arg = sorted(candidate_route_open_cells)
-            else:
-                candidate_route_open_cells = base_open_cells
-                opened_cells_arg = self.base_open_cell_list_for_edge(
-                    candidate_edge_key,
-                    base_open_cells,
-                )
-            self._add_candidate_setup_time(
-                "opened_cells_arg_s",
-                time.perf_counter() - t_open_arg_start,
-            )
-        t_max_bumps_start = time.perf_counter()
-        candidate_max_bumps = self.max_bumps_for_edge(candidate_edge_key, record)
-        self._add_candidate_setup_time(
-            "max_bumps_s",
-            time.perf_counter() - t_max_bumps_start,
-        )
-        attempt_info["planner_called"] = True
-        candidate_best_rr: dict[str, object] | None = None
-        candidate_last_exc: Exception | None = None
-        candidate_used_reserved_overlay = True
-        probe_elapsed_s = 0.0
-        probe = None
-        full_probe_available = False
-        if use_probe:
-            if blocked_by_planned is None:
-                blocked_by_planned = (
-                    self.reserved_meander_cells_for_python_planning()
-                    | extra_reserved_cells
-                )
-            assert blocked_by_planned is not None
-            t_probe_kwargs_start = time.perf_counter()
-            probe_kwargs = dict(
-                requested_extra_length_um=float(requested),
-                box_depths_um=box_depths_um,
-                min_bend_radius_um=None,
-                min_straight_um=min_straight_um,
-                max_bumps=candidate_max_bumps,
-                max_meander_height_um=max_height_um,
-                min_segment_length_um=min_seg_um,
-                endpoint_inset_um=endpoint_inset_um,
-                clearance_radius_cells=self.meander_box_clearance_radius_cells,
-                side_policy="both",
-                opened_cells=opened_cells_arg,
-                planning_mode="fill_box_multi_bump",
-                extra_blocked_cells=list(blocked_by_planned),
-            )
-            self._add_candidate_setup_time(
-                "probe_kwargs_s",
-                time.perf_counter() - t_probe_kwargs_start,
-            )
-            t_probe_start = time.perf_counter()
-            try:
-                if centerline is not None and hasattr(
-                    self.router,
-                    "probe_auto_analytic_meander_for_centerline_depth_sweep",
-                ):
-                    full_probe_available = True
-                    probe = cast(
-                        dict[str, object],
-                        self.router.probe_auto_analytic_meander_for_centerline_depth_sweep(
-                            centerline,
-                            **probe_kwargs,
-                        ),
-                    )
-                elif centerline is None and hasattr(
-                    self.router,
-                    "probe_auto_analytic_meander_for_route_depth_sweep",
-                ):
-                    full_probe_available = True
-                    probe = cast(
-                        dict[str, object],
-                        self.router.probe_auto_analytic_meander_for_route_depth_sweep(
-                            record.route_obj,
-                            **probe_kwargs,
-                        ),
-                    )
-            except TypeError:
-                probe_kwargs.pop("extra_blocked_cells", None)
-                try:
-                    if centerline is not None and hasattr(
-                        self.router,
-                        "probe_auto_analytic_meander_for_centerline_depth_sweep",
-                    ):
-                        full_probe_available = True
-                        probe = cast(
-                            dict[str, object],
-                            self.router.probe_auto_analytic_meander_for_centerline_depth_sweep(
-                                centerline,
-                                **probe_kwargs,
-                            ),
-                        )
-                    elif centerline is None and hasattr(
-                        self.router,
-                        "probe_auto_analytic_meander_for_route_depth_sweep",
-                    ):
-                        full_probe_available = True
-                        probe = cast(
-                            dict[str, object],
-                            self.router.probe_auto_analytic_meander_for_route_depth_sweep(
-                                record.route_obj,
-                                **probe_kwargs,
-                            ),
-                        )
-                except Exception as exc:
-                    candidate_last_exc = exc
-            except Exception as exc:
-                candidate_last_exc = exc
-            probe_elapsed_s = time.perf_counter() - t_probe_start
-            if isinstance(probe, dict):
-                attempt_info["probe"] = probe
-                attempt_info["probe_feasible"] = bool(probe.get("feasible", False))
-                if not bool(probe.get("feasible", False)):
-                    attempt_info["planner_called"] = False
-                    attempt_info["reason"] = "probe found no legal meander interval"
-                    self.candidate_overhead_s += (
-                        time.perf_counter() - t_candidate_start - probe_elapsed_s
-                    )
-                    return (
-                        attempt_info,
-                        None,
-                        record,
-                        True,
-                        candidate_max_bumps,
-                        candidate_route_open_cells,
-                        0.0,
-                        probe_elapsed_s,
-                        None,
-                    )
-            elif full_probe_available and candidate_last_exc is not None:
-                attempt_info["probe_error"] = str(candidate_last_exc)
-                candidate_last_exc = None
-        t_plan_start = time.perf_counter()
-        try:
-            t_planner_kwargs_start = time.perf_counter()
-            if use_registered_open:
-                extra_blocked_arg = extra_reserved_cells
-            else:
-                if blocked_by_planned is None:
-                    blocked_by_planned = (
-                        self.reserved_meander_cells_for_python_planning()
-                        | extra_reserved_cells
-                    )
-                assert blocked_by_planned is not None
-                extra_blocked_arg = blocked_by_planned
-            planner_kwargs = dict(
-                requested_extra_length_um=float(requested),
-                box_depths_um=box_depths_um,
-                min_bend_radius_um=None,
-                min_straight_um=min_straight_um,
-                max_bumps=candidate_max_bumps,
-                max_meander_height_um=max_height_um,
-                min_segment_length_um=min_seg_um,
-                endpoint_inset_um=endpoint_inset_um,
-                clearance_radius_cells=self.meander_box_clearance_radius_cells,
-                side_policy="both",
-                planning_mode="fill_box_multi_bump",
-                extra_blocked_cells=list(extra_blocked_arg),
-            )
-            if not use_registered_open:
-                planner_kwargs["opened_cells"] = opened_cells_arg
-            self._add_candidate_setup_time(
-                "planner_kwargs_s",
-                time.perf_counter() - t_planner_kwargs_start,
-            )
-            t_plan_start = time.perf_counter()
-            try:
-                if use_registered_open:
-                    assert centerline is not None
-                    assert registered_open_index is not None
-                    candidate_best_rr = cast(
-                        dict[str, object],
-                        self.router.plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
-                            centerline,
-                            registered_open_index,
-                            **planner_kwargs,
-                        ),
-                    )
-                elif centerline is not None:
-                    candidate_best_rr = cast(
-                        dict[str, object],
-                        self.router.plan_auto_analytic_meander_for_centerline_depth_sweep(
-                            centerline,
-                            **planner_kwargs,
-                        ),
-                    )
-                else:
-                    candidate_best_rr = cast(
-                        dict[str, object],
-                        self.router.plan_auto_analytic_meander_for_route_depth_sweep(
-                            record.route_obj,
-                            **planner_kwargs,
-                        ),
-                    )
-            except TypeError:
-                candidate_used_reserved_overlay = False
-                planner_kwargs.pop("extra_blocked_cells", None)
-                planner_kwargs["opened_cells"] = opened_cells_arg
-                if centerline is not None:
-                    candidate_best_rr = cast(
-                        dict[str, object],
-                        self.router.plan_auto_analytic_meander_for_centerline_depth_sweep(
-                            centerline,
-                            **planner_kwargs,
-                        ),
-                    )
-                else:
-                    candidate_best_rr = cast(
-                        dict[str, object],
-                        self.router.plan_auto_analytic_meander_for_route_depth_sweep(
-                            record.route_obj,
-                            **planner_kwargs,
-                        ),
-                    )
-        except Exception as exc:
-            candidate_last_exc = exc
-        elapsed_s = time.perf_counter() - t_plan_start
-        self.candidate_overhead_s += (
-            time.perf_counter() - t_candidate_start - elapsed_s - probe_elapsed_s
-        )
-
-        if candidate_best_rr is None:
-            attempt_info["reason"] = (
-                str(candidate_last_exc)
-                if candidate_last_exc is not None
-                else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
-            )
-            return (
-                attempt_info,
-                None,
-                record,
-                candidate_used_reserved_overlay,
-                candidate_max_bumps,
-                candidate_route_open_cells,
-                elapsed_s,
-                probe_elapsed_s,
-                candidate_last_exc,
-            )
-
-        candidate_inserted = _as_float(
-            candidate_best_rr.get("inserted_extra_length_um", 0.0),
-            0.0,
-        )
-        self.add_rust_planner_profile(candidate_best_rr.get("planner_profile"))
-        self.add_rust_wrapper_profile(candidate_best_rr.get("wrapper_profile"))
-        if abs(candidate_inserted - requested) > EXACT_MEANDER_EPS_UM:
-            attempt_info["reason"] = (
-                f"candidate residual {abs(candidate_inserted - requested):.6g} um "
-                f"exceeds hard limit {EXACT_MEANDER_EPS_UM} um"
-            )
-            attempt_info["inserted_extra_length_um"] = candidate_inserted
-            attempt_info["rejected_exact_length_mismatch"] = True
-            return (
-                attempt_info,
-                None,
-                record,
-                candidate_used_reserved_overlay,
-                candidate_max_bumps,
-                candidate_route_open_cells,
-                elapsed_s,
-                probe_elapsed_s,
-                None,
-            )
-
-        selected_grid_rect = candidate_best_rr.get("selected_grid_rect")
-        candidate_selected_grid_rect = _parse_grid_rect(selected_grid_rect)
-        if candidate_selected_grid_rect is None:
-            attempt_info["reason"] = "candidate selected_grid_rect is missing or invalid"
-            return (
-                attempt_info,
-                None,
-                record,
-                candidate_used_reserved_overlay,
-                candidate_max_bumps,
-                candidate_route_open_cells,
-                elapsed_s,
-                probe_elapsed_s,
-                None,
-            )
-        blocked, overlap_count = self._candidate_grid_rect_overlaps_blocked(
-            candidate_selected_grid_rect,
-            extra_blocked_cells=extra_reserved_cells,
-        )
-        if blocked:
-            attempt_info["reason"] = (
-                f"candidate selected_grid_rect overlaps blocked cells ({overlap_count} cells)"
-            )
-            attempt_info["rejected_box_blocked"] = True
-            attempt_info["blocked_overlap_count"] = overlap_count
-            return (
-                attempt_info,
-                None,
-                record,
-                candidate_used_reserved_overlay,
-                candidate_max_bumps,
-                candidate_route_open_cells,
-                elapsed_s,
-                probe_elapsed_s,
-                None,
-            )
-
-        attempt_info["status"] = "planned"
-        attempt_info["reason"] = ""
-        attempt_info["inserted_extra_length_um"] = candidate_inserted
-        candidate_best_rr["rejected_box_blocked"] = False
-        return (
-            attempt_info,
-            candidate_best_rr,
-            record,
-            candidate_used_reserved_overlay,
-            candidate_max_bumps,
-            candidate_route_open_cells,
-            elapsed_s,
-            probe_elapsed_s,
-            None,
-        )
 
     def plan_requirement_candidates_registered(
         self,
@@ -2158,8 +1744,6 @@ def analyze_meander_insertion_for_requirements(
     total_disregarded = 0.0
     planner_calls = 0
     planner_elapsed_s = 0.0
-    probe_calls = 0
-    probe_elapsed_s = 0.0
     bundle_candidate_calls = 0
     bundle_edge_calls = 0
     bundle_planned = 0
@@ -2169,8 +1753,6 @@ def analyze_meander_insertion_for_requirements(
     requirement_batch_edge_calls = 0
     requirement_batch_planned = 0
     requirement_batch_no_candidate = 0
-    fallback_candidate_calls = 0
-    fallback_edge_calls = 0
     candidate_engine_counts: Counter[str] = Counter()
     candidate_profile: dict[str, dict[str, object]] = {}
     min_insertable_extra_um = _minimum_four_bend_extra_length_um(
@@ -2594,8 +2176,6 @@ def analyze_meander_insertion_for_requirements(
             "unmatched_length_um": float(total_unmatched),
             "planner_calls": int(planner_calls),
             "planner_elapsed_s": float(planner_elapsed_s),
-            "probe_calls": int(probe_calls),
-            "probe_elapsed_s": float(probe_elapsed_s),
             "bundle_candidate_calls": int(bundle_candidate_calls),
             "bundle_edge_calls": int(bundle_edge_calls),
             "bundle_planned": int(bundle_planned),
@@ -2605,8 +2185,6 @@ def analyze_meander_insertion_for_requirements(
             "requirement_batch_edge_calls": int(requirement_batch_edge_calls),
             "requirement_batch_planned": int(requirement_batch_planned),
             "requirement_batch_no_candidate": int(requirement_batch_no_candidate),
-            "fallback_candidate_calls": int(fallback_candidate_calls),
-            "fallback_edge_calls": int(fallback_edge_calls),
             "candidate_engine_counts": dict(candidate_engine_counts),
             "setup_profile": context.setup_profile,
             "candidate_setup_profile": context.candidate_setup_profile,

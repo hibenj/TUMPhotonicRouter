@@ -1341,8 +1341,7 @@ def run_routing_flow(
                     "        Meander overhead profile: "
                     f"planner={float(report.get('planner_elapsed_s', 0.0)):.4f}s, "
                     f"candidate_setup={float(report.get('candidate_overhead_s', 0.0)):.4f}s, "
-                    f"commit={float(report.get('commit_elapsed_s', 0.0)):.4f}s, "
-                    f"probe={float(report.get('probe_elapsed_s', 0.0)):.4f}s"
+                    f"commit={float(report.get('commit_elapsed_s', 0.0)):.4f}s"
                 )
                 rust_planner_profile = report.get("rust_planner_profile", {})
                 if isinstance(rust_planner_profile, dict) and rust_planner_profile:
@@ -1399,9 +1398,7 @@ def run_routing_flow(
                     f"bundle_candidates={int(report.get('bundle_candidate_calls', 0))}, "
                     f"bundle_edge_calls={int(report.get('bundle_edge_calls', 0))}, "
                     f"bundle_planned={int(report.get('bundle_planned', 0))}, "
-                    f"bundle_no_candidate={int(report.get('bundle_no_candidate', 0))}, "
-                    f"fallback_candidates={int(report.get('fallback_candidate_calls', 0))}, "
-                    f"fallback_edge_calls={int(report.get('fallback_edge_calls', 0))}"
+                    f"bundle_no_candidate={int(report.get('bundle_no_candidate', 0))}"
                 )
                 candidate_engine_counts = report.get("candidate_engine_counts", {})
                 if isinstance(candidate_engine_counts, dict) and candidate_engine_counts:
