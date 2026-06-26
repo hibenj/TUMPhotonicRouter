@@ -283,7 +283,6 @@ class _MeanderPlannerContext:
     base_open_cell_lists_by_edge: dict[RoutedEdgeKey, list[GridCell]]
     max_bumps_by_edge: dict[RoutedEdgeKey, int]
     centerline_lists_by_edge: dict[RoutedEdgeKey, list[tuple[float, float]]]
-    footprint_prefilter_enabled_by_edge: dict[RoutedEdgeKey, bool]
     base_static_cells: set[GridCell]
     reserved_meander_cells: set[GridCell]
     pending_reserved_meander_rects: list[tuple[int, int, int, int]]
@@ -485,17 +484,6 @@ class _MeanderPlannerContext:
             self.centerline_lists_by_edge[edge_key] = centerline
         return centerline
 
-    def footprint_prefilter_enabled_for_edge(
-        self,
-        edge_key: RoutedEdgeKey,
-        record: RoutedNetRecord,
-    ) -> bool:
-        enabled = self.footprint_prefilter_enabled_by_edge.get(edge_key)
-        if enabled is None:
-            enabled = _record_has_prefilter_geometry(record)
-            self.footprint_prefilter_enabled_by_edge[edge_key] = enabled
-        return enabled
-
     def plan_edge_candidate(
         self,
         *,
@@ -578,44 +566,6 @@ class _MeanderPlannerContext:
         self._add_candidate_setup_time(
             "max_bumps_s",
             time.perf_counter() - t_max_bumps_start,
-        )
-        t_footprint_start = time.perf_counter()
-        if self.footprint_prefilter_enabled_for_edge(
-            candidate_edge_key,
-            record,
-        ) and not _meander_request_fits_footprint(
-            requested=requested,
-            bend_radius_um=self.bend_radius_um,
-            min_straight_um=min_straight_um,
-            max_bumps=candidate_max_bumps,
-            max_height_um=max_height_um,
-            box_depths_um=box_depths_um,
-        ):
-            attempt_info["reason"] = (
-                "requested extra length cannot be represented by the configured "
-                "meander footprint"
-            )
-            attempt_info["planner_called"] = False
-            attempt_info["max_bumps"] = candidate_max_bumps
-            self._add_candidate_setup_time(
-                "footprint_prefilter_s",
-                time.perf_counter() - t_footprint_start,
-            )
-            self.candidate_overhead_s += time.perf_counter() - t_candidate_start
-            return (
-                attempt_info,
-                None,
-                record,
-                True,
-                candidate_max_bumps,
-                candidate_route_open_cells,
-                0.0,
-                0.0,
-                None,
-            )
-        self._add_candidate_setup_time(
-            "footprint_prefilter_s",
-            time.perf_counter() - t_footprint_start,
         )
         attempt_info["planner_called"] = True
         candidate_best_rr: dict[str, object] | None = None
@@ -973,25 +923,6 @@ class _MeanderPlannerContext:
             if centerline is None or registered_index is None:
                 return None
             candidate_max_bumps = self.max_bumps_for_edge(candidate_edge_key, record)
-            if self.footprint_prefilter_enabled_for_edge(
-                candidate_edge_key,
-                record,
-            ) and not _meander_request_fits_footprint(
-                requested=requested,
-                bend_radius_um=self.bend_radius_um,
-                min_straight_um=min_straight_um,
-                max_bumps=candidate_max_bumps,
-                max_height_um=max_height_um,
-                box_depths_um=box_depths_um,
-            ):
-                attempt_info["reason"] = (
-                    "requested extra length cannot be represented by the configured "
-                    "meander footprint"
-                )
-                attempt_info["planner_called"] = False
-                attempt_info["max_bumps"] = candidate_max_bumps
-                edge_attempts.append(attempt_info)
-                return bundle_failure(edge_calls=0)
             attempt_info["planner_called"] = True
             attempt_info["max_bumps"] = candidate_max_bumps
             attempt_info["opened_route_cell_count"] = (
@@ -1166,7 +1097,6 @@ class _MeanderPlannerContext:
             centerlines: list[list[tuple[float, float]]] = []
             registered_indices: list[int] = []
             max_bumps_values: list[int] = []
-            prefiltered = False
             for candidate_edge_key in work_item.candidate.edge_keys:
                 record = self.by_edge.get(candidate_edge_key)
                 attempt_info: dict[str, object] = {
@@ -1180,26 +1110,6 @@ class _MeanderPlannerContext:
                     candidate_edge_key,
                     record,
                 )
-                if self.footprint_prefilter_enabled_for_edge(
-                    candidate_edge_key,
-                    record,
-                ) and not _meander_request_fits_footprint(
-                    requested=work_item.requested,
-                    bend_radius_um=self.bend_radius_um,
-                    min_straight_um=min_straight_um,
-                    max_bumps=edge_max_bumps,
-                    max_height_um=max_height_um,
-                    box_depths_um=box_depths_um,
-                ):
-                    attempt_info["reason"] = (
-                        "requested extra length cannot be represented by the configured "
-                        "meander footprint"
-                    )
-                    attempt_info["planner_called"] = False
-                    attempt_info["max_bumps"] = edge_max_bumps
-                    edge_attempts.append(attempt_info)
-                    prefiltered = True
-                    break
                 attempt_info["planner_called"] = True
                 attempt_info["max_bumps"] = edge_max_bumps
                 attempt_info["opened_route_cell_count"] = (
@@ -1228,8 +1138,6 @@ class _MeanderPlannerContext:
                     0,
                 )
             max_bumps_by_work[work_index] = max_bumps_values
-            if prefiltered:
-                continue
             rust_work_indices.append(work_index)
             if use_registered_geometry_indices:
                 candidate_geometry_indices.append(geometry_indices)
@@ -1609,13 +1517,6 @@ def _inflate_grid_cells(
                 if 0 <= ny < height:
                     inflated.add((nx, ny))
     return inflated
-
-
-def _record_has_prefilter_geometry(record: RoutedNetRecord) -> bool:
-    if len(record.corrected_centerline_um) >= 2:
-        return True
-    waypoints = getattr(record.route_obj, "compressed_waypoints", None) or []
-    return len(waypoints) >= 2
 
 
 def _grid_rect_cells(grid_rect: object) -> set[GridCell]:
@@ -2057,7 +1958,6 @@ def _build_planner_context(
         base_open_cell_lists_by_edge={},
         max_bumps_by_edge=registered_max_bumps_by_edge,
         centerline_lists_by_edge=registered_centerline_lists_by_edge,
-        footprint_prefilter_enabled_by_edge={},
         base_static_cells=base_static_cells,
         reserved_meander_cells=set(),
         pending_reserved_meander_rects=[],
@@ -2140,52 +2040,6 @@ def _meander_search_config_to_debug_dict(
             else "fixed"
         ),
     }
-
-
-def _meander_request_fits_footprint(
-    *,
-    requested: float,
-    bend_radius_um: float,
-    min_straight_um: float,
-    max_bumps: int,
-    max_height_um: float,
-    box_depths_um: Iterable[float],
-) -> bool:
-    requested = float(requested)
-    radius = float(bend_radius_um)
-    min_straight = max(0.0, float(min_straight_um))
-    max_height = max(0.0, float(max_height_um))
-    if (
-        not math.isfinite(requested)
-        or requested <= 0.0
-        or not math.isfinite(radius)
-        or radius <= 0.0
-        or max_bumps <= 0
-        or not math.isfinite(max_height)
-        or max_height <= 0.0
-    ):
-        return False
-    if not math.isfinite(min_straight):
-        return False
-
-    min_height = 2.0 * radius + min_straight
-    eps = 1.0e-9
-    for depth in box_depths_um:
-        depth = min(float(depth), max_height)
-        if not math.isfinite(depth) or depth + eps < min_height:
-            continue
-        max_visual_bumps = (int(max_bumps) + 1) // 2
-        for visual_bumps in range(1, max_visual_bumps + 1):
-            u_turns = 2 * visual_bumps - 1
-            quarter_turns = 4 * visual_bumps
-            arc_length = radius * quarter_turns * (math.pi / 2.0)
-            replaced_axis_length = radius * (4.0 * u_turns + 3.0)
-            fixed_extra = arc_length - replaced_axis_length
-            amplitude = (requested - fixed_extra) / float(u_turns)
-            if amplitude + eps < min_height or amplitude - eps > depth:
-                continue
-            return True
-    return False
 
 
 def _candidates_for_requirement(
