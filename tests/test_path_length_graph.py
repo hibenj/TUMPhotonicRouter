@@ -49,15 +49,24 @@ class _SchematicLike(Protocol):
     placements: dict[str, object]
 
 
-def _build_real_route_obj_for_test(x0: int, y0: int, x1: int, y1: int):
+def _build_real_route_obj_for_test(
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    *,
+    grid_size_um: float = 1.0,
+    bend_radius_cells: int = 4,
+    allow_45_degree_turns: bool = True,
+):
     rust_backend = _load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for M2 candidate-analysis test.")
-    grid = rust_backend.GridSpec(256, 256, 1.0, 0.0, 0.0)
+    grid = rust_backend.GridSpec(256, 256, grid_size_um, 0.0, 0.0)
     primitive = rust_backend.PrimitiveLibraryConfig(
-        grid_size_um=1.0,
-        bend_radius_cells=4,
-        allow_45_degree_turns=True,
+        grid_size_um=grid_size_um,
+        bend_radius_cells=bend_radius_cells,
+        allow_45_degree_turns=allow_45_degree_turns,
     )
     astar = rust_backend.AStarConfig(max_iterations=200_000)
     router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
@@ -1840,6 +1849,7 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
         config=MeanderInsertionConfig(
             enabled=True,
             min_candidate_straight_length_um=2.0,
+            auto_meander_endpoint_inset_um=4.0,
         ),
         realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
         allow_45_degree_turns=True,
@@ -1966,6 +1976,7 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
         config=MeanderInsertionConfig(
             enabled=True,
             min_candidate_straight_length_um=2.0,
+            auto_meander_endpoint_inset_um=4.0,
         ),
         realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
         allow_45_degree_turns=True,
@@ -2032,6 +2043,69 @@ def test_main_meander_report_uses_auto_multi_bump_path():
     assert entry.get("using_legacy_meander_path") is False
     assert entry.get("effective_bend_radius_um") == pytest.approx(4.0)
     assert entry.get("primitive_bend_radius_um") == pytest.approx(4.0)
+
+
+def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="gate0", port="i0"),
+    )
+    route_obj = _build_real_route_obj_for_test(
+        10,
+        60,
+        83,
+        60,
+        bend_radius_cells=7,
+        allow_45_degree_turns=False,
+    )
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=route_obj,
+        total_length_um=73.0,
+    )
+    req = MissingLengthRequirement(edge_key=edge, missing_length_um=60.0)
+
+    _fixed_updated, fixed_report = analyze_meander_insertion_for_requirements(
+        [record],
+        [req],
+        config=MeanderInsertionConfig(
+            enabled=True,
+            max_meander_height_um=40.0,
+            auto_meander_endpoint_inset_um=7.0,
+        ),
+        realization_grid_spec=(256, 256, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=False,
+        bend_radius_cells=7,
+    )
+    fixed_results = cast(list[dict[str, object]], fixed_report["results"])
+    assert fixed_results[0]["status"] == "no_candidate"
+    assert fixed_results[0]["endpoint_inset_candidates_um"] == [7.0]
+
+    updated, report = analyze_meander_insertion_for_requirements(
+        [record],
+        [req],
+        config=MeanderInsertionConfig(
+            enabled=True,
+            max_meander_height_um=40.0,
+            auto_meander_endpoint_inset_um=None,
+        ),
+        realization_grid_spec=(256, 256, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=False,
+        bend_radius_cells=7,
+    )
+
+    results = cast(list[dict[str, object]], report["results"])
+    entry = results[0]
+    assert entry["status"] == "planned"
+    assert entry["inserted_extra_length_um"] == pytest.approx(60.0)
+    assert cast(float, entry["endpoint_inset_um"]) < 7.0
+    assert entry["endpoint_inset_candidates_um"][:3] == [7.0, 5.25, 3.5]
+    assert entry["visual_bumps"] == 2
+    assert entry["quarter_turns"] == 8
+    assert updated[0].meander_auto_plan is not None
 
 
 def test_registered_meander_route_cells_match_legacy_opened_cells():

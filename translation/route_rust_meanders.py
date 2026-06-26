@@ -7,7 +7,7 @@ import math
 import time
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast
 
 from photonic_router.path_length_graph import (
@@ -221,6 +221,39 @@ class _MeanderSearchConfig:
     max_height_um: float
     box_depths_um: list[float]
     endpoint_inset_um: float
+    endpoint_insets_um: list[float]
+
+
+def _with_endpoint_inset(
+    search_config: _MeanderSearchConfig,
+    endpoint_inset_um: float,
+) -> _MeanderSearchConfig:
+    return replace(search_config, endpoint_inset_um=float(endpoint_inset_um))
+
+
+def _clone_work_items_for_retry(
+    work_items: list[_CandidateWorkItem],
+) -> list[_CandidateWorkItem]:
+    cloned: list[_CandidateWorkItem] = []
+    for work_item in work_items:
+        edge_attempts: list[dict[str, object]] = []
+        info = {
+            key: value
+            for key, value in work_item.info.items()
+            if key != "edge_attempts"
+        }
+        info["edge_attempts"] = edge_attempts
+        cloned.append(
+            _CandidateWorkItem(
+                candidate=work_item.candidate,
+                affected_edges=work_item.affected_edges,
+                requested=work_item.requested,
+                info=info,
+                edge_attempts=edge_attempts,
+                already_satisfied=work_item.already_satisfied,
+            )
+        )
+    return cloned
 
 
 @dataclass
@@ -2044,17 +2077,30 @@ def _meander_search_config(
         box_depths_um.insert(0, max_height_um)
     if not box_depths_um:
         box_depths_um = [max_height_um]
-    endpoint_inset_um = (
-        max(bend_radius_um, min_segment_um)
-        if config.auto_meander_endpoint_inset_um is None
-        else max(0.0, float(config.auto_meander_endpoint_inset_um))
-    )
+    if config.auto_meander_endpoint_inset_um is None:
+        base_endpoint_inset_um = max(bend_radius_um, min_segment_um)
+        raw_endpoint_insets = [
+            base_endpoint_inset_um,
+            0.75 * bend_radius_um,
+            0.5 * bend_radius_um,
+            0.25 * bend_radius_um,
+            0.0,
+        ]
+    else:
+        raw_endpoint_insets = [max(0.0, float(config.auto_meander_endpoint_inset_um))]
+    endpoint_insets_um: list[float] = []
+    for inset in raw_endpoint_insets:
+        inset = max(0.0, float(inset))
+        if all(abs(inset - existing) > 1.0e-9 for existing in endpoint_insets_um):
+            endpoint_insets_um.append(inset)
+    endpoint_inset_um = endpoint_insets_um[0] if endpoint_insets_um else 0.0
     return _MeanderSearchConfig(
         min_straight_um=min_straight_um,
         min_segment_um=min_segment_um,
         max_height_um=max_height_um,
         box_depths_um=box_depths_um,
         endpoint_inset_um=endpoint_inset_um,
+        endpoint_insets_um=endpoint_insets_um,
     )
 
 
@@ -2656,6 +2702,7 @@ def analyze_meander_insertion_for_requirements(
         max_bumps = 1
         current_route_open_cell_count = 0
         entry_candidate_engine = "none"
+        selected_endpoint_inset_um = search_config.endpoint_inset_um
 
         work_items: list[_CandidateWorkItem] = []
         for candidate in _candidates_for_requirement(
@@ -2723,14 +2770,25 @@ def analyze_meander_insertion_for_requirements(
                 )
             )
 
-        requirement_attempt = context.plan_requirement_candidates_registered(
-            work_items=work_items,
-            box_depths_um=search_config.box_depths_um,
-            min_straight_um=search_config.min_straight_um,
-            min_seg_um=search_config.min_segment_um,
-            max_height_um=search_config.max_height_um,
-            endpoint_inset_um=search_config.endpoint_inset_um,
-        )
+        requirement_attempt = None
+        attempted_endpoint_insets_um: list[float] = []
+        for endpoint_inset_um in search_config.endpoint_insets_um:
+            attempted_endpoint_insets_um.append(float(endpoint_inset_um))
+            requirement_attempt = context.plan_requirement_candidates_registered(
+                work_items=work_items,
+                box_depths_um=search_config.box_depths_um,
+                min_straight_um=search_config.min_straight_um,
+                min_seg_um=search_config.min_segment_um,
+                max_height_um=search_config.max_height_um,
+                endpoint_inset_um=float(endpoint_inset_um),
+            )
+            if requirement_attempt is None:
+                break
+            selected_work_index_probe = requirement_attempt[0]
+            selected_plans_probe = requirement_attempt[1]
+            if selected_work_index_probe is not None and selected_plans_probe:
+                selected_endpoint_inset_um = float(endpoint_inset_um)
+                break
         if requirement_attempt is not None:
             entry_candidate_engine = (
                 context.registered_requirement_candidate_engine()
@@ -2821,29 +2879,63 @@ def analyze_meander_insertion_for_requirements(
         else:
             entry_candidate_engine = "python_fallback"
             candidate_engine_counts[entry_candidate_engine] += 1
-            legacy_attempt = _plan_requirement_with_legacy_candidate_loop(
-                context=context,
-                work_items=work_items,
-                search_config=search_config,
-                candidate_profile=candidate_profile,
-            )
+            legacy_attempt: _LegacyRequirementAttempt | None = None
+            for endpoint_inset_um in search_config.endpoint_insets_um:
+                inset = float(endpoint_inset_um)
+                if all(
+                    abs(inset - attempted_inset) > 1.0e-9
+                    for attempted_inset in attempted_endpoint_insets_um
+                ):
+                    attempted_endpoint_insets_um.append(inset)
+                legacy_attempt = _plan_requirement_with_legacy_candidate_loop(
+                    context=context,
+                    work_items=_clone_work_items_for_retry(work_items),
+                    search_config=_with_endpoint_inset(search_config, inset),
+                    candidate_profile=candidate_profile,
+                )
+                planning_elapsed_for_entry_s += legacy_attempt.planning_elapsed_s
+                planner_elapsed_s += legacy_attempt.planner_elapsed_s
+                planner_calls += legacy_attempt.planner_calls
+                probe_calls += legacy_attempt.probe_calls
+                probe_elapsed_s += legacy_attempt.probe_elapsed_s
+                bundle_candidate_calls += legacy_attempt.bundle_candidate_calls
+                bundle_edge_calls += legacy_attempt.bundle_edge_calls
+                bundle_planned += legacy_attempt.bundle_planned
+                bundle_no_candidate += legacy_attempt.bundle_no_candidate
+                fallback_candidate_calls += legacy_attempt.fallback_candidate_calls
+                fallback_edge_calls += legacy_attempt.fallback_edge_calls
+                selected_endpoint_inset_um = inset
+                if legacy_attempt.selected_candidate is not None and legacy_attempt.selected_plans:
+                    break
+            if legacy_attempt is None:
+                legacy_attempt = _LegacyRequirementAttempt(
+                    selected_candidate=None,
+                    selected_candidate_requested=0.0,
+                    selected_affected_edges=(),
+                    selected_plans=[],
+                    candidate_attempts=[],
+                    attempted_edges=[],
+                    planning_elapsed_s=0.0,
+                    planner_elapsed_s=0.0,
+                    planner_calls=0,
+                    probe_calls=0,
+                    probe_elapsed_s=0.0,
+                    bundle_candidate_calls=0,
+                    bundle_edge_calls=0,
+                    bundle_planned=0,
+                    bundle_no_candidate=0,
+                    fallback_candidate_calls=0,
+                    fallback_edge_calls=0,
+                    last_exc=None,
+                    max_bumps=1,
+                    opened_route_cell_count=0,
+                )
             selected_candidate = legacy_attempt.selected_candidate
             selected_candidate_requested = legacy_attempt.selected_candidate_requested
             selected_affected_edges = legacy_attempt.selected_affected_edges
             selected_plans = legacy_attempt.selected_plans
             candidate_attempts = legacy_attempt.candidate_attempts
             attempted_edges = legacy_attempt.attempted_edges
-            planning_elapsed_for_entry_s += legacy_attempt.planning_elapsed_s
-            planner_elapsed_s += legacy_attempt.planner_elapsed_s
-            planner_calls += legacy_attempt.planner_calls
-            probe_calls += legacy_attempt.probe_calls
-            probe_elapsed_s += legacy_attempt.probe_elapsed_s
-            bundle_candidate_calls += legacy_attempt.bundle_candidate_calls
-            bundle_edge_calls += legacy_attempt.bundle_edge_calls
-            bundle_planned += legacy_attempt.bundle_planned
-            bundle_no_candidate += legacy_attempt.bundle_no_candidate
-            fallback_candidate_calls += legacy_attempt.fallback_candidate_calls
-            fallback_edge_calls += legacy_attempt.fallback_edge_calls
             last_exc = legacy_attempt.last_exc
             max_bumps = legacy_attempt.max_bumps
             current_route_open_cell_count = legacy_attempt.opened_route_cell_count
@@ -2854,6 +2946,7 @@ def analyze_meander_insertion_for_requirements(
         entry["candidate_engine"] = entry_candidate_engine
         entry["max_bumps"] = max_bumps
         entry["opened_route_cell_count"] = current_route_open_cell_count
+        entry["endpoint_inset_candidates_um"] = attempted_endpoint_insets_um
 
         if selected_candidate is None or not selected_plans:
             entry["status"] = "no_candidate"
@@ -2902,7 +2995,7 @@ def analyze_meander_insertion_for_requirements(
         entry["rejected_exact_length_mismatch"] = representative_rr.get("rejected_exact_length_mismatch")
         entry["rejected_too_short"] = representative_rr.get("rejected_too_short")
         entry["selected_interval_length_um"] = representative_rr.get("selected_interval_length_um")
-        entry["endpoint_inset_um"] = search_config.endpoint_inset_um
+        entry["endpoint_inset_um"] = selected_endpoint_inset_um
         entry["requested_probe_length_um"] = requested
         entry["used_reserved_overlay"] = all(plan[3] for plan in selected_plans)
         entry["selected_candidate_reason"] = selected_candidate.reason
@@ -2943,7 +3036,7 @@ def analyze_meander_insertion_for_requirements(
                 max_bumps=candidate_max_bumps,
                 max_height_um=search_config.max_height_um,
                 min_seg_um=search_config.min_segment_um,
-                endpoint_inset_um=search_config.endpoint_inset_um,
+                endpoint_inset_um=selected_endpoint_inset_um,
             )
         results.append(entry)
         for affected_edge in selected_affected_edges:
