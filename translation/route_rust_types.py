@@ -23,6 +23,92 @@ PRIMITIVE_TRANSITION_CLASSES = (
 DEFAULT_BEND_RADIUS_UM = 10.0
 
 
+@dataclass(frozen=True)
+class OpticalRouteClearancePolicy:
+    """Grid radii used for optical routing and PLM occupancy.
+
+    Static obstacles are already rasterized with their own physical clearance.
+    Dynamic routes need two radii: one to expand existing dynamic obstacles
+    during centerline search, and one to reserve the routed waveguide keepout
+    for later routes. PLM uses the committed keepout as occupied space, while
+    its candidate box clearance stays explicit so it can be changed separately.
+    """
+
+    route_width_um: float
+    grid_size_um: float
+    route_clearance_um: float
+    waveguide_core_radius_cells: int
+    dynamic_obstacle_search_expansion_radius_cells: int
+    dynamic_route_commit_keepout_radius_cells: int
+    dynamic_route_core_radius_cells: int
+    plm_registered_route_keepout_radius_cells: int
+    plm_candidate_box_clearance_radius_cells: int
+
+    @classmethod
+    def from_dimensions(
+        cls,
+        *,
+        route_width_um: float,
+        grid_size_um: float,
+        route_clearance_um: float,
+        plm_candidate_box_clearance_radius_cells: int = 0,
+    ) -> "OpticalRouteClearancePolicy":
+        route_width_um = float(route_width_um)
+        grid_size_um = float(grid_size_um)
+        route_clearance_um = max(0.0, float(route_clearance_um))
+        if not math.isfinite(route_width_um) or route_width_um <= 0.0:
+            raise ValueError("route_width_um must be finite and > 0")
+        if not math.isfinite(grid_size_um) or grid_size_um <= 0.0:
+            raise ValueError("grid_size_um must be finite and > 0")
+        if not math.isfinite(route_clearance_um):
+            raise ValueError("route_clearance_um must be finite")
+
+        core_radius_cells = max(
+            0,
+            math.ceil((route_width_um / 2.0) / grid_size_um),
+        )
+        keepout_radius_cells = max(
+            core_radius_cells,
+            math.ceil(((route_width_um / 2.0) + route_clearance_um) / grid_size_um),
+        )
+        box_clearance_radius_cells = max(
+            0,
+            int(plm_candidate_box_clearance_radius_cells),
+        )
+        return cls(
+            route_width_um=route_width_um,
+            grid_size_um=grid_size_um,
+            route_clearance_um=route_clearance_um,
+            waveguide_core_radius_cells=core_radius_cells,
+            dynamic_obstacle_search_expansion_radius_cells=core_radius_cells,
+            dynamic_route_commit_keepout_radius_cells=keepout_radius_cells,
+            dynamic_route_core_radius_cells=0,
+            plm_registered_route_keepout_radius_cells=keepout_radius_cells,
+            plm_candidate_box_clearance_radius_cells=box_clearance_radius_cells,
+        )
+
+    def to_debug_dict(self) -> dict[str, float | int]:
+        return {
+            "route_width_um": self.route_width_um,
+            "grid_size_um": self.grid_size_um,
+            "route_clearance_um": self.route_clearance_um,
+            "waveguide_core_radius_cells": self.waveguide_core_radius_cells,
+            "dynamic_obstacle_search_expansion_radius_cells": (
+                self.dynamic_obstacle_search_expansion_radius_cells
+            ),
+            "dynamic_route_commit_keepout_radius_cells": (
+                self.dynamic_route_commit_keepout_radius_cells
+            ),
+            "dynamic_route_core_radius_cells": self.dynamic_route_core_radius_cells,
+            "plm_registered_route_keepout_radius_cells": (
+                self.plm_registered_route_keepout_radius_cells
+            ),
+            "plm_candidate_box_clearance_radius_cells": (
+                self.plm_candidate_box_clearance_radius_cells
+            ),
+        }
+
+
 def bend_radius_cells_from_um(
     bend_radius_um: float | None,
     *,
@@ -101,6 +187,7 @@ class RustRouteDebugArtifacts:
     route_attempt_records: list["RouteAttemptRecord"] = field(default_factory=list)
     static_blocked_cells: tuple[tuple[int, int], ...] = ()
     static_obstacle_count: int = 0
+    static_port_open_count: int = 0
     port_alignment_diagnostics: list[dict[str, object]] = field(default_factory=list)
     realization_grid_spec: tuple[int, int, float, float, float] | None = None
     realization_allow_45_degree_turns: bool = True

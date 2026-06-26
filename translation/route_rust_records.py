@@ -341,6 +341,17 @@ def static_obstacle_count_from_map(obstacle_map: object) -> int:
     return int(static_obstacle_count)
 
 
+def static_port_open_count_from_map(obstacle_map: object) -> int:
+    port_open_cells = getattr(obstacle_map, "port_open_cells", ())
+    port_open_count = len(port_open_cells)
+    build_stats = getattr(obstacle_map, "build_stats", None)
+    if isinstance(build_stats, dict):
+        raw_count = build_stats.get("port_open_cell_count")
+        if isinstance(raw_count, int):
+            port_open_count = raw_count
+    return int(port_open_count)
+
+
 def build_route_debug_artifacts(
     *,
     obstacle_svg: Path | None,
@@ -366,6 +377,7 @@ def build_route_debug_artifacts(
         # block post-route meander box checks.
         static_blocked_cells=tuple(sorted(set(getattr(obstacle_map, "blocked_cells", ())))),
         static_obstacle_count=static_obstacle_count_from_map(obstacle_map),
+        static_port_open_count=static_port_open_count_from_map(obstacle_map),
         port_alignment_diagnostics=build_port_alignment_diagnostics(
             routed_net_records,
             realization_grid_spec=realization_grid_spec,

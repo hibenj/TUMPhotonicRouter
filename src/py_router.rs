@@ -12,6 +12,7 @@ use crate::astar::{
 };
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
+    cell_count_in_grid_rect as cell_count_in_grid_rect_rs,
     cells_in_grid_rect as cells_in_grid_rect_rs, centerline_length_um as centerline_length_um_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
     generate_waveguide_polygon as generate_waveguide_polygon_rs,
@@ -474,6 +475,7 @@ pub struct PyPhotonicRouter {
     meander_registered_open_indices: RefCell<Vec<SparseCellIndex>>,
     meander_registered_geometries: RefCell<Vec<RegisteredMeanderGeometry>>,
     meander_registered_reserved_cells: RefCell<FxHashSet<CellKey>>,
+    meander_registered_reserved_index: RefCell<Option<SparseCellIndex>>,
     last_meander_registration_profile: RefCell<Option<MeanderRegistrationProfile>>,
 }
 
@@ -810,6 +812,7 @@ struct MeanderPlanningProfileTotals {
     free_interval_s: f64,
     box_check_s: f64,
     analytic_plan_s: f64,
+    replacement_check_s: f64,
     depth_count: usize,
     run_side_checks: usize,
     box_checks: usize,
@@ -825,6 +828,7 @@ impl MeanderPlanningProfileTotals {
         self.free_interval_s += profile.free_interval_s;
         self.box_check_s += profile.box_check_s;
         self.analytic_plan_s += profile.analytic_plan_s;
+        self.replacement_check_s += profile.replacement_check_s;
         self.depth_count += profile.depth_count;
         self.run_side_checks += profile.run_side_checks;
         self.box_checks += profile.box_checks;
@@ -840,6 +844,7 @@ impl MeanderPlanningProfileTotals {
         profile.set_item("free_interval_s", self.free_interval_s)?;
         profile.set_item("box_check_s", self.box_check_s)?;
         profile.set_item("analytic_plan_s", self.analytic_plan_s)?;
+        profile.set_item("replacement_check_s", self.replacement_check_s)?;
         profile.set_item("depth_count", self.depth_count)?;
         profile.set_item("run_side_checks", self.run_side_checks)?;
         profile.set_item("box_checks", self.box_checks)?;
@@ -853,8 +858,6 @@ impl MeanderPlanningProfileTotals {
 #[derive(Default)]
 struct MeanderWrapperProfileTotals {
     reserved_snapshot_s: f64,
-    extra_blocked_base_clone_s: f64,
-    extra_blocked_candidate_extend_s: f64,
     planner_call_s: f64,
     selected_rect_cells_s: f64,
     candidate_reserved_update_s: f64,
@@ -871,8 +874,6 @@ struct MeanderWrapperProfileTotals {
 impl MeanderWrapperProfileTotals {
     fn add(&mut self, other: &MeanderWrapperProfileTotals) {
         self.reserved_snapshot_s += other.reserved_snapshot_s;
-        self.extra_blocked_base_clone_s += other.extra_blocked_base_clone_s;
-        self.extra_blocked_candidate_extend_s += other.extra_blocked_candidate_extend_s;
         self.planner_call_s += other.planner_call_s;
         self.selected_rect_cells_s += other.selected_rect_cells_s;
         self.candidate_reserved_update_s += other.candidate_reserved_update_s;
@@ -889,14 +890,6 @@ impl MeanderWrapperProfileTotals {
     fn set_item(&self, dict: &Bound<'_, PyDict>, key: &str) -> PyResult<()> {
         let profile = PyDict::new_bound(dict.py());
         profile.set_item("reserved_snapshot_s", self.reserved_snapshot_s)?;
-        profile.set_item(
-            "extra_blocked_base_clone_s",
-            self.extra_blocked_base_clone_s,
-        )?;
-        profile.set_item(
-            "extra_blocked_candidate_extend_s",
-            self.extra_blocked_candidate_extend_s,
-        )?;
         profile.set_item("planner_call_s", self.planner_call_s)?;
         profile.set_item("selected_rect_cells_s", self.selected_rect_cells_s)?;
         profile.set_item(
@@ -933,6 +926,7 @@ fn auto_meander_planning_profile_to_py_object(
     d.set_item("free_interval_s", profile.free_interval_s)?;
     d.set_item("box_check_s", profile.box_check_s)?;
     d.set_item("analytic_plan_s", profile.analytic_plan_s)?;
+    d.set_item("replacement_check_s", profile.replacement_check_s)?;
     d.set_item("depth_count", profile.depth_count)?;
     d.set_item("run_side_checks", profile.run_side_checks)?;
     d.set_item("box_checks", profile.box_checks)?;
@@ -1163,6 +1157,7 @@ impl PyPhotonicRouter {
             meander_registered_open_indices: RefCell::new(Vec::new()),
             meander_registered_geometries: RefCell::new(Vec::new()),
             meander_registered_reserved_cells: RefCell::new(FxHashSet::default()),
+            meander_registered_reserved_index: RefCell::new(None),
             last_meander_registration_profile: RefCell::new(None),
         }
     }
@@ -1176,6 +1171,21 @@ impl PyPhotonicRouter {
             *cached = Some(DenseOccupancyPrefix::from_obstacle_map(
                 &self.obstacle_map,
                 None,
+            ));
+        }
+    }
+
+    fn invalidate_meander_registered_reserved_index(&self) {
+        self.meander_registered_reserved_index.borrow_mut().take();
+    }
+
+    fn ensure_meander_registered_reserved_index(&self) {
+        let mut cached = self.meander_registered_reserved_index.borrow_mut();
+        if cached.is_none() {
+            *cached = Some(SparseCellIndex::from_cells(
+                self.grid.width as i32,
+                self.grid.height as i32,
+                self.meander_registered_reserved_cells.borrow().iter().copied(),
             ));
         }
     }
@@ -1195,6 +1205,7 @@ impl PyPhotonicRouter {
         self.meander_registered_open_indices.borrow_mut().clear();
         self.meander_registered_geometries.borrow_mut().clear();
         self.meander_registered_reserved_cells.borrow_mut().clear();
+        self.invalidate_meander_registered_reserved_index();
     }
     fn set_static_cells(&mut self, cells: Vec<(i32, i32)>) {
         self.clear_static_cells();
@@ -1207,12 +1218,20 @@ impl PyPhotonicRouter {
     }
     fn clear_registered_meander_reserved_cells(&self) {
         self.meander_registered_reserved_cells.borrow_mut().clear();
+        *self.meander_registered_reserved_index.borrow_mut() =
+            Some(SparseCellIndex::empty(self.grid.height as i32));
     }
     fn add_registered_meander_reserved_cells(&self, cells: Vec<(i32, i32)>) -> usize {
         let mut reserved = self.meander_registered_reserved_cells.borrow_mut();
         let before = reserved.len();
-        reserved.extend(cells.iter().map(|(x, y)| pack_xy(*x, *y)));
-        reserved.len().saturating_sub(before)
+        let packed_cells: Vec<CellKey> = cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
+        reserved.extend(packed_cells.iter().copied());
+        let added = reserved.len().saturating_sub(before);
+        drop(reserved);
+        if let Some(index) = self.meander_registered_reserved_index.borrow_mut().as_mut() {
+            index.insert_cells(self.grid.width as i32, packed_cells);
+        }
+        added
     }
     fn add_registered_meander_reserved_grid_rect(
         &self,
@@ -1233,7 +1252,18 @@ impl PyPhotonicRouter {
                 reserved.insert(pack_xy(x, y));
             }
         }
-        Ok(reserved.len().saturating_sub(before))
+        let added = reserved.len().saturating_sub(before);
+        drop(reserved);
+        if let Some(index) = self.meander_registered_reserved_index.borrow_mut().as_mut() {
+            index.insert_rect(
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+                self.grid.width as i32,
+            );
+        }
+        Ok(added)
     }
     fn registered_meander_open_cell_count(&self, index: usize) -> PyResult<usize> {
         self.meander_registered_open_cells
@@ -1330,6 +1360,7 @@ impl PyPhotonicRouter {
         };
         let reset_start = Instant::now();
         self.meander_registered_reserved_cells.borrow_mut().clear();
+        self.invalidate_meander_registered_reserved_index();
         profile.reset_s += reset_start.elapsed().as_secs_f64();
         let base_static_pack_start = Instant::now();
         let base_static_keys = pack_cells(&base_static_cells);
@@ -1409,6 +1440,7 @@ impl PyPhotonicRouter {
         self.meander_registered_open_indices.borrow_mut().clear();
         self.meander_registered_geometries.borrow_mut().clear();
         self.meander_registered_reserved_cells.borrow_mut().clear();
+        self.invalidate_meander_registered_reserved_index();
         if !base_static_cells.is_empty() {
             let base_static_add_start = Instant::now();
             self.obstacle_map.add_static_cells(&base_static_cells);
@@ -1488,6 +1520,7 @@ impl PyPhotonicRouter {
         self.meander_registered_open_indices.borrow_mut().clear();
         self.meander_registered_geometries.borrow_mut().clear();
         self.meander_registered_reserved_cells.borrow_mut().clear();
+        self.invalidate_meander_registered_reserved_index();
         profile.reset_s += reset_start.elapsed().as_secs_f64();
 
         let (route_cell_sets, route_cell_refcounts, unique_route_cells) =
@@ -2621,6 +2654,8 @@ impl PyPhotonicRouter {
             opened_ref,
             None,
             extra_blocked_ref,
+            None,
+            None,
             &cfg,
             &box_depths_um,
         )
@@ -2850,6 +2885,8 @@ impl PyPhotonicRouter {
             opened_ref,
             None,
             extra_blocked_ref,
+            None,
+            None,
             &cfg,
             &box_depths_um,
         )
@@ -2962,15 +2999,16 @@ impl PyPhotonicRouter {
         let base_prefix = cached
             .as_ref()
             .expect("meander base prefix should be initialized");
-        let mut extra_blocked_owned = self.meander_registered_reserved_cells.borrow().clone();
-        if let Some(cells) = extra_blocked_cells.as_ref() {
-            extra_blocked_owned.extend(cells.iter().map(|(x, y)| pack_xy(*x, *y)));
-        }
-        let extra_blocked_ref: Option<&FxHashSet<CellKey>> = if extra_blocked_owned.is_empty() {
-            None
-        } else {
-            Some(&extra_blocked_owned)
-        };
+        self.ensure_meander_registered_reserved_index();
+        let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
+        let extra_blocked_owned;
+        let extra_blocked_ref: Option<&FxHashSet<CellKey>> =
+            if let Some(cells) = extra_blocked_cells.as_ref() {
+                extra_blocked_owned = pack_cells(cells);
+                Some(&extra_blocked_owned)
+            } else {
+                None
+            };
         let plan = plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
             &centerline,
             &grid,
@@ -2978,6 +3016,8 @@ impl PyPhotonicRouter {
             Some(opened_ref),
             Some(opened_index_ref),
             extra_blocked_ref,
+            reserved_index_borrow.as_ref(),
+            None,
             &cfg,
             &box_depths_um,
         )
@@ -3082,10 +3122,12 @@ impl PyPhotonicRouter {
             .expect("meander base prefix should be initialized");
         let registered_open_cells = self.meander_registered_open_cells.borrow();
         let registered_open_indices = self.meander_registered_open_indices.borrow();
-        let mut candidate_reserved_cells = FxHashSet::default();
+        let mut candidate_reserved_index = SparseCellIndex::empty(self.grid.height as i32);
+        let mut candidate_reserved_has_cells = false;
         let mut wrapper_profile = MeanderWrapperProfileTotals::default();
         let reserved_snapshot_start = Instant::now();
-        let base_reserved_cells = self.meander_registered_reserved_cells.borrow().clone();
+        self.ensure_meander_registered_reserved_index();
+        let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
         wrapper_profile.reserved_snapshot_s += reserved_snapshot_start.elapsed().as_secs_f64();
         let plans = PyList::empty_bound(py);
         let mut total_candidate_runs = 0usize;
@@ -3114,18 +3156,8 @@ impl PyPhotonicRouter {
                         PyValueError::new_err("registered meander route index is out of range")
                     })?;
             wrapper_profile.extra_blocked_prepare_calls += 1;
-            let base_clone_start = Instant::now();
-            let mut extra_blocked_owned = base_reserved_cells.clone();
-            wrapper_profile.extra_blocked_base_clone_s += base_clone_start.elapsed().as_secs_f64();
-            let candidate_extend_start = Instant::now();
-            extra_blocked_owned.extend(candidate_reserved_cells.iter().copied());
-            wrapper_profile.extra_blocked_candidate_extend_s +=
-                candidate_extend_start.elapsed().as_secs_f64();
-            let extra_blocked_ref = if extra_blocked_owned.is_empty() {
-                None
-            } else {
-                Some(&extra_blocked_owned)
-            };
+            let candidate_reserved_index_ref = candidate_reserved_has_cells
+                .then_some(&candidate_reserved_index);
             let cfg = AutoMeanderConfig {
                 requested_extra_length_um,
                 min_bend_radius_um: effective_radius_um,
@@ -3146,7 +3178,9 @@ impl PyPhotonicRouter {
                 base_prefix,
                 Some(opened_ref),
                 Some(opened_index_ref),
-                extra_blocked_ref,
+                None,
+                reserved_index_borrow.as_ref(),
+                candidate_reserved_index_ref,
                 &cfg,
                 &box_depths_um,
             ) {
@@ -3183,12 +3217,18 @@ impl PyPhotonicRouter {
             total_rejected_exact_length_mismatch += plan.rejected_exact_length_mismatch;
             total_rejected_too_short += plan.rejected_too_short;
             let selected_rect_start = Instant::now();
-            let selected_rect_cells = cells_in_grid_rect_rs(plan.selected_grid_rect);
+            let selected_rect_cell_count = cell_count_in_grid_rect_rs(plan.selected_grid_rect);
             wrapper_profile.selected_rect_cells_s += selected_rect_start.elapsed().as_secs_f64();
-            wrapper_profile.selected_rect_cell_count += selected_rect_cells.len();
+            wrapper_profile.selected_rect_cell_count += selected_rect_cell_count;
             let candidate_reserved_update_start = Instant::now();
-            candidate_reserved_cells
-                .extend(selected_rect_cells.into_iter().map(|(x, y)| pack_xy(x, y)));
+            candidate_reserved_index.insert_rect(
+                plan.selected_grid_rect.min_x,
+                plan.selected_grid_rect.max_x,
+                plan.selected_grid_rect.min_y,
+                plan.selected_grid_rect.max_y,
+                self.grid.width as i32,
+            );
+            candidate_reserved_has_cells = true;
             wrapper_profile.candidate_reserved_update_s +=
                 candidate_reserved_update_start.elapsed().as_secs_f64();
             let py_plan_conversion_start = Instant::now();
@@ -3341,7 +3381,8 @@ impl PyPhotonicRouter {
         let registered_open_indices = self.meander_registered_open_indices.borrow();
         let mut call_wrapper_profile = MeanderWrapperProfileTotals::default();
         let reserved_snapshot_start = Instant::now();
-        let base_reserved_cells = self.meander_registered_reserved_cells.borrow().clone();
+        self.ensure_meander_registered_reserved_index();
+        let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
         call_wrapper_profile.reserved_snapshot_s += reserved_snapshot_start.elapsed().as_secs_f64();
         let candidate_results = PyList::empty_bound(py);
         let mut selected_plans: Option<PyObject> = None;
@@ -3354,7 +3395,8 @@ impl PyPhotonicRouter {
             let max_bumps_by_edge = &candidate_max_bumps_by_edge[candidate_index];
             let requested_extra_length_um = candidate_requested_extra_lengths_um[candidate_index];
             let plans = PyList::empty_bound(py);
-            let mut candidate_reserved_cells = FxHashSet::default();
+            let mut candidate_reserved_index = SparseCellIndex::empty(self.grid.height as i32);
+            let mut candidate_reserved_has_cells = false;
             let mut total_candidate_runs = 0usize;
             let mut total_candidate_intervals = 0usize;
             let mut total_rejected_box_blocked = 0usize;
@@ -3384,19 +3426,8 @@ impl PyPhotonicRouter {
                             PyValueError::new_err("registered meander route index is out of range")
                         })?;
                 candidate_wrapper_profile.extra_blocked_prepare_calls += 1;
-                let base_clone_start = Instant::now();
-                let mut extra_blocked_owned = base_reserved_cells.clone();
-                candidate_wrapper_profile.extra_blocked_base_clone_s +=
-                    base_clone_start.elapsed().as_secs_f64();
-                let candidate_extend_start = Instant::now();
-                extra_blocked_owned.extend(candidate_reserved_cells.iter().copied());
-                candidate_wrapper_profile.extra_blocked_candidate_extend_s +=
-                    candidate_extend_start.elapsed().as_secs_f64();
-                let extra_blocked_ref = if extra_blocked_owned.is_empty() {
-                    None
-                } else {
-                    Some(&extra_blocked_owned)
-                };
+                let candidate_reserved_index_ref = candidate_reserved_has_cells
+                    .then_some(&candidate_reserved_index);
                 let cfg = AutoMeanderConfig {
                     requested_extra_length_um,
                     min_bend_radius_um: effective_radius_um,
@@ -3418,7 +3449,9 @@ impl PyPhotonicRouter {
                         base_prefix,
                         Some(opened_ref),
                         Some(opened_index_ref),
-                        extra_blocked_ref,
+                        None,
+                        reserved_index_borrow.as_ref(),
+                        candidate_reserved_index_ref,
                         &cfg,
                         &box_depths_um,
                     ) {
@@ -3444,13 +3477,19 @@ impl PyPhotonicRouter {
                 total_rejected_exact_length_mismatch += plan.rejected_exact_length_mismatch;
                 total_rejected_too_short += plan.rejected_too_short;
                 let selected_rect_start = Instant::now();
-                let selected_rect_cells = cells_in_grid_rect_rs(plan.selected_grid_rect);
+                let selected_rect_cell_count = cell_count_in_grid_rect_rs(plan.selected_grid_rect);
                 candidate_wrapper_profile.selected_rect_cells_s +=
                     selected_rect_start.elapsed().as_secs_f64();
-                candidate_wrapper_profile.selected_rect_cell_count += selected_rect_cells.len();
+                candidate_wrapper_profile.selected_rect_cell_count += selected_rect_cell_count;
                 let candidate_reserved_update_start = Instant::now();
-                candidate_reserved_cells
-                    .extend(selected_rect_cells.into_iter().map(|(x, y)| pack_xy(x, y)));
+                candidate_reserved_index.insert_rect(
+                    plan.selected_grid_rect.min_x,
+                    plan.selected_grid_rect.max_x,
+                    plan.selected_grid_rect.min_y,
+                    plan.selected_grid_rect.max_y,
+                    self.grid.width as i32,
+                );
+                candidate_reserved_has_cells = true;
                 candidate_wrapper_profile.candidate_reserved_update_s +=
                     candidate_reserved_update_start.elapsed().as_secs_f64();
                 let py_plan_conversion_start = Instant::now();
@@ -3620,7 +3659,8 @@ impl PyPhotonicRouter {
         let registered_geometries = self.meander_registered_geometries.borrow();
         let mut call_wrapper_profile = MeanderWrapperProfileTotals::default();
         let reserved_snapshot_start = Instant::now();
-        let base_reserved_cells = self.meander_registered_reserved_cells.borrow().clone();
+        self.ensure_meander_registered_reserved_index();
+        let reserved_index_borrow = self.meander_registered_reserved_index.borrow();
         call_wrapper_profile.reserved_snapshot_s += reserved_snapshot_start.elapsed().as_secs_f64();
         let candidate_results = PyList::empty_bound(py);
         let mut selected_plans: Option<PyObject> = None;
@@ -3631,7 +3671,8 @@ impl PyPhotonicRouter {
             let geometry_indices = &candidate_geometry_indices[candidate_index];
             let requested_extra_length_um = candidate_requested_extra_lengths_um[candidate_index];
             let plans = PyList::empty_bound(py);
-            let mut candidate_reserved_cells = FxHashSet::default();
+            let mut candidate_reserved_index = SparseCellIndex::empty(self.grid.height as i32);
+            let mut candidate_reserved_has_cells = false;
             let mut total_candidate_runs = 0usize;
             let mut total_candidate_intervals = 0usize;
             let mut total_rejected_box_blocked = 0usize;
@@ -3656,21 +3697,10 @@ impl PyPhotonicRouter {
                     .get(geometry.registered_open_index)
                     .ok_or_else(|| {
                         PyValueError::new_err("registered meander route index is out of range")
-                    })?;
+                })?;
                 candidate_wrapper_profile.extra_blocked_prepare_calls += 1;
-                let base_clone_start = Instant::now();
-                let mut extra_blocked_owned = base_reserved_cells.clone();
-                candidate_wrapper_profile.extra_blocked_base_clone_s +=
-                    base_clone_start.elapsed().as_secs_f64();
-                let candidate_extend_start = Instant::now();
-                extra_blocked_owned.extend(candidate_reserved_cells.iter().copied());
-                candidate_wrapper_profile.extra_blocked_candidate_extend_s +=
-                    candidate_extend_start.elapsed().as_secs_f64();
-                let extra_blocked_ref = if extra_blocked_owned.is_empty() {
-                    None
-                } else {
-                    Some(&extra_blocked_owned)
-                };
+                let candidate_reserved_index_ref = candidate_reserved_has_cells
+                    .then_some(&candidate_reserved_index);
                 let cfg = AutoMeanderConfig {
                     requested_extra_length_um,
                     min_bend_radius_um: effective_radius_um,
@@ -3692,7 +3722,9 @@ impl PyPhotonicRouter {
                         base_prefix,
                         Some(opened_ref),
                         Some(opened_index_ref),
-                        extra_blocked_ref,
+                        None,
+                        reserved_index_borrow.as_ref(),
+                        candidate_reserved_index_ref,
                         &cfg,
                         &box_depths_um,
                     ) {
@@ -3718,13 +3750,19 @@ impl PyPhotonicRouter {
                 total_rejected_exact_length_mismatch += plan.rejected_exact_length_mismatch;
                 total_rejected_too_short += plan.rejected_too_short;
                 let selected_rect_start = Instant::now();
-                let selected_rect_cells = cells_in_grid_rect_rs(plan.selected_grid_rect);
+                let selected_rect_cell_count = cell_count_in_grid_rect_rs(plan.selected_grid_rect);
                 candidate_wrapper_profile.selected_rect_cells_s +=
                     selected_rect_start.elapsed().as_secs_f64();
-                candidate_wrapper_profile.selected_rect_cell_count += selected_rect_cells.len();
+                candidate_wrapper_profile.selected_rect_cell_count += selected_rect_cell_count;
                 let candidate_reserved_update_start = Instant::now();
-                candidate_reserved_cells
-                    .extend(selected_rect_cells.into_iter().map(|(x, y)| pack_xy(x, y)));
+                candidate_reserved_index.insert_rect(
+                    plan.selected_grid_rect.min_x,
+                    plan.selected_grid_rect.max_x,
+                    plan.selected_grid_rect.min_y,
+                    plan.selected_grid_rect.max_y,
+                    self.grid.width as i32,
+                );
+                candidate_reserved_has_cells = true;
                 candidate_wrapper_profile.candidate_reserved_update_s +=
                     candidate_reserved_update_start.elapsed().as_secs_f64();
                 let py_plan_conversion_start = Instant::now();

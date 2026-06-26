@@ -19,10 +19,13 @@ use crate::meander::{
 use crate::obstacle_map::{unpack_xy, CellKey, ObstacleMap};
 use crate::primitives::{PrimitiveGeometry, PrimitiveLibrary};
 use crate::static_obstacle_builder::{
-    grid_cell_center, physical_to_grid, rasterize_polygon, PortInput, StaticGridSpec,
+    grid_cell_center, physical_to_grid, PortInput, StaticGridSpec,
 };
+#[cfg(test)]
+use crate::static_obstacle_builder::rasterize_polygon;
 
 const EPS: f64 = 1.0e-9;
+const PORT_CORRECTION_GRID_TOLERANCE_CELLS: f64 = 2.0;
 const MITER_LIMIT: f64 = 4.0;
 const DEFAULT_BEND_SAMPLES_PER_90_DEG: usize = 16;
 
@@ -185,6 +188,7 @@ impl DenseOccupancyPrefix {
     }
 }
 
+#[allow(dead_code)]
 trait RectOccupancyQuery {
     fn grid_width(&self) -> i32;
     fn grid_height(&self) -> i32;
@@ -212,6 +216,14 @@ pub struct SparseCellIndex {
 }
 
 impl SparseCellIndex {
+    pub(crate) fn empty(height: i32) -> Self {
+        let row_count = usize::try_from(height.max(0)).unwrap_or(0);
+        Self {
+            rows: vec![Vec::new(); row_count],
+            is_empty: true,
+        }
+    }
+
     pub(crate) fn from_cells<I>(width: i32, height: i32, cells: I) -> Self
     where
         I: IntoIterator<Item = CellKey>,
@@ -232,6 +244,58 @@ impl SparseCellIndex {
         }
         let is_empty = rows.iter().all(Vec::is_empty);
         Self { rows, is_empty }
+    }
+
+    pub(crate) fn insert_cells<I>(&mut self, width: i32, cells: I)
+    where
+        I: IntoIterator<Item = CellKey>,
+    {
+        let mut touched_rows = FxHashSet::default();
+        let height = i32::try_from(self.rows.len()).unwrap_or(0);
+        for key in cells {
+            let (x, y) = unpack_xy(key);
+            if x < 0 || y < 0 || x >= width || y >= height {
+                continue;
+            }
+            let yu = usize::try_from(y).expect("non-negative y fits usize");
+            self.rows[yu].push(x);
+            touched_rows.insert(yu);
+        }
+        for row_index in touched_rows {
+            let row = &mut self.rows[row_index];
+            row.sort_unstable();
+            row.dedup();
+        }
+        self.is_empty = self.rows.iter().all(Vec::is_empty);
+    }
+
+    pub(crate) fn insert_rect(
+        &mut self,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+        width: i32,
+    ) {
+        if max_x < min_x || max_y < min_y {
+            return;
+        }
+        let height = i32::try_from(self.rows.len()).unwrap_or(0);
+        let x0 = min_x.max(0);
+        let x1 = max_x.min(width.saturating_sub(1));
+        let y0 = min_y.max(0);
+        let y1 = max_y.min(height.saturating_sub(1));
+        if x1 < x0 || y1 < y0 {
+            return;
+        }
+        for y in y0..=y1 {
+            let yu = usize::try_from(y).expect("non-negative y fits usize");
+            let row = &mut self.rows[yu];
+            row.extend(x0..=x1);
+            row.sort_unstable();
+            row.dedup();
+        }
+        self.is_empty = false;
     }
 
     fn is_empty(&self) -> bool {
@@ -276,7 +340,8 @@ impl SparseCellIndex {
 struct OverlayOccupancyQuery<'a> {
     base: &'a DenseOccupancyPrefix,
     opened_index: Cow<'a, SparseCellIndex>,
-    extra_blocked_index: SparseCellIndex,
+    extra_blocked_index: Cow<'a, SparseCellIndex>,
+    extra_blocked_overlay_index: Option<&'a SparseCellIndex>,
 }
 
 impl<'a> OverlayOccupancyQuery<'a> {
@@ -285,6 +350,8 @@ impl<'a> OverlayOccupancyQuery<'a> {
         opened_cells: Option<&'a FxHashSet<CellKey>>,
         opened_index: Option<&'a SparseCellIndex>,
         extra_blocked_cells: Option<&'a FxHashSet<CellKey>>,
+        extra_blocked_index: Option<&'a SparseCellIndex>,
+        extra_blocked_overlay_index: Option<&'a SparseCellIndex>,
     ) -> Self {
         let opened_index = opened_index.map_or_else(
             || {
@@ -303,25 +370,31 @@ impl<'a> OverlayOccupancyQuery<'a> {
             },
             Cow::Borrowed,
         );
-        let extra_blocked_index = SparseCellIndex::from_cells(
-            base.width,
-            base.height,
-            extra_blocked_cells
-                .into_iter()
-                .flat_map(|cells| cells.iter().copied())
-                .filter(|&key| {
-                    let (x, y) = unpack_xy(key);
-                    let opened = opened_index.count_in_rect(x, x, y, y) > 0;
-                    let base_blocked = base
-                        .blocked_count_in_rect(x, x, y, y)
-                        .is_some_and(|count| count > 0);
-                    !base_blocked || opened
-                }),
+        let extra_blocked_index = extra_blocked_index.map_or_else(
+            || {
+                Cow::Owned(SparseCellIndex::from_cells(
+                    base.width,
+                    base.height,
+                    extra_blocked_cells
+                        .into_iter()
+                        .flat_map(|cells| cells.iter().copied())
+                        .filter(|&key| {
+                            let (x, y) = unpack_xy(key);
+                            let opened = opened_index.count_in_rect(x, x, y, y) > 0;
+                            let base_blocked = base
+                                .blocked_count_in_rect(x, x, y, y)
+                                .is_some_and(|count| count > 0);
+                            !base_blocked || opened
+                        }),
+                ))
+            },
+            Cow::Borrowed,
         );
         Self {
             base,
             opened_index,
             extra_blocked_index,
+            extra_blocked_overlay_index,
         }
     }
 
@@ -330,8 +403,13 @@ impl<'a> OverlayOccupancyQuery<'a> {
     }
 
     fn extra_blocked_count_in_rect(&self, min_x: i32, max_x: i32, min_y: i32, max_y: i32) -> u32 {
-        self.extra_blocked_index
-            .count_in_rect(min_x, max_x, min_y, max_y)
+        let base_extra = self
+            .extra_blocked_index
+            .count_in_rect(min_x, max_x, min_y, max_y);
+        let overlay_extra = self
+            .extra_blocked_overlay_index
+            .map_or(0, |index| index.count_in_rect(min_x, max_x, min_y, max_y));
+        base_extra.saturating_add(overlay_extra)
     }
 }
 
@@ -905,13 +983,19 @@ pub fn route_to_port_corrected_centerline(
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
     let replay = route_to_primitive_centerline_with_runs(route, primitives, grid)?;
     let mut centerline = replay.centerline;
-    if !try_apply_full_straight_port_correction(&mut centerline, source_port_um, target_port_um)? {
+    if !try_apply_full_straight_port_correction(
+        &mut centerline,
+        source_port_um,
+        target_port_um,
+        PORT_CORRECTION_GRID_TOLERANCE_CELLS * grid.grid_size_um,
+    )? {
         try_apply_shared_axis_port_shift(&mut centerline, source_port_um, target_port_um)?;
         absorb_endpoint_delta_into_axis_runs(
             &mut centerline,
             &replay.straight_runs,
             source_port_um,
             target_port_um,
+            PORT_CORRECTION_GRID_TOLERANCE_CELLS * grid.grid_size_um,
         )?;
     }
     if centerline.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
@@ -960,6 +1044,7 @@ fn try_apply_full_straight_port_correction(
     centerline: &mut [(f64, f64)],
     source_port_um: Option<(f64, f64)>,
     target_port_um: Option<(f64, f64)>,
+    max_perpendicular_delta_um: f64,
 ) -> Result<bool, GeometryError> {
     let (Some(source), Some(target)) = (source_port_um, target_port_um) else {
         return Ok(false);
@@ -982,6 +1067,16 @@ fn try_apply_full_straight_port_correction(
         return Ok(true);
     }
 
+    if is_full_horizontal_centerline(centerline)
+        && centerline.len() > 2
+        && (source.1 - target.1).abs() <= max_perpendicular_delta_um
+    {
+        centerline[0] = source;
+        let last = centerline.len() - 1;
+        centerline[last] = target;
+        return Ok(true);
+    }
+
     if is_full_vertical_centerline(centerline) && (source.0 - target.0).abs() <= EPS {
         for point in centerline.iter_mut() {
             point.0 = source.0;
@@ -993,6 +1088,16 @@ fn try_apply_full_straight_port_correction(
         return Ok(true);
     }
 
+    if is_full_vertical_centerline(centerline)
+        && centerline.len() > 2
+        && (source.0 - target.0).abs() <= max_perpendicular_delta_um
+    {
+        centerline[0] = source;
+        let last = centerline.len() - 1;
+        centerline[last] = target;
+        return Ok(true);
+    }
+
     Ok(false)
 }
 
@@ -1001,6 +1106,7 @@ fn absorb_endpoint_delta_into_axis_runs(
     straight_runs: &[AxisAlignedRun],
     source_port_um: Option<(f64, f64)>,
     target_port_um: Option<(f64, f64)>,
+    max_terminal_endpoint_delta_um: f64,
 ) -> Result<(), GeometryError> {
     if centerline.len() < 2 {
         return Err(GeometryError::DegenerateRoute);
@@ -1016,8 +1122,24 @@ fn absorb_endpoint_delta_into_axis_runs(
         let start = centerline[0];
         let dx = source.0 - start.0;
         let dy = source.1 - start.1;
-        absorb_source_x_delta(centerline, straight_runs, dx)?;
-        absorb_source_y_delta(centerline, straight_runs, dy)?;
+        if let Err(err) = absorb_source_x_delta(centerline, straight_runs, dx) {
+            if matches!(err, GeometryError::NoMeanderCandidateSegment)
+                && dx.abs() <= max_terminal_endpoint_delta_um
+            {
+                centerline[0].0 = source.0;
+            } else {
+                return Err(err);
+            }
+        }
+        if let Err(err) = absorb_source_y_delta(centerline, straight_runs, dy) {
+            if matches!(err, GeometryError::NoMeanderCandidateSegment)
+                && dy.abs() <= max_terminal_endpoint_delta_um
+            {
+                centerline[0].1 = source.1;
+            } else {
+                return Err(err);
+            }
+        }
     }
     if let Some(target) = target_port_um {
         if !is_finite_point(target) {
@@ -1026,8 +1148,26 @@ fn absorb_endpoint_delta_into_axis_runs(
         let last = centerline[centerline.len() - 1];
         let dx = target.0 - last.0;
         let dy = target.1 - last.1;
-        absorb_target_x_delta(centerline, straight_runs, dx)?;
-        absorb_target_y_delta(centerline, straight_runs, dy)?;
+        if let Err(err) = absorb_target_x_delta(centerline, straight_runs, dx) {
+            if matches!(err, GeometryError::NoMeanderCandidateSegment)
+                && dx.abs() <= max_terminal_endpoint_delta_um
+            {
+                let last_index = centerline.len() - 1;
+                centerline[last_index].0 = target.0;
+            } else {
+                return Err(err);
+            }
+        }
+        if let Err(err) = absorb_target_y_delta(centerline, straight_runs, dy) {
+            if matches!(err, GeometryError::NoMeanderCandidateSegment)
+                && dy.abs() <= max_terminal_endpoint_delta_um
+            {
+                let last_index = centerline.len() - 1;
+                centerline[last_index].1 = target.1;
+            } else {
+                return Err(err);
+            }
+        }
     }
     Ok(())
 }
@@ -1557,6 +1697,7 @@ fn check_meander_box_free_with_occupancy<Q: RectOccupancyQuery>(
     Ok(rect)
 }
 
+#[cfg(test)]
 fn check_meander_replacement_polygon_free<Q: RectOccupancyQuery>(
     replacement_centerline: &[PhysicalPoint],
     grid: &GeometryGridSpec,
@@ -1604,6 +1745,13 @@ fn check_meander_replacement_polygon_free<Q: RectOccupancyQuery>(
     Ok(())
 }
 
+fn replacement_box_clearance_radius_cells(
+    _grid: &GeometryGridSpec,
+    configured_clearance_radius_cells: i32,
+) -> i32 {
+    configured_clearance_radius_cells
+}
+
 pub fn check_meander_box_free(
     box_um: MeanderBox,
     grid: &GeometryGridSpec,
@@ -1626,6 +1774,15 @@ pub fn cells_in_grid_rect(rect: GridRect) -> Vec<(i32, i32)> {
         }
     }
     out
+}
+
+pub fn cell_count_in_grid_rect(rect: GridRect) -> usize {
+    if rect.min_x > rect.max_x || rect.min_y > rect.max_y {
+        return 0;
+    }
+    let width = i64::from(rect.max_x) - i64::from(rect.min_x) + 1;
+    let height = i64::from(rect.max_y) - i64::from(rect.min_y) + 1;
+    usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1687,6 +1844,7 @@ pub struct AutoMeanderPlanningProfile {
     pub free_interval_s: f64,
     pub box_check_s: f64,
     pub analytic_plan_s: f64,
+    pub replacement_check_s: f64,
     pub depth_count: usize,
     pub run_side_checks: usize,
     pub box_checks: usize,
@@ -2317,9 +2475,22 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                         rejected_exact_length_mismatch += 1;
                         continue;
                     }
-                    if check_meander_replacement_polygon_free(&plan.centerline, grid, &prefix)
-                        .is_err()
-                    {
+                    let replacement_check_start = Instant::now();
+                    let replacement_clearance_radius_cells =
+                        replacement_box_clearance_radius_cells(
+                            grid,
+                            config.clearance_radius_cells,
+                        );
+                    let replacement_free = check_meander_box_free_with_prefix(
+                        box_um,
+                        grid,
+                        &prefix,
+                        replacement_clearance_radius_cells,
+                    )
+                    .is_ok();
+                    profile.replacement_check_s +=
+                        replacement_check_start.elapsed().as_secs_f64();
+                    if !replacement_free {
                         rejected_box_blocked += 1;
                         continue;
                     }
@@ -2379,6 +2550,8 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep_with_prefix(
     opened_cells: Option<&FxHashSet<CellKey>>,
     opened_index: Option<&SparseCellIndex>,
     extra_blocked_cells: Option<&FxHashSet<CellKey>>,
+    extra_blocked_index: Option<&SparseCellIndex>,
+    extra_blocked_overlay_index: Option<&SparseCellIndex>,
     config: &AutoMeanderConfig,
     box_depths_um: &[f64],
 ) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
@@ -2390,6 +2563,8 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep_with_prefix(
         opened_cells,
         opened_index,
         extra_blocked_cells,
+        extra_blocked_index,
+        extra_blocked_overlay_index,
         config,
         box_depths_um,
     )
@@ -2402,6 +2577,8 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
     opened_cells: Option<&FxHashSet<CellKey>>,
     opened_index: Option<&SparseCellIndex>,
     extra_blocked_cells: Option<&FxHashSet<CellKey>>,
+    extra_blocked_index: Option<&SparseCellIndex>,
+    extra_blocked_overlay_index: Option<&SparseCellIndex>,
     config: &AutoMeanderConfig,
     box_depths_um: &[f64],
 ) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
@@ -2434,8 +2611,14 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         }
     }
 
-    let occupancy =
-        OverlayOccupancyQuery::new(base_prefix, opened_cells, opened_index, extra_blocked_cells);
+    let occupancy = OverlayOccupancyQuery::new(
+        base_prefix,
+        opened_cells,
+        opened_index,
+        extra_blocked_cells,
+        extra_blocked_index,
+        extra_blocked_overlay_index,
+    );
     let side_order: &[MeanderSide] = match config.side_policy {
         AutoMeanderSidePolicy::Left => &[MeanderSide::Left],
         AutoMeanderSidePolicy::Right => &[MeanderSide::Right],
@@ -2579,9 +2762,22 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                         rejected_exact_length_mismatch += 1;
                         continue;
                     }
-                    if check_meander_replacement_polygon_free(&plan.centerline, grid, &occupancy)
-                        .is_err()
-                    {
+                    let replacement_check_start = Instant::now();
+                    let replacement_clearance_radius_cells =
+                        replacement_box_clearance_radius_cells(
+                            grid,
+                            config.clearance_radius_cells,
+                        );
+                    let replacement_free = check_meander_box_free_with_occupancy(
+                        box_um,
+                        grid,
+                        &occupancy,
+                        replacement_clearance_radius_cells,
+                    )
+                    .is_ok();
+                    profile.replacement_check_s +=
+                        replacement_check_start.elapsed().as_secs_f64();
+                    if !replacement_free {
                         rejected_box_blocked += 1;
                         continue;
                     }
@@ -2691,8 +2887,14 @@ pub fn probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         }
     }
 
-    let occupancy =
-        OverlayOccupancyQuery::new(base_prefix, opened_cells, None, extra_blocked_cells);
+    let occupancy = OverlayOccupancyQuery::new(
+        base_prefix,
+        opened_cells,
+        None,
+        extra_blocked_cells,
+        None,
+        None,
+    );
     let side_order: &[MeanderSide] = match config.side_policy {
         AutoMeanderSidePolicy::Left => &[MeanderSide::Left],
         AutoMeanderSidePolicy::Right => &[MeanderSide::Right],
@@ -3969,6 +4171,45 @@ mod tests {
     }
 
     #[test]
+    fn port_corrected_near_horizontal_straight_anchors_quantized_ports() {
+        let lib = test_lib();
+        let straight_east = primitive_id_for(&lib, 0, |p| {
+            p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
+        });
+        let primitive_ids = vec![straight_east, straight_east, straight_east];
+        let states = states_from_primitives(&lib, State::new(1, 2, 0), &primitive_ids);
+        let requested_target = *states.last().unwrap();
+        let route = RouteResult {
+            states,
+            primitives: primitive_ids,
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 12.0,
+            total_cost: 12.0,
+            requested_target,
+            reached_target: requested_target,
+            stats: Default::default(),
+        };
+
+        let corrected = route_to_port_corrected_centerline(
+            &route,
+            &lib,
+            &grid(),
+            Some((1.0, 2.5)),
+            Some((13.5, 2.0)),
+        )
+        .unwrap();
+
+        assert_eq!(corrected.first().copied(), Some((1.0, 2.5)));
+        assert_eq!(corrected.last().copied(), Some((13.5, 2.0)));
+        assert!(corrected.len() > 2);
+        assert!(corrected[1..corrected.len() - 1]
+            .windows(2)
+            .all(|w| is_horizontal_segment(w[0], w[1])));
+        assert!(centerline_length_um(&corrected).unwrap() > 12.0);
+    }
+
+    #[test]
     fn port_corrected_full_vertical_straight_shifts_line_and_adjusts_length() {
         let lib = test_lib();
         let straight_north = primitive_id_for(&lib, 2, |p| {
@@ -4067,6 +4308,49 @@ mod tests {
             generate_waveguide_polygon(&corrected, 0.5).unwrap()
         );
         assert_eq!(polygon.first(), polygon.last());
+    }
+
+    #[test]
+    fn port_corrected_dogleg_accepts_small_terminal_perpendicular_offsets() {
+        let lib = test_lib();
+        let straight_east_0 = primitive_id_for(&lib, 0, |p| {
+            p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
+        });
+        let bend_left = primitive_id_for(&lib, 0, |p| p.start_angle == 0 && p.end_angle == 2);
+        let bend_right = primitive_id_for(&lib, 2, |p| p.start_angle == 2 && p.end_angle == 0);
+        let straight_east_1 = primitive_id_for(&lib, 0, |p| {
+            p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
+        });
+        let primitive_ids = vec![straight_east_0, bend_left, bend_right, straight_east_1];
+        let states = states_from_primitives(&lib, State::new(1, 1, 0), &primitive_ids);
+        let requested_target = *states.last().unwrap();
+        let route = RouteResult {
+            states,
+            primitives: primitive_ids,
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target,
+            reached_target: requested_target,
+            stats: Default::default(),
+        };
+
+        let source_port = (1.25, 1.0);
+        let target_port = (12.75, 3.0);
+        let corrected = route_to_port_corrected_centerline(
+            &route,
+            &lib,
+            &grid(),
+            Some(source_port),
+            Some(target_port),
+        )
+        .unwrap();
+
+        assert_eq!(corrected.first().copied(), Some(source_port));
+        assert_eq!(corrected.last().copied(), Some(target_port));
+        assert!(corrected.len() > 2);
+        assert!(corrected.windows(2).all(|w| distance(w[0], w[1]) > EPS));
     }
 
     #[test]

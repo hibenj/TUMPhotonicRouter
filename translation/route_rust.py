@@ -52,6 +52,7 @@ from translation.route_rust_records import (
 )
 from translation.route_rust_types import (
     MeanderInsertionConfig,
+    OpticalRouteClearancePolicy,
     RipupRerouteConfig,
     RouteJob,
     RouteRustPipelineResult,
@@ -314,22 +315,19 @@ def route_match_and_realize(
             route_layer=route_layer,
             include_heater_obstacles=include_heater_obstacles,
         )
-        meander_route_clearance_radius_cells = max(
-            0,
-            math.ceil(
-                (
-                    (float(route_width_um) / 2.0)
-                    + max(
-                        0.0,
-                        _as_float(
-                            getattr(resolved_user_obstacle_config, "clearance_um", 0.0),
-                            0.0,
-                        ),
-                    )
-                )
-                / float(debug_artifacts.realization_grid_spec[2])
+        meander_route_clearance_um = max(
+            0.0,
+            _as_float(
+                getattr(resolved_user_obstacle_config, "clearance_um", 0.0),
+                0.0,
             ),
         )
+        meander_clearance_policy = OpticalRouteClearancePolicy.from_dimensions(
+            route_width_um=float(route_width_um),
+            grid_size_um=float(debug_artifacts.realization_grid_spec[2]),
+            route_clearance_um=meander_route_clearance_um,
+        )
+        analysis_info["clearance_policy"] = meander_clearance_policy.to_debug_dict()
         # Meander box legality should use real routed-layer geometry, not
         # conservative component bboxes. Keep static obstacles strict: source
         # and target access openings are valid for route entry/exit only, not
@@ -372,7 +370,12 @@ def route_match_and_realize(
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
             static_blocked_cells=meander_static_blocked_cells,
             static_blocked_cell_handle=meander_static_blocked_cell_handle,
-            route_clearance_radius_cells=meander_route_clearance_radius_cells,
+            route_occupancy_radius_cells=(
+                meander_clearance_policy.plm_registered_route_keepout_radius_cells
+            ),
+            meander_box_clearance_radius_cells=(
+                meander_clearance_policy.plm_candidate_box_clearance_radius_cells
+            ),
             requirement_delay_candidates=requirement_delay_candidates,
         )
         pipeline_timings_s["meander_planning"] = (
@@ -804,21 +807,20 @@ def route_nets_rust(
     if routing_window_scale is not None:
         astar_cfg.routing_window_scale = float(routing_window_scale)
 
-    block_radius_cells = max(
-        0, math.ceil((float(route_width_um) / 2.0) / float(grid.grid_size_um))
-    )
     route_clearance_um = max(
         0.0,
         _as_float(getattr(resolved_obstacle_config, "clearance_um", 0.0), 0.0),
     )
-    commit_radius_cells = max(
-        block_radius_cells,
-        math.ceil(
-            ((float(route_width_um) / 2.0) + route_clearance_um)
-            / float(grid.grid_size_um)
-        ),
+    clearance_policy = OpticalRouteClearancePolicy.from_dimensions(
+        route_width_um=float(route_width_um),
+        grid_size_um=float(grid.grid_size_um),
+        route_clearance_um=route_clearance_um,
     )
-    core_commit_radius_cells = 0
+    block_radius_cells = (
+        clearance_policy.dynamic_obstacle_search_expansion_radius_cells
+    )
+    commit_radius_cells = clearance_policy.dynamic_route_commit_keepout_radius_cells
+    core_commit_radius_cells = clearance_policy.dynamic_route_core_radius_cells
     routing_window_min_margin_cells = max(
         int(getattr(astar_cfg, "routing_window_min_margin_cells", 12)),
         int((2 * bend_radius_cells) + commit_radius_cells + 2),
@@ -1782,6 +1784,15 @@ def route_nets_rust(
             ),
             "opened_cells_count": len(opened_cells),
             "block_radius_cells": block_radius_cells,
+            "dynamic_obstacle_search_expansion_radius_cells": (
+                clearance_policy.dynamic_obstacle_search_expansion_radius_cells
+            ),
+            "dynamic_route_commit_keepout_radius_cells": (
+                clearance_policy.dynamic_route_commit_keepout_radius_cells
+            ),
+            "dynamic_route_core_radius_cells": (
+                clearance_policy.dynamic_route_core_radius_cells
+            ),
             "bend_radius_cells": bend_radius_cells,
             "window_width_cells": max(0, window_max_x - window_min_x + 1),
             "window_height_cells": max(0, window_max_y - window_min_y + 1),
@@ -2079,6 +2090,12 @@ def route_nets_rust(
             f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
             f"allow_45_degree_turns={allow_45_degree_turns}",
             f"block_radius_cells={block_radius_cells}",
+            "dynamic_obstacle_search_expansion_radius_cells="
+            f"{clearance_policy.dynamic_obstacle_search_expansion_radius_cells}",
+            "dynamic_route_commit_keepout_radius_cells="
+            f"{clearance_policy.dynamic_route_commit_keepout_radius_cells}",
+            "dynamic_route_core_radius_cells="
+            f"{clearance_policy.dynamic_route_core_radius_cells}",
             f"bend_radius_cells={bend_radius_cells}",
             f"port_entry_length_cells={port_entry_length_cells}",
             f"port_entry_half_width_cells={port_entry_half_width_cells}",

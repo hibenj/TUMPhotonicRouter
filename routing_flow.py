@@ -1108,11 +1108,10 @@ def run_routing_flow(
         if blocked_count > 0:
             stats.blocked_cells = blocked_count
             stats.raw_blocked_cells = blocked_count
-            if isinstance(stats.static_grid_width, int) and isinstance(stats.static_grid_height, int):
-                grid_area = max(1, stats.static_grid_width * stats.static_grid_height)
-                stats.port_open_cells = max(1, grid_area - blocked_count)
-            else:
-                stats.port_open_cells = max(1, blocked_count)
+            port_open_count = int(
+                getattr(debug_artifacts, "static_port_open_count", 0) or 0
+            )
+            stats.port_open_cells = port_open_count
         route_summary = debug_artifacts.route_search_summary
         stats.astar_time_s = float(route_summary.astar_elapsed_s)
         stats.route_attempts = int(route_summary.route_attempts)
@@ -1292,6 +1291,11 @@ def run_routing_flow(
                         f"add_route_static={float(setup_profile.get('add_route_static_cells_s', 0.0)):.4f}s, "
                         f"register_routes={float(setup_profile.get('register_route_cells_s', 0.0)):.4f}s, "
                         f"register_geometry={float(setup_profile.get('register_route_geometry_s', 0.0)):.4f}s, "
+                        f"registered_records={int(float(setup_profile.get('registered_record_count', 0.0)))}, "
+                        f"fallback_records={int(float(setup_profile.get('unregistered_record_count', 0.0)))}, "
+                        f"fallback_route_static={int(float(setup_profile.get('fallback_route_static_cell_count', 0.0)))}, "
+                        f"route_occupancy_radius={int(float(setup_profile.get('route_occupancy_radius_cells', 0.0)))}, "
+                        f"box_clearance_radius={int(float(setup_profile.get('meander_box_clearance_radius_cells', 0.0)))}, "
                         f"unique_route_cells={int(float(setup_profile.get('unique_route_cell_count', 0.0)))}"
                     )
                     print(
@@ -1347,6 +1351,7 @@ def run_routing_flow(
                         f"free_interval={float(rust_planner_profile.get('free_interval_s', 0.0)):.4f}s, "
                         f"box_check={float(rust_planner_profile.get('box_check_s', 0.0)):.4f}s, "
                         f"analytic_plan={float(rust_planner_profile.get('analytic_plan_s', 0.0)):.4f}s, "
+                        f"replacement_check={float(rust_planner_profile.get('replacement_check_s', 0.0)):.4f}s, "
                         f"footprint={float(rust_planner_profile.get('footprint_s', 0.0)):.4f}s, "
                         f"run_extraction={float(rust_planner_profile.get('run_extraction_s', 0.0)):.4f}s, "
                         f"plan_calls={int(float(rust_planner_profile.get('plan_calls', 0.0)))}, "
@@ -1361,8 +1366,6 @@ def run_routing_flow(
                         "        Rust meander wrapper split: "
                         f"planner_call={float(rust_wrapper_profile.get('planner_call_s', 0.0)):.4f}s, "
                         f"reserved_snapshot={float(rust_wrapper_profile.get('reserved_snapshot_s', 0.0)):.4f}s, "
-                        f"extra_blocked_clone={float(rust_wrapper_profile.get('extra_blocked_base_clone_s', 0.0)):.4f}s, "
-                        f"extra_blocked_extend={float(rust_wrapper_profile.get('extra_blocked_candidate_extend_s', 0.0)):.4f}s, "
                         f"rect_cells={float(rust_wrapper_profile.get('selected_rect_cells_s', 0.0)):.4f}s, "
                         f"reserved_update={float(rust_wrapper_profile.get('candidate_reserved_update_s', 0.0)):.4f}s, "
                         f"py_plan={float(rust_wrapper_profile.get('py_plan_conversion_s', 0.0)):.4f}s, "

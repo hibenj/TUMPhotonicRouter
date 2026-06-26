@@ -178,6 +178,8 @@ def test_planner_context_inflates_route_cells_for_meander_clearance():
     assert context.base_open_cells_for_edge(edge, record) == (
         expected_route_corridor - {(3, 3)}
     )
+    assert context.setup_profile["route_occupancy_radius_cells"] == 1.0
+    assert context.setup_profile["meander_box_clearance_radius_cells"] == 0.0
     assert context.setup_profile["route_clearance_radius_cells"] == 1.0
     assert context.setup_profile["registered_route_cell_acceleration_enabled"] == 0.0
 
