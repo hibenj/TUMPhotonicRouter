@@ -18,11 +18,11 @@ use crate::meander::{
 };
 use crate::obstacle_map::{unpack_xy, CellKey, ObstacleMap};
 use crate::primitives::{PrimitiveGeometry, PrimitiveLibrary};
+#[cfg(test)]
+use crate::static_obstacle_builder::rasterize_polygon;
 use crate::static_obstacle_builder::{
     grid_cell_center, physical_to_grid, PortInput, StaticGridSpec,
 };
-#[cfg(test)]
-use crate::static_obstacle_builder::rasterize_polygon;
 
 const EPS: f64 = 1.0e-9;
 const PORT_CORRECTION_GRID_TOLERANCE_CELLS: f64 = 2.0;
@@ -510,6 +510,7 @@ pub enum GeometryError {
         rejected_planning_failed: usize,
         rejected_exact_length_mismatch: usize,
         rejected_too_short: usize,
+        first_rejection: Option<AutoMeanderRejectionDetail>,
     },
     NoMeanderCandidateSegment,
     MeanderPlanningFailed(MeanderPlanningError),
@@ -579,10 +580,36 @@ impl fmt::Display for GeometryError {
                 rejected_planning_failed,
                 rejected_exact_length_mismatch,
                 rejected_too_short,
+                first_rejection,
             } => write!(
                 f,
-                "no legal auto-analytic meander candidate found (candidate_runs={candidate_runs}, candidate_intervals={candidate_intervals}, rejected_box_blocked={rejected_box_blocked}, rejected_planning_failed={rejected_planning_failed}, rejected_exact_length_mismatch={rejected_exact_length_mismatch}, rejected_too_short={rejected_too_short})"
-            ),
+                "no legal auto-analytic meander candidate found (candidate_runs={candidate_runs}, candidate_intervals={candidate_intervals}, rejected_box_blocked={rejected_box_blocked}, rejected_planning_failed={rejected_planning_failed}, rejected_exact_length_mismatch={rejected_exact_length_mismatch}, rejected_too_short={rejected_too_short}"
+            )
+            .and_then(|_| {
+                if let Some(detail) = first_rejection {
+                    write!(
+                        f,
+                        ", first_rejection={{reason={}, side={:?}, depth_um={:.3}, run_start_index={}, run_end_index={}, run_length_um={:.3}, allowed_interval_length_um={:.3}, required_interval_length_um={:.3}, run_start=({:.3},{:.3}), run_end=({:.3},{:.3}), strip_grid_rect={:?}, strip_blocked_count={:?}, strip_grid_error={:?}, planning_error={:?}}}",
+                        detail.reason,
+                        detail.side,
+                        detail.depth_um,
+                        detail.run_start_index,
+                        detail.run_end_index,
+                        detail.run_length_um,
+                        detail.allowed_interval_length_um,
+                        detail.required_interval_length_um,
+                        detail.run_start.0,
+                        detail.run_start.1,
+                        detail.run_end.0,
+                        detail.run_end.1,
+                        detail.strip_grid_rect,
+                        detail.strip_blocked_count,
+                        detail.strip_grid_error,
+                        detail.planning_error,
+                    )?;
+                }
+                write!(f, ")")
+            }),
             GeometryError::NoMeanderCandidateSegment => {
                 write!(f, "no axis-aligned centerline segment is suitable for meander insertion")
             }
@@ -1836,6 +1863,24 @@ pub struct AutoRouteAnalyticMeanderPlan {
     pub profile: AutoMeanderPlanningProfile,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutoMeanderRejectionDetail {
+    pub reason: &'static str,
+    pub side: MeanderSide,
+    pub depth_um: f64,
+    pub run_start_index: usize,
+    pub run_end_index: usize,
+    pub run_start: (f64, f64),
+    pub run_end: (f64, f64),
+    pub run_length_um: f64,
+    pub allowed_interval_length_um: f64,
+    pub required_interval_length_um: f64,
+    pub strip_grid_rect: Option<GridRect>,
+    pub strip_blocked_count: Option<u32>,
+    pub strip_grid_error: Option<String>,
+    pub planning_error: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AutoMeanderPlanningProfile {
     pub total_s: f64,
@@ -2044,6 +2089,91 @@ fn centered_subsegment(
         })
     } else {
         Err(GeometryError::NoMeanderCandidateSegment)
+    }
+}
+
+fn meander_projection_rejection_detail(
+    run: CenterlineStraightRun,
+    side: MeanderSide,
+    box_depth_um: f64,
+    endpoint_inset_um: f64,
+    min_segment_length_um: f64,
+    grid: &GeometryGridSpec,
+    occupancy: &impl RectOccupancyQuery,
+    clearance_radius_cells: i32,
+    reason: &'static str,
+    planning_error: Option<String>,
+) -> AutoMeanderRejectionDetail {
+    let mut strip_grid_rect = None;
+    let mut strip_blocked_count = None;
+    let mut strip_grid_error = None;
+    let allowed_start_dist = if endpoint_inset_um >= 0.0 && endpoint_inset_um.is_finite() {
+        endpoint_inset_um.min(run.length_um)
+    } else {
+        0.0
+    };
+    let allowed_end_dist = if endpoint_inset_um >= 0.0 && endpoint_inset_um.is_finite() {
+        (run.length_um - endpoint_inset_um).max(0.0)
+    } else {
+        0.0
+    };
+    let allowed_interval_length_um = (allowed_end_dist - allowed_start_dist).max(0.0);
+    if endpoint_inset_um >= 0.0 && endpoint_inset_um.is_finite() {
+        if allowed_interval_length_um + EPS >= min_segment_length_um {
+            let start_point = point_on_run_at_distance(run, allowed_start_dist);
+            let end_point = point_on_run_at_distance(run, allowed_end_dist);
+            let horizontal = (run.start.1 - run.end.1).abs() <= EPS;
+            let vertical = (run.start.0 - run.end.0).abs() <= EPS;
+            let allowed_min_coord = if horizontal {
+                start_point.x_um.min(end_point.x_um)
+            } else {
+                start_point.y_um.min(end_point.y_um)
+            };
+            let allowed_max_coord = if horizontal {
+                start_point.x_um.max(end_point.x_um)
+            } else {
+                start_point.y_um.max(end_point.y_um)
+            };
+            if (horizontal || vertical)
+                && allowed_max_coord - allowed_min_coord + EPS >= min_segment_length_um
+            {
+                if let Ok(allowed_segment) =
+                    segment_from_axis_interval(run, allowed_min_coord, allowed_max_coord)
+                {
+                    if let Ok(strip_box) =
+                        build_meander_box_for_segment(allowed_segment, side, box_depth_um)
+                    {
+                        match meander_box_to_grid_rect(strip_box, grid, clearance_radius_cells) {
+                            Ok(rect) => {
+                                strip_blocked_count = occupancy.blocked_count_in_rect(
+                                    rect.min_x, rect.max_x, rect.min_y, rect.max_y,
+                                );
+                                strip_grid_rect = Some(rect);
+                            }
+                            Err(err) => {
+                                strip_grid_error = Some(err.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    AutoMeanderRejectionDetail {
+        reason,
+        side,
+        depth_um: box_depth_um,
+        run_start_index: run.start_index,
+        run_end_index: run.end_index,
+        run_start: run.start,
+        run_end: run.end,
+        run_length_um: run.length_um,
+        allowed_interval_length_um,
+        required_interval_length_um: min_segment_length_um,
+        strip_grid_rect,
+        strip_blocked_count,
+        strip_grid_error,
+        planning_error,
     }
 }
 
@@ -2359,6 +2489,7 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
     let mut rejected_exact_length_mismatch = 0usize;
     let mut rejected_too_short = 0usize;
     let mut candidate_intervals = 0usize;
+    let mut first_rejection: Option<AutoMeanderRejectionDetail> = None;
     let mut selected: Option<(MeanderBox, GridRect, AnalyticMeanderPlan, f64)> = None;
     let mut selected_run: Option<CenterlineStraightRun> = None;
     let mut selected_segment: Option<StraightSegment> = None;
@@ -2407,6 +2538,20 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                 };
                 profile.free_interval_s += free_interval_start.elapsed().as_secs_f64();
                 if free_segments.is_empty() {
+                    first_rejection.get_or_insert_with(|| {
+                        meander_projection_rejection_detail(
+                            run,
+                            side,
+                            actual_depth_um,
+                            config.endpoint_inset_um,
+                            required_interval_length_um,
+                            grid,
+                            &prefix,
+                            config.clearance_radius_cells,
+                            "projected_strip_blocked_or_too_short",
+                            None,
+                        )
+                    });
                     rejected_box_blocked += 1;
                     continue;
                 }
@@ -2444,6 +2589,20 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                         Ok(v) => v,
                         Err(_) => {
                             profile.box_check_s += box_check_start.elapsed().as_secs_f64();
+                            first_rejection.get_or_insert_with(|| {
+                                meander_projection_rejection_detail(
+                                    run,
+                                    side,
+                                    actual_depth_um,
+                                    config.endpoint_inset_um,
+                                    required_interval_length_um,
+                                    grid,
+                                    &prefix,
+                                    config.clearance_radius_cells,
+                                    "candidate_box_blocked",
+                                    None,
+                                )
+                            });
                             rejected_box_blocked += 1;
                             continue;
                         }
@@ -2462,8 +2621,22 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                     let analytic_plan_start = Instant::now();
                     let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
                         Ok(v) => v,
-                        Err(_) => {
+                        Err(err) => {
                             profile.analytic_plan_s += analytic_plan_start.elapsed().as_secs_f64();
+                            first_rejection.get_or_insert_with(|| {
+                                meander_projection_rejection_detail(
+                                    run,
+                                    side,
+                                    actual_depth_um,
+                                    config.endpoint_inset_um,
+                                    required_interval_length_um,
+                                    grid,
+                                    &prefix,
+                                    config.clearance_radius_cells,
+                                    "analytic_planning_failed",
+                                    Some(format!("{err:?}")),
+                                )
+                            });
                             rejected_planning_failed += 1;
                             continue;
                         }
@@ -2477,10 +2650,7 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                     }
                     let replacement_check_start = Instant::now();
                     let replacement_clearance_radius_cells =
-                        replacement_box_clearance_radius_cells(
-                            grid,
-                            config.clearance_radius_cells,
-                        );
+                        replacement_box_clearance_radius_cells(grid, config.clearance_radius_cells);
                     let replacement_free = check_meander_box_free_with_prefix(
                         box_um,
                         grid,
@@ -2488,9 +2658,22 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
                         replacement_clearance_radius_cells,
                     )
                     .is_ok();
-                    profile.replacement_check_s +=
-                        replacement_check_start.elapsed().as_secs_f64();
+                    profile.replacement_check_s += replacement_check_start.elapsed().as_secs_f64();
                     if !replacement_free {
+                        first_rejection.get_or_insert_with(|| {
+                            meander_projection_rejection_detail(
+                                run,
+                                side,
+                                actual_depth_um,
+                                config.endpoint_inset_um,
+                                required_interval_length_um,
+                                grid,
+                                &prefix,
+                                config.clearance_radius_cells,
+                                "replacement_box_blocked",
+                                None,
+                            )
+                        });
                         rejected_box_blocked += 1;
                         continue;
                     }
@@ -2510,6 +2693,7 @@ pub fn plan_auto_analytic_meander_for_route_depth_sweep(
         rejected_planning_failed,
         rejected_exact_length_mismatch,
         rejected_too_short,
+        first_rejection: first_rejection.clone(),
     };
     let (selected_box, selected_grid_rect, plan, selected_box_depth_um) =
         selected.ok_or_else(no_auto_err)?;
@@ -2646,6 +2830,7 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
     let mut rejected_exact_length_mismatch = 0usize;
     let mut rejected_too_short = 0usize;
     let mut candidate_intervals = 0usize;
+    let mut first_rejection: Option<AutoMeanderRejectionDetail> = None;
     let mut selected: Option<(MeanderBox, GridRect, AnalyticMeanderPlan, f64)> = None;
     let mut selected_run: Option<CenterlineStraightRun> = None;
     let mut selected_segment: Option<StraightSegment> = None;
@@ -2694,6 +2879,20 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                 };
                 profile.free_interval_s += free_interval_start.elapsed().as_secs_f64();
                 if free_segments.is_empty() {
+                    first_rejection.get_or_insert_with(|| {
+                        meander_projection_rejection_detail(
+                            run,
+                            side,
+                            actual_depth_um,
+                            config.endpoint_inset_um,
+                            required_interval_length_um,
+                            grid,
+                            &occupancy,
+                            config.clearance_radius_cells,
+                            "projected_strip_blocked_or_too_short",
+                            None,
+                        )
+                    });
                     rejected_box_blocked += 1;
                     continue;
                 }
@@ -2731,6 +2930,20 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                         Ok(v) => v,
                         Err(_) => {
                             profile.box_check_s += box_check_start.elapsed().as_secs_f64();
+                            first_rejection.get_or_insert_with(|| {
+                                meander_projection_rejection_detail(
+                                    run,
+                                    side,
+                                    actual_depth_um,
+                                    config.endpoint_inset_um,
+                                    required_interval_length_um,
+                                    grid,
+                                    &occupancy,
+                                    config.clearance_radius_cells,
+                                    "candidate_box_blocked",
+                                    None,
+                                )
+                            });
                             rejected_box_blocked += 1;
                             continue;
                         }
@@ -2749,8 +2962,22 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                     let analytic_plan_start = Instant::now();
                     let plan = match plan_analytic_meander(segment, box_um, &plan_cfg) {
                         Ok(v) => v,
-                        Err(_) => {
+                        Err(err) => {
                             profile.analytic_plan_s += analytic_plan_start.elapsed().as_secs_f64();
+                            first_rejection.get_or_insert_with(|| {
+                                meander_projection_rejection_detail(
+                                    run,
+                                    side,
+                                    actual_depth_um,
+                                    config.endpoint_inset_um,
+                                    required_interval_length_um,
+                                    grid,
+                                    &occupancy,
+                                    config.clearance_radius_cells,
+                                    "analytic_planning_failed",
+                                    Some(format!("{err:?}")),
+                                )
+                            });
                             rejected_planning_failed += 1;
                             continue;
                         }
@@ -2764,10 +2991,7 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                     }
                     let replacement_check_start = Instant::now();
                     let replacement_clearance_radius_cells =
-                        replacement_box_clearance_radius_cells(
-                            grid,
-                            config.clearance_radius_cells,
-                        );
+                        replacement_box_clearance_radius_cells(grid, config.clearance_radius_cells);
                     let replacement_free = check_meander_box_free_with_occupancy(
                         box_um,
                         grid,
@@ -2775,9 +2999,22 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
                         replacement_clearance_radius_cells,
                     )
                     .is_ok();
-                    profile.replacement_check_s +=
-                        replacement_check_start.elapsed().as_secs_f64();
+                    profile.replacement_check_s += replacement_check_start.elapsed().as_secs_f64();
                     if !replacement_free {
+                        first_rejection.get_or_insert_with(|| {
+                            meander_projection_rejection_detail(
+                                run,
+                                side,
+                                actual_depth_um,
+                                config.endpoint_inset_um,
+                                required_interval_length_um,
+                                grid,
+                                &occupancy,
+                                config.clearance_radius_cells,
+                                "replacement_box_blocked",
+                                None,
+                            )
+                        });
                         rejected_box_blocked += 1;
                         continue;
                     }
@@ -2797,6 +3034,7 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         rejected_planning_failed,
         rejected_exact_length_mismatch,
         rejected_too_short,
+        first_rejection: first_rejection.clone(),
     };
     let (selected_box, selected_grid_rect, plan, selected_box_depth_um) =
         selected.ok_or_else(no_auto_err)?;

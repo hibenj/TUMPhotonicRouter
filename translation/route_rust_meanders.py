@@ -2045,7 +2045,7 @@ def _meander_search_config(
     if not box_depths_um:
         box_depths_um = [max_height_um]
     endpoint_inset_um = (
-        max(2.0 * bend_radius_um, min_segment_um)
+        max(bend_radius_um, min_segment_um)
         if config.auto_meander_endpoint_inset_um is None
         else max(0.0, float(config.auto_meander_endpoint_inset_um))
     )
@@ -2090,10 +2090,14 @@ def _meander_request_fits_footprint(
         depth = min(float(depth), max_height)
         if not math.isfinite(depth) or depth + eps < min_height:
             continue
-        for bumps in range(1, int(max_bumps) + 1, 2):
-            n = float(bumps)
-            bend_term = radius * (((n + 1.0) * math.pi) - (4.0 * n + 3.0))
-            amplitude = (requested - bend_term) / n
+        max_visual_bumps = (int(max_bumps) + 1) // 2
+        for visual_bumps in range(1, max_visual_bumps + 1):
+            u_turns = 2 * visual_bumps - 1
+            quarter_turns = 4 * visual_bumps
+            arc_length = radius * quarter_turns * (math.pi / 2.0)
+            replaced_axis_length = radius * (4.0 * u_turns + 3.0)
+            fixed_extra = arc_length - replaced_axis_length
+            amplitude = (requested - fixed_extra) / float(u_turns)
             if amplitude + eps < min_height or amplitude - eps > depth:
                 continue
             return True
@@ -2215,11 +2219,12 @@ def _route_geometry_max_meander_bumps(
     grid_size_um: float,
     bend_radius_um: float,
 ) -> int:
-    """Derive the odd internal bump cap from visible lobe width.
+    """Derive the odd internal U-turn cap from visible lobe width.
 
     One visible lobe consumes four 90-degree bend radii along the selected
     straight run. Rust's comb planner reports odd internal bump counts where
-    visible_lobes = (bumps + 1) / 2.
+    visual_bumps = (u_turns + 1) / 2. The returned value is still the legacy
+    ``max_bumps`` U-turn cap accepted by the Rust binding.
     """
     radius = float(bend_radius_um)
     grid_size = float(grid_size_um)
@@ -2852,10 +2857,19 @@ def analyze_meander_insertion_for_requirements(
 
         if selected_candidate is None or not selected_plans:
             entry["status"] = "no_candidate"
+            attempted_edge_reason = next(
+                (
+                    str(attempt.get("reason", ""))
+                    for attempt in attempted_edges
+                    if str(attempt.get("reason", ""))
+                ),
+                "",
+            )
             entry["reason"] = (
                 str(last_exc)
                 if last_exc is not None
-                else f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
+                else attempted_edge_reason
+                or f"no exact meander candidate found (|inserted-requested| <= {EXACT_MEANDER_EPS_UM} um)"
             )
             results.append(entry)
             continue
@@ -2876,6 +2890,9 @@ def analyze_meander_insertion_for_requirements(
         entry["selected_box"] = representative_rr.get("selected_box")
         entry["selected_grid_rect"] = representative_rr.get("selected_grid_rect")
         entry["bumps"] = representative_rr.get("bumps")
+        entry["visual_bumps"] = representative_rr.get("visual_bumps")
+        entry["u_turns"] = representative_rr.get("u_turns")
+        entry["quarter_turns"] = representative_rr.get("quarter_turns")
         entry["side"] = representative_rr.get("side")
         entry["planning_mode"] = representative_rr.get("planning_mode", "fill_box_multi_bump")
         entry["candidate_runs"] = representative_rr.get("candidate_runs")

@@ -1464,12 +1464,17 @@ def run_routing_flow(
                     selected_box = entry.get("selected_box", None)
                     selected_grid_rect = entry.get("selected_grid_rect", None)
                     bumps = entry.get("bumps", None)
+                    visual_bumps = entry.get("visual_bumps", None)
+                    u_turns = entry.get("u_turns", None)
+                    quarter_turns = entry.get("quarter_turns", None)
                     side = entry.get("side", None)
                     reserved_cells_count = entry.get("reserved_cells_count", None)
                     print(
                         f"        • {net_name}: status={status}, requested={req:.3f}um, "
                         f"inserted={ins:.3f}um, unmatched={unmatched:.3f}um, "
                         f"planning_mode={planning_mode}, side={side}, bumps={bumps}, "
+                        f"visual_bumps={visual_bumps}, u_turns={u_turns}, "
+                        f"quarter_turns={quarter_turns}, "
                         f"effective_bend_radius_um={effective_radius}, "
                         f"primitive_bend_radius_um={primitive_radius}, "
                         f"selected_box={selected_box}, selected_grid_rect={selected_grid_rect}, "

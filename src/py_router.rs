@@ -505,12 +505,7 @@ fn collect_meander_route_cell_sets(
         let mut route_cells = FxHashSet::default();
         let route_cell_collect_start = Instant::now();
         let route_cells_for_registration = if route_clearance_radius_cells > 0 {
-            inflate_route_cells(
-                &route.cells,
-                route_clearance_radius_cells,
-                width,
-                height,
-            )
+            inflate_route_cells(&route.cells, route_clearance_radius_cells, width, height)
         } else {
             route.cells.clone()
         };
@@ -1008,6 +1003,9 @@ fn auto_meander_plan_to_py_object(
         plan.plan.inserted_extra_length_um,
     )?;
     d.set_item("bumps", plan.plan.bumps)?;
+    d.set_item("visual_bumps", plan.plan.visual_bumps)?;
+    d.set_item("u_turns", plan.plan.u_turns)?;
+    d.set_item("quarter_turns", plan.plan.quarter_turns)?;
     d.set_item(
         "side",
         if plan.plan.side == MeanderSide::Left {
@@ -1185,7 +1183,10 @@ impl PyPhotonicRouter {
             *cached = Some(SparseCellIndex::from_cells(
                 self.grid.width as i32,
                 self.grid.height as i32,
-                self.meander_registered_reserved_cells.borrow().iter().copied(),
+                self.meander_registered_reserved_cells
+                    .borrow()
+                    .iter()
+                    .copied(),
             ));
         }
     }
@@ -1255,13 +1256,7 @@ impl PyPhotonicRouter {
         let added = reserved.len().saturating_sub(before);
         drop(reserved);
         if let Some(index) = self.meander_registered_reserved_index.borrow_mut().as_mut() {
-            index.insert_rect(
-                min_x,
-                max_x,
-                min_y,
-                max_y,
-                self.grid.width as i32,
-            );
+            index.insert_rect(min_x, max_x, min_y, max_y, self.grid.width as i32);
         }
         Ok(added)
     }
@@ -3156,8 +3151,8 @@ impl PyPhotonicRouter {
                         PyValueError::new_err("registered meander route index is out of range")
                     })?;
             wrapper_profile.extra_blocked_prepare_calls += 1;
-            let candidate_reserved_index_ref = candidate_reserved_has_cells
-                .then_some(&candidate_reserved_index);
+            let candidate_reserved_index_ref =
+                candidate_reserved_has_cells.then_some(&candidate_reserved_index);
             let cfg = AutoMeanderConfig {
                 requested_extra_length_um,
                 min_bend_radius_um: effective_radius_um,
@@ -3426,8 +3421,8 @@ impl PyPhotonicRouter {
                             PyValueError::new_err("registered meander route index is out of range")
                         })?;
                 candidate_wrapper_profile.extra_blocked_prepare_calls += 1;
-                let candidate_reserved_index_ref = candidate_reserved_has_cells
-                    .then_some(&candidate_reserved_index);
+                let candidate_reserved_index_ref =
+                    candidate_reserved_has_cells.then_some(&candidate_reserved_index);
                 let cfg = AutoMeanderConfig {
                     requested_extra_length_um,
                     min_bend_radius_um: effective_radius_um,
@@ -3697,10 +3692,10 @@ impl PyPhotonicRouter {
                     .get(geometry.registered_open_index)
                     .ok_or_else(|| {
                         PyValueError::new_err("registered meander route index is out of range")
-                })?;
+                    })?;
                 candidate_wrapper_profile.extra_blocked_prepare_calls += 1;
-                let candidate_reserved_index_ref = candidate_reserved_has_cells
-                    .then_some(&candidate_reserved_index);
+                let candidate_reserved_index_ref =
+                    candidate_reserved_has_cells.then_some(&candidate_reserved_index);
                 let cfg = AutoMeanderConfig {
                     requested_extra_length_um,
                     min_bend_radius_um: effective_radius_um,

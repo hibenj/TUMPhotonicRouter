@@ -78,7 +78,9 @@ def matching_group_diagnostics_to_info(
     tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
 ) -> list[dict[str, object]]:
     results = _meander_results(meander_report)
-    inserted_by_edge, status_by_edge, unmatched_by_edge = _meander_result_maps(results)
+    inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge = (
+        _meander_result_maps(results)
+    )
 
     adjusted_missing_by_edge: dict[tuple[str, str, str, str, str], float] = {}
     if adjusted_requirements is not None:
@@ -119,6 +121,7 @@ def matching_group_diagnostics_to_info(
             )
             inserted = float(inserted_by_edge.get(edge_id, 0.0))
             status = status_by_edge.get(edge_id, "not_required" if missing == 0.0 else "missing")
+            reason = reason_by_edge.get(edge_id, "")
             physical_residual = max(0.0, missing - inserted)
             accepted_unmatched = max(0.0, unmatched_by_edge.get(edge_id, physical_residual))
             disregarded = physical_residual if status == "below_minimum_bump" else 0.0
@@ -135,6 +138,7 @@ def matching_group_diagnostics_to_info(
                     "accepted_unmatched_um": accepted_unmatched,
                     "disregarded_residual_um": disregarded,
                     "meander_status": status,
+                    "meander_reason": reason,
                 }
             )
         diagnostics.append(
@@ -163,7 +167,9 @@ def output_matching_diagnostics_to_info(
         return []
 
     results = _meander_results(meander_report)
-    inserted_by_edge, status_by_edge, unmatched_by_edge = _meander_result_maps(results)
+    inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge = (
+        _meander_result_maps(results)
+    )
     raw_outputs = output_matching_info.get("outputs", [])
     if not isinstance(raw_outputs, list):
         raw_outputs = []
@@ -187,6 +193,7 @@ def output_matching_diagnostics_to_info(
             if edge_id is not None
             else str(raw_output.get("status", "missing"))
         )
+        reason = reason_by_edge.get(edge_id, "") if edge_id is not None else ""
         accepted_unmatched = (
             max(0.0, unmatched_by_edge.get(edge_id, physical_residual))
             if edge_id is not None
@@ -210,6 +217,7 @@ def output_matching_diagnostics_to_info(
                 "accepted_unmatched_um": accepted_unmatched,
                 "disregarded_residual_um": disregarded,
                 "meander_status": status,
+                "meander_reason": reason,
             }
         )
 
@@ -269,6 +277,7 @@ def path_length_acceptance_summary(
                 {
                     "edge": edge.get("edge", {}),
                     "meander_status": edge.get("meander_status", "unknown"),
+                    "meander_reason": edge.get("meander_reason", ""),
                     "requested_extra_length_um": object_to_float(
                         edge.get(
                             "adjusted_missing_length_um",
@@ -342,6 +351,9 @@ def format_path_length_acceptance_failure(summary: dict[str, object]) -> str:
                 f"residual={float(failure.get('physical_residual_um', 0.0)):.6g} um, "
                 f"status={failure.get('meander_status', 'unknown')}"
             )
+            reason = str(failure.get("meander_reason", ""))
+            if reason:
+                lines.append(f"    reason={reason}")
     if len(failed_groups) > 5:
         lines.append(f"  - ... {len(failed_groups) - 5} more failed group(s)")
     return "\n".join(lines)
@@ -404,10 +416,12 @@ def _meander_result_maps(
     dict[tuple[str, str, str, str, str], float],
     dict[tuple[str, str, str, str, str], str],
     dict[tuple[str, str, str, str, str], float],
+    dict[tuple[str, str, str, str, str], str],
 ]:
     inserted_by_edge: dict[tuple[str, str, str, str, str], float] = {}
     status_by_edge: dict[tuple[str, str, str, str, str], str] = {}
     unmatched_by_edge: dict[tuple[str, str, str, str, str], float] = {}
+    reason_by_edge: dict[tuple[str, str, str, str, str], str] = {}
     for item in results:
         edge_id = edge_identity_from_info(item.get("edge"))
         if edge_id is None:
@@ -419,10 +433,11 @@ def _meander_result_maps(
         previous_status = status_by_edge.get(edge_id)
         if previous_status is None or previous_status != "planned":
             status_by_edge[edge_id] = status
+            reason_by_edge[edge_id] = str(item.get("reason", ""))
         unmatched_by_edge[edge_id] = unmatched_by_edge.get(edge_id, 0.0) + object_to_float(
             item.get("unmatched_length_um", 0.0)
         )
-    return inserted_by_edge, status_by_edge, unmatched_by_edge
+    return inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge
 
 
 def _edge_label_from_info(edge_info: object) -> str:

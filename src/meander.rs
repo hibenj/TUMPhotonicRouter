@@ -52,6 +52,9 @@ pub struct AnalyticMeanderPlan {
     pub centerline: Vec<PhysicalPoint>,
     pub inserted_extra_length_um: f64,
     pub bumps: usize,
+    pub visual_bumps: usize,
+    pub u_turns: usize,
+    pub quarter_turns: usize,
     pub side: MeanderSide,
 }
 
@@ -61,6 +64,59 @@ pub struct AnalyticMeanderFootprint {
     pub amplitude_um: f64,
     pub inserted_extra_length_um: f64,
     pub bumps: usize,
+    pub visual_bumps: usize,
+    pub u_turns: usize,
+    pub quarter_turns: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeanderTurnModel {
+    pub visual_bumps: usize,
+    pub u_turns: usize,
+    pub quarter_turns: usize,
+}
+
+impl MeanderTurnModel {
+    pub fn from_visual_bumps(visual_bumps: usize) -> Option<Self> {
+        if visual_bumps == 0 {
+            return None;
+        }
+        let u_turns = visual_bumps.checked_mul(2)?.checked_sub(1)?;
+        let quarter_turns = visual_bumps.checked_mul(4)?;
+        Some(Self {
+            visual_bumps,
+            u_turns,
+            quarter_turns,
+        })
+    }
+
+    pub fn from_u_turns(u_turns: usize) -> Option<Self> {
+        if u_turns == 0 || u_turns % 2 == 0 {
+            return None;
+        }
+        let visual_bumps = (u_turns + 1) / 2;
+        let quarter_turns = visual_bumps.checked_mul(4)?;
+        Some(Self {
+            visual_bumps,
+            u_turns,
+            quarter_turns,
+        })
+    }
+
+    pub fn insertion_width_um(self, bend_radius_um: f64) -> f64 {
+        bend_radius_um * (4.0 * self.visual_bumps as f64 + 1.0)
+    }
+
+    pub fn fixed_extra_length_term_um(self, bend_radius_um: f64) -> f64 {
+        let arc_length_um =
+            bend_radius_um * (self.quarter_turns as f64) * std::f64::consts::FRAC_PI_2;
+        let replaced_axis_length_um = bend_radius_um * (4.0 * self.u_turns as f64 + 3.0);
+        arc_length_um - replaced_axis_length_um
+    }
+
+    pub fn inserted_extra_length_um(self, bend_radius_um: f64, amplitude_um: f64) -> f64 {
+        self.u_turns as f64 * amplitude_um + self.fixed_extra_length_term_um(bend_radius_um)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -104,25 +160,29 @@ pub fn plan_fill_box_multi_bump_footprint(
         return Err(MeanderPlanningError::AvailableBoxTooSmall);
     }
 
-    for bumps in (1..=max_bumps).filter(|b| b % 2 == 1) {
-        let n = bumps as f64;
-        let amplitude = (requested_extra_length_um
-            - r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0)))
-            / n;
+    let max_visual_bumps = (max_bumps + 1) / 2;
+    for visual_bumps in 1..=max_visual_bumps {
+        let Some(model) = MeanderTurnModel::from_visual_bumps(visual_bumps) else {
+            continue;
+        };
+        let amplitude = (requested_extra_length_um - model.fixed_extra_length_term_um(r))
+            / model.u_turns as f64;
         if amplitude + EPS < min_height || amplitude - EPS > max_meander_height_um {
             continue;
         }
         let amplitude = amplitude.clamp(min_height, max_meander_height_um);
-        let inserted_extra =
-            n * amplitude + r * (((n + 1.0) * std::f64::consts::PI) - (4.0 * n + 3.0));
+        let inserted_extra = model.inserted_extra_length_um(r, amplitude);
         if (inserted_extra - requested_extra_length_um).abs() > 1.0e-6 {
             return Err(MeanderPlanningError::RequestedExtraLengthDoesNotFit);
         }
         return Ok(AnalyticMeanderFootprint {
-            insertion_width_um: r * (2.0 * n + 3.0),
+            insertion_width_um: model.insertion_width_um(r),
             amplitude_um: amplitude,
             inserted_extra_length_um: inserted_extra,
-            bumps,
+            bumps: model.u_turns,
+            visual_bumps: model.visual_bumps,
+            u_turns: model.u_turns,
+            quarter_turns: model.quarter_turns,
         });
     }
 
@@ -329,19 +389,27 @@ pub fn plan_fill_box_multi_bump_meander(
     }
     // Dense comb with explicit 180-degree turns:
     // two 90-degree connectors only at entry/exit, all internal reversals are U-turns.
-    let max_feasible_bumps = (((segment_length_um / r) - 3.0) * 0.5).floor() as isize;
-    let max_feasible_bumps = (max_feasible_bumps.max(0) as usize).min(config.max_bumps);
-    if max_feasible_bumps == 0 {
+    let mut max_feasible_u_turns = 0usize;
+    let max_visual_bumps = (config.max_bumps + 1) / 2;
+    for visual_bumps in 1..=max_visual_bumps {
+        let Some(model) = MeanderTurnModel::from_visual_bumps(visual_bumps) else {
+            continue;
+        };
+        if model.insertion_width_um(r) <= segment_length_um + EPS {
+            max_feasible_u_turns = model.u_turns;
+        }
+    }
+    if max_feasible_u_turns == 0 {
         return Err(MeanderPlanningError::MaxBumpsTooSmall);
     }
     let footprint = plan_fill_box_multi_bump_footprint(
         config.requested_extra_length_um,
         config.min_bend_radius_um,
         config.min_straight_um,
-        max_feasible_bumps,
+        max_feasible_u_turns,
         depth,
     )?;
-    let num_meanders = footprint.bumps;
+    let num_meanders = footprint.u_turns;
     let amplitude = footprint.amplitude_um;
     let insertion_width_um = footprint.insertion_width_um;
     if insertion_width_um - EPS > segment_length_um {
@@ -472,7 +540,10 @@ pub fn plan_fill_box_multi_bump_meander(
     Ok(AnalyticMeanderPlan {
         centerline,
         inserted_extra_length_um: inserted_extra,
-        bumps: num_meanders,
+        bumps: footprint.u_turns,
+        visual_bumps: footprint.visual_bumps,
+        u_turns: footprint.u_turns,
+        quarter_turns: footprint.quarter_turns,
         side: config.side,
     })
 }
@@ -569,6 +640,41 @@ mod analytic_tests {
         };
         let plan = plan_analytic_meander(seg, b, &cfg).expect("plan should succeed");
         assert_plan_basics(&plan, seg, b);
+    }
+
+    #[test]
+    fn analytic_meander_accepts_exact_width_with_roundoff() {
+        let seg = StraightSegment {
+            start: PhysicalPoint {
+                x_um: 0.0,
+                y_um: 0.0,
+            },
+            end: PhysicalPoint {
+                x_um: 45.0 - 5.0e-10,
+                y_um: 0.0,
+            },
+        };
+        let b = MeanderBox {
+            min_x_um: 0.0,
+            max_x_um: 45.0,
+            min_y_um: -25.0,
+            max_y_um: 0.0,
+        };
+        let cfg = AnalyticMeanderConfig {
+            requested_extra_length_um: 60.0,
+            min_bend_radius_um: 5.0,
+            min_straight_um: 1.0,
+            max_bumps: 7,
+            max_meander_height_um: 80.0,
+            side: MeanderSide::Right,
+            mode: MeanderPlanningMode::FillBoxMultiBump,
+        };
+        let plan = plan_analytic_meander(seg, b, &cfg).expect("plan should succeed");
+        assert_eq!(plan.bumps, 3);
+        assert_eq!(plan.visual_bumps, 2);
+        assert_eq!(plan.u_turns, 3);
+        assert_eq!(plan.quarter_turns, 8);
+        assert!((plan.inserted_extra_length_um - 60.0).abs() <= 1.0e-6);
     }
 
     #[test]
