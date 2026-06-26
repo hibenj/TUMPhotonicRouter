@@ -1069,6 +1069,37 @@ fn auto_meander_probe_to_py_object(
     Ok(d.into())
 }
 
+fn annotate_endpoint_inset_sweep_result(
+    py: Python<'_>,
+    result: &PyObject,
+    selected_endpoint_inset_um: f64,
+    attempted_endpoint_insets_um: &[f64],
+) -> PyResult<String> {
+    let d = result.bind(py).downcast::<PyDict>()?;
+    d.set_item("endpoint_inset_um", selected_endpoint_inset_um)?;
+    d.set_item("endpoint_insets_attempted_um", attempted_endpoint_insets_um)?;
+    d.get_item("status")?
+        .ok_or_else(|| PyRuntimeError::new_err("meander result missing status"))?
+        .extract::<String>()
+}
+
+fn validate_endpoint_inset_candidates(endpoint_insets_um: &[f64]) -> PyResult<()> {
+    if endpoint_insets_um.is_empty() {
+        return Err(PyValueError::new_err(
+            "endpoint_insets_um must not be empty",
+        ));
+    }
+    if endpoint_insets_um
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return Err(PyValueError::new_err(
+            "endpoint_insets_um values must be finite and >= 0",
+        ));
+    }
+    Ok(())
+}
+
 #[pymethods]
 impl PyPhotonicRouter {
     #[pyo3(signature=(min_bend_radius_um=None))]
@@ -3565,6 +3596,62 @@ impl PyPhotonicRouter {
         Ok(d.into())
     }
 
+    #[pyo3(signature=(candidate_centerlines,candidate_registered_opened_cell_indices,candidate_requested_extra_lengths_um,box_depths_um,candidate_max_bumps_by_edge,endpoint_insets_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_auto_analytic_meander_requirement_candidates_registered_opened_endpoint_sweep(
+        &self,
+        py: Python<'_>,
+        candidate_centerlines: Vec<Vec<Vec<(f64, f64)>>>,
+        candidate_registered_opened_cell_indices: Vec<Vec<usize>>,
+        candidate_requested_extra_lengths_um: Vec<f64>,
+        box_depths_um: Vec<f64>,
+        candidate_max_bumps_by_edge: Vec<Vec<usize>>,
+        endpoint_insets_um: Vec<f64>,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        validate_endpoint_inset_candidates(&endpoint_insets_um)?;
+        let mut last_result: Option<PyObject> = None;
+        let mut attempted_endpoint_insets_um: Vec<f64> =
+            Vec::with_capacity(endpoint_insets_um.len());
+        for endpoint_inset_um in &endpoint_insets_um {
+            attempted_endpoint_insets_um.push(*endpoint_inset_um);
+            let result = self.plan_auto_analytic_meander_requirement_candidates_registered_opened(
+                py,
+                candidate_centerlines.clone(),
+                candidate_registered_opened_cell_indices.clone(),
+                candidate_requested_extra_lengths_um.clone(),
+                box_depths_um.clone(),
+                candidate_max_bumps_by_edge.clone(),
+                min_bend_radius_um,
+                min_straight_um,
+                max_meander_height_um,
+                min_segment_length_um,
+                *endpoint_inset_um,
+                clearance_radius_cells,
+                side_policy,
+                planning_mode,
+            )?;
+            let status = annotate_endpoint_inset_sweep_result(
+                py,
+                &result,
+                *endpoint_inset_um,
+                &attempted_endpoint_insets_um,
+            )?;
+            if status == "planned" {
+                return Ok(result);
+            }
+            last_result = Some(result);
+        }
+        last_result
+            .ok_or_else(|| PyRuntimeError::new_err("endpoint inset sweep produced no result"))
+    }
+
     #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
     #[allow(clippy::too_many_arguments)]
     fn plan_auto_analytic_meander_requirement_candidate_indices_registered_opened(
@@ -3836,6 +3923,59 @@ impl PyPhotonicRouter {
         call_wrapper_profile.py_result_build_s += py_result_build_start.elapsed().as_secs_f64();
         call_wrapper_profile.set_item(&d, "wrapper_profile_total")?;
         Ok(d.into())
+    }
+
+    #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,box_depths_um,endpoint_insets_um,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_endpoint_sweep(
+        &self,
+        py: Python<'_>,
+        candidate_geometry_indices: Vec<Vec<usize>>,
+        candidate_requested_extra_lengths_um: Vec<f64>,
+        box_depths_um: Vec<f64>,
+        endpoint_insets_um: Vec<f64>,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        validate_endpoint_inset_candidates(&endpoint_insets_um)?;
+        let mut last_result: Option<PyObject> = None;
+        let mut attempted_endpoint_insets_um: Vec<f64> =
+            Vec::with_capacity(endpoint_insets_um.len());
+        for endpoint_inset_um in &endpoint_insets_um {
+            attempted_endpoint_insets_um.push(*endpoint_inset_um);
+            let result = self
+                .plan_auto_analytic_meander_requirement_candidate_indices_registered_opened(
+                    py,
+                    candidate_geometry_indices.clone(),
+                    candidate_requested_extra_lengths_um.clone(),
+                    box_depths_um.clone(),
+                    min_bend_radius_um,
+                    min_straight_um,
+                    max_meander_height_um,
+                    min_segment_length_um,
+                    *endpoint_inset_um,
+                    clearance_radius_cells,
+                    side_policy,
+                    planning_mode,
+                )?;
+            let status = annotate_endpoint_inset_sweep_result(
+                py,
+                &result,
+                *endpoint_inset_um,
+                &attempted_endpoint_insets_um,
+            )?;
+            if status == "planned" {
+                return Ok(result);
+            }
+            last_result = Some(result);
+        }
+        last_result
+            .ok_or_else(|| PyRuntimeError::new_err("endpoint inset sweep produced no result"))
     }
 
     #[pyo3(signature=(centerline,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
