@@ -83,46 +83,6 @@ class _MeanderRouterProtocol(Protocol):
         registered_opened_cell_indices: list[int],
         max_bumps_by_edge: list[int],
     ) -> list[int]: ...
-    def plan_auto_analytic_meander_for_centerline_depth_sweep_registered_opened(
-        self,
-        centerline: list[tuple[float, float]],
-        registered_opened_cells_index: int,
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
-    def plan_auto_analytic_meander_requirement_candidates_registered_opened(
-        self,
-        candidate_centerlines: list[list[list[tuple[float, float]]]],
-        candidate_registered_opened_cell_indices: list[list[int]],
-        candidate_requested_extra_lengths_um: list[float],
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
-    def plan_auto_analytic_meander_requirement_candidates_registered_opened_endpoint_sweep(
-        self,
-        candidate_centerlines: list[list[list[tuple[float, float]]]],
-        candidate_registered_opened_cell_indices: list[list[int]],
-        candidate_requested_extra_lengths_um: list[float],
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
-    def plan_auto_analytic_meander_requirement_candidates_registered_opened_auto_config(
-        self,
-        candidate_centerlines: list[list[list[tuple[float, float]]]],
-        candidate_registered_opened_cell_indices: list[list[int]],
-        candidate_requested_extra_lengths_um: list[float],
-        candidate_max_bumps_by_edge: list[list[int]],
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
-    def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened(
-        self,
-        candidate_geometry_indices: list[list[int]],
-        candidate_requested_extra_lengths_um: list[float],
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
-    def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_endpoint_sweep(
-        self,
-        candidate_geometry_indices: list[list[int]],
-        candidate_requested_extra_lengths_um: list[float],
-        **kwargs: Any,
-    ) -> dict[str, object]: ...
     def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
         self,
         candidate_geometry_indices: list[list[int]],
@@ -228,33 +188,14 @@ class _MeanderPlannerContext:
         self._add_numeric_profile(self.rust_wrapper_profile, profile)
 
     def registered_requirement_candidate_engine(self) -> str | None:
-        if (
-            hasattr(
-                self.router,
-                "plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config",
-            )
-            and bool(self.registered_geometry_index_by_edge)
-        ):
-            return "rust_registered_geometry_indices_auto_config"
-        if hasattr(
+        if not self.registered_geometry_index_by_edge:
+            return None
+        if not hasattr(
             self.router,
-            "plan_auto_analytic_meander_requirement_candidates_registered_opened_auto_config",
+            "plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config",
         ):
-            return "rust_registered_centerlines_auto_config"
-        if (
-            hasattr(
-                self.router,
-                "plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_endpoint_sweep",
-            )
-            and bool(self.registered_geometry_index_by_edge)
-        ):
-            return "rust_registered_geometry_indices"
-        if hasattr(
-            self.router,
-            "plan_auto_analytic_meander_requirement_candidates_registered_opened_endpoint_sweep",
-        ):
-            return "rust_registered_centerlines"
-        return None
+            return None
+        return "rust_registered_geometry_indices_auto_config"
 
     @staticmethod
     def _add_numeric_profile(target: dict[str, float], profile: object) -> None:
@@ -322,7 +263,6 @@ class _MeanderPlannerContext:
         self,
         *,
         work_items: list[_CandidateWorkItem],
-        box_depths_um: list[float],
         min_straight_um: float,
         min_seg_um: float,
         max_height_um: float,
@@ -332,10 +272,6 @@ class _MeanderPlannerContext:
         candidate_engine = self.registered_requirement_candidate_engine()
         if candidate_engine is None:
             return None
-        use_registered_geometry_indices = candidate_engine.startswith(
-            "rust_registered_geometry_indices",
-        )
-        use_auto_config = candidate_engine.endswith("_auto_config")
         edge_attempts_by_work: list[list[dict[str, object]]] = [
             [] for _ in work_items
         ]
@@ -345,18 +281,13 @@ class _MeanderPlannerContext:
         elapsed_by_work: list[float] = [0.0 for _ in work_items]
         rust_work_indices: list[int] = []
         candidate_geometry_indices: list[list[int]] = []
-        candidate_centerlines: list[list[list[tuple[float, float]]]] = []
-        candidate_registered_indices: list[list[int]] = []
         candidate_requested: list[float] = []
-        candidate_max_bumps_by_edge: list[list[int]] = []
 
         for work_index, work_item in enumerate(work_items):
             if work_item.already_satisfied:
                 continue
             edge_attempts = edge_attempts_by_work[work_index]
             geometry_indices: list[int] = []
-            centerlines: list[list[tuple[float, float]]] = []
-            registered_indices: list[int] = []
             max_bumps_values: list[int] = []
             for candidate_edge_key in work_item.candidate.edge_keys:
                 record = self.by_edge.get(candidate_edge_key)
@@ -377,22 +308,12 @@ class _MeanderPlannerContext:
                     self.registered_open_cell_count_by_edge.get(candidate_edge_key, 0)
                 )
                 edge_attempts.append(attempt_info)
-                if use_registered_geometry_indices:
-                    geometry_index = self.registered_geometry_index_by_edge.get(
-                        candidate_edge_key,
-                    )
-                    if geometry_index is None:
-                        return None
-                    geometry_indices.append(geometry_index)
-                else:
-                    centerline = self.centerline_list_for_edge(candidate_edge_key, record)
-                    registered_index = self.registered_open_cell_index_by_edge.get(
-                        candidate_edge_key,
-                    )
-                    if centerline is None or registered_index is None:
-                        return None
-                    centerlines.append(centerline)
-                    registered_indices.append(registered_index)
+                geometry_index = self.registered_geometry_index_by_edge.get(
+                    candidate_edge_key,
+                )
+                if geometry_index is None:
+                    return None
+                geometry_indices.append(geometry_index)
                 max_bumps_values.append(edge_max_bumps)
                 open_counts_by_work[work_index] += _as_int(
                     attempt_info.get("opened_route_cell_count"),
@@ -400,13 +321,8 @@ class _MeanderPlannerContext:
                 )
             max_bumps_by_work[work_index] = max_bumps_values
             rust_work_indices.append(work_index)
-            if use_registered_geometry_indices:
-                candidate_geometry_indices.append(geometry_indices)
-            else:
-                candidate_centerlines.append(centerlines)
-                candidate_registered_indices.append(registered_indices)
+            candidate_geometry_indices.append(geometry_indices)
             candidate_requested.append(work_item.requested)
-            candidate_max_bumps_by_edge.append(max_bumps_values)
 
         if not rust_work_indices:
             return (
@@ -424,78 +340,21 @@ class _MeanderPlannerContext:
         result: dict[str, object] | None = None
         last_exc: Exception | None = None
         try:
-            if use_registered_geometry_indices:
-                if use_auto_config:
-                    result = cast(
-                        dict[str, object],
-                        self.router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
-                            candidate_geometry_indices,
-                            candidate_requested,
-                            min_bend_radius_um=None,
-                            min_straight_um=min_straight_um,
-                            max_meander_height_um=max_height_um,
-                            min_segment_length_um=min_seg_um,
-                            auto_endpoint_inset_um=auto_endpoint_inset_um,
-                            clearance_radius_cells=self.meander_box_clearance_radius_cells,
-                            side_policy="both",
-                            planning_mode="fill_box_multi_bump",
-                        ),
-                    )
-                else:
-                    result = cast(
-                        dict[str, object],
-                        self.router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_endpoint_sweep(
-                            candidate_geometry_indices,
-                            candidate_requested,
-                            box_depths_um=box_depths_um,
-                            endpoint_insets_um=endpoint_insets_um,
-                            min_bend_radius_um=None,
-                            min_straight_um=min_straight_um,
-                            max_meander_height_um=max_height_um,
-                            min_segment_length_um=min_seg_um,
-                            clearance_radius_cells=self.meander_box_clearance_radius_cells,
-                            side_policy="both",
-                            planning_mode="fill_box_multi_bump",
-                        ),
-                    )
-            else:
-                if use_auto_config:
-                    result = cast(
-                        dict[str, object],
-                        self.router.plan_auto_analytic_meander_requirement_candidates_registered_opened_auto_config(
-                            candidate_centerlines,
-                            candidate_registered_indices,
-                            candidate_requested,
-                            candidate_max_bumps_by_edge,
-                            min_bend_radius_um=None,
-                            min_straight_um=min_straight_um,
-                            max_meander_height_um=max_height_um,
-                            min_segment_length_um=min_seg_um,
-                            auto_endpoint_inset_um=auto_endpoint_inset_um,
-                            clearance_radius_cells=self.meander_box_clearance_radius_cells,
-                            side_policy="both",
-                            planning_mode="fill_box_multi_bump",
-                        ),
-                    )
-                else:
-                    result = cast(
-                        dict[str, object],
-                        self.router.plan_auto_analytic_meander_requirement_candidates_registered_opened_endpoint_sweep(
-                            candidate_centerlines,
-                            candidate_registered_indices,
-                            candidate_requested,
-                            box_depths_um=box_depths_um,
-                            candidate_max_bumps_by_edge=candidate_max_bumps_by_edge,
-                            min_bend_radius_um=None,
-                            min_straight_um=min_straight_um,
-                            max_meander_height_um=max_height_um,
-                            min_segment_length_um=min_seg_um,
-                            endpoint_insets_um=endpoint_insets_um,
-                            clearance_radius_cells=self.meander_box_clearance_radius_cells,
-                            side_policy="both",
-                            planning_mode="fill_box_multi_bump",
-                        ),
-                    )
+            result = cast(
+                dict[str, object],
+                self.router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+                    candidate_geometry_indices,
+                    candidate_requested,
+                    min_bend_radius_um=None,
+                    min_straight_um=min_straight_um,
+                    max_meander_height_um=max_height_um,
+                    min_segment_length_um=min_seg_um,
+                    auto_endpoint_inset_um=auto_endpoint_inset_um,
+                    clearance_radius_cells=self.meander_box_clearance_radius_cells,
+                    side_policy="both",
+                    planning_mode="fill_box_multi_bump",
+                ),
+            )
         except Exception as exc:
             last_exc = exc
         elapsed_s = time.perf_counter() - t_plan_start
@@ -1767,7 +1626,6 @@ def analyze_meander_insertion_for_requirements(
         registered_candidate_engine = context.registered_requirement_candidate_engine()
         requirement_attempt = context.plan_requirement_candidates_registered(
             work_items=work_items,
-            box_depths_um=search_config.box_depths_um,
             min_straight_um=search_config.min_straight_um,
             min_seg_um=search_config.min_segment_um,
             max_height_um=search_config.max_height_um,

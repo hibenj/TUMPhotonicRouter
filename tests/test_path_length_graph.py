@@ -1780,17 +1780,23 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
         ) -> tuple[list[int], list[int], int]:
             return list(range(len(routes))), [len(route.cells) for route in routes], 0
 
-        def plan_auto_analytic_meander_requirement_candidates_registered_opened_auto_config(
+        def register_meander_route_geometries(
             self,
-            candidate_centerlines: list[list[list[tuple[float, float]]]],
-            _candidate_registered_opened_cell_indices: list[list[int]],
+            centerlines: list[list[tuple[float, float]]],
+            _registered_opened_cell_indices: list[int],
+            _max_bumps_by_edge: list[int],
+        ) -> list[int]:
+            return list(range(len(centerlines)))
+
+        def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+            self,
+            candidate_geometry_indices: list[list[int]],
             candidate_requested_extra_lengths_um: list[float],
-            _candidate_max_bumps_by_edge: list[list[int]],
             **_kwargs: object,
         ) -> dict[str, object]:
             requested = float(candidate_requested_extra_lengths_um[0])
             plans = []
-            for edge_index, _centerline in enumerate(candidate_centerlines[0]):
+            for edge_index, _geometry_index in enumerate(candidate_geometry_indices[0]):
                 offset = 10 if edge_index == 0 else 20
                 plans.append(
                     {
@@ -1945,12 +1951,18 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
         ) -> tuple[list[int], list[int], int]:
             return list(range(len(routes))), [len(route.cells) for route in routes], 0
 
-        def plan_auto_analytic_meander_requirement_candidates_registered_opened_auto_config(
+        def register_meander_route_geometries(
             self,
-            candidate_centerlines: list[list[list[tuple[float, float]]]],
-            _candidate_registered_opened_cell_indices: list[list[int]],
+            centerlines: list[list[tuple[float, float]]],
+            _registered_opened_cell_indices: list[int],
+            _max_bumps_by_edge: list[int],
+        ) -> list[int]:
+            return list(range(len(centerlines)))
+
+        def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+            self,
+            candidate_geometry_indices: list[list[int]],
             candidate_requested_extra_lengths_um: list[float],
-            _candidate_max_bumps_by_edge: list[list[int]],
             **_kwargs: object,
         ) -> dict[str, object]:
             requested = float(candidate_requested_extra_lengths_um[0])
@@ -1963,7 +1975,7 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
                         "candidate_index": 0,
                         "status": "no_candidate",
                         "reason": f"no exact meander candidate for {requested}",
-                        "failed_edge_index": len(candidate_centerlines[0]) - 1,
+                        "failed_edge_index": len(candidate_geometry_indices[0]) - 1,
                         "plans": [],
                     }
                 ],
