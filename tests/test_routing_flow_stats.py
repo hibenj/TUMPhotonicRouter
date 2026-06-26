@@ -1,16 +1,21 @@
 from routing_flow import (
     RipupRerouteConfig,
     RoutingFlowStats,
+    SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     _build_arg_parser,
     _format_debug_route_indices,
     _parse_debug_svg_selector,
     run_routing_flow,
 )
+import inspect
 import benchmark_metadata
 from pathlib import Path
 from translation.electrical import ElectricalRoutingConfig
+from translation.route_rust import route_match_and_realize
 from translation.route_rust_types import (
     DEFAULT_BEND_RADIUS_UM,
+    DEFAULT_MEANDER_MAX_HEIGHT_UM,
+    MeanderInsertionConfig,
     RouteAttemptRecord,
     RouteSearchSummary,
     bend_radius_cells_from_um,
@@ -24,6 +29,27 @@ def test_default_bend_radius_is_ten_um_on_routing_grid():
     assert bend_radius_cells_from_um(None, grid_size_um=0.5) == 20
     assert bend_radius_cells_from_um(10.0, grid_size_um=0.5) == 20
     assert bend_radius_cells_from_um(3.0, grid_size_um=0.5) == 6
+
+
+def test_path_length_meander_height_defaults_are_centralized():
+    assert DEFAULT_MEANDER_MAX_HEIGHT_UM == 80.0
+    assert (
+        MeanderInsertionConfig().max_meander_height_um
+        == DEFAULT_MEANDER_MAX_HEIGHT_UM
+    )
+    assert SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM == DEFAULT_MEANDER_MAX_HEIGHT_UM
+    assert (
+        inspect.signature(run_routing_flow)
+        .parameters["path_length_meander_height_um"]
+        .default
+        == DEFAULT_MEANDER_MAX_HEIGHT_UM
+    )
+    assert (
+        inspect.signature(route_match_and_realize)
+        .parameters["path_length_meander_height_um"]
+        .default
+        == DEFAULT_MEANDER_MAX_HEIGHT_UM
+    )
 
 
 def test_routing_flow_populates_stats():

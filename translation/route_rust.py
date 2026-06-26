@@ -51,6 +51,7 @@ from translation.route_rust_records import (
     routed_edge_lengths_from_records,
 )
 from translation.route_rust_types import (
+    DEFAULT_MEANDER_MAX_HEIGHT_UM,
     MeanderInsertionConfig,
     OpticalRouteClearancePolicy,
     RipupRerouteConfig,
@@ -180,7 +181,7 @@ def route_match_and_realize(
     collect_attempt_diagnostics: bool = False,
     include_heater_obstacles: bool = False,
     ripup_reroute_config: RipupRerouteConfig | None = None,
-    path_length_meander_height_um: float = 20.0,
+    path_length_meander_height_um: float = DEFAULT_MEANDER_MAX_HEIGHT_UM,
 ) -> RouteRustPipelineResult:
     """Run Phase A->(optional M1)->B entirely in route_rust."""
     route_obstacle_config = obstacle_config
@@ -357,14 +358,37 @@ def route_match_and_realize(
             time.perf_counter() - t_meander_obstacle_start
         )
 
+        meander_config = MeanderInsertionConfig(
+            enabled=True,
+            max_meander_height_um=float(path_length_meander_height_um),
+        )
+        analysis_info["meander_config"] = {
+            "enabled": bool(meander_config.enabled),
+            "min_candidate_straight_length_um": float(
+                meander_config.min_candidate_straight_length_um
+            ),
+            "max_extra_length_per_region_um": float(
+                meander_config.max_extra_length_per_region_um
+            ),
+            "conservative_legal_check": bool(meander_config.conservative_legal_check),
+            "max_meander_height_um": float(meander_config.max_meander_height_um),
+            "auto_meander_endpoint_inset_um": (
+                None
+                if meander_config.auto_meander_endpoint_inset_um is None
+                else float(meander_config.auto_meander_endpoint_inset_um)
+            ),
+            "endpoint_inset_policy": (
+                "adaptive"
+                if meander_config.auto_meander_endpoint_inset_um is None
+                else "fixed"
+            ),
+        }
+
         t_meander_planning_start = time.perf_counter()
         records_for_realization, meander_report_info = analyze_meander_insertion_for_requirements(
             records_for_realization,
             requirements,
-            config=MeanderInsertionConfig(
-                enabled=True,
-                max_meander_height_um=float(path_length_meander_height_um),
-            ),
+            config=meander_config,
             realization_grid_spec=debug_artifacts.realization_grid_spec,
             allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
             bend_radius_cells=debug_artifacts.realization_bend_radius_cells,

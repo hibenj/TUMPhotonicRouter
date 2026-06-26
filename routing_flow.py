@@ -33,6 +33,7 @@ from translation.route_rust import (
     RipupRerouteConfig,
     route_match_and_realize,
 )
+from translation.route_rust_types import DEFAULT_MEANDER_MAX_HEIGHT_UM
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, ...]
@@ -49,7 +50,7 @@ SCRIPT_ALLOW_45_DEGREE_TURNS = False
 SCRIPT_BEND_RADIUS_UM = 10.0
 SCRIPT_ENABLE_PATH_LENGTH_MATCHING = True
 SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = False
-SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = 80.0
+SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = DEFAULT_MEANDER_MAX_HEIGHT_UM
 SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
@@ -839,7 +840,7 @@ def run_routing_flow(
     show_klayout: bool = False,
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
-    path_length_meander_height_um: float = 20.0,
+    path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     allow_45_degree_turns: bool = True,
     bend_radius_um: float = SCRIPT_BEND_RADIUS_UM,
     enable_jps4: bool = False,

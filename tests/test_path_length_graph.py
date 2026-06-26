@@ -2099,10 +2099,14 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
 
     results = cast(list[dict[str, object]], report["results"])
     entry = results[0]
+    search_config = cast(dict[str, object], report["search_config"])
     assert entry["status"] == "planned"
     assert entry["inserted_extra_length_um"] == pytest.approx(60.0)
     assert cast(float, entry["endpoint_inset_um"]) < 7.0
     assert entry["endpoint_inset_candidates_um"][:3] == [7.0, 5.25, 3.5]
+    assert search_config["max_height_um"] == pytest.approx(40.0)
+    assert search_config["endpoint_inset_policy"] == "adaptive"
+    assert search_config["endpoint_insets_um"] == [7.0, 5.25, 3.5, 1.75, 0.0]
     assert entry["visual_bumps"] == 2
     assert entry["quarter_turns"] == 8
     assert updated[0].meander_auto_plan is not None

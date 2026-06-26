@@ -8,7 +8,12 @@ from typing import Protocol
 
 from gdsfactory.component import Component
 
-from translation.route_rust_types import RoutedNetRecord, _as_float, _as_int
+from translation.route_rust_types import (
+    DEFAULT_MEANDER_MAX_HEIGHT_UM,
+    RoutedNetRecord,
+    _as_float,
+    _as_int,
+)
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 _load_rust_backend = _sob._load_rust_backend
@@ -171,7 +176,10 @@ def realize_routed_net_records(
                     min_bend_radius_um=plan["min_bend_radius_um"],
                     min_straight_um=_as_float(plan["min_straight_um"], 0.0),
                     max_bumps=_as_int(plan["max_bumps"], 8),
-                    max_meander_height_um=_as_float(plan.get("max_meander_height_um", 20.0), 20.0),
+                    max_meander_height_um=_as_float(
+                        plan.get("max_meander_height_um", DEFAULT_MEANDER_MAX_HEIGHT_UM),
+                        DEFAULT_MEANDER_MAX_HEIGHT_UM,
+                    ),
                     box_depth_um=_as_float(plan["box_depth_um"], 20.0),
                     min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
                     clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),

@@ -2104,6 +2104,26 @@ def _meander_search_config(
     )
 
 
+def _meander_search_config_to_debug_dict(
+    search_config: _MeanderSearchConfig,
+) -> dict[str, object]:
+    return {
+        "min_straight_um": float(search_config.min_straight_um),
+        "min_segment_um": float(search_config.min_segment_um),
+        "max_height_um": float(search_config.max_height_um),
+        "box_depths_um": [float(value) for value in search_config.box_depths_um],
+        "endpoint_inset_um": float(search_config.endpoint_inset_um),
+        "endpoint_insets_um": [
+            float(value) for value in search_config.endpoint_insets_um
+        ],
+        "endpoint_inset_policy": (
+            "adaptive"
+            if len(search_config.endpoint_insets_um) > 1
+            else "fixed"
+        ),
+    }
+
+
 def _meander_request_fits_footprint(
     *,
     requested: float,
@@ -3083,6 +3103,7 @@ def analyze_meander_insertion_for_requirements(
             "rust_planner_profile": context.rust_planner_profile,
             "rust_wrapper_profile": context.rust_wrapper_profile,
             "candidate_profile": candidate_profile,
+            "search_config": _meander_search_config_to_debug_dict(search_config),
             "minimum_insertable_extra_length_um": float(min_insertable_extra_um),
             "using_legacy_meander_path": False,
         },
