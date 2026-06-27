@@ -1918,7 +1918,8 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
     assert results[0]["selected_candidate_edge_count"] == 2
     assert results[0]["inserted_extra_length_um"] == pytest.approx(32.0)
     assert results[0]["physical_inserted_extra_length_um"] == pytest.approx(64.0)
-    assert report["planner_calls"] == 2
+    assert report["planner_calls"] == 4
+    assert report["final_planner_calls"] == 2
     assert updated_by_edge[edge_a].meander_auto_plan is not None
     assert updated_by_edge[edge_b].meander_auto_plan is not None
 
@@ -2066,7 +2067,7 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
     results = cast(list[dict[str, object]], report["results"])
     final_plan = cast(dict[str, object], updated[0].meander_auto_plan)
 
-    assert planned_requests == pytest.approx([100.0, 125.0])
+    assert planned_requests == pytest.approx([100.0, 125.0, 125.0])
     assert results[0]["inserted_extra_length_um"] == pytest.approx(100.0)
     assert results[1]["inserted_extra_length_um"] == pytest.approx(25.0)
     assert results[1]["planner_requested_extra_length_um"] == pytest.approx(125.0)
