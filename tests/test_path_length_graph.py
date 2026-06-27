@@ -1923,6 +1923,158 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
     assert updated_by_edge[edge_b].meander_auto_plan is not None
 
 
+def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch):
+    class _RouteObj:
+        def __init__(self) -> None:
+            self.cells = [(1, 1), (2, 2)]
+
+    planned_requests: list[float] = []
+
+    class _FakeRouter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_static_cells(self, _cells: object) -> None:
+            return None
+
+        def add_static_cells(self, _cells: object) -> None:
+            return None
+
+        def route_port_corrected_centerline(
+            self,
+            _route_obj: _RouteObj,
+        ) -> list[tuple[float, float]]:
+            return [(0.0, 10.0), (200.0, 10.0)]
+
+        def register_meander_route_cells_as_static(
+            self,
+            routes: list[_RouteObj],
+            _base_static_cells: list[tuple[int, int]],
+            _route_occupancy_radius_cells: int = 0,
+        ) -> tuple[list[int], list[int], int]:
+            return list(range(len(routes))), [len(route.cells) for route in routes], 0
+
+        def register_meander_route_geometries(
+            self,
+            centerlines: list[list[tuple[float, float]]],
+            _registered_opened_cell_indices: list[int],
+            _max_bumps_by_edge: list[int],
+        ) -> list[int]:
+            return list(range(len(centerlines)))
+
+        def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+            self,
+            candidate_geometry_indices: list[list[int]],
+            candidate_requested_extra_lengths_um: list[float],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            requested = float(candidate_requested_extra_lengths_um[0])
+            planned_requests.append(requested)
+            plan = {
+                "inserted_extra_length_um": requested,
+                "effective_bend_radius_um": 4.0,
+                "primitive_bend_radius_um": 4.0,
+                "selected_box": (0.0, 10.0, 0.0, 10.0),
+                "selected_grid_rect": (10, 10, len(planned_requests), len(planned_requests)),
+                "bumps": 1,
+                "side": "left",
+                "box_depth_um": 10.0,
+                "box_depths_um": [10.0],
+                "endpoint_inset_um": 4.0,
+                "endpoint_insets_um": [4.0],
+                "selected_run_start_index": 0,
+                "selected_run_end_index": 1,
+                "centerline": [(0.0, 0.0), (1.0, 0.0)],
+                "planning_mode": "fill_box_multi_bump",
+            }
+            return {
+                "status": "planned",
+                "selected_candidate_index": 0,
+                "plans": [plan],
+                "candidate_results": [
+                    {
+                        "candidate_index": 0,
+                        "status": "planned",
+                        "reason": "",
+                        "failed_edge_index": None,
+                        "plans": [plan],
+                    }
+                ],
+                "endpoint_inset_um": 4.0,
+                "endpoint_insets_um": [4.0],
+                "box_depths_um": [10.0],
+            }
+
+    class _FakeBackend:
+        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
+        PrimitiveLibraryConfig = staticmethod(
+            lambda *args, **kwargs: ("primitive", args, kwargs)
+        )
+        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
+        PyPhotonicRouter = _FakeRouter
+
+    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: _FakeBackend)
+
+    physical_edge = RoutedEdgeKey(
+        net_name="src_to_gate",
+        source=PortRef(instance="src", port="o1"),
+        target=PortRef(instance="gate", port="i0"),
+    )
+    output_edge = RoutedEdgeKey(
+        net_name="gate_to_out",
+        source=PortRef(instance="gate", port="o1"),
+        target=PortRef(instance="out", port="o1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=physical_edge.net_name,
+            source=physical_edge.source,
+            target=physical_edge.target,
+            route_obj=_RouteObj(),
+            total_length_um=100.0,
+        )
+    ]
+    requirements = [
+        MissingLengthRequirement(edge_key=physical_edge, missing_length_um=100.0),
+        MissingLengthRequirement(edge_key=output_edge, missing_length_um=25.0),
+    ]
+
+    updated, report = analyze_meander_insertion_for_requirements(
+        records,
+        requirements,
+        config=MeanderInsertionConfig(
+            enabled=True,
+            min_candidate_straight_length_um=2.0,
+            auto_meander_endpoint_inset_um=4.0,
+        ),
+        realization_grid_spec=(300, 300, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=True,
+        bend_radius_cells=4,
+        requirement_delay_candidates={
+            output_edge: [
+                DelayInsertionCandidate(
+                    requirement_edge_key=output_edge,
+                    edge_keys=(physical_edge,),
+                    extra_length_um=25.0,
+                    reason="recursive_transparent_serial_upstream",
+                    affected_requirement_edge_keys=(output_edge,),
+                )
+            ]
+        },
+    )
+
+    results = cast(list[dict[str, object]], report["results"])
+    final_plan = cast(dict[str, object], updated[0].meander_auto_plan)
+
+    assert planned_requests == pytest.approx([100.0, 125.0])
+    assert results[0]["inserted_extra_length_um"] == pytest.approx(100.0)
+    assert results[1]["inserted_extra_length_um"] == pytest.approx(25.0)
+    assert results[1]["planner_requested_extra_length_um"] == pytest.approx(125.0)
+    assert results[1]["existing_physical_extra_length_um"] == pytest.approx(100.0)
+    assert results[1]["physical_inserted_delta_um"] == pytest.approx(25.0)
+    assert final_plan["requested_extra_length_um"] == pytest.approx(125.0)
+
+
 def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
     class _RouteObj:
         def __init__(self, name: str):
@@ -2163,13 +2315,21 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
     results = cast(list[dict[str, object]], report["results"])
     entry = results[0]
     search_config = cast(dict[str, object], report["search_config"])
+    endpoint_inset_candidates = cast(
+        list[float],
+        entry["endpoint_inset_candidates_um"],
+    )
+    search_endpoint_insets = cast(
+        list[float],
+        search_config["endpoint_insets_um"],
+    )
     assert entry["status"] == "planned"
     assert entry["inserted_extra_length_um"] == pytest.approx(60.0)
     assert cast(float, entry["endpoint_inset_um"]) < 7.0
-    assert entry["endpoint_inset_candidates_um"][:3] == [7.0, 5.25, 3.5]
+    assert endpoint_inset_candidates[:3] == [7.0, 5.25, 3.5]
     assert search_config["max_height_um"] == pytest.approx(40.0)
     assert search_config["endpoint_inset_policy"] == "adaptive"
-    assert search_config["endpoint_insets_um"] == [7.0, 5.25, 3.5, 1.75, 0.0]
+    assert search_endpoint_insets == [7.0, 5.25, 3.5, 1.75, 0.0]
     assert entry["visual_bumps"] == 2
     assert entry["quarter_turns"] == 8
     assert updated[0].meander_auto_plan is not None

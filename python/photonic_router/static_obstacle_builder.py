@@ -33,6 +33,8 @@ class StaticObstacleMapConfig:
     materialize_cell_sets: bool = True
     populate_obstacle_map: bool = True
     die_bbox: Optional[BBox] = None
+    chip_add_x_um: float = 0.0
+    chip_add_y_um: float = 0.0
     obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = None
     heater_obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = (
         HEATER_METAL_OBSTACLE_LAYERS
@@ -155,14 +157,7 @@ def _build_static_obstacle_map_split_by_heater_clearance(
         raise ValueError("heater_clearance_um is required when splitting heater obstacles")
 
     all_benchmark = extract_benchmark(component, layers=config.obstacle_layers)
-    shared_die_bbox = config.die_bbox
-    if shared_die_bbox is None:
-        shared_die_bbox = make_grid_spec(
-            all_benchmark,
-            grid_size_um=config.grid_size_um,
-            security_margin_um=config.security_margin_um,
-            die_bbox=None,
-        ).die_bbox
+    shared_die_bbox = resolve_die_bbox(all_benchmark, config)
 
     rust_backend = _load_rust_backend()
     waveguide_data = _build_layer_group_static_obstacles(
@@ -393,6 +388,8 @@ def build_static_obstacle_map_python_from_extracted(
         grid_size_um=config.grid_size_um,
         security_margin_um=config.security_margin_um,
         die_bbox=config.die_bbox,
+        chip_add_x_um=config.chip_add_x_um,
+        chip_add_y_um=config.chip_add_y_um,
     )
 
     raw_blocked: Set[GridCell] = set()
@@ -444,6 +441,7 @@ def _build_static_obstacle_map_rust(
     ]
     fallback_without_clear_port_flag = False
     used_legacy_builder_signature = False
+    effective_die_bbox = resolve_die_bbox(benchmark, config)
 
     def _call_rust_builder() -> dict[str, Any]:
         positional_compat_message = (
@@ -466,7 +464,7 @@ def _build_static_obstacle_map_rust(
                 config.clearance_um,
                 config.clearance_metric,
                 config.port_open_radius_um,
-                config.die_bbox,
+                effective_die_bbox,
                 config.obstacle_mode,
                 config.clear_port_open_cells_from_static,
                 config.materialize_bbox_cells,
@@ -490,7 +488,7 @@ def _build_static_obstacle_map_rust(
                     config.clearance_um,
                     config.clearance_metric,
                     config.port_open_radius_um,
-                    config.die_bbox,
+                    effective_die_bbox,
                     config.obstacle_mode,
                     config.clear_port_open_cells_from_static,
                     config.materialize_bbox_cells,
@@ -507,7 +505,7 @@ def _build_static_obstacle_map_rust(
                         config.clearance_um,
                         config.clearance_metric,
                         config.port_open_radius_um,
-                        config.die_bbox,
+                        effective_die_bbox,
                         config.obstacle_mode,
                         config.clear_port_open_cells_from_static,
                     )
@@ -525,7 +523,7 @@ def _build_static_obstacle_map_rust(
                             config.clearance_um,
                             config.clearance_metric,
                             config.port_open_radius_um,
-                            config.die_bbox,
+                            effective_die_bbox,
                             config.obstacle_mode,
                         )
                     except TypeError as exc_without_mode:
@@ -540,7 +538,7 @@ def _build_static_obstacle_map_rust(
                                 config.clearance_um,
                                 config.clearance_metric,
                                 config.port_open_radius_um,
-                                config.die_bbox,
+                                effective_die_bbox,
                             )
                         except TypeError as exc_without_die_bbox:
                             if not _is_compat_error(str(exc_without_die_bbox)):
@@ -719,13 +717,23 @@ def make_grid_spec(
     grid_size_um: float,
     security_margin_um: float,
     die_bbox: Optional[BBox] = None,
+    chip_add_x_um: float = 0.0,
+    chip_add_y_um: float = 0.0,
 ) -> GridSpec:
     """Compute die bounds, grid dimensions, and grid origin."""
 
     if grid_size_um <= 0:
         raise ValueError("grid_size_um must be positive")
 
-    bbox = die_bbox if die_bbox is not None else expand_bbox(benchmark.bbox, security_margin_um)
+    if die_bbox is not None:
+        bbox = die_bbox
+    else:
+        bbox = expand_bbox(benchmark.bbox, security_margin_um)
+        bbox = expand_bbox_xy(
+            bbox,
+            chip_add_x_um=chip_add_x_um,
+            chip_add_y_um=chip_add_y_um,
+        )
     xmin, ymin, xmax, ymax = bbox
     if xmax < xmin or ymax < ymin:
         raise ValueError(f"invalid die bbox: {bbox}")
@@ -742,6 +750,22 @@ def make_grid_spec(
     )
 
 
+def resolve_die_bbox(
+    benchmark: ExtractedBenchmark,
+    config: StaticObstacleMapConfig,
+) -> BBox:
+    """Resolve the effective die bbox used by static obstacle builders."""
+
+    return make_grid_spec(
+        benchmark,
+        grid_size_um=config.grid_size_um,
+        security_margin_um=config.security_margin_um,
+        die_bbox=config.die_bbox,
+        chip_add_x_um=config.chip_add_x_um,
+        chip_add_y_um=config.chip_add_y_um,
+    ).die_bbox
+
+
 def expand_bbox(bbox: BBox, margin_um: float) -> BBox:
     """Expand a physical bbox by `margin_um` on every side."""
 
@@ -752,6 +776,32 @@ def expand_bbox(bbox: BBox, margin_um: float) -> BBox:
         xmax + margin_um,
         ymax + margin_um,
     )
+
+
+def expand_bbox_xy(
+    bbox: BBox,
+    *,
+    chip_add_x_um: float,
+    chip_add_y_um: float,
+) -> BBox:
+    """Expand a physical bbox by independent x/y margins on each side."""
+
+    add_x = _validate_nonnegative_margin(chip_add_x_um, "chip_add_x_um")
+    add_y = _validate_nonnegative_margin(chip_add_y_um, "chip_add_y_um")
+    xmin, ymin, xmax, ymax = bbox
+    return (
+        xmin - add_x,
+        ymin - add_y,
+        xmax + add_x,
+        ymax + add_y,
+    )
+
+
+def _validate_nonnegative_margin(value: float, name: str) -> float:
+    value = float(value)
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"{name} must be a finite non-negative value")
+    return value
 
 
 def physical_to_grid(x: float, y: float, grid: GridSpec) -> GridCell:

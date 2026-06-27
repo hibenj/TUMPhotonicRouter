@@ -82,10 +82,23 @@ def test_die_size_computation_manual_and_automatic():
     assert auto_grid.width == 8
     assert auto_grid.height == 8
 
+    padded_grid = make_grid_spec(
+        benchmark,
+        grid_size_um=0.5,
+        security_margin_um=1.0,
+        chip_add_x_um=2.0,
+        chip_add_y_um=3.0,
+    )
+    assert padded_grid.die_bbox == (-2.0, -2.0, 6.0, 8.0)
+    assert padded_grid.width == 16
+    assert padded_grid.height == 20
+
     manual_grid = make_grid_spec(
         benchmark,
         grid_size_um=0.5,
         security_margin_um=1.0,
+        chip_add_x_um=2.0,
+        chip_add_y_um=3.0,
         die_bbox=(-10.0, -5.0, 0.0, 5.0),
     )
     assert manual_grid.die_bbox == (-10.0, -5.0, 0.0, 5.0)

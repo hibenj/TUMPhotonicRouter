@@ -40,7 +40,7 @@ DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, 
 
 # Edit these values when running `routing_flow.py` directly from an IDE or file.
 # Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "heater_s"
+SCRIPT_BENCHMARK = "heater_s_mod"
 SCRIPT_DEBUG_SVGS: DebugSvgSelector = False  # Examples: True, "all", "5-10", "2,5-10"
 SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
@@ -49,14 +49,16 @@ SCRIPT_SHOW_KLAYOUT = False
 SCRIPT_ALLOW_45_DEGREE_TURNS = False
 SCRIPT_BEND_RADIUS_UM = 10.0
 SCRIPT_ENABLE_PATH_LENGTH_MATCHING = True
-SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = False
+SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = True
 SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = DEFAULT_MEANDER_MAX_HEIGHT_UM
 SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
 SCRIPT_OBSTACLE_MODE = "bounding_boxes"
-SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.0
-SCRIPT_HEATER_CLEARANCE_UM = 5.0
+SCRIPT_WAVEGUIDE_CLEARANCE_UM = 3.0
+SCRIPT_HEATER_CLEARANCE_UM = 10.0
+SCRIPT_CHIP_ADD_X_UM = 0.0
+SCRIPT_CHIP_ADD_Y_UM = 40.0
 SCRIPT_OBSTACLE_CLEARANCE_UM = SCRIPT_WAVEGUIDE_CLEARANCE_UM
 SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC = False
 SCRIPT_ENABLE_RIPUP_REROUTE = True
@@ -595,6 +597,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--chip-add-x-um",
+        type=float,
+        default=SCRIPT_CHIP_ADD_X_UM,
+        metavar="UM",
+        help=(
+            "Extra horizontal chip margin added to both left and right when "
+            "the die bbox is computed automatically "
+            f"(default: {SCRIPT_CHIP_ADD_X_UM})."
+        ),
+    )
+    parser.add_argument(
+        "--chip-add-y-um",
+        type=float,
+        default=SCRIPT_CHIP_ADD_Y_UM,
+        metavar="UM",
+        help=(
+            "Extra vertical chip margin added to both bottom and top when "
+            "the die bbox is computed automatically "
+            f"(default: {SCRIPT_CHIP_ADD_Y_UM})."
+        ),
+    )
+    parser.add_argument(
         "--clear-port-open-cells-from-static",
         type=_parse_bool_flag,
         default=SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC,
@@ -824,6 +848,8 @@ def main(argv: list[str] | None = None) -> Component:
             obstacle_mode=args.obstacle_mode,
             clearance_um=args.waveguide_clearance_um,
             heater_clearance_um=args.heater_clearance_um,
+            chip_add_x_um=args.chip_add_x_um,
+            chip_add_y_um=args.chip_add_y_um,
             clear_port_open_cells_from_static=args.clear_port_open_cells_from_static,
         ),
     )
@@ -1037,6 +1063,8 @@ def run_routing_flow(
     waveguide_clearance_um: float | None = None,
     heater_clearance_um: float | None = None,
     obstacle_clearance_um: float | None = None,
+    chip_add_x_um: float = SCRIPT_CHIP_ADD_X_UM,
+    chip_add_y_um: float = SCRIPT_CHIP_ADD_Y_UM,
     ripup_reroute_config: RipupRerouteConfig | None = None,
     static_obstacle_config: StaticObstacleMapConfig | None = None,
     enable_electrical_routing: bool = False,
@@ -1096,6 +1124,10 @@ def run_routing_flow(
         heater_clearance_um: Static clearance in micrometers for heater/metal
                       obstacles. Defaults to the waveguide clearance.
         obstacle_clearance_um: Deprecated alias for waveguide_clearance_um.
+        chip_add_x_um: Extra horizontal chip margin added to both left and
+                      right when the die bbox is computed automatically.
+        chip_add_y_um: Extra vertical chip margin added to both bottom and top
+                      when the die bbox is computed automatically.
         static_obstacle_config: Optional obstacle builder config. If omitted,
             strict bounding-box static obstacles are used.
         enable_electrical_routing: If True, run the electrical heater-metal
@@ -1144,6 +1176,8 @@ def run_routing_flow(
         obstacle_mode="bounding_boxes",
         clearance_um=float(waveguide_clearance_um),
         heater_clearance_um=float(heater_clearance_um),
+        chip_add_x_um=float(chip_add_x_um),
+        chip_add_y_um=float(chip_add_y_um),
         clear_port_open_cells_from_static=False,
     )
 
