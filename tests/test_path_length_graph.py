@@ -2454,6 +2454,35 @@ def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
     shifted = shifted_plans[0]
     assert shifted["selected_grid_rect"] != selected_rect
 
+    router.clear_registered_meander_reserved_cells()
+    sequence_result = (
+        router.plan_auto_analytic_meander_geometry_sequence_registered_opened_auto_config(
+            [geometry_indices[0], geometry_indices[0]],
+            [
+                kwargs["requested_extra_length_um"],
+                kwargs["requested_extra_length_um"],
+            ],
+            min_bend_radius_um=kwargs["min_bend_radius_um"],
+            min_straight_um=kwargs["min_straight_um"],
+            max_meander_height_um=kwargs["max_meander_height_um"],
+            min_segment_length_um=kwargs["min_segment_length_um"],
+            auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
+            clearance_radius_cells=kwargs["clearance_radius_cells"],
+            side_policy=kwargs["side_policy"],
+            planning_mode=kwargs["planning_mode"],
+        )
+    )
+    assert sequence_result["status"] == "planned"
+    sequence_plans = cast(list[dict[str, object]], sequence_result["plans"])
+    assert len(sequence_plans) == 2
+    assert sequence_plans[0]["inserted_extra_length_um"] == pytest.approx(
+        kwargs["requested_extra_length_um"]
+    )
+    assert sequence_plans[1]["inserted_extra_length_um"] == pytest.approx(
+        kwargs["requested_extra_length_um"]
+    )
+    assert sequence_plans[0]["selected_grid_rect"] != sequence_plans[1]["selected_grid_rect"]
+
 
 def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
     rust_backend = _load_rust_backend()
@@ -2511,6 +2540,7 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
     assert entry.get("effective_bend_radius_um") is not None
     assert float(cast(float, entry["planning_elapsed_s"])) >= 0.0
     assert float(cast(float, report["planner_elapsed_s"])) >= 0.0
+    assert report["final_planning_mode"] == "rust_registered_sequence"
 
 
 def test_meander_planning_requires_registered_rust_planner(monkeypatch):

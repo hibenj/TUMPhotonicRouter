@@ -89,6 +89,12 @@ class _MeanderRouterProtocol(Protocol):
         candidate_requested_extra_lengths_um: list[float],
         **kwargs: Any,
     ) -> dict[str, object]: ...
+    def plan_auto_analytic_meander_geometry_sequence_registered_opened_auto_config(
+        self,
+        geometry_indices: list[int],
+        requested_extra_lengths_um: list[float],
+        **kwargs: Any,
+    ) -> dict[str, object]: ...
     def route_port_corrected_centerline(
         self,
         route: object,
@@ -575,6 +581,149 @@ class _MeanderPlannerContext:
             edge_calls,
             elapsed_s,
             last_exc,
+        )
+
+    def plan_request_sequence_registered(
+        self,
+        *,
+        edge_keys: list[RoutedEdgeKey],
+        planner_requests_by_edge: Mapping[RoutedEdgeKey, float],
+        min_straight_um: float,
+        min_seg_um: float,
+        max_height_um: float,
+        auto_endpoint_inset_um: float | None,
+    ) -> tuple[
+        list[PlannedEdgeInsertion],
+        list[dict[str, object]],
+        list[int],
+        int,
+        int,
+        float,
+        Exception | None,
+    ] | None:
+        if not edge_keys:
+            return ([], [], [], 0, 0, 0.0, None)
+        if not hasattr(
+            self.router,
+            "plan_auto_analytic_meander_geometry_sequence_registered_opened_auto_config",
+        ):
+            return None
+
+        geometry_indices: list[int] = []
+        requested_lengths: list[float] = []
+        attempted_edges: list[dict[str, object]] = []
+        max_bumps_values: list[int] = []
+        open_count = 0
+        for edge_key in edge_keys:
+            record = self.by_edge.get(edge_key)
+            if record is None:
+                return None
+            edge_max_bumps = self.max_bumps_for_edge(edge_key, record)
+            geometry_index = self.registered_geometry_index_by_edge.get(edge_key)
+            if geometry_index is None:
+                return None
+            requested = float(planner_requests_by_edge.get(edge_key, 0.0))
+            geometry_indices.append(geometry_index)
+            requested_lengths.append(requested)
+            opened_count = self.registered_open_cell_count_by_edge.get(edge_key, 0)
+            open_count += opened_count
+            max_bumps_values.append(edge_max_bumps)
+            attempted_edges.append(
+                {
+                    "edge": edge_key_to_dict(edge_key),
+                    "status": "no_candidate",
+                    "reason": "",
+                    "planner_called": True,
+                    "max_bumps": edge_max_bumps,
+                    "opened_route_cell_count": opened_count,
+                }
+            )
+
+        t_plan_start = time.perf_counter()
+        result: dict[str, object] | None = None
+        last_exc: Exception | None = None
+        try:
+            result = cast(
+                dict[str, object],
+                self.router.plan_auto_analytic_meander_geometry_sequence_registered_opened_auto_config(
+                    geometry_indices,
+                    requested_lengths,
+                    min_bend_radius_um=None,
+                    min_straight_um=min_straight_um,
+                    max_meander_height_um=max_height_um,
+                    min_segment_length_um=min_seg_um,
+                    auto_endpoint_inset_um=auto_endpoint_inset_um,
+                    clearance_radius_cells=self.meander_box_clearance_radius_cells,
+                    side_policy="both",
+                    planning_mode="fill_box_multi_bump",
+                ),
+            )
+        except Exception as exc:
+            last_exc = exc
+        elapsed_s = time.perf_counter() - t_plan_start
+        if result is None:
+            if attempted_edges:
+                attempted_edges[0]["reason"] = (
+                    str(last_exc)
+                    if last_exc is not None
+                    else "no exact aggregate meander sequence found"
+                )
+            return ([], attempted_edges, max_bumps_values, open_count, len(edge_keys), elapsed_s, last_exc)
+
+        self.add_rust_planner_profile(result.get("planner_profile_total"))
+        self.add_rust_wrapper_profile(result.get("wrapper_profile_total"))
+        if result.get("status") != "planned":
+            raw_candidate_results = result.get("candidate_results", [])
+            failed_edge_index = 0
+            failed_reason = str(result.get("reason", "no exact aggregate meander sequence found"))
+            if isinstance(raw_candidate_results, list) and raw_candidate_results:
+                raw_first = raw_candidate_results[0]
+                if isinstance(raw_first, Mapping):
+                    failed_edge_index = _as_int(raw_first.get("failed_edge_index"), 0)
+                    failed_reason = str(raw_first.get("reason", failed_reason))
+            if 0 <= failed_edge_index < len(attempted_edges):
+                attempted_edges[failed_edge_index]["reason"] = failed_reason
+            return (
+                [],
+                attempted_edges,
+                max_bumps_values,
+                open_count,
+                min(len(edge_keys), failed_edge_index + 1),
+                elapsed_s,
+                None,
+            )
+
+        raw_plans = cast(list[dict[str, object]], result.get("plans", []))
+        if len(raw_plans) != len(edge_keys):
+            return (
+                [],
+                attempted_edges,
+                max_bumps_values,
+                open_count,
+                len(edge_keys),
+                elapsed_s,
+                RuntimeError("aggregate meander sequence returned wrong plan count"),
+            )
+        plans: list[PlannedEdgeInsertion] = []
+        for edge_key, rr, max_bumps_value, attempt_info in zip(
+            edge_keys,
+            raw_plans,
+            max_bumps_values,
+            attempted_edges,
+        ):
+            record = self.by_edge[edge_key]
+            attempt_info["status"] = "planned"
+            attempt_info["reason"] = ""
+            attempt_info["rejected_box_blocked"] = False
+            plans.append((edge_key, record, rr, True, max_bumps_value, set()))
+        return (
+            plans,
+            attempted_edges,
+            max_bumps_values,
+            open_count,
+            len(edge_keys),
+            elapsed_s,
+            None,
         )
 
     def commit_planned_edge(
@@ -2096,31 +2245,69 @@ def analyze_meander_insertion_for_requirements(
     final_failure_by_edge: dict[RoutedEdgeKey, str] = {}
     final_planner_calls = 0
     final_planner_elapsed_s = 0.0
+    final_planning_mode = "none"
 
-    for edge_key in physical_edge_order:
-        requested = physical_planned_extra_by_edge.get(edge_key, 0.0)
-        if requested <= EXACT_MEANDER_EPS_UM:
-            continue
-        commit_candidate = DelayInsertionCandidate(
-            requirement_edge_key=edge_key,
-            edge_keys=(edge_key,),
-            extra_length_um=requested,
-            reason="aggregate_physical_commit",
-            affected_requirement_edge_keys=(edge_key,),
-        )
-        commit_attempt = final_context.plan_mixed_request_candidate_registered(
-            candidate=commit_candidate,
-            planner_requests_by_edge={edge_key: requested},
-            min_straight_um=search_config.min_straight_um,
-            min_seg_um=search_config.min_segment_um,
-            max_height_um=search_config.max_height_um,
-            auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
-        )
-        if commit_attempt is None:
-            final_failure_by_edge[edge_key] = (
-                "Rust registered PLM planner could not prepare final aggregate input"
+    final_edge_keys = [
+        edge_key
+        for edge_key in physical_edge_order
+        if physical_planned_extra_by_edge.get(edge_key, 0.0) > EXACT_MEANDER_EPS_UM
+    ]
+    final_edge_requests = {
+        edge_key: physical_planned_extra_by_edge[edge_key]
+        for edge_key in final_edge_keys
+    }
+
+    def _commit_final_plans(
+        commit_plans: list[PlannedEdgeInsertion],
+        commit_max_bumps: list[int],
+    ) -> None:
+        for plan_index, (
+            selected_edge_key,
+            record,
+            rr,
+            used_reserved_overlay,
+            candidate_max_bumps,
+            _candidate_route_open_cells,
+        ) in enumerate(commit_plans):
+            requested = final_edge_requests.get(
+                selected_edge_key,
+                _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0),
             )
-            continue
+            final_plan_by_edge[selected_edge_key] = commit_plans[plan_index]
+            committed_requested = _as_float(
+                rr.get("inserted_extra_length_um", requested),
+                requested,
+            )
+            endpoint_inset_um = _as_float(
+                rr.get("endpoint_inset_um", search_config.endpoint_inset_um),
+                search_config.endpoint_inset_um,
+            )
+            final_context.commit_planned_edge(
+                selected_edge_key=selected_edge_key,
+                record=record,
+                rr=rr,
+                requested=committed_requested,
+                used_reserved_overlay=used_reserved_overlay,
+                min_straight_um=search_config.min_straight_um,
+                max_bumps=(
+                    commit_max_bumps[plan_index]
+                    if plan_index < len(commit_max_bumps)
+                    else candidate_max_bumps
+                ),
+                max_height_um=search_config.max_height_um,
+                min_seg_um=search_config.min_segment_um,
+                endpoint_inset_um=endpoint_inset_um,
+            )
+
+    sequence_attempt = final_context.plan_request_sequence_registered(
+        edge_keys=final_edge_keys,
+        planner_requests_by_edge=final_edge_requests,
+        min_straight_um=search_config.min_straight_um,
+        min_seg_um=search_config.min_segment_um,
+        max_height_um=search_config.max_height_um,
+        auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
+    )
+    if sequence_attempt is not None:
         (
             commit_plans,
             _commit_attempted_edges,
@@ -2129,45 +2316,67 @@ def analyze_meander_insertion_for_requirements(
             commit_edge_calls,
             commit_elapsed_s,
             commit_last_exc,
-        ) = commit_attempt
+        ) = sequence_attempt
         final_planner_calls += commit_edge_calls
         final_planner_elapsed_s += commit_elapsed_s
-        if not commit_plans:
-            final_failure_by_edge[edge_key] = (
+        if commit_plans:
+            final_planning_mode = "rust_registered_sequence"
+            _commit_final_plans(commit_plans, commit_max_bumps)
+        elif final_edge_keys:
+            final_failure_by_edge[final_edge_keys[0]] = (
                 str(commit_last_exc)
                 if commit_last_exc is not None
-                else "no exact final aggregate meander candidate found"
+                else "no exact final aggregate meander sequence found"
             )
-            continue
-        (
-            selected_edge_key,
-            record,
-            rr,
-            used_reserved_overlay,
-            candidate_max_bumps,
-            _candidate_route_open_cells,
-        ) = commit_plans[0]
-        final_plan_by_edge[selected_edge_key] = commit_plans[0]
-        committed_requested = _as_float(
-            rr.get("inserted_extra_length_um", requested),
-            requested,
-        )
-        endpoint_inset_um = _as_float(
-            rr.get("endpoint_inset_um", search_config.endpoint_inset_um),
-            search_config.endpoint_inset_um,
-        )
-        final_context.commit_planned_edge(
-            selected_edge_key=selected_edge_key,
-            record=record,
-            rr=rr,
-            requested=committed_requested,
-            used_reserved_overlay=used_reserved_overlay,
-            min_straight_um=search_config.min_straight_um,
-            max_bumps=max(commit_max_bumps, default=candidate_max_bumps),
-            max_height_um=search_config.max_height_um,
-            min_seg_um=search_config.min_segment_um,
-            endpoint_inset_um=endpoint_inset_um,
-        )
+
+    if final_edge_keys and not final_plan_by_edge:
+        final_planning_mode = "rust_registered_per_edge_fallback"
+        for edge_key in final_edge_keys:
+            requested = final_edge_requests[edge_key]
+            commit_candidate = DelayInsertionCandidate(
+                requirement_edge_key=edge_key,
+                edge_keys=(edge_key,),
+                extra_length_um=requested,
+                reason="aggregate_physical_commit",
+                affected_requirement_edge_keys=(edge_key,),
+            )
+            commit_attempt = final_context.plan_mixed_request_candidate_registered(
+                candidate=commit_candidate,
+                planner_requests_by_edge={edge_key: requested},
+                min_straight_um=search_config.min_straight_um,
+                min_seg_um=search_config.min_segment_um,
+                max_height_um=search_config.max_height_um,
+                auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
+            )
+            if commit_attempt is None:
+                final_failure_by_edge[edge_key] = (
+                    "Rust registered PLM planner could not prepare final aggregate input"
+                )
+                continue
+            (
+                commit_plans,
+                _commit_attempted_edges,
+                commit_max_bumps,
+                _commit_open_count,
+                commit_edge_calls,
+                commit_elapsed_s,
+                commit_last_exc,
+            ) = commit_attempt
+            final_planner_calls += commit_edge_calls
+            final_planner_elapsed_s += commit_elapsed_s
+            if not commit_plans:
+                final_failure_by_edge[edge_key] = (
+                    str(commit_last_exc)
+                    if commit_last_exc is not None
+                    else "no exact final aggregate meander candidate found"
+                )
+                continue
+            _commit_final_plans(commit_plans, commit_max_bumps)
+
+    if not final_edge_keys:
+        final_planning_mode = "none"
+    elif final_plan_by_edge and final_planning_mode == "none":
+        final_planning_mode = "rust_registered_sequence"
 
     planner_calls += final_planner_calls
     planner_elapsed_s += final_planner_elapsed_s
@@ -2291,6 +2500,7 @@ def analyze_meander_insertion_for_requirements(
             "requirement_batch_no_candidate": int(requirement_batch_no_candidate),
             "final_planner_calls": int(final_planner_calls),
             "final_planner_elapsed_s": float(final_planner_elapsed_s),
+            "final_planning_mode": final_planning_mode,
             "candidate_engine_counts": dict(candidate_engine_counts),
             "setup_profile": setup_profile,
             "selection_setup_profile": context.setup_profile,
