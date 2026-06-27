@@ -91,6 +91,34 @@ def _format_route_indices(indices: set[int]) -> str:
     return ",".join(ranges)
 
 
+def _centerline_tuple(points: object) -> tuple[tuple[float, float], ...]:
+    if not isinstance(points, list):
+        return ()
+    out: list[tuple[float, float]] = []
+    for point in points:
+        if not isinstance(point, (tuple, list)) or len(point) != 2:
+            return ()
+        try:
+            out.append((float(point[0]), float(point[1])))
+        except (TypeError, ValueError):
+            return ()
+    return tuple(out)
+
+
+def _port_center_um(port: object) -> tuple[float, float] | None:
+    center = getattr(port, "center", None)
+    if center is None:
+        center = getattr(port, "dcenter", None)
+    if center is None:
+        return None
+    try:
+        center_seq = cast(Iterable[Any], center)
+        x_um, y_um = tuple(center_seq)[:2]
+        return (float(x_um), float(y_um))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
 def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
     _meander_impl._load_rust_backend = _load_rust_backend
     return _meander_impl.analyze_meander_insertion_for_requirements(*args, **kwargs)
@@ -1974,12 +2002,52 @@ def route_nets_rust(
             lines.append(f"error={error_text}")
         diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def _record_route(job: RouteJob, route_obj: Any, opened_cells: list[tuple[int, int]]) -> None:
+    def _checked_endpoint_correction(
+        job: RouteJob,
+        route_obj: Any,
+        opened_cells: list[tuple[int, int]],
+        clearance_exempt_cells: list[tuple[int, int]],
+    ) -> tuple[tuple[tuple[float, float], ...], float] | None:
+        source_port = _port_center_um(job.source_port)
+        target_port = _port_center_um(job.target_port)
+        if source_port is None and target_port is None:
+            return None
+        result = router.route_port_corrected_centerline_checked_and_commit(
+            int(job.net_id),
+            route_obj,
+            float(route_width_um),
+            int(commit_radius_cells),
+            int(core_commit_radius_cells),
+            opened_cells,
+            clearance_exempt_cells,
+            source_port_um=source_port,
+            target_port_um=target_port,
+        )
+        if not isinstance(result, dict):
+            result = dict(result)
+        centerline = _centerline_tuple(result.get("centerline"))
+        if not centerline:
+            raise RuntimeError(
+                f"Endpoint correction returned an invalid centerline for {job.net_name}"
+            )
+        corrected_length_um = float(router.centerline_length_um(list(centerline)))
+        return centerline, corrected_length_um
+
+    def _record_route(
+        job: RouteJob,
+        route_obj: Any,
+        opened_cells: list[tuple[int, int]],
+        *,
+        corrected_centerline_um: tuple[tuple[float, float], ...] = (),
+        corrected_total_length_um: float | None = None,
+    ) -> None:
         route_bookkeeping.record_route(
             job,
             route_obj,
             opened_cells,
             route_cells=_route_cells_from_router(job.net_id) if track_dynamic_cells else None,
+            corrected_centerline_um=corrected_centerline_um,
+            corrected_total_length_um=corrected_total_length_um,
         )
 
     def _route_and_commit(
@@ -2241,9 +2309,16 @@ def route_nets_rust(
         )
         _record_elapsed("history_update", history_start)
         owner_lookup_start = _timing_start()
+        owner_lookup_radius_cells = max(
+            int(block_radius_cells),
+            int(commit_radius_cells),
+        )
         candidate_blockers = [
             int(owner)
-            for owner in router.dynamic_owners_for_route(probe_route, block_radius_cells)
+            for owner in router.dynamic_owners_for_route(
+                probe_route,
+                owner_lookup_radius_cells,
+            )
             if int(owner) != job.net_id and int(owner) in route_bookkeeping.records_by_id
         ]
         _record_elapsed("owner_lookup", owner_lookup_start)
@@ -2444,6 +2519,50 @@ def route_nets_rust(
 
         if should_print_route:
             print(f"ok {_route_engine_summary(route_obj)}")
+
+    for net_id in list(route_bookkeeping.route_order):
+        record = route_bookkeeping.records_by_id.get(net_id)
+        job = route_jobs_by_id.get(net_id)
+        if record is None or job is None:
+            continue
+        source_state, target_state, opened_candidate_cells, _, _ = (
+            _states_and_openings(job)
+        )
+        clearance_exempt_cells = sorted(
+            _dynamic_clearance_exempt_cells_for_route(source_state, target_state)
+        )
+        try:
+            correction = _checked_endpoint_correction(
+                job,
+                record.route_obj,
+                sorted(opened_candidate_cells),
+                clearance_exempt_cells,
+            )
+        except RuntimeError as exc:
+            message = (
+                "Checked grid-to-port endpoint correction skipped for net "
+                f"{job.net_name!r}: {exc}"
+            )
+            print("WARNING: " + message)
+            route_bookkeeping.records_by_id[net_id] = replace(
+                record,
+                endpoint_correction_error=message,
+            )
+            continue
+        if correction is None:
+            continue
+        corrected_centerline_um, corrected_total_length_um = correction
+        route_bookkeeping.records_by_id[net_id] = replace(
+            record,
+            total_length_um=corrected_total_length_um,
+            base_total_length_um=(
+                record.base_total_length_um
+                if record.base_total_length_um is not None
+                else float(record.total_length_um)
+            ),
+            corrected_centerline_um=corrected_centerline_um,
+            endpoint_correction_error=None,
+        )
 
     routed_net_records = route_bookkeeping.ordered_records()
     routed_record_keys = [

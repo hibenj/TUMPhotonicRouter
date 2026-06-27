@@ -63,6 +63,13 @@ enum OffsetBumpPlacement {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct OffsetBumpCandidate {
+    pub label: String,
+    pub centerline: Vec<(f64, f64)>,
+    pub placement_is_start: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct PrimitiveCenterlineReplay {
     centerline: Vec<(f64, f64)>,
     straight_runs: Vec<AxisAlignedRun>,
@@ -1094,6 +1101,79 @@ pub fn route_to_port_corrected_centerline(
     Ok(centerline)
 }
 
+pub fn full_straight_offset_bump_candidates(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+) -> Result<Vec<OffsetBumpCandidate>, GeometryError> {
+    let (Some(source), Some(target)) = (source_port_um, target_port_um) else {
+        return Ok(Vec::new());
+    };
+    if !is_finite_point(source) || !is_finite_point(target) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    if route.states.is_empty() {
+        return Err(GeometryError::DegenerateRoute);
+    }
+
+    let replay = route_to_primitive_centerline_with_runs(route, primitives, grid)?;
+    let centerline = replay.centerline;
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+
+    let start_angle = route.states[0].angle % 8;
+    let end_angle = route.states[route.states.len() - 1].angle % 8;
+    if start_angle != end_angle {
+        return Ok(Vec::new());
+    }
+
+    let offset_candidates = if is_full_horizontal_centerline(&centerline)
+        && matches!(start_angle, 0 | 4)
+        && (source.1 - target.1).abs() > EPS
+    {
+        [(2u8, "top"), (6u8, "bottom")]
+    } else if is_full_vertical_centerline(&centerline)
+        && matches!(start_angle, 2 | 6)
+        && (source.0 - target.0).abs() > EPS
+    {
+        [(0u8, "right"), (4u8, "left")]
+    } else {
+        return Ok(Vec::new());
+    };
+
+    let radius_um = infer_90_bend_radius_um(primitives)?;
+    let route_dir = angle_to_unit_vector(start_angle);
+    let mut candidates = Vec::new();
+    for placement in [OffsetBumpPlacement::Start, OffsetBumpPlacement::End] {
+        let placement_label = match placement {
+            OffsetBumpPlacement::Start => "start",
+            OffsetBumpPlacement::End => "end",
+        };
+        for (offset_angle, side_label) in offset_candidates {
+            if let Ok(centerline) = build_compact_four_bend_offset_bump(
+                source,
+                target,
+                start_angle,
+                offset_angle,
+                radius_um,
+                placement,
+            ) {
+                validate_bump_endpoint_tangents(&centerline, route_dir)?;
+                candidates.push(OffsetBumpCandidate {
+                    label: format!("{placement_label}/{side_label}"),
+                    centerline,
+                    placement_is_start: matches!(placement, OffsetBumpPlacement::Start),
+                });
+            }
+        }
+    }
+
+    Ok(candidates)
+}
+
 fn try_apply_shared_axis_port_shift(
     centerline: &mut [(f64, f64)],
     source_port_um: Option<(f64, f64)>,
@@ -1198,12 +1278,12 @@ fn try_apply_full_straight_offset_bump_correction(
         && matches!(start_angle, 0 | 4)
         && (source.1 - target.1).abs() > EPS
     {
-        build_preferred_compact_offset_bump(source, target, start_angle, radius_um)?
+        build_ordered_compact_offset_bump(source, target, start_angle, [2, 6], radius_um)?
     } else if is_full_vertical_centerline(centerline)
         && matches!(start_angle, 2 | 6)
         && (source.0 - target.0).abs() > EPS
     {
-        build_preferred_compact_offset_bump(source, target, start_angle, radius_um)?
+        build_ordered_compact_offset_bump(source, target, start_angle, [0, 4], radius_um)?
     } else {
         return Ok(false);
     };
@@ -1229,21 +1309,27 @@ fn infer_90_bend_radius_um(primitives: &PrimitiveLibrary) -> Result<f64, Geometr
     Err(GeometryError::NoMeanderCandidateSegment)
 }
 
-fn build_preferred_compact_offset_bump(
+fn build_ordered_compact_offset_bump(
     source: (f64, f64),
     target: (f64, f64),
     route_angle: u8,
+    offset_angles: [u8; 2],
     radius_um: f64,
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
+    let route_dir = angle_to_unit_vector(route_angle);
     for placement in [OffsetBumpPlacement::Start, OffsetBumpPlacement::End] {
-        if let Ok(centerline) = build_compact_offset_bump_with_side_retry(
-            source,
-            target,
-            route_angle,
-            radius_um,
-            placement,
-        ) {
-            return Ok(centerline);
+        for offset_angle in offset_angles {
+            if let Ok(centerline) = build_compact_four_bend_offset_bump(
+                source,
+                target,
+                route_angle,
+                offset_angle,
+                radius_um,
+                placement,
+            ) {
+                validate_bump_endpoint_tangents(&centerline, route_dir)?;
+                return Ok(centerline);
+            }
         }
     }
 

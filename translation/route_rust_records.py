@@ -257,6 +257,12 @@ def apply_port_endpoint_corrections(
     """Attach corrected physical centerlines and lengths to routed records."""
     updated: list[RoutedNetRecord] = []
     for record in records:
+        if record.corrected_centerline_um:
+            updated.append(record)
+            continue
+        if record.endpoint_correction_error is not None:
+            updated.append(record)
+            continue
         source_port = record.source_port_center_um
         target_port = record.target_port_center_um
         if source_port is None and target_port is None:
@@ -319,9 +325,16 @@ class RouteBookkeeping:
         opened_cells: list[tuple[int, int]],
         *,
         route_cells: set[tuple[int, int]] | None = None,
+        corrected_centerline_um: tuple[tuple[float, float], ...] = (),
+        corrected_total_length_um: float | None = None,
     ) -> None:
         edge_key = route_edge_key(job)
-        total_length_um = float(getattr(route_obj, "total_length_um"))
+        route_total_length_um = float(getattr(route_obj, "total_length_um"))
+        total_length_um = (
+            float(corrected_total_length_um)
+            if corrected_total_length_um is not None
+            else route_total_length_um
+        )
         self.records_by_id[job.net_id] = RoutedNetRecord(
             net_name=job.net_name,
             source=edge_key.source,
@@ -333,6 +346,10 @@ class RouteBookkeeping:
             target_port_center_um=_port_center_um(job.target_port),
             source_port_orientation_deg=_port_orientation_deg(job.source_port),
             target_port_orientation_deg=_port_orientation_deg(job.target_port),
+            base_total_length_um=(
+                route_total_length_um if corrected_centerline_um else None
+            ),
+            corrected_centerline_um=corrected_centerline_um,
         )
         self.lengths_by_id[job.net_id] = total_length_um
         if self.diagnostics_enabled and route_cells is not None:

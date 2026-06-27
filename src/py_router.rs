@@ -15,6 +15,7 @@ use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
     cells_in_grid_rect as cells_in_grid_rect_rs, centerline_length_um as centerline_length_um_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
+    full_straight_offset_bump_candidates as full_straight_offset_bump_candidates_rs,
     generate_waveguide_polygon as generate_waveguide_polygon_rs,
     meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
@@ -52,7 +53,9 @@ use crate::primitives::{
     create_grid4_unit_grid_primitive_library, create_jps4_unit_grid_primitive_library,
     create_photonic_primitive_library, Primitive, PrimitiveLibrary, PrimitiveLibraryConfig,
 };
-use crate::static_obstacle_builder::{PortInput, PyStaticCellSet, StaticGridSpec};
+use crate::static_obstacle_builder::{
+    rasterize_polygon, PortInput, PyStaticCellSet, StaticGridSpec,
+};
 
 #[pyclass(name = "GridSpec")]
 #[derive(Clone)]
@@ -636,6 +639,137 @@ fn route_core_cells(
     height: i32,
 ) -> Vec<(i32, i32)> {
     inflate_route_cells(center_cells, core_radius_cells, width, height)
+}
+
+fn unique_cells<I>(cells: I) -> Vec<(i32, i32)>
+where
+    I: IntoIterator<Item = (i32, i32)>,
+{
+    let mut out = Vec::new();
+    let mut seen: FxHashSet<CellKey> = FxHashSet::default();
+    for (x, y) in cells {
+        if seen.insert(pack_xy(x, y)) {
+            out.push((x, y));
+        }
+    }
+    out
+}
+
+fn static_grid_from_py_grid(grid: &PyGridSpec) -> StaticGridSpec {
+    StaticGridSpec {
+        width: grid.width as i32,
+        height: grid.height as i32,
+        grid_size_um: grid.grid_size_um,
+        origin: (grid.origin_x_um, grid.origin_y_um),
+        die_bbox: (
+            grid.origin_x_um,
+            grid.origin_y_um,
+            grid.origin_x_um + f64::from(grid.width) * grid.grid_size_um,
+            grid.origin_y_um + f64::from(grid.height) * grid.grid_size_um,
+        ),
+    }
+}
+
+fn centerline_core_cells(
+    centerline: &[(f64, f64)],
+    width_um: f64,
+    static_grid: &StaticGridSpec,
+) -> Result<Vec<(i32, i32)>, GeometryError> {
+    let polygon = generate_waveguide_polygon_rs(centerline, width_um)?;
+    Ok(rasterize_polygon(&polygon, static_grid)
+        .into_iter()
+        .map(unpack_xy)
+        .collect())
+}
+
+fn compact_bump_portion(centerline: &[(f64, f64)], placement_is_start: bool) -> &[(f64, f64)] {
+    if centerline.len() <= 2 {
+        return centerline;
+    }
+    if placement_is_start {
+        &centerline[..centerline.len() - 1]
+    } else {
+        &centerline[1..]
+    }
+}
+
+fn cells_bbox(cells: &[(i32, i32)]) -> Option<(i32, i32, i32, i32)> {
+    let first = cells.first()?;
+    let mut min_x = first.0;
+    let mut max_x = first.0;
+    let mut min_y = first.1;
+    let mut max_y = first.1;
+    for &(x, y) in cells.iter().skip(1) {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    Some((min_x, max_x, min_y, max_y))
+}
+
+fn format_bbox(cells: &[(i32, i32)]) -> String {
+    cells_bbox(cells)
+        .map(|(min_x, max_x, min_y, max_y)| format!("({min_x},{max_x},{min_y},{max_y})"))
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_cell_sample(cells: &[(i32, i32)], limit: usize) -> String {
+    let mut sample = cells.to_vec();
+    sample.sort_unstable();
+    sample.dedup();
+    let text = sample
+        .iter()
+        .take(limit)
+        .map(|(x, y)| format!("({x},{y})"))
+        .collect::<Vec<_>>()
+        .join(",");
+    if sample.len() > limit {
+        format!("{text},...")
+    } else {
+        text
+    }
+}
+
+fn sorted_other_owners_for_cells(
+    obstacle_map: &ObstacleMap,
+    cells: &[(i32, i32)],
+    net_id: u64,
+) -> Vec<u64> {
+    let mut owners: Vec<u64> = obstacle_map
+        .dynamic_owners_for_cells(cells)
+        .into_iter()
+        .filter(|owner| *owner != net_id)
+        .collect();
+    owners.sort_unstable();
+    owners
+}
+
+fn cells_with_other_dynamic_owner(
+    obstacle_map: &ObstacleMap,
+    cells: &[(i32, i32)],
+    clearance_exempt_keys: &FxHashSet<CellKey>,
+    net_id: u64,
+) -> Vec<(i32, i32)> {
+    cells
+        .iter()
+        .copied()
+        .filter(|&(x, y)| {
+            if !obstacle_map.in_bounds(x, y) || !obstacle_map.is_dynamic_blocked(x, y) {
+                return false;
+            }
+            let key = pack_xy(x, y);
+            let allowed_clearance_overlap =
+                clearance_exempt_keys.contains(&key) && !obstacle_map.is_dynamic_core_blocked(x, y);
+            if allowed_clearance_overlap {
+                return false;
+            }
+            obstacle_map
+                .dynamic_owners_for_cells(&[(x, y)])
+                .into_iter()
+                .any(|owner| owner != net_id)
+        })
+        .collect()
 }
 
 fn primitive_kind(p: &Primitive) -> String {
@@ -2454,6 +2588,217 @@ impl PyPhotonicRouter {
             target_port_um,
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
+
+    #[pyo3(signature=(net_id,route,width_um,clearance_radius_cells,core_radius_cells,opened_cells=None,clearance_exempt_cells=None,source_port_um=None,target_port_um=None))]
+    fn route_port_corrected_centerline_checked_and_commit(
+        &mut self,
+        py: Python<'_>,
+        net_id: u64,
+        route: &PyRouteResult,
+        width_um: f64,
+        clearance_radius_cells: i32,
+        core_radius_cells: i32,
+        opened_cells: Option<Vec<(i32, i32)>>,
+        clearance_exempt_cells: Option<Vec<(i32, i32)>>,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) -> PyResult<Py<PyDict>> {
+        let _ = clearance_radius_cells;
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        let candidates = full_straight_offset_bump_candidates_rs(
+            &r,
+            &self.primitives,
+            &grid,
+            source_port_um,
+            target_port_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        if candidates.is_empty() {
+            let centerline = route_to_port_corrected_centerline_rs(
+                &r,
+                &self.primitives,
+                &grid,
+                source_port_um,
+                target_port_um,
+            )
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            let d = PyDict::new_bound(py);
+            d.set_item("centerline", centerline)?;
+            d.set_item("committed_bump", false)?;
+            d.set_item("candidate_index", py.None())?;
+            return Ok(d.into());
+        }
+
+        let static_grid = static_grid_from_py_grid(&self.grid);
+        let width = self.grid.width as i32;
+        let height = self.grid.height as i32;
+        let opened_cell_vec = opened_cells.unwrap_or_default();
+        let opened_keys = pack_cells(&opened_cell_vec);
+        let clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or_default();
+        let clearance_exempt_keys = pack_cells(&clearance_exempt_cell_vec);
+        let old_blocked_cells: Vec<(i32, i32)> = self
+            .obstacle_map
+            .get_net_cells(net_id)
+            .map(|cells| cells.iter().copied().map(unpack_xy).collect())
+            .unwrap_or_default();
+        let old_core_cells = route_core_cells(&r.cells, core_radius_cells, width, height);
+        let commit_clearance_exempt_cell_vec = unique_cells(
+            clearance_exempt_cell_vec
+                .iter()
+                .copied()
+                .chain(old_core_cells.iter().copied()),
+        );
+        let commit_clearance_exempt_keys = pack_cells(&commit_clearance_exempt_cell_vec);
+        let mut rejection_details = Vec::new();
+
+        for (candidate_index, candidate) in candidates.into_iter().enumerate() {
+            let candidate_label = candidate.label;
+            let centerline = candidate.centerline;
+            let bump_centerline = compact_bump_portion(&centerline, candidate.placement_is_start);
+            let candidate_core_cells =
+                centerline_core_cells(bump_centerline, width_um, &static_grid)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            if candidate_core_cells.is_empty() {
+                rejection_details.push(format!(
+                    "#{candidate_index} {candidate_label}: empty core footprint"
+                ));
+                continue;
+            }
+            // A case-4 bump is an endpoint adapter, so its compact footprint is
+            // the local static opening for that port. Dynamic ownership is
+            // still checked below against other committed nets.
+            let local_endpoint_open_keys = pack_cells(&candidate_core_cells);
+            let out_of_bounds: Vec<(i32, i32)> = candidate_core_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
+                .collect();
+            let static_blockers: Vec<(i32, i32)> = candidate_core_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| {
+                    let key = pack_xy(x, y);
+                    self.obstacle_map.in_bounds(x, y)
+                        && self.obstacle_map.is_static_blocked(x, y)
+                        && !opened_keys.contains(&key)
+                        && !local_endpoint_open_keys.contains(&key)
+                })
+                .collect();
+            let dynamic_blockers = cells_with_other_dynamic_owner(
+                &self.obstacle_map,
+                &candidate_core_cells,
+                &clearance_exempt_keys,
+                net_id,
+            );
+            if !out_of_bounds.is_empty()
+                || !static_blockers.is_empty()
+                || !dynamic_blockers.is_empty()
+            {
+                let mut reasons = Vec::new();
+                if !out_of_bounds.is_empty() {
+                    reasons.push(format!(
+                        "out_of_bounds={} bbox={} sample={}",
+                        out_of_bounds.len(),
+                        format_bbox(&out_of_bounds),
+                        format_cell_sample(&out_of_bounds, 8)
+                    ));
+                }
+                if !static_blockers.is_empty() {
+                    reasons.push(format!(
+                        "static_overlap={} bbox={} sample={}",
+                        static_blockers.len(),
+                        format_bbox(&static_blockers),
+                        format_cell_sample(&static_blockers, 8)
+                    ));
+                }
+                if !dynamic_blockers.is_empty() {
+                    let owners = sorted_other_owners_for_cells(
+                        &self.obstacle_map,
+                        &dynamic_blockers,
+                        net_id,
+                    );
+                    reasons.push(format!(
+                        "dynamic_overlap={} owners={owners:?} bbox={} sample={}",
+                        dynamic_blockers.len(),
+                        format_bbox(&dynamic_blockers),
+                        format_cell_sample(&dynamic_blockers, 8)
+                    ));
+                }
+                rejection_details.push(format!(
+                    "#{candidate_index} {candidate_label}: {} core_cells={} core_bbox={}",
+                    reasons.join(", "),
+                    candidate_core_cells.len(),
+                    format_bbox(&candidate_core_cells)
+                ));
+                continue;
+            }
+
+            let candidate_blocked_cells =
+                inflate_route_cells(&candidate_core_cells, core_radius_cells, width, height);
+            let merged_core_cells = unique_cells(
+                old_core_cells
+                    .iter()
+                    .copied()
+                    .chain(candidate_core_cells.iter().copied()),
+            );
+            let merged_blocked_cells = unique_cells(
+                old_blocked_cells
+                    .iter()
+                    .copied()
+                    .chain(candidate_blocked_cells.iter().copied()),
+            );
+
+            if self.obstacle_map.commit_route_with_clearance_overlap(
+                net_id,
+                &merged_core_cells,
+                &merged_blocked_cells,
+                &commit_clearance_exempt_cell_vec,
+            ) {
+                self.invalidate_meander_base_prefix();
+                let d = PyDict::new_bound(py);
+                d.set_item("centerline", centerline)?;
+                d.set_item("committed_bump", true)?;
+                d.set_item("candidate_index", candidate_index)?;
+                d.set_item("candidate_label", candidate_label)?;
+                return Ok(d.into());
+            }
+            let commit_dynamic_blockers = cells_with_other_dynamic_owner(
+                &self.obstacle_map,
+                &merged_core_cells,
+                &commit_clearance_exempt_keys,
+                net_id,
+            );
+            let commit_out_of_bounds: Vec<(i32, i32)> = merged_blocked_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
+                .collect();
+            let commit_owners =
+                sorted_other_owners_for_cells(&self.obstacle_map, &commit_dynamic_blockers, net_id);
+            rejection_details.push(format!(
+                "#{candidate_index} {candidate_label}: commit_rejected dynamic_overlap={} owners={commit_owners:?} dynamic_bbox={} dynamic_sample={} out_of_bounds={} out_of_bounds_bbox={} core_cells={} core_bbox={}",
+                commit_dynamic_blockers.len(),
+                format_bbox(&commit_dynamic_blockers),
+                format_cell_sample(&commit_dynamic_blockers, 8),
+                commit_out_of_bounds.len(),
+                format_bbox(&commit_out_of_bounds),
+                candidate_core_cells.len(),
+                format_bbox(&candidate_core_cells)
+            ));
+        }
+
+        Err(PyRuntimeError::new_err(format!(
+            "No collision-free port endpoint case-4 bump placement found; candidates: {}",
+            rejection_details.join("; ")
+        )))
     }
 
     #[pyo3(signature=(route,width_um,source_port_um=None,target_port_um=None))]

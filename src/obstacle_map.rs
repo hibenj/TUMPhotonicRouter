@@ -366,6 +366,11 @@ impl ObstacleMap {
             .get(&net_id)
             .map(|route| route.iter().copied().collect())
             .unwrap_or_default();
+        let old_core_route_keys: FxHashSet<CellKey> = self
+            .net_core_routes
+            .get(&net_id)
+            .map(|route| route.iter().copied().collect())
+            .unwrap_or_default();
         let clearance_exempt_keys: FxHashSet<CellKey> = clearance_exempt_cells
             .iter()
             .filter_map(|&(x, y)| self.in_bounds(x, y).then_some(pack_xy(x, y)))
@@ -386,8 +391,10 @@ impl ObstacleMap {
             let existing_refs = self.dynamic_obstacles.get(&key).copied().unwrap_or(0);
             let same_net_refs = u16::from(old_route_keys.contains(&key));
             let existing_core_refs = self.dynamic_core_obstacles.get(&key).copied().unwrap_or(0);
+            let same_net_core_refs = u16::from(old_core_route_keys.contains(&key));
+            let other_core_refs = existing_core_refs.saturating_sub(same_net_core_refs);
             let allowed_clearance_overlap =
-                clearance_exempt_keys.contains(&key) && existing_core_refs == 0;
+                clearance_exempt_keys.contains(&key) && other_core_refs == 0;
             if existing_refs > same_net_refs && !allowed_clearance_overlap {
                 return false;
             }

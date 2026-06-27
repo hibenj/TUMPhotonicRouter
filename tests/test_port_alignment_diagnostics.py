@@ -177,12 +177,17 @@ def test_mmi_heater_pass0_characterizes_current_port_alignment():
     )
 
     records_by_name = {record.net_name: record for record in artifacts.routed_net_records}
-    assert records_by_name["gc0_to_mmi0_in1"].total_length_um == pytest.approx(149.0)
-    assert records_by_name["gc1_to_mmi0_in2"].total_length_um == pytest.approx(149.5)
+    first = records_by_name["gc0_to_mmi0_in1"]
+    second = records_by_name["gc1_to_mmi0_in2"]
+    assert first.base_total_length_um == pytest.approx(149.0)
+    assert second.base_total_length_um == pytest.approx(149.5)
+    assert first.total_length_um == pytest.approx(142.19131156954754)
+    assert second.total_length_um == pytest.approx(142.1913115695475)
     assert (
-        records_by_name["gc1_to_mmi0_in2"].total_length_um
-        - records_by_name["gc0_to_mmi0_in1"].total_length_um
-    ) == pytest.approx(0.5)
+        second.total_length_um - first.total_length_um
+    ) == pytest.approx(0.0)
+    _assert_record_uses_corrected_centerline(first)
+    _assert_record_uses_corrected_centerline(second)
 
     diagnostics_by_name = {
         str(entry["net_name"]): entry
@@ -284,3 +289,77 @@ def test_py_router_exposes_endpoint_corrected_centerline_and_polygon():
     assert polygon[0] == pytest.approx(polygon[-1])
     assert min(point[0] for point in polygon) <= 1.2 + 1.0e-9
     assert max(point[0] for point in polygon) >= 5.8 - 1.0e-9
+
+
+def _checked_case4_test_router_and_route(rust_backend):
+    grid = rust_backend.GridSpec(40, 12, 1.0, 0.0, 0.0)
+    primitive = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=1,
+        allow_45_degree_turns=False,
+    )
+    astar = rust_backend.AStarConfig(max_iterations=10_000)
+    router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
+
+    route = router.route_single_net_and_commit(
+        7,
+        rust_backend.State(1, 1, 0),
+        rust_backend.State(21, 1, 0),
+        0,
+        [],
+        0,
+        [],
+        0,
+    )
+    return router, route
+
+
+def test_checked_case4_bump_allows_local_static_port_opening():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(rust_backend)
+    router.add_static_cells([(2, 3), (3, 3)])
+
+    result = router.route_port_corrected_centerline_checked_and_commit(
+        7,
+        route,
+        0.5,
+        0,
+        0,
+        [],
+        [],
+        source_port_um=(1.5, 1.5),
+        target_port_um=(21.5, 2.0),
+    )
+
+    assert result["committed_bump"] is True
+    assert result["candidate_index"] == 0
+
+
+def test_checked_case4_bump_skips_dynamic_blocked_start_top_candidate():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(rust_backend)
+    assert router.commit_route_cells(8, [(2, 3), (3, 3)])
+
+    result = router.route_port_corrected_centerline_checked_and_commit(
+        7,
+        route,
+        0.5,
+        0,
+        0,
+        [],
+        [],
+        source_port_um=(1.5, 1.5),
+        target_port_um=(21.5, 2.0),
+    )
+
+    assert result["committed_bump"] is True
+    assert result["candidate_index"] == 1
+    centerline = tuple((float(x), float(y)) for x, y in result["centerline"])
+    assert centerline[0] == pytest.approx((1.5, 1.5))
+    assert centerline[-1] == pytest.approx((21.5, 2.0))
