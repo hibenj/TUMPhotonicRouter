@@ -145,6 +145,23 @@ class _SelectedMeanderRequirement:
     endpoint_inset_um: float
 
 
+@dataclass
+class _FinalMeanderPlanningResult:
+    updated_records: list[RoutedNetRecord]
+    total_inserted: float
+    total_physical_inserted: float
+    planner_calls: int
+    planner_elapsed_s: float
+    planning_mode: str
+    setup_profile: dict[str, float]
+    selection_setup_profile: dict[str, float]
+    final_setup_profile: dict[str, float]
+    commit_profile: dict[str, float]
+    commit_elapsed_s: float
+    rust_planner_profile: dict[str, float]
+    rust_wrapper_profile: dict[str, float]
+
+
 @dataclass(frozen=True)
 class _MeanderSearchConfig:
     min_straight_um: float
@@ -164,6 +181,17 @@ def _float_list_from_mapping_value(value: object) -> list[float] | None:
         except (TypeError, ValueError):
             return None
     return values
+
+
+def _merged_numeric_profiles(
+    *profiles: Mapping[str, float],
+) -> dict[str, float]:
+    merged: dict[str, float] = {}
+    for profile in profiles:
+        for key, value in profile.items():
+            merged[key] = merged.get(key, 0.0) + float(value)
+    return merged
+
 
 @dataclass
 class _MeanderPlannerContext:
@@ -1587,8 +1615,284 @@ def _longest_axis_aligned_centerline_run_um(
             current = length
             current_axis = axis
             current_line_coord = line_coord
-            current_dir = direction
+        current_dir = direction
     return max(longest, current)
+
+
+def _plan_and_commit_final_physical_meanders(
+    *,
+    selection_context: _MeanderPlannerContext,
+    rust_backend: _RustBackendProtocol,
+    routed_net_records: list[RoutedNetRecord],
+    realization_grid_spec: tuple[int, int, float, float, float],
+    allow_45_degree_turns: bool,
+    bend_radius_cells: int,
+    static_blocked_cells: Iterable[tuple[int, int]] | None,
+    static_blocked_cell_handle: object | None,
+    route_occupancy_radius_cells: int | None,
+    meander_box_clearance_radius_cells: int,
+    route_clearance_radius_cells: int | None,
+    config: MeanderInsertionConfig,
+    search_config: _MeanderSearchConfig,
+    selected_requirements: list[_SelectedMeanderRequirement],
+    physical_edge_order: list[RoutedEdgeKey],
+    physical_planned_extra_by_edge: Mapping[RoutedEdgeKey, float],
+) -> _FinalMeanderPlanningResult:
+    final_context = _build_planner_context(
+        rust_backend=rust_backend,
+        routed_net_records=routed_net_records,
+        realization_grid_spec=realization_grid_spec,
+        allow_45_degree_turns=allow_45_degree_turns,
+        bend_radius_cells=bend_radius_cells,
+        static_blocked_cells=static_blocked_cells,
+        static_blocked_cell_handle=static_blocked_cell_handle,
+        route_occupancy_radius_cells=route_occupancy_radius_cells,
+        meander_box_clearance_radius_cells=meander_box_clearance_radius_cells,
+        route_clearance_radius_cells=route_clearance_radius_cells,
+    )
+    final_plan_by_edge: dict[RoutedEdgeKey, PlannedEdgeInsertion] = {}
+    final_failure_by_edge: dict[RoutedEdgeKey, str] = {}
+    final_planner_calls = 0
+    final_planner_elapsed_s = 0.0
+    final_planning_mode = "none"
+
+    final_edge_keys = [
+        edge_key
+        for edge_key in physical_edge_order
+        if physical_planned_extra_by_edge.get(edge_key, 0.0) > EXACT_MEANDER_EPS_UM
+    ]
+    final_edge_requests = {
+        edge_key: float(physical_planned_extra_by_edge[edge_key])
+        for edge_key in final_edge_keys
+    }
+
+    def _commit_final_plans(
+        commit_plans: list[PlannedEdgeInsertion],
+        commit_max_bumps: list[int],
+    ) -> None:
+        for plan_index, (
+            selected_edge_key,
+            record,
+            rr,
+            used_reserved_overlay,
+            candidate_max_bumps,
+            _candidate_route_open_cells,
+        ) in enumerate(commit_plans):
+            requested = final_edge_requests.get(
+                selected_edge_key,
+                _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0),
+            )
+            final_plan_by_edge[selected_edge_key] = commit_plans[plan_index]
+            committed_requested = _as_float(
+                rr.get("inserted_extra_length_um", requested),
+                requested,
+            )
+            endpoint_inset_um = _as_float(
+                rr.get("endpoint_inset_um", search_config.endpoint_inset_um),
+                search_config.endpoint_inset_um,
+            )
+            final_context.commit_planned_edge(
+                selected_edge_key=selected_edge_key,
+                record=record,
+                rr=rr,
+                requested=committed_requested,
+                used_reserved_overlay=used_reserved_overlay,
+                min_straight_um=search_config.min_straight_um,
+                max_bumps=(
+                    commit_max_bumps[plan_index]
+                    if plan_index < len(commit_max_bumps)
+                    else candidate_max_bumps
+                ),
+                max_height_um=search_config.max_height_um,
+                min_seg_um=search_config.min_segment_um,
+                endpoint_inset_um=endpoint_inset_um,
+            )
+
+    sequence_attempt = final_context.plan_request_sequence_registered(
+        edge_keys=final_edge_keys,
+        planner_requests_by_edge=final_edge_requests,
+        min_straight_um=search_config.min_straight_um,
+        min_seg_um=search_config.min_segment_um,
+        max_height_um=search_config.max_height_um,
+        auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
+    )
+    if sequence_attempt is not None:
+        (
+            commit_plans,
+            _commit_attempted_edges,
+            commit_max_bumps,
+            _commit_open_count,
+            commit_edge_calls,
+            commit_elapsed_s,
+            commit_last_exc,
+        ) = sequence_attempt
+        final_planner_calls += commit_edge_calls
+        final_planner_elapsed_s += commit_elapsed_s
+        if commit_plans:
+            final_planning_mode = "rust_registered_sequence"
+            _commit_final_plans(commit_plans, commit_max_bumps)
+        elif final_edge_keys:
+            final_failure_by_edge[final_edge_keys[0]] = (
+                str(commit_last_exc)
+                if commit_last_exc is not None
+                else "no exact final aggregate meander sequence found"
+            )
+
+    if final_edge_keys and not final_plan_by_edge:
+        final_planning_mode = "rust_registered_per_edge_fallback"
+        for edge_key in final_edge_keys:
+            requested = final_edge_requests[edge_key]
+            commit_candidate = DelayInsertionCandidate(
+                requirement_edge_key=edge_key,
+                edge_keys=(edge_key,),
+                extra_length_um=requested,
+                reason="aggregate_physical_commit",
+                affected_requirement_edge_keys=(edge_key,),
+            )
+            commit_attempt = final_context.plan_mixed_request_candidate_registered(
+                candidate=commit_candidate,
+                planner_requests_by_edge={edge_key: requested},
+                min_straight_um=search_config.min_straight_um,
+                min_seg_um=search_config.min_segment_um,
+                max_height_um=search_config.max_height_um,
+                auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
+            )
+            if commit_attempt is None:
+                final_failure_by_edge[edge_key] = (
+                    "Rust registered PLM planner could not prepare final aggregate input"
+                )
+                continue
+            (
+                commit_plans,
+                _commit_attempted_edges,
+                commit_max_bumps,
+                _commit_open_count,
+                commit_edge_calls,
+                commit_elapsed_s,
+                commit_last_exc,
+            ) = commit_attempt
+            final_planner_calls += commit_edge_calls
+            final_planner_elapsed_s += commit_elapsed_s
+            if not commit_plans:
+                final_failure_by_edge[edge_key] = (
+                    str(commit_last_exc)
+                    if commit_last_exc is not None
+                    else "no exact final aggregate meander candidate found"
+                )
+                continue
+            _commit_final_plans(commit_plans, commit_max_bumps)
+
+    if not final_edge_keys:
+        final_planning_mode = "none"
+    elif final_plan_by_edge and final_planning_mode == "none":
+        final_planning_mode = "rust_registered_sequence"
+
+    total_inserted = 0.0
+    for selected in selected_requirements:
+        missing_final_edges = [
+            edge_key
+            for edge_key in selected.physical_edges
+            if edge_key not in final_plan_by_edge
+        ]
+        if missing_final_edges:
+            reason = final_failure_by_edge.get(
+                missing_final_edges[0],
+                "final aggregate physical meander planning failed",
+            )
+            selected.entry["status"] = "no_candidate"
+            selected.entry["reason"] = reason
+            selected.entry["inserted_extra_length_um"] = 0.0
+            selected.entry["physical_inserted_extra_length_um"] = 0.0
+            selected.entry["physical_inserted_delta_um"] = 0.0
+            selected.entry["unmatched_length_um"] = selected.credit_extra_length
+        else:
+            final_plans = [
+                final_plan_by_edge[edge_key]
+                for edge_key in selected.physical_edges
+            ]
+            representative_rr = final_plans[0][2]
+            final_physical_inserted = sum(
+                _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+                for _, _, rr, _, _, _ in final_plans
+            )
+            selected.entry["final_physical_extra_length_um"] = final_physical_inserted
+            selected.entry["effective_bend_radius_um"] = representative_rr.get(
+                "effective_bend_radius_um"
+            )
+            selected.entry["primitive_bend_radius_um"] = representative_rr.get(
+                "primitive_bend_radius_um"
+            )
+            selected.entry["selected_box"] = representative_rr.get("selected_box")
+            selected.entry["selected_grid_rect"] = representative_rr.get(
+                "selected_grid_rect"
+            )
+            selected.entry["bumps"] = representative_rr.get("bumps")
+            selected.entry["visual_bumps"] = representative_rr.get("visual_bumps")
+            selected.entry["u_turns"] = representative_rr.get("u_turns")
+            selected.entry["quarter_turns"] = representative_rr.get("quarter_turns")
+            selected.entry["side"] = representative_rr.get("side")
+            selected.entry["candidate_runs"] = representative_rr.get("candidate_runs")
+            selected.entry["candidate_intervals"] = representative_rr.get(
+                "candidate_intervals"
+            )
+            selected.entry["selected_interval_length_um"] = representative_rr.get(
+                "selected_interval_length_um"
+            )
+            selected.entry["endpoint_inset_um"] = _as_float(
+                representative_rr.get("endpoint_inset_um", selected.endpoint_inset_um),
+                selected.endpoint_inset_um,
+            )
+            selected.entry["planned_edge"] = edge_key_to_dict(final_plans[0][0])
+            selected.entry["planned_edges"] = [
+                edge_key_to_dict(candidate_edge_key)
+                for candidate_edge_key, *_ in final_plans
+            ]
+            total_inserted += selected.credit_extra_length * len(selected.affected_edges)
+
+        for affected_edge, virtual_entry in selected.virtual_entries:
+            virtual_entry.clear()
+            virtual_entry.update(
+                {
+                    **selected.entry,
+                    "edge": edge_key_to_dict(affected_edge),
+                    "satisfied_by_requirement_edge": edge_key_to_dict(selected.edge_key),
+                }
+            )
+
+    total_physical_inserted = sum(
+        _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+        for _, _, rr, _, _, _ in final_plan_by_edge.values()
+    )
+    setup_profile = _merged_numeric_profiles(
+        selection_context.setup_profile,
+        final_context.setup_profile,
+    )
+    rust_planner_profile = _merged_numeric_profiles(
+        selection_context.rust_planner_profile,
+        final_context.rust_planner_profile,
+    )
+    rust_wrapper_profile = _merged_numeric_profiles(
+        selection_context.rust_wrapper_profile,
+        final_context.rust_wrapper_profile,
+    )
+    return _FinalMeanderPlanningResult(
+        updated_records=[
+            final_context.updated.get(_record_edge_key(record), record)
+            for record in routed_net_records
+        ],
+        total_inserted=total_inserted,
+        total_physical_inserted=total_physical_inserted,
+        planner_calls=final_planner_calls,
+        planner_elapsed_s=final_planner_elapsed_s,
+        planning_mode=final_planning_mode,
+        setup_profile=setup_profile,
+        selection_setup_profile=selection_context.setup_profile,
+        final_setup_profile=final_context.setup_profile,
+        commit_profile=final_context.commit_profile,
+        commit_elapsed_s=float(final_context.commit_elapsed_s),
+        rust_planner_profile=rust_planner_profile,
+        rust_wrapper_profile=rust_wrapper_profile,
+    )
 
 
 def analyze_meander_insertion_for_requirements(
@@ -2229,7 +2533,8 @@ def analyze_meander_insertion_for_requirements(
             )
         )
 
-    final_context = _build_planner_context(
+    final_result = _plan_and_commit_final_physical_meanders(
+        selection_context=context,
         rust_backend=rust_backend,
         routed_net_records=routed_net_records,
         realization_grid_spec=realization_grid_spec,
@@ -2240,246 +2545,19 @@ def analyze_meander_insertion_for_requirements(
         route_occupancy_radius_cells=route_occupancy_radius_cells,
         meander_box_clearance_radius_cells=meander_box_clearance_radius_cells,
         route_clearance_radius_cells=route_clearance_radius_cells,
+        config=config,
+        search_config=search_config,
+        selected_requirements=selected_requirements,
+        physical_edge_order=physical_edge_order,
+        physical_planned_extra_by_edge=physical_planned_extra_by_edge,
     )
-    final_plan_by_edge: dict[RoutedEdgeKey, PlannedEdgeInsertion] = {}
-    final_failure_by_edge: dict[RoutedEdgeKey, str] = {}
-    final_planner_calls = 0
-    final_planner_elapsed_s = 0.0
-    final_planning_mode = "none"
-
-    final_edge_keys = [
-        edge_key
-        for edge_key in physical_edge_order
-        if physical_planned_extra_by_edge.get(edge_key, 0.0) > EXACT_MEANDER_EPS_UM
-    ]
-    final_edge_requests = {
-        edge_key: physical_planned_extra_by_edge[edge_key]
-        for edge_key in final_edge_keys
-    }
-
-    def _commit_final_plans(
-        commit_plans: list[PlannedEdgeInsertion],
-        commit_max_bumps: list[int],
-    ) -> None:
-        for plan_index, (
-            selected_edge_key,
-            record,
-            rr,
-            used_reserved_overlay,
-            candidate_max_bumps,
-            _candidate_route_open_cells,
-        ) in enumerate(commit_plans):
-            requested = final_edge_requests.get(
-                selected_edge_key,
-                _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0),
-            )
-            final_plan_by_edge[selected_edge_key] = commit_plans[plan_index]
-            committed_requested = _as_float(
-                rr.get("inserted_extra_length_um", requested),
-                requested,
-            )
-            endpoint_inset_um = _as_float(
-                rr.get("endpoint_inset_um", search_config.endpoint_inset_um),
-                search_config.endpoint_inset_um,
-            )
-            final_context.commit_planned_edge(
-                selected_edge_key=selected_edge_key,
-                record=record,
-                rr=rr,
-                requested=committed_requested,
-                used_reserved_overlay=used_reserved_overlay,
-                min_straight_um=search_config.min_straight_um,
-                max_bumps=(
-                    commit_max_bumps[plan_index]
-                    if plan_index < len(commit_max_bumps)
-                    else candidate_max_bumps
-                ),
-                max_height_um=search_config.max_height_um,
-                min_seg_um=search_config.min_segment_um,
-                endpoint_inset_um=endpoint_inset_um,
-            )
-
-    sequence_attempt = final_context.plan_request_sequence_registered(
-        edge_keys=final_edge_keys,
-        planner_requests_by_edge=final_edge_requests,
-        min_straight_um=search_config.min_straight_um,
-        min_seg_um=search_config.min_segment_um,
-        max_height_um=search_config.max_height_um,
-        auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
-    )
-    if sequence_attempt is not None:
-        (
-            commit_plans,
-            _commit_attempted_edges,
-            commit_max_bumps,
-            _commit_open_count,
-            commit_edge_calls,
-            commit_elapsed_s,
-            commit_last_exc,
-        ) = sequence_attempt
-        final_planner_calls += commit_edge_calls
-        final_planner_elapsed_s += commit_elapsed_s
-        if commit_plans:
-            final_planning_mode = "rust_registered_sequence"
-            _commit_final_plans(commit_plans, commit_max_bumps)
-        elif final_edge_keys:
-            final_failure_by_edge[final_edge_keys[0]] = (
-                str(commit_last_exc)
-                if commit_last_exc is not None
-                else "no exact final aggregate meander sequence found"
-            )
-
-    if final_edge_keys and not final_plan_by_edge:
-        final_planning_mode = "rust_registered_per_edge_fallback"
-        for edge_key in final_edge_keys:
-            requested = final_edge_requests[edge_key]
-            commit_candidate = DelayInsertionCandidate(
-                requirement_edge_key=edge_key,
-                edge_keys=(edge_key,),
-                extra_length_um=requested,
-                reason="aggregate_physical_commit",
-                affected_requirement_edge_keys=(edge_key,),
-            )
-            commit_attempt = final_context.plan_mixed_request_candidate_registered(
-                candidate=commit_candidate,
-                planner_requests_by_edge={edge_key: requested},
-                min_straight_um=search_config.min_straight_um,
-                min_seg_um=search_config.min_segment_um,
-                max_height_um=search_config.max_height_um,
-                auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
-            )
-            if commit_attempt is None:
-                final_failure_by_edge[edge_key] = (
-                    "Rust registered PLM planner could not prepare final aggregate input"
-                )
-                continue
-            (
-                commit_plans,
-                _commit_attempted_edges,
-                commit_max_bumps,
-                _commit_open_count,
-                commit_edge_calls,
-                commit_elapsed_s,
-                commit_last_exc,
-            ) = commit_attempt
-            final_planner_calls += commit_edge_calls
-            final_planner_elapsed_s += commit_elapsed_s
-            if not commit_plans:
-                final_failure_by_edge[edge_key] = (
-                    str(commit_last_exc)
-                    if commit_last_exc is not None
-                    else "no exact final aggregate meander candidate found"
-                )
-                continue
-            _commit_final_plans(commit_plans, commit_max_bumps)
-
-    if not final_edge_keys:
-        final_planning_mode = "none"
-    elif final_plan_by_edge and final_planning_mode == "none":
-        final_planning_mode = "rust_registered_sequence"
-
-    planner_calls += final_planner_calls
-    planner_elapsed_s += final_planner_elapsed_s
-
-    for selected in selected_requirements:
-        missing_final_edges = [
-            edge_key
-            for edge_key in selected.physical_edges
-            if edge_key not in final_plan_by_edge
-        ]
-        if missing_final_edges:
-            reason = final_failure_by_edge.get(
-                missing_final_edges[0],
-                "final aggregate physical meander planning failed",
-            )
-            selected.entry["status"] = "no_candidate"
-            selected.entry["reason"] = reason
-            selected.entry["inserted_extra_length_um"] = 0.0
-            selected.entry["physical_inserted_extra_length_um"] = 0.0
-            selected.entry["physical_inserted_delta_um"] = 0.0
-            selected.entry["unmatched_length_um"] = selected.credit_extra_length
-        else:
-            final_plans = [
-                final_plan_by_edge[edge_key]
-                for edge_key in selected.physical_edges
-            ]
-            representative_rr = final_plans[0][2]
-            final_physical_inserted = sum(
-                _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
-                for _, _, rr, _, _, _ in final_plans
-            )
-            selected.entry["final_physical_extra_length_um"] = final_physical_inserted
-            selected.entry["effective_bend_radius_um"] = representative_rr.get(
-                "effective_bend_radius_um"
-            )
-            selected.entry["primitive_bend_radius_um"] = representative_rr.get(
-                "primitive_bend_radius_um"
-            )
-            selected.entry["selected_box"] = representative_rr.get("selected_box")
-            selected.entry["selected_grid_rect"] = representative_rr.get(
-                "selected_grid_rect"
-            )
-            selected.entry["bumps"] = representative_rr.get("bumps")
-            selected.entry["visual_bumps"] = representative_rr.get("visual_bumps")
-            selected.entry["u_turns"] = representative_rr.get("u_turns")
-            selected.entry["quarter_turns"] = representative_rr.get("quarter_turns")
-            selected.entry["side"] = representative_rr.get("side")
-            selected.entry["candidate_runs"] = representative_rr.get("candidate_runs")
-            selected.entry["candidate_intervals"] = representative_rr.get(
-                "candidate_intervals"
-            )
-            selected.entry["selected_interval_length_um"] = representative_rr.get(
-                "selected_interval_length_um"
-            )
-            selected.entry["endpoint_inset_um"] = _as_float(
-                representative_rr.get("endpoint_inset_um", selected.endpoint_inset_um),
-                selected.endpoint_inset_um,
-            )
-            selected.entry["planned_edge"] = edge_key_to_dict(final_plans[0][0])
-            selected.entry["planned_edges"] = [
-                edge_key_to_dict(candidate_edge_key)
-                for candidate_edge_key, *_ in final_plans
-            ]
-            total_inserted += selected.credit_extra_length * len(selected.affected_edges)
-
-        for affected_edge, virtual_entry in selected.virtual_entries:
-            virtual_entry.clear()
-            virtual_entry.update(
-                {
-                    **selected.entry,
-                    "edge": edge_key_to_dict(affected_edge),
-                    "satisfied_by_requirement_edge": edge_key_to_dict(selected.edge_key),
-                }
-            )
-
-    total_physical_inserted = sum(
-        _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
-        for _, _, rr, _, _, _ in final_plan_by_edge.values()
-    )
-    def _merged_numeric_profiles(
-        *profiles: Mapping[str, float],
-    ) -> dict[str, float]:
-        merged: dict[str, float] = {}
-        for profile in profiles:
-            for key, value in profile.items():
-                merged[key] = merged.get(key, 0.0) + float(value)
-        return merged
-
-    setup_profile = _merged_numeric_profiles(
-        context.setup_profile,
-        final_context.setup_profile,
-    )
-    rust_planner_profile = _merged_numeric_profiles(
-        context.rust_planner_profile,
-        final_context.rust_planner_profile,
-    )
-    rust_wrapper_profile = _merged_numeric_profiles(
-        context.rust_wrapper_profile,
-        final_context.rust_wrapper_profile,
-    )
+    planner_calls += final_result.planner_calls
+    planner_elapsed_s += final_result.planner_elapsed_s
+    total_inserted = final_result.total_inserted
+    total_physical_inserted = final_result.total_physical_inserted
     total_unmatched = max(0.0, total_requested - total_inserted)
     return (
-        [final_context.updated.get(_record_edge_key(r), r) for r in routed_net_records],
+        final_result.updated_records,
         {
             "results": results,
             "total_requested_extra_length_um": float(total_requested),
@@ -2498,19 +2576,19 @@ def analyze_meander_insertion_for_requirements(
             "requirement_batch_edge_calls": int(requirement_batch_edge_calls),
             "requirement_batch_planned": int(requirement_batch_planned),
             "requirement_batch_no_candidate": int(requirement_batch_no_candidate),
-            "final_planner_calls": int(final_planner_calls),
-            "final_planner_elapsed_s": float(final_planner_elapsed_s),
-            "final_planning_mode": final_planning_mode,
+            "final_planner_calls": int(final_result.planner_calls),
+            "final_planner_elapsed_s": float(final_result.planner_elapsed_s),
+            "final_planning_mode": final_result.planning_mode,
             "candidate_engine_counts": dict(candidate_engine_counts),
-            "setup_profile": setup_profile,
-            "selection_setup_profile": context.setup_profile,
-            "final_setup_profile": final_context.setup_profile,
+            "setup_profile": final_result.setup_profile,
+            "selection_setup_profile": final_result.selection_setup_profile,
+            "final_setup_profile": final_result.final_setup_profile,
             "candidate_setup_profile": context.candidate_setup_profile,
             "candidate_overhead_s": float(context.candidate_overhead_s),
-            "commit_profile": final_context.commit_profile,
-            "commit_elapsed_s": float(final_context.commit_elapsed_s),
-            "rust_planner_profile": rust_planner_profile,
-            "rust_wrapper_profile": rust_wrapper_profile,
+            "commit_profile": final_result.commit_profile,
+            "commit_elapsed_s": float(final_result.commit_elapsed_s),
+            "rust_planner_profile": final_result.rust_planner_profile,
+            "rust_wrapper_profile": final_result.rust_wrapper_profile,
             "candidate_profile": candidate_profile,
             "search_config": _meander_search_config_to_debug_dict(search_config),
             "minimum_insertable_extra_length_um": float(min_insertable_extra_um),
