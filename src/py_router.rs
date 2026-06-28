@@ -45,10 +45,10 @@ use crate::meander::{
 };
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
 use crate::plm::{
-    plan_registered_geometry_request_sequence, plan_registered_geometry_requirement_candidates,
-    plan_registered_geometry_split_request, MeanderPlanningProfileTotals,
-    MeanderWrapperProfileTotals, RegisteredMeanderGeometry, RegisteredPlmContext,
-    RegisteredRequirementResult,
+    plan_registered_geometry_final_requests, plan_registered_geometry_request_sequence,
+    plan_registered_geometry_requirement_candidates, plan_registered_geometry_split_request,
+    MeanderPlanningProfileTotals, MeanderWrapperProfileTotals, RegisteredMeanderGeometry,
+    RegisteredPlmContext, RegisteredRequirementResult,
 };
 use crate::primitives::{
     create_grid4_unit_grid_primitive_library, create_jps4_unit_grid_primitive_library,
@@ -3951,6 +3951,96 @@ impl PyPhotonicRouter {
             min_segment_length_um,
             max_meander_height_um,
         )
+    }
+
+    #[pyo3(signature=(geometry_indices,requested_extra_lengths_um,min_insertable_extra_length_um,max_split_parts=8,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,auto_endpoint_inset_um=None,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_auto_analytic_meander_final_requests_registered_opened_auto_config(
+        &self,
+        py: Python<'_>,
+        geometry_indices: Vec<usize>,
+        requested_extra_lengths_um: Vec<f64>,
+        min_insertable_extra_length_um: f64,
+        max_split_parts: usize,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        auto_endpoint_inset_um: Option<f64>,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
+        let box_depths_um = default_meander_box_depths_um(max_meander_height_um)?;
+        let endpoint_insets_um = default_endpoint_insets_um(
+            effective_radius_um,
+            min_segment_length_um,
+            auto_endpoint_inset_um,
+        )?;
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            self.primitive_cfg.bend_radius_cells,
+            self.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        self.ensure_meander_base_prefix();
+        self.ensure_meander_registered_reserved_index();
+        let plm = self.registered_plm.borrow();
+        let base_prefix = plm
+            .base_prefix
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let final_result = plan_registered_geometry_final_requests(
+            &geometry_indices,
+            &requested_extra_lengths_um,
+            min_insertable_extra_length_um,
+            max_split_parts,
+            &plm.geometries,
+            &plm.open_cells,
+            &plm.open_indices,
+            base_prefix,
+            plm.reserved_index.as_ref(),
+            &grid,
+            self.grid.width as i32,
+            self.grid.height as i32,
+            &box_depths_um,
+            &endpoint_insets_um,
+            auto_endpoint_inset_um.is_some(),
+            effective_radius_um,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            policy,
+            mode,
+        )
+        .map_err(PyValueError::new_err)?;
+
+        let py_result = registered_requirement_result_to_py_object(
+            py,
+            final_result.result,
+            min_bend_radius_um,
+            effective_radius_um,
+            self.primitive_cfg.bend_radius_cells,
+            primitive_bend_radius_um,
+            mode,
+            min_straight_um,
+            min_segment_length_um,
+            max_meander_height_um,
+        )?;
+        let py_result_dict = py_result.bind(py).downcast::<PyDict>()?;
+        py_result_dict.set_item("planning_mode", final_result.planning_mode)?;
+        py_result_dict.set_item("plan_input_indices", final_result.plan_input_indices)?;
+        Ok(py_result)
     }
 
     #[pyo3(signature=(centerline,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]

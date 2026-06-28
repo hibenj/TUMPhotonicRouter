@@ -141,6 +141,21 @@ impl MeanderPlanningProfileTotals {
         self.analytic_plan_calls += profile.analytic_plan_calls;
         self.plan_calls += 1;
     }
+
+    pub fn add_totals(&mut self, other: &MeanderPlanningProfileTotals) {
+        self.total_s += other.total_s;
+        self.run_extraction_s += other.run_extraction_s;
+        self.footprint_s += other.footprint_s;
+        self.free_interval_s += other.free_interval_s;
+        self.box_check_s += other.box_check_s;
+        self.analytic_plan_s += other.analytic_plan_s;
+        self.replacement_check_s += other.replacement_check_s;
+        self.depth_count += other.depth_count;
+        self.run_side_checks += other.run_side_checks;
+        self.box_checks += other.box_checks;
+        self.analytic_plan_calls += other.analytic_plan_calls;
+        self.plan_calls += other.plan_calls;
+    }
 }
 
 #[derive(Clone, Default)]
@@ -226,6 +241,12 @@ impl RegisteredRequirementResult {
             "no_candidate"
         }
     }
+}
+
+pub struct RegisteredFinalPlanningResult {
+    pub result: RegisteredRequirementResult,
+    pub planning_mode: &'static str,
+    pub plan_input_indices: Vec<usize>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -764,4 +785,269 @@ pub fn plan_registered_geometry_split_request(
     }
 
     last_result.ok_or_else(|| "split request produced no candidate result".to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn plan_registered_geometry_final_requests(
+    geometry_indices: &[usize],
+    requested_extra_lengths_um: &[f64],
+    min_insertable_extra_um: f64,
+    max_split_parts: usize,
+    registered_geometries: &[RegisteredMeanderGeometry],
+    registered_open_cells: &[FxHashSet<CellKey>],
+    registered_open_indices: &[SparseCellIndex],
+    base_prefix: &DenseOccupancyPrefix,
+    reserved_index: Option<&SparseCellIndex>,
+    grid: &GeometryGridSpec,
+    grid_width: i32,
+    grid_height: i32,
+    box_depths_um: &[f64],
+    endpoint_insets_um: &[f64],
+    fixed_endpoint_inset: bool,
+    effective_radius_um: f64,
+    min_straight_um: f64,
+    max_meander_height_um: f64,
+    min_segment_length_um: f64,
+    clearance_radius_cells: i32,
+    side_policy: AutoMeanderSidePolicy,
+    mode: MeanderPlanningMode,
+) -> Result<RegisteredFinalPlanningResult, String> {
+    if geometry_indices.len() != requested_extra_lengths_um.len() {
+        return Err("geometry and requested length inputs must have matching lengths".into());
+    }
+    if geometry_indices.is_empty() {
+        return Ok(RegisteredFinalPlanningResult {
+            result: RegisteredRequirementResult {
+                selected_candidate_index: Some(0),
+                candidate_results: vec![RegisteredRequirementCandidateResult {
+                    candidate_index: 0,
+                    plans: Vec::new(),
+                    candidate_runs: 0,
+                    candidate_intervals: 0,
+                    rejected_box_blocked: 0,
+                    rejected_planning_failed: 0,
+                    rejected_exact_length_mismatch: 0,
+                    rejected_too_short: 0,
+                    planner_profile_total: MeanderPlanningProfileTotals::default(),
+                    wrapper_profile_total: MeanderWrapperProfileTotals::default(),
+                    failed_reason: None,
+                    failed_edge_index: None,
+                }],
+                planner_profile_total: MeanderPlanningProfileTotals::default(),
+                wrapper_profile_total: MeanderWrapperProfileTotals::default(),
+                endpoint_inset_um: endpoint_insets_um.first().copied().unwrap_or(0.0),
+                attempted_endpoint_insets_um: Vec::new(),
+                box_depths_um: box_depths_um.to_vec(),
+                endpoint_insets_um: endpoint_insets_um.to_vec(),
+                fixed_endpoint_inset,
+            },
+            planning_mode: "none",
+            plan_input_indices: Vec::new(),
+        });
+    }
+
+    let sequence_result = plan_registered_geometry_request_sequence(
+        geometry_indices,
+        requested_extra_lengths_um,
+        registered_geometries,
+        registered_open_cells,
+        registered_open_indices,
+        base_prefix,
+        reserved_index,
+        grid,
+        grid_width,
+        grid_height,
+        box_depths_um,
+        endpoint_insets_um,
+        fixed_endpoint_inset,
+        effective_radius_um,
+        min_straight_um,
+        max_meander_height_um,
+        min_segment_length_um,
+        clearance_radius_cells,
+        side_policy,
+        mode,
+    )?;
+    if sequence_result.selected_candidate_index.is_some() {
+        return Ok(RegisteredFinalPlanningResult {
+            result: sequence_result,
+            planning_mode: "rust_registered_sequence",
+            plan_input_indices: (0..geometry_indices.len()).collect(),
+        });
+    }
+
+    let mut aggregate_candidate = RegisteredRequirementCandidateResult {
+        candidate_index: 0,
+        plans: Vec::new(),
+        candidate_runs: 0,
+        candidate_intervals: 0,
+        rejected_box_blocked: 0,
+        rejected_planning_failed: 0,
+        rejected_exact_length_mismatch: 0,
+        rejected_too_short: 0,
+        planner_profile_total: MeanderPlanningProfileTotals::default(),
+        wrapper_profile_total: MeanderWrapperProfileTotals::default(),
+        failed_reason: None,
+        failed_edge_index: None,
+    };
+    let mut aggregate_planner_profile = MeanderPlanningProfileTotals::default();
+    let mut aggregate_wrapper_profile = MeanderWrapperProfileTotals::default();
+    let mut plan_input_indices = Vec::new();
+    let mut planning_mode = "rust_registered_per_edge_fallback";
+    let mut attempted_endpoint_insets_um = Vec::new();
+
+    for (input_index, (geometry_index, requested_extra_length_um)) in geometry_indices
+        .iter()
+        .zip(requested_extra_lengths_um.iter())
+        .enumerate()
+    {
+        let direct_result = plan_registered_geometry_request_sequence(
+            &[*geometry_index],
+            &[*requested_extra_length_um],
+            registered_geometries,
+            registered_open_cells,
+            registered_open_indices,
+            base_prefix,
+            reserved_index,
+            grid,
+            grid_width,
+            grid_height,
+            box_depths_um,
+            endpoint_insets_um,
+            fixed_endpoint_inset,
+            effective_radius_um,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy,
+            mode,
+        )?;
+        aggregate_planner_profile.add_totals(&direct_result.planner_profile_total);
+        aggregate_wrapper_profile.add(&direct_result.wrapper_profile_total);
+        attempted_endpoint_insets_um
+            .extend(direct_result.attempted_endpoint_insets_um.iter().copied());
+        if let Some(candidate) = direct_result.selected_candidate_index.and_then(|selected| {
+            direct_result
+                .candidate_results
+                .iter()
+                .find(|c| c.candidate_index == selected)
+        }) {
+            aggregate_candidate.candidate_runs += candidate.candidate_runs;
+            aggregate_candidate.candidate_intervals += candidate.candidate_intervals;
+            aggregate_candidate.rejected_box_blocked += candidate.rejected_box_blocked;
+            aggregate_candidate.rejected_planning_failed += candidate.rejected_planning_failed;
+            aggregate_candidate.rejected_exact_length_mismatch +=
+                candidate.rejected_exact_length_mismatch;
+            aggregate_candidate.rejected_too_short += candidate.rejected_too_short;
+            aggregate_candidate
+                .planner_profile_total
+                .add_totals(&candidate.planner_profile_total);
+            aggregate_candidate
+                .wrapper_profile_total
+                .add(&candidate.wrapper_profile_total);
+            for plan in &candidate.plans {
+                aggregate_candidate
+                    .plans
+                    .push(RegisteredRequirementEdgePlan {
+                        plan: plan.plan.clone(),
+                        endpoint_inset_um: plan.endpoint_inset_um,
+                    });
+                plan_input_indices.push(input_index);
+            }
+            continue;
+        }
+
+        let split_result = plan_registered_geometry_split_request(
+            *geometry_index,
+            *requested_extra_length_um,
+            min_insertable_extra_um,
+            max_split_parts,
+            registered_geometries,
+            registered_open_cells,
+            registered_open_indices,
+            base_prefix,
+            reserved_index,
+            grid,
+            grid_width,
+            grid_height,
+            box_depths_um,
+            endpoint_insets_um,
+            fixed_endpoint_inset,
+            effective_radius_um,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy,
+            mode,
+        )?;
+        aggregate_planner_profile.add_totals(&split_result.planner_profile_total);
+        aggregate_wrapper_profile.add(&split_result.wrapper_profile_total);
+        attempted_endpoint_insets_um
+            .extend(split_result.attempted_endpoint_insets_um.iter().copied());
+        if let Some(candidate) = split_result.selected_candidate_index.and_then(|selected| {
+            split_result
+                .candidate_results
+                .iter()
+                .find(|c| c.candidate_index == selected)
+        }) {
+            planning_mode = "rust_registered_split_route_runs";
+            aggregate_candidate.candidate_runs += candidate.candidate_runs;
+            aggregate_candidate.candidate_intervals += candidate.candidate_intervals;
+            aggregate_candidate.rejected_box_blocked += candidate.rejected_box_blocked;
+            aggregate_candidate.rejected_planning_failed += candidate.rejected_planning_failed;
+            aggregate_candidate.rejected_exact_length_mismatch +=
+                candidate.rejected_exact_length_mismatch;
+            aggregate_candidate.rejected_too_short += candidate.rejected_too_short;
+            aggregate_candidate
+                .planner_profile_total
+                .add_totals(&candidate.planner_profile_total);
+            aggregate_candidate
+                .wrapper_profile_total
+                .add(&candidate.wrapper_profile_total);
+            for plan in &candidate.plans {
+                aggregate_candidate
+                    .plans
+                    .push(RegisteredRequirementEdgePlan {
+                        plan: plan.plan.clone(),
+                        endpoint_inset_um: plan.endpoint_inset_um,
+                    });
+                plan_input_indices.push(input_index);
+            }
+            continue;
+        }
+
+        let failed_reason = split_result
+            .candidate_results
+            .last()
+            .and_then(|candidate| candidate.failed_reason.clone())
+            .or_else(|| {
+                direct_result
+                    .candidate_results
+                    .last()
+                    .and_then(|candidate| candidate.failed_reason.clone())
+            })
+            .unwrap_or_else(|| "no exact final aggregate meander candidate found".to_string());
+        aggregate_candidate.failed_reason = Some(failed_reason);
+        aggregate_candidate.failed_edge_index = Some(input_index);
+        break;
+    }
+
+    let selected_candidate_index = aggregate_candidate.failed_reason.is_none().then_some(0);
+    Ok(RegisteredFinalPlanningResult {
+        result: RegisteredRequirementResult {
+            selected_candidate_index,
+            candidate_results: vec![aggregate_candidate],
+            planner_profile_total: aggregate_planner_profile,
+            wrapper_profile_total: aggregate_wrapper_profile,
+            endpoint_inset_um: endpoint_insets_um.first().copied().unwrap_or(0.0),
+            attempted_endpoint_insets_um,
+            box_depths_um: box_depths_um.to_vec(),
+            endpoint_insets_um: endpoint_insets_um.to_vec(),
+            fixed_endpoint_inset,
+        },
+        planning_mode,
+        plan_input_indices,
+    })
 }

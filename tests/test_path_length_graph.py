@@ -1960,6 +1960,59 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
                 "box_depths_um": [10.0],
             }
 
+        def plan_auto_analytic_meander_final_requests_registered_opened_auto_config(
+            self,
+            geometry_indices: list[int],
+            requested_extra_lengths_um: list[float],
+            _min_insertable_extra_length_um: float,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            plans = []
+            plan_input_indices = []
+            for input_index, (_geometry_index, requested) in enumerate(
+                zip(geometry_indices, requested_extra_lengths_um)
+            ):
+                offset = 10 if input_index == 0 else 20
+                plans.append(
+                    {
+                        "inserted_extra_length_um": float(requested),
+                        "effective_bend_radius_um": 4.0,
+                        "primitive_bend_radius_um": 4.0,
+                        "selected_box": (0.0, 10.0, 0.0, 10.0),
+                        "selected_grid_rect": (offset, offset, offset, offset),
+                        "bumps": 1,
+                        "side": "left",
+                        "box_depth_um": 10.0,
+                        "box_depths_um": [10.0],
+                        "endpoint_inset_um": 4.0,
+                        "endpoint_insets_um": [4.0],
+                        "selected_run_start_index": 0,
+                        "selected_run_end_index": 1,
+                        "centerline": [(0.0, 0.0), (1.0, 0.0)],
+                        "planning_mode": "fill_box_multi_bump",
+                    }
+                )
+                plan_input_indices.append(input_index)
+            return {
+                "status": "planned",
+                "selected_candidate_index": 0,
+                "plans": plans,
+                "plan_input_indices": plan_input_indices,
+                "planning_mode": "rust_registered_sequence",
+                "candidate_results": [
+                    {
+                        "candidate_index": 0,
+                        "status": "planned",
+                        "reason": "",
+                        "failed_edge_index": None,
+                        "plans": plans,
+                    }
+                ],
+                "endpoint_inset_um": 4.0,
+                "endpoint_insets_um": [4.0],
+                "box_depths_um": [10.0],
+            }
+
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
         PrimitiveLibraryConfig = staticmethod(
@@ -2117,6 +2170,52 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
                 "status": "planned",
                 "selected_candidate_index": 0,
                 "plans": [plan],
+                "candidate_results": [
+                    {
+                        "candidate_index": 0,
+                        "status": "planned",
+                        "reason": "",
+                        "failed_edge_index": None,
+                        "plans": [plan],
+                    }
+                ],
+                "endpoint_inset_um": 4.0,
+                "endpoint_insets_um": [4.0],
+                "box_depths_um": [10.0],
+            }
+
+        def plan_auto_analytic_meander_final_requests_registered_opened_auto_config(
+            self,
+            geometry_indices: list[int],
+            requested_extra_lengths_um: list[float],
+            _min_insertable_extra_length_um: float,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            requested = float(requested_extra_lengths_um[0])
+            planned_requests.append(requested)
+            plan = {
+                "inserted_extra_length_um": requested,
+                "effective_bend_radius_um": 4.0,
+                "primitive_bend_radius_um": 4.0,
+                "selected_box": (0.0, 10.0, 0.0, 10.0),
+                "selected_grid_rect": (10, 10, len(planned_requests), len(planned_requests)),
+                "bumps": 1,
+                "side": "left",
+                "box_depth_um": 10.0,
+                "box_depths_um": [10.0],
+                "endpoint_inset_um": 4.0,
+                "endpoint_insets_um": [4.0],
+                "selected_run_start_index": 0,
+                "selected_run_end_index": 1,
+                "centerline": [(0.0, 0.0), (1.0, 0.0)],
+                "planning_mode": "fill_box_multi_bump",
+            }
+            return {
+                "status": "planned",
+                "selected_candidate_index": 0,
+                "plans": [plan],
+                "plan_input_indices": [0],
+                "planning_mode": "rust_registered_sequence",
                 "candidate_results": [
                     {
                         "candidate_index": 0,
