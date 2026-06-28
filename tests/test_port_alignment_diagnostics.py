@@ -425,6 +425,44 @@ def test_checked_case4_bump_skips_dynamic_blocked_start_top_candidate():
     assert centerline[-1] == pytest.approx((21.5, 2.0))
 
 
+def test_batch_checked_endpoint_correction_returns_per_net_metadata():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(rust_backend)
+    assert router.commit_route_cells(8, [(2, 3), (3, 3)])
+
+    results = router.apply_checked_endpoint_corrections_and_commit(
+        [
+            (
+                7,
+                route,
+                [],
+                [],
+                (1.5, 1.5),
+                (21.5, 2.0),
+            )
+        ],
+        0.5,
+        0,
+        0,
+        False,
+    )
+
+    assert len(results) == 1
+    result = dict(results[0])
+    assert result["net_id"] == 7
+    assert result["error"] is None
+    assert result["committed_bump"] is True
+    assert result["candidate_index"] == 1
+    assert "bottom" in result["candidate_label"]
+    assert result["total_length_um"] > 0.0
+    centerline = tuple((float(x), float(y)) for x, y in result["centerline"])
+    assert centerline[0] == pytest.approx((1.5, 1.5))
+    assert centerline[-1] == pytest.approx((21.5, 2.0))
+
+
 def test_checked_case4_bump_with_45_enabled_uses_clear_mirrored_side():
     rust_backend = _load_rust_backend()
     if rust_backend is None:

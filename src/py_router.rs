@@ -512,6 +512,13 @@ struct NativeRouteAttempt {
     ripup_ids: Vec<u64>,
 }
 
+struct NativeEndpointCorrection {
+    centerline: Vec<(f64, f64)>,
+    committed_bump: bool,
+    candidate_index: Option<usize>,
+    candidate_label: Option<String>,
+}
+
 fn pack_cells(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
     cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect()
 }
@@ -1931,6 +1938,214 @@ impl PyPhotonicRouter {
             self.grid.height as i32,
         );
         self.add_history_cells(cells, amount);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn route_port_corrected_centerline_checked_and_commit_native(
+        &mut self,
+        net_id: u64,
+        route: &RouteResult,
+        width_um: f64,
+        core_radius_cells: i32,
+        opened_cells: &[(i32, i32)],
+        clearance_exempt_cells: &[(i32, i32)],
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+        allow_unchecked_fallback: bool,
+    ) -> Result<NativeEndpointCorrection, String> {
+        let grid = GeometryGridSpec::new(
+            self.grid.grid_size_um,
+            self.grid.origin_x_um,
+            self.grid.origin_y_um,
+        )
+        .map_err(|err| err.to_string())?;
+        let candidates = full_straight_offset_bump_candidates_rs(
+            route,
+            &self.primitives,
+            &grid,
+            source_port_um,
+            target_port_um,
+        )
+        .map_err(|err| err.to_string())?;
+
+        if candidates.is_empty() {
+            let centerline = route_to_port_corrected_centerline_with_options_rs(
+                route,
+                &self.primitives,
+                &grid,
+                source_port_um,
+                target_port_um,
+                allow_unchecked_fallback,
+            )
+            .map_err(|err| err.to_string())?;
+            return Ok(NativeEndpointCorrection {
+                centerline,
+                committed_bump: false,
+                candidate_index: None,
+                candidate_label: None,
+            });
+        }
+
+        let static_grid = static_grid_from_py_grid(&self.grid);
+        let width = self.grid.width as i32;
+        let height = self.grid.height as i32;
+        let opened_keys = pack_cells(opened_cells);
+        let clearance_exempt_keys = pack_cells(clearance_exempt_cells);
+        let old_blocked_cells: Vec<(i32, i32)> = self
+            .obstacle_map
+            .get_net_cells(net_id)
+            .map(|cells| cells.iter().copied().map(unpack_xy).collect())
+            .unwrap_or_default();
+        let old_core_cells = route_core_cells(&route.cells, core_radius_cells, width, height);
+        let commit_clearance_exempt_cell_vec = unique_cells(
+            clearance_exempt_cells
+                .iter()
+                .copied()
+                .chain(old_core_cells.iter().copied()),
+        );
+        let commit_clearance_exempt_keys = pack_cells(&commit_clearance_exempt_cell_vec);
+        let mut rejection_details = Vec::new();
+
+        for (candidate_index, candidate) in candidates.into_iter().enumerate() {
+            let candidate_label = candidate.label;
+            let centerline = candidate.centerline;
+            let bump_centerline = compact_bump_portion(&centerline, candidate.placement_is_start);
+            let candidate_core_cells =
+                centerline_core_cells(bump_centerline, width_um, &static_grid)
+                    .map_err(|err| err.to_string())?;
+            if candidate_core_cells.is_empty() {
+                rejection_details.push(format!(
+                    "#{candidate_index} {candidate_label}: empty core footprint"
+                ));
+                continue;
+            }
+            // A case-4 bump is an endpoint adapter, so its compact footprint is
+            // the local static opening for that port. Dynamic ownership is
+            // still checked below against other committed nets.
+            let local_endpoint_open_keys = pack_cells(&candidate_core_cells);
+            let out_of_bounds: Vec<(i32, i32)> = candidate_core_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
+                .collect();
+            let static_blockers: Vec<(i32, i32)> = candidate_core_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| {
+                    let key = pack_xy(x, y);
+                    self.obstacle_map.in_bounds(x, y)
+                        && self.obstacle_map.is_static_blocked(x, y)
+                        && !opened_keys.contains(&key)
+                        && !local_endpoint_open_keys.contains(&key)
+                })
+                .collect();
+            let dynamic_blockers = cells_with_other_dynamic_owner(
+                &self.obstacle_map,
+                &candidate_core_cells,
+                &clearance_exempt_keys,
+                net_id,
+            );
+            if !out_of_bounds.is_empty()
+                || !static_blockers.is_empty()
+                || !dynamic_blockers.is_empty()
+            {
+                let mut reasons = Vec::new();
+                if !out_of_bounds.is_empty() {
+                    reasons.push(format!(
+                        "out_of_bounds={} bbox={} sample={}",
+                        out_of_bounds.len(),
+                        format_bbox(&out_of_bounds),
+                        format_cell_sample(&out_of_bounds, 8)
+                    ));
+                }
+                if !static_blockers.is_empty() {
+                    reasons.push(format!(
+                        "static_overlap={} bbox={} sample={}",
+                        static_blockers.len(),
+                        format_bbox(&static_blockers),
+                        format_cell_sample(&static_blockers, 8)
+                    ));
+                }
+                if !dynamic_blockers.is_empty() {
+                    let owners = sorted_other_owners_for_cells(
+                        &self.obstacle_map,
+                        &dynamic_blockers,
+                        net_id,
+                    );
+                    reasons.push(format!(
+                        "dynamic_overlap={} owners={owners:?} bbox={} sample={}",
+                        dynamic_blockers.len(),
+                        format_bbox(&dynamic_blockers),
+                        format_cell_sample(&dynamic_blockers, 8)
+                    ));
+                }
+                rejection_details.push(format!(
+                    "#{candidate_index} {candidate_label}: {} core_cells={} core_bbox={}",
+                    reasons.join(", "),
+                    candidate_core_cells.len(),
+                    format_bbox(&candidate_core_cells)
+                ));
+                continue;
+            }
+
+            let candidate_blocked_cells =
+                inflate_route_cells(&candidate_core_cells, core_radius_cells, width, height);
+            let merged_core_cells = unique_cells(
+                old_core_cells
+                    .iter()
+                    .copied()
+                    .chain(candidate_core_cells.iter().copied()),
+            );
+            let merged_blocked_cells = unique_cells(
+                old_blocked_cells
+                    .iter()
+                    .copied()
+                    .chain(candidate_blocked_cells.iter().copied()),
+            );
+
+            if self.obstacle_map.commit_route_with_clearance_overlap(
+                net_id,
+                &merged_core_cells,
+                &merged_blocked_cells,
+                &commit_clearance_exempt_cell_vec,
+            ) {
+                self.invalidate_meander_base_prefix();
+                return Ok(NativeEndpointCorrection {
+                    centerline,
+                    committed_bump: true,
+                    candidate_index: Some(candidate_index),
+                    candidate_label: Some(candidate_label),
+                });
+            }
+            let commit_dynamic_blockers = cells_with_other_dynamic_owner(
+                &self.obstacle_map,
+                &merged_core_cells,
+                &commit_clearance_exempt_keys,
+                net_id,
+            );
+            let commit_out_of_bounds: Vec<(i32, i32)> = merged_blocked_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
+                .collect();
+            let commit_owners =
+                sorted_other_owners_for_cells(&self.obstacle_map, &commit_dynamic_blockers, net_id);
+            rejection_details.push(format!(
+                "#{candidate_index} {candidate_label}: commit_rejected dynamic_overlap={} owners={commit_owners:?} dynamic_bbox={} dynamic_sample={} out_of_bounds={} out_of_bounds_bbox={} core_cells={} core_bbox={}",
+                commit_dynamic_blockers.len(),
+                format_bbox(&commit_dynamic_blockers),
+                format_cell_sample(&commit_dynamic_blockers, 8),
+                commit_out_of_bounds.len(),
+                format_bbox(&commit_out_of_bounds),
+                candidate_core_cells.len(),
+                format_bbox(&candidate_core_cells)
+            ));
+        }
+
+        Err(format!(
+            "No collision-free port endpoint case-4 bump placement found; candidates: {}",
+            rejection_details.join("; ")
+        ))
     }
 }
 
@@ -3451,201 +3666,96 @@ impl PyPhotonicRouter {
         allow_unchecked_fallback: bool,
     ) -> PyResult<Py<PyDict>> {
         let _ = clearance_radius_cells;
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let r = to_route_result(route);
-        let candidates = full_straight_offset_bump_candidates_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            source_port_um,
-            target_port_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-
-        if candidates.is_empty() {
-            let centerline = route_to_port_corrected_centerline_with_options_rs(
+        let opened_cell_vec = opened_cells.unwrap_or_default();
+        let clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or_default();
+        let correction = self
+            .route_port_corrected_centerline_checked_and_commit_native(
+                net_id,
                 &r,
-                &self.primitives,
-                &grid,
+                width_um,
+                core_radius_cells,
+                &opened_cell_vec,
+                &clearance_exempt_cell_vec,
                 source_port_um,
                 target_port_um,
                 allow_unchecked_fallback,
             )
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
-            let d = PyDict::new_bound(py);
-            d.set_item("centerline", centerline)?;
-            d.set_item("committed_bump", false)?;
-            d.set_item("candidate_index", py.None())?;
-            return Ok(d.into());
-        }
+            .map_err(PyRuntimeError::new_err)?;
+        let d = PyDict::new_bound(py);
+        d.set_item("centerline", correction.centerline)?;
+        d.set_item("committed_bump", correction.committed_bump)?;
+        d.set_item("candidate_index", correction.candidate_index)?;
+        d.set_item("candidate_label", correction.candidate_label)?;
+        Ok(d.into())
+    }
 
-        let static_grid = static_grid_from_py_grid(&self.grid);
-        let width = self.grid.width as i32;
-        let height = self.grid.height as i32;
-        let opened_cell_vec = opened_cells.unwrap_or_default();
-        let opened_keys = pack_cells(&opened_cell_vec);
-        let clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or_default();
-        let clearance_exempt_keys = pack_cells(&clearance_exempt_cell_vec);
-        let old_blocked_cells: Vec<(i32, i32)> = self
-            .obstacle_map
-            .get_net_cells(net_id)
-            .map(|cells| cells.iter().copied().map(unpack_xy).collect())
-            .unwrap_or_default();
-        let old_core_cells = route_core_cells(&r.cells, core_radius_cells, width, height);
-        let commit_clearance_exempt_cell_vec = unique_cells(
-            clearance_exempt_cell_vec
-                .iter()
-                .copied()
-                .chain(old_core_cells.iter().copied()),
-        );
-        let commit_clearance_exempt_keys = pack_cells(&commit_clearance_exempt_cell_vec);
-        let mut rejection_details = Vec::new();
-
-        for (candidate_index, candidate) in candidates.into_iter().enumerate() {
-            let candidate_label = candidate.label;
-            let centerline = candidate.centerline;
-            let bump_centerline = compact_bump_portion(&centerline, candidate.placement_is_start);
-            let candidate_core_cells =
-                centerline_core_cells(bump_centerline, width_um, &static_grid)
-                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
-            if candidate_core_cells.is_empty() {
-                rejection_details.push(format!(
-                    "#{candidate_index} {candidate_label}: empty core footprint"
-                ));
-                continue;
-            }
-            // A case-4 bump is an endpoint adapter, so its compact footprint is
-            // the local static opening for that port. Dynamic ownership is
-            // still checked below against other committed nets.
-            let local_endpoint_open_keys = pack_cells(&candidate_core_cells);
-            let out_of_bounds: Vec<(i32, i32)> = candidate_core_cells
-                .iter()
-                .copied()
-                .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
-                .collect();
-            let static_blockers: Vec<(i32, i32)> = candidate_core_cells
-                .iter()
-                .copied()
-                .filter(|&(x, y)| {
-                    let key = pack_xy(x, y);
-                    self.obstacle_map.in_bounds(x, y)
-                        && self.obstacle_map.is_static_blocked(x, y)
-                        && !opened_keys.contains(&key)
-                        && !local_endpoint_open_keys.contains(&key)
-                })
-                .collect();
-            let dynamic_blockers = cells_with_other_dynamic_owner(
-                &self.obstacle_map,
-                &candidate_core_cells,
-                &clearance_exempt_keys,
+    #[pyo3(signature=(jobs,width_um,clearance_radius_cells,core_radius_cells,allow_unchecked_fallback=true))]
+    fn apply_checked_endpoint_corrections_and_commit(
+        &mut self,
+        py: Python<'_>,
+        jobs: Vec<(
+            u64,
+            Py<PyRouteResult>,
+            Vec<(i32, i32)>,
+            Vec<(i32, i32)>,
+            Option<(f64, f64)>,
+            Option<(f64, f64)>,
+        )>,
+        width_um: f64,
+        clearance_radius_cells: i32,
+        core_radius_cells: i32,
+        allow_unchecked_fallback: bool,
+    ) -> PyResult<PyObject> {
+        let _ = clearance_radius_cells;
+        let entries = PyList::empty_bound(py);
+        for (
+            net_id,
+            route_obj,
+            opened_cells,
+            clearance_exempt_cells,
+            source_port_um,
+            target_port_um,
+        ) in jobs
+        {
+            let entry = PyDict::new_bound(py);
+            entry.set_item("net_id", net_id)?;
+            let route_ref = route_obj.bind(py).borrow();
+            let route = to_route_result(&route_ref);
+            drop(route_ref);
+            match self.route_port_corrected_centerline_checked_and_commit_native(
                 net_id,
-            );
-            if !out_of_bounds.is_empty()
-                || !static_blockers.is_empty()
-                || !dynamic_blockers.is_empty()
-            {
-                let mut reasons = Vec::new();
-                if !out_of_bounds.is_empty() {
-                    reasons.push(format!(
-                        "out_of_bounds={} bbox={} sample={}",
-                        out_of_bounds.len(),
-                        format_bbox(&out_of_bounds),
-                        format_cell_sample(&out_of_bounds, 8)
-                    ));
-                }
-                if !static_blockers.is_empty() {
-                    reasons.push(format!(
-                        "static_overlap={} bbox={} sample={}",
-                        static_blockers.len(),
-                        format_bbox(&static_blockers),
-                        format_cell_sample(&static_blockers, 8)
-                    ));
-                }
-                if !dynamic_blockers.is_empty() {
-                    let owners = sorted_other_owners_for_cells(
-                        &self.obstacle_map,
-                        &dynamic_blockers,
-                        net_id,
-                    );
-                    reasons.push(format!(
-                        "dynamic_overlap={} owners={owners:?} bbox={} sample={}",
-                        dynamic_blockers.len(),
-                        format_bbox(&dynamic_blockers),
-                        format_cell_sample(&dynamic_blockers, 8)
-                    ));
-                }
-                rejection_details.push(format!(
-                    "#{candidate_index} {candidate_label}: {} core_cells={} core_bbox={}",
-                    reasons.join(", "),
-                    candidate_core_cells.len(),
-                    format_bbox(&candidate_core_cells)
-                ));
-                continue;
-            }
-
-            let candidate_blocked_cells =
-                inflate_route_cells(&candidate_core_cells, core_radius_cells, width, height);
-            let merged_core_cells = unique_cells(
-                old_core_cells
-                    .iter()
-                    .copied()
-                    .chain(candidate_core_cells.iter().copied()),
-            );
-            let merged_blocked_cells = unique_cells(
-                old_blocked_cells
-                    .iter()
-                    .copied()
-                    .chain(candidate_blocked_cells.iter().copied()),
-            );
-
-            if self.obstacle_map.commit_route_with_clearance_overlap(
-                net_id,
-                &merged_core_cells,
-                &merged_blocked_cells,
-                &commit_clearance_exempt_cell_vec,
+                &route,
+                width_um,
+                core_radius_cells,
+                &opened_cells,
+                &clearance_exempt_cells,
+                source_port_um,
+                target_port_um,
+                allow_unchecked_fallback,
             ) {
-                self.invalidate_meander_base_prefix();
-                let d = PyDict::new_bound(py);
-                d.set_item("centerline", centerline)?;
-                d.set_item("committed_bump", true)?;
-                d.set_item("candidate_index", candidate_index)?;
-                d.set_item("candidate_label", candidate_label)?;
-                return Ok(d.into());
+                Ok(correction) => {
+                    let total_length_um = centerline_length_um_rs(&correction.centerline)
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                    entry.set_item("error", py.None())?;
+                    entry.set_item("centerline", correction.centerline)?;
+                    entry.set_item("total_length_um", total_length_um)?;
+                    entry.set_item("committed_bump", correction.committed_bump)?;
+                    entry.set_item("candidate_index", correction.candidate_index)?;
+                    entry.set_item("candidate_label", correction.candidate_label)?;
+                }
+                Err(error) => {
+                    entry.set_item("error", error)?;
+                    entry.set_item("centerline", py.None())?;
+                    entry.set_item("total_length_um", py.None())?;
+                    entry.set_item("committed_bump", false)?;
+                    entry.set_item("candidate_index", py.None())?;
+                    entry.set_item("candidate_label", py.None())?;
+                }
             }
-            let commit_dynamic_blockers = cells_with_other_dynamic_owner(
-                &self.obstacle_map,
-                &merged_core_cells,
-                &commit_clearance_exempt_keys,
-                net_id,
-            );
-            let commit_out_of_bounds: Vec<(i32, i32)> = merged_blocked_cells
-                .iter()
-                .copied()
-                .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
-                .collect();
-            let commit_owners =
-                sorted_other_owners_for_cells(&self.obstacle_map, &commit_dynamic_blockers, net_id);
-            rejection_details.push(format!(
-                "#{candidate_index} {candidate_label}: commit_rejected dynamic_overlap={} owners={commit_owners:?} dynamic_bbox={} dynamic_sample={} out_of_bounds={} out_of_bounds_bbox={} core_cells={} core_bbox={}",
-                commit_dynamic_blockers.len(),
-                format_bbox(&commit_dynamic_blockers),
-                format_cell_sample(&commit_dynamic_blockers, 8),
-                commit_out_of_bounds.len(),
-                format_bbox(&commit_out_of_bounds),
-                candidate_core_cells.len(),
-                format_bbox(&candidate_core_cells)
-            ));
+            entries.append(entry)?;
         }
-
-        Err(PyRuntimeError::new_err(format!(
-            "No collision-free port endpoint case-4 bump placement found; candidates: {}",
-            rejection_details.join("; ")
-        )))
+        Ok(entries.into())
     }
 
     #[pyo3(signature=(route,width_um,source_port_um=None,target_port_um=None))]

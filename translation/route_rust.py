@@ -2146,43 +2146,6 @@ def route_nets_rust(
             lines.append(f"error={error_text}")
         diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def _checked_endpoint_correction(
-        job: RouteJob,
-        route_obj: Any,
-        opened_cells: list[tuple[int, int]],
-        clearance_exempt_cells: list[tuple[int, int]],
-    ) -> tuple[tuple[tuple[float, float], ...], float] | None:
-        if not enable_checked_endpoint_correction:
-            # The checked correction path re-commits adjusted route cells and is
-            # currently restricted to axis-aligned centerlines. 45-degree
-            # routes use the non-committing realization correction instead.
-            return None
-        source_port = _port_center_um(job.source_port)
-        target_port = _port_center_um(job.target_port)
-        if source_port is None and target_port is None:
-            return None
-        result = router.route_port_corrected_centerline_checked_and_commit(
-            int(job.net_id),
-            route_obj,
-            float(route_width_um),
-            int(commit_radius_cells),
-            int(core_commit_radius_cells),
-            opened_cells,
-            clearance_exempt_cells,
-            source_port_um=source_port,
-            target_port_um=target_port,
-            allow_unchecked_fallback=not allow_45_degree_turns,
-        )
-        if not isinstance(result, dict):
-            result = dict(result)
-        centerline = _centerline_tuple(result.get("centerline"))
-        if not centerline:
-            raise RuntimeError(
-                f"Endpoint correction returned an invalid centerline for {job.net_name}"
-            )
-        corrected_length_um = float(router.centerline_length_um(list(centerline)))
-        return centerline, corrected_length_um
-
     def _record_route(
         job: RouteJob,
         route_obj: Any,
@@ -2725,52 +2688,116 @@ def route_nets_rust(
     if collect_timing:
         astar_elapsed_s = time.perf_counter() - t_astar_start
 
-    for net_id in list(route_bookkeeping.route_order):
-        record = route_bookkeeping.records_by_id.get(net_id)
-        job = route_jobs_by_id.get(net_id)
-        if record is None or job is None:
-            continue
-        source_state, target_state, opened_candidate_cells, _, _ = (
-            _states_and_openings(job)
-        )
-        clearance_exempt_cells = sorted(
-            _dynamic_clearance_exempt_cells_for_route(source_state, target_state)
-        )
+    if enable_checked_endpoint_correction:
+        if not hasattr(router, "apply_checked_endpoint_corrections_and_commit"):
+            raise RuntimeError(
+                "The loaded photonic_router._rust extension does not expose "
+                "PyPhotonicRouter.apply_checked_endpoint_corrections_and_commit. "
+                "Rebuild it with `maturin develop --release`."
+            )
+        correction_jobs: list[
+            tuple[
+                int,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
+        ] = []
+        for net_id in list(route_bookkeeping.route_order):
+            record = route_bookkeeping.records_by_id.get(net_id)
+            job = route_jobs_by_id.get(net_id)
+            if record is None or job is None:
+                continue
+            source_port = _port_center_um(job.source_port)
+            target_port = _port_center_um(job.target_port)
+            if source_port is None and target_port is None:
+                continue
+            source_state, target_state, opened_candidate_cells, _, _ = (
+                _states_and_openings(job)
+            )
+            clearance_exempt_cells = sorted(
+                _dynamic_clearance_exempt_cells_for_route(source_state, target_state)
+            )
+            correction_jobs.append(
+                (
+                    int(net_id),
+                    record.route_obj,
+                    sorted(opened_candidate_cells),
+                    clearance_exempt_cells,
+                    source_port,
+                    target_port,
+                )
+            )
+
         correction_start = _timing_start()
-        try:
-            correction = _checked_endpoint_correction(
-                job,
-                record.route_obj,
-                sorted(opened_candidate_cells),
-                clearance_exempt_cells,
-            )
-        except RuntimeError as exc:
-            _record_elapsed("endpoint_correction", correction_start, failed=True)
-            message = (
-                "Checked grid-to-port endpoint correction skipped for net "
-                f"{job.net_name!r}: {exc}"
-            )
-            print("WARNING: " + message)
+        raw_corrections = router.apply_checked_endpoint_corrections_and_commit(
+            correction_jobs,
+            float(route_width_um),
+            int(commit_radius_cells),
+            int(core_commit_radius_cells),
+            not allow_45_degree_turns,
+        )
+        correction_elapsed_s = time.perf_counter() - correction_start if collect_timing else 0.0
+        correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
+        for raw_correction in cast(Iterable[Any], raw_corrections):
+            correction = dict(raw_correction)
+            net_id = int(correction["net_id"])
+            record = route_bookkeeping.records_by_id.get(net_id)
+            job = route_jobs_by_id.get(net_id)
+            if record is None or job is None:
+                continue
+            error = correction.get("error")
+            if error is not None:
+                if collect_timing:
+                    route_timing_buckets["endpoint_correction"].record_elapsed(
+                        correction_elapsed_per_job_s,
+                        failed=True,
+                    )
+                message = (
+                    "Checked grid-to-port endpoint correction skipped for net "
+                    f"{job.net_name!r}: {error}"
+                )
+                print("WARNING: " + message)
+                route_bookkeeping.records_by_id[net_id] = replace(
+                    record,
+                    endpoint_correction_error=message,
+                )
+                continue
+            centerline = _centerline_tuple(correction.get("centerline"))
+            if not centerline:
+                if collect_timing:
+                    route_timing_buckets["endpoint_correction"].record_elapsed(
+                        correction_elapsed_per_job_s,
+                        failed=True,
+                    )
+                message = (
+                    "Checked grid-to-port endpoint correction skipped for net "
+                    f"{job.net_name!r}: endpoint correction returned an invalid centerline"
+                )
+                print("WARNING: " + message)
+                route_bookkeeping.records_by_id[net_id] = replace(
+                    record,
+                    endpoint_correction_error=message,
+                )
+                continue
+            if collect_timing:
+                route_timing_buckets["endpoint_correction"].record_elapsed(
+                    correction_elapsed_per_job_s,
+                )
+            corrected_total_length_um = float(correction["total_length_um"])
             route_bookkeeping.records_by_id[net_id] = replace(
                 record,
-                endpoint_correction_error=message,
+                total_length_um=corrected_total_length_um,
+                base_total_length_um=(
+                    record.base_total_length_um
+                    if record.base_total_length_um is not None
+                    else float(record.total_length_um)
+                ),
+                corrected_centerline_um=centerline,
+                endpoint_correction_error=None,
             )
-            continue
-        _record_elapsed("endpoint_correction", correction_start)
-        if correction is None:
-            continue
-        corrected_centerline_um, corrected_total_length_um = correction
-        route_bookkeeping.records_by_id[net_id] = replace(
-            record,
-            total_length_um=corrected_total_length_um,
-            base_total_length_um=(
-                record.base_total_length_um
-                if record.base_total_length_um is not None
-                else float(record.total_length_um)
-            ),
-            corrected_centerline_um=corrected_centerline_um,
-            endpoint_correction_error=None,
-        )
 
     routed_net_records = route_bookkeeping.ordered_records()
     routed_record_keys = [
