@@ -1617,6 +1617,7 @@ def route_nets_rust(
             "owner_lookup",
             "ripup",
             "rollback",
+            "endpoint_correction",
         )
     }
 
@@ -2736,6 +2737,10 @@ def route_nets_rust(
         if should_print_route:
             print(f"ok {_route_engine_summary(route_obj)}")
 
+    astar_elapsed_s = 0.0
+    if collect_timing:
+        astar_elapsed_s = time.perf_counter() - t_astar_start
+
     for net_id in list(route_bookkeeping.route_order):
         record = route_bookkeeping.records_by_id.get(net_id)
         job = route_jobs_by_id.get(net_id)
@@ -2747,6 +2752,7 @@ def route_nets_rust(
         clearance_exempt_cells = sorted(
             _dynamic_clearance_exempt_cells_for_route(source_state, target_state)
         )
+        correction_start = _timing_start()
         try:
             correction = _checked_endpoint_correction(
                 job,
@@ -2755,6 +2761,7 @@ def route_nets_rust(
                 clearance_exempt_cells,
             )
         except RuntimeError as exc:
+            _record_elapsed("endpoint_correction", correction_start, failed=True)
             message = (
                 "Checked grid-to-port endpoint correction skipped for net "
                 f"{job.net_name!r}: {exc}"
@@ -2765,6 +2772,7 @@ def route_nets_rust(
                 endpoint_correction_error=message,
             )
             continue
+        _record_elapsed("endpoint_correction", correction_start)
         if correction is None:
             continue
         corrected_centerline_um, corrected_total_length_um = correction
@@ -2795,10 +2803,6 @@ def route_nets_rust(
         )
         raise RuntimeError(f"Duplicate routed records generated: {formatted}")
 
-    astar_elapsed_s = 0.0
-    if collect_timing:
-        astar_elapsed_s = time.perf_counter() - t_astar_start
-
     if debug_timing and verbose_route_diagnostics:
         print(f"      - A* route-search loop time: {astar_elapsed_s:.4f} s")
         print(
@@ -2818,6 +2822,7 @@ def route_nets_rust(
             "owner_lookup",
             "ripup",
             "rollback",
+            "endpoint_correction",
         ):
             bucket = route_timing_buckets[bucket_name]
             if bucket.calls == 0:

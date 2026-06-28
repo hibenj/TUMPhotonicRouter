@@ -755,6 +755,9 @@ class RouteSearchSummary:
     simple_route_count: int = 0
     repair_count: int = 0
     astar_elapsed_s: float = 0.0
+    endpoint_correction_time_s: float = 0.0
+    endpoint_correction_calls: int = 0
+    endpoint_correction_failures: int = 0
     normal_route_time_s: float = 0.0
     expanded_states: int = 0
     generated_neighbors: int = 0
@@ -842,6 +845,15 @@ def summarize_route_search(
         simple_route_count=int(simple_route_count),
         repair_count=int(repair_count),
         astar_elapsed_s=float(astar_elapsed_s),
+        endpoint_correction_time_s=float(
+            route_timing_buckets.get("endpoint_correction", RouteTimingBucket()).elapsed_s
+        ),
+        endpoint_correction_calls=int(
+            route_timing_buckets.get("endpoint_correction", RouteTimingBucket()).calls
+        ),
+        endpoint_correction_failures=int(
+            route_timing_buckets.get("endpoint_correction", RouteTimingBucket()).failures
+        ),
         normal_route_time_s=float(
             route_timing_buckets.get("normal_route", RouteTimingBucket()).elapsed_s
         ),

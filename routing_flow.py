@@ -1430,6 +1430,16 @@ def run_routing_flow(
             f"{int(route_summary.route_count)}, "
             f"repairs={int(route_summary.repair_count)}"
         )
+        endpoint_correction_time_s = float(
+            getattr(route_summary, "endpoint_correction_time_s", 0.0)
+        )
+        if endpoint_correction_time_s > 0.0:
+            print(
+                "          endpoint correction: "
+                f"time={endpoint_correction_time_s:.4f}s, "
+                f"calls={int(getattr(route_summary, 'endpoint_correction_calls', 0))}, "
+                f"failures={int(getattr(route_summary, 'endpoint_correction_failures', 0))}"
+            )
         print(
             "          A* counters: "
             f"expanded={int(route_summary.expanded_states)}, "
