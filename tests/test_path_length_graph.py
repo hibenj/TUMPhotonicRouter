@@ -202,19 +202,60 @@ def test_axis_aligned_centerline_run_lengths_are_sorted_descending():
     ]
 
 
-def test_split_request_fallback_reuses_route_geometry_for_ordered_runs(monkeypatch):
+def test_split_request_calls_rust_split_planner():
     edge = RoutedEdgeKey(
         net_name="n0",
         source=PortRef(instance="src", port="o1"),
         target=PortRef(instance="dst", port="o1"),
     )
+
+    class _FakeSplitRouter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def plan_auto_analytic_meander_split_request_registered_opened_auto_config(
+            self,
+            geometry_index: int,
+            requested_extra_length_um: float,
+            min_insertable_extra_length_um: float,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            self.calls.append(
+                {
+                    "geometry_index": geometry_index,
+                    "requested_extra_length_um": requested_extra_length_um,
+                    "min_insertable_extra_length_um": min_insertable_extra_length_um,
+                    **kwargs,
+                }
+            )
+            return {
+                "status": "planned",
+                "selected_candidate_index": 3,
+                "plans": [
+                    {"inserted_extra_length_um": 40.0},
+                    {"inserted_extra_length_um": 40.0},
+                    {"inserted_extra_length_um": 40.0},
+                ],
+                "planner_profile_total": {},
+                "wrapper_profile_total": {},
+            }
+
+    fake_router = _FakeSplitRouter()
     context = _MeanderPlannerContext(
-        router=cast(Any, object()),
-        by_edge={},
+        router=cast(Any, fake_router),
+        by_edge={
+            edge: RoutedNetRecord(
+                net_name=edge.net_name,
+                source=edge.source,
+                target=edge.target,
+                route_obj=object(),
+                total_length_um=90.0,
+            )
+        },
         updated={},
         registered_open_cell_index_by_edge={},
-        registered_open_cell_count_by_edge={},
-        registered_geometry_index_by_edge={},
+        registered_open_cell_count_by_edge={edge: 7},
+        registered_geometry_index_by_edge={edge: 42},
         max_bumps_by_edge={},
         centerline_lists_by_edge={
             edge: [
@@ -235,25 +276,6 @@ def test_split_request_fallback_reuses_route_geometry_for_ordered_runs(monkeypat
         rust_planner_profile={},
         rust_wrapper_profile={},
     )
-    calls: list[tuple[list[RoutedEdgeKey], dict[RoutedEdgeKey, float]]] = []
-
-    def fake_sequence(**kwargs):
-        edge_keys = list(kwargs["edge_keys"])
-        requests = dict(kwargs["planner_requests_by_edge"])
-        calls.append((edge_keys, requests))
-        if len(edge_keys) < 3:
-            return ([], [], [], 0, len(edge_keys), 0.0, None)
-        plans = [
-            (edge, None, {"inserted_extra_length_um": requests[edge]}, False, 1, set())
-            for _ in edge_keys
-        ]
-        return (plans, [], [1] * len(edge_keys), 0, len(edge_keys), 0.0, None)
-
-    monkeypatch.setattr(
-        context,
-        "plan_request_sequence_registered",
-        fake_sequence,
-    )
 
     attempt = context.plan_split_request_registered(
         edge_key=edge,
@@ -266,12 +288,24 @@ def test_split_request_fallback_reuses_route_geometry_for_ordered_runs(monkeypat
     )
 
     assert attempt is not None
-    assert [len(edge_keys) for edge_keys, _ in calls] == [2, 3]
-    assert calls[0][0] == [edge, edge]
-    assert calls[0][1] == {edge: 60.0}
-    assert calls[1][0] == [edge, edge, edge]
-    assert calls[1][1] == {edge: 40.0}
+    assert fake_router.calls == [
+        {
+            "geometry_index": 42,
+            "requested_extra_length_um": 120.0,
+            "min_insertable_extra_length_um": 30.0,
+            "max_parts": 8,
+            "min_bend_radius_um": None,
+            "min_straight_um": 1.0,
+            "max_meander_height_um": 80.0,
+            "min_segment_length_um": 1.0,
+            "auto_endpoint_inset_um": None,
+            "clearance_radius_cells": 0,
+            "side_policy": "both",
+            "planning_mode": "fill_box_multi_bump",
+        }
+    ]
     assert attempt[-1] == 3
+    assert len(attempt[0]) == 3
 
 
 def test_build_graph_from_schematic_tracks_port_directions_and_fanout_shape():
