@@ -1164,130 +1164,6 @@ def route_nets_rust(
 
         return source_state, target_state, extra_cells
 
-    def _collect_inflated_step_cells(
-        base_x: int,
-        base_y: int,
-        *,
-        step_x: int,
-        step_y: int,
-        length_cells: int,
-        half_width_cells: int,
-    ) -> set[tuple[int, int]]:
-        cells: set[tuple[int, int]] = set()
-        for step_idx in range(length_cells):
-            cx = base_x + step_x * step_idx
-            cy = base_y + step_y * step_idx
-            if not _in_bounds(cx, cy):
-                continue
-            for dx in range(-half_width_cells, half_width_cells + 1):
-                for dy in range(-half_width_cells, half_width_cells + 1):
-                    nx = cx + dx
-                    ny = cy + dy
-                    if _in_bounds(nx, ny):
-                        cells.add((nx, ny))
-        return cells
-
-    def _inflate_cell_set(
-        cells: Iterable[tuple[int, int]],
-        radius_cells: int,
-    ) -> set[tuple[int, int]]:
-        radius = max(0, int(radius_cells))
-        inflated: set[tuple[int, int]] = set()
-        for x, y in cells:
-            for dx in range(-radius, radius + 1):
-                for dy in range(-radius, radius + 1):
-                    nx = int(x) + dx
-                    ny = int(y) + dy
-                    if _in_bounds(nx, ny):
-                        inflated.add((nx, ny))
-        return inflated
-
-    def _turn_footprint_cells(
-        *,
-        start_angle: int,
-        angle_delta: int,
-    ) -> tuple[list[tuple[int, int]], tuple[int, int]]:
-        start_step = _angle_to_step(start_angle)
-        end_angle = (int(start_angle) + int(angle_delta)) % 8
-        end_step = _angle_to_step(end_angle)
-        radius = int(bend_radius_cells)
-        footprint: list[tuple[int, int]] = []
-        seen: set[tuple[int, int]] = set()
-
-        def add_cell(cell: tuple[int, int]) -> None:
-            if cell not in seen:
-                seen.add(cell)
-                footprint.append(cell)
-
-        for step_idx in range(radius + 1):
-            add_cell((start_step[0] * step_idx, start_step[1] * step_idx))
-        corner = (start_step[0] * radius, start_step[1] * radius)
-        for step_idx in range(radius + 1):
-            add_cell((
-                corner[0] + end_step[0] * step_idx,
-                corner[1] + end_step[1] * step_idx,
-            ))
-        end_cell = footprint[-1] if footprint else (0, 0)
-        return footprint, end_cell
-
-    def _bend_angle_deltas() -> tuple[int, ...]:
-        deltas = [-2, 2]
-        if allow_45_degree_turns:
-            deltas.extend((-1, 1))
-        return tuple(deltas)
-
-    def _one_bend_dynamic_clearance_exempt_cells(
-        *,
-        anchor_cell: tuple[int, int],
-        anchor_angle: int,
-        is_target: bool,
-    ) -> set[tuple[int, int]]:
-        anchor_x, anchor_y = int(anchor_cell[0]), int(anchor_cell[1])
-        cells: set[tuple[int, int]] = {(anchor_x, anchor_y)}
-        for delta in _bend_angle_deltas():
-            if is_target:
-                start_angle = (int(anchor_angle) - int(delta)) % 8
-            else:
-                start_angle = int(anchor_angle) % 8
-            footprint, end_cell = _turn_footprint_cells(
-                start_angle=start_angle,
-                angle_delta=delta,
-            )
-            if is_target:
-                origin_x = anchor_x - end_cell[0]
-                origin_y = anchor_y - end_cell[1]
-            else:
-                origin_x = anchor_x
-                origin_y = anchor_y
-            for dx, dy in footprint:
-                gx = origin_x + dx
-                gy = origin_y + dy
-                if _in_bounds(gx, gy):
-                    cells.add((gx, gy))
-        return _inflate_cell_set(cells, commit_radius_cells)
-
-    def _dynamic_clearance_exempt_cells_for_route(
-        source_state: Any,
-        target_state: Any,
-    ) -> set[tuple[int, int]]:
-        source_anchor = (int(source_state.x), int(source_state.y))
-        target_anchor = (int(target_state.x), int(target_state.y))
-        cells = _one_bend_dynamic_clearance_exempt_cells(
-            anchor_cell=source_anchor,
-            anchor_angle=int(source_state.angle),
-            is_target=False,
-        )
-        cells.update(
-            _one_bend_dynamic_clearance_exempt_cells(
-                anchor_cell=target_anchor,
-                anchor_angle=int(target_state.angle),
-                is_target=True,
-            )
-        )
-        cells.add(source_anchor)
-        cells.add(target_anchor)
-        return cells
-
     port_open_radius_um = _as_float(
         getattr(resolved_obstacle_config, "port_open_radius_um", 0.5),
         0.5,
@@ -1691,6 +1567,44 @@ def route_nets_rust(
             sorted(opened_cells_set),
         )
 
+    if not hasattr(router, "build_dynamic_clearance_exempt_cells_for_routes"):
+        extension_path = getattr(rust_backend, "__file__", "<unknown>")
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.build_dynamic_clearance_exempt_cells_for_routes. "
+            "Rebuild it with `maturin develop --release`. "
+            f"Loaded extension: {extension_path}"
+        )
+
+    route_state_openings_by_id = {
+        int(job.net_id): _states_and_openings(job)
+        for job in route_jobs
+    }
+    clearance_exempt_inputs = [
+        (int(net_id), state_openings[0], state_openings[1])
+        for net_id, state_openings in route_state_openings_by_id.items()
+    ]
+    batch_clearance_exempt_cells_by_id = {
+        int(net_id): [(int(cell[0]), int(cell[1])) for cell in cells]
+        for net_id, cells in router.build_dynamic_clearance_exempt_cells_for_routes(
+            clearance_exempt_inputs,
+            bool(allow_45_degree_turns),
+            int(bend_radius_cells),
+            int(commit_radius_cells),
+        )
+    }
+
+    def _state_openings_for_job(
+        job: RouteJob,
+    ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
+        return route_state_openings_by_id[int(job.net_id)]
+
+    def _clearance_exempt_cells_for_job(job: RouteJob) -> list[tuple[int, int]]:
+        return batch_clearance_exempt_cells_by_id.get(int(job.net_id), [])
+
+    def _clearance_exempt_cell_set_for_job(job: RouteJob) -> set[tuple[int, int]]:
+        return set(_clearance_exempt_cells_for_job(job))
+
     def _static_cells_in_rect(min_x: int, max_x: int, min_y: int, max_y: int) -> int:
         if min_x > max_x or min_y > max_y:
             return 0
@@ -1731,7 +1645,7 @@ def route_nets_rust(
         ripup_ids: list[int] | None = None,
     ) -> dict[str, object]:
         dynamic_cells_before = _committed_dynamic_cells_for_attempt(exclude_net_id=job.net_id)
-        source_state, target_state, _, _, opened_cells = _states_and_openings(job)
+        source_state, target_state, _, _, opened_cells = _state_openings_for_job(job)
         source_x = int(source_state.x)
         source_y = int(source_state.y)
         source_angle = int(source_state.angle)
@@ -2227,7 +2141,7 @@ def route_nets_rust(
 
         if diagnostics_enabled:
             source_state, target_state, opened_candidate_cells, opened_cells_set, _ = (
-                _states_and_openings(job)
+                _state_openings_for_job(job)
             )
             route_cells = {
                 (int(cell[0]), int(cell[1]))
@@ -2238,10 +2152,7 @@ def route_nets_rust(
                 source_state=source_state,
                 target_state=target_state,
                 opened_candidate_cells=opened_candidate_cells,
-                dynamic_clearance_exempt_cells=_dynamic_clearance_exempt_cells_for_route(
-                    source_state,
-                    target_state,
-                ),
+                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(job),
                 opened_cells_set=opened_cells_set,
                 diag_txt=diag_txt,
                 status="ok",
@@ -2266,10 +2177,8 @@ def route_nets_rust(
         batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
         batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
         for job in route_jobs:
-            source_state, target_state, _, _, opened_cells = _states_and_openings(job)
-            clearance_exempt_cells = sorted(
-                _dynamic_clearance_exempt_cells_for_route(source_state, target_state)
-            )
+            source_state, target_state, _, _, opened_cells = _state_openings_for_job(job)
+            clearance_exempt_cells = _clearance_exempt_cells_for_job(job)
             route_selected_for_debug = (
                 debug_route_indices is None or job.route_index in debug_route_indices
             )
@@ -2403,7 +2312,7 @@ def route_nets_rust(
             if failed_job is None:
                 raise RuntimeError(error_text)
             source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
-                _states_and_openings(failed_job)
+                _state_openings_for_job(failed_job)
             )
             should_print_route, diag_txt = batch_debug_by_id.get(
                 failed_net_id,
@@ -2420,10 +2329,7 @@ def route_nets_rust(
                 source_state=source_state,
                 target_state=target_state,
                 opened_candidate_cells=opened_candidate_cells,
-                dynamic_clearance_exempt_cells=_dynamic_clearance_exempt_cells_for_route(
-                    source_state,
-                    target_state,
-                ),
+                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(failed_job),
                 opened_cells_set=opened_cells_set,
                 diag_txt=diag_txt,
                 status="failed",
@@ -2458,10 +2364,8 @@ def route_nets_rust(
         batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
         batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
         for job in route_jobs:
-            source_state, target_state, _, _, opened_cells = _states_and_openings(job)
-            clearance_exempt_cells = sorted(
-                _dynamic_clearance_exempt_cells_for_route(source_state, target_state)
-            )
+            source_state, target_state, _, _, opened_cells = _state_openings_for_job(job)
+            clearance_exempt_cells = _clearance_exempt_cells_for_job(job)
             route_selected_for_debug = (
                 debug_route_indices is None or job.route_index in debug_route_indices
             )
@@ -2543,7 +2447,7 @@ def route_nets_rust(
             if failed_job is None:
                 raise RuntimeError(error_text)
             source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
-                _states_and_openings(failed_job)
+                _state_openings_for_job(failed_job)
             )
             should_print_route, diag_txt = batch_debug_by_id.get(
                 failed_net_id,
@@ -2577,10 +2481,7 @@ def route_nets_rust(
                 source_state=source_state,
                 target_state=target_state,
                 opened_candidate_cells=opened_candidate_cells,
-                dynamic_clearance_exempt_cells=_dynamic_clearance_exempt_cells_for_route(
-                    source_state,
-                    target_state,
-                ),
+                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(failed_job),
                 opened_cells_set=opened_cells_set,
                 diag_txt=diag_txt,
                 status="failed",
@@ -2633,11 +2534,9 @@ def route_nets_rust(
             if source_port is None and target_port is None:
                 continue
             source_state, target_state, opened_candidate_cells, _, _ = (
-                _states_and_openings(job)
+                _state_openings_for_job(job)
             )
-            clearance_exempt_cells = sorted(
-                _dynamic_clearance_exempt_cells_for_route(source_state, target_state)
-            )
+            clearance_exempt_cells = _clearance_exempt_cells_for_job(job)
             correction_jobs.append(
                 (
                     int(net_id),

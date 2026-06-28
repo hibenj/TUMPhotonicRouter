@@ -192,6 +192,48 @@ def test_rust_port_opening_batch_filters_raw_static_rects():
     assert by_spec["electrical"] == (set(), set(), set())
 
 
+def test_rust_dynamic_clearance_exempt_batch_includes_45_degree_footprints():
+    rust_backend = route_rust._load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend is not available")
+
+    grid = rust_backend.GridSpec(40, 30, 1.0, 0.0, 0.0)
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=2,
+        allow_45_degree_turns=True,
+    )
+    router = rust_backend.PyPhotonicRouter(
+        grid,
+        primitive_cfg,
+        rust_backend.AStarConfig(max_iterations=100),
+    )
+    source = rust_backend.State(10, 10, 0)
+    target = rust_backend.State(24, 12, 4)
+
+    ninety_result = router.build_dynamic_clearance_exempt_cells_for_routes(
+        [(7, source, target)],
+        False,
+        2,
+        1,
+    )
+    diagonal_result = router.build_dynamic_clearance_exempt_cells_for_routes(
+        [(7, source, target)],
+        True,
+        2,
+        1,
+    )
+
+    ninety_cells = set(ninety_result[0][1])
+    diagonal_cells = set(diagonal_result[0][1])
+    assert ninety_result[0][0] == 7
+    assert diagonal_result[0][0] == 7
+    assert (10, 10) in diagonal_cells
+    assert (24, 12) in diagonal_cells
+    assert ninety_cells < diagonal_cells
+    assert (12, 12) in diagonal_cells
+
+
 def test_route_nets_rust_applies_heater_opening_only_to_connected_endpoint(
     monkeypatch,
     tmp_path,

@@ -701,6 +701,134 @@ fn route_cell_in_raw_static(
         .any(|(x0, y0, x1, y1)| x >= *x0 && x <= *x1 && y >= *y0 && y <= *y1)
 }
 
+fn route_turn_footprint_cells(
+    start_angle: u8,
+    angle_delta: i32,
+    bend_radius_cells: i32,
+) -> (Vec<(i32, i32)>, (i32, i32)) {
+    let start_step = route_angle_to_step(start_angle);
+    let end_angle = (start_angle as i32 + angle_delta).rem_euclid(8) as u8;
+    let end_step = route_angle_to_step(end_angle);
+    let radius = bend_radius_cells.max(0);
+    let mut footprint = Vec::new();
+    let mut seen = FxHashSet::default();
+
+    let mut add_cell = |cell: (i32, i32)| {
+        let key = pack_xy(cell.0, cell.1);
+        if seen.insert(key) {
+            footprint.push(cell);
+        }
+    };
+
+    for step_idx in 0..=radius {
+        add_cell((start_step.0 * step_idx, start_step.1 * step_idx));
+    }
+    let corner = (start_step.0 * radius, start_step.1 * radius);
+    for step_idx in 0..=radius {
+        add_cell((
+            corner.0 + end_step.0 * step_idx,
+            corner.1 + end_step.1 * step_idx,
+        ));
+    }
+    let end_cell = footprint.last().copied().unwrap_or((0, 0));
+    (footprint, end_cell)
+}
+
+fn route_inflate_cell_keys(
+    cells: &FxHashSet<CellKey>,
+    radius_cells: i32,
+    width: i32,
+    height: i32,
+) -> FxHashSet<CellKey> {
+    let radius = radius_cells.max(0);
+    let mut inflated = FxHashSet::default();
+    for key in cells {
+        let (x, y) = unpack_xy(*key);
+        for dx in -radius..=radius {
+            for dy in -radius..=radius {
+                let nx = x + dx;
+                let ny = y + dy;
+                if nx >= 0 && nx < width && ny >= 0 && ny < height {
+                    inflated.insert(pack_xy(nx, ny));
+                }
+            }
+        }
+    }
+    inflated
+}
+
+fn route_one_bend_dynamic_clearance_exempt_cells(
+    anchor: PyState,
+    is_target: bool,
+    allow_45_degree_turns: bool,
+    bend_radius_cells: i32,
+    commit_radius_cells: i32,
+    width: i32,
+    height: i32,
+) -> FxHashSet<CellKey> {
+    let mut cells = FxHashSet::default();
+    cells.insert(pack_xy(anchor.x, anchor.y));
+    let deltas: &[i32] = if allow_45_degree_turns {
+        &[-2, 2, -1, 1]
+    } else {
+        &[-2, 2]
+    };
+    for delta in deltas {
+        let start_angle = if is_target {
+            (anchor.angle as i32 - *delta).rem_euclid(8) as u8
+        } else {
+            anchor.angle % 8
+        };
+        let (footprint, end_cell) =
+            route_turn_footprint_cells(start_angle, *delta, bend_radius_cells);
+        let origin = if is_target {
+            (anchor.x - end_cell.0, anchor.y - end_cell.1)
+        } else {
+            (anchor.x, anchor.y)
+        };
+        for (dx, dy) in footprint {
+            let gx = origin.0 + dx;
+            let gy = origin.1 + dy;
+            if gx >= 0 && gx < width && gy >= 0 && gy < height {
+                cells.insert(pack_xy(gx, gy));
+            }
+        }
+    }
+    route_inflate_cell_keys(&cells, commit_radius_cells, width, height)
+}
+
+fn route_dynamic_clearance_exempt_cells(
+    source: PyState,
+    target: PyState,
+    allow_45_degree_turns: bool,
+    bend_radius_cells: i32,
+    commit_radius_cells: i32,
+    width: i32,
+    height: i32,
+) -> FxHashSet<CellKey> {
+    let mut cells = route_one_bend_dynamic_clearance_exempt_cells(
+        source,
+        false,
+        allow_45_degree_turns,
+        bend_radius_cells,
+        commit_radius_cells,
+        width,
+        height,
+    );
+    cells.extend(route_one_bend_dynamic_clearance_exempt_cells(
+        target,
+        true,
+        allow_45_degree_turns,
+        bend_radius_cells,
+        commit_radius_cells,
+        width,
+        height,
+    ));
+    cells.insert(pack_xy(source.x, source.y));
+    cells.insert(pack_xy(target.x, target.y));
+    cells
+}
+
 fn sorted_cells(cells: FxHashSet<CellKey>) -> Vec<(i32, i32)> {
     let mut out: Vec<(i32, i32)> = cells.into_iter().map(unpack_xy).collect();
     out.sort_unstable();
@@ -2954,6 +3082,32 @@ impl PyPhotonicRouter {
                     )
                 },
             )
+            .collect()
+    }
+
+    #[pyo3(signature=(jobs,allow_45_degree_turns,bend_radius_cells,commit_radius_cells))]
+    fn build_dynamic_clearance_exempt_cells_for_routes(
+        &self,
+        jobs: Vec<(u64, PyState, PyState)>,
+        allow_45_degree_turns: bool,
+        bend_radius_cells: i32,
+        commit_radius_cells: i32,
+    ) -> Vec<(u64, Vec<(i32, i32)>)> {
+        let width = self.grid.width as i32;
+        let height = self.grid.height as i32;
+        jobs.into_iter()
+            .map(|(net_id, source, target)| {
+                let cells = route_dynamic_clearance_exempt_cells(
+                    source,
+                    target,
+                    allow_45_degree_turns,
+                    bend_radius_cells,
+                    commit_radius_cells,
+                    width,
+                    height,
+                );
+                (net_id, sorted_cells(cells))
+            })
             .collect()
     }
 
