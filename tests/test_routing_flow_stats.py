@@ -133,6 +133,40 @@ def test_route_match_uses_rust_batch_path_when_repair_disabled():
     } == {"normal_route"}
 
 
+@pytest.mark.parametrize(
+    "benchmark_name",
+    [
+        "TOY",
+        "clements_8x8",
+        "heater_s",
+        "heater_s_compact",
+        "heater_s_mod",
+        "mmi_heater",
+        "mmi_heater_8x4",
+        "mmi_heater_8x4_ripup_reroute",
+    ],
+)
+def test_benchmarks_route_with_astar_only(benchmark_name):
+    stats = RoutingFlowStats()
+
+    run_routing_flow(
+        benchmark_name,
+        show_unrouted=False,
+        show_routed=False,
+        show_static_obstacles_svg=False,
+        enable_path_length_matching=False,
+        allow_45_degree_turns=True,
+        enable_simple_routes=False,
+        waveguide_clearance_um=0.0,
+        collect_route_stats=True,
+        stats=stats,
+    )
+
+    assert stats.net_count > 0
+    assert stats.simple_route_count == 0
+    assert stats.route_attempts >= stats.net_count
+
+
 def _route_heater_s_mod_for_regression(waveguide_clearance_um: float):
     schematic = load_benchmark("heater_s_mod")
     unrouted_layout = layout_from_schematic(schematic)

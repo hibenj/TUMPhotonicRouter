@@ -789,6 +789,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--enable-simple-routes",
+        type=_parse_bool_flag,
+        default=True,
+        metavar="BOOL",
+        help=(
+            "Enable straight/L/Z simple-route candidates before dense A* "
+            "(default: true). Pass false for A*-only regression runs."
+        ),
+    )
+    parser.add_argument(
         "--primitive-ordering",
         choices=("library", "long_straight_first", "target_biased"),
         default="library",
@@ -832,6 +842,7 @@ def main(argv: list[str] | None = None) -> Component:
         path_length_match_outputs=args.path_length_match_outputs,
         path_length_meander_height_um=args.path_length_meander_height_um,
         max_iterations=args.max_iterations,
+        enable_simple_routes=args.enable_simple_routes,
         routing_window_scale=args.routing_window_scale,
         include_heater_obstacles=args.include_heater_obstacles,
         ripup_reroute_config=RipupRerouteConfig(
@@ -1063,6 +1074,7 @@ def run_routing_flow(
     bend_radius_um: float = SCRIPT_BEND_RADIUS_UM,
     enable_jps4: bool = False,
     use_indexed_heap: bool = False,
+    enable_simple_routes: bool = True,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
     heap_tie_breaker: str = "smaller_g",
@@ -1117,6 +1129,8 @@ def run_routing_flow(
         use_indexed_heap: Benchmark-only indexed-heap experiment. Pass 8E
             measured it slower than duplicate-entry BinaryHeap queueing, so
             the default remains False.
+        enable_simple_routes: If False, force optical nets through A* by
+            disabling straight/L/Z simple-route candidates.
         primitive_ordering: Benchmark-only dense A* primitive ordering
             experiment. Pass 8F keeps "library" as the default.
         heuristic_mode: Dense A* heuristic experiment.
@@ -1302,6 +1316,7 @@ def run_routing_flow(
             bend_radius_um=bend_radius_um,
             enable_jps4=enable_jps4,
             use_indexed_heap=use_indexed_heap,
+            enable_simple_routes=enable_simple_routes,
             primitive_ordering=primitive_ordering,
             heuristic_mode=heuristic_mode,
             heap_tie_breaker=heap_tie_breaker,

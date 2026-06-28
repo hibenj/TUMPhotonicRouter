@@ -201,6 +201,7 @@ def route_match_and_realize(
     bend_radius_um: float | None = None,
     enable_jps4: bool = False,
     use_indexed_heap: bool = False,
+    enable_simple_routes: bool = True,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
     heap_tie_breaker: str = "smaller_g",
@@ -238,6 +239,7 @@ def route_match_and_realize(
         bend_radius_um=bend_radius_um,
         enable_jps4=enable_jps4,
         use_indexed_heap=use_indexed_heap,
+        enable_simple_routes=enable_simple_routes,
         primitive_ordering=primitive_ordering,
         heuristic_mode=heuristic_mode,
         heap_tie_breaker=heap_tie_breaker,
@@ -720,6 +722,7 @@ def route_nets_rust(
     bend_radius_um: float | None = None,
     enable_jps4: bool = False,
     use_indexed_heap: bool = False,
+    enable_simple_routes: bool = True,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
     heap_tie_breaker: str = "smaller_g",
@@ -759,6 +762,8 @@ def route_nets_rust(
         use_indexed_heap: Benchmark-only queue experiment. Pass 8E measured
             this slower than duplicate-entry BinaryHeap queueing, so the
             production default remains False.
+        enable_simple_routes: If False, skip straight/L/Z simple-route
+            candidates and force routes through A* search.
         primitive_ordering: Benchmark-only dense A* primitive iteration order.
             Supported values: "library", "long_straight_first",
             "target_biased". Pass 8F keeps "library" as the default.
@@ -857,6 +862,7 @@ def route_nets_rust(
     )
     bend_radius_cells = int(primitive_cfg.bend_radius_cells)
     astar_cfg = rust_backend.AStarConfig(max_iterations=int(max_iterations))
+    astar_cfg.enable_simple_routes = bool(enable_simple_routes)
     astar_cfg.enable_jps4 = bool(enable_jps4)
     astar_cfg.use_indexed_heap = bool(use_indexed_heap or allow_45_degree_turns)
     astar_cfg.collect_detailed_timing = bool(
