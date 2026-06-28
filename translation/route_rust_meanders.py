@@ -754,6 +754,100 @@ class _MeanderPlannerContext:
             None,
         )
 
+    def plan_split_request_registered(
+        self,
+        *,
+        edge_key: RoutedEdgeKey,
+        requested: float,
+        min_insertable_extra_um: float,
+        min_straight_um: float,
+        min_seg_um: float,
+        max_height_um: float,
+        auto_endpoint_inset_um: float | None,
+        max_parts: int = 8,
+    ) -> tuple[
+        list[PlannedEdgeInsertion],
+        list[dict[str, object]],
+        list[int],
+        int,
+        int,
+        float,
+        Exception | None,
+        int,
+    ] | None:
+        """Try splitting one route request across its longest straight regions.
+
+        Rust's registered sequence planner reserves each accepted meander box
+        before planning the next entry. Repeating the same geometry therefore
+        asks Rust to walk its existing length-sorted run order. The next chunk
+        can land elsewhere on the same long run or on the next legal run after
+        the previous box has been reserved.
+        """
+        requested = max(0.0, float(requested))
+        min_insertable = max(0.0, float(min_insertable_extra_um))
+        if requested <= 0.0 or min_insertable <= 0.0:
+            return None
+
+        ordered_run_lengths_um = _axis_aligned_centerline_run_lengths_um(
+            tuple(self.centerline_lists_by_edge.get(edge_key, ()))
+        )
+        if not ordered_run_lengths_um:
+            return None
+
+        largest_part_count = min(
+            max(2, int(max_parts)),
+            int(requested // min_insertable),
+        )
+        if largest_part_count < 2:
+            return None
+
+        last_attempt: tuple[
+            list[PlannedEdgeInsertion],
+            list[dict[str, object]],
+            list[int],
+            int,
+            int,
+            float,
+            Exception | None,
+            int,
+        ] | None = None
+        for part_count in range(2, largest_part_count + 1):
+            chunk_request = requested / float(part_count)
+            if chunk_request + EXACT_MEANDER_EPS_UM < min_insertable:
+                continue
+            sequence_attempt = self.plan_request_sequence_registered(
+                edge_keys=[edge_key] * part_count,
+                planner_requests_by_edge={edge_key: chunk_request},
+                min_straight_um=min_straight_um,
+                min_seg_um=min_seg_um,
+                max_height_um=max_height_um,
+                auto_endpoint_inset_um=auto_endpoint_inset_um,
+            )
+            if sequence_attempt is None:
+                return None
+            (
+                plans,
+                attempted_edges,
+                max_bumps_values,
+                open_count,
+                edge_calls,
+                elapsed_s,
+                last_exc,
+            ) = sequence_attempt
+            last_attempt = (
+                plans,
+                attempted_edges,
+                max_bumps_values,
+                open_count,
+                edge_calls,
+                elapsed_s,
+                last_exc,
+                part_count,
+            )
+            if plans:
+                return last_attempt
+        return last_attempt
+
     def commit_planned_edge(
         self,
         *,
@@ -1578,10 +1672,17 @@ def _route_geometry_max_meander_bumps(
 def _longest_axis_aligned_centerline_run_um(
     centerline: tuple[tuple[float, float], ...],
 ) -> float:
+    lengths = _axis_aligned_centerline_run_lengths_um(centerline)
+    return max(lengths, default=0.0)
+
+
+def _axis_aligned_centerline_run_lengths_um(
+    centerline: tuple[tuple[float, float], ...],
+) -> list[float]:
     if len(centerline) < 2:
-        return 0.0
+        return []
     eps = 1.0e-9
-    longest = 0.0
+    lengths: list[float] = []
     current = 0.0
     current_axis: str | None = None
     current_line_coord = 0.0
@@ -1600,7 +1701,8 @@ def _longest_axis_aligned_centerline_run_um(
             direction = 1 if dy > 0 else -1
             length = abs(dy)
         else:
-            longest = max(longest, current)
+            if current > eps:
+                lengths.append(current)
             current = 0.0
             current_axis = None
             continue
@@ -1611,12 +1713,16 @@ def _longest_axis_aligned_centerline_run_um(
         ):
             current += length
         else:
-            longest = max(longest, current)
+            if current > eps:
+                lengths.append(current)
             current = length
             current_axis = axis
             current_line_coord = line_coord
         current_dir = direction
-    return max(longest, current)
+    if current > eps:
+        lengths.append(current)
+    lengths.sort(reverse=True)
+    return lengths
 
 
 def _plan_and_commit_final_physical_meanders(
@@ -1650,7 +1756,7 @@ def _plan_and_commit_final_physical_meanders(
         meander_box_clearance_radius_cells=meander_box_clearance_radius_cells,
         route_clearance_radius_cells=route_clearance_radius_cells,
     )
-    final_plan_by_edge: dict[RoutedEdgeKey, PlannedEdgeInsertion] = {}
+    final_plan_by_edge: dict[RoutedEdgeKey, list[PlannedEdgeInsertion]] = {}
     final_failure_by_edge: dict[RoutedEdgeKey, str] = {}
     final_planner_calls = 0
     final_planner_elapsed_s = 0.0
@@ -1682,7 +1788,9 @@ def _plan_and_commit_final_physical_meanders(
                 selected_edge_key,
                 _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0),
             )
-            final_plan_by_edge[selected_edge_key] = commit_plans[plan_index]
+            final_plan_by_edge.setdefault(selected_edge_key, []).append(
+                commit_plans[plan_index]
+            )
             committed_requested = _as_float(
                 rr.get("inserted_extra_length_um", requested),
                 requested,
@@ -1774,6 +1882,37 @@ def _plan_and_commit_final_physical_meanders(
             final_planner_calls += commit_edge_calls
             final_planner_elapsed_s += commit_elapsed_s
             if not commit_plans:
+                split_attempt = final_context.plan_split_request_registered(
+                    edge_key=edge_key,
+                    requested=requested,
+                    min_insertable_extra_um=_minimum_four_bend_extra_length_um(
+                        grid_size_um=float(realization_grid_spec[2]),
+                        bend_radius_cells=int(bend_radius_cells),
+                        min_straight_um=search_config.min_straight_um,
+                    ),
+                    min_straight_um=search_config.min_straight_um,
+                    min_seg_um=search_config.min_segment_um,
+                    max_height_um=search_config.max_height_um,
+                    auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
+                )
+                if split_attempt is not None:
+                    (
+                        split_plans,
+                        _split_attempted_edges,
+                        split_max_bumps,
+                        _split_open_count,
+                        split_edge_calls,
+                        split_elapsed_s,
+                        split_last_exc,
+                        _split_part_count,
+                    ) = split_attempt
+                    final_planner_calls += split_edge_calls
+                    final_planner_elapsed_s += split_elapsed_s
+                    if split_plans:
+                        final_planning_mode = "rust_registered_split_route_runs"
+                        _commit_final_plans(split_plans, split_max_bumps)
+                        continue
+                    commit_last_exc = split_last_exc or commit_last_exc
                 final_failure_by_edge[edge_key] = (
                     str(commit_last_exc)
                     if commit_last_exc is not None
@@ -1807,8 +1946,9 @@ def _plan_and_commit_final_physical_meanders(
             selected.entry["unmatched_length_um"] = selected.credit_extra_length
         else:
             final_plans = [
-                final_plan_by_edge[edge_key]
+                final_plan
                 for edge_key in selected.physical_edges
+                for final_plan in final_plan_by_edge[edge_key]
             ]
             representative_rr = final_plans[0][2]
             final_physical_inserted = sum(
@@ -1861,7 +2001,8 @@ def _plan_and_commit_final_physical_meanders(
 
     total_physical_inserted = sum(
         _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
-        for _, _, rr, _, _, _ in final_plan_by_edge.values()
+        for final_plans in final_plan_by_edge.values()
+        for _, _, rr, _, _, _ in final_plans
     )
     setup_profile = _merged_numeric_profiles(
         selection_context.setup_profile,
@@ -2375,6 +2516,91 @@ def analyze_meander_insertion_for_requirements(
                 bundle_no_candidate += 1
             last_exc = RuntimeError(no_registered_reason)
 
+        if selected_candidate is None and registered_candidate_engine is not None:
+            split_attempt = context.plan_split_request_registered(
+                edge_key=edge_key,
+                requested=requested,
+                min_insertable_extra_um=min_insertable_extra_um,
+                min_straight_um=search_config.min_straight_um,
+                min_seg_um=search_config.min_segment_um,
+                max_height_um=search_config.max_height_um,
+                auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
+            )
+            if split_attempt is not None:
+                (
+                    split_plans,
+                    split_attempted_edges,
+                    split_max_bumps,
+                    split_open_count,
+                    split_edge_calls,
+                    split_elapsed_s,
+                    split_last_exc,
+                    split_part_count,
+                ) = split_attempt
+                attempted_edges.extend(split_attempted_edges)
+                planning_elapsed_for_entry_s += split_elapsed_s
+                planner_elapsed_s += split_elapsed_s
+                planner_calls += split_edge_calls
+                bundle_candidate_calls += 1
+                bundle_edge_calls += split_edge_calls
+                requirement_batch_calls += 1 if split_elapsed_s > 0.0 else 0
+                requirement_batch_candidate_calls += 1
+                requirement_batch_edge_calls += split_edge_calls
+                split_candidate_info = {
+                    "candidate_reason": "split_route_runs",
+                    "requested_extra_length_um": requested,
+                    "planner_requested_extra_length_um": requested / float(split_part_count),
+                    "split_part_count": split_part_count,
+                    "edges": [edge_key_to_dict(edge_key)],
+                    "affected_requirement_edges": [edge_key_to_dict(edge_key)],
+                    "edge_count": split_part_count,
+                    "status": "planned" if split_plans else "no_candidate",
+                    "failure_reason": (
+                        ""
+                        if split_plans
+                        else (
+                            str(split_last_exc)
+                            if split_last_exc is not None
+                            else "no exact split same-edge meander sequence found"
+                        )
+                    ),
+                    "edge_attempts": split_attempted_edges,
+                }
+                candidate_attempts.append(split_candidate_info)
+                _record_candidate_profile(
+                    candidate_profile,
+                    reason="split_route_runs",
+                    status="planned" if split_plans else "no_candidate",
+                    edge_count=split_part_count,
+                    edge_calls=split_edge_calls,
+                    elapsed_s=split_elapsed_s,
+                )
+                if split_plans:
+                    bundle_planned += 1
+                    requirement_batch_planned += 1
+                    selected_candidate = DelayInsertionCandidate(
+                        requirement_edge_key=edge_key,
+                        edge_keys=(edge_key,),
+                        extra_length_um=requested,
+                        reason="split_route_runs",
+                        affected_requirement_edge_keys=(edge_key,),
+                    )
+                    selected_candidate_requested = requested
+                    selected_credit_extra_length = requested
+                    selected_existing_physical_extra_length = 0.0
+                    selected_affected_edges = (edge_key,)
+                    selected_plans = split_plans
+                    max_bumps = max(split_max_bumps, default=1)
+                    current_route_open_cell_count = split_open_count
+                    entry_candidate_engine = "rust_registered_split_route_runs"
+                    candidate_engine_counts[entry_candidate_engine] += 1
+                    last_exc = None
+                else:
+                    bundle_no_candidate += 1
+                    requirement_batch_no_candidate += 1
+                    if split_last_exc is not None:
+                        last_exc = split_last_exc
+
         entry["planning_elapsed_s"] = planning_elapsed_for_entry_s
         entry["candidate_edges"] = attempted_edges
         entry["candidate_attempts"] = candidate_attempts
@@ -2407,21 +2633,23 @@ def analyze_meander_insertion_for_requirements(
             for selected_edge_key, *_ in selected_plans
         }
         if not selected_per_edge_planner_requests:
-            selected_per_edge_planner_requests = {
-                selected_edge_key: _as_float(
+            selected_per_edge_planner_requests = {}
+            for selected_edge_key, _, rr, _, _, _ in selected_plans:
+                selected_per_edge_planner_requests[selected_edge_key] = (
+                    selected_per_edge_planner_requests.get(selected_edge_key, 0.0)
+                    + _as_float(
                     rr.get("inserted_extra_length_um", selected_candidate_requested),
                     float(selected_candidate_requested),
                 )
-                for selected_edge_key, _, rr, _, _, _ in selected_plans
-            }
+                )
         physical_inserted = sum(selected_per_edge_planner_requests.values())
         physical_inserted_delta = sum(
             max(
                 0.0,
-                selected_per_edge_planner_requests.get(selected_edge_key, 0.0)
+                edge_requested
                 - selected_existing_physical_by_edge.get(selected_edge_key, 0.0),
             )
-            for selected_edge_key, *_ in selected_plans
+            for selected_edge_key, edge_requested in selected_per_edge_planner_requests.items()
         )
         unmatched = 0.0
         representative_rr = selected_plans[0][2]
@@ -2488,6 +2716,7 @@ def analyze_meander_insertion_for_requirements(
                 effective_inserted_by_requirement_edge.get(affected_edge, 0.0)
                 + inserted
             )
+        selected_physical_total_by_edge: dict[RoutedEdgeKey, float] = {}
         for (
             selected_edge_key,
             _record,
@@ -2496,16 +2725,21 @@ def analyze_meander_insertion_for_requirements(
             _candidate_max_bumps,
             _candidate_route_open_cells,
         ) in selected_plans:
-            physical_planned_extra_by_edge[selected_edge_key] = _as_float(
-                rr.get(
-                    "inserted_extra_length_um",
-                    selected_per_edge_planner_requests.get(
-                        selected_edge_key,
-                        float(selected_candidate_requested),
+            selected_physical_total_by_edge[selected_edge_key] = (
+                selected_physical_total_by_edge.get(selected_edge_key, 0.0)
+                + _as_float(
+                    rr.get(
+                        "inserted_extra_length_um",
+                        selected_per_edge_planner_requests.get(
+                            selected_edge_key,
+                            float(selected_candidate_requested),
+                        ),
                     ),
-                ),
-                selected_per_edge_planner_requests.get(selected_edge_key, 0.0),
+                    selected_per_edge_planner_requests.get(selected_edge_key, 0.0),
+                )
             )
+        for selected_edge_key, selected_physical_total in selected_physical_total_by_edge.items():
+            physical_planned_extra_by_edge[selected_edge_key] = selected_physical_total
             if selected_edge_key not in physical_edge_order_seen:
                 physical_edge_order_seen.add(selected_edge_key)
                 physical_edge_order.append(selected_edge_key)
@@ -2527,7 +2761,7 @@ def analyze_meander_insertion_for_requirements(
                 virtual_entries=virtual_entries,
                 edge_key=edge_key,
                 affected_edges=selected_affected_edges,
-                physical_edges=tuple(selected_edge_key for selected_edge_key, *_ in selected_plans),
+                physical_edges=tuple(selected_physical_total_by_edge.keys()),
                 credit_extra_length=inserted,
                 endpoint_inset_um=selected_endpoint_inset_um,
             )

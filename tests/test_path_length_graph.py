@@ -35,6 +35,7 @@ from translation.route_rust_analysis import (
 )
 from translation.route_rust_meanders import (
     _MeanderPlannerContext,
+    _axis_aligned_centerline_run_lengths_um,
     _build_planner_context,
     _meander_search_config,
     _normalize_minimum_insertable_request,
@@ -181,6 +182,96 @@ def test_planner_context_avoids_python_route_cell_bookkeeping_without_registrati
     assert context.setup_profile["registered_route_cell_acceleration_enabled"] == 0.0
     assert not hasattr(context, "route_cells_by_edge")
     assert not hasattr(context, "base_open_cells_for_edge")
+
+
+def test_axis_aligned_centerline_run_lengths_are_sorted_descending():
+    centerline = (
+        (0.0, 0.0),
+        (20.0, 0.0),
+        (20.0, 5.0),
+        (50.0, 5.0),
+        (55.0, 10.0),
+        (55.0, 25.0),
+    )
+
+    assert _axis_aligned_centerline_run_lengths_um(centerline) == [
+        30.0,
+        20.0,
+        15.0,
+        5.0,
+    ]
+
+
+def test_split_request_fallback_reuses_route_geometry_for_ordered_runs(monkeypatch):
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src", port="o1"),
+        target=PortRef(instance="dst", port="o1"),
+    )
+    context = _MeanderPlannerContext(
+        router=cast(Any, object()),
+        by_edge={},
+        updated={},
+        registered_open_cell_index_by_edge={},
+        registered_open_cell_count_by_edge={},
+        registered_geometry_index_by_edge={},
+        max_bumps_by_edge={},
+        centerline_lists_by_edge={
+            edge: [
+                (0.0, 0.0),
+                (40.0, 0.0),
+                (40.0, 5.0),
+                (70.0, 5.0),
+                (70.0, 10.0),
+                (90.0, 10.0),
+            ]
+        },
+        base_static_cells=set(),
+        grid_size_um=1.0,
+        bend_radius_um=10.0,
+        setup_profile={},
+        candidate_setup_profile={},
+        commit_profile={},
+        rust_planner_profile={},
+        rust_wrapper_profile={},
+    )
+    calls: list[tuple[list[RoutedEdgeKey], dict[RoutedEdgeKey, float]]] = []
+
+    def fake_sequence(**kwargs):
+        edge_keys = list(kwargs["edge_keys"])
+        requests = dict(kwargs["planner_requests_by_edge"])
+        calls.append((edge_keys, requests))
+        if len(edge_keys) < 3:
+            return ([], [], [], 0, len(edge_keys), 0.0, None)
+        plans = [
+            (edge, None, {"inserted_extra_length_um": requests[edge]}, False, 1, set())
+            for _ in edge_keys
+        ]
+        return (plans, [], [1] * len(edge_keys), 0, len(edge_keys), 0.0, None)
+
+    monkeypatch.setattr(
+        context,
+        "plan_request_sequence_registered",
+        fake_sequence,
+    )
+
+    attempt = context.plan_split_request_registered(
+        edge_key=edge,
+        requested=120.0,
+        min_insertable_extra_um=30.0,
+        min_straight_um=1.0,
+        min_seg_um=1.0,
+        max_height_um=80.0,
+        auto_endpoint_inset_um=None,
+    )
+
+    assert attempt is not None
+    assert [len(edge_keys) for edge_keys, _ in calls] == [2, 3]
+    assert calls[0][0] == [edge, edge]
+    assert calls[0][1] == {edge: 60.0}
+    assert calls[1][0] == [edge, edge, edge]
+    assert calls[1][1] == {edge: 40.0}
+    assert attempt[-1] == 3
 
 
 def test_build_graph_from_schematic_tracks_port_directions_and_fanout_shape():
