@@ -107,6 +107,32 @@ def test_routing_flow_populates_stats():
     assert stats_dict["expanded_states"] == stats.expanded_states
 
 
+def test_route_match_uses_rust_batch_path_when_repair_disabled():
+    schematic = load_benchmark("TOY")
+    unrouted_layout = layout_from_schematic(schematic)
+
+    result = route_match_and_realize(
+        unrouted_layout,
+        schematic,
+        enable_path_length_matching=False,
+        allow_45_degree_turns=True,
+        bend_radius_um=5.0,
+        collect_route_stats=True,
+        ripup_reroute_config=RipupRerouteConfig(enabled=False),
+        obstacle_config=StaticObstacleMapConfig(clearance_um=0.0),
+    )
+
+    summary = result.debug_artifacts.route_search_summary
+    assert summary.route_count == 4
+    assert summary.route_attempts == 4
+    assert summary.route_failures == 0
+    assert summary.repair_count == 0
+    assert len(result.debug_artifacts.route_attempt_records) == 4
+    assert {
+        record.bucket_name for record in result.debug_artifacts.route_attempt_records
+    } == {"normal_route"}
+
+
 def _route_heater_s_mod_for_regression(waveguide_clearance_um: float):
     schematic = load_benchmark("heater_s_mod")
     unrouted_layout = layout_from_schematic(schematic)

@@ -1472,6 +1472,214 @@ fn auto_meander_search_config_rs(
     .into())
 }
 
+impl PyPhotonicRouter {
+    #[allow(clippy::too_many_arguments)]
+    fn route_single_net_and_commit_native(
+        &mut self,
+        net_id: u64,
+        source: PyState,
+        target: PyState,
+        block_radius_cells: i32,
+        opened_cells: Option<&[(i32, i32)]>,
+        commit_radius_cells: Option<i32>,
+        clearance_exempt_cells: Option<&[(i32, i32)]>,
+        core_radius_cells: Option<i32>,
+    ) -> Result<RouteResult, String> {
+        if self.astar_cfg.target_tolerance_cells < 0 {
+            return Err("target_tolerance_cells must be >= 0".to_string());
+        }
+        let opened_owned;
+        let opened_ref: &FxHashSet<CellKey> = if let Some(cells) = opened_cells {
+            opened_owned = pack_cells(cells);
+            &opened_owned
+        } else {
+            &self.port_open_cells
+        };
+        let mut cfg = astar_config_from_py(&self.astar_cfg, &self.primitive_cfg, None, None, None)
+            .map_err(|err| err.to_string())?;
+        cfg.require_terminal_straights = true;
+        let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or(&[]);
+        let collect_timing = self.astar_cfg.collect_detailed_timing;
+        let mut obstacle_map_prepare_time_us = 0u128;
+        let mut simple_route_time_us = 0u128;
+        let mut commit_prepare_time_us = 0u128;
+        let mut commit_time_us = 0u128;
+        let prepare_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let dynamic_clearance_exempt_keys;
+        let mut opened_dynamic_obstacle_map;
+        let search_obstacle_map = if block_radius_cells > 0 {
+            dynamic_clearance_exempt_keys = (!dynamic_clearance_exempt_cell_vec.is_empty())
+                .then(|| pack_cells(dynamic_clearance_exempt_cell_vec));
+            None
+        } else {
+            dynamic_clearance_exempt_keys = None;
+            opened_dynamic_obstacle_map = self.obstacle_map.clone();
+            opened_dynamic_obstacle_map
+                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
+            Some(&opened_dynamic_obstacle_map)
+        };
+        if let Some(prepare_start) = prepare_start.as_ref() {
+            obstacle_map_prepare_time_us += prepare_start.elapsed().as_micros();
+        }
+        if block_radius_cells > 0 {
+            let simple_start = if collect_timing {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            if let Some(mut result) = try_simple_route_with_dynamic_expansion_config(
+                &self.obstacle_map,
+                &self.primitives,
+                State::new(source.x, source.y, source.angle),
+                State::new(target.x, target.y, target.angle),
+                Some(opened_ref),
+                &cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys.as_ref(),
+            ) {
+                if let Some(simple_start) = simple_start.as_ref() {
+                    simple_route_time_us += simple_start.elapsed().as_micros();
+                }
+                let commit_prepare_start = if collect_timing {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
+                let route_cells = route_commit_cells(
+                    &result.cells,
+                    block_radius_cells,
+                    commit_radius_cells.unwrap_or(block_radius_cells),
+                    clearance_exempt_cells,
+                    self.grid.width as i32,
+                    self.grid.height as i32,
+                );
+                let core_cells = route_core_cells(
+                    &result.cells,
+                    core_radius_cells.unwrap_or(block_radius_cells),
+                    self.grid.width as i32,
+                    self.grid.height as i32,
+                );
+                if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
+                    commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
+                }
+                let commit_start = if collect_timing {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
+                let committed = self.obstacle_map.commit_route_with_clearance_overlap(
+                    net_id,
+                    &core_cells,
+                    &route_cells,
+                    clearance_exempt_cells.unwrap_or(&[]),
+                );
+                if let Some(commit_start) = commit_start.as_ref() {
+                    commit_time_us += commit_start.elapsed().as_micros();
+                }
+                if committed {
+                    if collect_timing {
+                        result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
+                        result.stats.simple_route_time_us += simple_route_time_us;
+                        result.stats.commit_prepare_time_us += commit_prepare_time_us;
+                        result.stats.commit_time_us += commit_time_us;
+                    }
+                    self.invalidate_meander_base_prefix();
+                    return Ok(result);
+                }
+            } else if let Some(simple_start) = simple_start.as_ref() {
+                simple_route_time_us += simple_start.elapsed().as_micros();
+            }
+        }
+        let search_cfg = if block_radius_cells > 0 {
+            let mut search_cfg = astar_config_from_py(
+                &self.astar_cfg,
+                &self.primitive_cfg,
+                None,
+                Some(false),
+                None,
+            )
+            .map_err(|err| err.to_string())?;
+            search_cfg.require_terminal_straights = true;
+            search_cfg
+        } else {
+            cfg
+        };
+        let mut result = if block_radius_cells > 0 {
+            route_single_net_with_dynamic_expansion_config(
+                &self.obstacle_map,
+                &self.primitives,
+                State::new(source.x, source.y, source.angle),
+                State::new(target.x, target.y, target.angle),
+                Some(opened_ref),
+                &search_cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys.as_ref(),
+            )
+        } else {
+            route_single_net_with_config(
+                search_obstacle_map.expect("zero-radius search map should be prepared"),
+                &self.primitives,
+                State::new(source.x, source.y, source.angle),
+                State::new(target.x, target.y, target.angle),
+                Some(opened_ref),
+                &search_cfg,
+            )
+        }
+        .ok_or_else(|| "No route found".to_string())?;
+
+        if collect_timing {
+            result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
+            result.stats.simple_route_time_us += simple_route_time_us;
+        }
+        let commit_prepare_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let route_cells = route_commit_cells(
+            &result.cells,
+            block_radius_cells,
+            commit_radius_cells.unwrap_or(block_radius_cells),
+            clearance_exempt_cells,
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        let core_cells = route_core_cells(
+            &result.cells,
+            core_radius_cells.unwrap_or(block_radius_cells),
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
+            result.stats.commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
+        }
+        let commit_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
+            net_id,
+            &core_cells,
+            &route_cells,
+            clearance_exempt_cells.unwrap_or(&[]),
+        );
+        if let Some(commit_start) = commit_start.as_ref() {
+            result.stats.commit_time_us += commit_start.elapsed().as_micros();
+        }
+        if !committed {
+            return Err("Failed to commit routed cells to obstacle map".to_string());
+        }
+        self.invalidate_meander_base_prefix();
+
+        Ok(result)
+    }
+}
+
 #[pymethods]
 impl PyPhotonicRouter {
     #[pyo3(signature=(min_bend_radius_um=None))]
@@ -2013,198 +2221,66 @@ impl PyPhotonicRouter {
         clearance_exempt_cells: Option<Vec<(i32, i32)>>,
         core_radius_cells: Option<i32>,
     ) -> PyResult<Py<PyRouteResult>> {
-        if self.astar_cfg.target_tolerance_cells < 0 {
-            return Err(PyValueError::new_err("target_tolerance_cells must be >= 0"));
-        }
-        let opened_owned;
-        let opened_ref: &FxHashSet<CellKey> = if let Some(cells) = opened_cells.as_ref() {
-            opened_owned = pack_cells(cells);
-            &opened_owned
-        } else {
-            &self.port_open_cells
-        };
-        let mut cfg = astar_config_from_py(&self.astar_cfg, &self.primitive_cfg, None, None, None)?;
-        cfg.require_terminal_straights = true;
-        let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.as_deref().unwrap_or(&[]);
-        let collect_timing = self.astar_cfg.collect_detailed_timing;
-        let mut obstacle_map_prepare_time_us = 0u128;
-        let mut simple_route_time_us = 0u128;
-        let mut commit_prepare_time_us = 0u128;
-        let mut commit_time_us = 0u128;
-        let prepare_start = if collect_timing {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        let dynamic_clearance_exempt_keys;
-        let mut opened_dynamic_obstacle_map;
-        let search_obstacle_map = if block_radius_cells > 0 {
-            dynamic_clearance_exempt_keys = (!dynamic_clearance_exempt_cell_vec.is_empty())
-                .then(|| pack_cells(dynamic_clearance_exempt_cell_vec));
-            None
-        } else {
-            dynamic_clearance_exempt_keys = None;
-            opened_dynamic_obstacle_map = self.obstacle_map.clone();
-            opened_dynamic_obstacle_map
-                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
-            Some(&opened_dynamic_obstacle_map)
-        };
-        if let Some(prepare_start) = prepare_start.as_ref() {
-            obstacle_map_prepare_time_us += prepare_start.elapsed().as_micros();
-        }
-        if block_radius_cells > 0 {
-            let simple_start = if collect_timing {
-                Some(Instant::now())
-            } else {
-                None
-            };
-            if let Some(mut result) = try_simple_route_with_dynamic_expansion_config(
-                &self.obstacle_map,
-                &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
-                Some(opened_ref),
-                &cfg,
+        let result = self
+            .route_single_net_and_commit_native(
+                net_id,
+                source,
+                target,
                 block_radius_cells,
-                dynamic_clearance_exempt_keys.as_ref(),
+                opened_cells.as_deref(),
+                commit_radius_cells,
+                clearance_exempt_cells.as_deref(),
+                core_radius_cells,
+            )
+            .map_err(PyRuntimeError::new_err)?;
+        Py::new(py, convert_result(py, &self.primitives, &result)?)
+    }
+
+    #[pyo3(signature=(jobs,block_radius_cells=0,commit_radius_cells=None,core_radius_cells=None))]
+    fn route_many_normal_and_commit(
+        &mut self,
+        py: Python<'_>,
+        jobs: Vec<(u64, PyState, PyState, Vec<(i32, i32)>, Vec<(i32, i32)>)>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+    ) -> PyResult<PyObject> {
+        let result_dict = PyDict::new_bound(py);
+        let route_entries = PyList::empty_bound(py);
+        for (net_id, source, target, opened_cells, clearance_exempt_cells) in jobs {
+            match self.route_single_net_and_commit_native(
+                net_id,
+                source,
+                target,
+                block_radius_cells,
+                Some(&opened_cells),
+                commit_radius_cells,
+                Some(&clearance_exempt_cells),
+                core_radius_cells,
             ) {
-                if let Some(simple_start) = simple_start.as_ref() {
-                    simple_route_time_us += simple_start.elapsed().as_micros();
+                Ok(route_result) => {
+                    let entry = PyDict::new_bound(py);
+                    entry.set_item("net_id", net_id)?;
+                    entry.set_item(
+                        "route",
+                        Py::new(py, convert_result(py, &self.primitives, &route_result)?)?,
+                    )?;
+                    route_entries.append(entry)?;
                 }
-                let commit_prepare_start = if collect_timing {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
-                let route_cells = route_commit_cells(
-                    &result.cells,
-                    block_radius_cells,
-                    commit_radius_cells.unwrap_or(block_radius_cells),
-                    clearance_exempt_cells.as_deref(),
-                    self.grid.width as i32,
-                    self.grid.height as i32,
-                );
-                let core_cells = route_core_cells(
-                    &result.cells,
-                    core_radius_cells.unwrap_or(block_radius_cells),
-                    self.grid.width as i32,
-                    self.grid.height as i32,
-                );
-                if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
-                    commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
+                Err(error) => {
+                    result_dict.set_item("status", "failed")?;
+                    result_dict.set_item("failed_net_id", net_id)?;
+                    result_dict.set_item("error", error)?;
+                    result_dict.set_item("routes", route_entries)?;
+                    return Ok(result_dict.into());
                 }
-                let commit_start = if collect_timing {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
-                let committed = self.obstacle_map.commit_route_with_clearance_overlap(
-                    net_id,
-                    &core_cells,
-                    &route_cells,
-                    clearance_exempt_cells.as_deref().unwrap_or(&[]),
-                );
-                if let Some(commit_start) = commit_start.as_ref() {
-                    commit_time_us += commit_start.elapsed().as_micros();
-                }
-                if committed {
-                    if collect_timing {
-                        result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
-                        result.stats.simple_route_time_us += simple_route_time_us;
-                        result.stats.commit_prepare_time_us += commit_prepare_time_us;
-                        result.stats.commit_time_us += commit_time_us;
-                    }
-                    self.invalidate_meander_base_prefix();
-                    return Py::new(py, convert_result(py, &self.primitives, &result)?);
-                }
-            } else if let Some(simple_start) = simple_start.as_ref() {
-                simple_route_time_us += simple_start.elapsed().as_micros();
             }
         }
-        let search_cfg = if block_radius_cells > 0 {
-            let mut search_cfg = astar_config_from_py(
-                &self.astar_cfg,
-                &self.primitive_cfg,
-                None,
-                Some(false),
-                None,
-            )?;
-            search_cfg.require_terminal_straights = true;
-            search_cfg
-        } else {
-            cfg
-        };
-        let mut result = if block_radius_cells > 0 {
-            route_single_net_with_dynamic_expansion_config(
-                &self.obstacle_map,
-                &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
-                Some(opened_ref),
-                &search_cfg,
-                block_radius_cells,
-                dynamic_clearance_exempt_keys.as_ref(),
-            )
-        } else {
-            route_single_net_with_config(
-                search_obstacle_map.expect("zero-radius search map should be prepared"),
-                &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
-                Some(opened_ref),
-                &search_cfg,
-            )
-        }
-        .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
-
-        if collect_timing {
-            result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
-            result.stats.simple_route_time_us += simple_route_time_us;
-        }
-        let commit_prepare_start = if collect_timing {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        let route_cells = route_commit_cells(
-            &result.cells,
-            block_radius_cells,
-            commit_radius_cells.unwrap_or(block_radius_cells),
-            clearance_exempt_cells.as_deref(),
-            self.grid.width as i32,
-            self.grid.height as i32,
-        );
-        let core_cells = route_core_cells(
-            &result.cells,
-            core_radius_cells.unwrap_or(block_radius_cells),
-            self.grid.width as i32,
-            self.grid.height as i32,
-        );
-        if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
-            result.stats.commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
-        }
-        let commit_start = if collect_timing {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
-            net_id,
-            &core_cells,
-            &route_cells,
-            clearance_exempt_cells.as_deref().unwrap_or(&[]),
-        );
-        if let Some(commit_start) = commit_start.as_ref() {
-            result.stats.commit_time_us += commit_start.elapsed().as_micros();
-        }
-        if !committed {
-            return Err(PyRuntimeError::new_err(
-                "Failed to commit routed cells to obstacle map",
-            ));
-        }
-        self.invalidate_meander_base_prefix();
-
-        Py::new(py, convert_result(py, &self.primitives, &result)?)
+        result_dict.set_item("status", "routed")?;
+        result_dict.set_item("failed_net_id", py.None())?;
+        result_dict.set_item("error", py.None())?;
+        result_dict.set_item("routes", route_entries)?;
+        Ok(result_dict.into())
     }
 
     fn ripup_route(&mut self, net_id: u64) -> bool {
