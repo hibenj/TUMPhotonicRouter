@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 
 def _load_benchmark_photonic_module():
     path = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_photonic.py"
@@ -55,6 +57,7 @@ def _row_with_attempts() -> dict[str, object]:
         "slowest_meander_rejected_planning_failed": None,
         "slowest_meander_rejected_exact_length_mismatch": None,
         "route_attempts": 2,
+        "route_failures": 0,
         "simple_routes": 1,
         "repairs": 1,
         "expanded_states": 123,
@@ -154,6 +157,117 @@ def test_markdown_report_includes_slowest_route_attempts():
     assert "n0" in report
     assert "0.7500" in report
     assert "Dominant Route Diagnostics" not in report
+
+
+def test_repeat_aggregation_uses_median_timing_fields():
+    module = _load_benchmark_photonic_module()
+    samples = []
+    for route_nets_s in (0.9, 0.5, 0.7):
+        row = _row_with_attempts()
+        row["route_nets_s"] = route_nets_s
+        row["route_s"] = route_nets_s + 0.1
+        samples.append(row)
+
+    aggregated = module._aggregate_repeat_rows(samples, "route_nets_s")
+
+    assert aggregated["repeat_runs"] == 3
+    assert aggregated["route_nets_s"] == 0.7
+    assert aggregated["route_s"] == pytest.approx(0.8)
+    assert aggregated["perf_metric_min"] == 0.5
+    assert aggregated["perf_metric_max"] == 0.9
+
+
+def test_perf_baseline_accepts_rows_within_tolerance():
+    module = _load_benchmark_photonic_module()
+    baseline_row = _row_with_attempts()
+    baseline = module._perf_baseline_payload(
+        [baseline_row],
+        metric="route_nets_s",
+        relative_tolerance=0.1,
+        absolute_tolerance_s=0.05,
+        counter_relative_tolerance=0.1,
+    )
+    current = json.loads(json.dumps(baseline_row))
+    current["route_nets_s"] = 0.82
+
+    violations = module._perf_baseline_violations(
+        [current],
+        baseline,
+        metric="route_nets_s",
+        relative_tolerance=0.1,
+        absolute_tolerance_s=0.05,
+        counter_relative_tolerance=0.1,
+    )
+
+    assert violations == []
+
+
+def test_perf_baseline_reports_timing_and_counter_regression():
+    module = _load_benchmark_photonic_module()
+    baseline_row = _row_with_attempts()
+    baseline = module._perf_baseline_payload(
+        [baseline_row],
+        metric="route_nets_s",
+        relative_tolerance=0.1,
+        absolute_tolerance_s=0.05,
+        counter_relative_tolerance=0.1,
+    )
+    current = json.loads(json.dumps(baseline_row))
+    current["route_nets_s"] = 0.83
+    current["expanded_states"] = 200
+
+    violations = module._perf_baseline_violations(
+        [current],
+        baseline,
+        metric="route_nets_s",
+        relative_tolerance=0.1,
+        absolute_tolerance_s=0.05,
+        counter_relative_tolerance=0.1,
+    )
+
+    assert {violation["name"] for violation in violations} == {
+        "route_nets_s",
+        "expanded_states",
+    }
+
+
+def test_main_fails_on_perf_baseline_violation(monkeypatch, tmp_path):
+    module = _load_benchmark_photonic_module()
+    baseline_row = _row_with_attempts()
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        json.dumps(
+            module._perf_baseline_payload(
+                [baseline_row],
+                metric="route_nets_s",
+                relative_tolerance=0.1,
+                absolute_tolerance_s=0.05,
+                counter_relative_tolerance=0.1,
+            )
+        ),
+        encoding="utf-8",
+    )
+    current = json.loads(json.dumps(baseline_row))
+    current["route_nets_s"] = 0.83
+
+    monkeypatch.setattr(module, "_benchmark_rows", lambda args: [current])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_photonic.py",
+            "case",
+            "--compare-perf-baseline",
+            str(baseline_path),
+            "--perf-relative-tolerance",
+            "0.1",
+            "--perf-absolute-tolerance-s",
+            "0.05",
+        ],
+    )
+
+    assert module.main() == 1
+    assert current["perf_baseline_violations"][0]["name"] == "route_nets_s"
 
 
 def test_markdown_report_includes_diagnostics_when_available():

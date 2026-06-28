@@ -8,6 +8,7 @@ import csv
 from collections.abc import Mapping
 from datetime import datetime
 import json
+import statistics
 from pathlib import Path
 import platform
 import subprocess
@@ -19,10 +20,30 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-from routing_flow import RipupRerouteConfig, RoutingFlowStats, run_routing_flow
+from routing_flow import (
+    SCRIPT_BEND_RADIUS_UM,
+    SCRIPT_CHIP_ADD_X_UM,
+    SCRIPT_CHIP_ADD_Y_UM,
+    SCRIPT_GRID_SIZE_UM,
+    SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
+    SCRIPT_RIPUP_HISTORY_INCREMENT,
+    SCRIPT_RIPUP_HISTORY_WEIGHT,
+    SCRIPT_RIPUP_MAX_ROUNDS,
+    SCRIPT_RIPUP_MAX_VICTIMS,
+    RipupRerouteConfig,
+    RoutingFlowStats,
+    run_routing_flow,
+)
 
 
 DEFAULT_BENCHMARKS = ("TOY", "mmi_heater", "mmi_heater_8x4_ripup_reroute")
+DEFAULT_PERF_BASELINE_PATH = (
+    PROJECT_ROOT / "tests" / "baselines" / "photonic_perf_baseline.json"
+)
+DEFAULT_PERF_METRIC = "route_nets_s"
+DEFAULT_PERF_RELATIVE_TOLERANCE = 0.10
+DEFAULT_PERF_ABSOLUTE_TOLERANCE_S = 0.05
+DEFAULT_PERF_COUNTER_RELATIVE_TOLERANCE = 0.10
 WORKER_MARKER = "PHOTONIC_BENCHMARK_JSON:"
 AttemptColumn: TypeAlias = Literal[
     "benchmark",
@@ -424,20 +445,35 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         enable_path_length_matching=args.path_length_matching,
         path_length_match_outputs=args.path_length_match_outputs,
         allow_45_degree_turns=args.allow_45_degree_turns,
+        bend_radius_um=args.bend_radius_um,
         use_indexed_heap=args.use_indexed_heap,
+        enable_simple_routes=args.enable_simple_routes,
         primitive_ordering=args.primitive_ordering,
         heuristic_mode=args.heuristic_mode,
         heap_tie_breaker=args.heap_tie_breaker,
         max_iterations=args.max_iterations,
         routing_window_scale=args.routing_window_scale,
         include_heater_obstacles=args.include_heater_obstacles,
-        ripup_reroute_config=RipupRerouteConfig(enabled=args.ripup_reroute),
+        grid_size_um=args.grid_size_um,
+        chip_add_x_um=args.chip_add_x_um,
+        chip_add_y_um=args.chip_add_y_um,
+        path_length_meander_height_um=args.path_length_meander_height_um,
+        ripup_reroute_config=RipupRerouteConfig(
+            enabled=args.ripup_reroute,
+            max_rounds=args.ripup_max_rounds,
+            max_victims_per_failure=args.ripup_max_victims,
+            history_weight=args.ripup_history_weight,
+            history_increment=args.ripup_history_increment,
+        ),
         collect_attempt_diagnostics=getattr(args, "attempt_diagnostics", False),
         static_obstacle_config=StaticObstacleMapConfig(
+            grid_size_um=args.grid_size_um,
             obstacle_mode=args.obstacle_mode,
             clearance_um=args.waveguide_clearance_um,
             heater_clearance_um=args.heater_clearance_um,
-            clear_port_open_cells_from_static=False,
+            chip_add_x_um=args.chip_add_x_um,
+            chip_add_y_um=args.chip_add_y_um,
+            clear_port_open_cells_from_static=args.clear_port_open_cells_from_static,
         ),
         stats=stats,
     )
@@ -603,6 +639,24 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         str(args.max_iterations),
         "--routing-window-scale",
         str(args.routing_window_scale),
+        "--bend-radius-um",
+        str(args.bend_radius_um),
+        "--grid-size-um",
+        str(args.grid_size_um),
+        "--chip-add-x-um",
+        str(args.chip_add_x_um),
+        "--chip-add-y-um",
+        str(args.chip_add_y_um),
+        "--path-length-meander-height-um",
+        str(args.path_length_meander_height_um),
+        "--ripup-max-rounds",
+        str(args.ripup_max_rounds),
+        "--ripup-max-victims",
+        str(args.ripup_max_victims),
+        "--ripup-history-weight",
+        str(args.ripup_history_weight),
+        "--ripup-history-increment",
+        str(args.ripup_history_increment),
         "--obstacle-mode",
         args.obstacle_mode,
         "--waveguide-clearance-um",
@@ -618,6 +672,8 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
     ]
     if args.use_indexed_heap:
         command.append("--use-indexed-heap")
+    if not args.enable_simple_routes:
+        command.append("--no-enable-simple-routes")
     if args.path_length_matching:
         command.append("--path-length-matching")
     if args.path_length_match_outputs:
@@ -628,35 +684,311 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         command.append("--include-heater-obstacles")
     if args.ripup_reroute:
         command.append("--ripup-reroute")
+    if args.clear_port_open_cells_from_static:
+        command.append("--clear-port-open-cells-from-static")
     if getattr(args, "attempt_diagnostics", False):
         command.append("--attempt-diagnostics")
     return command
 
 
+def _worker_row(benchmark: str, args: argparse.Namespace) -> dict[str, object]:
+    result = subprocess.run(
+        _worker_command(benchmark, args),
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    for line in result.stdout.splitlines():
+        if not line.startswith(WORKER_MARKER):
+            sys.stderr.write(f"{line}\n")
+    sys.stderr.write(result.stderr)
+    result.check_returncode()
+    marker_lines = [
+        line[len(WORKER_MARKER) :]
+        for line in result.stdout.splitlines()
+        if line.startswith(WORKER_MARKER)
+    ]
+    if not marker_lines:
+        raise RuntimeError(f"benchmark worker did not report stats for {benchmark}")
+    loaded = json.loads(marker_lines[-1])
+    if not isinstance(loaded, dict):
+        raise RuntimeError(f"benchmark worker reported invalid stats for {benchmark}")
+    return loaded
+
+
+_REPEAT_MEDIAN_FIELDS = (
+    "total_s",
+    "load_s",
+    "layout_s",
+    "route_s",
+    "route_nets_s",
+    "route_realization_s",
+    "astar_s",
+    "path_length_analysis_s",
+    "meander_obstacle_map_s",
+    "meander_planning_s",
+    "meander_planner_elapsed_s",
+)
+
+
+def _as_float(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _median_float(values: Iterable[object]) -> float | None:
+    numbers = [_as_float(value) for value in values]
+    filtered = [value for value in numbers if value is not None]
+    if not filtered:
+        return None
+    return float(statistics.median(filtered))
+
+
+def _aggregate_repeat_rows(
+    samples: list[dict[str, object]], metric: str
+) -> dict[str, object]:
+    if not samples:
+        raise ValueError("expected at least one benchmark sample")
+    if len(samples) == 1:
+        row = dict(samples[0])
+        row["repeat_runs"] = 1
+        return row
+
+    sortable_samples = [
+        (metric_value, sample)
+        for sample in samples
+        if (metric_value := _as_float(sample.get(metric))) is not None
+    ]
+    representative = (
+        sorted(sortable_samples, key=lambda item: item[0])[len(sortable_samples) // 2][1]
+        if sortable_samples
+        else samples[0]
+    )
+    row = dict(representative)
+    for field in _REPEAT_MEDIAN_FIELDS:
+        median_value = _median_float(sample.get(field) for sample in samples)
+        if median_value is not None:
+            row[field] = median_value
+
+    metric_samples = [
+        value
+        for sample in samples
+        if (value := _as_float(sample.get(metric))) is not None
+    ]
+    row["repeat_runs"] = len(samples)
+    row["perf_metric"] = metric
+    row["perf_metric_samples"] = metric_samples
+    if metric_samples:
+        row["perf_metric_min"] = min(metric_samples)
+        row["perf_metric_max"] = max(metric_samples)
+    return row
+
+
 def _benchmark_rows(args: argparse.Namespace) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
+    repeat_runs = max(1, int(getattr(args, "repeat_runs", 1)))
+    metric = str(getattr(args, "perf_metric", DEFAULT_PERF_METRIC))
     for benchmark in args.benchmarks:
-        result = subprocess.run(
-            _worker_command(benchmark, args),
-            cwd=PROJECT_ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        for line in result.stdout.splitlines():
-            if not line.startswith(WORKER_MARKER):
-                sys.stderr.write(f"{line}\n")
-        sys.stderr.write(result.stderr)
-        result.check_returncode()
-        marker_lines = [
-            line[len(WORKER_MARKER) :]
-            for line in result.stdout.splitlines()
-            if line.startswith(WORKER_MARKER)
-        ]
-        if not marker_lines:
-            raise RuntimeError(f"benchmark worker did not report stats for {benchmark}")
-        rows.append(json.loads(marker_lines[-1]))
+        samples = [_worker_row(benchmark, args) for _ in range(repeat_runs)]
+        rows.append(_aggregate_repeat_rows(samples, metric))
     return rows
+
+
+def _rows_by_benchmark(payload: object) -> dict[str, Mapping[str, object]]:
+    if isinstance(payload, Mapping):
+        benchmarks = payload.get("benchmarks")
+        if isinstance(benchmarks, Mapping):
+            return {
+                str(name): row
+                for name, row in benchmarks.items()
+                if isinstance(row, Mapping)
+            }
+    if isinstance(payload, list):
+        return {
+            str(row["benchmark"]): row
+            for row in payload
+            if isinstance(row, Mapping) and "benchmark" in row
+        }
+    return {}
+
+
+def _perf_baseline_payload(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    metric: str,
+    relative_tolerance: float,
+    absolute_tolerance_s: float,
+    counter_relative_tolerance: float,
+) -> dict[str, object]:
+    benchmarks: dict[str, dict[str, object]] = {}
+    for row in rows:
+        name = str(row.get("benchmark", ""))
+        if not name:
+            continue
+        compact: dict[str, object] = {
+            metric: row.get(metric),
+            "grid": row.get("grid"),
+            "nets": row.get("nets"),
+            "route_attempts": row.get("route_attempts"),
+            "route_failures": row.get("route_failures"),
+            "simple_routes": row.get("simple_routes"),
+            "repairs": row.get("repairs"),
+            "expanded_states": row.get("expanded_states"),
+            "generated_neighbors": row.get("generated_neighbors"),
+            "repeat_runs": row.get("repeat_runs", 1),
+        }
+        benchmarks[name] = compact
+    return {
+        "metric": metric,
+        "relative_tolerance": relative_tolerance,
+        "absolute_tolerance_s": absolute_tolerance_s,
+        "counter_relative_tolerance": counter_relative_tolerance,
+        "benchmarks": benchmarks,
+    }
+
+
+def _load_json(path: Path) -> object:
+    load_path = path if path.is_absolute() else PROJECT_ROOT / path
+    return json.loads(load_path.read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, payload: object) -> None:
+    output_path = path if path.is_absolute() else PROJECT_ROOT / path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _perf_baseline_violations(
+    current_rows: Iterable[Mapping[str, object]],
+    baseline_payload: object,
+    *,
+    metric: str,
+    relative_tolerance: float,
+    absolute_tolerance_s: float,
+    counter_relative_tolerance: float,
+) -> list[dict[str, object]]:
+    current_by_benchmark = {
+        str(row.get("benchmark", "")): row
+        for row in current_rows
+        if str(row.get("benchmark", ""))
+    }
+    baseline_by_benchmark = _rows_by_benchmark(baseline_payload)
+    violations: list[dict[str, object]] = []
+    for benchmark, baseline in baseline_by_benchmark.items():
+        current = current_by_benchmark.get(benchmark)
+        if current is None:
+            violations.append(
+                {
+                    "benchmark": benchmark,
+                    "name": "benchmark",
+                    "reason": "missing_current_row",
+                }
+            )
+            continue
+
+        expected = _as_float(baseline.get(metric))
+        actual = _as_float(current.get(metric))
+        if expected is None:
+            violations.append(
+                {
+                    "benchmark": benchmark,
+                    "name": metric,
+                    "reason": "missing_baseline_metric",
+                }
+            )
+        elif actual is None:
+            violations.append(
+                {
+                    "benchmark": benchmark,
+                    "name": metric,
+                    "reason": "missing_current_metric",
+                }
+            )
+        else:
+            allowed = expected * (1.0 + relative_tolerance) + absolute_tolerance_s
+            if actual > allowed:
+                violations.append(
+                    {
+                        "benchmark": benchmark,
+                        "name": metric,
+                        "actual": actual,
+                        "expected": expected,
+                        "allowed": allowed,
+                        "relative_tolerance": relative_tolerance,
+                        "absolute_tolerance_s": absolute_tolerance_s,
+                    }
+                )
+
+        for key in (
+            "grid",
+            "nets",
+            "route_attempts",
+            "route_failures",
+            "simple_routes",
+            "repairs",
+        ):
+            if baseline.get(key) != current.get(key):
+                violations.append(
+                    {
+                        "benchmark": benchmark,
+                        "name": key,
+                        "actual": current.get(key),
+                        "expected": baseline.get(key),
+                    }
+                )
+
+        for key in ("expanded_states", "generated_neighbors"):
+            expected_counter = _as_float(baseline.get(key))
+            actual_counter = _as_float(current.get(key))
+            if expected_counter is None or actual_counter is None:
+                continue
+            allowed_counter = expected_counter * (1.0 + counter_relative_tolerance)
+            if actual_counter > allowed_counter:
+                violations.append(
+                    {
+                        "benchmark": benchmark,
+                        "name": key,
+                        "actual": actual_counter,
+                        "expected": expected_counter,
+                        "allowed": allowed_counter,
+                        "relative_tolerance": counter_relative_tolerance,
+                    }
+                )
+    for benchmark in sorted(set(current_by_benchmark) - set(baseline_by_benchmark)):
+        violations.append(
+            {
+                "benchmark": benchmark,
+                "name": "benchmark",
+                "reason": "missing_baseline_row",
+            }
+        )
+    return violations
+
+
+def _attach_perf_baseline_violations(
+    rows: list[dict[str, object]],
+    violations: list[dict[str, object]],
+) -> None:
+    by_benchmark: dict[str, list[dict[str, object]]] = {}
+    for violation in violations:
+        by_benchmark.setdefault(str(violation.get("benchmark", "")), []).append(
+            violation
+        )
+    for row in rows:
+        row_violations = by_benchmark.get(str(row.get("benchmark", "")), [])
+        if row_violations:
+            row["perf_baseline_violations"] = row_violations
+
+
+def _has_perf_baseline_violations(rows: Iterable[Mapping[str, object]]) -> bool:
+    return any(bool(row.get("perf_baseline_violations")) for row in rows)
 
 
 def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace) -> str:
@@ -678,6 +1010,8 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Heuristic mode: `{args.heuristic_mode}`",
         f"- Heap tie-breaker: `{getattr(args, 'heap_tie_breaker', 'smaller_g')}`",
         f"- Attempt diagnostics: `{getattr(args, 'attempt_diagnostics', False)}`",
+        f"- Repeat runs: `{getattr(args, 'repeat_runs', 1)}`",
+        f"- Perf metric: `{getattr(args, 'perf_metric', DEFAULT_PERF_METRIC)}`",
         "",
         "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
         "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -713,6 +1047,66 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 fallbacks=_format_int(row["full_grid_fallbacks"]),
             )
         )
+    repeated_rows = [
+        row for row in rows if int(row.get("repeat_runs", 1) or 1) > 1
+    ]
+    if repeated_rows:
+        metric = str(getattr(args, "perf_metric", DEFAULT_PERF_METRIC))
+        lines.extend(
+            [
+                "",
+                "## Repeat Samples",
+                "",
+                "| Benchmark | Runs | Metric | Median s | Min s | Max s | Samples s |",
+                "| --- | ---: | --- | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for row in repeated_rows:
+            samples = row.get("perf_metric_samples", [])
+            sample_values = samples if isinstance(samples, list) else []
+            lines.append(
+                "| {benchmark} | {runs} | {metric} | {median} | {minimum} | {maximum} | {samples} |".format(
+                    benchmark=row.get("benchmark", ""),
+                    runs=_format_int(row.get("repeat_runs")),
+                    metric=metric,
+                    median=_format_seconds(_record_seconds(row, metric)),
+                    minimum=_format_seconds(_record_seconds(row, "perf_metric_min")),
+                    maximum=_format_seconds(_record_seconds(row, "perf_metric_max")),
+                    samples=", ".join(
+                        _format_seconds(_as_float(value)) for value in sample_values
+                    ),
+                )
+            )
+    violation_rows = [
+        row for row in rows if row.get("perf_baseline_violations")
+    ]
+    if violation_rows:
+        lines.extend(
+            [
+                "",
+                "## Performance Baseline Violations",
+                "",
+                "| Benchmark | Metric | Actual | Expected | Allowed | Reason |",
+                "| --- | --- | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for row in violation_rows:
+            violations = row.get("perf_baseline_violations", [])
+            if not isinstance(violations, list):
+                continue
+            for violation in violations:
+                if not isinstance(violation, Mapping):
+                    continue
+                lines.append(
+                    "| {benchmark} | {name} | {actual} | {expected} | {allowed} | {reason} |".format(
+                        benchmark=violation.get("benchmark", ""),
+                        name=violation.get("name", ""),
+                        actual=violation.get("actual", ""),
+                        expected=violation.get("expected", ""),
+                        allowed=violation.get("allowed", ""),
+                        reason=violation.get("reason", ""),
+                    )
+                )
     plm_rows = [
         row
         for row in rows
@@ -1002,6 +1396,57 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("benchmarks", nargs="*", default=list(DEFAULT_BENCHMARKS))
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
+        "--repeat-runs",
+        type=int,
+        default=1,
+        help=(
+            "Run each benchmark this many times in fresh worker processes and "
+            "report median timing fields."
+        ),
+    )
+    parser.add_argument(
+        "--perf-metric",
+        default=DEFAULT_PERF_METRIC,
+        help="Numeric row field to compare for performance regressions.",
+    )
+    parser.add_argument(
+        "--compare-perf-baseline",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_PERF_BASELINE_PATH,
+        default=None,
+        help=(
+            "Compare compact benchmark rows against a JSON performance baseline "
+            "and exit non-zero on violations. Defaults to "
+            f"{DEFAULT_PERF_BASELINE_PATH.relative_to(PROJECT_ROOT)} when no "
+            "path is supplied."
+        ),
+    )
+    parser.add_argument(
+        "--write-perf-baseline",
+        type=Path,
+        default=None,
+        help="Write a compact JSON performance baseline from the current rows.",
+    )
+    parser.add_argument(
+        "--perf-relative-tolerance",
+        type=float,
+        default=DEFAULT_PERF_RELATIVE_TOLERANCE,
+        help="Allowed relative slowdown against the baseline metric.",
+    )
+    parser.add_argument(
+        "--perf-absolute-tolerance-s",
+        type=float,
+        default=DEFAULT_PERF_ABSOLUTE_TOLERANCE_S,
+        help="Additional absolute slowdown allowance in seconds.",
+    )
+    parser.add_argument(
+        "--perf-counter-relative-tolerance",
+        type=float,
+        default=DEFAULT_PERF_COUNTER_RELATIVE_TOLERANCE,
+        help="Allowed relative increase for expanded/generated route counters.",
+    )
+    parser.add_argument(
         "--attempt-output",
         type=Path,
         default=None,
@@ -1009,11 +1454,32 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--path-length-matching", action="store_true")
     parser.add_argument("--path-length-match-outputs", action="store_true")
+    parser.add_argument(
+        "--path-length-meander-height-um",
+        type=float,
+        default=SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
+    )
     parser.add_argument("--allow-45-degree-turns", action="store_true")
+    parser.add_argument("--bend-radius-um", type=float, default=SCRIPT_BEND_RADIUS_UM)
+    parser.add_argument(
+        "--enable-simple-routes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--max-iterations", type=int, default=5_000_000)
     parser.add_argument("--routing-window-scale", type=float, default=0.05)
     parser.add_argument("--include-heater-obstacles", action="store_true")
     parser.add_argument("--ripup-reroute", action="store_true")
+    parser.add_argument("--ripup-max-rounds", type=int, default=SCRIPT_RIPUP_MAX_ROUNDS)
+    parser.add_argument(
+        "--ripup-max-victims", type=int, default=SCRIPT_RIPUP_MAX_VICTIMS
+    )
+    parser.add_argument(
+        "--ripup-history-weight", type=float, default=SCRIPT_RIPUP_HISTORY_WEIGHT
+    )
+    parser.add_argument(
+        "--ripup-history-increment", type=int, default=SCRIPT_RIPUP_HISTORY_INCREMENT
+    )
     parser.add_argument(
         "--attempt-diagnostics",
         action="store_true",
@@ -1055,8 +1521,12 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--obstacle-mode", default="bounding_boxes")
+    parser.add_argument("--grid-size-um", type=float, default=SCRIPT_GRID_SIZE_UM)
     parser.add_argument("--waveguide-clearance-um", type=float, default=0.5)
     parser.add_argument("--heater-clearance-um", type=float, default=5.0)
+    parser.add_argument("--chip-add-x-um", type=float, default=SCRIPT_CHIP_ADD_X_UM)
+    parser.add_argument("--chip-add-y-um", type=float, default=SCRIPT_CHIP_ADD_Y_UM)
+    parser.add_argument("--clear-port-open-cells-from-static", action="store_true")
     parser.add_argument("--_worker-benchmark", default=None, help=argparse.SUPPRESS)
     return parser.parse_args()
 
@@ -1069,6 +1539,17 @@ def main() -> int:
         return 0
 
     rows = _benchmark_rows(args)
+    if args.compare_perf_baseline is not None:
+        baseline_payload = _load_json(args.compare_perf_baseline)
+        violations = _perf_baseline_violations(
+            rows,
+            baseline_payload,
+            metric=args.perf_metric,
+            relative_tolerance=args.perf_relative_tolerance,
+            absolute_tolerance_s=args.perf_absolute_tolerance_s,
+            counter_relative_tolerance=args.perf_counter_relative_tolerance,
+        )
+        _attach_perf_baseline_violations(rows, violations)
     report = _markdown_report(rows, args)
     print(report)
     if args.output is not None:
@@ -1082,7 +1563,18 @@ def main() -> int:
         if not attempt_output_path.is_absolute():
             attempt_output_path = PROJECT_ROOT / attempt_output_path
         _write_attempt_output(rows, attempt_output_path)
-    return 0
+    if args.write_perf_baseline is not None:
+        _write_json(
+            args.write_perf_baseline,
+            _perf_baseline_payload(
+                rows,
+                metric=args.perf_metric,
+                relative_tolerance=args.perf_relative_tolerance,
+                absolute_tolerance_s=args.perf_absolute_tolerance_s,
+                counter_relative_tolerance=args.perf_counter_relative_tolerance,
+            ),
+        )
+    return 1 if _has_perf_baseline_violations(rows) else 0
 
 
 if __name__ == "__main__":

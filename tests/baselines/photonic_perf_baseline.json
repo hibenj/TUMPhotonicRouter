@@ -1,0 +1,20 @@
+{
+  "absolute_tolerance_s": 0.05,
+  "benchmarks": {
+    "clements_8x8": {
+      "expanded_states": 4936,
+      "generated_neighbors": 29616,
+      "grid": "2420x442",
+      "nets": 79,
+      "repairs": 1,
+      "repeat_runs": 5,
+      "route_attempts": 82,
+      "route_failures": 1,
+      "route_nets_s": 0.53,
+      "simple_routes": 68
+    }
+  },
+  "counter_relative_tolerance": 0.1,
+  "metric": "route_nets_s",
+  "relative_tolerance": 0.1
+}
