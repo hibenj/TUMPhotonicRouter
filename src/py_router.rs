@@ -497,7 +497,31 @@ struct NativeRouteJob {
     source: PyState,
     target: PyState,
     opened_cells: Vec<(i32, i32)>,
+    opened_cell_keys: FxHashSet<CellKey>,
     clearance_exempt_cells: Vec<(i32, i32)>,
+    clearance_exempt_cell_keys: FxHashSet<CellKey>,
+}
+
+impl NativeRouteJob {
+    fn new(
+        net_id: u64,
+        source: PyState,
+        target: PyState,
+        opened_cells: Vec<(i32, i32)>,
+        clearance_exempt_cells: Vec<(i32, i32)>,
+    ) -> Self {
+        let opened_cell_keys = pack_cells(&opened_cells);
+        let clearance_exempt_cell_keys = pack_cells(&clearance_exempt_cells);
+        Self {
+            net_id,
+            source,
+            target,
+            opened_cells,
+            opened_cell_keys,
+            clearance_exempt_cells,
+            clearance_exempt_cell_keys,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1821,15 +1845,19 @@ impl PyPhotonicRouter {
         target: PyState,
         block_radius_cells: i32,
         opened_cells: Option<&[(i32, i32)]>,
+        opened_cell_keys: Option<&FxHashSet<CellKey>>,
         commit_radius_cells: Option<i32>,
         clearance_exempt_cells: Option<&[(i32, i32)]>,
+        clearance_exempt_cell_keys: Option<&FxHashSet<CellKey>>,
         core_radius_cells: Option<i32>,
     ) -> Result<RouteResult, String> {
         if self.astar_cfg.target_tolerance_cells < 0 {
             return Err("target_tolerance_cells must be >= 0".to_string());
         }
         let opened_owned;
-        let opened_ref: &FxHashSet<CellKey> = if let Some(cells) = opened_cells {
+        let opened_ref: &FxHashSet<CellKey> = if let Some(keys) = opened_cell_keys {
+            keys
+        } else if let Some(cells) = opened_cells {
             opened_owned = pack_cells(cells);
             &opened_owned
         } else {
@@ -1849,14 +1877,25 @@ impl PyPhotonicRouter {
         } else {
             None
         };
-        let dynamic_clearance_exempt_keys;
+        let dynamic_clearance_exempt_keys_owned: Option<FxHashSet<CellKey>> = if block_radius_cells
+            > 0
+            && !dynamic_clearance_exempt_cell_vec.is_empty()
+            && clearance_exempt_cell_keys.is_none()
+        {
+            Some(pack_cells(dynamic_clearance_exempt_cell_vec))
+        } else {
+            None
+        };
+        let dynamic_clearance_exempt_keys =
+            if block_radius_cells > 0 && !dynamic_clearance_exempt_cell_vec.is_empty() {
+                clearance_exempt_cell_keys.or(dynamic_clearance_exempt_keys_owned.as_ref())
+            } else {
+                None
+            };
         let mut opened_dynamic_obstacle_map;
         let search_obstacle_map = if block_radius_cells > 0 {
-            dynamic_clearance_exempt_keys = (!dynamic_clearance_exempt_cell_vec.is_empty())
-                .then(|| pack_cells(dynamic_clearance_exempt_cell_vec));
             None
         } else {
-            dynamic_clearance_exempt_keys = None;
             opened_dynamic_obstacle_map = self.obstacle_map.clone();
             opened_dynamic_obstacle_map
                 .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
@@ -1879,7 +1918,7 @@ impl PyPhotonicRouter {
                 Some(opened_ref),
                 &cfg,
                 block_radius_cells,
-                dynamic_clearance_exempt_keys.as_ref(),
+                dynamic_clearance_exempt_keys,
             ) {
                 if let Some(simple_start) = simple_start.as_ref() {
                     simple_route_time_us += simple_start.elapsed().as_micros();
@@ -1957,7 +1996,7 @@ impl PyPhotonicRouter {
                 Some(opened_ref),
                 &search_cfg,
                 block_radius_cells,
-                dynamic_clearance_exempt_keys.as_ref(),
+                dynamic_clearance_exempt_keys,
             )
         } else {
             route_single_net_with_config(
@@ -2027,16 +2066,20 @@ impl PyPhotonicRouter {
         target: PyState,
         block_radius_cells: i32,
         opened_cells: Option<&[(i32, i32)]>,
+        opened_cell_keys: Option<&FxHashSet<CellKey>>,
         history_weight: f64,
         commit_radius_cells: Option<i32>,
         clearance_exempt_cells: Option<&[(i32, i32)]>,
+        clearance_exempt_cell_keys: Option<&FxHashSet<CellKey>>,
         core_radius_cells: Option<i32>,
     ) -> Result<RouteResult, String> {
         if self.astar_cfg.target_tolerance_cells < 0 {
             return Err("target_tolerance_cells must be >= 0".to_string());
         }
         let opened_owned;
-        let opened_ref: &FxHashSet<CellKey> = if let Some(cells) = opened_cells {
+        let opened_ref: &FxHashSet<CellKey> = if let Some(keys) = opened_cell_keys {
+            keys
+        } else if let Some(cells) = opened_cells {
             opened_owned = pack_cells(cells);
             &opened_owned
         } else {
@@ -2058,14 +2101,25 @@ impl PyPhotonicRouter {
         } else {
             None
         };
-        let dynamic_clearance_exempt_keys;
+        let dynamic_clearance_exempt_keys_owned: Option<FxHashSet<CellKey>> = if block_radius_cells
+            > 0
+            && !dynamic_clearance_exempt_cell_vec.is_empty()
+            && clearance_exempt_cell_keys.is_none()
+        {
+            Some(pack_cells(dynamic_clearance_exempt_cell_vec))
+        } else {
+            None
+        };
+        let dynamic_clearance_exempt_keys =
+            if block_radius_cells > 0 && !dynamic_clearance_exempt_cell_vec.is_empty() {
+                clearance_exempt_cell_keys.or(dynamic_clearance_exempt_keys_owned.as_ref())
+            } else {
+                None
+            };
         let mut opened_dynamic_obstacle_map;
         let search_obstacle_map = if block_radius_cells > 0 {
-            dynamic_clearance_exempt_keys = (!dynamic_clearance_exempt_cell_vec.is_empty())
-                .then(|| pack_cells(dynamic_clearance_exempt_cell_vec));
             None
         } else {
-            dynamic_clearance_exempt_keys = None;
             opened_dynamic_obstacle_map = self.obstacle_map.clone();
             opened_dynamic_obstacle_map
                 .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
@@ -2083,7 +2137,7 @@ impl PyPhotonicRouter {
                 Some(opened_ref),
                 &cfg,
                 block_radius_cells,
-                dynamic_clearance_exempt_keys.as_ref(),
+                dynamic_clearance_exempt_keys,
             )
         } else {
             route_single_net_with_config(
@@ -2149,12 +2203,15 @@ impl PyPhotonicRouter {
         source: PyState,
         target: PyState,
         opened_cells: Option<&[(i32, i32)]>,
+        opened_cell_keys: Option<&FxHashSet<CellKey>>,
     ) -> Result<RouteResult, String> {
         if self.astar_cfg.target_tolerance_cells < 0 {
             return Err("target_tolerance_cells must be >= 0".to_string());
         }
         let opened_owned;
-        let opened_ref: &FxHashSet<CellKey> = if let Some(cells) = opened_cells {
+        let opened_ref: &FxHashSet<CellKey> = if let Some(keys) = opened_cell_keys {
+            keys
+        } else if let Some(cells) = opened_cells {
             opened_owned = pack_cells(cells);
             &opened_owned
         } else {
@@ -3169,8 +3226,10 @@ impl PyPhotonicRouter {
                 target,
                 block_radius_cells,
                 opened_cells.as_deref(),
+                None,
                 commit_radius_cells,
                 clearance_exempt_cells.as_deref(),
+                None,
                 core_radius_cells,
             )
             .map_err(PyRuntimeError::new_err)?;
@@ -3189,14 +3248,18 @@ impl PyPhotonicRouter {
         let result_dict = PyDict::new_bound(py);
         let route_entries = PyList::empty_bound(py);
         for (net_id, source, target, opened_cells, clearance_exempt_cells) in jobs {
+            let job =
+                NativeRouteJob::new(net_id, source, target, opened_cells, clearance_exempt_cells);
             match self.route_single_net_and_commit_native(
-                net_id,
-                source,
-                target,
+                job.net_id,
+                job.source,
+                job.target,
                 block_radius_cells,
-                Some(&opened_cells),
+                Some(&job.opened_cells),
+                Some(&job.opened_cell_keys),
                 commit_radius_cells,
-                Some(&clearance_exempt_cells),
+                Some(&job.clearance_exempt_cells),
+                Some(&job.clearance_exempt_cell_keys),
                 core_radius_cells,
             ) {
                 Ok(route_result) => {
@@ -3210,7 +3273,7 @@ impl PyPhotonicRouter {
                 }
                 Err(error) => {
                     result_dict.set_item("status", "failed")?;
-                    result_dict.set_item("failed_net_id", net_id)?;
+                    result_dict.set_item("failed_net_id", job.net_id)?;
                     result_dict.set_item("error", error)?;
                     result_dict.set_item("routes", route_entries)?;
                     return Ok(result_dict.into());
@@ -3241,12 +3304,14 @@ impl PyPhotonicRouter {
         let native_jobs: Vec<NativeRouteJob> = jobs
             .into_iter()
             .map(
-                |(net_id, source, target, opened_cells, clearance_exempt_cells)| NativeRouteJob {
-                    net_id,
-                    source,
-                    target,
-                    opened_cells,
-                    clearance_exempt_cells,
+                |(net_id, source, target, opened_cells, clearance_exempt_cells)| {
+                    NativeRouteJob::new(
+                        net_id,
+                        source,
+                        target,
+                        opened_cells,
+                        clearance_exempt_cells,
+                    )
                 },
             )
             .collect();
@@ -3273,8 +3338,10 @@ impl PyPhotonicRouter {
                 job.target,
                 block_radius_cells,
                 Some(&job.opened_cells),
+                Some(&job.opened_cell_keys),
                 commit_radius_cells,
                 Some(&job.clearance_exempt_cells),
+                Some(&job.clearance_exempt_cell_keys),
                 core_radius_cells,
             ) {
                 Ok(route) => {
@@ -3309,6 +3376,7 @@ impl PyPhotonicRouter {
                 job.source,
                 job.target,
                 Some(&job.opened_cells),
+                Some(&job.opened_cell_keys),
             ) {
                 Ok(route) => {
                     attempts.push(NativeRouteAttempt {
@@ -3410,8 +3478,10 @@ impl PyPhotonicRouter {
                             job.target,
                             block_radius_cells,
                             Some(&job.opened_cells),
+                            Some(&job.opened_cell_keys),
                             commit_radius_cells,
                             Some(&job.clearance_exempt_cells),
+                            Some(&job.clearance_exempt_cell_keys),
                             core_radius_cells,
                         ) {
                             Ok(route) => {
@@ -3456,8 +3526,10 @@ impl PyPhotonicRouter {
                                 victim_job.target,
                                 block_radius_cells,
                                 Some(&victim_job.opened_cells),
+                                Some(&victim_job.opened_cell_keys),
                                 commit_radius_cells,
                                 Some(&victim_job.clearance_exempt_cells),
+                                Some(&victim_job.clearance_exempt_cell_keys),
                                 core_radius_cells,
                             );
                             let route = match reroute_result {
@@ -3479,9 +3551,11 @@ impl PyPhotonicRouter {
                                         victim_job.target,
                                         block_radius_cells,
                                         Some(&victim_job.opened_cells),
+                                        Some(&victim_job.opened_cell_keys),
                                         history_weight,
                                         commit_radius_cells,
                                         Some(&victim_job.clearance_exempt_cells),
+                                        Some(&victim_job.clearance_exempt_cell_keys),
                                         core_radius_cells,
                                     ) {
                                         Ok(route) => route,
@@ -3523,8 +3597,10 @@ impl PyPhotonicRouter {
                             job.target,
                             block_radius_cells,
                             Some(&job.opened_cells),
+                            Some(&job.opened_cell_keys),
                             commit_radius_cells,
                             Some(&job.clearance_exempt_cells),
+                            Some(&job.clearance_exempt_cell_keys),
                             core_radius_cells,
                         );
                         let route = match normal_result {
@@ -3546,9 +3622,11 @@ impl PyPhotonicRouter {
                                     job.target,
                                     block_radius_cells,
                                     Some(&job.opened_cells),
+                                    Some(&job.opened_cell_keys),
                                     history_weight,
                                     commit_radius_cells,
                                     Some(&job.clearance_exempt_cells),
+                                    Some(&job.clearance_exempt_cell_keys),
                                     core_radius_cells,
                                 ) {
                                     Ok(route) => route,
