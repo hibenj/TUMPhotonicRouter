@@ -622,3 +622,146 @@ pub fn plan_registered_geometry_request_sequence(
 
     last_result.ok_or_else(|| "endpoint inset sweep produced no result".to_string())
 }
+
+#[allow(clippy::too_many_arguments)]
+pub fn plan_registered_geometry_split_request(
+    geometry_index: usize,
+    requested_extra_length_um: f64,
+    min_insertable_extra_um: f64,
+    max_parts: usize,
+    registered_geometries: &[RegisteredMeanderGeometry],
+    registered_open_cells: &[FxHashSet<CellKey>],
+    registered_open_indices: &[SparseCellIndex],
+    base_prefix: &DenseOccupancyPrefix,
+    reserved_index: Option<&SparseCellIndex>,
+    grid: &GeometryGridSpec,
+    grid_width: i32,
+    grid_height: i32,
+    box_depths_um: &[f64],
+    endpoint_insets_um: &[f64],
+    fixed_endpoint_inset: bool,
+    effective_radius_um: f64,
+    min_straight_um: f64,
+    max_meander_height_um: f64,
+    min_segment_length_um: f64,
+    clearance_radius_cells: i32,
+    side_policy: AutoMeanderSidePolicy,
+    mode: MeanderPlanningMode,
+) -> Result<RegisteredRequirementResult, String> {
+    if requested_extra_length_um <= 0.0 || !requested_extra_length_um.is_finite() {
+        return Err("requested extra length must be finite and > 0".into());
+    }
+    if min_insertable_extra_um <= 0.0 || !min_insertable_extra_um.is_finite() {
+        return Err("minimum insertable extra length must be finite and > 0".into());
+    }
+    if max_parts < 2 {
+        return Err("max_parts must be >= 2".into());
+    }
+    if box_depths_um.is_empty() {
+        return Err("box_depths_um must not be empty".into());
+    }
+    if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+        return Err("box_depths_um values must be finite and > 0".into());
+    }
+    if endpoint_insets_um.is_empty() {
+        return Err("endpoint_insets_um must not be empty".into());
+    }
+    if endpoint_insets_um
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return Err("endpoint_insets_um values must be finite and >= 0".into());
+    }
+    if min_straight_um < 0.0 {
+        return Err("min_straight_um must be >= 0".into());
+    }
+    if max_meander_height_um <= 0.0 {
+        return Err("max_meander_height_um must be > 0".into());
+    }
+    if min_segment_length_um <= 0.0 {
+        return Err("min_segment_length_um must be > 0".into());
+    }
+    if clearance_radius_cells < 0 {
+        return Err("clearance_radius_cells must be >= 0".into());
+    }
+
+    let largest_part_count =
+        max_parts.min((requested_extra_length_um / min_insertable_extra_um) as usize);
+    if largest_part_count < 2 {
+        return Err("requested extra length cannot be split into legal chunks".into());
+    }
+
+    let mut attempted_endpoint_insets_um: Vec<f64> = Vec::with_capacity(endpoint_insets_um.len());
+    let mut last_result: Option<RegisteredRequirementResult> = None;
+
+    for endpoint_inset_um in endpoint_insets_um {
+        attempted_endpoint_insets_um.push(*endpoint_inset_um);
+        let reserved_snapshot_start = Instant::now();
+        let mut call_wrapper_profile = MeanderWrapperProfileTotals::default();
+        call_wrapper_profile.reserved_snapshot_s += reserved_snapshot_start.elapsed().as_secs_f64();
+        let mut call_profile_totals = MeanderPlanningProfileTotals::default();
+        let mut candidate_results = Vec::with_capacity(largest_part_count - 1);
+        let mut selected_candidate_index: Option<usize> = None;
+
+        for part_count in 2..=largest_part_count {
+            let chunk_request = requested_extra_length_um / part_count as f64;
+            if chunk_request < min_insertable_extra_um {
+                continue;
+            }
+            let geometry_indices = vec![geometry_index; part_count];
+            let requested_lengths = vec![chunk_request; part_count];
+            let candidate_result = plan_registered_geometry_sequence_at_endpoint(
+                part_count,
+                &geometry_indices,
+                &requested_lengths,
+                registered_geometries,
+                registered_open_cells,
+                registered_open_indices,
+                base_prefix,
+                reserved_index,
+                grid,
+                grid_width,
+                grid_height,
+                box_depths_um,
+                *endpoint_inset_um,
+                effective_radius_um,
+                min_straight_um,
+                max_meander_height_um,
+                min_segment_length_um,
+                clearance_radius_cells,
+                side_policy,
+                mode,
+                &mut call_profile_totals,
+            )?;
+
+            let planned = candidate_result.failed_reason.is_none();
+            call_wrapper_profile.add(&candidate_result.wrapper_profile_total);
+            candidate_results.push(candidate_result);
+            if planned {
+                selected_candidate_index = Some(part_count);
+                break;
+            }
+        }
+
+        if candidate_results.is_empty() {
+            continue;
+        }
+        let result = RegisteredRequirementResult {
+            selected_candidate_index,
+            candidate_results,
+            planner_profile_total: call_profile_totals,
+            wrapper_profile_total: call_wrapper_profile,
+            endpoint_inset_um: *endpoint_inset_um,
+            attempted_endpoint_insets_um: attempted_endpoint_insets_um.clone(),
+            box_depths_um: box_depths_um.to_vec(),
+            endpoint_insets_um: endpoint_insets_um.to_vec(),
+            fixed_endpoint_inset,
+        };
+        if result.selected_candidate_index.is_some() {
+            return Ok(result);
+        }
+        last_result = Some(result);
+    }
+
+    last_result.ok_or_else(|| "split request produced no candidate result".to_string())
+}

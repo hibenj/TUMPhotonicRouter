@@ -95,6 +95,13 @@ class _MeanderRouterProtocol(Protocol):
         requested_extra_lengths_um: list[float],
         **kwargs: Any,
     ) -> dict[str, object]: ...
+    def plan_auto_analytic_meander_split_request_registered_opened_auto_config(
+        self,
+        geometry_index: int,
+        requested_extra_length_um: float,
+        min_insertable_extra_length_um: float,
+        **kwargs: Any,
+    ) -> dict[str, object]: ...
     def route_port_corrected_centerline(
         self,
         route: object,
@@ -800,6 +807,160 @@ class _MeanderPlannerContext:
         )
         if largest_part_count < 2:
             return None
+
+        if hasattr(
+            self.router,
+            "plan_auto_analytic_meander_split_request_registered_opened_auto_config",
+        ):
+            record = self.by_edge.get(edge_key)
+            if record is None:
+                return None
+            geometry_index = self.registered_geometry_index_by_edge.get(edge_key)
+            if geometry_index is None:
+                return None
+            edge_max_bumps = self.max_bumps_for_edge(edge_key, record)
+            opened_count = self.registered_open_cell_count_by_edge.get(edge_key, 0)
+            t_plan_start = time.perf_counter()
+            result: dict[str, object] | None = None
+            last_exc: Exception | None = None
+            try:
+                result = cast(
+                    dict[str, object],
+                    self.router.plan_auto_analytic_meander_split_request_registered_opened_auto_config(
+                        int(geometry_index),
+                        requested,
+                        min_insertable,
+                        max_parts=int(max_parts),
+                        min_bend_radius_um=None,
+                        min_straight_um=min_straight_um,
+                        max_meander_height_um=max_height_um,
+                        min_segment_length_um=min_seg_um,
+                        auto_endpoint_inset_um=auto_endpoint_inset_um,
+                        clearance_radius_cells=self.meander_box_clearance_radius_cells,
+                        side_policy="both",
+                        planning_mode="fill_box_multi_bump",
+                    ),
+                )
+            except Exception as exc:
+                last_exc = exc
+            elapsed_s = time.perf_counter() - t_plan_start
+            if result is None:
+                return (
+                    [],
+                    [
+                        {
+                            "edge": edge_key_to_dict(edge_key),
+                            "status": "no_candidate",
+                            "reason": (
+                                str(last_exc)
+                                if last_exc is not None
+                                else "no exact split route-run meander candidate found"
+                            ),
+                            "planner_called": True,
+                            "max_bumps": edge_max_bumps,
+                            "opened_route_cell_count": opened_count,
+                        }
+                    ],
+                    [edge_max_bumps],
+                    opened_count,
+                    1,
+                    elapsed_s,
+                    last_exc,
+                    1,
+                )
+
+            self.add_rust_planner_profile(result.get("planner_profile_total"))
+            self.add_rust_wrapper_profile(result.get("wrapper_profile_total"))
+            raw_plans = cast(list[dict[str, object]], result.get("plans", []))
+            split_part_count = _as_int(
+                result.get("selected_candidate_index"),
+                len(raw_plans),
+            )
+            if split_part_count < 2:
+                raw_candidate_results = result.get("candidate_results", [])
+                if isinstance(raw_candidate_results, list) and raw_candidate_results:
+                    raw_last = raw_candidate_results[-1]
+                    if isinstance(raw_last, Mapping):
+                        split_part_count = _as_int(
+                            raw_last.get("candidate_index"),
+                            split_part_count,
+                        )
+            split_part_count = max(1, split_part_count)
+            attempted_edges = [
+                {
+                    "edge": edge_key_to_dict(edge_key),
+                    "status": "no_candidate",
+                    "reason": "",
+                    "planner_called": True,
+                    "max_bumps": edge_max_bumps,
+                    "opened_route_cell_count": opened_count,
+                }
+                for _ in range(split_part_count)
+            ]
+            max_bumps_values = [edge_max_bumps for _ in range(split_part_count)]
+            open_count = opened_count * split_part_count
+
+            if result.get("status") != "planned":
+                raw_candidate_results = result.get("candidate_results", [])
+                failed_edge_index = 0
+                failed_reason = str(
+                    result.get(
+                        "reason",
+                        "no exact split route-run meander candidate found",
+                    )
+                )
+                if isinstance(raw_candidate_results, list) and raw_candidate_results:
+                    raw_last = raw_candidate_results[-1]
+                    if isinstance(raw_last, Mapping):
+                        failed_edge_index = _as_int(
+                            raw_last.get("failed_edge_index"),
+                            0,
+                        )
+                        failed_reason = str(raw_last.get("reason", failed_reason))
+                if 0 <= failed_edge_index < len(attempted_edges):
+                    attempted_edges[failed_edge_index]["reason"] = failed_reason
+                return (
+                    [],
+                    attempted_edges,
+                    max_bumps_values,
+                    open_count,
+                    min(split_part_count, failed_edge_index + 1),
+                    elapsed_s,
+                    None,
+                    split_part_count,
+                )
+
+            if len(raw_plans) != split_part_count:
+                return (
+                    [],
+                    attempted_edges,
+                    max_bumps_values,
+                    open_count,
+                    split_part_count,
+                    elapsed_s,
+                    RuntimeError("split route-run planner returned wrong plan count"),
+                    split_part_count,
+                )
+            plans: list[PlannedEdgeInsertion] = []
+            for rr, max_bumps_value, attempt_info in zip(
+                raw_plans,
+                max_bumps_values,
+                attempted_edges,
+            ):
+                attempt_info["status"] = "planned"
+                attempt_info["reason"] = ""
+                attempt_info["rejected_box_blocked"] = False
+                plans.append((edge_key, record, rr, True, max_bumps_value, set()))
+            return (
+                plans,
+                attempted_edges,
+                max_bumps_values,
+                open_count,
+                split_part_count,
+                elapsed_s,
+                None,
+                split_part_count,
+            )
 
         last_attempt: tuple[
             list[PlannedEdgeInsertion],
