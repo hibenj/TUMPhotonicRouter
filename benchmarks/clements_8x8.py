@@ -6,6 +6,7 @@ The routed LiDAR GDS path is kept as reference metadata for comparisons.
 
 from __future__ import annotations
 
+import gdsfactory as gf
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
@@ -133,65 +134,144 @@ MZI_ARRAY_SETTINGS = {'delta_length': 10.0,
  'min_length': 0.01,
  'auto_rename_ports': True}
 
+EMPTY_SETTINGS = {}
+
 SETTINGS_BY_GROUP = {
     "gc": GC_SETTINGS,
     "mmi1x2": MMI1X2_SETTINGS,
     "mod_mzi1x2": MOD_MZI1X2_SETTINGS,
     "mzi_array": MZI_ARRAY_SETTINGS,
+    "lidar_empty": EMPTY_SETTINGS,
 }
 
-INSTANCE_SPECS = (('gc1', 'grating_coupler_elliptical_lumerical', 'gc', 0.0, 800.0, 0, True),
- ('fanout_yb_0_0', 'mmi1x2', 'mmi1x2', 100, 798.75, 0, False),
- ('fanout_yb_1_0', 'mmi1x2', 'mmi1x2', 200, 748.75, 0, False),
- ('fanout_yb_1_1', 'mmi1x2', 'mmi1x2', 200, 848.75, 0, False),
- ('fanout_yb_2_0', 'mmi1x2', 'mmi1x2', 375.5, 648.75, 0, False),
- ('fanout_yb_2_1', 'mmi1x2', 'mmi1x2', 375.5, 748.75, 0, False),
- ('fanout_yb_2_2', 'mmi1x2', 'mmi1x2', 375.5, 848.75, 0, False),
- ('fanout_yb_2_3', 'mmi1x2', 'mmi1x2', 375.5, 948.75, 0, False),
- ('mod_mzi1x2_0', 'mzi', 'mod_mzi1x2', 501.0, 450.0, 0, False),
- ('mod_mzi1x2_1', 'mzi', 'mod_mzi1x2', 501.0, 550.0, 0, False),
- ('mod_mzi1x2_2', 'mzi', 'mod_mzi1x2', 501.0, 650.0, 0, False),
- ('mod_mzi1x2_3', 'mzi', 'mod_mzi1x2', 501.0, 750.0, 0, False),
- ('mod_mzi1x2_4', 'mzi', 'mod_mzi1x2', 501.0, 850.0, 0, False),
- ('mod_mzi1x2_5', 'mzi', 'mod_mzi1x2', 501.0, 950.0, 0, False),
- ('mod_mzi1x2_6', 'mzi', 'mod_mzi1x2', 501.0, 1050.0, 0, False),
- ('mod_mzi1x2_7', 'mzi', 'mod_mzi1x2', 501.0, 1150.0, 0, False),
- ('mzi_array_0_mzi_0', 'mzi', 'mzi_array', 672.1, 622.125, 0, False),
- ('mzi_array_0_mzi_1', 'mzi', 'mzi_array', 672.1, 722.125, 0, False),
- ('mzi_array_0_mzi_2', 'mzi', 'mzi_array', 672.1, 822.125, 0, False),
- ('mzi_array_0_mzi_3', 'mzi', 'mzi_array', 672.1, 922.125, 0, False),
- ('mzi_array_1_mzi_0', 'mzi', 'mzi_array', 1043.1, 672.125, 0, False),
- ('mzi_array_1_mzi_1', 'mzi', 'mzi_array', 1043.1, 772.125, 0, False),
- ('mzi_array_1_mzi_2', 'mzi', 'mzi_array', 1043.1, 872.125, 0, False),
- ('mzi_array_2_mzi_0', 'mzi', 'mzi_array', 1414.1, 622.125, 0, False),
- ('mzi_array_2_mzi_1', 'mzi', 'mzi_array', 1414.1, 722.125, 0, False),
- ('mzi_array_2_mzi_2', 'mzi', 'mzi_array', 1414.1, 822.125, 0, False),
- ('mzi_array_2_mzi_3', 'mzi', 'mzi_array', 1414.1, 922.125, 0, False),
- ('mzi_array_3_mzi_0', 'mzi', 'mzi_array', 1785.1, 672.125, 0, False),
- ('mzi_array_3_mzi_1', 'mzi', 'mzi_array', 1785.1, 772.125, 0, False),
- ('mzi_array_3_mzi_2', 'mzi', 'mzi_array', 1785.1, 872.125, 0, False),
- ('mzi_array_4_mzi_0', 'mzi', 'mzi_array', 2156.1, 622.125, 0, False),
- ('mzi_array_4_mzi_1', 'mzi', 'mzi_array', 2156.1, 722.125, 0, False),
- ('mzi_array_4_mzi_2', 'mzi', 'mzi_array', 2156.1, 822.125, 0, False),
- ('mzi_array_4_mzi_3', 'mzi', 'mzi_array', 2156.1, 922.125, 0, False),
- ('mzi_array_5_mzi_0', 'mzi', 'mzi_array', 2527.1, 672.125, 0, False),
- ('mzi_array_5_mzi_1', 'mzi', 'mzi_array', 2527.1, 772.125, 0, False),
- ('mzi_array_5_mzi_2', 'mzi', 'mzi_array', 2527.1, 872.125, 0, False),
- ('mzi_array_6_mzi_0', 'mzi', 'mzi_array', 2898.1, 622.125, 0, False),
- ('mzi_array_6_mzi_1', 'mzi', 'mzi_array', 2898.1, 722.125, 0, False),
- ('mzi_array_6_mzi_2', 'mzi', 'mzi_array', 2898.1, 822.125, 0, False),
- ('mzi_array_6_mzi_3', 'mzi', 'mzi_array', 2898.1, 922.125, 0, False),
- ('mzi_array_7_mzi_0', 'mzi', 'mzi_array', 3269.1, 672.125, 0, False),
- ('mzi_array_7_mzi_1', 'mzi', 'mzi_array', 3269.1, 772.125, 0, False),
- ('mzi_array_7_mzi_2', 'mzi', 'mzi_array', 3269.1, 872.125, 0, False),
- ('gc_array_out_gc_0', 'grating_coupler_elliptical_lumerical', 'gc', 4772.836, 437.127, 0, False),
- ('gc_array_out_gc_1', 'grating_coupler_elliptical_lumerical', 'gc', 4772.836, 537.127, 0, False),
- ('gc_array_out_gc_2', 'grating_coupler_elliptical_lumerical', 'gc', 4772.836, 637.127, 0, False),
- ('gc_array_out_gc_3', 'grating_coupler_elliptical_lumerical', 'gc', 4772.836, 737.127, 0, False),
- ('gc_array_out_gc_4', 'grating_coupler_elliptical_lumerical', 'gc', 4772.836, 837.127, 0, False),
- ('gc_array_out_gc_5', 'grating_coupler_elliptical_lumerical', 'gc', 4772.836, 937.127, 0, False),
- ('gc_array_out_gc_6', 'grating_coupler_elliptical_lumerical', 'gc', 4772.836, 1037.127, 0, False),
- ('gc_array_out_gc_7', 'grating_coupler_elliptical_lumerical', 'gc', 4772.836, 1137.127, 0, False))
+LIDAR_LAYER = (1, 0)
+
+GC_PINS = {
+    "o1": (0.0, 12.873000000000001, 0.5, 180.0),
+}
+MMI1X2_PINS = {
+    "o1": (0.0, 1.25, 0.5, 180.0),
+    "o2": (25.5, 1.875, 0.5, 0.0),
+    "o3": (25.5, 0.625, 0.5, 0.0),
+}
+MOD_MZI1X2_PINS = {
+    "o1": (0.0, 27.875, 0.5, 180.0),
+    "o2": (91.10000000000001, 27.875, 0.5, 0.0),
+}
+MZI_ARRAY_PINS = {
+    "o1": (0.0, 27.25, 0.5, 180.0),
+    "o2": (0.0, 28.5, 0.5, 180.0),
+    "o4": (291.0, 27.25, 0.5, 0.0),
+    "o3": (291.0, 28.5, 0.5, 0.0),
+}
+
+
+def _lidar_macro_component(
+    *,
+    component: str,
+    settings: dict[str, object],
+    pins: dict[str, tuple[float, float, float, float]],
+) -> gf.Component:
+    base = gf.get_component(component, settings=settings)
+    c = gf.Component()
+    ref = c.add_ref(base)
+    bbox = ref.dbbox()
+    ref.dmove((-float(bbox.left), -float(bbox.bottom)))
+    for name, (x, y, width, orientation) in pins.items():
+        c.add_port(
+            name=name,
+            center=(x, y),
+            width=width,
+            orientation=orientation,
+            layer=LIDAR_LAYER,
+        )
+    return c
+
+
+def clements_lidar_gc() -> gf.Component:
+    return _lidar_macro_component(
+        component="grating_coupler_elliptical_lumerical",
+        settings=GC_SETTINGS,
+        pins=GC_PINS,
+    )
+
+
+def clements_lidar_mmi1x2() -> gf.Component:
+    return _lidar_macro_component(
+        component="mmi1x2",
+        settings=MMI1X2_SETTINGS,
+        pins=MMI1X2_PINS,
+    )
+
+
+def clements_lidar_mod_mzi1x2() -> gf.Component:
+    return _lidar_macro_component(
+        component="mzi",
+        settings=MOD_MZI1X2_SETTINGS,
+        pins=MOD_MZI1X2_PINS,
+    )
+
+
+def clements_lidar_mzi_array() -> gf.Component:
+    return _lidar_macro_component(
+        component="mzi",
+        settings=MZI_ARRAY_SETTINGS,
+        pins=MZI_ARRAY_PINS,
+    )
+
+
+INSTANCE_SPECS = (('gc1', 'clements_lidar_gc', 'lidar_empty', 0.0, 800.0, 0, True),
+ ('fanout_yb_0_0', 'clements_lidar_mmi1x2', 'lidar_empty', 100, 798.75, 0, False),
+ ('fanout_yb_1_0', 'clements_lidar_mmi1x2', 'lidar_empty', 200, 748.75, 0, False),
+ ('fanout_yb_1_1', 'clements_lidar_mmi1x2', 'lidar_empty', 200, 848.75, 0, False),
+ ('fanout_yb_2_0', 'clements_lidar_mmi1x2', 'lidar_empty', 375.5, 648.75, 0, False),
+ ('fanout_yb_2_1', 'clements_lidar_mmi1x2', 'lidar_empty', 375.5, 748.75, 0, False),
+ ('fanout_yb_2_2', 'clements_lidar_mmi1x2', 'lidar_empty', 375.5, 848.75, 0, False),
+ ('fanout_yb_2_3', 'clements_lidar_mmi1x2', 'lidar_empty', 375.5, 948.75, 0, False),
+ ('mod_mzi1x2_0', 'clements_lidar_mod_mzi1x2', 'lidar_empty', 501.0, 450.0, 0, False),
+ ('mod_mzi1x2_1', 'clements_lidar_mod_mzi1x2', 'lidar_empty', 501.0, 550.0, 0, False),
+ ('mod_mzi1x2_2', 'clements_lidar_mod_mzi1x2', 'lidar_empty', 501.0, 650.0, 0, False),
+ ('mod_mzi1x2_3', 'clements_lidar_mod_mzi1x2', 'lidar_empty', 501.0, 750.0, 0, False),
+ ('mod_mzi1x2_4', 'clements_lidar_mod_mzi1x2', 'lidar_empty', 501.0, 850.0, 0, False),
+ ('mod_mzi1x2_5', 'clements_lidar_mod_mzi1x2', 'lidar_empty', 501.0, 950.0, 0, False),
+ ('mod_mzi1x2_6', 'clements_lidar_mod_mzi1x2', 'lidar_empty', 501.0, 1050.0, 0, False),
+ ('mod_mzi1x2_7', 'clements_lidar_mod_mzi1x2', 'lidar_empty', 501.0, 1150.0, 0, False),
+ ('mzi_array_0_mzi_0', 'clements_lidar_mzi_array', 'lidar_empty', 672.1, 622.125, 0, False),
+ ('mzi_array_0_mzi_1', 'clements_lidar_mzi_array', 'lidar_empty', 672.1, 722.125, 0, False),
+ ('mzi_array_0_mzi_2', 'clements_lidar_mzi_array', 'lidar_empty', 672.1, 822.125, 0, False),
+ ('mzi_array_0_mzi_3', 'clements_lidar_mzi_array', 'lidar_empty', 672.1, 922.125, 0, False),
+ ('mzi_array_1_mzi_0', 'clements_lidar_mzi_array', 'lidar_empty', 1043.1, 672.125, 0, False),
+ ('mzi_array_1_mzi_1', 'clements_lidar_mzi_array', 'lidar_empty', 1043.1, 772.125, 0, False),
+ ('mzi_array_1_mzi_2', 'clements_lidar_mzi_array', 'lidar_empty', 1043.1, 872.125, 0, False),
+ ('mzi_array_2_mzi_0', 'clements_lidar_mzi_array', 'lidar_empty', 1414.1, 622.125, 0, False),
+ ('mzi_array_2_mzi_1', 'clements_lidar_mzi_array', 'lidar_empty', 1414.1, 722.125, 0, False),
+ ('mzi_array_2_mzi_2', 'clements_lidar_mzi_array', 'lidar_empty', 1414.1, 822.125, 0, False),
+ ('mzi_array_2_mzi_3', 'clements_lidar_mzi_array', 'lidar_empty', 1414.1, 922.125, 0, False),
+ ('mzi_array_3_mzi_0', 'clements_lidar_mzi_array', 'lidar_empty', 1785.1, 672.125, 0, False),
+ ('mzi_array_3_mzi_1', 'clements_lidar_mzi_array', 'lidar_empty', 1785.1, 772.125, 0, False),
+ ('mzi_array_3_mzi_2', 'clements_lidar_mzi_array', 'lidar_empty', 1785.1, 872.125, 0, False),
+ ('mzi_array_4_mzi_0', 'clements_lidar_mzi_array', 'lidar_empty', 2156.1, 622.125, 0, False),
+ ('mzi_array_4_mzi_1', 'clements_lidar_mzi_array', 'lidar_empty', 2156.1, 722.125, 0, False),
+ ('mzi_array_4_mzi_2', 'clements_lidar_mzi_array', 'lidar_empty', 2156.1, 822.125, 0, False),
+ ('mzi_array_4_mzi_3', 'clements_lidar_mzi_array', 'lidar_empty', 2156.1, 922.125, 0, False),
+ ('mzi_array_5_mzi_0', 'clements_lidar_mzi_array', 'lidar_empty', 2527.1, 672.125, 0, False),
+ ('mzi_array_5_mzi_1', 'clements_lidar_mzi_array', 'lidar_empty', 2527.1, 772.125, 0, False),
+ ('mzi_array_5_mzi_2', 'clements_lidar_mzi_array', 'lidar_empty', 2527.1, 872.125, 0, False),
+ ('mzi_array_6_mzi_0', 'clements_lidar_mzi_array', 'lidar_empty', 2898.1, 622.125, 0, False),
+ ('mzi_array_6_mzi_1', 'clements_lidar_mzi_array', 'lidar_empty', 2898.1, 722.125, 0, False),
+ ('mzi_array_6_mzi_2', 'clements_lidar_mzi_array', 'lidar_empty', 2898.1, 822.125, 0, False),
+ ('mzi_array_6_mzi_3', 'clements_lidar_mzi_array', 'lidar_empty', 2898.1, 922.125, 0, False),
+ ('mzi_array_7_mzi_0', 'clements_lidar_mzi_array', 'lidar_empty', 3269.1, 672.125, 0, False),
+ ('mzi_array_7_mzi_1', 'clements_lidar_mzi_array', 'lidar_empty', 3269.1, 772.125, 0, False),
+ ('mzi_array_7_mzi_2', 'clements_lidar_mzi_array', 'lidar_empty', 3269.1, 872.125, 0, False),
+ ('gc_array_out_gc_0', 'clements_lidar_gc', 'lidar_empty', 4772.836, 437.127, 0, False),
+ ('gc_array_out_gc_1', 'clements_lidar_gc', 'lidar_empty', 4772.836, 537.127, 0, False),
+ ('gc_array_out_gc_2', 'clements_lidar_gc', 'lidar_empty', 4772.836, 637.127, 0, False),
+ ('gc_array_out_gc_3', 'clements_lidar_gc', 'lidar_empty', 4772.836, 737.127, 0, False),
+ ('gc_array_out_gc_4', 'clements_lidar_gc', 'lidar_empty', 4772.836, 837.127, 0, False),
+ ('gc_array_out_gc_5', 'clements_lidar_gc', 'lidar_empty', 4772.836, 937.127, 0, False),
+ ('gc_array_out_gc_6', 'clements_lidar_gc', 'lidar_empty', 4772.836, 1037.127, 0, False),
+ ('gc_array_out_gc_7', 'clements_lidar_gc', 'lidar_empty', 4772.836, 1137.127, 0, False))
 
 NET_SPECS = (('n_0', 'fanout_yb_0_0,o3', 'fanout_yb_1_0,o1'),
  ('n_1', 'fanout_yb_0_0,o2', 'fanout_yb_1_1,o1'),
@@ -333,6 +413,12 @@ def build_schematic() -> Schematic:
     """Build the LiDAR Clements 8x8 benchmark schematic."""
     pdk = get_generic_pdk()
     pdk.activate()
+    pdk.register_cells(
+        clements_lidar_gc=clements_lidar_gc,
+        clements_lidar_mmi1x2=clements_lidar_mmi1x2,
+        clements_lidar_mod_mzi1x2=clements_lidar_mod_mzi1x2,
+        clements_lidar_mzi_array=clements_lidar_mzi_array,
+    )
 
     schematic = Schematic()
 
@@ -343,7 +429,7 @@ def build_schematic() -> Schematic:
                 component=component,
                 settings=dict(SETTINGS_BY_GROUP[settings_group]),
             ),
-            Placement(x=x, y=y, rotation=rotation, mirror=mirror),
+            Placement(x=x, y=y, port="sw", rotation=rotation, mirror=mirror),
         )
 
     for name, p1, p2 in NET_SPECS:
