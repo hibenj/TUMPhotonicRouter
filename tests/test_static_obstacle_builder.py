@@ -7,6 +7,7 @@ import os
 import webbrowser
 
 import gdsfactory as gf
+import pytest
 from gdsfactory.gpdk import get_generic_pdk
 
 from photonic_router.benchmark_extractor import ExtractedBenchmark, Port, extract_benchmark
@@ -62,6 +63,21 @@ def test_extracts_geometry_and_reference_ports_from_component():
     assert any(port.name.endswith(",o1") for port in extracted.ports)
     assert any(port.name.endswith(",o2") for port in extracted.ports)
     assert any(port.position == (0.0, 3.0) for port in extracted.ports)
+
+
+def test_extract_benchmark_can_use_polygon_bounding_boxes():
+    component = gf.Component("extract_bbox_test")
+    component.add_polygon([(0.2, 0.4), (2.8, 0.7), (1.1, 2.6)], layer=(1, 0))
+
+    exact = extract_benchmark(component, layers=((1, 0),))
+    bbox = extract_benchmark(component, layers=((1, 0),), as_bounding_boxes=True)
+
+    assert len(exact.polygons) == 1
+    assert len(bbox.polygons) == 1
+    assert [coord for point in bbox.polygons[0] for coord in point] == pytest.approx(
+        [0.2, 0.4, 2.8, 0.4, 2.8, 2.6, 0.2, 2.6]
+    )
+    assert bbox.bbox == exact.bbox
 
 
 def test_die_size_computation_manual_and_automatic():

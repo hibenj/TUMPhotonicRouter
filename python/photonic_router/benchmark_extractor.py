@@ -37,34 +37,69 @@ class ExtractedBenchmark:
     bbox: BBox
 
 
-def extract_benchmark(component: Any, layers: Optional[Iterable[Any]] = None) -> ExtractedBenchmark:
+def extract_benchmark(
+    component: Any,
+    layers: Optional[Iterable[Any]] = None,
+    *,
+    as_bounding_boxes: bool = False,
+) -> ExtractedBenchmark:
     """Extract flattened geometry, reference ports, and bbox from a component.
 
     Args:
         component: A `gdsfactory.Component`.
         layers: Optional layer filter passed to `component.get_polygons`.
+        as_bounding_boxes: If true, represent each polygon by its physical
+            bounding box. This is equivalent for bounding-box obstacle mode and
+            avoids expensive hull-point conversion.
 
     Returns:
         Extracted benchmark data in physical micrometer units.
     """
 
-    polygons = _extract_polygons(component, layers=layers)
+    polygons = _extract_polygons(
+        component,
+        layers=layers,
+        as_bounding_boxes=as_bounding_boxes,
+    )
     ports = _extract_ports(component)
     bbox = _compute_bbox(polygons, ports)
     return ExtractedBenchmark(polygons=polygons, ports=ports, bbox=bbox)
 
 
-def _extract_polygons(component: Any, layers: Optional[Iterable[Any]] = None) -> List[Polygon]:
+def _extract_polygons(
+    component: Any,
+    layers: Optional[Iterable[Any]] = None,
+    *,
+    as_bounding_boxes: bool = False,
+) -> List[Polygon]:
     polygon_map = component.get_polygons(merge=False, by="tuple", layers=layers)
     dbu = float(getattr(component.kcl, "dbu", 1.0))
 
     polygons: List[Polygon] = []
     for layer_polygons in polygon_map.values():
         for polygon in layer_polygons:
-            points = _polygon_points_um(polygon, dbu)
+            points = (
+                _polygon_bbox_points_um(polygon, dbu)
+                if as_bounding_boxes
+                else _polygon_points_um(polygon, dbu)
+            )
             if len(points) >= 3:
                 polygons.append(points)
     return polygons
+
+
+def _polygon_bbox_points_um(polygon: Any, dbu: float) -> Polygon:
+    """Convert a KLayout/kfactory polygon bbox to a rectangle in micrometers."""
+
+    if not hasattr(polygon, "bbox"):
+        return _polygon_points_um(polygon, dbu)
+
+    bbox = polygon.bbox()
+    left = float(getattr(bbox, "left")) * dbu
+    right = float(getattr(bbox, "right")) * dbu
+    bottom = float(getattr(bbox, "bottom")) * dbu
+    top = float(getattr(bbox, "top")) * dbu
+    return [(left, bottom), (right, bottom), (right, top), (left, top)]
 
 
 def _polygon_points_um(polygon: Any, dbu: float) -> Polygon:

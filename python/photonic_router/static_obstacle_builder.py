@@ -118,7 +118,11 @@ def build_static_obstacle_map(
             split_layers=split_layers,
         )
 
-    benchmark = extract_benchmark(component, layers=config.obstacle_layers)
+    benchmark = extract_benchmark(
+        component,
+        layers=config.obstacle_layers,
+        as_bounding_boxes=config.obstacle_mode == "bounding_boxes",
+    )
 
     rust_backend = _load_rust_backend()
     if rust_backend is not None:
@@ -156,7 +160,11 @@ def _build_static_obstacle_map_split_by_heater_clearance(
     if heater_clearance_um is None:
         raise ValueError("heater_clearance_um is required when splitting heater obstacles")
 
-    all_benchmark = extract_benchmark(component, layers=config.obstacle_layers)
+    all_benchmark = extract_benchmark(
+        component,
+        layers=config.obstacle_layers,
+        as_bounding_boxes=config.obstacle_mode == "bounding_boxes",
+    )
     shared_die_bbox = resolve_die_bbox(all_benchmark, config)
 
     rust_backend = _load_rust_backend()
@@ -204,7 +212,11 @@ def _build_layer_group_static_obstacles(
     rust_backend: Any | None,
 ) -> StaticObstacleMapData:
     if config.obstacle_layers:
-        benchmark = extract_benchmark(component, layers=config.obstacle_layers)
+        benchmark = extract_benchmark(
+            component,
+            layers=config.obstacle_layers,
+            as_bounding_boxes=config.obstacle_mode == "bounding_boxes",
+        )
     else:
         benchmark = ExtractedBenchmark(
             polygons=[],
