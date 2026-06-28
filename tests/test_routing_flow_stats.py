@@ -4,13 +4,19 @@ from routing_flow import (
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     _build_arg_parser,
     _format_debug_route_indices,
+    load_benchmark,
     _parse_debug_svg_selector,
     run_routing_flow,
 )
 import inspect
 import benchmark_metadata
+import pytest
 from pathlib import Path
+from photonic_router.routing_layers import get_routing_obstacle_layers
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from translation.electrical import ElectricalRoutingConfig
+from translation.layout_from_schematic import layout_from_schematic
+from translation.photonic_verification import verify_photonic_routing
 from translation.route_rust import route_match_and_realize
 from translation.route_rust_types import (
     DEFAULT_BEND_RADIUS_UM,
@@ -60,6 +66,11 @@ def test_routing_flow_populates_stats():
         show_unrouted=False,
         show_routed=False,
         show_static_obstacles_svg=False,
+        enable_path_length_matching=False,
+        path_length_match_outputs=False,
+        allow_45_degree_turns=True,
+        bend_radius_um=5.0,
+        waveguide_clearance_um=0.0,
         stats=stats,
     )
 
@@ -94,6 +105,81 @@ def test_routing_flow_populates_stats():
     assert stats_dict["total_time_s"] == stats.total_time_s
     assert stats_dict["route_attempts"] == stats.route_attempts
     assert stats_dict["expanded_states"] == stats.expanded_states
+
+
+def _route_heater_s_mod_for_regression(waveguide_clearance_um: float):
+    schematic = load_benchmark("heater_s_mod")
+    unrouted_layout = layout_from_schematic(schematic)
+    metadata = benchmark_metadata.load_benchmark_metadata(
+        "heater_s_mod",
+        schematic=schematic,
+    )
+
+    result = route_match_and_realize(
+        unrouted_layout,
+        schematic,
+        enable_path_length_matching=True,
+        path_length_match_outputs=True,
+        node_types=metadata.get("node_types"),
+        internal_delays_um=metadata.get("internal_delays_um"),
+        debug_dir=None,
+        debug_prefix="heater_s_mod",
+        allow_45_degree_turns=False,
+        bend_radius_um=10.0,
+        max_iterations=5_000_000,
+        routing_window_scale=0.05,
+        collect_route_stats=True,
+        include_heater_obstacles=True,
+        obstacle_config=StaticObstacleMapConfig(
+            grid_size_um=2.0,
+            obstacle_mode="bounding_boxes",
+            clearance_um=float(waveguide_clearance_um),
+            heater_clearance_um=10.0,
+            chip_add_x_um=0.0,
+            chip_add_y_um=40.0,
+            clear_port_open_cells_from_static=False,
+        ),
+    )
+    return schematic, unrouted_layout, result
+
+
+@pytest.mark.parametrize("waveguide_clearance_um", [3.0, 0.0])
+def test_heater_s_mod_90_degree_plm_regression(waveguide_clearance_um):
+    schematic, unrouted_layout, result = _route_heater_s_mod_for_regression(
+        waveguide_clearance_um
+    )
+    route_summary = result.debug_artifacts.route_search_summary
+
+    assert route_summary.route_count == 81
+    assert route_summary.route_failures == 0
+    assert route_summary.repair_count == 0
+    assert route_summary.simple_route_count >= 60
+    assert route_summary.full_grid_fallbacks == 0
+
+    analysis = result.path_length_analysis_info
+    assert analysis is not None
+    acceptance = analysis["path_length_acceptance"]
+    assert acceptance["passed"] is True
+    assert acceptance["failed_group_count"] == 0
+    assert acceptance["failed_edge_count"] == 0
+    assert acceptance["max_physical_residual_um"] == pytest.approx(0.0, abs=1e-9)
+
+    meander_report = result.meander_insertion_report_info
+    assert meander_report is not None
+    assert meander_report["unmatched_length_um"] == pytest.approx(0.0, abs=1e-9)
+
+    assert result.debug_artifacts.realization_grid_spec is not None
+    verification = verify_photonic_routing(
+        result.routed_layout,
+        schematic,
+        routed_net_records=result.debug_artifacts.routed_net_records,
+        unrouted_layout=unrouted_layout,
+        obstacle_layers=get_routing_obstacle_layers(include_heaters=True),
+        realization_grid_spec=result.debug_artifacts.realization_grid_spec,
+        allow_45_degree_turns=result.debug_artifacts.realization_allow_45_degree_turns,
+        bend_radius_cells=result.debug_artifacts.realization_bend_radius_cells,
+    )
+    assert verification.success, verification.as_dict()
 
 
 def test_routing_flow_routes_single_heater_electrical_metal_end_to_end():
