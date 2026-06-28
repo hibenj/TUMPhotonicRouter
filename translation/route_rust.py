@@ -2717,7 +2717,12 @@ def route_nets_rust(
             route_bookkeeping.set_committed_cells(old_id, cells)
         route_bookkeeping.restore_records(snapshot_records, snapshot_lengths)
 
-    def _attempt_repair(job: RouteJob, failed_error: Exception) -> bool:
+    def _attempt_repair(
+        job: RouteJob,
+        failed_error: Exception,
+        *,
+        commit_probe_without_blockers: bool = True,
+    ) -> bool:
         nonlocal repair_count, total_expanded_states, simple_route_count
         if not repair_config.enabled:
             return False
@@ -2768,6 +2773,10 @@ def route_nets_rust(
         ]
         _record_elapsed("owner_lookup", owner_lookup_start)
         if not candidate_blockers:
+            if not commit_probe_without_blockers:
+                if repair_should_print:
+                    print("blockers=0", end=" ")
+                return False
             route_cells = [
                 (int(cell[0]), int(cell[1]))
                 for cell in (getattr(probe_route, "cells", None) or [])
@@ -2972,6 +2981,60 @@ def route_nets_rust(
         _ = failed_error
         return False
 
+    def _has_committed_dynamic_cells_in_set(
+        cells: set[tuple[int, int]],
+        *,
+        exclude_net_id: int | None = None,
+    ) -> bool:
+        if not cells:
+            return False
+        if route_bookkeeping.diagnostics_enabled:
+            return any(
+                (x, y) in cells
+                for x, y in route_bookkeeping.committed_dynamic_cells(
+                    exclude_net_id=exclude_net_id
+                )
+            )
+        for net_id in route_bookkeeping.records_by_id:
+            if exclude_net_id is not None and int(net_id) == int(exclude_net_id):
+                continue
+            for x, y in _route_cells_from_router(int(net_id)):
+                if (x, y) in cells:
+                    return True
+        return False
+
+    def _should_try_preemptive_repair(
+        job: RouteJob,
+        source_state: Any,
+        target_state: Any,
+        *,
+        route_span_cells: int,
+    ) -> bool:
+        if not allow_45_degree_turns or not repair_config.enabled:
+            return False
+        if not route_bookkeeping.records_by_id:
+            return False
+        if int(job.route_index) < 20:
+            return False
+        min_preemptive_span_cells = max(64, int(12 * bend_radius_cells))
+        max_preemptive_span_cells = max(256, int(64 * bend_radius_cells))
+        if int(route_span_cells) < min_preemptive_span_cells:
+            return False
+        if int(route_span_cells) > max_preemptive_span_cells:
+            return False
+        span_x = abs(int(target_state.x) - int(source_state.x))
+        span_y = abs(int(target_state.y) - int(source_state.y))
+        if min(span_x, span_y) == 0:
+            return False
+        terminal_cells = _dynamic_clearance_exempt_cells_for_route(
+            source_state,
+            target_state,
+        )
+        return _has_committed_dynamic_cells_in_set(
+            terminal_cells,
+            exclude_net_id=job.net_id,
+        )
+
     for job in route_jobs:
         port1_spec = f"{job.inst1},{job.port1}"
         port2_spec = f"{job.inst2},{job.port2}"
@@ -3010,10 +3073,17 @@ def route_nets_rust(
             abs(int(target_state.y) - int(source_state.y)),
         )
         if (
-            allow_45_degree_turns
-            and repair_config.enabled
-            and route_span_cells >= 1000
-            and _attempt_repair(job, RuntimeError("preemptive static probe"))
+            _should_try_preemptive_repair(
+                job,
+                source_state,
+                target_state,
+                route_span_cells=route_span_cells,
+            )
+            and _attempt_repair(
+                job,
+                RuntimeError("preemptive static probe"),
+                commit_probe_without_blockers=False,
+            )
         ):
             if should_print_route:
                 repaired_record = route_bookkeeping.records_by_id.get(job.net_id)
