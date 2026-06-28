@@ -491,6 +491,27 @@ pub struct PyPhotonicRouter {
     last_meander_registration_profile: RefCell<Option<MeanderRegistrationProfile>>,
 }
 
+#[derive(Clone)]
+struct NativeRouteJob {
+    net_id: u64,
+    source: PyState,
+    target: PyState,
+    opened_cells: Vec<(i32, i32)>,
+    clearance_exempt_cells: Vec<(i32, i32)>,
+}
+
+#[derive(Clone)]
+struct NativeRouteAttempt {
+    bucket_name: &'static str,
+    net_id: u64,
+    route: Option<RouteResult>,
+    failed: bool,
+    error: Option<String>,
+    repair_round: Option<u32>,
+    candidate_blockers: Vec<u64>,
+    ripup_ids: Vec<u64>,
+}
+
 fn pack_cells(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
     cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect()
 }
@@ -1678,6 +1699,239 @@ impl PyPhotonicRouter {
 
         Ok(result)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn route_single_net_and_commit_repair_native(
+        &mut self,
+        net_id: u64,
+        source: PyState,
+        target: PyState,
+        block_radius_cells: i32,
+        opened_cells: Option<&[(i32, i32)]>,
+        history_weight: f64,
+        commit_radius_cells: Option<i32>,
+        clearance_exempt_cells: Option<&[(i32, i32)]>,
+        core_radius_cells: Option<i32>,
+    ) -> Result<RouteResult, String> {
+        if self.astar_cfg.target_tolerance_cells < 0 {
+            return Err("target_tolerance_cells must be >= 0".to_string());
+        }
+        let opened_owned;
+        let opened_ref: &FxHashSet<CellKey> = if let Some(cells) = opened_cells {
+            opened_owned = pack_cells(cells);
+            &opened_owned
+        } else {
+            &self.port_open_cells
+        };
+        let mut cfg = astar_config_from_py(
+            &self.astar_cfg,
+            &self.primitive_cfg,
+            Some(false),
+            Some(false),
+            Some(history_weight),
+        )
+        .map_err(|err| err.to_string())?;
+        cfg.require_terminal_straights = true;
+        let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or(&[]);
+        let collect_timing = self.astar_cfg.collect_detailed_timing;
+        let prepare_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let dynamic_clearance_exempt_keys;
+        let mut opened_dynamic_obstacle_map;
+        let search_obstacle_map = if block_radius_cells > 0 {
+            dynamic_clearance_exempt_keys = (!dynamic_clearance_exempt_cell_vec.is_empty())
+                .then(|| pack_cells(dynamic_clearance_exempt_cell_vec));
+            None
+        } else {
+            dynamic_clearance_exempt_keys = None;
+            opened_dynamic_obstacle_map = self.obstacle_map.clone();
+            opened_dynamic_obstacle_map
+                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
+            Some(&opened_dynamic_obstacle_map)
+        };
+        let obstacle_map_prepare_time_us = prepare_start
+            .as_ref()
+            .map_or(0, |start| start.elapsed().as_micros());
+        let mut result = if block_radius_cells > 0 {
+            route_single_net_with_dynamic_expansion_config(
+                &self.obstacle_map,
+                &self.primitives,
+                State::new(source.x, source.y, source.angle),
+                State::new(target.x, target.y, target.angle),
+                Some(opened_ref),
+                &cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys.as_ref(),
+            )
+        } else {
+            route_single_net_with_config(
+                search_obstacle_map.expect("zero-radius search map should be prepared"),
+                &self.primitives,
+                State::new(source.x, source.y, source.angle),
+                State::new(target.x, target.y, target.angle),
+                Some(opened_ref),
+                &cfg,
+            )
+        }
+        .ok_or_else(|| "No route found".to_string())?;
+
+        if collect_timing {
+            result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
+        }
+        let commit_prepare_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let route_cells = route_commit_cells(
+            &result.cells,
+            block_radius_cells,
+            commit_radius_cells.unwrap_or(block_radius_cells),
+            clearance_exempt_cells,
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        let core_cells = route_core_cells(
+            &result.cells,
+            core_radius_cells.unwrap_or(block_radius_cells),
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
+            result.stats.commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
+        }
+        let commit_start = if collect_timing {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
+            net_id,
+            &core_cells,
+            &route_cells,
+            clearance_exempt_cells.unwrap_or(&[]),
+        );
+        if let Some(commit_start) = commit_start.as_ref() {
+            result.stats.commit_time_us += commit_start.elapsed().as_micros();
+        }
+        if !committed {
+            return Err("Failed to commit routed cells to obstacle map".to_string());
+        }
+        self.invalidate_meander_base_prefix();
+
+        Ok(result)
+    }
+
+    fn route_single_net_ignore_dynamic_native(
+        &self,
+        source: PyState,
+        target: PyState,
+        opened_cells: Option<&[(i32, i32)]>,
+    ) -> Result<RouteResult, String> {
+        if self.astar_cfg.target_tolerance_cells < 0 {
+            return Err("target_tolerance_cells must be >= 0".to_string());
+        }
+        let opened_owned;
+        let opened_ref: &FxHashSet<CellKey> = if let Some(cells) = opened_cells {
+            opened_owned = pack_cells(cells);
+            &opened_owned
+        } else {
+            &self.port_open_cells
+        };
+        let mut cfg = astar_config_from_py(
+            &self.astar_cfg,
+            &self.primitive_cfg,
+            Some(true),
+            Some(false),
+            Some(0.0),
+        )
+        .map_err(|err| err.to_string())?;
+        cfg.require_terminal_straights = true;
+        let mut static_only_obstacle_map = self.obstacle_map.clone();
+        static_only_obstacle_map.clear_dynamic();
+        route_single_net_with_config(
+            &static_only_obstacle_map,
+            &self.primitives,
+            State::new(source.x, source.y, source.angle),
+            State::new(target.x, target.y, target.angle),
+            Some(opened_ref),
+            &cfg,
+        )
+        .ok_or_else(|| "No route found".to_string())
+    }
+
+    fn commit_native_route_with_clearance(
+        &mut self,
+        net_id: u64,
+        route: &RouteResult,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        clearance_exempt_cells: &[(i32, i32)],
+        core_radius_cells: Option<i32>,
+    ) -> bool {
+        let route_cells = route_commit_cells(
+            &route.cells,
+            block_radius_cells,
+            commit_radius_cells.unwrap_or(block_radius_cells),
+            Some(clearance_exempt_cells),
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        let core_cells = route_core_cells(
+            &route.cells,
+            core_radius_cells.unwrap_or(block_radius_cells),
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
+            net_id,
+            &core_cells,
+            &route_cells,
+            clearance_exempt_cells,
+        );
+        if committed {
+            self.invalidate_meander_base_prefix();
+        }
+        committed
+    }
+
+    fn dynamic_owners_for_native_route(
+        &self,
+        route: &RouteResult,
+        block_radius_cells: i32,
+    ) -> Vec<u64> {
+        let cells = inflate_route_cells(
+            &route.cells,
+            block_radius_cells,
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        let mut owners: Vec<u64> = self
+            .obstacle_map
+            .dynamic_owners_for_cells(&cells)
+            .into_iter()
+            .collect();
+        owners.sort_unstable();
+        owners
+    }
+
+    fn add_history_for_native_route(
+        &mut self,
+        route: &RouteResult,
+        block_radius_cells: i32,
+        amount: u32,
+    ) {
+        let cells = inflate_route_cells(
+            &route.cells,
+            block_radius_cells,
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        self.add_history_cells(cells, amount);
+    }
 }
 
 #[pymethods]
@@ -2280,6 +2534,434 @@ impl PyPhotonicRouter {
         result_dict.set_item("failed_net_id", py.None())?;
         result_dict.set_item("error", py.None())?;
         result_dict.set_item("routes", route_entries)?;
+        Ok(result_dict.into())
+    }
+
+    #[pyo3(signature=(jobs,block_radius_cells=0,commit_radius_cells=None,core_radius_cells=None,max_rounds=4,max_victims_per_failure=8,history_weight=2.0,history_increment=1))]
+    #[allow(clippy::too_many_arguments)]
+    fn route_many_with_repair_and_commit(
+        &mut self,
+        py: Python<'_>,
+        jobs: Vec<(u64, PyState, PyState, Vec<(i32, i32)>, Vec<(i32, i32)>)>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        max_rounds: u32,
+        max_victims_per_failure: usize,
+        history_weight: f64,
+        history_increment: u32,
+    ) -> PyResult<PyObject> {
+        let native_jobs: Vec<NativeRouteJob> = jobs
+            .into_iter()
+            .map(
+                |(net_id, source, target, opened_cells, clearance_exempt_cells)| NativeRouteJob {
+                    net_id,
+                    source,
+                    target,
+                    opened_cells,
+                    clearance_exempt_cells,
+                },
+            )
+            .collect();
+        let order_by_id: FxHashMap<u64, usize> = native_jobs
+            .iter()
+            .enumerate()
+            .map(|(index, job)| (job.net_id, index))
+            .collect();
+        let job_by_id: FxHashMap<u64, NativeRouteJob> = native_jobs
+            .iter()
+            .cloned()
+            .map(|job| (job.net_id, job))
+            .collect();
+        let mut final_routes: FxHashMap<u64, RouteResult> = FxHashMap::default();
+        let mut attempts: Vec<NativeRouteAttempt> = Vec::new();
+        let mut repair_count = 0u32;
+        let mut failed_net_id: Option<u64> = None;
+        let mut failed_error: Option<String> = None;
+
+        for job in &native_jobs {
+            match self.route_single_net_and_commit_native(
+                job.net_id,
+                job.source,
+                job.target,
+                block_radius_cells,
+                Some(&job.opened_cells),
+                commit_radius_cells,
+                Some(&job.clearance_exempt_cells),
+                core_radius_cells,
+            ) {
+                Ok(route) => {
+                    attempts.push(NativeRouteAttempt {
+                        bucket_name: "normal_route",
+                        net_id: job.net_id,
+                        route: Some(route.clone()),
+                        failed: false,
+                        error: None,
+                        repair_round: None,
+                        candidate_blockers: Vec::new(),
+                        ripup_ids: Vec::new(),
+                    });
+                    final_routes.insert(job.net_id, route);
+                    continue;
+                }
+                Err(error) => {
+                    attempts.push(NativeRouteAttempt {
+                        bucket_name: "normal_route",
+                        net_id: job.net_id,
+                        route: None,
+                        failed: true,
+                        error: Some(error.clone()),
+                        repair_round: None,
+                        candidate_blockers: Vec::new(),
+                        ripup_ids: Vec::new(),
+                    });
+                }
+            }
+
+            let probe_route = match self.route_single_net_ignore_dynamic_native(
+                job.source,
+                job.target,
+                Some(&job.opened_cells),
+            ) {
+                Ok(route) => {
+                    attempts.push(NativeRouteAttempt {
+                        bucket_name: "probe_route",
+                        net_id: job.net_id,
+                        route: Some(route.clone()),
+                        failed: false,
+                        error: None,
+                        repair_round: None,
+                        candidate_blockers: Vec::new(),
+                        ripup_ids: Vec::new(),
+                    });
+                    route
+                }
+                Err(error) => {
+                    attempts.push(NativeRouteAttempt {
+                        bucket_name: "probe_route",
+                        net_id: job.net_id,
+                        route: None,
+                        failed: true,
+                        error: Some(error.clone()),
+                        repair_round: None,
+                        candidate_blockers: Vec::new(),
+                        ripup_ids: Vec::new(),
+                    });
+                    failed_net_id = Some(job.net_id);
+                    failed_error = Some(error);
+                    break;
+                }
+            };
+
+            let owner_lookup_radius_cells =
+                block_radius_cells.max(commit_radius_cells.unwrap_or(block_radius_cells));
+            let mut candidate_blockers: Vec<u64> = self
+                .dynamic_owners_for_native_route(&probe_route, owner_lookup_radius_cells)
+                .into_iter()
+                .filter(|owner| *owner != job.net_id && final_routes.contains_key(owner))
+                .collect();
+            candidate_blockers.sort_unstable_by_key(|owner| {
+                order_by_id.get(owner).copied().unwrap_or(usize::MAX)
+            });
+            candidate_blockers.dedup();
+            if candidate_blockers.is_empty() {
+                if self.commit_native_route_with_clearance(
+                    job.net_id,
+                    &probe_route,
+                    block_radius_cells,
+                    commit_radius_cells,
+                    &job.clearance_exempt_cells,
+                    core_radius_cells,
+                ) {
+                    final_routes.insert(job.net_id, probe_route);
+                    continue;
+                }
+                failed_net_id = Some(job.net_id);
+                failed_error = Some("Failed to commit static-only probe route".to_string());
+                break;
+            }
+
+            self.add_history_for_native_route(&probe_route, block_radius_cells, history_increment);
+            let max_rounds = max_rounds.max(1);
+            let max_victims = max_victims_per_failure.max(1);
+            let mut repaired = false;
+            let round_base_map = self.obstacle_map.clone();
+            let round_base_routes = final_routes.clone();
+
+            for round_idx in 1..=max_rounds {
+                let ripup_ids: Vec<u64> = candidate_blockers
+                    .iter()
+                    .take((max_victims * round_idx as usize).min(candidate_blockers.len()))
+                    .copied()
+                    .collect();
+                if ripup_ids.is_empty() {
+                    continue;
+                }
+                for victim_first in [false, true] {
+                    self.obstacle_map = round_base_map.clone();
+                    self.invalidate_meander_base_prefix();
+                    final_routes = round_base_routes.clone();
+
+                    for old_id in &ripup_ids {
+                        if let Some(old_route) = final_routes.get(old_id).cloned() {
+                            self.add_history_for_native_route(
+                                &old_route,
+                                block_radius_cells,
+                                history_increment,
+                            );
+                        }
+                        self.obstacle_map.ripup_route(*old_id);
+                        final_routes.remove(old_id);
+                    }
+
+                    let mut mode_failed = false;
+                    let mut repaired_route: Option<RouteResult> = None;
+                    if !victim_first {
+                        match self.route_single_net_and_commit_native(
+                            job.net_id,
+                            job.source,
+                            job.target,
+                            block_radius_cells,
+                            Some(&job.opened_cells),
+                            commit_radius_cells,
+                            Some(&job.clearance_exempt_cells),
+                            core_radius_cells,
+                        ) {
+                            Ok(route) => {
+                                attempts.push(NativeRouteAttempt {
+                                    bucket_name: "repair_failed_net",
+                                    net_id: job.net_id,
+                                    route: Some(route.clone()),
+                                    failed: false,
+                                    error: None,
+                                    repair_round: Some(round_idx),
+                                    candidate_blockers: candidate_blockers.clone(),
+                                    ripup_ids: ripup_ids.clone(),
+                                });
+                                final_routes.insert(job.net_id, route.clone());
+                                repaired_route = Some(route);
+                            }
+                            Err(error) => {
+                                attempts.push(NativeRouteAttempt {
+                                    bucket_name: "repair_failed_net",
+                                    net_id: job.net_id,
+                                    route: None,
+                                    failed: true,
+                                    error: Some(error),
+                                    repair_round: Some(round_idx),
+                                    candidate_blockers: candidate_blockers.clone(),
+                                    ripup_ids: ripup_ids.clone(),
+                                });
+                                mode_failed = true;
+                            }
+                        }
+                    }
+
+                    if !mode_failed {
+                        for old_id in &ripup_ids {
+                            let Some(victim_job) = job_by_id.get(old_id) else {
+                                mode_failed = true;
+                                break;
+                            };
+                            let reroute_result = self.route_single_net_and_commit_native(
+                                victim_job.net_id,
+                                victim_job.source,
+                                victim_job.target,
+                                block_radius_cells,
+                                Some(&victim_job.opened_cells),
+                                commit_radius_cells,
+                                Some(&victim_job.clearance_exempt_cells),
+                                core_radius_cells,
+                            );
+                            let route = match reroute_result {
+                                Ok(route) => route,
+                                Err(normal_error) => {
+                                    attempts.push(NativeRouteAttempt {
+                                        bucket_name: "reroute_victims",
+                                        net_id: victim_job.net_id,
+                                        route: None,
+                                        failed: true,
+                                        error: Some(normal_error),
+                                        repair_round: Some(round_idx),
+                                        candidate_blockers: candidate_blockers.clone(),
+                                        ripup_ids: ripup_ids.clone(),
+                                    });
+                                    match self.route_single_net_and_commit_repair_native(
+                                        victim_job.net_id,
+                                        victim_job.source,
+                                        victim_job.target,
+                                        block_radius_cells,
+                                        Some(&victim_job.opened_cells),
+                                        history_weight,
+                                        commit_radius_cells,
+                                        Some(&victim_job.clearance_exempt_cells),
+                                        core_radius_cells,
+                                    ) {
+                                        Ok(route) => route,
+                                        Err(error) => {
+                                            attempts.push(NativeRouteAttempt {
+                                                bucket_name: "reroute_victims",
+                                                net_id: victim_job.net_id,
+                                                route: None,
+                                                failed: true,
+                                                error: Some(error),
+                                                repair_round: Some(round_idx),
+                                                candidate_blockers: candidate_blockers.clone(),
+                                                ripup_ids: ripup_ids.clone(),
+                                            });
+                                            mode_failed = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            };
+                            attempts.push(NativeRouteAttempt {
+                                bucket_name: "reroute_victims",
+                                net_id: victim_job.net_id,
+                                route: Some(route.clone()),
+                                failed: false,
+                                error: None,
+                                repair_round: Some(round_idx),
+                                candidate_blockers: candidate_blockers.clone(),
+                                ripup_ids: ripup_ids.clone(),
+                            });
+                            final_routes.insert(victim_job.net_id, route);
+                        }
+                    }
+
+                    if !mode_failed && victim_first {
+                        let normal_result = self.route_single_net_and_commit_native(
+                            job.net_id,
+                            job.source,
+                            job.target,
+                            block_radius_cells,
+                            Some(&job.opened_cells),
+                            commit_radius_cells,
+                            Some(&job.clearance_exempt_cells),
+                            core_radius_cells,
+                        );
+                        let route = match normal_result {
+                            Ok(route) => route,
+                            Err(normal_error) => {
+                                attempts.push(NativeRouteAttempt {
+                                    bucket_name: "repair_failed_net",
+                                    net_id: job.net_id,
+                                    route: None,
+                                    failed: true,
+                                    error: Some(normal_error),
+                                    repair_round: Some(round_idx),
+                                    candidate_blockers: candidate_blockers.clone(),
+                                    ripup_ids: ripup_ids.clone(),
+                                });
+                                match self.route_single_net_and_commit_repair_native(
+                                    job.net_id,
+                                    job.source,
+                                    job.target,
+                                    block_radius_cells,
+                                    Some(&job.opened_cells),
+                                    history_weight,
+                                    commit_radius_cells,
+                                    Some(&job.clearance_exempt_cells),
+                                    core_radius_cells,
+                                ) {
+                                    Ok(route) => route,
+                                    Err(error) => {
+                                        attempts.push(NativeRouteAttempt {
+                                            bucket_name: "repair_failed_net",
+                                            net_id: job.net_id,
+                                            route: None,
+                                            failed: true,
+                                            error: Some(error),
+                                            repair_round: Some(round_idx),
+                                            candidate_blockers: candidate_blockers.clone(),
+                                            ripup_ids: ripup_ids.clone(),
+                                        });
+                                        continue;
+                                    }
+                                }
+                            }
+                        };
+                        attempts.push(NativeRouteAttempt {
+                            bucket_name: "repair_failed_net",
+                            net_id: job.net_id,
+                            route: Some(route.clone()),
+                            failed: false,
+                            error: None,
+                            repair_round: Some(round_idx),
+                            candidate_blockers: candidate_blockers.clone(),
+                            ripup_ids: ripup_ids.clone(),
+                        });
+                        final_routes.insert(job.net_id, route.clone());
+                        repaired_route = Some(route);
+                    }
+
+                    if !mode_failed && repaired_route.is_some() {
+                        repaired = true;
+                        repair_count += 1;
+                        break;
+                    }
+                }
+                if repaired {
+                    break;
+                }
+            }
+
+            if !repaired {
+                self.obstacle_map = round_base_map;
+                self.invalidate_meander_base_prefix();
+                final_routes = round_base_routes;
+                failed_net_id = Some(job.net_id);
+                failed_error = Some("No repair route found".to_string());
+                break;
+            }
+        }
+
+        let result_dict = PyDict::new_bound(py);
+        let route_entries = PyList::empty_bound(py);
+        for job in &native_jobs {
+            if let Some(route_result) = final_routes.get(&job.net_id) {
+                let entry = PyDict::new_bound(py);
+                entry.set_item("net_id", job.net_id)?;
+                entry.set_item(
+                    "route",
+                    Py::new(py, convert_result(py, &self.primitives, route_result)?)?,
+                )?;
+                route_entries.append(entry)?;
+            }
+        }
+        let attempt_entries = PyList::empty_bound(py);
+        for attempt in attempts {
+            let entry = PyDict::new_bound(py);
+            entry.set_item("bucket_name", attempt.bucket_name)?;
+            entry.set_item("net_id", attempt.net_id)?;
+            entry.set_item("failed", attempt.failed)?;
+            entry.set_item("error", attempt.error)?;
+            entry.set_item("repair_round", attempt.repair_round)?;
+            entry.set_item("candidate_blockers", attempt.candidate_blockers)?;
+            entry.set_item("ripup_ids", attempt.ripup_ids)?;
+            if let Some(route) = attempt.route {
+                entry.set_item(
+                    "route",
+                    Py::new(py, convert_result(py, &self.primitives, &route)?)?,
+                )?;
+            } else {
+                entry.set_item("route", py.None())?;
+            }
+            attempt_entries.append(entry)?;
+        }
+        result_dict.set_item(
+            "status",
+            if failed_net_id.is_some() {
+                "failed"
+            } else {
+                "routed"
+            },
+        )?;
+        result_dict.set_item("failed_net_id", failed_net_id)?;
+        result_dict.set_item("error", failed_error)?;
+        result_dict.set_item("repair_count", repair_count)?;
+        result_dict.set_item("routes", route_entries)?;
+        result_dict.set_item("attempts", attempt_entries)?;
         Ok(result_dict.into())
     }
 

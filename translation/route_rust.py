@@ -3087,7 +3087,193 @@ def route_nets_rust(
         if should_print_route:
             print(f"ok {_route_engine_summary(route_obj)}")
 
-    if not repair_config.enabled and hasattr(router, "route_many_normal_and_commit"):
+    if repair_config.enabled and hasattr(router, "route_many_with_repair_and_commit"):
+        batch_jobs: list[
+            tuple[int, Any, Any, list[tuple[int, int]], list[tuple[int, int]]]
+        ] = []
+        batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
+        batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
+        for job in route_jobs:
+            source_state, target_state, _, _, opened_cells = _states_and_openings(job)
+            clearance_exempt_cells = sorted(
+                _dynamic_clearance_exempt_cells_for_route(source_state, target_state)
+            )
+            route_selected_for_debug = (
+                debug_route_indices is None or job.route_index in debug_route_indices
+            )
+            should_print_route = verbose_route_diagnostics and route_selected_for_debug
+            if debug_route_indices is not None and route_selected_for_debug:
+                should_print_route = True
+            if should_print_route:
+                print(
+                    f"  Routing [{job.route_index}/{len(route_jobs)}] "
+                    f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
+                    end=" ",
+                )
+            route_dir = debug_path / "routes" if debug_path is not None else None
+            diag_txt: Path | None = None
+            if debug_path is not None and route_selected_for_debug and route_dir is not None:
+                _ensure_dir(route_dir)
+                diag_txt = route_dir / f"{debug_prefix}_{job.net_name}_diagnostics.txt"
+            batch_jobs.append(
+                (
+                    int(job.net_id),
+                    source_state,
+                    target_state,
+                    opened_cells,
+                    clearance_exempt_cells,
+                )
+            )
+            batch_opened_cells_by_id[int(job.net_id)] = opened_cells
+            batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
+
+        batch_start = _timing_start()
+        raw_batch_result = router.route_many_with_repair_and_commit(
+            batch_jobs,
+            block_radius_cells,
+            commit_radius_cells,
+            core_commit_radius_cells,
+            int(repair_config.max_rounds),
+            int(repair_config.max_victims_per_failure),
+            float(repair_config.history_weight),
+            int(repair_config.history_increment),
+        )
+        batch_elapsed_s = time.perf_counter() - batch_start if collect_timing else 0.0
+        batch_result = dict(raw_batch_result)
+        raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
+        per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
+        for raw_attempt in raw_attempts:
+            attempt = dict(raw_attempt)
+            net_id = int(attempt["net_id"])
+            job = route_jobs_by_id[net_id]
+            route_obj = attempt.get("route")
+            if route_obj is None:
+                route_obj = None
+            failed = bool(attempt.get("failed", False))
+            bucket_name = str(attempt.get("bucket_name", "normal_route"))
+            error_text = (
+                str(attempt.get("error"))
+                if attempt.get("error") is not None
+                else None
+            )
+            repair_round_raw = attempt.get("repair_round")
+            repair_round = (
+                int(repair_round_raw)
+                if repair_round_raw is not None
+                else None
+            )
+            candidate_blockers = [
+                int(value)
+                for value in cast(list[object], attempt.get("candidate_blockers", []))
+            ]
+            ripup_ids = [
+                int(value)
+                for value in cast(list[object], attempt.get("ripup_ids", []))
+            ]
+            if collect_timing:
+                if route_obj is not None and not failed:
+                    route_timing_buckets[bucket_name].record_route(
+                        per_attempt_elapsed_s,
+                        route_obj,
+                    )
+                else:
+                    route_timing_buckets[bucket_name].record_elapsed(
+                        per_attempt_elapsed_s,
+                        failed=failed,
+                    )
+                route_attempt_records.append(
+                    route_attempt_record_from_route(
+                        attempt_index=len(route_attempt_records) + 1,
+                        bucket_name=bucket_name,
+                        net_id=job.net_id,
+                        route_index=job.route_index,
+                        net_name=job.net_name,
+                        source=f"{job.inst1},{job.port1}",
+                        target=f"{job.inst2},{job.port2}",
+                        elapsed_s=per_attempt_elapsed_s,
+                        route_obj=route_obj if route_obj is not None and not failed else None,
+                        failed=failed,
+                        repair_round=repair_round,
+                        error=error_text,
+                        diagnostics=_route_attempt_diagnostics(
+                            job,
+                            route_obj if route_obj is not None and not failed else None,
+                            candidate_blockers=candidate_blockers,
+                            ripup_ids=ripup_ids,
+                        )
+                        if collect_attempt_diagnostics
+                        else None,
+                    )
+                )
+
+        repair_count += int(batch_result.get("repair_count", 0) or 0)
+        raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
+        for raw_entry in raw_routes:
+            entry = dict(raw_entry)
+            net_id = int(entry["net_id"])
+            route_obj = entry["route"]
+            job = route_jobs_by_id[net_id]
+            opened_cells = batch_opened_cells_by_id[net_id]
+            _record_route(job, route_obj, opened_cells)
+            should_print_route, diag_txt = batch_debug_by_id[net_id]
+            _finalize_committed_route(
+                job,
+                route_obj,
+                opened_cells,
+                should_print_route=should_print_route,
+                diag_txt=diag_txt,
+            )
+
+        if str(batch_result.get("status", "")) != "routed":
+            failed_net_id = int(batch_result.get("failed_net_id", -1))
+            failed_job = route_jobs_by_id.get(failed_net_id)
+            error_text = str(batch_result.get("error", "No route found"))
+            if failed_job is None:
+                raise RuntimeError(error_text)
+            source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
+                _states_and_openings(failed_job)
+            )
+            should_print_route, diag_txt = batch_debug_by_id.get(
+                failed_net_id,
+                (False, None),
+            )
+            if not should_print_route:
+                print(
+                    f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
+                    f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
+                    f"{failed_job.inst2},{failed_job.port2}... failed"
+                )
+            _write_route_diagnostics(
+                job=failed_job,
+                source_state=source_state,
+                target_state=target_state,
+                opened_candidate_cells=opened_candidate_cells,
+                dynamic_clearance_exempt_cells=_dynamic_clearance_exempt_cells_for_route(
+                    source_state,
+                    target_state,
+                ),
+                opened_cells_set=opened_cells_set,
+                diag_txt=diag_txt,
+                status="failed",
+                error_text=error_text,
+            )
+            _write_failed_log(
+                failed_job,
+                source_state,
+                target_state,
+                opened_candidate_cells,
+                opened_cells,
+                error_text,
+            )
+            raise RuntimeError(
+                f"No route found for {failed_job.net_name}: "
+                f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
+                f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
+                f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
+                f"allow_45_degree_turns={allow_45_degree_turns}"
+            )
+
+    elif not repair_config.enabled and hasattr(router, "route_many_normal_and_commit"):
         batch_jobs: list[
             tuple[int, Any, Any, list[tuple[int, int]], list[tuple[int, int]]]
         ] = []
