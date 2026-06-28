@@ -211,6 +211,7 @@ def route_match_and_realize(
     include_heater_obstacles: bool = False,
     ripup_reroute_config: RipupRerouteConfig | None = None,
     path_length_meander_height_um: float = DEFAULT_MEANDER_MAX_HEIGHT_UM,
+    enable_grid_endpoint_correction: bool = True,
 ) -> RouteRustPipelineResult:
     """Run Phase A->(optional M1)->B entirely in route_rust."""
     route_obstacle_config = obstacle_config
@@ -247,6 +248,7 @@ def route_match_and_realize(
         include_heater_obstacles=include_heater_obstacles,
         ripup_reroute_config=ripup_reroute_config,
         defer_realization=True,
+        enable_checked_endpoint_correction=enable_grid_endpoint_correction,
     )
     pipeline_timings_s: dict[str, float] = {
         "route_nets": time.perf_counter() - t_route_nets_start,
@@ -257,7 +259,8 @@ def route_match_and_realize(
             f"(obstacle map + A* + repairs): {pipeline_timings_s['route_nets']:.4f} s"
         )
 
-    debug_artifacts = _apply_endpoint_corrections_to_debug_artifacts(debug_artifacts)
+    if enable_grid_endpoint_correction:
+        debug_artifacts = _apply_endpoint_corrections_to_debug_artifacts(debug_artifacts)
     analysis_info = None
     requirements_info = None
     meander_report_info = None
@@ -727,6 +730,7 @@ def route_nets_rust(
     include_heater_obstacles: bool = False,
     ripup_reroute_config: RipupRerouteConfig | None = None,
     defer_realization: bool = False,
+    enable_checked_endpoint_correction: bool = True,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
     """Route schematic nets using Rust A* and add one polygon per routed net.
 
@@ -764,6 +768,8 @@ def route_nets_rust(
         defer_realization: If True, keep routed RouteResult objects but skip
             polygon realization. This is used for pre-realization transforms
             such as path-length matching/meander insertion.
+        enable_checked_endpoint_correction: If False, skip the checked
+            grid-to-port correction pass used by PLM-oriented flows.
 
     Returns:
         A tuple of (routed_layout, debug_artifacts).
@@ -850,13 +856,27 @@ def route_nets_rust(
     bend_radius_cells = int(primitive_cfg.bend_radius_cells)
     astar_cfg = rust_backend.AStarConfig(max_iterations=int(max_iterations))
     astar_cfg.enable_jps4 = bool(enable_jps4)
-    astar_cfg.use_indexed_heap = bool(use_indexed_heap)
+    astar_cfg.use_indexed_heap = bool(use_indexed_heap or allow_45_degree_turns)
     astar_cfg.collect_detailed_timing = bool(
         debug_timing or collect_route_stats or collect_attempt_diagnostics
     )
     astar_cfg.primitive_ordering = str(primitive_ordering)
-    astar_cfg.heuristic_mode = str(heuristic_mode)
-    astar_cfg.heap_tie_breaker = str(heap_tie_breaker)
+    effective_heuristic_mode = str(heuristic_mode)
+    if allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
+        effective_heuristic_mode = "diagonal_aware"
+    astar_cfg.heuristic_mode = effective_heuristic_mode
+    if allow_45_degree_turns and hasattr(astar_cfg, "max_iterations"):
+        astar_cfg.max_iterations = min(int(astar_cfg.max_iterations), 50_000)
+    if allow_45_degree_turns and hasattr(astar_cfg, "heuristic_weight"):
+        astar_cfg.heuristic_weight = max(float(astar_cfg.heuristic_weight), 1.25)
+    if allow_45_degree_turns and hasattr(astar_cfg, "bend_weight"):
+        # LiDAR heavily penalizes bends relative to propagation. Matching that
+        # scale keeps 45-degree A* from spending work on short zig-zag variants.
+        astar_cfg.bend_weight = max(float(astar_cfg.bend_weight), 12.0)
+    effective_heap_tie_breaker = str(heap_tie_breaker)
+    if allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":
+        effective_heap_tie_breaker = "larger_g"
+    astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
     if routing_window_scale is not None:
         astar_cfg.routing_window_scale = float(routing_window_scale)
 
@@ -1486,6 +1506,58 @@ def route_nets_rust(
                 port_access_candidate_cells_by_spec[port2_spec] = candidate_cells
                 port_access_rule_by_spec[port2_spec] = rule_name
 
+    def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
+        return port_to_grid_state(
+            port,
+            origin_x_um,
+            origin_y_um,
+            float(grid.grid_size_um),
+            as_target=as_target,
+        )
+
+    endpoint_ports_by_key: dict[tuple[int, int, int], list[tuple[str, bool, Port]]] = {}
+    for job in route_jobs:
+        for port_spec, port, as_target in (
+            (f"{job.inst1},{job.port1}", job.source_port, False),
+            (f"{job.inst2},{job.port2}", job.target_port, True),
+        ):
+            state = _endpoint_state_for_lane_assignment(port, as_target=as_target)
+            key = (int(state.x), int(state.y), int(state.angle) % 8)
+            endpoint_ports_by_key.setdefault(key, []).append((port_spec, as_target, port))
+
+    port_state_lane_offsets: dict[tuple[str, bool], tuple[int, int]] = {}
+    for (base_x, base_y, angle), endpoints in endpoint_ports_by_key.items():
+        unique_endpoints = list(dict.fromkeys((spec, is_target) for spec, is_target, _ in endpoints))
+        if len(unique_endpoints) <= 1:
+            continue
+        step_x, step_y = _angle_to_step(angle)
+        lateral_x, lateral_y = -step_y, step_x
+        if lateral_x == 0 and lateral_y == 0:
+            continue
+
+        def lateral_position(item: tuple[str, bool, Port]) -> float:
+            center = _port_center_um(item[2])
+            if center is None:
+                return 0.0
+            return center[0] * lateral_x + center[1] * lateral_y
+
+        sorted_endpoints = sorted(endpoints, key=lateral_position)
+        seen_endpoint_keys: set[tuple[str, bool]] = set()
+        lane_index = 0
+        for port_spec, is_target, _ in sorted_endpoints:
+            endpoint_key = (port_spec, is_target)
+            if endpoint_key in seen_endpoint_keys:
+                continue
+            seen_endpoint_keys.add(endpoint_key)
+            candidate_x = base_x + lateral_x * lane_index
+            candidate_y = base_y + lateral_y * lane_index
+            if _in_bounds(candidate_x, candidate_y):
+                port_state_lane_offsets[endpoint_key] = (
+                    lateral_x * lane_index,
+                    lateral_y * lane_index,
+                )
+            lane_index += 1
+
     blocked_static_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
     if hasattr(obstacle_map, "blocked_static_rects"):
         blocked_static_rects: list[tuple[int, int, int, int]] = []
@@ -1656,6 +1728,20 @@ def route_nets_rust(
             float(grid.grid_size_um),
             as_target=True,
         )
+        source_lane_offset = port_state_lane_offsets.get((f"{job.inst1},{job.port1}", False))
+        if source_lane_offset is not None:
+            source_state = rust_backend.State(
+                int(source_state.x) + int(source_lane_offset[0]),
+                int(source_state.y) + int(source_lane_offset[1]),
+                int(source_state.angle),
+            )
+        target_lane_offset = port_state_lane_offsets.get((f"{job.inst2},{job.port2}", True))
+        if target_lane_offset is not None:
+            target_state = rust_backend.State(
+                int(target_state.x) + int(target_lane_offset[0]),
+                int(target_state.y) + int(target_lane_offset[1]),
+                int(target_state.angle),
+            )
         source_state, target_state, original_anchor_cells = _snap_nearly_collinear_states(
             source_state,
             target_state,
@@ -2008,6 +2094,12 @@ def route_nets_rust(
         opened_cells: list[tuple[int, int]],
         clearance_exempt_cells: list[tuple[int, int]],
     ) -> tuple[tuple[tuple[float, float], ...], float] | None:
+        if not enable_checked_endpoint_correction:
+            # The checked correction path re-commits adjusted route cells and is
+            # currently restricted to axis-aligned centerlines. Callers that
+            # route 45-degree centerlines without PLM can skip it and let
+            # realization use the raw route geometry.
+            return None
         source_port = _port_center_um(job.source_port)
         target_port = _port_center_um(job.target_port)
         if source_port is None and target_port is None:
@@ -2276,6 +2368,9 @@ def route_nets_rust(
         nonlocal repair_count, total_expanded_states, simple_route_count
         if not repair_config.enabled:
             return False
+        repair_should_print = verbose_route_diagnostics and (
+            debug_route_indices is None or job.route_index in debug_route_indices
+        )
         source_state, target_state, _, _, opened_cells = _states_and_openings(job)
         probe_start = _timing_start()
         try:
@@ -2293,6 +2388,8 @@ def route_nets_rust(
                 failed=True,
                 error_text=str(exc),
             )
+            if repair_should_print:
+                print(f"\n    probe failed: {exc}", end=" ")
             return False
         _record_route_attempt(
             job,
@@ -2300,14 +2397,9 @@ def route_nets_rust(
             probe_start,
             probe_route,
         )
+        if repair_should_print:
+            print(f"\n    probe ok {_route_engine_summary(probe_route)}", end=" ")
 
-        history_start = _timing_start()
-        router.add_history_for_route(
-            probe_route,
-            block_radius_cells,
-            int(repair_config.history_increment),
-        )
-        _record_elapsed("history_update", history_start)
         owner_lookup_start = _timing_start()
         owner_lookup_radius_cells = max(
             int(block_radius_cells),
@@ -2323,12 +2415,51 @@ def route_nets_rust(
         ]
         _record_elapsed("owner_lookup", owner_lookup_start)
         if not candidate_blockers:
+            route_cells = [
+                (int(cell[0]), int(cell[1]))
+                for cell in (getattr(probe_route, "cells", None) or [])
+            ]
+            clearance_exempt_cells = sorted(
+                _dynamic_clearance_exempt_cells_for_route(source_state, target_state)
+            )
+            committed = False
+            if route_cells and hasattr(router, "commit_route_with_clearance"):
+                committed = bool(
+                    router.commit_route_with_clearance(
+                        job.net_id,
+                        route_cells,
+                        block_radius_cells,
+                        commit_radius_cells,
+                        clearance_exempt_cells,
+                        core_commit_radius_cells,
+                    )
+                )
+            if committed:
+                _record_route(job, probe_route, opened_cells)
+                _export_route_svg(job, probe_route, suffix="_probe")
+                total_expanded_states += int(getattr(probe_route, "expanded_states", 0))
+                if int(getattr(probe_route, "expanded_states", 0)) == 0:
+                    simple_route_count += 1
+                if repair_should_print:
+                    print("blockers=0 committed_probe", end=" ")
+                return True
+            if repair_should_print:
+                print("blockers=0", end=" ")
             return False
 
         candidate_blockers = sorted(
             dict.fromkeys(candidate_blockers),
             key=lambda owner: route_jobs_by_id[owner].route_index,
         )
+        history_start = _timing_start()
+        router.add_history_for_route(
+            probe_route,
+            block_radius_cells,
+            int(repair_config.history_increment),
+        )
+        _record_elapsed("history_update", history_start)
+        if repair_should_print:
+            print(f"blockers={candidate_blockers}", end=" ")
         max_victims = max(1, int(repair_config.max_victims_per_failure))
         max_rounds = max(1, int(repair_config.max_rounds))
 
@@ -2354,75 +2485,130 @@ def route_nets_rust(
             _record_elapsed("snapshot_cells", snapshot_start)
             touched_ids = set(ripup_ids)
             touched_ids.add(job.net_id)
-            try:
-                for old_id in ripup_ids:
-                    record = route_bookkeeping.records_by_id.get(old_id)
-                    if record is not None:
-                        history_start = _timing_start()
-                        router.add_history_for_route(
-                            record.route_obj,
-                            block_radius_cells,
-                            int(repair_config.history_increment),
-                        )
-                        _record_elapsed("history_update", history_start)
-                    ripup_start = _timing_start()
-                    router.ripup_route(old_id)
-                    _record_elapsed("ripup", ripup_start)
-                    route_bookkeeping.clear_route(old_id)
+            for victim_first in (False, True):
+                mode_label = "victim_first" if victim_first else "failed_first"
+                try:
+                    for old_id in ripup_ids:
+                        record = route_bookkeeping.records_by_id.get(old_id)
+                        if record is not None:
+                            history_start = _timing_start()
+                            router.add_history_for_route(
+                                record.route_obj,
+                                block_radius_cells,
+                                int(repair_config.history_increment),
+                            )
+                            _record_elapsed("history_update", history_start)
+                        ripup_start = _timing_start()
+                        router.ripup_route(old_id)
+                        _record_elapsed("ripup", ripup_start)
+                        route_bookkeeping.clear_route(old_id)
 
-                repaired_route, _ = _route_and_commit(
-                    job,
-                    # Route the originally failed net first with simple L/Z
-                    # candidates enabled. The blocker victims below still use
-                    # repair A* with history so they avoid recreating the
-                    # conflict that caused this rip-up.
-                    repair=False,
-                    timing_bucket="repair_failed_net",
-                    repair_round=round_idx,
-                    candidate_blockers=candidate_blockers,
-                    ripup_ids=ripup_ids,
-                )
-                total_expanded_states += int(getattr(repaired_route, "expanded_states", 0))
-                if int(getattr(repaired_route, "expanded_states", 0)) == 0:
-                    simple_route_count += 1
-
-                for old_id in ripup_ids:
-                    reroute_job = route_jobs_by_id[old_id]
-                    try:
-                        rerouted_obj, _ = _route_and_commit(
-                            reroute_job,
+                    repaired_route = None
+                    if not victim_first:
+                        repaired_route, _ = _route_and_commit(
+                            job,
+                            # Route the originally failed net first with simple
+                            # candidates enabled. The blocker victims below
+                            # still use repair A* with history so they avoid
+                            # recreating the conflict that caused this rip-up.
                             repair=False,
-                            timing_bucket="reroute_victims",
+                            timing_bucket="repair_failed_net",
                             repair_round=round_idx,
                             candidate_blockers=candidate_blockers,
                             ripup_ids=ripup_ids,
                         )
-                    except RuntimeError:
-                        rerouted_obj, _ = _route_and_commit(
-                            reroute_job,
-                            repair=True,
-                            timing_bucket="reroute_victims",
-                            repair_round=round_idx,
-                            candidate_blockers=candidate_blockers,
-                            ripup_ids=ripup_ids,
-                        )
-                    total_expanded_states += int(getattr(rerouted_obj, "expanded_states", 0))
-                    if int(getattr(rerouted_obj, "expanded_states", 0)) == 0:
-                        simple_route_count += 1
-                    _export_route_svg(
-                        reroute_job,
-                        rerouted_obj,
-                        suffix=f"_repair{round_idx}",
-                    )
+                        if repair_should_print:
+                            print(
+                                f"{mode_label} repair_net ok "
+                                f"{_route_engine_summary(repaired_route)}",
+                                end=" ",
+                            )
+                        total_expanded_states += int(getattr(repaired_route, "expanded_states", 0))
+                        if int(getattr(repaired_route, "expanded_states", 0)) == 0:
+                            simple_route_count += 1
 
-                _export_route_svg(job, repaired_route, suffix=f"_repair{round_idx}")
-                repair_count += 1
-                return True
-            except RuntimeError:
-                rollback_start = _timing_start()
-                _restore_snapshot(snapshot_records, snapshot_lengths, snapshot_cells, touched_ids)
-                _record_elapsed("rollback", rollback_start)
-                continue
+                    for old_id in ripup_ids:
+                        reroute_job = route_jobs_by_id[old_id]
+                        try:
+                            rerouted_obj, _ = _route_and_commit(
+                                reroute_job,
+                                repair=bool(victim_first),
+                                timing_bucket="reroute_victims",
+                                repair_round=round_idx,
+                                candidate_blockers=candidate_blockers,
+                                ripup_ids=ripup_ids,
+                            )
+                        except RuntimeError:
+                            if repair_should_print:
+                                print(f"victim {old_id} normal failed", end=" ")
+                            rerouted_obj, _ = _route_and_commit(
+                                reroute_job,
+                                repair=True,
+                                timing_bucket="reroute_victims",
+                                repair_round=round_idx,
+                                candidate_blockers=candidate_blockers,
+                                ripup_ids=ripup_ids,
+                            )
+                        if repair_should_print:
+                            print(
+                                f"victim {old_id} ok {_route_engine_summary(rerouted_obj)}",
+                                end=" ",
+                            )
+                        total_expanded_states += int(getattr(rerouted_obj, "expanded_states", 0))
+                        if int(getattr(rerouted_obj, "expanded_states", 0)) == 0:
+                            simple_route_count += 1
+                        _export_route_svg(
+                            reroute_job,
+                            rerouted_obj,
+                            suffix=f"_repair{round_idx}",
+                        )
+
+                    if victim_first:
+                        try:
+                            repaired_route, _ = _route_and_commit(
+                                job,
+                                repair=False,
+                                timing_bucket="repair_failed_net",
+                                repair_round=round_idx,
+                                candidate_blockers=candidate_blockers,
+                                ripup_ids=ripup_ids,
+                            )
+                        except RuntimeError:
+                            if repair_should_print:
+                                print("repair_net normal failed", end=" ")
+                            repaired_route, _ = _route_and_commit(
+                                job,
+                                repair=True,
+                                timing_bucket="repair_failed_net",
+                                repair_round=round_idx,
+                                candidate_blockers=candidate_blockers,
+                                ripup_ids=ripup_ids,
+                            )
+                        if repair_should_print:
+                            print(
+                                f"{mode_label} repair_net ok "
+                                f"{_route_engine_summary(repaired_route)}",
+                                end=" ",
+                            )
+                        total_expanded_states += int(getattr(repaired_route, "expanded_states", 0))
+                        if int(getattr(repaired_route, "expanded_states", 0)) == 0:
+                            simple_route_count += 1
+
+                    _export_route_svg(job, repaired_route, suffix=f"_repair{round_idx}")
+                    repair_count += 1
+                    return True
+                except RuntimeError:
+                    if repair_should_print:
+                        print(f"{mode_label} repair_round {round_idx} failed; rollback", end=" ")
+                    rollback_start = _timing_start()
+                    _restore_snapshot(
+                        snapshot_records,
+                        snapshot_lengths,
+                        snapshot_cells,
+                        touched_ids,
+                    )
+                    _record_elapsed("rollback", rollback_start)
+                    continue
 
         _ = failed_error
         return False
@@ -2459,6 +2645,24 @@ def route_nets_rust(
         if should_export_route_debug and route_dir is not None:
             _ensure_dir(route_dir)
             diag_txt = route_dir / f"{debug_prefix}_{job.net_name}_diagnostics.txt"
+
+        route_span_cells = max(
+            abs(int(target_state.x) - int(source_state.x)),
+            abs(int(target_state.y) - int(source_state.y)),
+        )
+        if (
+            allow_45_degree_turns
+            and repair_config.enabled
+            and route_span_cells >= 1000
+            and _attempt_repair(job, RuntimeError("preemptive static probe"))
+        ):
+            if should_print_route:
+                repaired_record = route_bookkeeping.records_by_id.get(job.net_id)
+                if repaired_record is not None:
+                    print(f"repaired {_route_engine_summary(repaired_record.route_obj)}")
+                else:
+                    print("repaired")
+            continue
 
         try:
             route_obj, opened_cells = _route_and_commit(

@@ -14,9 +14,11 @@ use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
 use crate::simple_routes::{
     direction_between as simple_direction_between, expand_candidate_to_grid_points,
+    try_45_degree_straight_l_or_z_candidate_with_config,
+    try_45_degree_straight_l_or_z_candidate_with_dynamic_expansion_config,
     try_straight_l_or_z_candidate_with_config,
-    try_straight_l_or_z_candidate_with_dynamic_expansion_config, GridPoint, SimpleRouteCandidate,
-    SimpleZRouteConfig,
+    try_straight_l_or_z_candidate_with_dynamic_expansion_config, GridPoint,
+    SimpleRouteCandidate, SimpleZRouteConfig,
 };
 
 /// Router search state: grid position plus 45-degree heading index.
@@ -63,6 +65,7 @@ pub struct AStarConfig {
     pub use_indexed_heap: bool,
     pub primitive_ordering: PrimitiveOrdering,
     pub heuristic_mode: HeuristicMode,
+    pub heuristic_weight: f64,
     pub heap_tie_breaker: HeapTieBreaker,
     pub require_terminal_straights: bool,
 }
@@ -93,6 +96,7 @@ impl Default for AStarConfig {
             use_indexed_heap: false,
             primitive_ordering: PrimitiveOrdering::Library,
             heuristic_mode: HeuristicMode::HeadingAware,
+            heuristic_weight: 1.0,
             heap_tie_breaker: HeapTieBreaker::SmallerG,
             require_terminal_straights: false,
         }
@@ -112,6 +116,7 @@ pub enum HeuristicMode {
     #[default]
     Distance,
     HeadingAware,
+    DiagonalAware,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1231,13 +1236,23 @@ pub fn try_simple_route_with_config(
             .simple_route_min_leg_len_cells
             .max(bend_radius_cells + terminal_straight_cells),
     };
-    let candidate = try_straight_l_or_z_candidate_with_config(
-        source,
-        target,
-        obstacle_map,
-        Some(&anchor_open_cells),
-        &z_config,
-    )?;
+    let candidate = if primitive_library_allows_45_degree_turns(primitives) {
+        try_45_degree_straight_l_or_z_candidate_with_config(
+            source,
+            target,
+            obstacle_map,
+            Some(&anchor_open_cells),
+            &z_config,
+        )
+    } else {
+        try_straight_l_or_z_candidate_with_config(
+            source,
+            target,
+            obstacle_map,
+            Some(&anchor_open_cells),
+            &z_config,
+        )
+    }?;
     simple_candidate_to_route_result(
         &candidate,
         source,
@@ -1296,15 +1311,27 @@ pub fn try_simple_route_with_dynamic_expansion_config(
             .simple_route_min_leg_len_cells
             .max(bend_radius_cells + terminal_straight_cells),
     };
-    let candidate = try_straight_l_or_z_candidate_with_dynamic_expansion_config(
-        source,
-        target,
-        obstacle_map,
-        Some(&anchor_open_cells),
-        &z_config,
-        dynamic_expansion_radius_cells,
-        dynamic_clearance_exempt_cells,
-    )?;
+    let candidate = if primitive_library_allows_45_degree_turns(primitives) {
+        try_45_degree_straight_l_or_z_candidate_with_dynamic_expansion_config(
+            source,
+            target,
+            obstacle_map,
+            Some(&anchor_open_cells),
+            &z_config,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+        )
+    } else {
+        try_straight_l_or_z_candidate_with_dynamic_expansion_config(
+            source,
+            target,
+            obstacle_map,
+            Some(&anchor_open_cells),
+            &z_config,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+        )
+    }?;
     simple_candidate_to_route_result(
         &candidate,
         source,
@@ -1644,6 +1671,16 @@ fn primitive_library_is_plain_jps4_grid(primitives: &PrimitiveLibrary) -> bool {
         }
     }
     true
+}
+
+fn primitive_library_allows_45_degree_turns(primitives: &PrimitiveLibrary) -> bool {
+    primitives
+        .get_primitives_for_angle(0)
+        .iter()
+        .any(|primitive| match &primitive.geometry {
+            PrimitiveGeometry::Bend { angle_delta, .. } => angle_delta.unsigned_abs() == 1,
+            PrimitiveGeometry::Straight { .. } => false,
+        })
 }
 
 const JPS4_DIRECTIONS: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
@@ -2846,6 +2883,14 @@ fn distance_heuristic(state: State, target: State, grid_size_um: f64) -> f64 {
     (dx * dx + dy * dy).sqrt() * grid_size_um
 }
 
+fn diagonal_distance_heuristic(state: State, target: State, grid_size_um: f64) -> f64 {
+    let dx = (target.x - state.x).abs() as f64;
+    let dy = (target.y - state.y).abs() as f64;
+    let diagonal = dx.min(dy);
+    let straight = dx.max(dy) - diagonal;
+    (straight + diagonal * 2.0_f64.sqrt()) * grid_size_um
+}
+
 fn direction_reaches_target_ray(state: State, target: State, tolerance: i32) -> bool {
     let dx = target.x - state.x;
     let dy = target.y - state.y;
@@ -2881,12 +2926,38 @@ fn minimum_positive_bend_cost(primitives: &PrimitiveLibrary, bend_weight: f64) -
 }
 
 #[derive(Clone, Copy, Debug)]
+struct TerminalApproach {
+    predecessor_angle: u8,
+    dx: i32,
+    dy: i32,
+    cost: f64,
+}
+
+impl Default for TerminalApproach {
+    fn default() -> Self {
+        Self {
+            predecessor_angle: 0,
+            dx: 0,
+            dy: 0,
+            cost: f64::INFINITY,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 enum SearchHeuristicMode {
     Distance,
     HeadingAware {
         minimum_bend_cost: f64,
         tolerance: i32,
         target_angle_ok: [bool; 8],
+    },
+    DiagonalAware {
+        minimum_bend_cost: f64,
+        tolerance: i32,
+        target_angle_ok: [bool; 8],
+        terminal_approaches: [TerminalApproach; 64],
+        terminal_approach_count: usize,
     },
 }
 
@@ -2895,49 +2966,161 @@ struct SearchHeuristic {
     target: State,
     grid_size_um: f64,
     mode: SearchHeuristicMode,
+    weight: f64,
 }
 
 impl SearchHeuristic {
     fn new(target: State, primitives: &PrimitiveLibrary, config: &AStarConfig) -> Self {
-        let minimum_bend_cost = if config.heuristic_mode == HeuristicMode::HeadingAware {
-            minimum_positive_bend_cost(primitives, config.bend_weight)
-        } else {
-            0.0
+        let target_angle_ok = target_angle_acceptance(target, config);
+        let minimum_bend_cost = match config.heuristic_mode {
+            HeuristicMode::Distance => 0.0,
+            HeuristicMode::HeadingAware | HeuristicMode::DiagonalAware => {
+                minimum_positive_bend_cost(primitives, config.bend_weight)
+            }
         };
-        let mode = if minimum_bend_cost > 0.0 {
-            SearchHeuristicMode::HeadingAware {
+        let mode = match (config.heuristic_mode, minimum_bend_cost > 0.0) {
+            (HeuristicMode::DiagonalAware, true) => {
+                let (terminal_approaches, terminal_approach_count) =
+                    terminal_approaches_to_target(primitives, config.bend_weight, target_angle_ok);
+                SearchHeuristicMode::DiagonalAware {
+                    minimum_bend_cost,
+                    tolerance: config.target_tolerance_cells.max(0),
+                    target_angle_ok,
+                    terminal_approaches,
+                    terminal_approach_count,
+                }
+            }
+            (HeuristicMode::HeadingAware, true) => SearchHeuristicMode::HeadingAware {
                 minimum_bend_cost,
                 tolerance: config.target_tolerance_cells.max(0),
-                target_angle_ok: target_angle_acceptance(target, config),
-            }
-        } else {
-            SearchHeuristicMode::Distance
+                target_angle_ok,
+            },
+            _ => SearchHeuristicMode::Distance,
         };
         Self {
             target,
             grid_size_um: primitives.grid_size_um(),
             mode,
+            weight: config.heuristic_weight.max(0.0),
         }
     }
 
     fn estimate(&self, state: State) -> f64 {
-        let distance = distance_heuristic(state, self.target, self.grid_size_um);
-        let SearchHeuristicMode::HeadingAware {
-            minimum_bend_cost,
-            tolerance,
-            target_angle_ok,
-        } = self.mode
-        else {
-            return distance;
-        };
-        if !target_angle_ok[(state.angle % 8) as usize]
-            || !direction_reaches_target_ray(state, self.target, tolerance)
-        {
-            distance + minimum_bend_cost
-        } else {
-            distance
+        match &self.mode {
+            SearchHeuristicMode::Distance => {
+                self.weight * distance_heuristic(state, self.target, self.grid_size_um)
+            }
+            SearchHeuristicMode::HeadingAware {
+                minimum_bend_cost,
+                tolerance,
+                target_angle_ok,
+            } => {
+                let distance = distance_heuristic(state, self.target, self.grid_size_um);
+                let estimate = if !target_angle_ok[(state.angle % 8) as usize]
+                    || !direction_reaches_target_ray(state, self.target, *tolerance)
+                {
+                    distance + *minimum_bend_cost
+                } else {
+                    distance
+                };
+                self.weight * estimate
+            }
+            SearchHeuristicMode::DiagonalAware {
+                minimum_bend_cost,
+                tolerance,
+                target_angle_ok,
+                terminal_approaches,
+                terminal_approach_count,
+            } => {
+                let distance = diagonal_distance_heuristic(state, self.target, self.grid_size_um);
+                let dx = (self.target.x - state.x).abs();
+                let dy = (self.target.y - state.y).abs();
+                let diagonal_correction_needed = dx > *tolerance
+                    && dy > *tolerance
+                    && (state.angle % 2 == 0)
+                    && !direction_reaches_target_ray(state, self.target, *tolerance);
+                let estimate = if !target_angle_ok[(state.angle % 8) as usize]
+                    || !direction_reaches_target_ray(state, self.target, *tolerance)
+                    || diagonal_correction_needed
+                {
+                    distance + *minimum_bend_cost
+                } else {
+                    distance
+                };
+                let terminal_estimate = terminal_approach_estimate(
+                    state,
+                    self.target,
+                    self.grid_size_um,
+                    *minimum_bend_cost,
+                    *tolerance,
+                    terminal_approaches,
+                    *terminal_approach_count,
+                );
+                self.weight * estimate.max(terminal_estimate)
+            }
         }
     }
+}
+
+fn terminal_approaches_to_target(
+    primitives: &PrimitiveLibrary,
+    bend_weight: f64,
+    target_angle_ok: [bool; 8],
+) -> ([TerminalApproach; 64], usize) {
+    let mut approaches = [TerminalApproach::default(); 64];
+    let mut count = 0usize;
+    for angle in 0u8..8u8 {
+        for primitive in primitives.get_primitives_for_angle(angle) {
+            if !target_angle_ok[(primitive.end_angle % 8) as usize] || count >= approaches.len() {
+                continue;
+            }
+            approaches[count] = TerminalApproach {
+                predecessor_angle: primitive.start_angle,
+                dx: primitive.dx,
+                dy: primitive.dy,
+                cost: primitive.length_um + bend_weight * primitive.bend_cost,
+            };
+            count += 1;
+        }
+    }
+    (approaches, count)
+}
+
+fn terminal_approach_estimate(
+    state: State,
+    target: State,
+    grid_size_um: f64,
+    minimum_bend_cost: f64,
+    tolerance: i32,
+    terminal_approaches: &[TerminalApproach; 64],
+    terminal_approach_count: usize,
+) -> f64 {
+    if state.x == target.x && state.y == target.y {
+        return 0.0;
+    }
+
+    let mut best = f64::INFINITY;
+    for approach in terminal_approaches
+        .iter()
+        .take(terminal_approach_count.min(terminal_approaches.len()))
+    {
+        let predecessor = State::new(
+            target.x - approach.dx,
+            target.y - approach.dy,
+            approach.predecessor_angle,
+        );
+        let mut estimate = diagonal_distance_heuristic(state, predecessor, grid_size_um);
+        if state.angle != predecessor.angle
+            || !direction_reaches_target_ray(state, predecessor, tolerance)
+        {
+            estimate += minimum_bend_cost;
+        }
+        estimate += approach.cost;
+        if estimate < best {
+            best = estimate;
+        }
+    }
+    best
 }
 
 fn target_angle_acceptance(target: State, config: &AStarConfig) -> [bool; 8] {
@@ -3095,6 +3278,16 @@ mod tests {
         })
     }
 
+    fn primitive_library_no45_bend1() -> PrimitiveLibrary {
+        create_photonic_primitive_library(PrimitiveLibraryConfig {
+            grid_size_um: 1.0,
+            straight_short_cells: 1,
+            straight_long_cells: 4,
+            bend_radius_cells: 1,
+            allow_45_degree_turns: false,
+        })
+    }
+
     #[test]
     fn simple_dynamic_expansion_overlay_matches_materialized_map() {
         let mut map = ObstacleMap::new(24, 12);
@@ -3103,7 +3296,7 @@ mod tests {
         let exemptions = vec![(9, 2)];
         expanded.clear_dynamic_clearance_in_cells(&exemptions);
         let exemption_keys = pack_cells_for_test(&exemptions);
-        let library = primitive_library_no45_bend2();
+        let library = primitive_library_no45_bend1();
         let source = State::new(1, 1, 0);
         let target = State::new(18, 1, 0);
         let config = AStarConfig {
@@ -3145,7 +3338,7 @@ mod tests {
         let exemptions = vec![(16, 5)];
         expanded.clear_dynamic_clearance_in_cells(&exemptions);
         let exemption_keys = pack_cells_for_test(&exemptions);
-        let library = primitive_library_no45_bend2();
+        let library = primitive_library_no45_bend1();
         let source = State::new(3, 7, 0);
         let target = State::new(34, 7, 0);
         let config = AStarConfig {
@@ -3397,7 +3590,7 @@ mod tests {
         let map = ObstacleMap::new(10, 5);
         let result = route_single_net(
             &map,
-            &primitive_library(),
+            &primitive_library_no45_bend1(),
             State::new(1, 2, 0),
             State::new(5, 2, 0),
             None,
@@ -3512,7 +3705,7 @@ mod tests {
 
         let result = route_single_net(
             &map,
-            &primitive_library(),
+            &primitive_library_no45_bend1(),
             State::new(1, 1, 0),
             State::new(5, 1, 0),
             Some(&opened),
@@ -3542,7 +3735,7 @@ mod tests {
     #[test]
     fn supports_coordinate_tolerance() {
         let map = ObstacleMap::new(12, 6);
-        let library = primitive_library();
+        let library = primitive_library_no45_bend2();
         let result = route_single_net_with_config(
             &map,
             &library,
@@ -3649,7 +3842,7 @@ mod tests {
         let map = ObstacleMap::new(10, 6);
         let result = route_single_net_with_config(
             &map,
-            &primitive_library(),
+            &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
             State::new(5, 1, 0),
             None,
@@ -3668,7 +3861,7 @@ mod tests {
         let map = ObstacleMap::new(10, 10);
         let result = route_single_net_with_config(
             &map,
-            &primitive_library(),
+            &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
             State::new(5, 4, 2),
             None,
@@ -3687,7 +3880,7 @@ mod tests {
         let map = ObstacleMap::new(20, 20);
         let result = route_single_net_with_config(
             &map,
-            &primitive_library(),
+            &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
             State::new(10, 10, 0),
             None,
@@ -3726,7 +3919,7 @@ mod tests {
     #[test]
     fn simple_z_route_has_primitives_and_replay_centerline() {
         let map = ObstacleMap::new(20, 20);
-        let library = primitive_library();
+        let library = primitive_library_no45_bend1();
         let result = route_single_net_with_config(
             &map,
             &library,
@@ -3755,7 +3948,7 @@ mod tests {
         let map = ObstacleMap::new(10, 6);
         let result = route_single_net_with_config(
             &map,
-            &primitive_library(),
+            &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
             State::new(5, 1, 0),
             None,
@@ -3968,6 +4161,33 @@ mod tests {
     }
 
     #[test]
+    fn diagonal_aware_heuristic_uses_octile_distance_and_minimum_bend_bound() {
+        let library = primitive_library();
+        let min_bend_cost = minimum_positive_bend_cost(&library, 1.0);
+        let config = AStarConfig {
+            heuristic_mode: HeuristicMode::DiagonalAware,
+            require_target_angle: false,
+            ..AStarConfig::default()
+        };
+
+        let cardinal_source = State::new(0, 0, 0);
+        let diagonal_target = State::new(10, 5, 0);
+        let heuristic = SearchHeuristic::new(diagonal_target, &library, &config);
+        assert_eq!(
+            heuristic.estimate(cardinal_source),
+            diagonal_distance_heuristic(cardinal_source, diagonal_target, 1.0) + min_bend_cost
+        );
+
+        let diagonal_source = State::new(0, 0, 1);
+        let same_ray_target = State::new(5, 5, 1);
+        let same_ray_heuristic = SearchHeuristic::new(same_ray_target, &library, &config);
+        assert_eq!(
+            same_ray_heuristic.estimate(diagonal_source),
+            diagonal_distance_heuristic(diagonal_source, same_ray_target, 1.0)
+        );
+    }
+
+    #[test]
     fn heading_aware_heuristic_preserves_route_cost_on_forced_detour() {
         let mut map = ObstacleMap::new(180, 80);
         for y in 4..=72 {
@@ -4065,7 +4285,7 @@ mod tests {
 
         let result = route_single_net_with_config(
             &map,
-            &primitive_library(),
+            &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
             State::new(5, 1, 0),
             Some(&opened),
@@ -4160,7 +4380,7 @@ mod tests {
         opened.insert(pack_xy(3, 0));
         let result = route_single_net_with_config(
             &map,
-            &primitive_library(),
+            &primitive_library_no45_bend1(),
             State::new(1, 0, 0),
             State::new(5, 0, 0),
             Some(&opened),

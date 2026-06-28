@@ -174,6 +174,7 @@ def test_mmi_heater_pass0_characterizes_current_port_alignment():
         defer_realization=True,
         include_heater_obstacles=True,
         collect_route_stats=True,
+        allow_45_degree_turns=False,
     )
 
     records_by_name = {record.net_name: record for record in artifacts.routed_net_records}
@@ -229,6 +230,7 @@ def test_mmi_heater_route_match_uses_corrected_records_for_realization():
         ),
         include_heater_obstacles=True,
         collect_route_stats=True,
+        allow_45_degree_turns=False,
     )
 
     records = result.debug_artifacts.routed_net_records
@@ -261,7 +263,7 @@ def test_py_router_exposes_endpoint_corrected_centerline_and_polygon():
     primitive = rust_backend.PrimitiveLibraryConfig(
         grid_size_um=1.0,
         bend_radius_cells=1,
-        allow_45_degree_turns=True,
+        allow_45_degree_turns=False,
     )
     astar = rust_backend.AStarConfig(max_iterations=10_000)
     router = rust_backend.PyPhotonicRouter(grid, primitive, astar)

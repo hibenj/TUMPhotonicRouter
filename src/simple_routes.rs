@@ -811,6 +811,36 @@ pub fn try_straight_l_or_z_candidate_with_dynamic_expansion_config(
     try_straight_l_or_z_candidate_with_query(source, target, &query, opened_cells, z_config)
 }
 
+/// Placeholder for future 45-degree-aware simple routes.
+///
+/// The current simple-route implementations are strictly axis-aligned. When
+/// the primitive library allows 45-degree turns, callers should use this entry
+/// point instead of silently reusing cardinal L/Z candidates. It intentionally
+/// returns `None` for now so the router falls through to A* while preserving the
+/// extension point for diagonal-leg L/Z candidates.
+pub fn try_45_degree_straight_l_or_z_candidate_with_config(
+    _source: State,
+    _target: State,
+    _obstacle_map: &ObstacleMap,
+    _opened_cells: Option<&FxHashSet<CellKey>>,
+    _z_config: &SimpleZRouteConfig,
+) -> Option<SimpleRouteCandidate> {
+    None
+}
+
+/// Dynamic-expansion variant of the 45-degree simple-route placeholder.
+pub fn try_45_degree_straight_l_or_z_candidate_with_dynamic_expansion_config(
+    _source: State,
+    _target: State,
+    _obstacle_map: &ObstacleMap,
+    _opened_cells: Option<&FxHashSet<CellKey>>,
+    _z_config: &SimpleZRouteConfig,
+    _dynamic_expansion_radius_cells: i32,
+    _clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<SimpleRouteCandidate> {
+    None
+}
+
 fn try_straight_l_or_z_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
     source: State,
     target: State,

@@ -207,12 +207,14 @@ pub struct PyAStarConfig {
     #[pyo3(get, set)]
     pub heuristic_mode: String,
     #[pyo3(get, set)]
+    pub heuristic_weight: f64,
+    #[pyo3(get, set)]
     pub heap_tie_breaker: String,
 }
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string(),heuristic_mode="heading_aware".to_string()))]
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string(),heuristic_mode="heading_aware".to_string(),heuristic_weight=1.0))]
     fn new(
         max_iterations: usize,
         bend_weight: f64,
@@ -232,6 +234,7 @@ impl PyAStarConfig {
         use_indexed_heap: bool,
         primitive_ordering: String,
         heuristic_mode: String,
+        heuristic_weight: f64,
     ) -> Self {
         Self {
             max_iterations,
@@ -256,6 +259,7 @@ impl PyAStarConfig {
             use_indexed_heap,
             primitive_ordering,
             heuristic_mode,
+            heuristic_weight,
             heap_tie_breaker: "smaller_g".to_string(),
         }
     }
@@ -819,8 +823,9 @@ fn parse_heuristic_mode(value: &str) -> PyResult<HeuristicMode> {
     match value.trim().to_ascii_lowercase().as_str() {
         "distance" => Ok(HeuristicMode::Distance),
         "heading_aware" => Ok(HeuristicMode::HeadingAware),
+        "diagonal_aware" => Ok(HeuristicMode::DiagonalAware),
         _ => Err(PyValueError::new_err(
-            "heuristic_mode must be one of 'distance' or 'heading_aware'",
+            "heuristic_mode must be one of 'distance', 'heading_aware', or 'diagonal_aware'",
         )),
     }
 }
@@ -872,6 +877,7 @@ fn astar_config_from_py(
         use_indexed_heap: astar_cfg.use_indexed_heap,
         primitive_ordering,
         heuristic_mode,
+        heuristic_weight: astar_cfg.heuristic_weight,
         heap_tie_breaker,
         require_terminal_straights: false,
     })
@@ -2222,6 +2228,42 @@ impl PyPhotonicRouter {
 
     fn commit_route_cells(&mut self, net_id: u64, cells: Vec<(i32, i32)>) -> bool {
         let committed = self.obstacle_map.commit_route(net_id, &cells);
+        if committed {
+            self.invalidate_meander_base_prefix();
+        }
+        committed
+    }
+
+    #[pyo3(signature=(net_id, cells, block_radius_cells=0, commit_radius_cells=None, clearance_exempt_cells=None, core_radius_cells=None))]
+    fn commit_route_with_clearance(
+        &mut self,
+        net_id: u64,
+        cells: Vec<(i32, i32)>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        clearance_exempt_cells: Option<Vec<(i32, i32)>>,
+        core_radius_cells: Option<i32>,
+    ) -> bool {
+        let route_cells = route_commit_cells(
+            &cells,
+            block_radius_cells,
+            commit_radius_cells.unwrap_or(block_radius_cells),
+            clearance_exempt_cells.as_deref(),
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        let core_cells = route_core_cells(
+            &cells,
+            core_radius_cells.unwrap_or(block_radius_cells),
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
+            net_id,
+            &core_cells,
+            &route_cells,
+            clearance_exempt_cells.as_deref().unwrap_or(&[]),
+        );
         if committed {
             self.invalidate_meander_base_prefix();
         }
@@ -4650,6 +4692,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
@@ -4703,6 +4746,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let route = PyRouteResult {
@@ -4809,6 +4853,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let route = PyRouteResult {
@@ -4932,6 +4977,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let route = PyRouteResult {
@@ -5046,6 +5092,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -5155,6 +5202,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         router.add_static_cells(vec![(3, 3)]);
@@ -5196,6 +5244,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let route = PyRouteResult {
@@ -5319,6 +5368,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let route = PyRouteResult {
@@ -5431,6 +5481,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let route = PyRouteResult {
@@ -5542,6 +5593,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let eff = router.effective_bend_radius_um(None).unwrap();
@@ -5573,6 +5625,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let eff = router.effective_bend_radius_um(Some(1.1)).unwrap();
@@ -5605,6 +5658,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         Python::with_gil(|py| {
@@ -5653,6 +5707,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let route = PyRouteResult {
@@ -5811,6 +5866,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let route = PyRouteResult {
@@ -5950,6 +6006,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         Python::with_gil(|py| {
@@ -6022,6 +6079,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let err = Python::with_gil(|py| {
@@ -6077,6 +6135,7 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
+                1.0,
             ),
         );
         let reserved_cells: Vec<(i32, i32)> = Python::with_gil(|py| {

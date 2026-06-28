@@ -36,6 +36,7 @@ def _physical_port_centerline(
     record: RoutedNetRecord,
     *,
     realization_grid_spec: tuple[int, int, float, float, float] | None = None,
+    enable_endpoint_correction: bool = True,
 ) -> list[tuple[float, float]]:
     corrected_centerline = [
         (float(p[0]), float(p[1]))
@@ -43,6 +44,8 @@ def _physical_port_centerline(
     ]
     if corrected_centerline:
         return corrected_centerline
+    if not enable_endpoint_correction:
+        return []
 
     source_port_um = record.source_port_center_um
     target_port_um = record.target_port_center_um
@@ -136,6 +139,7 @@ def realize_routed_net_records(
             router,
             record,
             realization_grid_spec=realization_grid_spec,
+            enable_endpoint_correction=not allow_45_degree_turns,
         )
         if record.meander_auto_plan is not None:
             plan = record.meander_auto_plan

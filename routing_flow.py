@@ -55,6 +55,7 @@ SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
 SCRIPT_OBSTACLE_MODE = "bounding_boxes"
+SCRIPT_GRID_SIZE_UM = 2.0
 SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.0
 SCRIPT_HEATER_CLEARANCE_UM = 10.0
 SCRIPT_CHIP_ADD_X_UM = 0.0
@@ -568,6 +569,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Static obstacle mode passed to StaticObstacleMapConfig.",
     )
     parser.add_argument(
+        "--grid-size-um",
+        type=float,
+        default=SCRIPT_GRID_SIZE_UM,
+        metavar="UM",
+        help=f"Optical routing grid resolution in micrometers (default: {SCRIPT_GRID_SIZE_UM}).",
+    )
+    parser.add_argument(
         "--waveguide-clearance-um",
         type=float,
         default=SCRIPT_WAVEGUIDE_CLEARANCE_UM,
@@ -845,6 +853,7 @@ def main(argv: list[str] | None = None) -> Component:
             pad_pitch_um=args.electrical_pad_pitch_um,
         ),
         static_obstacle_config=StaticObstacleMapConfig(
+            grid_size_um=args.grid_size_um,
             obstacle_mode=args.obstacle_mode,
             clearance_um=args.waveguide_clearance_um,
             heater_clearance_um=args.heater_clearance_um,
@@ -1060,6 +1069,7 @@ def run_routing_flow(
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     include_heater_obstacles: bool = False,
+    grid_size_um: float = SCRIPT_GRID_SIZE_UM,
     waveguide_clearance_um: float | None = None,
     heater_clearance_um: float | None = None,
     obstacle_clearance_um: float | None = None,
@@ -1119,6 +1129,7 @@ def run_routing_flow(
         include_heater_obstacles: If True, include configured heater/metal
                       layers as static optical-routing obstacles and enable
                       component-specific heater optical port openings.
+        grid_size_um: Optical routing grid resolution in micrometers.
         waveguide_clearance_um: Static clearance in micrometers for existing
                       optical/waveguide obstacles.
         heater_clearance_um: Static clearance in micrometers for heater/metal
@@ -1173,6 +1184,7 @@ def run_routing_flow(
         heater_clearance_um = float(waveguide_clearance_um)
 
     route_static_obstacle_config = static_obstacle_config or StaticObstacleMapConfig(
+        grid_size_um=float(grid_size_um),
         obstacle_mode="bounding_boxes",
         clearance_um=float(waveguide_clearance_um),
         heater_clearance_um=float(heater_clearance_um),
@@ -1300,6 +1312,7 @@ def run_routing_flow(
             include_heater_obstacles=include_heater_obstacles,
             ripup_reroute_config=ripup_reroute_config,
             path_length_meander_height_um=path_length_meander_height_um,
+            enable_grid_endpoint_correction=not allow_45_degree_turns,
             obstacle_config=route_static_obstacle_config,
         )
     except Exception:

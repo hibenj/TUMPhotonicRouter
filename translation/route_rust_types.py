@@ -64,14 +64,18 @@ class OpticalRouteClearancePolicy:
         if not math.isfinite(route_clearance_um):
             raise ValueError("route_clearance_um must be finite")
 
-        core_radius_cells = max(
-            0,
-            math.ceil((route_width_um / 2.0) / grid_size_um),
-        )
-        keepout_radius_cells = max(
-            core_radius_cells,
-            math.ceil(((route_width_um / 2.0) + route_clearance_um) / grid_size_um),
-        )
+        if route_clearance_um <= 0.0:
+            core_radius_cells = 0
+            keepout_radius_cells = 0
+        else:
+            core_radius_cells = max(
+                0,
+                math.ceil((route_width_um / 2.0) / grid_size_um),
+            )
+            keepout_radius_cells = max(
+                core_radius_cells,
+                math.ceil(((route_width_um / 2.0) + route_clearance_um) / grid_size_um),
+            )
         box_clearance_radius_cells = max(
             0,
             int(plm_candidate_box_clearance_radius_cells),
