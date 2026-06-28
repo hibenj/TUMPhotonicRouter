@@ -3370,6 +3370,98 @@ mod tests {
         assert!((overlay.total_cost - materialized.total_cost).abs() < 1.0e-9);
     }
 
+    #[test]
+    fn zero_radius_dynamic_overlay_matches_materialized_simple_map() {
+        let mut map = ObstacleMap::new(24, 12);
+        assert!(map.commit_route_with_clearance_overlap(1, &[(9, 4)], &[(9, 4)], &[]));
+        let mut materialized_map = map.clone();
+        let exemptions = vec![(9, 4)];
+        materialized_map.clear_dynamic_clearance_in_cells(&exemptions);
+        let exemption_keys = pack_cells_for_test(&exemptions);
+        let library = primitive_library_no45_bend1();
+        let source = State::new(1, 4, 0);
+        let target = State::new(18, 4, 0);
+        let config = AStarConfig {
+            require_target_angle: true,
+            ..AStarConfig::default()
+        };
+
+        let materialized = try_simple_route_with_config(
+            &materialized_map,
+            &library,
+            source,
+            target,
+            None,
+            &config,
+        );
+        let overlay = try_simple_route_with_dynamic_expansion_config(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &config,
+            0,
+            Some(&exemption_keys),
+        );
+
+        assert_eq!(overlay.is_some(), materialized.is_some());
+        if let (Some(overlay), Some(materialized)) = (overlay, materialized) {
+            assert_eq!(overlay.primitives, materialized.primitives);
+            assert_eq!(overlay.cells, materialized.cells);
+            assert_eq!(overlay.reached_target, materialized.reached_target);
+        }
+    }
+
+    #[test]
+    fn zero_radius_dynamic_overlay_matches_materialized_dense_map() {
+        let mut map = ObstacleMap::new(40, 16);
+        assert!(map.commit_route_with_clearance_overlap(
+            1,
+            &[(16, 7), (17, 7), (18, 7)],
+            &[(16, 7), (17, 7), (18, 7)],
+            &[],
+        ));
+        let mut materialized_map = map.clone();
+        let exemptions = vec![(17, 7)];
+        materialized_map.clear_dynamic_clearance_in_cells(&exemptions);
+        let exemption_keys = pack_cells_for_test(&exemptions);
+        let library = primitive_library_no45_bend1();
+        let source = State::new(3, 7, 0);
+        let target = State::new(34, 7, 0);
+        let config = AStarConfig {
+            max_iterations: 500_000,
+            require_target_angle: false,
+            enable_simple_routes: false,
+            routing_window_fallback_full_grid: true,
+            ..AStarConfig::default()
+        };
+
+        let materialized = route_single_net_with_config(
+            &materialized_map,
+            &library,
+            source,
+            target,
+            None,
+            &config,
+        )
+        .expect("materialized zero-radius map should route");
+        let overlay = route_single_net_with_dynamic_expansion_config(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &config,
+            0,
+            Some(&exemption_keys),
+        )
+        .expect("zero-radius overlay map should route");
+
+        assert_eq!(overlay.reached_target, materialized.reached_target);
+        assert!((overlay.total_cost - materialized.total_cost).abs() < 1.0e-9);
+    }
+
     fn pack_cells_for_test(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
         cells.iter().map(|&(x, y)| pack_xy(x, y)).collect()
     }

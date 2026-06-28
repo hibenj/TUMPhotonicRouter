@@ -1892,15 +1892,6 @@ impl PyPhotonicRouter {
             } else {
                 None
             };
-        let mut opened_dynamic_obstacle_map;
-        let search_obstacle_map = if block_radius_cells > 0 {
-            None
-        } else {
-            opened_dynamic_obstacle_map = self.obstacle_map.clone();
-            opened_dynamic_obstacle_map
-                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
-            Some(&opened_dynamic_obstacle_map)
-        };
         if let Some(prepare_start) = prepare_start.as_ref() {
             obstacle_map_prepare_time_us += prepare_start.elapsed().as_micros();
         }
@@ -1987,7 +1978,11 @@ impl PyPhotonicRouter {
         } else {
             cfg
         };
-        let mut result = if block_radius_cells > 0 {
+        let zero_radius_overlay = block_radius_cells <= 0
+            && dynamic_clearance_exempt_keys.is_some()
+            && !search_cfg.enable_jps4;
+        let mut opened_dynamic_obstacle_map;
+        let mut result = if block_radius_cells > 0 || zero_radius_overlay {
             route_single_net_with_dynamic_expansion_config(
                 &self.obstacle_map,
                 &self.primitives,
@@ -1995,12 +1990,20 @@ impl PyPhotonicRouter {
                 State::new(target.x, target.y, target.angle),
                 Some(opened_ref),
                 &search_cfg,
-                block_radius_cells,
+                block_radius_cells.max(0),
                 dynamic_clearance_exempt_keys,
             )
         } else {
+            let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
+                opened_dynamic_obstacle_map = self.obstacle_map.clone();
+                opened_dynamic_obstacle_map
+                    .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
+                &opened_dynamic_obstacle_map
+            } else {
+                &self.obstacle_map
+            };
             route_single_net_with_config(
-                search_obstacle_map.expect("zero-radius search map should be prepared"),
+                search_obstacle_map,
                 &self.primitives,
                 State::new(source.x, source.y, source.angle),
                 State::new(target.x, target.y, target.angle),
@@ -2116,19 +2119,13 @@ impl PyPhotonicRouter {
             } else {
                 None
             };
-        let mut opened_dynamic_obstacle_map;
-        let search_obstacle_map = if block_radius_cells > 0 {
-            None
-        } else {
-            opened_dynamic_obstacle_map = self.obstacle_map.clone();
-            opened_dynamic_obstacle_map
-                .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
-            Some(&opened_dynamic_obstacle_map)
-        };
         let obstacle_map_prepare_time_us = prepare_start
             .as_ref()
             .map_or(0, |start| start.elapsed().as_micros());
-        let mut result = if block_radius_cells > 0 {
+        let zero_radius_overlay =
+            block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some() && !cfg.enable_jps4;
+        let mut opened_dynamic_obstacle_map;
+        let mut result = if block_radius_cells > 0 || zero_radius_overlay {
             route_single_net_with_dynamic_expansion_config(
                 &self.obstacle_map,
                 &self.primitives,
@@ -2136,12 +2133,20 @@ impl PyPhotonicRouter {
                 State::new(target.x, target.y, target.angle),
                 Some(opened_ref),
                 &cfg,
-                block_radius_cells,
+                block_radius_cells.max(0),
                 dynamic_clearance_exempt_keys,
             )
         } else {
+            let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
+                opened_dynamic_obstacle_map = self.obstacle_map.clone();
+                opened_dynamic_obstacle_map
+                    .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
+                &opened_dynamic_obstacle_map
+            } else {
+                &self.obstacle_map
+            };
             route_single_net_with_config(
-                search_obstacle_map.expect("zero-radius search map should be prepared"),
+                search_obstacle_map,
                 &self.primitives,
                 State::new(source.x, source.y, source.angle),
                 State::new(target.x, target.y, target.angle),
