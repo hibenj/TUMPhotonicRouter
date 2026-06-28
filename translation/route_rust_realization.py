@@ -27,6 +27,7 @@ class _EndpointCorrectionRouter(Protocol):
         *,
         source_port_um: tuple[float, float] | None = None,
         target_port_um: tuple[float, float] | None = None,
+        allow_unchecked_bumps: bool = True,
     ) -> Iterable[object]:
         ...
 
@@ -37,6 +38,7 @@ def _physical_port_centerline(
     *,
     realization_grid_spec: tuple[int, int, float, float, float] | None = None,
     enable_endpoint_correction: bool = True,
+    allow_unchecked_bumps: bool = True,
 ) -> list[tuple[float, float]]:
     corrected_centerline = [
         (float(p[0]), float(p[1]))
@@ -59,6 +61,7 @@ def _physical_port_centerline(
             record.route_obj,
             source_port_um=source_port_um,
             target_port_um=target_port_um,
+            allow_unchecked_bumps=allow_unchecked_bumps,
         )
     except (TypeError, ValueError) as exc:
         print(
@@ -139,7 +142,8 @@ def realize_routed_net_records(
             router,
             record,
             realization_grid_spec=realization_grid_spec,
-            enable_endpoint_correction=not allow_45_degree_turns,
+            enable_endpoint_correction=True,
+            allow_unchecked_bumps=not allow_45_degree_turns,
         )
         if record.meander_auto_plan is not None:
             plan = record.meander_auto_plan

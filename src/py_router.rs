@@ -32,7 +32,7 @@ use crate::geometry_realization::{
     realize_route_polygon_with_checked_analytic_meander_box as realize_route_polygon_with_checked_analytic_meander_box_rs,
     realize_route_polygon_with_endpoint_correction as realize_route_polygon_with_endpoint_correction_rs,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
-    route_to_port_corrected_centerline as route_to_port_corrected_centerline_rs,
+    route_to_port_corrected_centerline_with_options as route_to_port_corrected_centerline_with_options_rs,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
     splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
     AutoMeanderConfig, AutoMeanderPlanningProfile, AutoMeanderSidePolicy, DenseOccupancyPrefix,
@@ -2608,12 +2608,13 @@ impl PyPhotonicRouter {
             .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(route,source_port_um=None,target_port_um=None))]
+    #[pyo3(signature=(route,source_port_um=None,target_port_um=None,allow_unchecked_bumps=true))]
     fn route_port_corrected_centerline(
         &self,
         route: &PyRouteResult,
         source_port_um: Option<(f64, f64)>,
         target_port_um: Option<(f64, f64)>,
+        allow_unchecked_bumps: bool,
     ) -> PyResult<Vec<(f64, f64)>> {
         let grid = GeometryGridSpec::new(
             self.grid.grid_size_um,
@@ -2622,17 +2623,18 @@ impl PyPhotonicRouter {
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let r = to_route_result(route);
-        route_to_port_corrected_centerline_rs(
+        route_to_port_corrected_centerline_with_options_rs(
             &r,
             &self.primitives,
             &grid,
             source_port_um,
             target_port_um,
+            allow_unchecked_bumps,
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(net_id,route,width_um,clearance_radius_cells,core_radius_cells,opened_cells=None,clearance_exempt_cells=None,source_port_um=None,target_port_um=None))]
+    #[pyo3(signature=(net_id,route,width_um,clearance_radius_cells,core_radius_cells,opened_cells=None,clearance_exempt_cells=None,source_port_um=None,target_port_um=None,allow_unchecked_fallback=true))]
     fn route_port_corrected_centerline_checked_and_commit(
         &mut self,
         py: Python<'_>,
@@ -2645,6 +2647,7 @@ impl PyPhotonicRouter {
         clearance_exempt_cells: Option<Vec<(i32, i32)>>,
         source_port_um: Option<(f64, f64)>,
         target_port_um: Option<(f64, f64)>,
+        allow_unchecked_fallback: bool,
     ) -> PyResult<Py<PyDict>> {
         let _ = clearance_radius_cells;
         let grid = GeometryGridSpec::new(
@@ -2664,12 +2667,13 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
 
         if candidates.is_empty() {
-            let centerline = route_to_port_corrected_centerline_rs(
+            let centerline = route_to_port_corrected_centerline_with_options_rs(
                 &r,
                 &self.primitives,
                 &grid,
                 source_port_um,
                 target_port_um,
+                allow_unchecked_fallback,
             )
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
             let d = PyDict::new_bound(py);

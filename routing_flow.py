@@ -1312,7 +1312,7 @@ def run_routing_flow(
             include_heater_obstacles=include_heater_obstacles,
             ripup_reroute_config=ripup_reroute_config,
             path_length_meander_height_um=path_length_meander_height_um,
-            enable_grid_endpoint_correction=not allow_45_degree_turns,
+            enable_grid_endpoint_correction=True,
             obstacle_config=route_static_obstacle_config,
         )
     except Exception:

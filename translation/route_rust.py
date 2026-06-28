@@ -169,6 +169,8 @@ def _apply_endpoint_corrections_to_debug_artifacts(
         debug_artifacts.routed_net_records,
         router=router,
         realization_grid_spec=debug_artifacts.realization_grid_spec,
+        allow_unchecked_bumps=not debug_artifacts.realization_allow_45_degree_turns,
+        log_failures=not debug_artifacts.realization_allow_45_degree_turns,
     )
     return replace(
         debug_artifacts,
@@ -2096,9 +2098,8 @@ def route_nets_rust(
     ) -> tuple[tuple[tuple[float, float], ...], float] | None:
         if not enable_checked_endpoint_correction:
             # The checked correction path re-commits adjusted route cells and is
-            # currently restricted to axis-aligned centerlines. Callers that
-            # route 45-degree centerlines without PLM can skip it and let
-            # realization use the raw route geometry.
+            # currently restricted to axis-aligned centerlines. 45-degree
+            # routes use the non-committing realization correction instead.
             return None
         source_port = _port_center_um(job.source_port)
         target_port = _port_center_um(job.target_port)
@@ -2114,6 +2115,7 @@ def route_nets_rust(
             clearance_exempt_cells,
             source_port_um=source_port,
             target_port_um=target_port,
+            allow_unchecked_fallback=not allow_45_degree_turns,
         )
         if not isinstance(result, dict):
             result = dict(result)

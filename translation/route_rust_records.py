@@ -241,6 +241,7 @@ class EndpointCorrectionRouter(Protocol):
         *,
         source_port_um: tuple[float, float] | None = None,
         target_port_um: tuple[float, float] | None = None,
+        allow_unchecked_bumps: bool = True,
     ) -> object:
         ...
 
@@ -253,6 +254,8 @@ def apply_port_endpoint_corrections(
     *,
     router: EndpointCorrectionRouter,
     realization_grid_spec: tuple[int, int, float, float, float] | None = None,
+    allow_unchecked_bumps: bool = True,
+    log_failures: bool = True,
 ) -> list[RoutedNetRecord]:
     """Attach corrected physical centerlines and lengths to routed records."""
     updated: list[RoutedNetRecord] = []
@@ -273,6 +276,7 @@ def apply_port_endpoint_corrections(
                 record.route_obj,
                 source_port_um=source_port,
                 target_port_um=target_port,
+                allow_unchecked_bumps=allow_unchecked_bumps,
             )
         except (TypeError, ValueError) as exc:
             message = format_port_endpoint_correction_error(
@@ -280,7 +284,8 @@ def apply_port_endpoint_corrections(
                 exc,
                 realization_grid_spec=realization_grid_spec,
             )
-            print("ERROR: " + message)
+            if log_failures:
+                print("ERROR: " + message)
             updated.append(replace(record, endpoint_correction_error=message))
             continue
         centerline = _centerline_tuple(raw_centerline)
@@ -290,7 +295,8 @@ def apply_port_endpoint_corrections(
                 "router returned an empty or invalid corrected centerline",
                 realization_grid_spec=realization_grid_spec,
             )
-            print("ERROR: " + message)
+            if log_failures:
+                print("ERROR: " + message)
             updated.append(replace(record, endpoint_correction_error=message))
             continue
         corrected_length_um = float(router.centerline_length_um(list(centerline)))

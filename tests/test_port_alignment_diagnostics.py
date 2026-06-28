@@ -293,12 +293,70 @@ def test_py_router_exposes_endpoint_corrected_centerline_and_polygon():
     assert max(point[0] for point in polygon) >= 5.8 - 1.0e-9
 
 
-def _checked_case4_test_router_and_route(rust_backend):
+def test_py_router_corrects_full_diagonal_45_degree_centerline():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    grid = rust_backend.GridSpec(64, 64, 1.0, 0.0, 0.0)
+    primitive = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=1,
+        allow_45_degree_turns=True,
+    )
+    astar = rust_backend.AStarConfig(max_iterations=10_000)
+    router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
+
+    route = router.route_single_net(
+        rust_backend.State(1, 1, 1),
+        rust_backend.State(9, 9, 1),
+    )
+    centerline = router.route_port_corrected_centerline(
+        route,
+        source_port_um=(1.2, 1.2),
+        target_port_um=(10.0, 10.0),
+    )
+
+    assert centerline[0] == pytest.approx((1.2, 1.2))
+    assert centerline[-1] == pytest.approx((10.0, 10.0))
+    for p0, p1 in zip(centerline, centerline[1:]):
+        assert (p1[0] - p0[0]) == pytest.approx(p1[1] - p0[1])
+        assert p1[0] > p0[0]
+
+
+def test_py_router_safe_endpoint_correction_rejects_unchecked_bump():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    grid = rust_backend.GridSpec(64, 16, 1.0, 0.0, 0.0)
+    primitive = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=1,
+        allow_45_degree_turns=True,
+    )
+    astar = rust_backend.AStarConfig(max_iterations=10_000)
+    router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
+    route = router.route_single_net(
+        rust_backend.State(1, 2, 0),
+        rust_backend.State(13, 2, 0),
+    )
+
+    with pytest.raises(ValueError):
+        router.route_port_corrected_centerline(
+            route,
+            source_port_um=(1.0, 2.5),
+            target_port_um=(13.5, 2.0),
+            allow_unchecked_bumps=False,
+        )
+
+
+def _checked_case4_test_router_and_route(rust_backend, *, allow_45_degree_turns: bool = False):
     grid = rust_backend.GridSpec(40, 12, 1.0, 0.0, 0.0)
     primitive = rust_backend.PrimitiveLibraryConfig(
         grid_size_um=1.0,
         bend_radius_cells=1,
-        allow_45_degree_turns=False,
+        allow_45_degree_turns=allow_45_degree_turns,
     )
     astar = rust_backend.AStarConfig(max_iterations=10_000)
     router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
@@ -365,3 +423,32 @@ def test_checked_case4_bump_skips_dynamic_blocked_start_top_candidate():
     centerline = tuple((float(x), float(y)) for x, y in result["centerline"])
     assert centerline[0] == pytest.approx((1.5, 1.5))
     assert centerline[-1] == pytest.approx((21.5, 2.0))
+
+
+def test_checked_case4_bump_with_45_enabled_uses_clear_mirrored_side():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(
+        rust_backend,
+        allow_45_degree_turns=True,
+    )
+    assert router.commit_route_cells(8, [(2, 3), (3, 3)])
+
+    result = router.route_port_corrected_centerline_checked_and_commit(
+        7,
+        route,
+        0.5,
+        0,
+        0,
+        [],
+        [],
+        source_port_um=(1.5, 1.5),
+        target_port_um=(21.5, 2.0),
+        allow_unchecked_fallback=False,
+    )
+
+    assert result["committed_bump"] is True
+    assert result["candidate_index"] == 1
+    assert "bottom" in result["candidate_label"]
