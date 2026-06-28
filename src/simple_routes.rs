@@ -2,7 +2,7 @@
 //!
 //! This module intentionally does not run search or integrate into the
 //! production routing flow yet. It only models and validates pre-defined
-//! axis-aligned polyline candidates.
+//! octant-aligned polyline candidates.
 
 use rustc_hash::FxHashSet;
 
@@ -23,7 +23,7 @@ impl GridPoint {
     }
 }
 
-/// Axis-aligned candidate segment between two grid points.
+/// Octant-aligned candidate segment between two grid points.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct Segment {
     pub start: GridPoint,
@@ -49,6 +49,18 @@ impl Segment {
     #[inline]
     pub fn is_axis_aligned(&self) -> bool {
         self.is_horizontal() || self.is_vertical()
+    }
+
+    #[inline]
+    pub fn is_diagonal_45(&self) -> bool {
+        let dx = (self.end.x - self.start.x).abs();
+        let dy = (self.end.y - self.start.y).abs();
+        dx > 0 && dx == dy
+    }
+
+    #[inline]
+    pub fn is_octant_aligned(&self) -> bool {
+        self.is_axis_aligned() || self.is_diagonal_45()
     }
 
     /// Return the same segment with endpoints in a stable order.
@@ -79,6 +91,13 @@ impl Segment {
     #[inline]
     pub fn manhattan_len(&self) -> i32 {
         (self.end.x - self.start.x).abs() + (self.end.y - self.start.y).abs()
+    }
+
+    #[inline]
+    pub fn step_len(&self) -> i32 {
+        (self.end.x - self.start.x)
+            .abs()
+            .max((self.end.y - self.start.y).abs())
     }
 }
 
@@ -265,6 +284,11 @@ impl SimpleRouteCandidate {
         self.segments().iter().all(Segment::is_axis_aligned)
     }
 
+    /// True when every segment follows a cardinal or 45-degree diagonal octant.
+    pub fn is_octant_aligned(&self) -> bool {
+        self.segments().iter().all(Segment::is_octant_aligned)
+    }
+
     /// True when two adjacent corner points are identical.
     pub fn has_duplicate_consecutive_points(&self) -> bool {
         self.points.windows(2).any(|pair| pair[0] == pair[1])
@@ -297,6 +321,46 @@ pub fn direction_between(a: GridPoint, b: GridPoint) -> Option<u8> {
     None
 }
 
+/// Return a cardinal or 45-degree diagonal heading in octant-angle format.
+pub fn direction_between_octant(a: GridPoint, b: GridPoint) -> Option<u8> {
+    if let Some(cardinal) = direction_between(a, b) {
+        return Some(cardinal);
+    }
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    if dx == 0 || dy == 0 || dx.abs() != dy.abs() {
+        return None;
+    }
+    match (dx.signum(), dy.signum()) {
+        (1, 1) => Some(1),
+        (-1, 1) => Some(3),
+        (-1, -1) => Some(5),
+        (1, -1) => Some(7),
+        _ => None,
+    }
+}
+
+#[inline]
+fn heading_vector(angle: u8) -> (i32, i32) {
+    match angle % 8 {
+        0 => (1, 0),
+        1 => (1, 1),
+        2 => (0, 1),
+        3 => (-1, 1),
+        4 => (-1, 0),
+        5 => (-1, -1),
+        6 => (0, -1),
+        7 => (1, -1),
+        _ => unreachable!(),
+    }
+}
+
+#[inline]
+fn offset_point(point: GridPoint, heading: u8, steps: i32) -> GridPoint {
+    let (dx, dy) = heading_vector(heading);
+    GridPoint::new(point.x + dx * steps, point.y + dy * steps)
+}
+
 /// Return true when heading is one of the Manhattan/cardinal octants.
 #[inline]
 pub fn is_cardinal_heading(angle: u8) -> bool {
@@ -314,6 +378,13 @@ pub fn opposite_heading(angle: u8) -> u8 {
 pub fn heading_delta_is_perpendicular(a: u8, b: u8) -> bool {
     let delta = (b as i16 - a as i16).rem_euclid(8) as u8;
     delta == 2 || delta == 6
+}
+
+/// Return true when two headings can be connected by one available 45/90 bend.
+#[inline]
+pub fn heading_delta_is_simple_bend(a: u8, b: u8) -> bool {
+    let delta = (b as i16 - a as i16).rem_euclid(8) as u8;
+    matches!(delta, 1 | 2 | 6 | 7)
 }
 
 /// Drop heading and keep only grid position.
@@ -811,34 +882,262 @@ pub fn try_straight_l_or_z_candidate_with_dynamic_expansion_config(
     try_straight_l_or_z_candidate_with_query(source, target, &query, opened_cells, z_config)
 }
 
-/// Placeholder for future 45-degree-aware simple routes.
-///
-/// The current simple-route implementations are strictly axis-aligned. When
-/// the primitive library allows 45-degree turns, callers should use this entry
-/// point instead of silently reusing cardinal L/Z candidates. It intentionally
-/// returns `None` for now so the router falls through to A* while preserving the
-/// extension point for diagonal-leg L/Z candidates.
+/// Try deterministic straight, L, then Z candidates using cardinal or diagonal
+/// octant segments. Each leg is a single octant; this intentionally does not
+/// split one logical leg into diagonal-plus-cardinal residual pieces yet.
 pub fn try_45_degree_straight_l_or_z_candidate_with_config(
-    _source: State,
-    _target: State,
-    _obstacle_map: &ObstacleMap,
-    _opened_cells: Option<&FxHashSet<CellKey>>,
-    _z_config: &SimpleZRouteConfig,
+    source: State,
+    target: State,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    z_config: &SimpleZRouteConfig,
 ) -> Option<SimpleRouteCandidate> {
+    try_45_degree_straight_l_or_z_candidate_with_query(
+        source,
+        target,
+        obstacle_map,
+        opened_cells,
+        z_config,
+    )
+}
+
+/// Dynamic-expansion variant of the 45-degree simple-route candidate builder.
+pub fn try_45_degree_straight_l_or_z_candidate_with_dynamic_expansion_config(
+    source: State,
+    target: State,
+    obstacle_map: &ObstacleMap,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    z_config: &SimpleZRouteConfig,
+    dynamic_expansion_radius_cells: i32,
+    clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<SimpleRouteCandidate> {
+    let query = ExpandedDynamicObstacleQuery::new(
+        obstacle_map,
+        dynamic_expansion_radius_cells,
+        clearance_exempt_cells,
+    );
+    try_45_degree_straight_l_or_z_candidate_with_query(
+        source,
+        target,
+        &query,
+        opened_cells,
+        z_config,
+    )
+}
+
+fn try_45_degree_straight_l_or_z_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    source: State,
+    target: State,
+    obstacle_query: &Q,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    z_config: &SimpleZRouteConfig,
+) -> Option<SimpleRouteCandidate> {
+    try_45_degree_straight_candidate_with_query(source, target, obstacle_query, opened_cells)
+        .or_else(|| {
+            try_45_degree_l_candidate_with_query(
+                source,
+                target,
+                obstacle_query,
+                opened_cells,
+                z_config.min_leg_len_cells,
+            )
+        })
+        .or_else(|| {
+            try_45_degree_z_candidate_with_query(
+                source,
+                target,
+                obstacle_query,
+                opened_cells,
+                z_config,
+            )
+        })
+}
+
+fn try_45_degree_straight_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    source: State,
+    target: State,
+    obstacle_query: &Q,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> Option<SimpleRouteCandidate> {
+    let source_heading = source.angle % 8;
+    let target_heading = target.angle % 8;
+    let source_point = grid_point_from_state(source);
+    let target_point = grid_point_from_state(target);
+    if source_point == target_point {
+        return None;
+    }
+    let route_heading = direction_between_octant(source_point, target_point)?;
+    if route_heading != source_heading || route_heading != target_heading {
+        return None;
+    }
+    let candidate =
+        SimpleRouteCandidate::new(SimpleRouteKind::Straight, vec![source_point, target_point]);
+    if check_simple_candidate_with_query(&candidate, obstacle_query, opened_cells) {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn try_45_degree_l_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    source: State,
+    target: State,
+    obstacle_query: &Q,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    min_leg_len_cells: i32,
+) -> Option<SimpleRouteCandidate> {
+    let source_heading = source.angle % 8;
+    let target_heading = target.angle % 8;
+    if !heading_delta_is_simple_bend(source_heading, target_heading) {
+        return None;
+    }
+    let source_point = grid_point_from_state(source);
+    let target_point = grid_point_from_state(target);
+    let (first_len, second_len) =
+        solve_two_heading_lengths(source_point, target_point, source_heading, target_heading)?;
+    let min_leg_len = min_leg_len_cells.max(1);
+    if first_len < min_leg_len || second_len < min_leg_len {
+        return None;
+    }
+    let bend = offset_point(source_point, source_heading, first_len);
+    let candidate = SimpleRouteCandidate::new(
+        SimpleRouteKind::LShape,
+        vec![source_point, bend, target_point],
+    );
+    if is_valid_octant_l_candidate(
+        &candidate,
+        source_heading,
+        target_heading,
+        min_leg_len,
+        obstacle_query,
+        opened_cells,
+    ) {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn try_45_degree_z_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
+    source: State,
+    target: State,
+    obstacle_query: &Q,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+    config: &SimpleZRouteConfig,
+) -> Option<SimpleRouteCandidate> {
+    let source_heading = source.angle % 8;
+    let target_heading = target.angle % 8;
+    if source_heading != target_heading {
+        return None;
+    }
+    let source_point = grid_point_from_state(source);
+    let target_point = grid_point_from_state(target);
+    if source_point == target_point {
+        return None;
+    }
+
+    let min_leg_len = config.min_leg_len_cells.max(1);
+    let offsets = compact_offset_order(config.max_offset_cells, config.include_zero_offset);
+    let distances = distances_from_offsets(min_leg_len, &offsets);
+    if distances.is_empty() {
+        return None;
+    }
+
+    for middle_heading in z_middle_headings(source_heading) {
+        let Some((forward_total, middle_len)) =
+            solve_two_heading_lengths(source_point, target_point, source_heading, middle_heading)
+        else {
+            continue;
+        };
+        if middle_len < 2 * min_leg_len || forward_total < 2 * min_leg_len {
+            continue;
+        }
+        let min_forward = min_leg_len;
+        let max_forward = forward_total - min_leg_len;
+        let middle_forward = min_forward + (max_forward - min_forward) / 2;
+        let mut first_lengths = Vec::new();
+        push_forward_lane(
+            &mut first_lengths,
+            0,
+            1,
+            middle_forward,
+            min_forward,
+            max_forward,
+        );
+        for distance in &distances {
+            push_forward_lane(
+                &mut first_lengths,
+                0,
+                1,
+                *distance,
+                min_forward,
+                max_forward,
+            );
+            push_forward_lane(
+                &mut first_lengths,
+                0,
+                1,
+                forward_total - *distance,
+                min_forward,
+                max_forward,
+            );
+        }
+        for first_len in first_lengths {
+            let second_forward_len = forward_total - first_len;
+            if second_forward_len < min_leg_len {
+                continue;
+            }
+            let p1 = offset_point(source_point, source_heading, first_len);
+            let p2 = offset_point(p1, middle_heading, middle_len);
+            let candidate = SimpleRouteCandidate::new(
+                SimpleRouteKind::ZShape,
+                vec![source_point, p1, p2, target_point],
+            );
+            if is_valid_octant_z_candidate(
+                &candidate,
+                source_heading,
+                target_heading,
+                min_leg_len,
+                obstacle_query,
+                opened_cells,
+            ) {
+                return Some(candidate);
+            }
+        }
+    }
+
     None
 }
 
-/// Dynamic-expansion variant of the 45-degree simple-route placeholder.
-pub fn try_45_degree_straight_l_or_z_candidate_with_dynamic_expansion_config(
-    _source: State,
-    _target: State,
-    _obstacle_map: &ObstacleMap,
-    _opened_cells: Option<&FxHashSet<CellKey>>,
-    _z_config: &SimpleZRouteConfig,
-    _dynamic_expansion_radius_cells: i32,
-    _clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-) -> Option<SimpleRouteCandidate> {
-    None
+fn z_middle_headings(source_heading: u8) -> [u8; 2] {
+    [(source_heading + 1) % 8, (source_heading + 7) % 8]
+}
+
+fn solve_two_heading_lengths(
+    source: GridPoint,
+    target: GridPoint,
+    first_heading: u8,
+    second_heading: u8,
+) -> Option<(i32, i32)> {
+    let (ax, ay) = heading_vector(first_heading);
+    let (bx, by) = heading_vector(second_heading);
+    let dx = target.x - source.x;
+    let dy = target.y - source.y;
+    let det = ax * by - ay * bx;
+    if det == 0 {
+        return None;
+    }
+    let first_num = dx * by - dy * bx;
+    let second_num = ax * dy - ay * dx;
+    if first_num % det != 0 || second_num % det != 0 {
+        return None;
+    }
+    let first_len = first_num / det;
+    let second_len = second_num / det;
+    if first_len <= 0 || second_len <= 0 {
+        return None;
+    }
+    Some((first_len, second_len))
 }
 
 fn try_straight_l_or_z_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
@@ -997,11 +1296,13 @@ fn expand_segment_points(segment: Segment) -> Option<Vec<GridPoint>> {
     let dx = segment.end.x - segment.start.x;
     let dy = segment.end.y - segment.start.y;
 
-    if dx != 0 && dy != 0 {
+    if dx != 0 && dy != 0 && dx.abs() != dy.abs() {
         return None;
     }
 
-    let (step_x, step_y, steps) = if dx != 0 {
+    let (step_x, step_y, steps) = if dx != 0 && dy != 0 {
+        (dx.signum(), dy.signum(), dx.abs())
+    } else if dx != 0 {
         (dx.signum(), 0, dx.abs())
     } else {
         (0, dy.signum(), dy.abs())
@@ -1128,6 +1429,99 @@ fn is_valid_l_candidate(
     check_simple_candidate_with_query(candidate, obstacle_query, opened_cells)
 }
 
+fn is_valid_octant_l_candidate(
+    candidate: &SimpleRouteCandidate,
+    source_heading: u8,
+    target_heading: u8,
+    min_leg_len: i32,
+    obstacle_query: &(impl SimpleRouteObstacleQuery + ?Sized),
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> bool {
+    if candidate.kind != SimpleRouteKind::LShape || candidate.points.len() != 3 {
+        return false;
+    }
+    if candidate.has_duplicate_consecutive_points() || !candidate.is_octant_aligned() {
+        return false;
+    }
+
+    let p0 = candidate.points[0];
+    let p1 = candidate.points[1];
+    let p2 = candidate.points[2];
+    let Some(h01) = direction_between_octant(p0, p1) else {
+        return false;
+    };
+    let Some(h12) = direction_between_octant(p1, p2) else {
+        return false;
+    };
+
+    if h01 != source_heading || h12 != target_heading {
+        return false;
+    }
+    if !heading_delta_is_simple_bend(h01, h12) {
+        return false;
+    }
+    if candidate
+        .segments()
+        .iter()
+        .any(|segment| segment.step_len() < min_leg_len)
+    {
+        return false;
+    }
+
+    check_simple_candidate_with_query(candidate, obstacle_query, opened_cells)
+}
+
+fn is_valid_octant_z_candidate(
+    candidate: &SimpleRouteCandidate,
+    source_heading: u8,
+    target_heading: u8,
+    min_leg_len: i32,
+    obstacle_query: &(impl SimpleRouteObstacleQuery + ?Sized),
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> bool {
+    if candidate.kind != SimpleRouteKind::ZShape || candidate.points.len() != 4 {
+        return false;
+    }
+    if candidate.has_duplicate_consecutive_points() || !candidate.is_octant_aligned() {
+        return false;
+    }
+
+    let p0 = candidate.points[0];
+    let p1 = candidate.points[1];
+    let p2 = candidate.points[2];
+    let p3 = candidate.points[3];
+    let Some(h01) = direction_between_octant(p0, p1) else {
+        return false;
+    };
+    let Some(h12) = direction_between_octant(p1, p2) else {
+        return false;
+    };
+    let Some(h23) = direction_between_octant(p2, p3) else {
+        return false;
+    };
+
+    if h01 != source_heading || h23 != target_heading || h01 != h23 {
+        return false;
+    }
+    if !heading_delta_is_simple_bend(h01, h12) || !heading_delta_is_simple_bend(h12, h23) {
+        return false;
+    }
+
+    let segments = candidate.segments();
+    for (idx, segment) in segments.iter().enumerate() {
+        let required_len = if idx == 1 {
+            2 * min_leg_len
+        } else {
+            min_leg_len
+        };
+        if segment.step_len() < required_len {
+            return false;
+        }
+    }
+
+    check_simple_candidate_with_query(candidate, obstacle_query, opened_cells)
+}
+
 fn turnaround_lanes(
     source_orthogonal: i32,
     target_orthogonal: i32,
@@ -1245,6 +1639,9 @@ mod tests {
         assert!(!seg.is_horizontal());
         assert!(!seg.is_vertical());
         assert!(!seg.is_axis_aligned());
+        assert!(seg.is_diagonal_45());
+        assert!(seg.is_octant_aligned());
+        assert_eq!(seg.step_len(), 1);
     }
 
     #[test]
@@ -1330,6 +1727,24 @@ mod tests {
     }
 
     #[test]
+    fn expand_diagonal_candidate() {
+        let candidate = SimpleRouteCandidate::new(
+            SimpleRouteKind::Straight,
+            vec![GridPoint::new(1, 1), GridPoint::new(4, 4)],
+        );
+        let expanded = expand_candidate_to_grid_points(&candidate);
+        assert_eq!(
+            expanded,
+            vec![
+                GridPoint::new(1, 1),
+                GridPoint::new(2, 2),
+                GridPoint::new(3, 3),
+                GridPoint::new(4, 4),
+            ]
+        );
+    }
+
+    #[test]
     fn candidate_validation_accepts_clear_straight_route() {
         let map = ObstacleMap::new(10, 10);
         let candidate = SimpleRouteCandidate::new(
@@ -1340,11 +1755,21 @@ mod tests {
     }
 
     #[test]
-    fn candidate_validation_rejects_diagonal_segment() {
+    fn candidate_validation_accepts_diagonal_segment() {
         let map = ObstacleMap::new(10, 10);
         let candidate = SimpleRouteCandidate::new(
             SimpleRouteKind::Straight,
             vec![GridPoint::new(1, 1), GridPoint::new(2, 2)],
+        );
+        assert!(check_simple_candidate(&candidate, &map, None));
+    }
+
+    #[test]
+    fn candidate_validation_rejects_non_octant_segment() {
+        let map = ObstacleMap::new(10, 10);
+        let candidate = SimpleRouteCandidate::new(
+            SimpleRouteKind::Straight,
+            vec![GridPoint::new(1, 1), GridPoint::new(3, 2)],
         );
         assert!(!check_simple_candidate(&candidate, &map, None));
     }
@@ -1552,6 +1977,152 @@ mod tests {
             try_straight_or_l_candidate(State::new(1, 1, 0), State::new(5, 1, 7), &map, None)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn forty_five_straight_candidate_succeeds_for_diagonal() {
+        let map = ObstacleMap::new(20, 20);
+        let cfg = SimpleZRouteConfig::default();
+        let candidate = try_45_degree_straight_l_or_z_candidate_with_config(
+            State::new(1, 1, 1),
+            State::new(5, 5, 1),
+            &map,
+            None,
+            &cfg,
+        )
+        .expect("diagonal straight should be valid");
+        assert_eq!(candidate.kind, SimpleRouteKind::Straight);
+        assert_eq!(
+            candidate.points,
+            vec![GridPoint::new(1, 1), GridPoint::new(5, 5)]
+        );
+    }
+
+    #[test]
+    fn forty_five_straight_candidate_rejects_wrong_heading() {
+        let map = ObstacleMap::new(20, 20);
+        let cfg = SimpleZRouteConfig::default();
+        assert!(try_45_degree_straight_l_or_z_candidate_with_config(
+            State::new(1, 1, 0),
+            State::new(5, 5, 1),
+            &map,
+            None,
+            &cfg,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn forty_five_straight_candidate_rejects_blocked_diagonal() {
+        let mut map = ObstacleMap::new(20, 20);
+        assert!(map.add_static_cell(3, 3));
+        let cfg = SimpleZRouteConfig::default();
+        assert!(try_45_degree_straight_l_or_z_candidate_with_config(
+            State::new(1, 1, 1),
+            State::new(5, 5, 1),
+            &map,
+            None,
+            &cfg,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn forty_five_l_candidate_uses_single_diagonal_leg() {
+        let map = ObstacleMap::new(20, 20);
+        let cfg = SimpleZRouteConfig::default();
+        let candidate = try_45_degree_straight_l_or_z_candidate_with_config(
+            State::new(1, 1, 0),
+            State::new(7, 4, 1),
+            &map,
+            None,
+            &cfg,
+        )
+        .expect("45-degree L should be valid");
+        assert_eq!(candidate.kind, SimpleRouteKind::LShape);
+        assert_eq!(
+            candidate.points,
+            vec![
+                GridPoint::new(1, 1),
+                GridPoint::new(4, 1),
+                GridPoint::new(7, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn forty_five_z_candidate_uses_single_diagonal_middle_leg() {
+        let map = ObstacleMap::new(20, 20);
+        let cfg = SimpleZRouteConfig {
+            max_offset_cells: 4,
+            include_zero_offset: true,
+            min_leg_len_cells: 1,
+        };
+        let candidate = try_45_degree_straight_l_or_z_candidate_with_config(
+            State::new(1, 1, 0),
+            State::new(9, 5, 0),
+            &map,
+            None,
+            &cfg,
+        )
+        .expect("45-degree Z should be valid");
+        assert_eq!(candidate.kind, SimpleRouteKind::ZShape);
+        assert_eq!(
+            candidate.points,
+            vec![
+                GridPoint::new(1, 1),
+                GridPoint::new(3, 1),
+                GridPoint::new(7, 5),
+                GridPoint::new(9, 5),
+            ]
+        );
+    }
+
+    #[test]
+    fn forty_five_z_candidate_avoids_blocked_middle_leg() {
+        let mut map = ObstacleMap::new(20, 20);
+        assert!(map.add_static_cell(5, 3));
+        let cfg = SimpleZRouteConfig {
+            max_offset_cells: 4,
+            include_zero_offset: true,
+            min_leg_len_cells: 1,
+        };
+        let candidate = try_45_degree_straight_l_or_z_candidate_with_config(
+            State::new(1, 1, 0),
+            State::new(9, 5, 0),
+            &map,
+            None,
+            &cfg,
+        )
+        .expect("alternative 45-degree Z should be valid");
+        assert_ne!(
+            candidate.points,
+            vec![
+                GridPoint::new(1, 1),
+                GridPoint::new(3, 1),
+                GridPoint::new(7, 5),
+                GridPoint::new(9, 5),
+            ]
+        );
+        assert!(check_simple_candidate(&candidate, &map, None));
+    }
+
+    #[test]
+    fn forty_five_z_candidate_rejects_cardinal_only_middle_leg() {
+        let map = ObstacleMap::new(20, 20);
+        let cfg = SimpleZRouteConfig {
+            max_offset_cells: 8,
+            include_zero_offset: true,
+            min_leg_len_cells: 1,
+        };
+        assert!(try_45_degree_straight_l_or_z_candidate_with_config(
+            State::new(1, 8, 0),
+            State::new(8, 1, 0),
+            &map,
+            None,
+            &cfg,
+        )
+        .is_none());
     }
 
     #[test]

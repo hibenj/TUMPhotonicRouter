@@ -13,12 +13,12 @@ use rustc_hash::FxHashSet;
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
 use crate::simple_routes::{
-    direction_between as simple_direction_between, expand_candidate_to_grid_points,
+    direction_between_octant as simple_direction_between, expand_candidate_to_grid_points,
     try_45_degree_straight_l_or_z_candidate_with_config,
     try_45_degree_straight_l_or_z_candidate_with_dynamic_expansion_config,
     try_straight_l_or_z_candidate_with_config,
-    try_straight_l_or_z_candidate_with_dynamic_expansion_config, GridPoint,
-    SimpleRouteCandidate, SimpleZRouteConfig,
+    try_straight_l_or_z_candidate_with_dynamic_expansion_config, GridPoint, SimpleRouteCandidate,
+    SimpleZRouteConfig,
 };
 
 /// Router search state: grid position plus 45-degree heading index.
@@ -2021,7 +2021,7 @@ fn simple_candidate_to_route_result(
         let a = candidate.points[i];
         let b = candidate.points[i + 1];
         headings.push(simple_direction_between(a, b)?);
-        segment_lengths.push((b.x - a.x).abs() + (b.y - a.y).abs());
+        segment_lengths.push((b.x - a.x).abs().max((b.y - a.y).abs()));
     }
 
     let bend_radius_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
@@ -2195,7 +2195,7 @@ fn decompose_straight_cells(
                 if primitive.end_angle != start_angle {
                     return None;
                 }
-                let cells = (primitive.dx.abs() + primitive.dy.abs()) as usize;
+                let cells = primitive.dx.abs().max(primitive.dy.abs()) as usize;
                 if cells == 0 {
                     return None;
                 }
@@ -2256,8 +2256,10 @@ fn decompose_straight_cells(
 fn turn_delta(from: u8, to: u8) -> Option<i8> {
     let delta = (to as i16 - from as i16).rem_euclid(8) as u8;
     match delta {
+        1 => Some(1),
         2 => Some(2),
         6 => Some(-2),
+        7 => Some(-1),
         _ => None,
     }
 }
@@ -3941,6 +3943,95 @@ mod tests {
         let centerline = route_to_primitive_centerline(&result, &library, &grid)
             .expect("primitive replay centerline should succeed");
         assert!(centerline.len() >= 2);
+    }
+
+    #[test]
+    fn simple_45_diagonal_straight_route_used_before_astar() {
+        let map = ObstacleMap::new(10, 10);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 1),
+            State::new(5, 5, 1),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("simple 45-degree straight route should exist");
+        assert_eq!(result.compressed_waypoints, vec![(1, 1), (5, 5)]);
+        assert_eq!(result.states.last().copied(), Some(State::new(5, 5, 1)));
+        assert_eq!(result.stats.expanded_states, 0);
+        assert!(!result.primitives.is_empty());
+    }
+
+    #[test]
+    fn simple_45_l_route_used_before_astar() {
+        let map = ObstacleMap::new(12, 8);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(7, 4, 1),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("simple 45-degree L route should exist");
+        assert_eq!(result.compressed_waypoints, vec![(1, 1), (4, 1), (7, 4)]);
+        assert_eq!(result.states.last().copied(), Some(State::new(7, 4, 1)));
+        assert_eq!(result.stats.expanded_states, 0);
+    }
+
+    #[test]
+    fn simple_45_z_route_used_before_astar() {
+        let map = ObstacleMap::new(14, 8);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(9, 5, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("simple 45-degree Z route should exist");
+        assert_eq!(
+            result.compressed_waypoints,
+            vec![(1, 1), (3, 1), (7, 5), (9, 5)]
+        );
+        assert_eq!(result.states.last().copied(), Some(State::new(9, 5, 0)));
+        assert_eq!(result.stats.expanded_states, 0);
+    }
+
+    #[test]
+    fn simple_45_z_route_can_use_alternative_lane_when_preferred_is_blocked() {
+        let mut map = ObstacleMap::new(14, 8);
+        map.add_static_cell(5, 3);
+        let result = route_single_net_with_config(
+            &map,
+            &primitive_library(),
+            State::new(1, 1, 0),
+            State::new(9, 5, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: true,
+                ..AStarConfig::default()
+            },
+        )
+        .expect("alternative simple 45-degree Z route should exist");
+        assert_eq!(result.stats.expanded_states, 0);
+        assert_eq!(result.states.last().copied(), Some(State::new(9, 5, 0)));
+        assert_ne!(
+            result.compressed_waypoints,
+            vec![(1, 1), (3, 1), (7, 5), (9, 5)]
+        );
+        assert!(!result.cells.iter().any(|&(x, y)| map.is_blocked(x, y)));
     }
 
     #[test]

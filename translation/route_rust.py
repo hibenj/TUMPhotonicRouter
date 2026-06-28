@@ -1372,6 +1372,30 @@ def route_nets_rust(
             half_width_cells=port_open_radius_cells,
         )
 
+    port_runway_length_cells = max(1, int(bend_radius_cells) + 1)
+    port_runway_half_width_cells = max(0, int(commit_radius_cells))
+
+    def build_port_runway_cells(port: Port) -> set[tuple[int, int]]:
+        state = port_to_grid_state(
+            port,
+            origin_x_um,
+            origin_y_um,
+            float(grid.grid_size_um),
+            as_target=False,
+        )
+        port_angle = _orientation_to_angle(port.orientation, flip=False)
+        sx, sy = _angle_to_step(port_angle)
+        cells = _collect_inflated_step_cells(
+            int(state.x),
+            int(state.y),
+            step_x=sx,
+            step_y=sy,
+            length_cells=port_runway_length_cells,
+            half_width_cells=port_runway_half_width_cells,
+        )
+        cells.add((int(state.x), int(state.y)))
+        return cells
+
     raw_blocked_obj: object
     if hasattr(obstacle_map, "raw_blocked_cells"):
         raw_blocked_obj = getattr(obstacle_map, "raw_blocked_cells")
@@ -1427,7 +1451,12 @@ def route_nets_rust(
         instance_name: str,
         port_name: str,
         port: Port,
-    ) -> tuple[set[tuple[int, int]], set[tuple[int, int]], str | None]:
+    ) -> tuple[
+        set[tuple[int, int]],
+        set[tuple[int, int]],
+        set[tuple[int, int]],
+        str | None,
+    ]:
         port_type = _port_type_name(port)
         component_name = _schematic_instance_component_name(schematic, instance_name)
         rule = (
@@ -1445,27 +1474,33 @@ def route_nets_rust(
                 access_length_um=rule.access_length_um,
                 access_width_um=rule.access_width_um,
             )
-            return cells, cells, rule.component_name_pattern
+            return cells, cells, set(), rule.component_name_pattern
 
         if port_type is not None and port_type != "optical":
-            return set(), set(), None
+            return set(), set(), set(), None
 
         candidate_cells = build_port_access_cells(port)
         base_open_cells = build_base_port_open_cells(port)
+        runway_cells = build_port_runway_cells(port)
         if route_clearance_um <= 0.0:
-            effective_cells = candidate_cells & base_open_cells
-            return effective_cells, candidate_cells, None
+            effective_cells = (candidate_cells & base_open_cells) | runway_cells
+            return effective_cells, candidate_cells | runway_cells, runway_cells, None
 
         clearance_access_cells = {
             cell for cell in candidate_cells
             if not _cell_in_raw_static(cell)
         }
-        effective_cells = clearance_access_cells | (candidate_cells & base_open_cells)
-        return effective_cells, candidate_cells, None
+        effective_cells = (
+            clearance_access_cells
+            | (candidate_cells & base_open_cells)
+            | runway_cells
+        )
+        return effective_cells, candidate_cells | runway_cells, runway_cells, None
 
     route_jobs: list[RouteJob] = []
     port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
+    port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_access_rule_by_spec: dict[str, str | None] = {}
     next_net_id = 1
     for net_name, bundle in nets.items():
@@ -1490,22 +1525,24 @@ def route_nets_rust(
             )
             next_net_id += 1
             if port1_spec not in port_access_cells_by_spec:
-                cells, candidate_cells, rule_name = build_keyed_port_access_cells(
+                cells, candidate_cells, runway_cells, rule_name = build_keyed_port_access_cells(
                     instance_name=inst1,
                     port_name=port1,
                     port=source_port,
                 )
                 port_access_cells_by_spec[port1_spec] = cells
                 port_access_candidate_cells_by_spec[port1_spec] = candidate_cells
+                port_runway_cells_by_spec[port1_spec] = runway_cells
                 port_access_rule_by_spec[port1_spec] = rule_name
             if port2_spec not in port_access_cells_by_spec:
-                cells, candidate_cells, rule_name = build_keyed_port_access_cells(
+                cells, candidate_cells, runway_cells, rule_name = build_keyed_port_access_cells(
                     instance_name=inst2,
                     port_name=port2,
                     port=target_port,
                 )
                 port_access_cells_by_spec[port2_spec] = cells
                 port_access_candidate_cells_by_spec[port2_spec] = candidate_cells
+                port_runway_cells_by_spec[port2_spec] = runway_cells
                 port_access_rule_by_spec[port2_spec] = rule_name
 
     def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
@@ -1560,6 +1597,12 @@ def route_nets_rust(
                 )
             lane_index += 1
 
+    port_runway_static_cells: set[tuple[int, int]] = set()
+    for cells in port_runway_cells_by_spec.values():
+        port_runway_static_cells.update(cells)
+    static_blocked_cells_before_port_reservations = set(raw_static_cells)
+    static_blocked_cells_before_port_reservations.update(port_runway_static_cells)
+
     blocked_static_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
     if hasattr(obstacle_map, "blocked_static_rects"):
         blocked_static_rects: list[tuple[int, int, int, int]] = []
@@ -1588,6 +1631,14 @@ def route_nets_rust(
         static_cells = set(static_blocked_cells_before_port_reservations)
         sorted_static_cells = sorted(static_cells)
         router.set_static_cells(sorted_static_cells)
+    if port_runway_static_cells:
+        if not hasattr(router, "add_static_cells"):
+            raise RuntimeError(
+                "The loaded photonic_router._rust extension does not expose "
+                "PyPhotonicRouter.add_static_cells. Rebuild it with "
+                "`maturin develop --release`."
+            )
+        router.add_static_cells(sorted(port_runway_static_cells))
     repair_config = ripup_reroute_config or RipupRerouteConfig()
     route_jobs_by_id = {job.net_id: job for job in route_jobs}
     route_order = [job.net_id for job in route_jobs]
@@ -1903,6 +1954,49 @@ def route_nets_rust(
         )
         blocker_ids = list(candidate_blockers or [])
         victim_ids = list(ripup_ids or [])
+        raw_dynamic_cells: set[tuple[int, int]] = set()
+        raw_dynamic_refcount_gt1_cells: set[tuple[int, int]] = set()
+        raw_core_cells: set[tuple[int, int]] = set()
+        raw_core_refcount_gt1_cells: set[tuple[int, int]] = set()
+        raw_net_route_cells: set[tuple[int, int]] = set()
+        if hasattr(router, "raw_dynamic_obstacle_cells"):
+            raw_dynamic_entries = [
+                (int(x), int(y), int(refs))
+                for x, y, refs in router.raw_dynamic_obstacle_cells()
+            ]
+            raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
+            raw_dynamic_refcount_gt1_cells = {
+                (x, y) for x, y, refs in raw_dynamic_entries if refs > 1
+            }
+        if hasattr(router, "raw_dynamic_core_cells"):
+            raw_core_entries = [
+                (int(x), int(y), int(refs))
+                for x, y, refs in router.raw_dynamic_core_cells()
+            ]
+            raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
+            raw_core_refcount_gt1_cells = {
+                (x, y) for x, y, refs in raw_core_entries if refs > 1
+            }
+        if hasattr(router, "all_net_route_cells"):
+            for _, cells in router.all_net_route_cells():
+                raw_net_route_cells.update(
+                    (int(cell[0]), int(cell[1])) for cell in cells
+                )
+        raw_dynamic_without_owner = raw_dynamic_cells - raw_net_route_cells
+        raw_net_route_without_dynamic = raw_net_route_cells - raw_dynamic_cells
+        raw_core_without_dynamic = raw_core_cells - raw_dynamic_cells
+        raw_dynamic_span_cells = {
+            (x, y)
+            for x, y in raw_dynamic_cells
+            if span_bbox_min_x <= x <= span_bbox_max_x
+            and span_bbox_min_y <= y <= span_bbox_max_y
+        }
+        raw_dynamic_without_owner_span_cells = {
+            (x, y)
+            for x, y in raw_dynamic_without_owner
+            if span_bbox_min_x <= x <= span_bbox_max_x
+            and span_bbox_min_y <= y <= span_bbox_max_y
+        }
         return {
             "source_state": [source_x, source_y, source_angle],
             "target_state": [target_x, target_y, target_angle],
@@ -1980,6 +2074,23 @@ def route_nets_rust(
                 else None
             ),
             "committed_dynamic_cells_before": len(dynamic_cells_before),
+            "raw_dynamic_obstacle_cells_before": len(raw_dynamic_cells),
+            "raw_dynamic_core_cells_before": len(raw_core_cells),
+            "raw_net_route_cells_before": len(raw_net_route_cells),
+            "raw_dynamic_refcount_gt1_count": len(raw_dynamic_refcount_gt1_cells),
+            "raw_dynamic_refcount_gt1_bbox": _cells_bbox(raw_dynamic_refcount_gt1_cells),
+            "raw_core_refcount_gt1_count": len(raw_core_refcount_gt1_cells),
+            "raw_dynamic_without_owner_count": len(raw_dynamic_without_owner),
+            "raw_dynamic_without_owner_bbox": _cells_bbox(raw_dynamic_without_owner),
+            "raw_dynamic_without_owner_sample": sorted(raw_dynamic_without_owner)[:12],
+            "raw_net_route_without_dynamic_count": len(raw_net_route_without_dynamic),
+            "raw_net_route_without_dynamic_bbox": _cells_bbox(raw_net_route_without_dynamic),
+            "raw_core_without_dynamic_count": len(raw_core_without_dynamic),
+            "span_raw_dynamic_cells": len(raw_dynamic_span_cells),
+            "span_raw_dynamic_without_owner_count": len(raw_dynamic_without_owner_span_cells),
+            "span_raw_dynamic_without_owner_bbox": _cells_bbox(
+                raw_dynamic_without_owner_span_cells
+            ),
             "candidate_blocker_count": len(blocker_ids),
             "candidate_blocker_net_ids": blocker_ids,
             "candidate_blocker_route_indices": [
@@ -2235,6 +2346,245 @@ def route_nets_rust(
         route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
         route_svgs.append(route_svg)
 
+    def _export_conflict_snapshot_svg(
+        job: RouteJob,
+        probe_route: Any,
+        blocker_ids: list[int],
+        *,
+        owner_lookup_radius_cells: int,
+    ) -> None:
+        should_export = (
+            debug_path is not None
+            and (debug_route_indices is None or job.route_index in debug_route_indices)
+        )
+        if not should_export:
+            return
+
+        probe_cell_list = [
+            (int(cell[0]), int(cell[1]))
+            for cell in (getattr(probe_route, "cells", None) or [])
+        ]
+        probe_cells = set(probe_cell_list)
+        blocker_cells_by_id = {
+            int(net_id): _route_cells_from_router(int(net_id))
+            for net_id in blocker_ids
+        }
+        blocker_cells: set[tuple[int, int]] = set()
+        for cells in blocker_cells_by_id.values():
+            blocker_cells.update(cells)
+        if not probe_cells and not blocker_cells:
+            return
+
+        lookup_cells = _inflate_cell_set(probe_cells, owner_lookup_radius_cells)
+        conflict_cells = lookup_cells & blocker_cells
+        context_cells = (_committed_dynamic_cells() - blocker_cells) & lookup_cells
+        source_state, target_state, _, _, _ = _states_and_openings(job)
+        source_terminal_cells = _one_bend_dynamic_clearance_exempt_cells(
+            anchor_cell=(int(source_state.x), int(source_state.y)),
+            anchor_angle=int(source_state.angle),
+            is_target=False,
+        )
+        target_terminal_cells = _one_bend_dynamic_clearance_exempt_cells(
+            anchor_cell=(int(target_state.x), int(target_state.y)),
+            anchor_angle=int(target_state.angle),
+            is_target=True,
+        )
+        blocker_in_source_terminal = blocker_cells & source_terminal_cells
+        blocker_in_target_terminal = blocker_cells & target_terminal_cells
+        conflict_in_source_terminal = conflict_cells & source_terminal_cells
+        conflict_in_target_terminal = conflict_cells & target_terminal_cells
+        source_runway_cells = port_runway_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
+        target_runway_cells = port_runway_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
+        blocker_in_source_runway = blocker_cells & source_runway_cells
+        blocker_in_target_runway = blocker_cells & target_runway_cells
+        conflict_in_source_runway = conflict_cells & source_runway_cells
+        conflict_in_target_runway = conflict_cells & target_runway_cells
+        all_cells = set(probe_cells)
+        all_cells.update(blocker_cells)
+        all_cells.update(conflict_cells)
+        all_cells.update(blocker_in_source_terminal)
+        all_cells.update(blocker_in_target_terminal)
+        all_cells.update(source_runway_cells)
+        all_cells.update(target_runway_cells)
+        source_cell = probe_cell_list[0] if probe_cell_list else None
+        target_cell = probe_cell_list[-1] if probe_cell_list else None
+        if source_cell is not None:
+            all_cells.add(source_cell)
+        if target_cell is not None:
+            all_cells.add(target_cell)
+
+        xs = [cell[0] for cell in all_cells]
+        ys = [cell[1] for cell in all_cells]
+        pad = max(8, int(owner_lookup_radius_cells) + 8)
+        min_x = max(0, min(xs) - pad)
+        max_x = min(int(grid.width) - 1, max(xs) + pad)
+        min_y = max(0, min(ys) - pad)
+        max_y = min(int(grid.height) - 1, max(ys) + pad)
+
+        cols = max_x - min_x + 1
+        rows = max_y - min_y + 1
+        cell_px = max(2, min(8, int(1600 / max(cols, rows, 1))))
+        margin_left = 18
+        margin_top = 82
+        legend_height = 70
+        width_px = margin_left * 2 + cols * cell_px
+        height_px = margin_top + rows * cell_px + legend_height
+
+        def rect(cell: tuple[int, int], color: str, opacity: float = 1.0) -> str:
+            x, y = cell
+            px = margin_left + (x - min_x) * cell_px
+            py = margin_top + (max_y - y) * cell_px
+            return (
+                f'<rect x="{px}" y="{py}" width="{cell_px}" height="{cell_px}" '
+                f'fill="{color}" opacity="{opacity:.3f}"/>'
+            )
+
+        def clipped(cells: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+            return [
+                cell
+                for cell in cells
+                if min_x <= cell[0] <= max_x and min_y <= cell[1] <= max_y
+            ]
+
+        def route_polyline(cells: set[tuple[int, int]], color: str, opacity: float) -> str:
+            ordered = [
+                (int(cell[0]), int(cell[1]))
+                for cell in probe_cell_list
+                if (int(cell[0]), int(cell[1])) in cells
+                and min_x <= int(cell[0]) <= max_x
+                and min_y <= int(cell[1]) <= max_y
+            ]
+            if len(ordered) < 2:
+                return ""
+            points = " ".join(
+                f"{margin_left + (x - min_x + 0.5) * cell_px:.1f},"
+                f"{margin_top + (max_y - y + 0.5) * cell_px:.1f}"
+                for x, y in ordered
+            )
+            stroke_width = max(1.5, cell_px * 0.7)
+            return (
+                f'<polyline points="{points}" fill="none" stroke="{color}" '
+                f'stroke-width="{stroke_width:.1f}" opacity="{opacity:.3f}" '
+                'stroke-linecap="round" stroke-linejoin="round"/>'
+            )
+
+        parts: list[str] = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            (
+                f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" '
+                f'height="{height_px}" viewBox="0 0 {width_px} {height_px}">'
+            ),
+            '<rect width="100%" height="100%" fill="#ffffff"/>',
+            (
+                f'<text x="{margin_left}" y="22" font-family="monospace" '
+                f'font-size="14" fill="#111827">'
+                f'{debug_prefix} {job.net_name}: probe route blocked by '
+                f'net-id {",".join(str(net_id) for net_id in blocker_ids)}</text>'
+            ),
+            (
+                f'<text x="{margin_left}" y="40" font-family="monospace" '
+                f'font-size="11" fill="#4b5563">grid bbox x={min_x}..{max_x}, '
+                f'y={min_y}..{max_y}; conflict_cells={len(conflict_cells)}</text>'
+            ),
+            (
+                f'<text x="{margin_left}" y="56" font-family="monospace" '
+                f'font-size="11" fill="#4b5563">blocker in one-bend port space: '
+                f'source={len(blocker_in_source_terminal)}, '
+                f'target={len(blocker_in_target_terminal)}</text>'
+            ),
+            (
+                f'<text x="{margin_left}" y="72" font-family="monospace" '
+                f'font-size="11" fill="#4b5563">conflict in one-bend port space: '
+                f'source={len(conflict_in_source_terminal)}, '
+                f'target={len(conflict_in_target_terminal)}</text>'
+            ),
+        ]
+
+        for cell in clipped(context_cells):
+            parts.append(rect(cell, "#9ca3af", 0.28))
+        for net_id, cells in blocker_cells_by_id.items():
+            color = "#dc2626" if net_id == blocker_ids[0] else "#f97316"
+            for cell in clipped(cells):
+                parts.append(rect(cell, color, 0.80))
+        for cell in clipped(probe_cells - conflict_cells):
+            parts.append(rect(cell, "#2563eb", 0.55))
+        for cell in clipped(conflict_cells):
+            parts.append(rect(cell, "#d946ef", 0.95))
+        parts.append(route_polyline(probe_cells, "#1d4ed8", 0.90))
+        if source_cell is not None:
+            parts.append(rect(source_cell, "#16a34a", 0.95))
+        if target_cell is not None:
+            parts.append(rect(target_cell, "#7c3aed", 0.95))
+
+        legend_y = margin_top + rows * cell_px + 24
+        legend_items = [
+            ("#2563eb", "probe route for failed net"),
+            ("#dc2626", "blocking victim net"),
+            ("#d946ef", "actual conflict cells"),
+            ("#9ca3af", "other dynamic cells in probe corridor"),
+            ("#16a34a", "source"),
+            ("#7c3aed", "target"),
+        ]
+        x = margin_left
+        for color, label in legend_items:
+            parts.append(
+                f'<rect x="{x}" y="{legend_y - 10}" width="12" height="12" '
+                f'fill="{color}" opacity="0.85"/>'
+            )
+            parts.append(
+                f'<text x="{x + 16}" y="{legend_y}" font-family="monospace" '
+                f'font-size="10" fill="#111827">{label}</text>'
+            )
+            x += 190
+            if x + 180 > width_px:
+                x = margin_left
+                legend_y += 18
+
+        parts.append("</svg>")
+
+        route_dir = debug_path / "routes"
+        _ensure_dir(route_dir)
+        route_svg = route_dir / f"{debug_prefix}_{job.net_name}_conflict.svg"
+        route_svg.write_text("\n".join(parts), encoding="utf-8")
+        route_svgs.append(route_svg)
+
+        conflict_txt = route_dir / f"{debug_prefix}_{job.net_name}_conflict.txt"
+        conflict_txt.write_text(
+            "\n".join(
+                [
+                    f"net_name={job.net_name}",
+                    f"route_index={job.route_index}",
+                    f"source={job.inst1},{job.port1}",
+                    f"target={job.inst2},{job.port2}",
+                    f"blocker_net_ids={blocker_ids}",
+                    f"bend_radius_cells={bend_radius_cells}",
+                    f"commit_radius_cells={commit_radius_cells}",
+                    f"owner_lookup_radius_cells={owner_lookup_radius_cells}",
+                    f"probe_cells={len(probe_cells)}",
+                    f"blocker_cells={len(blocker_cells)}",
+                    f"conflict_cells={len(conflict_cells)}",
+                    f"source_terminal_one_bend_cells={len(source_terminal_cells)}",
+                    f"target_terminal_one_bend_cells={len(target_terminal_cells)}",
+                    f"source_runway_cells={len(source_runway_cells)}",
+                    f"target_runway_cells={len(target_runway_cells)}",
+                    f"blocker_in_source_terminal={len(blocker_in_source_terminal)}",
+                    f"blocker_in_target_terminal={len(blocker_in_target_terminal)}",
+                    f"conflict_in_source_terminal={len(conflict_in_source_terminal)}",
+                    f"conflict_in_target_terminal={len(conflict_in_target_terminal)}",
+                    f"blocker_in_source_runway={len(blocker_in_source_runway)}",
+                    f"blocker_in_target_runway={len(blocker_in_target_runway)}",
+                    f"conflict_in_source_runway={len(conflict_in_source_runway)}",
+                    f"conflict_in_target_runway={len(conflict_in_target_runway)}",
+                    f"source_runway_sample={sorted(source_runway_cells)[:20]}",
+                    f"target_runway_sample={sorted(target_runway_cells)[:20]}",
+                    f"target_terminal_sample={sorted(target_terminal_cells)[:40]}",
+                    f"conflict_cell_sample={sorted(conflict_cells)[:40]}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
     def _route_engine_summary(route_obj: Any) -> str:
         expanded_states = int(getattr(route_obj, "expanded_states", 0))
         route_kind = "simple" if expanded_states == 0 else "astar"
@@ -2453,6 +2803,12 @@ def route_nets_rust(
         candidate_blockers = sorted(
             dict.fromkeys(candidate_blockers),
             key=lambda owner: route_jobs_by_id[owner].route_index,
+        )
+        _export_conflict_snapshot_svg(
+            job,
+            probe_route,
+            candidate_blockers,
+            owner_lookup_radius_cells=owner_lookup_radius_cells,
         )
         history_start = _timing_start()
         router.add_history_for_route(

@@ -217,6 +217,20 @@ impl ObstacleMap {
         self.dynamic_obstacles.keys().copied()
     }
 
+    /// Packed dynamic route obstacle cells with their reference counts.
+    pub fn dynamic_obstacle_entries(&self) -> impl Iterator<Item = (CellKey, u16)> + '_ {
+        self.dynamic_obstacles
+            .iter()
+            .map(|(&key, &refs)| (key, refs))
+    }
+
+    /// Packed dynamic route core cells with their reference counts.
+    pub fn dynamic_core_obstacle_entries(&self) -> impl Iterator<Item = (CellKey, u16)> + '_ {
+        self.dynamic_core_obstacles
+            .iter()
+            .map(|(&key, &refs)| (key, refs))
+    }
+
     /// Packed cell keys with accumulated rip-up history costs.
     pub fn history_entries(&self) -> impl Iterator<Item = (CellKey, u32)> + '_ {
         self.history_cost.iter().map(|(&key, &cost)| (key, cost))
@@ -470,6 +484,13 @@ impl ObstacleMap {
     /// Return the packed cells owned by `net_id`, if that net has a committed route.
     pub fn get_net_cells(&self, net_id: NetId) -> Option<&[CellKey]> {
         self.net_routes.get(&net_id).map(Vec::as_slice)
+    }
+
+    /// Return committed route cells grouped by net id.
+    pub fn net_route_entries(&self) -> impl Iterator<Item = (NetId, &[CellKey])> + '_ {
+        self.net_routes
+            .iter()
+            .map(|(&net_id, cells)| (net_id, cells.as_slice()))
     }
 
     /// Return the committed dynamic-route owner of a cell, if any.

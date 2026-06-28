@@ -2226,6 +2226,47 @@ impl PyPhotonicRouter {
             .unwrap_or_default()
     }
 
+    fn raw_dynamic_obstacle_cells(&self) -> Vec<(i32, i32, u16)> {
+        let mut cells: Vec<(i32, i32, u16)> = self
+            .obstacle_map
+            .dynamic_obstacle_entries()
+            .map(|(key, refs)| {
+                let (x, y) = unpack_xy(key);
+                (x, y, refs)
+            })
+            .collect();
+        cells.sort_unstable();
+        cells
+    }
+
+    fn raw_dynamic_core_cells(&self) -> Vec<(i32, i32, u16)> {
+        let mut cells: Vec<(i32, i32, u16)> = self
+            .obstacle_map
+            .dynamic_core_obstacle_entries()
+            .map(|(key, refs)| {
+                let (x, y) = unpack_xy(key);
+                (x, y, refs)
+            })
+            .collect();
+        cells.sort_unstable();
+        cells
+    }
+
+    fn all_net_route_cells(&self) -> Vec<(u64, Vec<(i32, i32)>)> {
+        let mut routes: Vec<(u64, Vec<(i32, i32)>)> = self
+            .obstacle_map
+            .net_route_entries()
+            .map(|(net_id, cells)| {
+                (
+                    net_id,
+                    cells.iter().copied().map(unpack_xy).collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        routes.sort_unstable_by_key(|(net_id, _)| *net_id);
+        routes
+    }
+
     fn commit_route_cells(&mut self, net_id: u64, cells: Vec<(i32, i32)>) -> bool {
         let committed = self.obstacle_map.commit_route(net_id, &cells);
         if committed {
@@ -2351,13 +2392,14 @@ impl PyPhotonicRouter {
         } else {
             &self.port_open_cells
         };
-        let cfg = astar_config_from_py(
+        let mut cfg = astar_config_from_py(
             &self.astar_cfg,
             &self.primitive_cfg,
             Some(true),
             Some(false),
             Some(0.0),
         )?;
+        cfg.require_terminal_straights = true;
         let _ = block_radius_cells;
         let mut static_only_obstacle_map = self.obstacle_map.clone();
         static_only_obstacle_map.clear_dynamic();
