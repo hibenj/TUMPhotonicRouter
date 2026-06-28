@@ -529,38 +529,37 @@ fn try_z_candidate_with_config_query<Q: SimpleRouteObstacleQuery + ?Sized>(
     let min_leg_len = config.min_leg_len_cells.max(0);
     let offsets = compact_offset_order(config.max_offset_cells, config.include_zero_offset);
     let distances = distances_from_offsets(min_leg_len, &offsets);
-    if distances.is_empty() {
+    if distances.is_empty() || offsets.is_empty() {
         return None;
     }
 
-    for distance in distances {
+    let lanes = z_middle_lanes(
+        source_point,
+        target_point,
+        source_heading,
+        &offsets,
+        &distances,
+        min_leg_len,
+    );
+
+    for lane in lanes {
         let candidate = if source_heading == 0 || source_heading == 4 {
-            let bend_x = if source_heading == 0 {
-                source_point.x + distance
-            } else {
-                source_point.x - distance
-            };
             SimpleRouteCandidate::new(
                 SimpleRouteKind::ZShape,
                 vec![
                     source_point,
-                    GridPoint::new(bend_x, source_point.y),
-                    GridPoint::new(bend_x, target_point.y),
+                    GridPoint::new(lane, source_point.y),
+                    GridPoint::new(lane, target_point.y),
                     target_point,
                 ],
             )
         } else {
-            let bend_y = if source_heading == 2 {
-                source_point.y + distance
-            } else {
-                source_point.y - distance
-            };
             SimpleRouteCandidate::new(
                 SimpleRouteKind::ZShape,
                 vec![
                     source_point,
-                    GridPoint::new(source_point.x, bend_y),
-                    GridPoint::new(target_point.x, bend_y),
+                    GridPoint::new(source_point.x, lane),
+                    GridPoint::new(target_point.x, lane),
                     target_point,
                 ],
             )
@@ -580,6 +579,79 @@ fn try_z_candidate_with_config_query<Q: SimpleRouteObstacleQuery + ?Sized>(
     }
 
     None
+}
+
+fn z_middle_lanes(
+    source_point: GridPoint,
+    target_point: GridPoint,
+    source_heading: u8,
+    offsets: &[i32],
+    distances: &[i32],
+    min_leg_len: i32,
+) -> Vec<i32> {
+    let min_forward = min_leg_len.max(0);
+    let (source_primary, target_primary, direction) = match source_heading {
+        0 => (source_point.x, target_point.x, 1),
+        2 => (source_point.y, target_point.y, 1),
+        4 => (source_point.x, target_point.x, -1),
+        6 => (source_point.y, target_point.y, -1),
+        _ => return Vec::new(),
+    };
+    let span = (target_primary - source_primary) * direction;
+    if span < 2 * min_forward {
+        return Vec::new();
+    }
+
+    let min_lane = min_forward;
+    let max_lane = span - min_forward;
+    let middle = min_lane + (max_lane - min_lane) / 2;
+    let mut lanes = Vec::new();
+
+    for &offset in offsets {
+        push_forward_lane(
+            &mut lanes,
+            source_primary,
+            direction,
+            middle + offset,
+            min_lane,
+            max_lane,
+        );
+    }
+
+    for &distance in distances {
+        push_forward_lane(
+            &mut lanes,
+            source_primary,
+            direction,
+            distance,
+            min_lane,
+            max_lane,
+        );
+        push_forward_lane(
+            &mut lanes,
+            source_primary,
+            direction,
+            span - distance,
+            min_lane,
+            max_lane,
+        );
+    }
+
+    lanes
+}
+
+fn push_forward_lane(
+    lanes: &mut Vec<i32>,
+    source_primary: i32,
+    direction: i32,
+    forward_distance: i32,
+    min_lane: i32,
+    max_lane: i32,
+) {
+    if forward_distance < min_lane || forward_distance > max_lane {
+        return;
+    }
+    push_unique(lanes, source_primary + direction * forward_distance);
 }
 
 /// Try constructing a deterministic four-bend route for same-heading ports
@@ -1036,11 +1108,6 @@ fn turnaround_lanes(
     let high = source_orthogonal.max(target_orthogonal);
     let mut lanes = Vec::new();
 
-    for &distance in distances {
-        push_unique(&mut lanes, high + distance);
-        push_unique(&mut lanes, low - distance);
-    }
-
     let min_separation = 2 * min_leg_len.max(0);
     if high - low >= 2 * min_separation {
         let middle = low + (high - low) / 2;
@@ -1049,6 +1116,11 @@ fn turnaround_lanes(
             push_unique(&mut lanes, middle + distance);
             push_unique(&mut lanes, middle - distance);
         }
+    }
+
+    for &distance in distances {
+        push_unique(&mut lanes, high + distance);
+        push_unique(&mut lanes, low - distance);
     }
 
     lanes
@@ -1482,8 +1554,8 @@ mod tests {
             candidate.points,
             vec![
                 GridPoint::new(1, 1),
-                GridPoint::new(2, 1),
-                GridPoint::new(2, 4),
+                GridPoint::new(3, 1),
+                GridPoint::new(3, 4),
                 GridPoint::new(5, 4),
             ]
         );
@@ -1500,8 +1572,8 @@ mod tests {
             candidate.points,
             vec![
                 GridPoint::new(5, 1),
-                GridPoint::new(4, 1),
-                GridPoint::new(4, 4),
+                GridPoint::new(3, 1),
+                GridPoint::new(3, 4),
                 GridPoint::new(1, 4),
             ]
         );
@@ -1518,8 +1590,8 @@ mod tests {
             candidate.points,
             vec![
                 GridPoint::new(1, 1),
-                GridPoint::new(1, 2),
-                GridPoint::new(4, 2),
+                GridPoint::new(1, 3),
+                GridPoint::new(4, 3),
                 GridPoint::new(4, 5),
             ]
         );
@@ -1536,8 +1608,8 @@ mod tests {
             candidate.points,
             vec![
                 GridPoint::new(1, 5),
-                GridPoint::new(1, 4),
-                GridPoint::new(4, 4),
+                GridPoint::new(1, 3),
+                GridPoint::new(4, 3),
                 GridPoint::new(4, 1),
             ]
         );
@@ -1575,24 +1647,46 @@ mod tests {
     }
 
     #[test]
-    fn z_candidate_avoids_blocked_first_candidate_and_uses_next_distance() {
-        let mut map = ObstacleMap::new(20, 20);
-        assert!(map.add_static_cell(2, 2));
+    fn z_candidate_uses_midpoint_lane_first() {
+        let map = ObstacleMap::new(20, 20);
         let cfg = SimpleZRouteConfig {
-            max_offset_cells: 2,
+            max_offset_cells: 4,
             include_zero_offset: true,
             min_leg_len_cells: 1,
         };
         let candidate =
-            try_z_candidate_with_config(State::new(1, 1, 0), State::new(5, 4, 0), &map, None, &cfg)
-                .expect("distance 2 should be selected after distance 1 is blocked");
+            try_z_candidate_with_config(State::new(1, 1, 0), State::new(9, 4, 0), &map, None, &cfg)
+                .expect("midpoint Z lane should be selected");
         assert_eq!(
             candidate.points,
             vec![
                 GridPoint::new(1, 1),
-                GridPoint::new(3, 1),
-                GridPoint::new(3, 4),
+                GridPoint::new(5, 1),
                 GridPoint::new(5, 4),
+                GridPoint::new(9, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn z_candidate_avoids_blocked_midpoint_lane_and_uses_next_offset() {
+        let mut map = ObstacleMap::new(20, 20);
+        assert!(map.add_static_cell(5, 2));
+        let cfg = SimpleZRouteConfig {
+            max_offset_cells: 4,
+            include_zero_offset: true,
+            min_leg_len_cells: 1,
+        };
+        let candidate =
+            try_z_candidate_with_config(State::new(1, 1, 0), State::new(9, 4, 0), &map, None, &cfg)
+                .expect("next midpoint offset should be selected after midpoint is blocked");
+        assert_eq!(
+            candidate.points,
+            vec![
+                GridPoint::new(1, 1),
+                GridPoint::new(6, 1),
+                GridPoint::new(6, 4),
+                GridPoint::new(9, 4),
             ]
         );
     }

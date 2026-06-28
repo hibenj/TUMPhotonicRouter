@@ -3699,7 +3699,7 @@ mod tests {
         .expect("simple Z route should exist");
         assert_eq!(
             result.compressed_waypoints,
-            vec![(1, 1), (2, 1), (2, 10), (10, 10)]
+            vec![(1, 1), (5, 1), (5, 10), (10, 10)]
         );
         assert_eq!(result.stats.expanded_states, 0);
     }

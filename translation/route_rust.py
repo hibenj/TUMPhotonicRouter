@@ -2388,14 +2388,24 @@ def route_nets_rust(
 
                 for old_id in ripup_ids:
                     reroute_job = route_jobs_by_id[old_id]
-                    rerouted_obj, _ = _route_and_commit(
-                        reroute_job,
-                        repair=True,
-                        timing_bucket="reroute_victims",
-                        repair_round=round_idx,
-                        candidate_blockers=candidate_blockers,
-                        ripup_ids=ripup_ids,
-                    )
+                    try:
+                        rerouted_obj, _ = _route_and_commit(
+                            reroute_job,
+                            repair=False,
+                            timing_bucket="reroute_victims",
+                            repair_round=round_idx,
+                            candidate_blockers=candidate_blockers,
+                            ripup_ids=ripup_ids,
+                        )
+                    except RuntimeError:
+                        rerouted_obj, _ = _route_and_commit(
+                            reroute_job,
+                            repair=True,
+                            timing_bucket="reroute_victims",
+                            repair_round=round_idx,
+                            candidate_blockers=candidate_blockers,
+                            ripup_ids=ripup_ids,
+                        )
                     total_expanded_states += int(getattr(rerouted_obj, "expanded_states", 0))
                     if int(getattr(rerouted_obj, "expanded_states", 0)) == 0:
                         simple_route_count += 1
