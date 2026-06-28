@@ -146,6 +146,52 @@ def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
     assert route_opened_static_count == 0
 
 
+def test_rust_port_opening_batch_filters_raw_static_rects():
+    rust_backend = route_rust._load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend is not available")
+
+    grid = rust_backend.GridSpec(30, 20, 1.0, 0.0, 0.0)
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=2,
+        allow_45_degree_turns=False,
+    )
+    router = rust_backend.PyPhotonicRouter(
+        grid,
+        primitive_cfg,
+        rust_backend.AStarConfig(max_iterations=100),
+    )
+
+    result = router.build_route_port_openings(
+        [
+            ("optical", 2.0, 10.0, 0.0, "optical", None, None),
+            ("electrical", 2.0, 14.0, 0.0, "electrical", None, None),
+        ],
+        raw_static_cells=[],
+        raw_static_rects=[(5, 8, 8, 12)],
+        route_clearance_um=3.0,
+        port_open_radius_um=1.0,
+        bend_radius_cells=2,
+        commit_radius_cells=1,
+        port_entry_length_cells=4,
+        port_entry_half_width_cells=2,
+        port_lane_length_cells=6,
+        port_lane_half_width_cells=1,
+    )
+
+    by_spec = {
+        spec: (set(cells), set(candidates), set(runway))
+        for spec, cells, candidates, runway in result
+    }
+    effective, candidates, runway = by_spec["optical"]
+    assert (5, 10) in candidates
+    assert (5, 10) in runway
+    assert (5, 10) not in effective
+    assert (3, 10) in effective
+    assert by_spec["electrical"] == (set(), set(), set())
+
+
 def test_route_nets_rust_applies_heater_opening_only_to_connected_endpoint(
     monkeypatch,
     tmp_path,

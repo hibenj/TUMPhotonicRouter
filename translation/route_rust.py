@@ -1292,114 +1292,6 @@ def route_nets_rust(
         getattr(resolved_obstacle_config, "port_open_radius_um", 0.5),
         0.5,
     )
-    port_open_radius_cells = max(
-        0,
-        math.ceil(port_open_radius_um / float(grid.grid_size_um)),
-    )
-
-    def build_port_access_cells(
-        port: Port,
-        *,
-        access_length_um: float | None = None,
-        access_width_um: float | None = None,
-    ) -> set[tuple[int, int]]:
-        state = port_to_grid_state(
-            port,
-            origin_x_um,
-            origin_y_um,
-            float(grid.grid_size_um),
-            as_target=False,
-        )
-        port_angle = _orientation_to_angle(port.orientation, flip=False)
-        sx, sy = _angle_to_step(port_angle)
-        base_x = int(state.x)
-        base_y = int(state.y)
-        if access_length_um is not None or access_width_um is not None:
-            length_cells = max(
-                1,
-                math.ceil(
-                    max(0.0, _as_float(access_length_um, 0.0))
-                    / float(grid.grid_size_um),
-                ),
-            )
-            half_width_cells = max(
-                0,
-                math.ceil(
-                    (max(0.0, _as_float(access_width_um, 0.0)) / 2.0)
-                    / float(grid.grid_size_um),
-                ),
-            )
-            cells = _collect_inflated_step_cells(
-                base_x,
-                base_y,
-                step_x=sx,
-                step_y=sy,
-                length_cells=length_cells,
-                half_width_cells=half_width_cells,
-            )
-            cells.add((int(state.x), int(state.y)))
-            return cells
-
-        entry_zone = _collect_inflated_step_cells(
-            base_x,
-            base_y,
-            step_x=sx,
-            step_y=sy,
-            length_cells=port_entry_length_cells,
-            half_width_cells=port_entry_half_width_cells,
-        )
-        lane_zone = _collect_inflated_step_cells(
-            base_x,
-            base_y,
-            step_x=sx,
-            step_y=sy,
-            length_cells=port_lane_length_cells,
-            half_width_cells=port_lane_half_width_cells,
-        )
-        cells = entry_zone | lane_zone
-        cells.add((int(state.x), int(state.y)))
-        return cells
-
-    def build_base_port_open_cells(port: Port) -> set[tuple[int, int]]:
-        center = getattr(port, "center", None)
-        if center is None:
-            center = getattr(port, "dcenter", None)
-        if center is None:
-            return set()
-        base_x = int((float(center[0]) - origin_x_um) // float(grid.grid_size_um))
-        base_y = int((float(center[1]) - origin_y_um) // float(grid.grid_size_um))
-        return _collect_inflated_step_cells(
-            base_x,
-            base_y,
-            step_x=0,
-            step_y=0,
-            length_cells=1,
-            half_width_cells=port_open_radius_cells,
-        )
-
-    port_runway_length_cells = max(1, int(bend_radius_cells) + 1)
-    port_runway_half_width_cells = max(0, int(commit_radius_cells))
-
-    def build_port_runway_cells(port: Port) -> set[tuple[int, int]]:
-        state = port_to_grid_state(
-            port,
-            origin_x_um,
-            origin_y_um,
-            float(grid.grid_size_um),
-            as_target=False,
-        )
-        port_angle = _orientation_to_angle(port.orientation, flip=False)
-        sx, sy = _angle_to_step(port_angle)
-        cells = _collect_inflated_step_cells(
-            int(state.x),
-            int(state.y),
-            step_x=sx,
-            step_y=sy,
-            length_cells=port_runway_length_cells,
-            half_width_cells=port_runway_half_width_cells,
-        )
-        cells.add((int(state.x), int(state.y)))
-        return cells
 
     raw_blocked_obj: object
     if hasattr(obstacle_map, "raw_blocked_cells"):
@@ -1419,28 +1311,36 @@ def route_nets_rust(
                 raw_static_rects_for_openings.append(
                     (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
                 )
-    raw_static_rect_ranges_by_y: dict[int, list[tuple[int, int]]] = {}
     grid_width = int(grid.width)
     grid_height = int(grid.height)
-    for rect_min_x, rect_min_y, rect_max_x, rect_max_y in raw_static_rects_for_openings:
-        min_x = max(0, rect_min_x)
-        max_x = min(grid_width - 1, rect_max_x)
-        min_y = max(0, rect_min_y)
-        max_y = min(grid_height - 1, rect_max_y)
-        if min_x > max_x or min_y > max_y:
-            continue
-        for y in range(min_y, max_y + 1):
-            raw_static_rect_ranges_by_y.setdefault(y, []).append((min_x, max_x))
-    for y, ranges in list(raw_static_rect_ranges_by_y.items()):
-        ranges.sort()
-        merged_ranges: list[tuple[int, int]] = []
-        for min_x, max_x in ranges:
-            if not merged_ranges or min_x > merged_ranges[-1][1] + 1:
-                merged_ranges.append((min_x, max_x))
-            else:
-                prev_min_x, prev_max_x = merged_ranges[-1]
-                merged_ranges[-1] = (prev_min_x, max(prev_max_x, max_x))
-        raw_static_rect_ranges_by_y[y] = merged_ranges
+    raw_static_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
+
+    def _raw_static_rect_ranges_by_y() -> dict[int, list[tuple[int, int]]]:
+        nonlocal raw_static_rect_ranges_by_y
+        if raw_static_rect_ranges_by_y is not None:
+            return raw_static_rect_ranges_by_y
+        ranges_by_y: dict[int, list[tuple[int, int]]] = {}
+        for rect_min_x, rect_min_y, rect_max_x, rect_max_y in raw_static_rects_for_openings:
+            min_x = max(0, rect_min_x)
+            max_x = min(grid_width - 1, rect_max_x)
+            min_y = max(0, rect_min_y)
+            max_y = min(grid_height - 1, rect_max_y)
+            if min_x > max_x or min_y > max_y:
+                continue
+            for y in range(min_y, max_y + 1):
+                ranges_by_y.setdefault(y, []).append((min_x, max_x))
+        for y, ranges in list(ranges_by_y.items()):
+            ranges.sort()
+            merged_ranges: list[tuple[int, int]] = []
+            for min_x, max_x in ranges:
+                if not merged_ranges or min_x > merged_ranges[-1][1] + 1:
+                    merged_ranges.append((min_x, max_x))
+                else:
+                    prev_min_x, prev_max_x = merged_ranges[-1]
+                    merged_ranges[-1] = (prev_min_x, max(prev_max_x, max_x))
+            ranges_by_y[y] = merged_ranges
+        raw_static_rect_ranges_by_y = ranges_by_y
+        return ranges_by_y
 
     def _cell_in_raw_static(cell: tuple[int, int]) -> bool:
         if cell in raw_static_cells:
@@ -1448,7 +1348,7 @@ def route_nets_rust(
         x, y = cell
         return any(
             rect_min_x <= x <= rect_max_x
-            for rect_min_x, rect_max_x in raw_static_rect_ranges_by_y.get(y, ())
+            for rect_min_x, rect_max_x in _raw_static_rect_ranges_by_y().get(y, ())
         )
 
     def _cells_in_raw_static_geometry(
@@ -1456,17 +1356,12 @@ def route_nets_rust(
     ) -> set[tuple[int, int]]:
         return {cell for cell in cells if _cell_in_raw_static(cell)}
 
-    def build_keyed_port_access_cells(
+    def _keyed_port_access_rule(
         *,
         instance_name: str,
         port_name: str,
         port: Port,
-    ) -> tuple[
-        set[tuple[int, int]],
-        set[tuple[int, int]],
-        set[tuple[int, int]],
-        str | None,
-    ]:
+    ) -> tuple[float | None, float | None, str | None]:
         port_type = _port_type_name(port)
         component_name = _schematic_instance_component_name(schematic, instance_name)
         rule = (
@@ -1479,36 +1374,16 @@ def route_nets_rust(
             else None
         )
         if rule is not None:
-            cells = build_port_access_cells(
-                port,
-                access_length_um=rule.access_length_um,
-                access_width_um=rule.access_width_um,
+            return (
+                float(rule.access_length_um),
+                float(rule.access_width_um),
+                rule.component_name_pattern,
             )
-            return cells, cells, set(), rule.component_name_pattern
 
-        if port_type is not None and port_type != "optical":
-            return set(), set(), set(), None
-
-        candidate_cells = build_port_access_cells(port)
-        base_open_cells = build_base_port_open_cells(port)
-        runway_cells = build_port_runway_cells(port)
-        runway_open_cells = {cell for cell in runway_cells if not _cell_in_raw_static(cell)}
-        if route_clearance_um <= 0.0:
-            effective_cells = (candidate_cells & base_open_cells) | runway_open_cells
-            return effective_cells, candidate_cells | runway_cells, runway_cells, None
-
-        clearance_access_cells = {
-            cell for cell in candidate_cells
-            if not _cell_in_raw_static(cell)
-        }
-        effective_cells = (
-            clearance_access_cells
-            | (candidate_cells & base_open_cells)
-            | runway_open_cells
-        )
-        return effective_cells, candidate_cells | runway_cells, runway_cells, None
+        return None, None, None
 
     route_jobs: list[RouteJob] = []
+    endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = {}
     port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
@@ -1535,26 +1410,69 @@ def route_nets_rust(
                 )
             )
             next_net_id += 1
-            if port1_spec not in port_access_cells_by_spec:
-                cells, candidate_cells, runway_cells, rule_name = build_keyed_port_access_cells(
-                    instance_name=inst1,
-                    port_name=port1,
-                    port=source_port,
-                )
-                port_access_cells_by_spec[port1_spec] = cells
-                port_access_candidate_cells_by_spec[port1_spec] = candidate_cells
-                port_runway_cells_by_spec[port1_spec] = runway_cells
-                port_access_rule_by_spec[port1_spec] = rule_name
-            if port2_spec not in port_access_cells_by_spec:
-                cells, candidate_cells, runway_cells, rule_name = build_keyed_port_access_cells(
-                    instance_name=inst2,
-                    port_name=port2,
-                    port=target_port,
-                )
-                port_access_cells_by_spec[port2_spec] = cells
-                port_access_candidate_cells_by_spec[port2_spec] = candidate_cells
-                port_runway_cells_by_spec[port2_spec] = runway_cells
-                port_access_rule_by_spec[port2_spec] = rule_name
+            endpoint_ports_by_spec.setdefault(port1_spec, (inst1, port1, source_port))
+            endpoint_ports_by_spec.setdefault(port2_spec, (inst2, port2, target_port))
+
+    if not hasattr(router, "build_route_port_openings"):
+        extension_path = getattr(rust_backend, "__file__", "<unknown>")
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.build_route_port_openings. Rebuild it with "
+            "`maturin develop --release`. "
+            f"Loaded extension: {extension_path}"
+        )
+
+    port_opening_inputs: list[
+        tuple[str, float, float, float | None, str | None, float | None, float | None]
+    ] = []
+    for port_spec, (instance_name, port_name, port) in endpoint_ports_by_spec.items():
+        center = _port_center_um(port)
+        if center is None:
+            raise ValueError(f"Port {port_spec!r} has no finite center coordinate")
+        orientation_value = getattr(port, "orientation", None)
+        orientation = None if orientation_value is None else float(orientation_value)
+        port_type = _port_type_name(port)
+        access_length_um, access_width_um, rule_name = _keyed_port_access_rule(
+            instance_name=instance_name,
+            port_name=port_name,
+            port=port,
+        )
+        port_access_rule_by_spec[port_spec] = rule_name
+        port_opening_inputs.append(
+            (
+                port_spec,
+                float(center[0]),
+                float(center[1]),
+                orientation,
+                port_type,
+                access_length_um,
+                access_width_um,
+            )
+        )
+
+    raw_static_cells_for_openings = sorted(raw_static_cells)
+    for port_spec, cells, candidate_cells, runway_cells in router.build_route_port_openings(
+        port_opening_inputs,
+        raw_static_cells=raw_static_cells_for_openings,
+        raw_static_rects=raw_static_rects_for_openings,
+        route_clearance_um=float(route_clearance_um),
+        port_open_radius_um=float(port_open_radius_um),
+        bend_radius_cells=int(bend_radius_cells),
+        commit_radius_cells=int(commit_radius_cells),
+        port_entry_length_cells=int(port_entry_length_cells),
+        port_entry_half_width_cells=int(port_entry_half_width_cells),
+        port_lane_length_cells=int(port_lane_length_cells),
+        port_lane_half_width_cells=int(port_lane_half_width_cells),
+    ):
+        port_access_cells_by_spec[str(port_spec)] = {
+            (int(cell[0]), int(cell[1])) for cell in cells
+        }
+        port_access_candidate_cells_by_spec[str(port_spec)] = {
+            (int(cell[0]), int(cell[1])) for cell in candidate_cells
+        }
+        port_runway_cells_by_spec[str(port_spec)] = {
+            (int(cell[0]), int(cell[1])) for cell in runway_cells
+        }
 
     def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
         return port_to_grid_state(

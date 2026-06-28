@@ -55,7 +55,7 @@ use crate::primitives::{
     create_photonic_primitive_library, Primitive, PrimitiveLibrary, PrimitiveLibraryConfig,
 };
 use crate::static_obstacle_builder::{
-    rasterize_polygon, PortInput, PyStaticCellSet, StaticGridSpec,
+    physical_to_grid, rasterize_polygon, PortInput, PyStaticCellSet, StaticGridSpec,
 };
 
 #[pyclass(name = "GridSpec")]
@@ -521,6 +521,190 @@ struct NativeEndpointCorrection {
 
 fn pack_cells(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
     cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect()
+}
+
+fn route_orientation_to_angle(orientation: Option<f64>) -> u8 {
+    let value = orientation.unwrap_or(0.0).rem_euclid(360.0);
+    (value / 45.0).round().rem_euclid(8.0) as u8
+}
+
+fn route_angle_to_step(angle: u8) -> (i32, i32) {
+    match angle % 8 {
+        0 => (1, 0),
+        1 => (1, 1),
+        2 => (0, 1),
+        3 => (-1, 1),
+        4 => (-1, 0),
+        5 => (-1, -1),
+        6 => (0, -1),
+        _ => (1, -1),
+    }
+}
+
+fn route_in_bounds(x: i32, y: i32, grid: &StaticGridSpec) -> bool {
+    x >= 0 && x < grid.width && y >= 0 && y < grid.height
+}
+
+fn route_collect_inflated_step_cells(
+    grid: &StaticGridSpec,
+    base_x: i32,
+    base_y: i32,
+    step_x: i32,
+    step_y: i32,
+    length_cells: i32,
+    half_width_cells: i32,
+) -> FxHashSet<CellKey> {
+    let mut cells = FxHashSet::default();
+    let length = length_cells.max(0);
+    let half_width = half_width_cells.max(0);
+    for step_idx in 0..length {
+        let cx = base_x + step_x * step_idx;
+        let cy = base_y + step_y * step_idx;
+        if !route_in_bounds(cx, cy, grid) {
+            continue;
+        }
+        for dx in -half_width..=half_width {
+            for dy in -half_width..=half_width {
+                let nx = cx + dx;
+                let ny = cy + dy;
+                if route_in_bounds(nx, ny, grid) {
+                    cells.insert(pack_xy(nx, ny));
+                }
+            }
+        }
+    }
+    cells
+}
+
+fn route_port_state_cell(
+    grid: &StaticGridSpec,
+    x_um: f64,
+    y_um: f64,
+    orientation: Option<f64>,
+) -> (i32, i32) {
+    let angle = route_orientation_to_angle(orientation);
+    let (sx, sy) = route_angle_to_step(angle);
+    physical_to_grid(
+        x_um + sx as f64 * grid.grid_size_um,
+        y_um + sy as f64 * grid.grid_size_um,
+        grid,
+    )
+}
+
+fn route_port_access_cells(
+    grid: &StaticGridSpec,
+    x_um: f64,
+    y_um: f64,
+    orientation: Option<f64>,
+    access_length_um: Option<f64>,
+    access_width_um: Option<f64>,
+    port_entry_length_cells: i32,
+    port_entry_half_width_cells: i32,
+    port_lane_length_cells: i32,
+    port_lane_half_width_cells: i32,
+) -> FxHashSet<CellKey> {
+    let angle = route_orientation_to_angle(orientation);
+    let (sx, sy) = route_angle_to_step(angle);
+    let (base_x, base_y) = route_port_state_cell(grid, x_um, y_um, orientation);
+    let mut cells = if access_length_um.is_some() || access_width_um.is_some() {
+        let length_cells = ((access_length_um.unwrap_or(0.0).max(0.0)) / grid.grid_size_um)
+            .ceil()
+            .max(1.0) as i32;
+        let half_width_cells = (((access_width_um.unwrap_or(0.0).max(0.0)) / 2.0)
+            / grid.grid_size_um)
+            .ceil()
+            .max(0.0) as i32;
+        route_collect_inflated_step_cells(
+            grid,
+            base_x,
+            base_y,
+            sx,
+            sy,
+            length_cells,
+            half_width_cells,
+        )
+    } else {
+        let mut entry_zone = route_collect_inflated_step_cells(
+            grid,
+            base_x,
+            base_y,
+            sx,
+            sy,
+            port_entry_length_cells,
+            port_entry_half_width_cells,
+        );
+        let lane_zone = route_collect_inflated_step_cells(
+            grid,
+            base_x,
+            base_y,
+            sx,
+            sy,
+            port_lane_length_cells,
+            port_lane_half_width_cells,
+        );
+        entry_zone.extend(lane_zone);
+        entry_zone
+    };
+    if route_in_bounds(base_x, base_y, grid) {
+        cells.insert(pack_xy(base_x, base_y));
+    }
+    cells
+}
+
+fn route_base_port_open_cells(
+    grid: &StaticGridSpec,
+    x_um: f64,
+    y_um: f64,
+    port_open_radius_cells: i32,
+) -> FxHashSet<CellKey> {
+    let (base_x, base_y) = physical_to_grid(x_um, y_um, grid);
+    route_collect_inflated_step_cells(grid, base_x, base_y, 0, 0, 1, port_open_radius_cells)
+}
+
+fn route_port_runway_cells(
+    grid: &StaticGridSpec,
+    x_um: f64,
+    y_um: f64,
+    orientation: Option<f64>,
+    length_cells: i32,
+    half_width_cells: i32,
+) -> FxHashSet<CellKey> {
+    let angle = route_orientation_to_angle(orientation);
+    let (sx, sy) = route_angle_to_step(angle);
+    let (base_x, base_y) = route_port_state_cell(grid, x_um, y_um, orientation);
+    let mut cells = route_collect_inflated_step_cells(
+        grid,
+        base_x,
+        base_y,
+        sx,
+        sy,
+        length_cells,
+        half_width_cells,
+    );
+    if route_in_bounds(base_x, base_y, grid) {
+        cells.insert(pack_xy(base_x, base_y));
+    }
+    cells
+}
+
+fn route_cell_in_raw_static(
+    key: CellKey,
+    raw_static_keys: &FxHashSet<CellKey>,
+    raw_static_rects: &[(i32, i32, i32, i32)],
+) -> bool {
+    if raw_static_keys.contains(&key) {
+        return true;
+    }
+    let (x, y) = unpack_xy(key);
+    raw_static_rects
+        .iter()
+        .any(|(x0, y0, x1, y1)| x >= *x0 && x <= *x1 && y >= *y0 && y <= *y1)
+}
+
+fn sorted_cells(cells: FxHashSet<CellKey>) -> Vec<(i32, i32)> {
+    let mut out: Vec<(i32, i32)> = cells.into_iter().map(unpack_xy).collect();
+    out.sort_unstable();
+    out
 }
 
 fn collect_meander_route_cell_sets(
@@ -2639,6 +2823,140 @@ impl PyPhotonicRouter {
         self.obstacle_map.set_static_rects(&obstacle_rects);
         self.invalidate_meander_base_prefix();
     }
+
+    #[pyo3(signature=(
+        ports,
+        raw_static_cells=None,
+        raw_static_rects=None,
+        route_clearance_um=0.0,
+        port_open_radius_um=0.5,
+        bend_radius_cells=2,
+        commit_radius_cells=0,
+        port_entry_length_cells=4,
+        port_entry_half_width_cells=1,
+        port_lane_length_cells=6,
+        port_lane_half_width_cells=1
+    ))]
+    fn build_route_port_openings(
+        &self,
+        ports: Vec<(
+            String,
+            f64,
+            f64,
+            Option<f64>,
+            Option<String>,
+            Option<f64>,
+            Option<f64>,
+        )>,
+        raw_static_cells: Option<Vec<(i32, i32)>>,
+        raw_static_rects: Option<Vec<(i32, i32, i32, i32)>>,
+        route_clearance_um: f64,
+        port_open_radius_um: f64,
+        bend_radius_cells: i32,
+        commit_radius_cells: i32,
+        port_entry_length_cells: i32,
+        port_entry_half_width_cells: i32,
+        port_lane_length_cells: i32,
+        port_lane_half_width_cells: i32,
+    ) -> Vec<(String, Vec<(i32, i32)>, Vec<(i32, i32)>, Vec<(i32, i32)>)> {
+        let grid = StaticGridSpec {
+            width: self.grid.width as i32,
+            height: self.grid.height as i32,
+            grid_size_um: self.grid.grid_size_um,
+            origin: (self.grid.origin_x_um, self.grid.origin_y_um),
+            die_bbox: (0.0, 0.0, 0.0, 0.0),
+        };
+        let raw_static_keys: FxHashSet<CellKey> = raw_static_cells
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(x, y)| pack_xy(x, y))
+            .collect();
+        let raw_rects: Vec<(i32, i32, i32, i32)> = raw_static_rects
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(x0, y0, x1, y1)| (x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)))
+            .collect();
+        let port_open_radius_cells =
+            (port_open_radius_um.max(0.0) / self.grid.grid_size_um).ceil() as i32;
+        let runway_length_cells = bend_radius_cells.max(0) + 1;
+        let runway_half_width_cells = commit_radius_cells.max(0);
+
+        ports
+            .into_iter()
+            .map(
+                |(spec, x_um, y_um, orientation, port_type, access_length_um, access_width_um)| {
+                    let is_custom_access = access_length_um.is_some() || access_width_um.is_some();
+                    if !is_custom_access
+                        && port_type.as_deref().is_some_and(|kind| kind != "optical")
+                    {
+                        return (spec, Vec::new(), Vec::new(), Vec::new());
+                    }
+
+                    let candidate_cells = route_port_access_cells(
+                        &grid,
+                        x_um,
+                        y_um,
+                        orientation,
+                        access_length_um,
+                        access_width_um,
+                        port_entry_length_cells,
+                        port_entry_half_width_cells,
+                        port_lane_length_cells,
+                        port_lane_half_width_cells,
+                    );
+                    if is_custom_access {
+                        let cells = sorted_cells(candidate_cells);
+                        return (spec, cells.clone(), cells, Vec::new());
+                    }
+
+                    let base_open_cells =
+                        route_base_port_open_cells(&grid, x_um, y_um, port_open_radius_cells);
+                    let runway_cells = route_port_runway_cells(
+                        &grid,
+                        x_um,
+                        y_um,
+                        orientation,
+                        runway_length_cells,
+                        runway_half_width_cells,
+                    );
+                    let runway_open_cells: FxHashSet<CellKey> = runway_cells
+                        .iter()
+                        .copied()
+                        .filter(|key| !route_cell_in_raw_static(*key, &raw_static_keys, &raw_rects))
+                        .collect();
+
+                    let mut candidate_and_runway = candidate_cells.clone();
+                    candidate_and_runway.extend(runway_cells.iter().copied());
+
+                    let effective_cells: FxHashSet<CellKey> = if route_clearance_um <= 0.0 {
+                        candidate_cells
+                            .intersection(&base_open_cells)
+                            .copied()
+                            .chain(runway_open_cells)
+                            .collect()
+                    } else {
+                        candidate_cells
+                            .iter()
+                            .copied()
+                            .filter(|key| {
+                                !route_cell_in_raw_static(*key, &raw_static_keys, &raw_rects)
+                            })
+                            .chain(candidate_cells.intersection(&base_open_cells).copied())
+                            .chain(runway_open_cells)
+                            .collect()
+                    };
+
+                    (
+                        spec,
+                        sorted_cells(effective_cells),
+                        sorted_cells(candidate_and_runway),
+                        sorted_cells(runway_cells),
+                    )
+                },
+            )
+            .collect()
+    }
+
     fn add_port_open_cells(&mut self, cells: Vec<(i32, i32)>) {
         self.port_open_cells.extend(pack_cells(&cells));
     }
