@@ -1446,6 +1446,11 @@ def route_nets_rust(
             for rect_min_x, rect_max_x in raw_static_rect_ranges_by_y.get(y, ())
         )
 
+    def _cells_in_raw_static_geometry(
+        cells: set[tuple[int, int]],
+    ) -> set[tuple[int, int]]:
+        return {cell for cell in cells if _cell_in_raw_static(cell)}
+
     def build_keyed_port_access_cells(
         *,
         instance_name: str,
@@ -1482,8 +1487,9 @@ def route_nets_rust(
         candidate_cells = build_port_access_cells(port)
         base_open_cells = build_base_port_open_cells(port)
         runway_cells = build_port_runway_cells(port)
+        runway_open_cells = {cell for cell in runway_cells if not _cell_in_raw_static(cell)}
         if route_clearance_um <= 0.0:
-            effective_cells = (candidate_cells & base_open_cells) | runway_cells
+            effective_cells = (candidate_cells & base_open_cells) | runway_open_cells
             return effective_cells, candidate_cells | runway_cells, runway_cells, None
 
         clearance_access_cells = {
@@ -1493,7 +1499,7 @@ def route_nets_rust(
         effective_cells = (
             clearance_access_cells
             | (candidate_cells & base_open_cells)
-            | runway_cells
+            | runway_open_cells
         )
         return effective_cells, candidate_cells | runway_cells, runway_cells, None
 
@@ -2130,12 +2136,10 @@ def route_nets_rust(
         committed_dynamic_cells = _committed_dynamic_cells(exclude_net_id=job.net_id)
         if diagnostics_enabled:
             opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
-            opened_candidate_static_overlap = (
-                opened_candidate_cells & static_blocked_cells_before_port_reservations
+            opened_candidate_static_overlap = _cells_in_raw_static_geometry(
+                opened_candidate_cells
             )
-            opened_static_overlap = (
-                opened_cells_set & static_blocked_cells_before_port_reservations
-            )
+            opened_static_overlap = _cells_in_raw_static_geometry(opened_cells_set)
             opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
             dynamic_exempt_dynamic_overlap = (
                 dynamic_clearance_exempt_cells & committed_dynamic_cells
@@ -2148,7 +2152,7 @@ def route_nets_rust(
             dynamic_exempt_dynamic_overlap = set()
 
         route_cells = route_cells or set()
-        route_static_overlap = route_cells & static_blocked_cells_before_port_reservations
+        route_static_overlap = _cells_in_raw_static_geometry(route_cells)
         route_overlap_with_candidate_opened_static = (
             route_cells & opened_candidate_static_overlap
         )
