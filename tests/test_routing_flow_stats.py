@@ -677,6 +677,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "primitive_accepted_by_class": zero_primitive_counters,
             "footprint_checks": 0,
             "footprint_rect_checks": 77,
+            "route_search_total_time_s": 0.0,
             "dense_grid_build_time_s": 0.0,
             "dense_grid_cells": 0,
             "search_loop_time_s": 0.0,

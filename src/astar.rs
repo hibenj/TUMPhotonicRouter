@@ -199,6 +199,7 @@ pub struct RouteSearchStats {
     pub dense_grid_build_failures: usize,
     pub max_window_area_cells: i64,
     pub dense_grid_cells: usize,
+    pub route_search_total_time_us: u128,
     pub dense_grid_build_time_us: u128,
     pub search_loop_time_us: u128,
     pub obstacle_map_prepare_time_us: u128,
@@ -214,6 +215,16 @@ pub struct RouteSearchStats {
     pub jps4_used: bool,
     pub jps4_fallbacks: usize,
     pub jps4_fallback_reason: String,
+}
+
+fn with_route_search_total_time(
+    mut route: RouteResult,
+    route_search_total_start: Option<&Instant>,
+) -> RouteResult {
+    if let Some(route_search_total_start) = route_search_total_start {
+        route.stats.route_search_total_time_us += route_search_total_start.elapsed().as_micros();
+    }
+    route
 }
 
 #[derive(Clone, Debug)]
@@ -1373,6 +1384,11 @@ pub fn route_single_net_with_config(
     anchor_open_cells.insert(pack_xy(target.x, target.y));
 
     let mut stats = RouteSearchStats::default();
+    let route_search_total_start = if config.collect_detailed_timing {
+        Some(Instant::now())
+    } else {
+        None
+    };
     let jps4_eligibility = evaluate_jps4_eligibility(primitives, source, target, config);
     stats.jps4_requested = config.enable_jps4;
     stats.jps4_eligible = jps4_eligibility.eligible;
@@ -1387,23 +1403,38 @@ pub fn route_single_net_with_config(
             primitives.grid_size_um(),
             stats.clone(),
         ) {
-            return Some(route);
+            return Some(with_route_search_total_time(
+                route,
+                route_search_total_start.as_ref(),
+            ));
         }
         stats.jps4_fallbacks += 1;
         stats.jps4_fallback_reason = "jps4 search failed".to_string();
     } else if config.enable_jps4 {
         stats.jps4_fallbacks += 1;
     }
-    if let Some(mut simple_route) = try_simple_route_with_config(
+    let simple_route_start = if config.collect_detailed_timing {
+        Some(Instant::now())
+    } else {
+        None
+    };
+    let simple_route = try_simple_route_with_config(
         obstacle_map,
         primitives,
         source,
         target,
         port_open_cells,
         config,
-    ) {
+    );
+    if let Some(simple_route_start) = simple_route_start.as_ref() {
+        stats.simple_route_time_us += simple_route_start.elapsed().as_micros();
+    }
+    if let Some(mut simple_route) = simple_route {
         simple_route.stats = stats;
-        return Some(simple_route);
+        return Some(with_route_search_total_time(
+            simple_route,
+            route_search_total_start.as_ref(),
+        ));
     }
 
     if !config.use_routing_window {
@@ -1416,7 +1447,8 @@ pub fn route_single_net_with_config(
             config,
             None,
             &mut stats,
-        );
+        )
+        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
     }
 
     let mut last_bounds: Option<RoutingBounds> = None;
@@ -1444,7 +1476,10 @@ pub fn route_single_net_with_config(
             Some(bounds),
             &mut stats,
         ) {
-            return Some(route);
+            return Some(with_route_search_total_time(
+                route,
+                route_search_total_start.as_ref(),
+            ));
         }
     }
 
@@ -1472,7 +1507,8 @@ pub fn route_single_net_with_config(
             config,
             None,
             &mut stats,
-        );
+        )
+        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
     }
 
     None
@@ -1510,6 +1546,11 @@ pub fn route_single_net_with_dynamic_expansion_config(
     anchor_open_cells.insert(pack_xy(target.x, target.y));
 
     let mut stats = RouteSearchStats::default();
+    let route_search_total_start = if config.collect_detailed_timing {
+        Some(Instant::now())
+    } else {
+        None
+    };
     stats.jps4_requested = config.enable_jps4;
     stats.jps4_eligible = false;
     stats.jps4_fallback_reason = "dynamic expansion overlay uses dense A*".to_string();
@@ -1529,7 +1570,8 @@ pub fn route_single_net_with_dynamic_expansion_config(
             &mut stats,
             dynamic_expansion_radius_cells,
             dynamic_clearance_exempt_cells,
-        );
+        )
+        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
     }
 
     let mut last_bounds: Option<RoutingBounds> = None;
@@ -1559,7 +1601,10 @@ pub fn route_single_net_with_dynamic_expansion_config(
             dynamic_expansion_radius_cells,
             dynamic_clearance_exempt_cells,
         ) {
-            return Some(route);
+            return Some(with_route_search_total_time(
+                route,
+                route_search_total_start.as_ref(),
+            ));
         }
     }
 
@@ -1589,7 +1634,8 @@ pub fn route_single_net_with_dynamic_expansion_config(
             &mut stats,
             dynamic_expansion_radius_cells,
             dynamic_clearance_exempt_cells,
-        );
+        )
+        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
     }
 
     None

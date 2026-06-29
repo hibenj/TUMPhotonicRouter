@@ -1519,6 +1519,20 @@ def route_nets_rust(
             failed=failed,
         )
 
+    def _record_native_batch_timings(batch_result: dict[str, Any]) -> None:
+        if not collect_pipeline_timing:
+            return
+        raw_timings = batch_result.get("timings_s")
+        if raw_timings is None:
+            return
+        for raw_name, raw_elapsed_s in dict(raw_timings).items():
+            try:
+                elapsed_s = float(raw_elapsed_s)
+            except (TypeError, ValueError):
+                continue
+            name = f"native_batch_{raw_name}"
+            route_nets_timings_s[name] = route_nets_timings_s.get(name, 0.0) + elapsed_s
+
     def _committed_dynamic_cells(*, exclude_net_id: int | None = None) -> set[tuple[int, int]]:
         return route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
 
@@ -2271,6 +2285,7 @@ def route_nets_rust(
         _record_pipeline_timing("native_route_batch", batch_start)
         t_batch_result_processing_start = _pipeline_timer_start()
         batch_result = dict(raw_batch_result)
+        _record_native_batch_timings(batch_result)
         raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
         per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
         for raw_attempt in raw_attempts:
@@ -2462,6 +2477,7 @@ def route_nets_rust(
         _record_pipeline_timing("native_route_batch", batch_start)
         t_batch_result_processing_start = _pipeline_timer_start()
         batch_result = dict(raw_batch_result)
+        _record_native_batch_timings(batch_result)
         raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
         per_route_elapsed_s = batch_elapsed_s / max(1, len(raw_routes))
         for raw_entry in raw_routes:

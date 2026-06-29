@@ -381,6 +381,8 @@ pub struct PyRouteResult {
     #[pyo3(get)]
     pub dense_grid_cells: usize,
     #[pyo3(get)]
+    pub route_search_total_time_us: u64,
+    #[pyo3(get)]
     pub dense_grid_build_time_us: u64,
     #[pyo3(get)]
     pub search_loop_time_us: u64,
@@ -483,6 +485,7 @@ pub struct PyPhotonicRouter {
     grid: PyGridSpec,
     primitive_cfg: PyPrimitiveLibraryConfig,
     astar_cfg: PyAStarConfig,
+    astar_cfg_cached: Result<AStarConfig, String>,
     obstacle_map: ObstacleMap,
     primitives: PrimitiveLibrary,
     static_cells: FxHashSet<CellKey>,
@@ -534,6 +537,48 @@ struct NativeRouteAttempt {
     repair_round: Option<u32>,
     candidate_blockers: Vec<u64>,
     ripup_ids: Vec<u64>,
+}
+
+#[derive(Default)]
+struct NativeBatchTimings {
+    route_job_unpack_us: u128,
+    obstacle_map_prepare_us: u128,
+    route_search_total_us: u128,
+    simple_route_candidate_us: u128,
+    dense_astar_us: u128,
+    commit_cell_build_us: u128,
+    commit_update_dynamic_map_us: u128,
+    normal_route_wall_us: u128,
+    probe_route_wall_us: u128,
+    repair_failed_net_wall_us: u128,
+    reroute_victims_wall_us: u128,
+    normal_route_failed_wall_us: u128,
+    probe_route_failed_wall_us: u128,
+    repair_failed_net_failed_wall_us: u128,
+    reroute_victims_failed_wall_us: u128,
+    repair_probe_victim_selection_us: u128,
+    repair_state_reset_us: u128,
+    ripup_us: u128,
+    history_update_us: u128,
+    route_result_construction_us: u128,
+    python_return_dict_us: u128,
+}
+
+impl NativeBatchTimings {
+    fn add_route_result_stats(&mut self, route: &RouteResult) {
+        self.obstacle_map_prepare_us += route.stats.obstacle_map_prepare_time_us;
+        self.route_search_total_us += route.stats.route_search_total_time_us;
+        self.simple_route_candidate_us += route.stats.simple_route_time_us;
+        self.dense_astar_us += route.stats.search_loop_time_us;
+        self.commit_cell_build_us += route.stats.commit_prepare_time_us;
+        self.commit_update_dynamic_map_us += route.stats.commit_time_us;
+    }
+
+    fn add_route_result_stats_if(&mut self, enabled: bool, route: &RouteResult) {
+        if enabled {
+            self.add_route_result_stats(route);
+        }
+    }
 }
 
 struct NativeEndpointCorrection {
@@ -1837,6 +1882,29 @@ fn auto_meander_search_config_rs(
 }
 
 impl PyPhotonicRouter {
+    fn astar_config(
+        &self,
+        ignore_dynamic_obstacles: Option<bool>,
+        enable_simple_routes: Option<bool>,
+        history_weight: Option<f64>,
+    ) -> Result<AStarConfig, String> {
+        let mut cfg = self
+            .astar_cfg_cached
+            .as_ref()
+            .map_err(|err| err.clone())?
+            .clone();
+        if let Some(ignore_dynamic_obstacles) = ignore_dynamic_obstacles {
+            cfg.ignore_dynamic_obstacles = ignore_dynamic_obstacles;
+        }
+        if let Some(enable_simple_routes) = enable_simple_routes {
+            cfg.enable_simple_routes = enable_simple_routes;
+        }
+        if let Some(history_weight) = history_weight {
+            cfg.history_weight = history_weight;
+        }
+        Ok(cfg)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn route_single_net_and_commit_native(
         &mut self,
@@ -1863,8 +1931,7 @@ impl PyPhotonicRouter {
         } else {
             &self.port_open_cells
         };
-        let mut cfg = astar_config_from_py(&self.astar_cfg, &self.primitive_cfg, None, None, None)
-            .map_err(|err| err.to_string())?;
+        let mut cfg = self.astar_config(None, None, None)?;
         cfg.require_terminal_straights = true;
         let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or(&[]);
         let collect_timing = self.astar_cfg.collect_detailed_timing;
@@ -1965,14 +2032,7 @@ impl PyPhotonicRouter {
             }
         }
         let search_cfg = if block_radius_cells > 0 {
-            let mut search_cfg = astar_config_from_py(
-                &self.astar_cfg,
-                &self.primitive_cfg,
-                None,
-                Some(false),
-                None,
-            )
-            .map_err(|err| err.to_string())?;
+            let mut search_cfg = self.astar_config(None, Some(false), None)?;
             search_cfg.require_terminal_straights = true;
             search_cfg
         } else {
@@ -2088,14 +2148,7 @@ impl PyPhotonicRouter {
         } else {
             &self.port_open_cells
         };
-        let mut cfg = astar_config_from_py(
-            &self.astar_cfg,
-            &self.primitive_cfg,
-            Some(false),
-            Some(false),
-            Some(history_weight),
-        )
-        .map_err(|err| err.to_string())?;
+        let mut cfg = self.astar_config(Some(false), Some(false), Some(history_weight))?;
         cfg.require_terminal_straights = true;
         let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or(&[]);
         let collect_timing = self.astar_cfg.collect_detailed_timing;
@@ -2222,14 +2275,7 @@ impl PyPhotonicRouter {
         } else {
             &self.port_open_cells
         };
-        let mut cfg = astar_config_from_py(
-            &self.astar_cfg,
-            &self.primitive_cfg,
-            Some(true),
-            Some(false),
-            Some(0.0),
-        )
-        .map_err(|err| err.to_string())?;
+        let mut cfg = self.astar_config(Some(true), Some(false), Some(0.0))?;
         cfg.require_terminal_straights = true;
         let mut static_only_obstacle_map = self.obstacle_map.clone();
         static_only_obstacle_map.clear_dynamic();
@@ -2596,11 +2642,15 @@ impl PyPhotonicRouter {
                 allow_45_degree_turns: primitive_config.allow_45_degree_turns,
             })
         };
+        let astar_cfg_cached =
+            astar_config_from_py(&astar_config, &primitive_config, None, None, None)
+                .map_err(|err| err.to_string());
         Self {
             obstacle_map: ObstacleMap::new(grid_spec.width as i32, grid_spec.height as i32),
             grid: grid_spec,
             primitive_cfg: primitive_config,
             astar_cfg: astar_config,
+            astar_cfg_cached,
             primitives,
             static_cells: FxHashSet::default(),
             port_open_cells: FxHashSet::default(),
@@ -3198,7 +3248,9 @@ impl PyPhotonicRouter {
         } else {
             &self.port_open_cells
         };
-        let cfg = astar_config_from_py(&self.astar_cfg, &self.primitive_cfg, None, None, None)?;
+        let cfg = self
+            .astar_config(None, None, None)
+            .map_err(PyValueError::new_err)?;
         let result = route_single_net_with_config(
             &self.obstacle_map,
             &self.primitives,
@@ -3250,15 +3302,32 @@ impl PyPhotonicRouter {
         commit_radius_cells: Option<i32>,
         core_radius_cells: Option<i32>,
     ) -> PyResult<PyObject> {
+        let collect_native_timing = self.astar_cfg.collect_detailed_timing;
+        let mut timings = NativeBatchTimings::default();
+        let unpack_start = native_batch_timer(collect_native_timing);
+        let native_jobs: Vec<NativeRouteJob> = jobs
+            .into_iter()
+            .map(
+                |(net_id, source, target, opened_cells, clearance_exempt_cells)| {
+                    NativeRouteJob::new(
+                        net_id,
+                        source,
+                        target,
+                        opened_cells,
+                        clearance_exempt_cells,
+                    )
+                },
+            )
+            .collect();
+        timings.route_job_unpack_us += native_batch_elapsed_us(unpack_start);
         let result_dict = PyDict::new_bound(py);
         let route_entries = PyList::empty_bound(py);
-        for (net_id, source, target, opened_cells, clearance_exempt_cells) in jobs {
-            let job =
-                NativeRouteJob::new(net_id, source, target, opened_cells, clearance_exempt_cells);
-            match self.route_single_net_and_commit_native(
+        for job in &native_jobs {
+            let route_start = native_batch_timer(collect_native_timing);
+            let route_result = self.route_single_net_and_commit_native(
                 job.net_id,
-                job.source,
-                job.target,
+                job.source.clone(),
+                job.target.clone(),
                 block_radius_cells,
                 Some(&job.opened_cells),
                 Some(&job.opened_cell_keys),
@@ -3266,29 +3335,45 @@ impl PyPhotonicRouter {
                 Some(&job.clearance_exempt_cells),
                 Some(&job.clearance_exempt_cell_keys),
                 core_radius_cells,
-            ) {
+            );
+            let route_elapsed_us = native_batch_elapsed_us(route_start);
+            timings.normal_route_wall_us += route_elapsed_us;
+            match route_result {
                 Ok(route_result) => {
+                    timings.add_route_result_stats_if(collect_native_timing, &route_result);
                     let entry = PyDict::new_bound(py);
-                    entry.set_item("net_id", net_id)?;
-                    entry.set_item(
-                        "route",
-                        Py::new(py, convert_result(py, &self.primitives, &route_result)?)?,
-                    )?;
+                    let route_construct_start = native_batch_timer(collect_native_timing);
+                    let route_obj =
+                        Py::new(py, convert_result(py, &self.primitives, &route_result)?)?;
+                    timings.route_result_construction_us +=
+                        native_batch_elapsed_us(route_construct_start);
+                    let dict_start = native_batch_timer(collect_native_timing);
+                    entry.set_item("net_id", job.net_id)?;
+                    entry.set_item("route", route_obj)?;
                     route_entries.append(entry)?;
+                    timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
                 }
                 Err(error) => {
+                    timings.normal_route_failed_wall_us += route_elapsed_us;
+                    let dict_start = native_batch_timer(collect_native_timing);
                     result_dict.set_item("status", "failed")?;
                     result_dict.set_item("failed_net_id", job.net_id)?;
                     result_dict.set_item("error", error)?;
                     result_dict.set_item("routes", route_entries)?;
+                    timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
+                    result_dict
+                        .set_item("timings_s", native_batch_timings_to_py_dict(py, &timings)?)?;
                     return Ok(result_dict.into());
                 }
             }
         }
+        let dict_start = native_batch_timer(collect_native_timing);
         result_dict.set_item("status", "routed")?;
         result_dict.set_item("failed_net_id", py.None())?;
         result_dict.set_item("error", py.None())?;
         result_dict.set_item("routes", route_entries)?;
+        timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
+        result_dict.set_item("timings_s", native_batch_timings_to_py_dict(py, &timings)?)?;
         Ok(result_dict.into())
     }
 
@@ -3306,6 +3391,9 @@ impl PyPhotonicRouter {
         history_weight: f64,
         history_increment: u32,
     ) -> PyResult<PyObject> {
+        let collect_native_timing = self.astar_cfg.collect_detailed_timing;
+        let mut timings = NativeBatchTimings::default();
+        let unpack_start = native_batch_timer(collect_native_timing);
         let native_jobs: Vec<NativeRouteJob> = jobs
             .into_iter()
             .map(
@@ -3320,6 +3408,7 @@ impl PyPhotonicRouter {
                 },
             )
             .collect();
+        timings.route_job_unpack_us += native_batch_elapsed_us(unpack_start);
         let order_by_id: FxHashMap<u64, usize> = native_jobs
             .iter()
             .enumerate()
@@ -3337,7 +3426,8 @@ impl PyPhotonicRouter {
         let mut failed_error: Option<String> = None;
 
         for job in &native_jobs {
-            match self.route_single_net_and_commit_native(
+            let route_start = native_batch_timer(collect_native_timing);
+            let route_result = self.route_single_net_and_commit_native(
                 job.net_id,
                 job.source,
                 job.target,
@@ -3348,8 +3438,12 @@ impl PyPhotonicRouter {
                 Some(&job.clearance_exempt_cells),
                 Some(&job.clearance_exempt_cell_keys),
                 core_radius_cells,
-            ) {
+            );
+            let route_elapsed_us = native_batch_elapsed_us(route_start);
+            timings.normal_route_wall_us += route_elapsed_us;
+            match route_result {
                 Ok(route) => {
+                    timings.add_route_result_stats_if(collect_native_timing, &route);
                     attempts.push(NativeRouteAttempt {
                         bucket_name: "normal_route",
                         net_id: job.net_id,
@@ -3364,6 +3458,7 @@ impl PyPhotonicRouter {
                     continue;
                 }
                 Err(error) => {
+                    timings.normal_route_failed_wall_us += route_elapsed_us;
                     attempts.push(NativeRouteAttempt {
                         bucket_name: "normal_route",
                         net_id: job.net_id,
@@ -3377,13 +3472,18 @@ impl PyPhotonicRouter {
                 }
             }
 
-            let probe_route = match self.route_single_net_ignore_dynamic_native(
+            let probe_start = native_batch_timer(collect_native_timing);
+            let probe_result = self.route_single_net_ignore_dynamic_native(
                 job.source,
                 job.target,
                 Some(&job.opened_cells),
                 Some(&job.opened_cell_keys),
-            ) {
+            );
+            let probe_elapsed_us = native_batch_elapsed_us(probe_start);
+            timings.probe_route_wall_us += probe_elapsed_us;
+            let probe_route = match probe_result {
                 Ok(route) => {
+                    timings.add_route_result_stats_if(collect_native_timing, &route);
                     attempts.push(NativeRouteAttempt {
                         bucket_name: "probe_route",
                         net_id: job.net_id,
@@ -3397,6 +3497,7 @@ impl PyPhotonicRouter {
                     route
                 }
                 Err(error) => {
+                    timings.probe_route_failed_wall_us += probe_elapsed_us;
                     attempts.push(NativeRouteAttempt {
                         bucket_name: "probe_route",
                         net_id: job.net_id,
@@ -3413,6 +3514,7 @@ impl PyPhotonicRouter {
                 }
             };
 
+            let victim_selection_start = native_batch_timer(collect_native_timing);
             let owner_lookup_radius_cells =
                 block_radius_cells.max(commit_radius_cells.unwrap_or(block_radius_cells));
             let mut candidate_blockers: Vec<u64> = self
@@ -3424,7 +3526,10 @@ impl PyPhotonicRouter {
                 order_by_id.get(owner).copied().unwrap_or(usize::MAX)
             });
             candidate_blockers.dedup();
+            timings.repair_probe_victim_selection_us +=
+                native_batch_elapsed_us(victim_selection_start);
             if candidate_blockers.is_empty() {
+                let commit_start = native_batch_timer(collect_native_timing);
                 if self.commit_native_route_with_clearance(
                     job.net_id,
                     &probe_route,
@@ -3433,15 +3538,19 @@ impl PyPhotonicRouter {
                     &job.clearance_exempt_cells,
                     core_radius_cells,
                 ) {
+                    timings.commit_update_dynamic_map_us += native_batch_elapsed_us(commit_start);
                     final_routes.insert(job.net_id, probe_route);
                     continue;
                 }
+                timings.commit_update_dynamic_map_us += native_batch_elapsed_us(commit_start);
                 failed_net_id = Some(job.net_id);
                 failed_error = Some("Failed to commit static-only probe route".to_string());
                 break;
             }
 
+            let history_start = native_batch_timer(collect_native_timing);
             self.add_history_for_native_route(&probe_route, block_radius_cells, history_increment);
+            timings.history_update_us += native_batch_elapsed_us(history_start);
             let max_rounds = max_rounds.max(1);
             let max_victims = max_victims_per_failure.max(1);
             let mut repaired = false;
@@ -3458,26 +3567,33 @@ impl PyPhotonicRouter {
                     continue;
                 }
                 for victim_first in [false, true] {
+                    let reset_start = native_batch_timer(collect_native_timing);
                     self.obstacle_map = round_base_map.clone();
                     self.invalidate_meander_base_prefix();
                     final_routes = round_base_routes.clone();
+                    timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
 
                     for old_id in &ripup_ids {
                         if let Some(old_route) = final_routes.get(old_id).cloned() {
+                            let history_start = native_batch_timer(collect_native_timing);
                             self.add_history_for_native_route(
                                 &old_route,
                                 block_radius_cells,
                                 history_increment,
                             );
+                            timings.history_update_us += native_batch_elapsed_us(history_start);
                         }
+                        let ripup_start = native_batch_timer(collect_native_timing);
                         self.obstacle_map.ripup_route(*old_id);
+                        timings.ripup_us += native_batch_elapsed_us(ripup_start);
                         final_routes.remove(old_id);
                     }
 
                     let mut mode_failed = false;
                     let mut repaired_route: Option<RouteResult> = None;
                     if !victim_first {
-                        match self.route_single_net_and_commit_native(
+                        let route_start = native_batch_timer(collect_native_timing);
+                        let route_result = self.route_single_net_and_commit_native(
                             job.net_id,
                             job.source,
                             job.target,
@@ -3488,8 +3604,12 @@ impl PyPhotonicRouter {
                             Some(&job.clearance_exempt_cells),
                             Some(&job.clearance_exempt_cell_keys),
                             core_radius_cells,
-                        ) {
+                        );
+                        let route_elapsed_us = native_batch_elapsed_us(route_start);
+                        timings.repair_failed_net_wall_us += route_elapsed_us;
+                        match route_result {
                             Ok(route) => {
+                                timings.add_route_result_stats_if(collect_native_timing, &route);
                                 attempts.push(NativeRouteAttempt {
                                     bucket_name: "repair_failed_net",
                                     net_id: job.net_id,
@@ -3504,6 +3624,7 @@ impl PyPhotonicRouter {
                                 repaired_route = Some(route);
                             }
                             Err(error) => {
+                                timings.repair_failed_net_failed_wall_us += route_elapsed_us;
                                 attempts.push(NativeRouteAttempt {
                                     bucket_name: "repair_failed_net",
                                     net_id: job.net_id,
@@ -3525,6 +3646,7 @@ impl PyPhotonicRouter {
                                 mode_failed = true;
                                 break;
                             };
+                            let reroute_start = native_batch_timer(collect_native_timing);
                             let reroute_result = self.route_single_net_and_commit_native(
                                 victim_job.net_id,
                                 victim_job.source,
@@ -3537,9 +3659,16 @@ impl PyPhotonicRouter {
                                 Some(&victim_job.clearance_exempt_cell_keys),
                                 core_radius_cells,
                             );
+                            let reroute_elapsed_us = native_batch_elapsed_us(reroute_start);
+                            timings.reroute_victims_wall_us += reroute_elapsed_us;
                             let route = match reroute_result {
-                                Ok(route) => route,
+                                Ok(route) => {
+                                    timings
+                                        .add_route_result_stats_if(collect_native_timing, &route);
+                                    route
+                                }
                                 Err(normal_error) => {
+                                    timings.reroute_victims_failed_wall_us += reroute_elapsed_us;
                                     attempts.push(NativeRouteAttempt {
                                         bucket_name: "reroute_victims",
                                         net_id: victim_job.net_id,
@@ -3550,21 +3679,34 @@ impl PyPhotonicRouter {
                                         candidate_blockers: candidate_blockers.clone(),
                                         ripup_ids: ripup_ids.clone(),
                                     });
-                                    match self.route_single_net_and_commit_repair_native(
-                                        victim_job.net_id,
-                                        victim_job.source,
-                                        victim_job.target,
-                                        block_radius_cells,
-                                        Some(&victim_job.opened_cells),
-                                        Some(&victim_job.opened_cell_keys),
-                                        history_weight,
-                                        commit_radius_cells,
-                                        Some(&victim_job.clearance_exempt_cells),
-                                        Some(&victim_job.clearance_exempt_cell_keys),
-                                        core_radius_cells,
-                                    ) {
-                                        Ok(route) => route,
+                                    let repair_start = native_batch_timer(collect_native_timing);
+                                    let repair_result = self
+                                        .route_single_net_and_commit_repair_native(
+                                            victim_job.net_id,
+                                            victim_job.source,
+                                            victim_job.target,
+                                            block_radius_cells,
+                                            Some(&victim_job.opened_cells),
+                                            Some(&victim_job.opened_cell_keys),
+                                            history_weight,
+                                            commit_radius_cells,
+                                            Some(&victim_job.clearance_exempt_cells),
+                                            Some(&victim_job.clearance_exempt_cell_keys),
+                                            core_radius_cells,
+                                        );
+                                    let repair_elapsed_us = native_batch_elapsed_us(repair_start);
+                                    timings.reroute_victims_wall_us += repair_elapsed_us;
+                                    match repair_result {
+                                        Ok(route) => {
+                                            timings.add_route_result_stats_if(
+                                                collect_native_timing,
+                                                &route,
+                                            );
+                                            route
+                                        }
                                         Err(error) => {
+                                            timings.reroute_victims_failed_wall_us +=
+                                                repair_elapsed_us;
                                             attempts.push(NativeRouteAttempt {
                                                 bucket_name: "reroute_victims",
                                                 net_id: victim_job.net_id,
@@ -3596,6 +3738,7 @@ impl PyPhotonicRouter {
                     }
 
                     if !mode_failed && victim_first {
+                        let route_start = native_batch_timer(collect_native_timing);
                         let normal_result = self.route_single_net_and_commit_native(
                             job.net_id,
                             job.source,
@@ -3608,9 +3751,15 @@ impl PyPhotonicRouter {
                             Some(&job.clearance_exempt_cell_keys),
                             core_radius_cells,
                         );
+                        let route_elapsed_us = native_batch_elapsed_us(route_start);
+                        timings.repair_failed_net_wall_us += route_elapsed_us;
                         let route = match normal_result {
-                            Ok(route) => route,
+                            Ok(route) => {
+                                timings.add_route_result_stats_if(collect_native_timing, &route);
+                                route
+                            }
                             Err(normal_error) => {
+                                timings.repair_failed_net_failed_wall_us += route_elapsed_us;
                                 attempts.push(NativeRouteAttempt {
                                     bucket_name: "repair_failed_net",
                                     net_id: job.net_id,
@@ -3621,7 +3770,8 @@ impl PyPhotonicRouter {
                                     candidate_blockers: candidate_blockers.clone(),
                                     ripup_ids: ripup_ids.clone(),
                                 });
-                                match self.route_single_net_and_commit_repair_native(
+                                let repair_start = native_batch_timer(collect_native_timing);
+                                let repair_result = self.route_single_net_and_commit_repair_native(
                                     job.net_id,
                                     job.source,
                                     job.target,
@@ -3633,9 +3783,20 @@ impl PyPhotonicRouter {
                                     Some(&job.clearance_exempt_cells),
                                     Some(&job.clearance_exempt_cell_keys),
                                     core_radius_cells,
-                                ) {
-                                    Ok(route) => route,
+                                );
+                                let repair_elapsed_us = native_batch_elapsed_us(repair_start);
+                                timings.repair_failed_net_wall_us += repair_elapsed_us;
+                                match repair_result {
+                                    Ok(route) => {
+                                        timings.add_route_result_stats_if(
+                                            collect_native_timing,
+                                            &route,
+                                        );
+                                        route
+                                    }
                                     Err(error) => {
+                                        timings.repair_failed_net_failed_wall_us +=
+                                            repair_elapsed_us;
                                         attempts.push(NativeRouteAttempt {
                                             bucket_name: "repair_failed_net",
                                             net_id: job.net_id,
@@ -3677,9 +3838,11 @@ impl PyPhotonicRouter {
             }
 
             if !repaired {
+                let reset_start = native_batch_timer(collect_native_timing);
                 self.obstacle_map = round_base_map;
                 self.invalidate_meander_base_prefix();
                 final_routes = round_base_routes;
+                timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
                 failed_net_id = Some(job.net_id);
                 failed_error = Some("No repair route found".to_string());
                 break;
@@ -3691,17 +3854,30 @@ impl PyPhotonicRouter {
         for job in &native_jobs {
             if let Some(route_result) = final_routes.get(&job.net_id) {
                 let entry = PyDict::new_bound(py);
+                let route_construct_start = native_batch_timer(collect_native_timing);
+                let route_obj = Py::new(py, convert_result(py, &self.primitives, route_result)?)?;
+                timings.route_result_construction_us +=
+                    native_batch_elapsed_us(route_construct_start);
+                let dict_start = native_batch_timer(collect_native_timing);
                 entry.set_item("net_id", job.net_id)?;
-                entry.set_item(
-                    "route",
-                    Py::new(py, convert_result(py, &self.primitives, route_result)?)?,
-                )?;
+                entry.set_item("route", route_obj)?;
                 route_entries.append(entry)?;
+                timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
             }
         }
         let attempt_entries = PyList::empty_bound(py);
         for attempt in attempts {
             let entry = PyDict::new_bound(py);
+            let route_obj = if let Some(route) = attempt.route.as_ref() {
+                let route_construct_start = native_batch_timer(collect_native_timing);
+                let route_obj = Py::new(py, convert_result(py, &self.primitives, route)?)?;
+                timings.route_result_construction_us +=
+                    native_batch_elapsed_us(route_construct_start);
+                Some(route_obj)
+            } else {
+                None
+            };
+            let dict_start = native_batch_timer(collect_native_timing);
             entry.set_item("bucket_name", attempt.bucket_name)?;
             entry.set_item("net_id", attempt.net_id)?;
             entry.set_item("failed", attempt.failed)?;
@@ -3709,16 +3885,15 @@ impl PyPhotonicRouter {
             entry.set_item("repair_round", attempt.repair_round)?;
             entry.set_item("candidate_blockers", attempt.candidate_blockers)?;
             entry.set_item("ripup_ids", attempt.ripup_ids)?;
-            if let Some(route) = attempt.route {
-                entry.set_item(
-                    "route",
-                    Py::new(py, convert_result(py, &self.primitives, &route)?)?,
-                )?;
+            if let Some(route_obj) = route_obj {
+                entry.set_item("route", route_obj)?;
             } else {
                 entry.set_item("route", py.None())?;
             }
             attempt_entries.append(entry)?;
+            timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
         }
+        let dict_start = native_batch_timer(collect_native_timing);
         result_dict.set_item(
             "status",
             if failed_net_id.is_some() {
@@ -3732,6 +3907,8 @@ impl PyPhotonicRouter {
         result_dict.set_item("repair_count", repair_count)?;
         result_dict.set_item("routes", route_entries)?;
         result_dict.set_item("attempts", attempt_entries)?;
+        timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
+        result_dict.set_item("timings_s", native_batch_timings_to_py_dict(py, &timings)?)?;
         Ok(result_dict.into())
     }
 
@@ -5633,7 +5810,9 @@ impl PyPhotonicRouter {
             Some(&self.port_open_cells)
         };
 
-        let cfg = astar_config_from_py(&self.astar_cfg, &self.primitive_cfg, None, None, None)?;
+        let cfg = self
+            .astar_config(None, None, None)
+            .map_err(PyValueError::new_err)?;
 
         let result = route_single_net_with_config(
             &self.obstacle_map,
@@ -5901,6 +6080,104 @@ fn describe_primitives(py: Python<'_>, lib: &PrimitiveLibrary) -> PyResult<Vec<P
     Ok(out)
 }
 
+fn native_batch_seconds(us: u128) -> f64 {
+    us as f64 / 1_000_000.0
+}
+
+fn native_batch_timer(enabled: bool) -> Option<Instant> {
+    enabled.then(Instant::now)
+}
+
+fn native_batch_elapsed_us(start: Option<Instant>) -> u128 {
+    start.map_or(0, |start| start.elapsed().as_micros())
+}
+
+fn native_batch_timings_to_py_dict(
+    py: Python<'_>,
+    timings: &NativeBatchTimings,
+) -> PyResult<PyObject> {
+    let d = pyo3::types::PyDict::new_bound(py);
+    d.set_item(
+        "route_job_unpack",
+        native_batch_seconds(timings.route_job_unpack_us),
+    )?;
+    d.set_item(
+        "obstacle_map_prepare",
+        native_batch_seconds(timings.obstacle_map_prepare_us),
+    )?;
+    d.set_item(
+        "route_search_total",
+        native_batch_seconds(timings.route_search_total_us),
+    )?;
+    d.set_item(
+        "simple_route_candidate",
+        native_batch_seconds(timings.simple_route_candidate_us),
+    )?;
+    d.set_item("dense_astar", native_batch_seconds(timings.dense_astar_us))?;
+    d.set_item(
+        "commit_cell_build",
+        native_batch_seconds(timings.commit_cell_build_us),
+    )?;
+    d.set_item(
+        "commit_update_dynamic_map",
+        native_batch_seconds(timings.commit_update_dynamic_map_us),
+    )?;
+    d.set_item(
+        "normal_route_wall",
+        native_batch_seconds(timings.normal_route_wall_us),
+    )?;
+    d.set_item(
+        "probe_route_wall",
+        native_batch_seconds(timings.probe_route_wall_us),
+    )?;
+    d.set_item(
+        "repair_failed_net_wall",
+        native_batch_seconds(timings.repair_failed_net_wall_us),
+    )?;
+    d.set_item(
+        "reroute_victims_wall",
+        native_batch_seconds(timings.reroute_victims_wall_us),
+    )?;
+    d.set_item(
+        "normal_route_failed_wall",
+        native_batch_seconds(timings.normal_route_failed_wall_us),
+    )?;
+    d.set_item(
+        "probe_route_failed_wall",
+        native_batch_seconds(timings.probe_route_failed_wall_us),
+    )?;
+    d.set_item(
+        "repair_failed_net_failed_wall",
+        native_batch_seconds(timings.repair_failed_net_failed_wall_us),
+    )?;
+    d.set_item(
+        "reroute_victims_failed_wall",
+        native_batch_seconds(timings.reroute_victims_failed_wall_us),
+    )?;
+    d.set_item(
+        "repair_probe_victim_selection",
+        native_batch_seconds(timings.repair_probe_victim_selection_us),
+    )?;
+    d.set_item(
+        "repair_state_reset",
+        native_batch_seconds(timings.repair_state_reset_us),
+    )?;
+    d.set_item("ripup", native_batch_seconds(timings.ripup_us))?;
+    d.set_item(
+        "history_update",
+        native_batch_seconds(timings.history_update_us),
+    )?;
+    d.set_item(
+        "route_result_construction",
+        native_batch_seconds(timings.route_result_construction_us),
+    )?;
+    d.set_item(
+        "python_return_dict",
+        native_batch_seconds(timings.python_return_dict_us),
+    )?;
+    Ok(d.into())
+}
+
 fn convert_result(
     py: Python<'_>,
     lib: &PrimitiveLibrary,
@@ -5987,6 +6264,10 @@ fn convert_result(
         primitive_footprint_rect_checks: r.stats.primitive_footprint_rect_checks,
         primitive_footprint_rect_rejects: r.stats.primitive_footprint_rect_rejects,
         dense_grid_cells: r.stats.dense_grid_cells,
+        route_search_total_time_us: {
+            let clamped = r.stats.route_search_total_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
         dense_grid_build_time_us: {
             let clamped = r.stats.dense_grid_build_time_us.min(u64::MAX as u128);
             clamped as u64
@@ -6116,6 +6397,7 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             primitive_footprint_rect_checks: route.primitive_footprint_rect_checks,
             primitive_footprint_rect_rejects: route.primitive_footprint_rect_rejects,
             dense_grid_cells: route.dense_grid_cells,
+            route_search_total_time_us: u128::from(route.route_search_total_time_us),
             dense_grid_build_time_us: u128::from(route.dense_grid_build_time_us),
             search_loop_time_us: u128::from(route.search_loop_time_us),
             obstacle_map_prepare_time_us: u128::from(route.obstacle_map_prepare_time_us),
@@ -6272,6 +6554,7 @@ mod tests {
             primitive_footprint_rect_checks: 0,
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
+            route_search_total_time_us: 0,
             dense_grid_build_time_us: 0,
             search_loop_time_us: 0,
             obstacle_map_prepare_time_us: 0,
@@ -6379,6 +6662,7 @@ mod tests {
             primitive_footprint_rect_checks: 0,
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
+            route_search_total_time_us: 0,
             dense_grid_build_time_us: 0,
             search_loop_time_us: 0,
             obstacle_map_prepare_time_us: 0,
@@ -6503,6 +6787,7 @@ mod tests {
             primitive_footprint_rect_checks: 0,
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
+            route_search_total_time_us: 0,
             dense_grid_build_time_us: 0,
             search_loop_time_us: 0,
             obstacle_map_prepare_time_us: 0,
@@ -6619,6 +6904,7 @@ mod tests {
             primitive_footprint_rect_checks: 0,
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
+            route_search_total_time_us: 0,
             dense_grid_build_time_us: 0,
             search_loop_time_us: 0,
             obstacle_map_prepare_time_us: 0,
@@ -6770,6 +7056,7 @@ mod tests {
             primitive_footprint_rect_checks: 0,
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
+            route_search_total_time_us: 0,
             dense_grid_build_time_us: 0,
             search_loop_time_us: 0,
             obstacle_map_prepare_time_us: 0,
@@ -6894,6 +7181,7 @@ mod tests {
             primitive_footprint_rect_checks: 0,
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
+            route_search_total_time_us: 0,
             dense_grid_build_time_us: 0,
             search_loop_time_us: 0,
             obstacle_map_prepare_time_us: 0,
@@ -7007,6 +7295,7 @@ mod tests {
             primitive_footprint_rect_checks: 0,
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
+            route_search_total_time_us: 0,
             dense_grid_build_time_us: 0,
             search_loop_time_us: 0,
             obstacle_map_prepare_time_us: 0,
@@ -7233,6 +7522,7 @@ mod tests {
             primitive_footprint_rect_checks: 0,
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
+            route_search_total_time_us: 0,
             dense_grid_build_time_us: 0,
             search_loop_time_us: 0,
             obstacle_map_prepare_time_us: 0,
@@ -7392,6 +7682,7 @@ mod tests {
             primitive_footprint_rect_checks: 0,
             primitive_footprint_rect_rejects: 0,
             dense_grid_cells: 0,
+            route_search_total_time_us: 0,
             dense_grid_build_time_us: 0,
             search_loop_time_us: 0,
             obstacle_map_prepare_time_us: 0,

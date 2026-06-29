@@ -288,6 +288,7 @@ class RouteTimingBucket:
     footprint_rect_rejects: int = 0
     dense_grid_build_failures: int = 0
     dense_grid_cells: int = 0
+    route_search_total_time_us: int = 0
     dense_grid_build_time_us: int = 0
     search_loop_time_us: int = 0
     obstacle_map_prepare_time_us: int = 0
@@ -401,6 +402,10 @@ class RouteTimingBucket:
             "dense_grid_build_failures",
         )
         self.dense_grid_cells += _get_route_int_stat(route_obj, "dense_grid_cells")
+        self.route_search_total_time_us += _get_route_int_stat(
+            route_obj,
+            "route_search_total_time_us",
+        )
         self.dense_grid_build_time_us += _get_route_int_stat(
             route_obj,
             "dense_grid_build_time_us",
@@ -506,6 +511,7 @@ class RouteAttemptRecord:
     )
     footprint_checks: int = 0
     footprint_rect_checks: int = 0
+    route_search_total_time_us: int = 0
     dense_grid_build_time_us: int = 0
     dense_grid_cells: int = 0
     search_loop_time_us: int = 0
@@ -577,6 +583,9 @@ class RouteAttemptRecord:
             "primitive_accepted_by_class": dict(self.primitive_accepted_by_class),
             "footprint_checks": self.footprint_checks,
             "footprint_rect_checks": self.footprint_rect_checks,
+            "route_search_total_time_s": (
+                self.route_search_total_time_us / 1_000_000.0
+            ),
             "dense_grid_build_time_s": self.dense_grid_build_time_us / 1_000_000.0,
             "dense_grid_cells": self.dense_grid_cells,
             "search_loop_time_s": self.search_loop_time_us / 1_000_000.0,
@@ -699,6 +708,10 @@ def route_attempt_record_from_route(
             route_obj,
             "primitive_footprint_rect_checks",
         ),
+        route_search_total_time_us=_get_route_int_stat(
+            route_obj,
+            "route_search_total_time_us",
+        ),
         dense_grid_build_time_us=_get_route_int_stat(
             route_obj,
             "dense_grid_build_time_us",
@@ -798,6 +811,7 @@ class RouteSearchSummary:
     footprint_rejects: int = 0
     footprint_rect_checks: int = 0
     footprint_rect_rejects: int = 0
+    route_search_total_time_us: int = 0
     dense_grid_build_time_us: int = 0
     dense_grid_cells: int = 0
     search_loop_time_us: int = 0
@@ -898,6 +912,9 @@ def summarize_route_search(
         footprint_rejects=sum(bucket.footprint_rejects for bucket in buckets),
         footprint_rect_checks=sum(bucket.footprint_rect_checks for bucket in buckets),
         footprint_rect_rejects=sum(bucket.footprint_rect_rejects for bucket in buckets),
+        route_search_total_time_us=sum(
+            bucket.route_search_total_time_us for bucket in buckets
+        ),
         dense_grid_build_time_us=sum(bucket.dense_grid_build_time_us for bucket in buckets),
         dense_grid_cells=sum(bucket.dense_grid_cells for bucket in buckets),
         search_loop_time_us=sum(bucket.search_loop_time_us for bucket in buckets),

@@ -56,6 +56,27 @@ ROUTE_NETS_TIMING_KEYS = (
     "clearance_exempt_batch",
     "batch_job_pack",
     "native_route_batch",
+    "native_batch_route_job_unpack",
+    "native_batch_obstacle_map_prepare",
+    "native_batch_route_search_total",
+    "native_batch_simple_route_candidate",
+    "native_batch_dense_astar",
+    "native_batch_commit_cell_build",
+    "native_batch_commit_update_dynamic_map",
+    "native_batch_normal_route_wall",
+    "native_batch_probe_route_wall",
+    "native_batch_repair_failed_net_wall",
+    "native_batch_reroute_victims_wall",
+    "native_batch_normal_route_failed_wall",
+    "native_batch_probe_route_failed_wall",
+    "native_batch_repair_failed_net_failed_wall",
+    "native_batch_reroute_victims_failed_wall",
+    "native_batch_repair_probe_victim_selection",
+    "native_batch_repair_state_reset",
+    "native_batch_ripup",
+    "native_batch_history_update",
+    "native_batch_route_result_construction",
+    "native_batch_python_return_dict",
     "batch_result_processing",
     "endpoint_correction_pack",
     "endpoint_correction_native",
@@ -1140,6 +1161,100 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     endpoint_s=_format_seconds(endpoint_s),
                     artifact_s=_format_seconds(artifact_s),
                     other_s=_format_seconds(other_s),
+                )
+            )
+    native_split_rows = [
+        row
+        for row in rows
+        if any(
+            _as_float(row.get(f"route_nets_native_batch_{key}_s")) is not None
+            for key in (
+                "route_job_unpack",
+                "route_search_total",
+                "simple_route_candidate",
+                "dense_astar",
+                "commit_update_dynamic_map",
+                "route_result_construction",
+                "python_return_dict",
+                "normal_route_failed_wall",
+                "probe_route_failed_wall",
+                "repair_failed_net_failed_wall",
+                "reroute_victims_failed_wall",
+            )
+        )
+    ]
+    if native_split_rows:
+        lines.extend(
+            [
+                "",
+                "## Native Batch Timing Split",
+                "",
+                "| Benchmark | Unpack s | Route wall s | Failed route wall s | Search total s | Simple in route s | Dense A* in route s | Commit build in route s | Commit/map in route s | Repair book s | Result obj s | Py return s | Other native s |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+
+        def native_batch_time(row: Mapping[str, object], key: str) -> float:
+            return _numeric_float(row.get(f"route_nets_native_batch_{key}_s"))
+
+        repair_bookkeeping_keys = (
+            "repair_probe_victim_selection",
+            "repair_state_reset",
+            "ripup",
+            "history_update",
+        )
+        route_wall_keys = (
+            "normal_route_wall",
+            "probe_route_wall",
+            "repair_failed_net_wall",
+            "reroute_victims_wall",
+        )
+        failed_route_wall_keys = (
+            "normal_route_failed_wall",
+            "probe_route_failed_wall",
+            "repair_failed_net_failed_wall",
+            "reroute_victims_failed_wall",
+        )
+        for row in native_split_rows:
+            unpack_s = native_batch_time(row, "route_job_unpack")
+            route_wall_s = sum(native_batch_time(row, key) for key in route_wall_keys)
+            failed_route_wall_s = sum(
+                native_batch_time(row, key) for key in failed_route_wall_keys
+            )
+            search_total_s = native_batch_time(row, "route_search_total")
+            simple_s = native_batch_time(row, "simple_route_candidate")
+            dense_s = native_batch_time(row, "dense_astar")
+            commit_build_s = native_batch_time(row, "commit_cell_build")
+            commit_s = native_batch_time(row, "commit_update_dynamic_map")
+            repair_book_s = sum(
+                native_batch_time(row, key) for key in repair_bookkeeping_keys
+            )
+            result_obj_s = native_batch_time(row, "route_result_construction")
+            py_return_s = native_batch_time(row, "python_return_dict")
+            known_s = (
+                unpack_s
+                + route_wall_s
+                + repair_book_s
+                + result_obj_s
+                + py_return_s
+            )
+            native_total_s = _numeric_float(row.get("route_nets_native_route_batch_s"))
+            other_native_s = max(0.0, native_total_s - known_s)
+            lines.append(
+                "| {benchmark} | {unpack_s} | {route_wall_s} | {failed_route_wall_s} | {search_total_s} | {simple_s} | {dense_s} | {commit_build_s} | {commit_s} | {repair_book_s} | {result_obj_s} | {py_return_s} | {other_native_s} |".format(
+                    benchmark=row.get("benchmark", ""),
+                    unpack_s=_format_seconds(unpack_s),
+                    route_wall_s=_format_seconds(route_wall_s),
+                    failed_route_wall_s=_format_seconds(failed_route_wall_s),
+                    search_total_s=_format_seconds(search_total_s),
+                    simple_s=_format_seconds(simple_s),
+                    dense_s=_format_seconds(dense_s),
+                    commit_build_s=_format_seconds(commit_build_s),
+                    commit_s=_format_seconds(commit_s),
+                    repair_book_s=_format_seconds(repair_book_s),
+                    result_obj_s=_format_seconds(result_obj_s),
+                    py_return_s=_format_seconds(py_return_s),
+                    other_native_s=_format_seconds(other_native_s),
                 )
             )
     repeated_rows = [
