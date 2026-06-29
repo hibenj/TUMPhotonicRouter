@@ -56,8 +56,6 @@ class GraphEdge:
     key: RoutedEdgeKey
     source: PortRef
     target: PortRef
-    routed_length_um: float | None = None
-    required_extra_length_um: float = 0.0
 
 
 @dataclass
@@ -105,24 +103,43 @@ class PathLengthAnalysisResult:
 
 
 @dataclass
-class PhotonicRoutingGraph:
-    nodes: dict[str, GraphNode] = field(default_factory=dict)
-    edges: dict[RoutedEdgeKey, GraphEdge] = field(default_factory=dict)
-    incoming_edges: dict[str, list[RoutedEdgeKey]] = field(default_factory=dict)
-    outgoing_edges: dict[str, list[RoutedEdgeKey]] = field(default_factory=dict)
+class PathLengthGraphAnnotations:
+    """PLM-owned annotations for a structural routing graph."""
 
-    def topological_order(self) -> list[str]:
-        sorter = TopologicalSorter()
-        for node_name in self.nodes:
-            sorter.add(node_name)
-        for edge in self.edges.values():
-            sorter.add(edge.target.instance, edge.source.instance)
-        return list(sorter.static_order())
+    edge_lengths_um: dict[RoutedEdgeKey, float] = field(default_factory=dict)
+    edge_missing_lengths_um: dict[RoutedEdgeKey, float] = field(default_factory=dict)
+
+    @classmethod
+    def from_edge_lengths(
+        cls,
+        graph: "PhotonicRoutingGraph",
+        lengths_um: Mapping[RoutedEdgeKey, float],
+    ) -> "PathLengthGraphAnnotations":
+        annotations = cls()
+        annotations.set_edge_lengths(graph, lengths_um)
+        return annotations
+
+    def set_edge_lengths(
+        self,
+        graph: "PhotonicRoutingGraph",
+        lengths_um: Mapping[RoutedEdgeKey, float],
+    ) -> None:
+        for edge_key, length_um in lengths_um.items():
+            if edge_key not in graph.edges:
+                raise KeyError(
+                    f"Unknown routed edge key: {edge_key.net_name} "
+                    f"{edge_key.source.instance},{edge_key.source.port} -> "
+                    f"{edge_key.target.instance},{edge_key.target.port}"
+                )
+            self.edge_lengths_um[edge_key] = float(length_um)
 
     def analyze_missing_lengths(
-        self, *, tolerance_um: float = 1.0e-9
+        self,
+        graph: "PhotonicRoutingGraph",
+        *,
+        tolerance_um: float = 1.0e-9,
     ) -> PathLengthAnalysisResult:
-        order = self.topological_order()
+        order = graph.topological_order()
         input_arrivals: dict[str, float] = {}
         output_arrivals: dict[str, float] = {}
         edge_missing: dict[RoutedEdgeKey, float] = {}
@@ -130,23 +147,24 @@ class PhotonicRoutingGraph:
         requirements: list[MissingLengthRequirement] = []
 
         for node_name in order:
-            node = self.nodes[node_name]
-            in_edges = self.incoming_edges.get(node_name, [])
+            node = graph.nodes[node_name]
+            in_edges = graph.incoming_edges.get(node_name, [])
             if not in_edges:
                 input_arrival = 0.0
                 incoming_timings: list[NodeIncomingEdgeTiming] = []
             else:
                 incoming_arrivals: dict[RoutedEdgeKey, float] = {}
                 for edge_key in in_edges:
-                    edge = self.edges[edge_key]
+                    edge = graph.edges[edge_key]
                     src_arrival = output_arrivals.get(edge.source.instance, 0.0)
-                    if edge.routed_length_um is None:
+                    routed_length_um = self.edge_lengths_um.get(edge_key)
+                    if routed_length_um is None:
                         raise ValueError(
                             f"Missing routed length for edge {edge.key.net_name} "
                             f"{edge.source.instance},{edge.source.port} -> "
                             f"{edge.target.instance},{edge.target.port}"
                         )
-                    edge_arrival = src_arrival + edge.routed_length_um
+                    edge_arrival = src_arrival + routed_length_um
                     incoming_arrivals[edge_key] = edge_arrival
 
                 input_arrival = max(incoming_arrivals.values())
@@ -155,9 +173,8 @@ class PhotonicRoutingGraph:
                     missing = max(0.0, input_arrival - arrival)
                     if missing <= tolerance_um:
                         missing = 0.0
-                    self.edges[edge_key].required_extra_length_um = missing
                     edge_missing[edge_key] = missing
-                    routed_length_um = self.edges[edge_key].routed_length_um
+                    routed_length_um = self.edge_lengths_um.get(edge_key)
                     if routed_length_um is None:
                         raise ValueError(
                             f"Missing routed length for edge {edge_key.net_name}"
@@ -190,6 +207,7 @@ class PhotonicRoutingGraph:
                 incoming_edges=incoming_timings,
             )
 
+        self.edge_missing_lengths_um = edge_missing
         return PathLengthAnalysisResult(
             topological_order=order,
             node_arrival_um=output_arrivals,
@@ -199,6 +217,22 @@ class PhotonicRoutingGraph:
             edge_missing_lengths_um=edge_missing,
             requirements=requirements,
         )
+
+
+@dataclass
+class PhotonicRoutingGraph:
+    nodes: dict[str, GraphNode] = field(default_factory=dict)
+    edges: dict[RoutedEdgeKey, GraphEdge] = field(default_factory=dict)
+    incoming_edges: dict[str, list[RoutedEdgeKey]] = field(default_factory=dict)
+    outgoing_edges: dict[str, list[RoutedEdgeKey]] = field(default_factory=dict)
+
+    def topological_order(self) -> list[str]:
+        sorter = TopologicalSorter()
+        for node_name in self.nodes:
+            sorter.add(node_name)
+        for edge in self.edges.values():
+            sorter.add(edge.target.instance, edge.source.instance)
+        return list(sorter.static_order())
 
 
 def _parse_port_ref(spec: str) -> PortRef:
@@ -280,15 +314,8 @@ def build_graph_from_schematic(
 def annotate_edge_lengths(
     graph: PhotonicRoutingGraph,
     lengths_um: Mapping[RoutedEdgeKey, float],
-) -> None:
-    for edge_key, length_um in lengths_um.items():
-        if edge_key not in graph.edges:
-            raise KeyError(
-                f"Unknown routed edge key: {edge_key.net_name} "
-                f"{edge_key.source.instance},{edge_key.source.port} -> "
-                f"{edge_key.target.instance},{edge_key.target.port}"
-            )
-        graph.edges[edge_key].routed_length_um = float(length_um)
+) -> PathLengthGraphAnnotations:
+    return PathLengthGraphAnnotations.from_edge_lengths(graph, lengths_um)
 
 
 def list_edges_requiring_meander(

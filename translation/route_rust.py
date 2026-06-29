@@ -58,6 +58,7 @@ from translation.route_rust_types import (
     RouteJob,
     RouteRustPipelineResult,
     RouteTimingBucket,
+    RoutedNetRecord,
     RustRouteDebugArtifacts,
     _as_float,
     bend_radius_cells_from_um,

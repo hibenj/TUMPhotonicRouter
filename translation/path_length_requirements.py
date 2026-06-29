@@ -7,9 +7,10 @@ from photonic_router.path_length_graph import (
     NodeIncomingEdgeTiming,
     NodeType,
     PathLengthAnalysisResult,
+    PathLengthGraphAnnotations,
+    PhotonicRoutingGraph,
     RoutedEdgeKey,
     SchematicLike,
-    annotate_edge_lengths,
     build_graph_from_schematic,
     list_edges_requiring_meander,
 )
@@ -47,8 +48,23 @@ def analyze_path_length_matching(
         node_types=node_types,
         internal_delays_um=internal_delays_um,
     )
-    annotate_edge_lengths(graph, routed_net_records_to_edge_lengths(routed_net_records))
-    analysis = graph.analyze_missing_lengths()
+    return analyze_path_length_matching_for_graph(
+        graph,
+        routed_net_records=routed_net_records,
+    )
+
+
+def analyze_path_length_matching_for_graph(
+    graph: PhotonicRoutingGraph,
+    *,
+    routed_net_records: list[RoutedNetRecord],
+) -> tuple[PathLengthAnalysisResult, list]:
+    """Compute per-edge missing lengths on an existing Python routing graph."""
+    annotations = PathLengthGraphAnnotations.from_edge_lengths(
+        graph,
+        routed_net_records_to_edge_lengths(routed_net_records),
+    )
+    analysis = annotations.analyze_missing_lengths(graph)
     return analysis, list(list_edges_requiring_meander(analysis))
 
 

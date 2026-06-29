@@ -22,6 +22,7 @@ from photonic_router.path_length_graph import (
     MissingLengthRequirement,
     NodeType,
     PathLengthAnalysisResult,
+    PathLengthGraphAnnotations,
     PhotonicRoutingGraph,
     PortDirection,
     PortRef,
@@ -29,6 +30,14 @@ from photonic_router.path_length_graph import (
     annotate_edge_lengths,
     build_graph_from_schematic,
     list_edges_requiring_meander,
+)
+from photonic_router.graph_analysis import GraphAnalysisContext
+from photonic_router.topology_analysis import (
+    TopologyAnalysisResult,
+    TopologyCrossing,
+    TopologyEdgeRank,
+    analyze_graph_topology,
+    analyze_schematic_topology,
 )
 
 __all__ = [
@@ -43,8 +52,13 @@ __all__ = [
     "GraphEdge",
     "PhotonicRoutingGraph",
     "PathLengthAnalysisResult",
+    "PathLengthGraphAnnotations",
     "MissingLengthRequirement",
     "DelayInsertionCandidate",
+    "GraphAnalysisContext",
+    "TopologyAnalysisResult",
+    "TopologyCrossing",
+    "TopologyEdgeRank",
     "ComponentPortAccessRule",
     "StaticObstacleMapConfig",
     "StaticObstacleMapData",
@@ -52,6 +66,8 @@ __all__ = [
     "HEATER_OPTICAL_PORT_ACCESS_RULES",
     "OPTICAL_OBSTACLE_LAYERS",
     "annotate_edge_lengths",
+    "analyze_graph_topology",
+    "analyze_schematic_topology",
     "build_graph_from_schematic",
     "build_static_obstacle_map",
     "extract_benchmark",
