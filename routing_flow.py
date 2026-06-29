@@ -43,8 +43,8 @@ DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, 
 
 # Edit these values when running `routing_flow.py` directly from an IDE or file.
 # Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "clements_8x8"
-SCRIPT_DEBUG_SVGS: DebugSvgSelector = False  # Examples: True, "all", "5-10", "2,5-10"
+SCRIPT_BENCHMARK = "benes_4x4"
+SCRIPT_DEBUG_SVGS: DebugSvgSelector = True  # Examples: True, "all", "5-10", "2,5-10"
 SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
 SCRIPT_VERBOSE_ROUTES = False
@@ -54,7 +54,7 @@ SCRIPT_BEND_RADIUS_UM = 5.0
 SCRIPT_ENABLE_PATH_LENGTH_MATCHING = False
 SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = False
 SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = DEFAULT_MEANDER_MAX_HEIGHT_UM
-SCRIPT_ENABLE_CROSSINGS = False
+SCRIPT_ENABLE_CROSSINGS = True
 SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
