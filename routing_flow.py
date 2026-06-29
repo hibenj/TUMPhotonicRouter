@@ -1424,9 +1424,17 @@ def run_routing_flow(
         plm_analysis_time = float(timings.get("path_length_analysis", 0.0))
         plm_obstacle_time = float(timings.get("meander_obstacle_map", 0.0))
         plm_planning_time = float(timings.get("meander_planning", 0.0))
+        route_endpoint_correction_time = float(
+            timings.get("route_endpoint_correction", 0.0)
+        )
         realization_time = float(timings.get("route_realization", 0.0))
         plm_total = plm_analysis_time + plm_obstacle_time + plm_planning_time
-        known_substage_time = route_nets_time + plm_total + realization_time
+        known_substage_time = (
+            route_nets_time
+            + route_endpoint_correction_time
+            + plm_total
+            + realization_time
+        )
         overhead_time = max(0.0, route_time - known_substage_time)
         print(
             "      - Optical routing stage time "
@@ -1436,6 +1444,41 @@ def run_routing_flow(
             "        - net routing phase "
             f"(obstacles + A* + repairs): {route_nets_time:.4f} s"
         )
+        route_nets_subtimings = {
+            str(name).removeprefix("route_nets."): float(elapsed_s)
+            for name, elapsed_s in timings.items()
+            if str(name).startswith("route_nets.")
+        }
+        if route_nets_subtimings:
+            ordered_subtiming_names = (
+                "obstacle_map",
+                "router_setup",
+                "route_job_build",
+                "port_opening_prep",
+                "port_opening_batch",
+                "static_map_handoff",
+                "state_opening_precompute",
+                "clearance_exempt_batch",
+                "batch_job_pack",
+                "native_route_batch",
+                "batch_result_processing",
+                "endpoint_correction_pack",
+                "endpoint_correction_native",
+                "endpoint_correction_processing",
+                "record_assembly",
+                "direct_realization",
+                "debug_artifact_assembly",
+            )
+            known_route_nets_s = sum(route_nets_subtimings.values())
+            parts = [
+                f"{name}={route_nets_subtimings[name]:.4f}s"
+                for name in ordered_subtiming_names
+                if route_nets_subtimings.get(name, 0.0) > 0.0
+            ]
+            route_nets_other_s = max(0.0, route_nets_time - known_route_nets_s)
+            if route_nets_other_s > 1.0e-4:
+                parts.append(f"other={route_nets_other_s:.4f}s")
+            print("          route_nets split: " + ", ".join(parts))
         print(
             "          route search: "
             f"astar_loop={float(route_summary.astar_elapsed_s):.4f}s, "
@@ -1520,6 +1563,11 @@ def run_routing_flow(
                 f"(analysis={plm_analysis_time:.4f}s, "
                 f"meander_obstacles={plm_obstacle_time:.4f}s, "
                 f"meander_planning={plm_planning_time:.4f}s)"
+            )
+        if route_endpoint_correction_time > 0.0:
+            print(
+                "        - route endpoint correction phase: "
+                f"{route_endpoint_correction_time:.4f} s"
             )
         print(f"        - route realization phase: {realization_time:.4f} s")
         if overhead_time > 1.0e-3:

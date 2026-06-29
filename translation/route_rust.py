@@ -256,6 +256,13 @@ def route_match_and_realize(
     pipeline_timings_s: dict[str, float] = {
         "route_nets": time.perf_counter() - t_route_nets_start,
     }
+    route_nets_timings = getattr(debug_artifacts, "route_nets_timings_s", {})
+    if isinstance(route_nets_timings, dict):
+        for name, elapsed_s in route_nets_timings.items():
+            try:
+                pipeline_timings_s[f"route_nets.{name}"] = float(elapsed_s)
+            except (TypeError, ValueError):
+                continue
     if debug_timing and verbose_route_diagnostics:
         print(
             "      - Optical net routing phase "
@@ -263,7 +270,11 @@ def route_match_and_realize(
         )
 
     if enable_grid_endpoint_correction:
+        t_endpoint_correction_start = time.perf_counter()
         debug_artifacts = _apply_endpoint_corrections_to_debug_artifacts(debug_artifacts)
+        pipeline_timings_s["route_endpoint_correction"] = (
+            time.perf_counter() - t_endpoint_correction_start
+        )
     analysis_info = None
     requirements_info = None
     meander_report_info = None
@@ -796,18 +807,33 @@ def route_nets_rust(
     routed_layout = unrouted_layout.copy()
     routed_layout.name = "routed_layout_rust"
 
-    t_obstacle_start = 0.0
-    if debug_timing:
-        t_obstacle_start = time.perf_counter()
+    collect_pipeline_timing = (
+        debug_timing or collect_route_stats or collect_attempt_diagnostics
+    )
+    route_nets_timings_s: dict[str, float] = {}
+
+    def _pipeline_timer_start() -> float:
+        return time.perf_counter() if collect_pipeline_timing else 0.0
+
+    def _record_pipeline_timing(name: str, start_s: float) -> None:
+        if collect_pipeline_timing:
+            route_nets_timings_s[name] = route_nets_timings_s.get(name, 0.0) + (
+                time.perf_counter() - start_s
+            )
+
+    t_obstacle_start = _pipeline_timer_start()
     resolved_obstacle_config = _resolve_obstacle_config(
         obstacle_config,
         route_layer=route_layer,
         include_heater_obstacles=include_heater_obstacles,
     )
     obstacle_map = build_static_obstacle_map(unrouted_layout, config=resolved_obstacle_config)
+    _record_pipeline_timing("obstacle_map", t_obstacle_start)
     if debug_timing and verbose_route_diagnostics:
-        t_obstacle_end = time.perf_counter()
-        print(f"      - Obstacle Map time: {t_obstacle_end - t_obstacle_start:.4f} s")
+        print(
+            "      - Obstacle Map time: "
+            f"{route_nets_timings_s.get('obstacle_map', 0.0):.4f} s"
+        )
     grid = obstacle_map.grid
 
     debug_path = Path(debug_dir) if debug_dir is not None else None
@@ -842,6 +868,7 @@ def route_nets_rust(
             "Rebuild/install the Rust extension with the class-based API."
         )
 
+    t_router_setup_start = _pipeline_timer_start()
     origin_x_um, origin_y_um = _grid_origin_xy(grid)
     grid_spec = rust_backend.GridSpec(
         int(grid.width),
@@ -914,6 +941,7 @@ def route_nets_rust(
         int(12 * bend_radius_cells + 2 * commit_radius_cells),
     )
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+    _record_pipeline_timing("router_setup", t_router_setup_start)
 
     port_entry_length_cells = max(2, bend_radius_cells + 2)
     port_entry_half_width_cells = max(1, bend_radius_cells + commit_radius_cells + 1)
@@ -1265,6 +1293,7 @@ def route_nets_rust(
     port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_access_rule_by_spec: dict[str, str | None] = {}
     next_net_id = 1
+    t_route_job_build_start = _pipeline_timer_start()
     for net_name, bundle in nets.items():
         links = bundle.links
         for port1_spec, port2_spec in links.items():
@@ -1288,6 +1317,7 @@ def route_nets_rust(
             next_net_id += 1
             endpoint_ports_by_spec.setdefault(port1_spec, (inst1, port1, source_port))
             endpoint_ports_by_spec.setdefault(port2_spec, (inst2, port2, target_port))
+    _record_pipeline_timing("route_job_build", t_route_job_build_start)
 
     if not hasattr(router, "build_route_port_openings"):
         extension_path = getattr(rust_backend, "__file__", "<unknown>")
@@ -1298,6 +1328,7 @@ def route_nets_rust(
             f"Loaded extension: {extension_path}"
         )
 
+    t_port_opening_prep_start = _pipeline_timer_start()
     port_opening_inputs: list[
         tuple[str, float, float, float | None, str | None, float | None, float | None]
     ] = []
@@ -1325,8 +1356,10 @@ def route_nets_rust(
                 access_width_um,
             )
         )
+    _record_pipeline_timing("port_opening_prep", t_port_opening_prep_start)
 
     raw_static_cells_for_openings = sorted(raw_static_cells)
+    t_port_opening_batch_start = _pipeline_timer_start()
     for port_spec, cells, candidate_cells, runway_cells in router.build_route_port_openings(
         port_opening_inputs,
         raw_static_cells=raw_static_cells_for_openings,
@@ -1349,6 +1382,7 @@ def route_nets_rust(
         port_runway_cells_by_spec[str(port_spec)] = {
             (int(cell[0]), int(cell[1])) for cell in runway_cells
         }
+    _record_pipeline_timing("port_opening_batch", t_port_opening_batch_start)
 
     def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
         return port_to_grid_state(
@@ -1408,6 +1442,7 @@ def route_nets_rust(
     static_blocked_cells_before_port_reservations = set(raw_static_cells)
     static_blocked_cells_before_port_reservations.update(port_runway_static_cells)
 
+    t_static_handoff_start = _pipeline_timer_start()
     blocked_static_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
     if hasattr(obstacle_map, "blocked_static_rects"):
         blocked_static_rects: list[tuple[int, int, int, int]] = []
@@ -1444,6 +1479,7 @@ def route_nets_rust(
                 "`maturin develop --release`."
             )
         router.add_static_cells(sorted(port_runway_static_cells))
+    _record_pipeline_timing("static_map_handoff", t_static_handoff_start)
     repair_config = ripup_reroute_config or RipupRerouteConfig()
     route_jobs_by_id = {job.net_id: job for job in route_jobs}
     route_order = [job.net_id for job in route_jobs]
@@ -1576,14 +1612,20 @@ def route_nets_rust(
             f"Loaded extension: {extension_path}"
         )
 
+    t_state_opening_precompute_start = _pipeline_timer_start()
     route_state_openings_by_id = {
         int(job.net_id): _states_and_openings(job)
         for job in route_jobs
     }
+    _record_pipeline_timing(
+        "state_opening_precompute",
+        t_state_opening_precompute_start,
+    )
     clearance_exempt_inputs = [
         (int(net_id), state_openings[0], state_openings[1])
         for net_id, state_openings in route_state_openings_by_id.items()
     ]
+    t_clearance_exempt_batch_start = _pipeline_timer_start()
     batch_clearance_exempt_cells_by_id = {
         int(net_id): [(int(cell[0]), int(cell[1])) for cell in cells]
         for net_id, cells in router.build_dynamic_clearance_exempt_cells_for_routes(
@@ -1593,6 +1635,10 @@ def route_nets_rust(
             int(commit_radius_cells),
         )
     }
+    _record_pipeline_timing(
+        "clearance_exempt_batch",
+        t_clearance_exempt_batch_start,
+    )
 
     def _state_openings_for_job(
         job: RouteJob,
@@ -2176,6 +2222,7 @@ def route_nets_rust(
         ] = []
         batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
         batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
+        t_batch_job_pack_start = _pipeline_timer_start()
         for job in route_jobs:
             source_state, target_state, _, _, opened_cells = _state_openings_for_job(job)
             clearance_exempt_cells = _clearance_exempt_cells_for_job(job)
@@ -2207,6 +2254,7 @@ def route_nets_rust(
             )
             batch_opened_cells_by_id[int(job.net_id)] = opened_cells
             batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
+        _record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
 
         batch_start = _timing_start()
         raw_batch_result = router.route_many_with_repair_and_commit(
@@ -2220,6 +2268,8 @@ def route_nets_rust(
             int(repair_config.history_increment),
         )
         batch_elapsed_s = time.perf_counter() - batch_start if collect_timing else 0.0
+        _record_pipeline_timing("native_route_batch", batch_start)
+        t_batch_result_processing_start = _pipeline_timer_start()
         batch_result = dict(raw_batch_result)
         raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
         per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
@@ -2304,6 +2354,10 @@ def route_nets_rust(
                 should_print_route=should_print_route,
                 diag_txt=diag_txt,
             )
+        _record_pipeline_timing(
+            "batch_result_processing",
+            t_batch_result_processing_start,
+        )
 
         if str(batch_result.get("status", "")) != "routed":
             failed_net_id = int(batch_result.get("failed_net_id", -1))
@@ -2363,6 +2417,7 @@ def route_nets_rust(
         ] = []
         batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
         batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
+        t_batch_job_pack_start = _pipeline_timer_start()
         for job in route_jobs:
             source_state, target_state, _, _, opened_cells = _state_openings_for_job(job)
             clearance_exempt_cells = _clearance_exempt_cells_for_job(job)
@@ -2394,6 +2449,7 @@ def route_nets_rust(
             )
             batch_opened_cells_by_id[int(job.net_id)] = opened_cells
             batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
+        _record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
 
         batch_start = _timing_start()
         raw_batch_result = router.route_many_normal_and_commit(
@@ -2403,6 +2459,8 @@ def route_nets_rust(
             core_commit_radius_cells,
         )
         batch_elapsed_s = time.perf_counter() - batch_start if collect_timing else 0.0
+        _record_pipeline_timing("native_route_batch", batch_start)
+        t_batch_result_processing_start = _pipeline_timer_start()
         batch_result = dict(raw_batch_result)
         raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
         per_route_elapsed_s = batch_elapsed_s / max(1, len(raw_routes))
@@ -2439,6 +2497,10 @@ def route_nets_rust(
                 should_print_route=should_print_route,
                 diag_txt=diag_txt,
             )
+        _record_pipeline_timing(
+            "batch_result_processing",
+            t_batch_result_processing_start,
+        )
 
         if str(batch_result.get("status", "")) != "routed":
             failed_net_id = int(batch_result.get("failed_net_id", -1))
@@ -2524,6 +2586,7 @@ def route_nets_rust(
                 tuple[float, float] | None,
             ]
         ] = []
+        t_endpoint_correction_pack_start = _pipeline_timer_start()
         for net_id in list(route_bookkeeping.route_order):
             record = route_bookkeeping.records_by_id.get(net_id)
             job = route_jobs_by_id.get(net_id)
@@ -2547,6 +2610,10 @@ def route_nets_rust(
                     target_port,
                 )
             )
+        _record_pipeline_timing(
+            "endpoint_correction_pack",
+            t_endpoint_correction_pack_start,
+        )
 
         correction_start = _timing_start()
         raw_corrections = router.apply_checked_endpoint_corrections_and_commit(
@@ -2556,7 +2623,11 @@ def route_nets_rust(
             int(core_commit_radius_cells),
             not allow_45_degree_turns,
         )
-        correction_elapsed_s = time.perf_counter() - correction_start if collect_timing else 0.0
+        correction_elapsed_s = (
+            time.perf_counter() - correction_start if collect_timing else 0.0
+        )
+        _record_pipeline_timing("endpoint_correction_native", correction_start)
+        t_endpoint_correction_processing_start = _pipeline_timer_start()
         correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
         for raw_correction in cast(Iterable[Any], raw_corrections):
             correction = dict(raw_correction)
@@ -2615,7 +2686,12 @@ def route_nets_rust(
                 corrected_centerline_um=centerline,
                 endpoint_correction_error=None,
             )
+        _record_pipeline_timing(
+            "endpoint_correction_processing",
+            t_endpoint_correction_processing_start,
+        )
 
+    t_record_assembly_start = _pipeline_timer_start()
     routed_net_records = route_bookkeeping.ordered_records()
     routed_record_keys = [
         (record.net_name, record.source.instance, record.source.port, record.target.instance, record.target.port)
@@ -2630,6 +2706,7 @@ def route_nets_rust(
             for name, src_i, src_p, dst_i, dst_p in duplicate_record_keys[:8]
         )
         raise RuntimeError(f"Duplicate routed records generated: {formatted}")
+    _record_pipeline_timing("record_assembly", t_record_assembly_start)
 
     if debug_timing and verbose_route_diagnostics:
         print(f"      - A* route-search loop time: {astar_elapsed_s:.4f} s")
@@ -2701,6 +2778,7 @@ def route_nets_rust(
         float(origin_y_um),
     )
     if not defer_realization:
+        t_direct_realization_start = _pipeline_timer_start()
         realize_routed_net_records(
             routed_layout,
             routed_net_records,
@@ -2710,8 +2788,10 @@ def route_nets_rust(
             allow_45_degree_turns=allow_45_degree_turns,
             bend_radius_cells=bend_radius_cells,
         )
+        _record_pipeline_timing("direct_realization", t_direct_realization_start)
 
-    return routed_layout, build_route_debug_artifacts(
+    t_debug_artifact_start = _pipeline_timer_start()
+    debug_artifacts = build_route_debug_artifacts(
         obstacle_svg=obstacle_svg,
         route_svgs=route_svgs,
         obstacle_map=obstacle_map,
@@ -2727,4 +2807,12 @@ def route_nets_rust(
             astar_elapsed_s=astar_elapsed_s,
         ),
         route_attempt_records=route_attempt_records,
+        route_nets_timings_s=route_nets_timings_s,
     )
+    _record_pipeline_timing("debug_artifact_assembly", t_debug_artifact_start)
+    if collect_pipeline_timing:
+        debug_artifacts = replace(
+            debug_artifacts,
+            route_nets_timings_s=dict(route_nets_timings_s),
+        )
+    return routed_layout, debug_artifacts

@@ -194,6 +194,7 @@ class RustRouteDebugArtifacts:
     static_obstacle_count: int = 0
     static_port_open_count: int = 0
     port_alignment_diagnostics: list[dict[str, object]] = field(default_factory=list)
+    route_nets_timings_s: dict[str, float] = field(default_factory=dict)
     realization_grid_spec: tuple[int, int, float, float, float] | None = None
     realization_allow_45_degree_turns: bool = True
     realization_bend_radius_cells: int = 4

@@ -440,6 +440,7 @@ def build_route_debug_artifacts(
     bend_radius_cells: int,
     route_search_summary: RouteSearchSummary | None = None,
     route_attempt_records: list[RouteAttemptRecord] | None = None,
+    route_nets_timings_s: dict[str, float] | None = None,
 ) -> RustRouteDebugArtifacts:
     return RustRouteDebugArtifacts(
         obstacle_svg=obstacle_svg,
@@ -459,6 +460,7 @@ def build_route_debug_artifacts(
             routed_net_records,
             realization_grid_spec=realization_grid_spec,
         ),
+        route_nets_timings_s=dict(route_nets_timings_s or {}),
         realization_grid_spec=realization_grid_spec,
         realization_allow_45_degree_turns=allow_45_degree_turns,
         realization_bend_radius_cells=bend_radius_cells,

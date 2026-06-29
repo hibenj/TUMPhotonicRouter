@@ -45,6 +45,25 @@ DEFAULT_PERF_RELATIVE_TOLERANCE = 0.10
 DEFAULT_PERF_ABSOLUTE_TOLERANCE_S = 0.05
 DEFAULT_PERF_COUNTER_RELATIVE_TOLERANCE = 0.10
 WORKER_MARKER = "PHOTONIC_BENCHMARK_JSON:"
+ROUTE_NETS_TIMING_KEYS = (
+    "obstacle_map",
+    "router_setup",
+    "route_job_build",
+    "port_opening_prep",
+    "port_opening_batch",
+    "static_map_handoff",
+    "state_opening_precompute",
+    "clearance_exempt_batch",
+    "batch_job_pack",
+    "native_route_batch",
+    "batch_result_processing",
+    "endpoint_correction_pack",
+    "endpoint_correction_native",
+    "endpoint_correction_processing",
+    "record_assembly",
+    "direct_realization",
+    "debug_artifact_assembly",
+)
 AttemptColumn: TypeAlias = Literal[
     "benchmark",
     "attempt_index",
@@ -496,6 +515,10 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
     slowest_meander = _slowest_meander_result(meander_results)
     matching_group_diagnostics = _path_length_group_diagnostics(layout_info)
     path_length_analysis = _path_length_analysis_info(layout_info)
+    route_nets_timing_fields = {
+        f"route_nets_{key}_s": stats.step_times_s.get(f"route_nets.{key}")
+        for key in ROUTE_NETS_TIMING_KEYS
+    }
     return {
         "benchmark": benchmark,
         "instances": stats.instance_count,
@@ -515,6 +538,10 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "meander_obstacle_map_s": stats.step_times_s.get("meander_obstacle_map"),
         "meander_planning_s": stats.step_times_s.get("meander_planning"),
         "route_realization_s": stats.step_times_s.get("route_realization"),
+        "route_endpoint_correction_s": stats.step_times_s.get(
+            "route_endpoint_correction"
+        ),
+        **route_nets_timing_fields,
         "astar_s": stats.astar_time_s,
         "meander_requirements": _list_length(layout_info.get("meander_requirements", [])),
         "path_length_group_count": len(matching_group_diagnostics),
@@ -724,12 +751,13 @@ _REPEAT_MEDIAN_FIELDS = (
     "route_s",
     "route_nets_s",
     "route_realization_s",
+    "route_endpoint_correction_s",
     "astar_s",
     "path_length_analysis_s",
     "meander_obstacle_map_s",
     "meander_planning_s",
     "meander_planner_elapsed_s",
-)
+) + tuple(f"route_nets_{key}_s" for key in ROUTE_NETS_TIMING_KEYS)
 
 
 def _as_float(value: object) -> float | None:
@@ -1047,6 +1075,73 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 fallbacks=_format_int(row["full_grid_fallbacks"]),
             )
         )
+    route_split_rows = [
+        row
+        for row in rows
+        if any(
+            _as_float(row.get(f"route_nets_{key}_s")) is not None
+            for key in ROUTE_NETS_TIMING_KEYS
+        )
+    ]
+    if route_split_rows:
+        lines.extend(
+            [
+                "",
+                "## Route Nets Timing Split",
+                "",
+                "| Benchmark | Obstacle map s | Prep s | Native batch s | Batch post s | Endpoint corr s | Debug/artifact s | Other route_nets s |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        prep_keys = (
+            "router_setup",
+            "route_job_build",
+            "port_opening_prep",
+            "port_opening_batch",
+            "static_map_handoff",
+            "state_opening_precompute",
+            "clearance_exempt_batch",
+            "batch_job_pack",
+        )
+        endpoint_keys = (
+            "endpoint_correction_pack",
+            "endpoint_correction_native",
+            "endpoint_correction_processing",
+        )
+        artifact_keys = ("record_assembly", "debug_artifact_assembly")
+
+        def route_nets_time(row: Mapping[str, object], key: str) -> float:
+            return _numeric_float(row.get(f"route_nets_{key}_s"))
+
+        for row in route_split_rows:
+            obstacle_map_s = route_nets_time(row, "obstacle_map")
+            prep_s = sum(route_nets_time(row, key) for key in prep_keys)
+            native_batch_s = route_nets_time(row, "native_route_batch")
+            batch_post_s = route_nets_time(row, "batch_result_processing")
+            endpoint_s = sum(route_nets_time(row, key) for key in endpoint_keys)
+            artifact_s = sum(route_nets_time(row, key) for key in artifact_keys)
+            known_s = (
+                obstacle_map_s
+                + prep_s
+                + native_batch_s
+                + batch_post_s
+                + endpoint_s
+                + artifact_s
+            )
+            route_nets_s = _numeric_float(row.get("route_nets_s"))
+            other_s = max(0.0, route_nets_s - known_s)
+            lines.append(
+                "| {benchmark} | {obstacle_map_s} | {prep_s} | {native_batch_s} | {batch_post_s} | {endpoint_s} | {artifact_s} | {other_s} |".format(
+                    benchmark=row.get("benchmark", ""),
+                    obstacle_map_s=_format_seconds(obstacle_map_s),
+                    prep_s=_format_seconds(prep_s),
+                    native_batch_s=_format_seconds(native_batch_s),
+                    batch_post_s=_format_seconds(batch_post_s),
+                    endpoint_s=_format_seconds(endpoint_s),
+                    artifact_s=_format_seconds(artifact_s),
+                    other_s=_format_seconds(other_s),
+                )
+            )
     repeated_rows = [
         row for row in rows if int(row.get("repeat_runs", 1) or 1) > 1
     ]
