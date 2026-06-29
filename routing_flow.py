@@ -1088,7 +1088,7 @@ def run_routing_flow(
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
-    enable_crossings: bool = SCRIPT_ENABLE_CROSSINGS,
+    enable_crossings: bool = False,
     allow_45_degree_turns: bool = SCRIPT_ALLOW_45_DEGREE_TURNS,
     bend_radius_um: float = SCRIPT_BEND_RADIUS_UM,
     enable_jps4: bool = False,

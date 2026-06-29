@@ -384,6 +384,25 @@ impl ObstacleMap {
         clearance_exempt_cells: &[(i32, i32)],
         allowed_core_overlap_nets: &FxHashSet<NetId>,
     ) -> bool {
+        self.commit_route_with_clearance_and_allowed_core_overlap_cells(
+            net_id,
+            core_cells,
+            blocked_cells,
+            clearance_exempt_cells,
+            allowed_core_overlap_nets,
+            None,
+        )
+    }
+
+    pub fn commit_route_with_clearance_and_allowed_core_overlap_cells(
+        &mut self,
+        net_id: NetId,
+        core_cells: &[(i32, i32)],
+        blocked_cells: &[(i32, i32)],
+        clearance_exempt_cells: &[(i32, i32)],
+        allowed_core_overlap_nets: &FxHashSet<NetId>,
+        allowed_core_overlap_cells: Option<&FxHashSet<CellKey>>,
+    ) -> bool {
         let mut keys = Vec::with_capacity(blocked_cells.len());
         let mut seen = FxHashSet::default();
         for &(x, y) in blocked_cells {
@@ -439,6 +458,7 @@ impl ObstacleMap {
                     && other_owners
                         .iter()
                         .all(|owner| allowed_core_overlap_nets.contains(owner))
+                    && allowed_core_overlap_cells.is_none_or(|cells| cells.contains(&key))
             };
             if existing_refs > same_net_refs
                 && !allowed_clearance_overlap
@@ -603,6 +623,32 @@ impl ObstacleMap {
                 continue;
             }
             let (x, y) = unpack_xy(key);
+            self.dynamic_obstacles.remove(&key);
+            self.dynamic_core_obstacles.remove(&key);
+            self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
+            cleared += 1;
+        }
+        cleared
+    }
+
+    pub fn clear_dynamic_blocking_in_cells_for_nets(
+        &mut self,
+        cells: &FxHashSet<CellKey>,
+        net_ids: &FxHashSet<NetId>,
+    ) -> usize {
+        if cells.is_empty() || net_ids.is_empty() {
+            return 0;
+        }
+        let mut cleared = 0usize;
+        for &key in cells {
+            let (x, y) = unpack_xy(key);
+            if !self.in_bounds(x, y) {
+                continue;
+            }
+            let owners = self.dynamic_owners_for_key(key, None);
+            if owners.is_empty() || !owners.iter().all(|owner| net_ids.contains(owner)) {
+                continue;
+            }
             self.dynamic_obstacles.remove(&key);
             self.dynamic_core_obstacles.remove(&key);
             self.clear_occupancy_bit(x, y, DYNAMIC_BIT);

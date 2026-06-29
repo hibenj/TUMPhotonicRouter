@@ -54,6 +54,7 @@ use crate::plm::{
 use crate::primitives::{
     create_grid4_unit_grid_primitive_library, create_jps4_unit_grid_primitive_library,
     create_photonic_primitive_library, Primitive, PrimitiveLibrary, PrimitiveLibraryConfig,
+    DIRECTIONS,
 };
 use crate::static_obstacle_builder::{
     physical_to_grid, rasterize_polygon, PortInput, PyStaticCellSet, StaticGridSpec,
@@ -642,6 +643,7 @@ pub struct PyPhotonicRouter {
     obstacle_map: ObstacleMap,
     primitives: PrimitiveLibrary,
     crossing_context: CrossingContext,
+    committed_center_routes: FxHashMap<u64, Vec<(i32, i32)>>,
     static_cells: FxHashSet<CellKey>,
     port_open_cells: FxHashSet<CellKey>,
     registered_plm: RefCell<RegisteredPlmContext>,
@@ -1338,6 +1340,226 @@ fn cells_with_other_dynamic_owner(
                 .any(|owner| owner != net_id)
         })
         .collect()
+}
+
+#[derive(Clone)]
+struct CrossingAnchorCandidate {
+    partner_net_id: u64,
+    state: State,
+    window_keys: FxHashSet<CellKey>,
+    score: f64,
+}
+
+fn straight_runs(cells: &[(i32, i32)]) -> Vec<(usize, usize, u8)> {
+    if cells.len() < 3 {
+        return Vec::new();
+    }
+    let mut runs = Vec::new();
+    let mut run_start = 0usize;
+    let mut current_angle = match direction_angle_between_cells(cells[0], cells[1]) {
+        Some(angle) => angle,
+        None => return runs,
+    };
+    for index in 1..(cells.len() - 1) {
+        let Some(next_angle) = direction_angle_between_cells(cells[index], cells[index + 1]) else {
+            if index > run_start {
+                runs.push((run_start, index, current_angle));
+            }
+            run_start = index + 1;
+            if run_start + 1 < cells.len() {
+                if let Some(angle) =
+                    direction_angle_between_cells(cells[run_start], cells[run_start + 1])
+                {
+                    current_angle = angle;
+                }
+            }
+            continue;
+        };
+        if next_angle != current_angle {
+            runs.push((run_start, index, current_angle));
+            run_start = index;
+            current_angle = next_angle;
+        }
+    }
+    if cells.len() - 1 > run_start {
+        runs.push((run_start, cells.len() - 1, current_angle));
+    }
+    runs
+}
+
+fn direction_angle_between_cells(a: (i32, i32), b: (i32, i32)) -> Option<u8> {
+    let step = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
+    DIRECTIONS
+        .iter()
+        .position(|dir| *dir == step)
+        .map(|idx| idx as u8)
+}
+
+fn perpendicular_angles(angle: u8) -> [u8; 2] {
+    [
+        ((angle as i32 + 2).rem_euclid(8)) as u8,
+        ((angle as i32 + 6).rem_euclid(8)) as u8,
+    ]
+}
+
+fn crossing_anchor_score(source: State, target: State, anchor: State, partner_angle: u8) -> f64 {
+    let distance = octile_cells((source.x, source.y), (anchor.x, anchor.y))
+        + octile_cells((anchor.x, anchor.y), (target.x, target.y));
+    let (cross_dx, cross_dy) = DIRECTIONS[(anchor.angle % 8) as usize];
+    let target_dx = (target.x - anchor.x).signum();
+    let target_dy = (target.y - anchor.y).signum();
+    let direction_penalty = if cross_dx * target_dx + cross_dy * target_dy >= 0 {
+        0.0
+    } else {
+        32.0
+    };
+    let partner_parallel_penalty = if anchor.angle == partner_angle {
+        128.0
+    } else {
+        0.0
+    };
+    distance + direction_penalty + partner_parallel_penalty
+}
+
+fn octile_cells(a: (i32, i32), b: (i32, i32)) -> f64 {
+    let dx = (a.0 - b.0).abs() as f64;
+    let dy = (a.1 - b.1).abs() as f64;
+    dx.max(dy)
+}
+
+fn crossing_window_keys(
+    x: i32,
+    y: i32,
+    radius: i32,
+    width: i32,
+    height: i32,
+) -> FxHashSet<CellKey> {
+    let mut keys = FxHashSet::default();
+    for dx in -radius..=radius {
+        for dy in -radius..=radius {
+            let nx = x + dx;
+            let ny = y + dy;
+            if nx >= 0 && nx < width && ny >= 0 && ny < height {
+                keys.insert(pack_xy(nx, ny));
+            }
+        }
+    }
+    keys
+}
+
+fn compressed_waypoints_for_path(path: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    if path.len() <= 2 {
+        return path.to_vec();
+    }
+    let mut waypoints = Vec::new();
+    push_unique_point(&mut waypoints, path[0]);
+    let mut prev_dir = (
+        (path[1].0 - path[0].0).signum(),
+        (path[1].1 - path[0].1).signum(),
+    );
+    for index in 2..path.len() {
+        let dir = (
+            (path[index].0 - path[index - 1].0).signum(),
+            (path[index].1 - path[index - 1].1).signum(),
+        );
+        if dir != prev_dir {
+            push_unique_point(&mut waypoints, path[index - 1]);
+        }
+        prev_dir = dir;
+    }
+    push_unique_point(&mut waypoints, path[path.len() - 1]);
+    waypoints
+}
+
+fn push_unique_point(points: &mut Vec<(i32, i32)>, point: (i32, i32)) {
+    if points.last().copied() != Some(point) {
+        points.push(point);
+    }
+}
+
+fn combine_route_search_stats(mut a: RouteSearchStats, b: RouteSearchStats) -> RouteSearchStats {
+    a.window_attempts += b.window_attempts;
+    a.used_full_grid_fallback |= b.used_full_grid_fallback;
+    a.expanded_states += b.expanded_states;
+    a.generated_neighbors += b.generated_neighbors;
+    a.heap_pushes += b.heap_pushes;
+    a.heap_pops += b.heap_pops;
+    a.skipped_duplicate_heap_entries += b.skipped_duplicate_heap_entries;
+    a.stale_generation_heap_entries += b.stale_generation_heap_entries;
+    a.closed_heap_entries += b.closed_heap_entries;
+    a.max_heap_size = a.max_heap_size.max(b.max_heap_size);
+    a.dense_search_states += b.dense_search_states;
+    a.dense_search_storage_bytes += b.dense_search_storage_bytes;
+    a.best_cost_updates += b.best_cost_updates;
+    a.parent_updates += b.parent_updates;
+    a.obstacle_clearance_checks += b.obstacle_clearance_checks;
+    a.window_rejects += b.window_rejects;
+    a.footprint_rejects += b.footprint_rejects;
+    for idx in 0..a.primitive_generated_by_class.len() {
+        a.primitive_generated_by_class[idx] += b.primitive_generated_by_class[idx];
+        a.primitive_bounds_rejects_by_class[idx] += b.primitive_bounds_rejects_by_class[idx];
+        a.primitive_closed_rejects_by_class[idx] += b.primitive_closed_rejects_by_class[idx];
+        a.primitive_cost_pruned_by_class[idx] += b.primitive_cost_pruned_by_class[idx];
+        a.primitive_footprint_checks_by_class[idx] += b.primitive_footprint_checks_by_class[idx];
+        a.primitive_footprint_rejects_by_class[idx] += b.primitive_footprint_rejects_by_class[idx];
+        a.primitive_accepted_by_class[idx] += b.primitive_accepted_by_class[idx];
+    }
+    a.primitive_footprint_checks += b.primitive_footprint_checks;
+    a.primitive_footprint_cells_tested += b.primitive_footprint_cells_tested;
+    a.primitive_footprint_rect_checks += b.primitive_footprint_rect_checks;
+    a.primitive_footprint_rect_rejects += b.primitive_footprint_rect_rejects;
+    a.dense_grid_build_failures += b.dense_grid_build_failures;
+    a.max_window_area_cells = a.max_window_area_cells.max(b.max_window_area_cells);
+    a.dense_grid_cells += b.dense_grid_cells;
+    a.route_search_total_time_us += b.route_search_total_time_us;
+    a.dense_grid_build_time_us += b.dense_grid_build_time_us;
+    a.search_loop_time_us += b.search_loop_time_us;
+    a.obstacle_map_prepare_time_us += b.obstacle_map_prepare_time_us;
+    a.simple_route_time_us += b.simple_route_time_us;
+    a.commit_prepare_time_us += b.commit_prepare_time_us;
+    a.commit_time_us += b.commit_time_us;
+    a.neighbor_generation_time_us += b.neighbor_generation_time_us;
+    a.heap_operation_time_us += b.heap_operation_time_us;
+    a.legality_check_time_us += b.legality_check_time_us;
+    a.reconstruction_time_us += b.reconstruction_time_us;
+    a.jps4_requested |= b.jps4_requested;
+    a.jps4_eligible &= b.jps4_eligible;
+    a.jps4_used |= b.jps4_used;
+    a.jps4_fallbacks += b.jps4_fallbacks;
+    if a.jps4_fallback_reason.is_empty() {
+        a.jps4_fallback_reason = b.jps4_fallback_reason;
+    }
+    a
+}
+
+fn combine_anchor_route(first: RouteResult, second: RouteResult) -> RouteResult {
+    let mut states = first.states.clone();
+    states.extend(second.states.iter().copied().skip(1));
+    let mut primitives = first.primitives.clone();
+    primitives.extend(second.primitives.iter().copied());
+    let mut cells = Vec::new();
+    let mut seen = FxHashSet::default();
+    for cell in first.cells.iter().chain(second.cells.iter()).copied() {
+        if seen.insert(pack_xy(cell.0, cell.1)) {
+            cells.push(cell);
+        }
+    }
+    let mut ordered_path = first.compressed_waypoints.clone();
+    for point in &second.compressed_waypoints {
+        push_unique_point(&mut ordered_path, *point);
+    }
+    let stats = combine_route_search_stats(first.stats.clone(), second.stats.clone());
+    RouteResult {
+        states,
+        primitives,
+        cells,
+        compressed_waypoints: compressed_waypoints_for_path(&ordered_path),
+        total_length_um: first.total_length_um + second.total_length_um,
+        total_cost: first.total_cost + second.total_cost,
+        requested_target: second.requested_target,
+        reached_target: second.reached_target,
+        stats,
+    }
 }
 
 fn primitive_kind(p: &Primitive) -> String {
@@ -2078,6 +2300,129 @@ impl PyPhotonicRouter {
             .collect()
     }
 
+    fn crossing_anchor_candidates(
+        &self,
+        net_id: u64,
+        source: State,
+        target: State,
+        block_radius_cells: i32,
+    ) -> Vec<CrossingAnchorCandidate> {
+        let partner_ids = self.crossing_allowed_partner_set(net_id);
+        if partner_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let cfg = self.crossing_context.config();
+        let min_margin = cfg
+            .min_straight_cells_per_crossing
+            .max(cfg.crossing_half_size_cells)
+            .max(block_radius_cells)
+            .max(1);
+        let window_radius = cfg.crossing_half_size_cells.max(block_radius_cells).max(0);
+        let mut candidates = Vec::new();
+        for partner_id in partner_ids {
+            let Some(route_cells) = self.committed_center_routes.get(&partner_id) else {
+                continue;
+            };
+            for (run_start, run_end, partner_angle) in straight_runs(route_cells) {
+                if run_end <= run_start {
+                    continue;
+                }
+                let run_len = (run_end - run_start) as i32;
+                if run_len < min_margin * 2 {
+                    continue;
+                }
+                for index in (run_start + min_margin as usize)..=(run_end - min_margin as usize) {
+                    let (x, y) = route_cells[index];
+                    for crossing_angle in perpendicular_angles(partner_angle) {
+                        let score = crossing_anchor_score(
+                            source,
+                            target,
+                            State::new(x, y, crossing_angle),
+                            partner_angle,
+                        );
+                        let window_keys = crossing_window_keys(
+                            x,
+                            y,
+                            window_radius,
+                            self.grid.width as i32,
+                            self.grid.height as i32,
+                        );
+                        candidates.push(CrossingAnchorCandidate {
+                            partner_net_id: partner_id,
+                            state: State::new(x, y, crossing_angle),
+                            window_keys,
+                            score,
+                        });
+                    }
+                }
+            }
+        }
+        candidates.sort_by(|a, b| {
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.partner_net_id.cmp(&b.partner_net_id))
+                .then_with(|| a.state.x.cmp(&b.state.x))
+                .then_with(|| a.state.y.cmp(&b.state.y))
+                .then_with(|| a.state.angle.cmp(&b.state.angle))
+        });
+        candidates.truncate(24);
+        candidates
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_route_via_crossing_anchor(
+        &self,
+        net_id: u64,
+        source: State,
+        target: State,
+        opened_ref: &FxHashSet<CellKey>,
+        search_cfg: &AStarConfig,
+        block_radius_cells: i32,
+        dynamic_clearance_exempt_keys: Option<&FxHashSet<CellKey>>,
+    ) -> Option<(RouteResult, CrossingAnchorCandidate)> {
+        let candidates =
+            self.crossing_anchor_candidates(net_id, source, target, block_radius_cells);
+        for candidate in candidates {
+            let mut allowed_partner_ids = FxHashSet::default();
+            allowed_partner_ids.insert(candidate.partner_net_id);
+            let mut search_map = self.obstacle_map.clone();
+            search_map.clear_dynamic_blocking_in_cells_for_nets(
+                &candidate.window_keys,
+                &allowed_partner_ids,
+            );
+            let mut opened_with_anchor = opened_ref.clone();
+            opened_with_anchor.extend(candidate.window_keys.iter().copied());
+            let Some(first) = route_single_net_with_dynamic_expansion_config(
+                &search_map,
+                &self.primitives,
+                source,
+                candidate.state,
+                Some(&opened_with_anchor),
+                search_cfg,
+                block_radius_cells.max(0),
+                dynamic_clearance_exempt_keys,
+            ) else {
+                continue;
+            };
+            let Some(second) = route_single_net_with_dynamic_expansion_config(
+                &search_map,
+                &self.primitives,
+                candidate.state,
+                target,
+                Some(&opened_with_anchor),
+                search_cfg,
+                block_radius_cells.max(0),
+                dynamic_clearance_exempt_keys,
+            ) else {
+                continue;
+            };
+            return Some((combine_anchor_route(first, second), candidate));
+        }
+        None
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn route_single_net_and_commit_native(
         &mut self,
@@ -2132,16 +2477,74 @@ impl PyPhotonicRouter {
             } else {
                 None
             };
-        let crossing_allowed_partner_ids = self.crossing_allowed_partner_set(net_id);
-        let crossing_search_obstacle_map_owned = if crossing_allowed_partner_ids.is_empty() {
-            None
-        } else {
-            let mut crossing_map = self.obstacle_map.clone();
-            crossing_map.clear_dynamic_blocking_for_nets(&crossing_allowed_partner_ids);
-            Some(crossing_map)
-        };
         if let Some(prepare_start) = prepare_start.as_ref() {
             obstacle_map_prepare_time_us += prepare_start.elapsed().as_micros();
+        }
+        let source_state = State::new(source.x, source.y, source.angle);
+        let target_state = State::new(target.x, target.y, target.angle);
+        if let Some((mut anchored_result, anchor)) = self.try_route_via_crossing_anchor(
+            net_id,
+            source_state,
+            target_state,
+            opened_ref,
+            &cfg,
+            block_radius_cells,
+            dynamic_clearance_exempt_keys,
+        ) {
+            let commit_prepare_start = if collect_timing {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            let route_cells = route_commit_cells(
+                &anchored_result.cells,
+                block_radius_cells,
+                commit_radius_cells.unwrap_or(block_radius_cells),
+                clearance_exempt_cells,
+                self.grid.width as i32,
+                self.grid.height as i32,
+            );
+            let core_cells = route_core_cells(
+                &anchored_result.cells,
+                core_radius_cells.unwrap_or(block_radius_cells),
+                self.grid.width as i32,
+                self.grid.height as i32,
+            );
+            if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
+                commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
+            }
+            let mut allowed_partner_ids = FxHashSet::default();
+            allowed_partner_ids.insert(anchor.partner_net_id);
+            let commit_start = if collect_timing {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            let committed = self
+                .obstacle_map
+                .commit_route_with_clearance_and_allowed_core_overlap_cells(
+                    net_id,
+                    &core_cells,
+                    &route_cells,
+                    clearance_exempt_cells.unwrap_or(&[]),
+                    &allowed_partner_ids,
+                    Some(&anchor.window_keys),
+                );
+            if let Some(commit_start) = commit_start.as_ref() {
+                commit_time_us += commit_start.elapsed().as_micros();
+            }
+            if committed {
+                if collect_timing {
+                    anchored_result.stats.obstacle_map_prepare_time_us +=
+                        obstacle_map_prepare_time_us;
+                    anchored_result.stats.commit_prepare_time_us += commit_prepare_time_us;
+                    anchored_result.stats.commit_time_us += commit_time_us;
+                }
+                self.committed_center_routes
+                    .insert(net_id, anchored_result.cells.clone());
+                self.invalidate_meander_base_prefix();
+                return Ok(anchored_result);
+            }
         }
         if block_radius_cells > 0 {
             let simple_start = if collect_timing {
@@ -2150,14 +2553,11 @@ impl PyPhotonicRouter {
                 None
             };
             let simple_result = {
-                let search_map = crossing_search_obstacle_map_owned
-                    .as_ref()
-                    .unwrap_or(&self.obstacle_map);
                 try_simple_route_with_dynamic_expansion_config(
-                    search_map,
+                    &self.obstacle_map,
                     &self.primitives,
-                    State::new(source.x, source.y, source.angle),
-                    State::new(target.x, target.y, target.angle),
+                    source_state,
+                    target_state,
                     Some(opened_ref),
                     &cfg,
                     block_radius_cells,
@@ -2195,6 +2595,7 @@ impl PyPhotonicRouter {
                 } else {
                     None
                 };
+                let allowed_partner_ids = FxHashSet::default();
                 let committed = self
                     .obstacle_map
                     .commit_route_with_clearance_and_allowed_core_overlaps(
@@ -2202,7 +2603,7 @@ impl PyPhotonicRouter {
                         &core_cells,
                         &route_cells,
                         clearance_exempt_cells.unwrap_or(&[]),
-                        &crossing_allowed_partner_ids,
+                        &allowed_partner_ids,
                     );
                 if let Some(commit_start) = commit_start.as_ref() {
                     commit_time_us += commit_start.elapsed().as_micros();
@@ -2214,6 +2615,8 @@ impl PyPhotonicRouter {
                         result.stats.commit_prepare_time_us += commit_prepare_time_us;
                         result.stats.commit_time_us += commit_time_us;
                     }
+                    self.committed_center_routes
+                        .insert(net_id, result.cells.clone());
                     self.invalidate_meander_base_prefix();
                     return Ok(result);
                 }
@@ -2233,14 +2636,11 @@ impl PyPhotonicRouter {
             && !search_cfg.enable_jps4;
         let mut opened_dynamic_obstacle_map;
         let mut result = if block_radius_cells > 0 || zero_radius_overlay {
-            let search_map = crossing_search_obstacle_map_owned
-                .as_ref()
-                .unwrap_or(&self.obstacle_map);
             route_single_net_with_dynamic_expansion_config(
-                search_map,
+                &self.obstacle_map,
                 &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
+                source_state,
+                target_state,
                 Some(opened_ref),
                 &search_cfg,
                 block_radius_cells.max(0),
@@ -2248,23 +2648,18 @@ impl PyPhotonicRouter {
             )
         } else {
             let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
-                let base_map = crossing_search_obstacle_map_owned
-                    .as_ref()
-                    .unwrap_or(&self.obstacle_map);
-                opened_dynamic_obstacle_map = base_map.clone();
+                opened_dynamic_obstacle_map = self.obstacle_map.clone();
                 opened_dynamic_obstacle_map
                     .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
                 &opened_dynamic_obstacle_map
             } else {
-                crossing_search_obstacle_map_owned
-                    .as_ref()
-                    .unwrap_or(&self.obstacle_map)
+                &self.obstacle_map
             };
             route_single_net_with_config(
                 search_obstacle_map,
                 &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
+                source_state,
+                target_state,
                 Some(opened_ref),
                 &search_cfg,
             )
@@ -2302,6 +2697,7 @@ impl PyPhotonicRouter {
         } else {
             None
         };
+        let allowed_partner_ids = FxHashSet::default();
         let committed = self
             .obstacle_map
             .commit_route_with_clearance_and_allowed_core_overlaps(
@@ -2309,7 +2705,7 @@ impl PyPhotonicRouter {
                 &core_cells,
                 &route_cells,
                 clearance_exempt_cells.unwrap_or(&[]),
-                &crossing_allowed_partner_ids,
+                &allowed_partner_ids,
             );
         if let Some(commit_start) = commit_start.as_ref() {
             result.stats.commit_time_us += commit_start.elapsed().as_micros();
@@ -2317,6 +2713,8 @@ impl PyPhotonicRouter {
         if !committed {
             return Err("Failed to commit routed cells to obstacle map".to_string());
         }
+        self.committed_center_routes
+            .insert(net_id, result.cells.clone());
         self.invalidate_meander_base_prefix();
 
         Ok(result)
@@ -2521,6 +2919,8 @@ impl PyPhotonicRouter {
             clearance_exempt_cells,
         );
         if committed {
+            self.committed_center_routes
+                .insert(net_id, route.cells.clone());
             self.invalidate_meander_base_prefix();
         }
         committed
@@ -2854,6 +3254,7 @@ impl PyPhotonicRouter {
             astar_cfg_cached,
             primitives,
             crossing_context: CrossingContext::default(),
+            committed_center_routes: FxHashMap::default(),
             static_cells: FxHashSet::default(),
             port_open_cells: FxHashSet::default(),
             registered_plm: RefCell::new(RegisteredPlmContext::default()),
@@ -2937,6 +3338,7 @@ impl PyPhotonicRouter {
         self.invalidate_meander_base_prefix();
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.static_cells.clear();
+        self.committed_center_routes.clear();
         let mut plm = self.registered_plm.borrow_mut();
         plm.clear_registered_routes();
         plm.clear_reserved_cells_and_invalidate_index();
@@ -3150,6 +3552,7 @@ impl PyPhotonicRouter {
         let reset_start = Instant::now();
         self.invalidate_meander_base_prefix();
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
+        self.committed_center_routes.clear();
         profile.reset_s += reset_start.elapsed().as_secs_f64();
         let base_static_pack_start = Instant::now();
         let base_static_keys = pack_cells(&base_static_cells);
@@ -3238,6 +3641,7 @@ impl PyPhotonicRouter {
         let reset_start = Instant::now();
         self.invalidate_meander_base_prefix();
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
+        self.committed_center_routes.clear();
         self.static_cells = base_static_keys.clone();
         {
             let mut plm = self.registered_plm.borrow_mut();
@@ -3803,6 +4207,7 @@ impl PyPhotonicRouter {
             let max_victims = max_victims_per_failure.max(1);
             let mut repaired = false;
             let round_base_map = self.obstacle_map.clone();
+            let round_base_center_routes = self.committed_center_routes.clone();
             let round_base_routes = final_routes.clone();
 
             for round_idx in 1..=max_rounds {
@@ -3817,6 +4222,7 @@ impl PyPhotonicRouter {
                 for victim_first in [false, true] {
                     let reset_start = native_batch_timer(collect_native_timing);
                     self.obstacle_map = round_base_map.clone();
+                    self.committed_center_routes = round_base_center_routes.clone();
                     self.invalidate_meander_base_prefix();
                     final_routes = round_base_routes.clone();
                     timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
@@ -3833,6 +4239,7 @@ impl PyPhotonicRouter {
                         }
                         let ripup_start = native_batch_timer(collect_native_timing);
                         self.obstacle_map.ripup_route(*old_id);
+                        self.committed_center_routes.remove(old_id);
                         timings.ripup_us += native_batch_elapsed_us(ripup_start);
                         final_routes.remove(old_id);
                     }
@@ -4088,6 +4495,7 @@ impl PyPhotonicRouter {
             if !repaired {
                 let reset_start = native_batch_timer(collect_native_timing);
                 self.obstacle_map = round_base_map;
+                self.committed_center_routes = round_base_center_routes;
                 self.invalidate_meander_base_prefix();
                 final_routes = round_base_routes;
                 timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
@@ -4163,6 +4571,7 @@ impl PyPhotonicRouter {
     fn ripup_route(&mut self, net_id: u64) -> bool {
         let removed = self.obstacle_map.ripup_route(net_id);
         if removed {
+            self.committed_center_routes.remove(&net_id);
             self.invalidate_meander_base_prefix();
         }
         removed
@@ -4170,6 +4579,7 @@ impl PyPhotonicRouter {
 
     fn clear_dynamic(&mut self) {
         self.obstacle_map.clear_dynamic();
+        self.committed_center_routes.clear();
         self.invalidate_meander_base_prefix();
     }
 

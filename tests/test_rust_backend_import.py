@@ -89,3 +89,44 @@ def test_router_crossing_context_stores_expected_pairs():
     router.clear_crossing_constraints()
     assert router.crossing_expected_count(3) == 0
     assert router.crossing_has_expected_pair(3, 1) is False
+
+
+def test_crossing_enabled_route_uses_expected_partner_anchor():
+    backend = _load_rust_backend()
+    assert backend is not None
+
+    primitive = backend.PrimitiveLibraryConfig()
+    primitive.grid4_unit_grid = True
+    router = backend.PyPhotonicRouter(
+        backend.GridSpec(32, 32, 1.0, 0.0, 0.0),
+        primitive,
+        backend.AStarConfig(max_iterations=10_000),
+    )
+
+    router.route_single_net_and_commit(
+        1,
+        backend.State(10, 5, 2),
+        backend.State(10, 24, 2),
+        block_radius_cells=0,
+    )
+    router.set_crossing_constraints(
+        [backend.CrossingConstraint(2, 1, level=0, source_depth=0, target_depth=1)]
+    )
+    router.set_crossing_config(
+        backend.CrossingConfig(
+            enabled=True,
+            crossing_half_size_cells=0,
+            min_straight_cells_per_crossing=2,
+        )
+    )
+
+    router.route_single_net_and_commit(
+        2,
+        backend.State(3, 12, 0),
+        backend.State(24, 12, 0),
+        block_radius_cells=0,
+    )
+
+    net1_core = {tuple(cell) for cell in router.get_net_core_cells(1)}
+    net2_core = {tuple(cell) for cell in router.get_net_core_cells(2)}
+    assert net1_core & net2_core

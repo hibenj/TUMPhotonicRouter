@@ -185,13 +185,18 @@ def _build_crossing_plan_info(
         info["reason"] = "missing_topology_metadata"
         return info
 
-    topology = analyze_schematic_topology(
-        schematic,
-        node_depths=node_depths,
-        node_ranks=node_ranks,
-        edge_ranks=edge_ranks,
-    )
-    crossing_plan: CrossingPlan = build_crossing_plan(topology)
+    try:
+        topology = analyze_schematic_topology(
+            schematic,
+            node_depths=node_depths,
+            node_ranks=node_ranks,
+            edge_ranks=edge_ranks,
+        )
+        crossing_plan: CrossingPlan = build_crossing_plan(topology)
+    except (KeyError, ValueError) as exc:
+        info["reason"] = "invalid_topology_metadata"
+        info["error"] = str(exc)
+        return info
     info["event_count"] = len(crossing_plan.events)
     info["stage_count"] = len(crossing_plan.stages)
     info["plan_text"] = crossing_plan.to_text(include_empty_stages=True)
