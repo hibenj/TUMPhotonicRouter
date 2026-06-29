@@ -137,7 +137,9 @@ def _electrical_die_bbox(
     margin = config.layout_margin_um
     x_margin = max(
         margin,
-        config.bus_x_margin_um + config.pad_pitch_um + config.bondpad_width_um,
+        config.bus_x_margin_um
+        + (individual_route_count + 1) * config.pad_pitch_um
+        + config.common_bus_bondpad_width_um,
     )
     bus_extra = config.bus_offset_um + config.bus_width_um + margin
     pad_offset_um = max(
@@ -176,7 +178,7 @@ def _bus_bbox(layout_bbox: BBox, config: ElectricalRoutingConfig) -> BBox:
     xmin, ymin, xmax, ymax = layout_bbox
     x0 = xmin - config.bus_x_margin_um
     x1 = xmax + config.bus_x_margin_um
-    pad_side_extension = config.pad_pitch_um + config.bondpad_width_um
+    pad_side_extension = config.pad_pitch_um + config.common_bus_bondpad_width_um
     if config.common_bus_pad_position == "left":
         x0 -= pad_side_extension
     else:

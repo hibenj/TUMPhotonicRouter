@@ -22,6 +22,9 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 from translation.electrical import (
+    DEFAULT_BUS_WIDTH_UM,
+    DEFAULT_PAD_PITCH_UM,
+    DEFAULT_WIRE_WIDTH_UM,
     ElectricalRoutingConfig,
     ElectricalVerificationIssue,
     ElectricalVerificationResult,
@@ -72,10 +75,10 @@ SCRIPT_ENABLE_ELECTRICAL_ROUTING = False
 SCRIPT_ELECTRICAL_PAD_SIDE = "top"
 SCRIPT_ELECTRICAL_GRID_PITCH_UM = 10.0
 SCRIPT_ELECTRICAL_OBSTACLE_CLEARANCE_UM = 10.0
-SCRIPT_ELECTRICAL_WIRE_WIDTH_UM = 20.0
-SCRIPT_ELECTRICAL_BUS_WIDTH_UM = 60.0
+SCRIPT_ELECTRICAL_WIRE_WIDTH_UM = DEFAULT_WIRE_WIDTH_UM
+SCRIPT_ELECTRICAL_BUS_WIDTH_UM = DEFAULT_BUS_WIDTH_UM
 SCRIPT_ELECTRICAL_TERMINAL_CONTACT_WIDTH_UM = 10.0
-SCRIPT_ELECTRICAL_PAD_PITCH_UM = 130.0
+SCRIPT_ELECTRICAL_PAD_PITCH_UM = DEFAULT_PAD_PITCH_UM
 
 
 @dataclass
@@ -945,6 +948,8 @@ def _electrical_config_summary(
         "terminal_contact_width_um",
         "pad_pitch_um",
         "bondpad_width_um",
+        "common_bus_bondpad_width_um",
+        "common_bus_bondpad_length_um",
         "bondpad_length_um",
         "pad_offset_um",
         "pad_access_depth_um",

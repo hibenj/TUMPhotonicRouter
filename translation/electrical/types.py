@@ -15,6 +15,14 @@ GridCell = tuple[int, int]
 GridPoint = tuple[float, float]
 Side = Literal["top", "bottom"]
 
+DEFAULT_WIRE_WIDTH_UM = 20.0
+DEFAULT_BUS_WIDTH_UM = 400.0
+DEFAULT_BONDPAD_WIDTH_UM = 80.0
+DEFAULT_COMMON_BUS_BONDPAD_WIDTH_UM = DEFAULT_BUS_WIDTH_UM
+DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM = DEFAULT_BUS_WIDTH_UM
+DEFAULT_BONDPAD_SPACING_UM = 50.0
+DEFAULT_PAD_PITCH_UM = DEFAULT_BONDPAD_WIDTH_UM + DEFAULT_BONDPAD_SPACING_UM
+
 
 @dataclass(frozen=True)
 class ElectricalRoutingConfig:
@@ -25,11 +33,13 @@ class ElectricalRoutingConfig:
     """
 
     pad_side: Side = "top"
-    wire_width_um: float = 20.0
-    bondpad_width_um: float = 80.0
+    wire_width_um: float = DEFAULT_WIRE_WIDTH_UM
+    bondpad_width_um: float = DEFAULT_BONDPAD_WIDTH_UM
+    common_bus_bondpad_width_um: float = DEFAULT_COMMON_BUS_BONDPAD_WIDTH_UM
+    common_bus_bondpad_length_um: float = DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM
     bondpad_length_um: float = 300.0
-    bondpad_spacing_um: float = 50.0
-    pad_pitch_um: float = 130.0
+    bondpad_spacing_um: float = DEFAULT_BONDPAD_SPACING_UM
+    pad_pitch_um: float = DEFAULT_PAD_PITCH_UM
     pad_offset_um: float = 40.0
     pad_access_depth_um: float = 20.0
     pad_origin_x_um: float | None = None
@@ -47,7 +57,7 @@ class ElectricalRoutingConfig:
     terminal_contact_width_um: float = 10.0
     layout_margin_um: float = 80.0
     bus_offset_um: float = 60.0
-    bus_width_um: float = 60.0
+    bus_width_um: float = DEFAULT_BUS_WIDTH_UM
     bus_x_margin_um: float = 80.0
     common_bus_routing_strategy: Literal["greedy_tree", "local_trunk_then_greedy"] = (
         "local_trunk_then_greedy"
@@ -79,6 +89,11 @@ class ElectricalRoutingConfig:
             raise ValueError("wire_width_um must be positive")
         if self.bondpad_width_um <= 0 or self.bondpad_length_um <= 0:
             raise ValueError("bondpad dimensions must be positive")
+        if (
+            self.common_bus_bondpad_width_um <= 0
+            or self.common_bus_bondpad_length_um <= 0
+        ):
+            raise ValueError("common bus bondpad dimensions must be positive")
         if self.bondpad_spacing_um < 0:
             raise ValueError("bondpad_spacing_um must be non-negative")
         if self.pad_pitch_um < self.bondpad_width_um + self.bondpad_spacing_um:

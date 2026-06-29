@@ -248,7 +248,11 @@ def _common_bus_tagged_rects(
                 access=_common_bus_access(obstacle_map, route.terminal),
             )
         )
-    if common_bus_escape is not None and common_bus_escape.success:
+    if (
+        common_bus_escape is not None
+        and common_bus_escape.success
+        and len(common_bus_escape.path) > 1
+    ):
         rects.extend(
             _tagged_grid_wire_rects(
                 common_bus_escape.path,
@@ -422,7 +426,11 @@ def _verify_common_bus_pad_contact(
             )
         )
         return
-    access = pad_access_bbox(common_bus_escape.pad_assignment.slot, config)
+    access = pad_access_bbox(
+        common_bus_escape.pad_assignment.slot,
+        config,
+        width_um=config.bus_width_um,
+    )
     if not _any_rect_intersects(common_bus_rects, access):
         issues.append(
             ElectricalVerificationIssue(
@@ -1374,10 +1382,17 @@ def _pad_channel_height_um(
 ) -> float | None:
     if pad_plan is None or not pad_plan.assigned_slots:
         return None
+    channel_slots = tuple(
+        assignment.slot
+        for assignment in pad_plan.assignments
+        if assignment.kind == "individual"
+    )
+    if not channel_slots:
+        channel_slots = pad_plan.assigned_slots
     _, layout_ymin, _, layout_ymax = obstacle_map.layout_bbox
     if pad_plan.side == "top":
-        return min(slot.bbox[1] for slot in pad_plan.assigned_slots) - layout_ymax
-    return layout_ymin - max(slot.bbox[3] for slot in pad_plan.assigned_slots)
+        return min(slot.bbox[1] for slot in channel_slots) - layout_ymax
+    return layout_ymin - max(slot.bbox[3] for slot in channel_slots)
 
 
 def _rect_intersection(left: BBox, right: BBox) -> BBox | None:

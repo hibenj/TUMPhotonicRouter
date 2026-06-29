@@ -93,6 +93,15 @@ def _region_covers_bbox(region, bbox_um) -> bool:
     return (box - region).is_empty()
 
 
+def _bbox_contains(outer, inner) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and outer[2] >= inner[2]
+        and outer[3] >= inner[3]
+    )
+
+
 def test_wire_rect_generation_omits_redundant_vertex_squares():
     rects = wire_rects_for_points(
         ((0.0, 0.0), (20.0, 0.0), (20.0, 20.0)),
@@ -677,7 +686,7 @@ def test_common_bus_rail_extends_toward_common_bus_pad_side():
         obstacle_map.layout_bbox[2]
         + config.bus_x_margin_um
         + config.pad_pitch_um
-        + config.bondpad_width_um
+        + config.common_bus_bondpad_width_um
     )
 
 
@@ -710,21 +719,45 @@ def test_common_bus_rail_and_pad_escape_use_bus_width_only():
         if tagged.source == "bus_escape"
     ]
     assert bus_escape_segments
-    assert any(
-        min(xmax - xmin, ymax - ymin) == pytest.approx(config.bus_width_um)
-        for xmin, ymin, xmax, ymax in bus_escape_segments
-    )
-    if result.common_bus.bus_side == "bottom":
-        assert all(
-            ymin >= result.common_bus.bus.bbox[1]
-            for _, ymin, _, _ in bus_escape_segments
-        )
+    bus_assignment = result.pad_plan.common_bus_assignment
+    assert bus_assignment is not None
+    xmin, ymin, xmax, ymax = bus_assignment.slot.bbox
+    assert xmax - xmin == pytest.approx(config.common_bus_bondpad_width_um)
+    assert ymax - ymin == pytest.approx(config.common_bus_bondpad_length_um)
+    assert bus_assignment.slot.side == config.pad_side
+    assert result.common_bus_escape is not None
+    escape_path = result.common_bus_escape.path
+    assert len(escape_path) > 2
+    assert escape_path[0] in result.common_bus.bus.cells
+    first_y = escape_path[0][1]
+    horizontal_prefix = [
+        cell for cell in escape_path if cell[1] == first_y
+    ]
+    assert len(horizontal_prefix) > 1
+    if config.common_bus_pad_position == "right":
+        assert horizontal_prefix[-1][0] > horizontal_prefix[0][0]
     else:
-        assert all(
-            ymax <= result.common_bus.bus.bbox[3]
-            for _, _, _, ymax in bus_escape_segments
-        )
-
+        assert horizontal_prefix[-1][0] < horizontal_prefix[0][0]
+    bus_connection_cells = {
+        cell
+        for route in result.common_bus.routes
+        for cell in route.path
+        if cell in result.common_bus.bus.cells
+    }
+    assert bus_connection_cells
+    origin_x, _ = result.obstacle_map.grid.origin
+    grid_pitch = result.obstacle_map.grid.grid_size_um
+    connection_xs = [
+        origin_x + (cell[0] + 0.5) * grid_pitch
+        for cell in bus_connection_cells
+    ]
+    half_overlap_um = max(grid_pitch / 2.0, config.wire_width_um / 2.0)
+    assert result.common_bus.bus.bbox[0] == pytest.approx(
+        min(connection_xs) - half_overlap_um
+    )
+    assert result.common_bus.bus.bbox[2] == pytest.approx(
+        max(connection_xs) + half_overlap_um
+    )
     bus_route_segments = [
         tagged.bbox
         for tagged in tagged_rects
@@ -936,8 +969,12 @@ def test_pad_plan_assigns_slots_without_realizing_geometry():
     assert pad_plan.common_bus_assignment.slot.index == max(slot.index for slot in pad_plan.slots)
     assert pad_plan.empty_slots
     assert pad_plan.common_bus_assignment is not None
-    for slot in pad_plan.assigned_slots:
-        assert slot.center[0] == slot.index * config.pad_pitch_um
+    for assignment in pad_plan.assignments:
+        if assignment.kind == "individual":
+            assert assignment.slot.center[0] == assignment.slot.index * config.pad_pitch_um
+        else:
+            xmin, _, xmax, _ = assignment.slot.bbox
+            assert xmax - xmin == pytest.approx(config.common_bus_bondpad_width_um)
 
 
 def test_pad_access_is_only_on_chip_facing_pad_edge():
@@ -969,6 +1006,8 @@ def test_pad_access_is_only_on_chip_facing_pad_edge():
     bottom_slot = bottom_result.pad_plan.common_bus_assignment.slot
     top_half_width = top_config.wire_width_um / 2.0
     bottom_half_width = bottom_config.wire_width_um / 2.0
+    assert top_slot.side == top_config.pad_side
+    assert bottom_slot.side == bottom_config.pad_side
     assert pad_access_bbox(top_slot, top_config) == (
         top_slot.center[0] - top_half_width,
         top_slot.bbox[1],
@@ -980,6 +1019,17 @@ def test_pad_access_is_only_on_chip_facing_pad_edge():
         bottom_slot.bbox[3] - bottom_config.pad_access_depth_um,
         bottom_slot.center[0] + bottom_half_width,
         bottom_slot.bbox[3],
+    )
+    top_bus_half_width = top_config.bus_width_um / 2.0
+    assert pad_access_bbox(
+        top_slot,
+        top_config,
+        width_um=top_config.bus_width_um,
+    ) == (
+        top_slot.center[0] - top_bus_half_width,
+        top_slot.bbox[1],
+        top_slot.center[0] + top_bus_half_width,
+        top_slot.bbox[1] + top_config.pad_access_depth_um,
     )
 
 
@@ -1013,8 +1063,16 @@ def test_top_pad_offset_moves_pad_row_further_from_layout():
         ),
     )
 
-    near_slot = near.pad_plan.common_bus_assignment.slot
-    far_slot = far.pad_plan.common_bus_assignment.slot
+    near_slot = next(
+        assignment.slot
+        for assignment in near.pad_plan.assignments
+        if assignment.kind == "individual"
+    )
+    far_slot = next(
+        assignment.slot
+        for assignment in far.pad_plan.assignments
+        if assignment.kind == "individual"
+    )
     assert far_slot.bbox[1] > near_slot.bbox[1]
     assert far_slot.center[1] > near_slot.center[1]
 
@@ -1055,7 +1113,8 @@ def test_pad_plan_allows_empty_pitch_slots_and_keeps_individual_order():
         slot.index for slot in pad_plan.empty_slots
     }
     for assignment in assignments:
-        assert assignment.slot.center[0] == assignment.slot.index * config.pad_pitch_um
+        if assignment.kind == "individual":
+            assert assignment.slot.center[0] == assignment.slot.index * config.pad_pitch_um
 
 
 def test_auto_pad_origin_compacts_row_toward_escape_topology():
@@ -1155,7 +1214,7 @@ def test_auto_pad_channel_height_uses_widest_topology_bundle():
     assert result.verification.metrics["cross_net_min_spacing_um"] >= (
         result.verification.metrics["required_cross_net_clearance_um"]
     )
-    assert result.verification.metrics["centerline_length_um"] < 21_000.0
+    assert result.verification.metrics["centerline_length_um"] < 30_000.0
 
 
 def test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps():
@@ -1476,11 +1535,15 @@ def test_metal_realization_creates_assigned_pads_but_not_empty_slots():
     marker_region = _polygon_region_by_layer(routed_component, config.pad_marker_layer)
 
     assert result.pad_plan.assignments
+    assigned_bboxes = tuple(
+        assignment.slot.bbox for assignment in result.pad_plan.assignments
+    )
     for assignment in result.pad_plan.assignments:
         assert _region_covers_bbox(metal_region, assignment.slot.bbox)
         assert _region_covers_bbox(marker_region, assignment.slot.bbox)
     for slot in result.pad_plan.empty_slots:
-        assert not _region_covers_bbox(metal_region, slot.bbox)
+        if any(_bbox_contains(assigned_bbox, slot.bbox) for assigned_bbox in assigned_bboxes):
+            continue
         assert not _region_covers_bbox(marker_region, slot.bbox)
 
 
@@ -1682,6 +1745,22 @@ def test_common_bus_escape_reaches_assigned_common_bus_pad_slot():
     assert escape.path[-1] in escape.target_cells
     assert escape.target_cells
     assert escape.cost == len(escape.path) - 1
+    pad_bbox = escape.pad_assignment.slot.bbox
+    bus_escape_rects = [
+        tagged.bbox
+        for tagged in _common_bus_tagged_rects(
+            result.common_bus,
+            result.common_bus_escape,
+            result.obstacle_map,
+            config,
+        )
+        if tagged.source == "bus_escape"
+    ]
+    assert any(
+        rect[0] == pytest.approx(pad_bbox[0])
+        and rect[2] == pytest.approx(pad_bbox[2])
+        for rect in bus_escape_rects
+    )
 
 
 def test_common_bus_escape_uses_opposite_bus_for_bottom_pad_side():

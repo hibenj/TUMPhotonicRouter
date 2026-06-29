@@ -72,7 +72,11 @@ def realize_electrical_metal(
             access=_common_bus_access(obstacle_map, route.terminal),
         )
 
-    if common_bus_escape is not None and common_bus_escape.success:
+    if (
+        common_bus_escape is not None
+        and common_bus_escape.success
+        and len(common_bus_escape.path) > 1
+    ):
         _append_grid_wire_path(
             rects_by_net["common_bus"],
             common_bus_escape.path,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from gdsfactory.component import Component
@@ -15,8 +16,16 @@ from .individual_topology import compute_individual_escape_topology
 from .metal_realization import realize_electrical_metal
 from .obstacle_extraction import build_electrical_obstacle_map
 from .pad_slots import plan_pad_slots
+from .pitch_grid import bbox_to_grid_cells
 from .terminal_extraction import extract_heater_terminal_pairs
-from .types import CommonBusRoutingResult, ElectricalRoutingConfig, ElectricalRoutingResult
+from .types import (
+    BusStripe,
+    CommonBusRoutingResult,
+    ElectricalObstacleMap,
+    ElectricalRoutingConfig,
+    ElectricalRoutingResult,
+    GridCell,
+)
 from .verification import verify_electrical_routing
 
 
@@ -59,6 +68,11 @@ def route_electrical_heaters(
         )
 
     common_bus = route_common_bus(terminal_groups, obstacle_map, config)
+    obstacle_map, common_bus = _trim_common_bus_to_connections(
+        obstacle_map,
+        common_bus,
+        config,
+    )
     individual_topology = (
         compute_individual_escape_topology(obstacle_map, common_bus, config)
         if common_bus.success
@@ -155,4 +169,75 @@ def route_electrical_heaters(
         routed_component=routed_component,
         verification=verification,
         debug_artifacts=artifacts,
+    )
+
+
+def _trim_common_bus_to_connections(
+    obstacle_map: ElectricalObstacleMap,
+    common_bus: CommonBusRoutingResult,
+    config: ElectricalRoutingConfig,
+) -> tuple[ElectricalObstacleMap, CommonBusRoutingResult]:
+    """Limit realized/debug bus stripe to the span touched by routed terminals."""
+
+    if not common_bus.routes:
+        return obstacle_map, common_bus
+
+    provisional_bus_cells = obstacle_map.bus.cells
+    connection_cells = {
+        cell
+        for route in common_bus.routes
+        for cell in route.path
+        if cell in provisional_bus_cells
+    }
+    if not connection_cells:
+        return obstacle_map, common_bus
+
+    min_x_um = min(
+        _grid_cell_center_um(cell, obstacle_map)[0]
+        for cell in connection_cells
+    )
+    max_x_um = max(
+        _grid_cell_center_um(cell, obstacle_map)[0]
+        for cell in connection_cells
+    )
+    half_overlap_um = max(
+        obstacle_map.grid.grid_size_um / 2.0,
+        config.wire_width_um / 2.0,
+    )
+    _, bus_ymin, _, bus_ymax = obstacle_map.bus.bbox
+    trimmed_bbox = (
+        min_x_um - half_overlap_um,
+        bus_ymin,
+        max_x_um + half_overlap_um,
+        bus_ymax,
+    )
+    trimmed_bus_cells = bbox_to_grid_cells(trimmed_bbox, obstacle_map.grid)
+    trimmed_bus = BusStripe(
+        side=obstacle_map.bus.side,
+        bbox=trimmed_bbox,
+        cells=frozenset(trimmed_bus_cells),
+    )
+    trimmed_tree_cells = (
+        set(common_bus.tree_cells).difference(provisional_bus_cells)
+        | set(trimmed_bus_cells)
+    )
+    trimmed_obstacle_map = replace(obstacle_map, bus=trimmed_bus)
+    trimmed_common_bus = replace(
+        common_bus,
+        bus=trimmed_bus,
+        tree_cells=frozenset(trimmed_tree_cells),
+    )
+    return trimmed_obstacle_map, trimmed_common_bus
+
+
+def _grid_cell_center_um(
+    cell: GridCell,
+    obstacle_map: ElectricalObstacleMap,
+) -> tuple[float, float]:
+    x, y = cell
+    grid = obstacle_map.grid
+    origin_x, origin_y = grid.origin
+    return (
+        origin_x + (x + 0.5) * grid.grid_size_um,
+        origin_y + (y + 0.5) * grid.grid_size_um,
     )

@@ -1,6 +1,9 @@
 from routing_flow import (
     RipupRerouteConfig,
     RoutingFlowStats,
+    SCRIPT_ELECTRICAL_BUS_WIDTH_UM,
+    SCRIPT_ELECTRICAL_PAD_PITCH_UM,
+    SCRIPT_ELECTRICAL_WIRE_WIDTH_UM,
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     _build_arg_parser,
     _format_debug_route_indices,
@@ -14,7 +17,15 @@ import pytest
 from pathlib import Path
 from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-from translation.electrical import ElectricalRoutingConfig
+from translation.electrical import (
+    DEFAULT_BONDPAD_WIDTH_UM,
+    DEFAULT_BUS_WIDTH_UM,
+    DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM,
+    DEFAULT_COMMON_BUS_BONDPAD_WIDTH_UM,
+    DEFAULT_PAD_PITCH_UM,
+    DEFAULT_WIRE_WIDTH_UM,
+    ElectricalRoutingConfig,
+)
 from translation.layout_from_schematic import layout_from_schematic
 from translation.photonic_verification import verify_photonic_routing
 from translation.route_rust import route_match_and_realize
@@ -56,6 +67,28 @@ def test_path_length_meander_height_defaults_are_centralized():
         .default
         == DEFAULT_MEANDER_MAX_HEIGHT_UM
     )
+
+
+def test_electrical_width_defaults_are_centralized():
+    config = ElectricalRoutingConfig()
+
+    assert DEFAULT_WIRE_WIDTH_UM == 20.0
+    assert DEFAULT_BUS_WIDTH_UM == 400.0
+    assert DEFAULT_BONDPAD_WIDTH_UM == 80.0
+    assert DEFAULT_COMMON_BUS_BONDPAD_WIDTH_UM == DEFAULT_BUS_WIDTH_UM
+    assert DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM == DEFAULT_BUS_WIDTH_UM
+    assert DEFAULT_PAD_PITCH_UM == (
+        config.bondpad_width_um + config.bondpad_spacing_um
+    )
+    assert config.wire_width_um == DEFAULT_WIRE_WIDTH_UM
+    assert config.bus_width_um == DEFAULT_BUS_WIDTH_UM
+    assert config.bondpad_width_um == DEFAULT_BONDPAD_WIDTH_UM
+    assert config.common_bus_bondpad_width_um == DEFAULT_COMMON_BUS_BONDPAD_WIDTH_UM
+    assert config.common_bus_bondpad_length_um == DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM
+    assert config.pad_pitch_um == DEFAULT_PAD_PITCH_UM
+    assert SCRIPT_ELECTRICAL_WIRE_WIDTH_UM == DEFAULT_WIRE_WIDTH_UM
+    assert SCRIPT_ELECTRICAL_BUS_WIDTH_UM == DEFAULT_BUS_WIDTH_UM
+    assert SCRIPT_ELECTRICAL_PAD_PITCH_UM == DEFAULT_PAD_PITCH_UM
 
 
 def test_routing_flow_populates_stats():
@@ -267,7 +300,7 @@ def test_routing_flow_routes_single_heater_electrical_metal_end_to_end():
     assert summary["config"]["pad_side"] == "top"
     assert summary["config"]["bus_side"] == "bottom"
     assert summary["config"]["wire_width_um"] == 20.0
-    assert summary["config"]["bus_width_um"] == 60.0
+    assert summary["config"]["bus_width_um"] == DEFAULT_BUS_WIDTH_UM
     assert summary["config"]["terminal_contact_width_um"] == 10.0
     assert summary["config"]["metal_layer"] == (125, 0)
     assert summary["config"]["pad_marker_layer"] == (150, 0)
