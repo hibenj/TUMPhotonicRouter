@@ -54,6 +54,7 @@ SCRIPT_BEND_RADIUS_UM = 5.0
 SCRIPT_ENABLE_PATH_LENGTH_MATCHING = False
 SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = False
 SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = DEFAULT_MEANDER_MAX_HEIGHT_UM
+SCRIPT_ENABLE_CROSSINGS = False
 SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
@@ -540,6 +541,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--crossings",
+        type=_parse_bool_flag,
+        default=SCRIPT_ENABLE_CROSSINGS,
+        metavar="BOOL",
+        help=(
+            "Build and pass topology-derived crossing constraints to the Rust "
+            "router (default: "
+            f"{str(SCRIPT_ENABLE_CROSSINGS).lower()})."
+        ),
+    )
+    parser.add_argument(
         "--max-iterations",
         type=int,
         default=SCRIPT_MAX_ITERATIONS,
@@ -844,6 +856,7 @@ def main(argv: list[str] | None = None) -> Component:
         enable_path_length_matching=args.path_length_matching,
         path_length_match_outputs=args.path_length_match_outputs,
         path_length_meander_height_um=args.path_length_meander_height_um,
+        enable_crossings=args.crossings,
         max_iterations=args.max_iterations,
         enable_simple_routes=args.enable_simple_routes,
         routing_window_scale=args.routing_window_scale,
@@ -1075,6 +1088,7 @@ def run_routing_flow(
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
+    enable_crossings: bool = SCRIPT_ENABLE_CROSSINGS,
     allow_45_degree_turns: bool = SCRIPT_ALLOW_45_DEGREE_TURNS,
     bend_radius_um: float = SCRIPT_BEND_RADIUS_UM,
     enable_jps4: bool = False,
@@ -1312,6 +1326,10 @@ def run_routing_flow(
             path_length_match_outputs=path_length_match_outputs,
             node_types=metadata.get("node_types"),
             internal_delays_um=metadata.get("internal_delays_um"),
+            enable_crossings=enable_crossings,
+            node_depths=metadata.get("node_depths"),
+            node_ranks=metadata.get("node_ranks"),
+            edge_ranks=metadata.get("edge_ranks"),
             debug_dir=debug_dir,
             debug_prefix=benchmark_name.lower(),
             debug_route_indices=debug_route_indices,
@@ -1579,6 +1597,10 @@ def run_routing_flow(
             print(f"        - stage overhead/reporting: {overhead_time:.4f} s")
     print(f"      ✓ Routed layout generated: {routed_layout.name}")
     electrical_result: ElectricalRoutingResult | None = None
+
+    crossing_plan_info = getattr(debug_artifacts, "crossing_plan_info", None)
+    if crossing_plan_info is not None:
+        routed_layout.info["crossing_plan"] = crossing_plan_info
 
     if route_result.path_length_analysis_info is not None:
         meander_report_info = getattr(route_result, "meander_insertion_report_info", None)

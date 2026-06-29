@@ -25,6 +25,8 @@ from photonic_router.routing_layers import (
     find_component_port_access_rule,
     get_routing_obstacle_layers,
 )
+from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
+from photonic_router.topology_analysis import analyze_schematic_topology
 from translation.route_rust_analysis import (
     analysis_to_info_dict,
     analyze_path_length_matching,
@@ -48,6 +50,7 @@ from translation.route_rust_records import (
     apply_port_endpoint_corrections,
     build_port_alignment_diagnostics,
     build_route_debug_artifacts,
+    route_edge_key,
     routed_edge_lengths_from_records,
 )
 from translation.route_rust_types import (
@@ -117,6 +120,125 @@ def _port_center_um(port: object) -> tuple[float, float] | None:
         return (float(x_um), float(y_um))
     except (TypeError, ValueError, IndexError):
         return None
+
+
+def _build_crossing_plan_info(
+    *,
+    rust_backend: object,
+    router: object,
+    schematic: Schematic,
+    route_jobs: list[RouteJob],
+    enable_crossings: bool,
+    node_depths: dict[str, int] | None,
+    node_ranks: dict[str, int] | None,
+    edge_ranks: dict[str, dict[str, int]] | None,
+    crossing_loss: float,
+    crossing_half_size_cells: int,
+    min_straight_cells_per_crossing: int,
+    allow_only_expected_crossings: bool,
+) -> dict[str, object]:
+    info: dict[str, object] = {
+        "enabled": bool(enable_crossings),
+        "constraint_count": 0,
+        "event_count": 0,
+        "missing_event_count": 0,
+        "missing_events": [],
+        "expected_crossings_by_net_id": {},
+        "expected_crossings_by_net_name": {},
+    }
+    if not enable_crossings:
+        return info
+
+    required_backend = (
+        "CrossingConfig",
+        "CrossingConstraint",
+    )
+    missing_backend = [name for name in required_backend if not hasattr(rust_backend, name)]
+    required_router = (
+        "set_crossing_config",
+        "set_crossing_constraints",
+        "crossing_expected_count",
+    )
+    missing_router = [name for name in required_router if not hasattr(router, name)]
+    if missing_backend or missing_router:
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose crossing "
+            "configuration APIs. Rebuild it with `maturin develop`. "
+            f"Missing backend attrs: {missing_backend}; missing router attrs: {missing_router}."
+        )
+
+    if node_depths is None or node_ranks is None or edge_ranks is None:
+        info["reason"] = "missing_topology_metadata"
+        return info
+
+    topology = analyze_schematic_topology(
+        schematic,
+        node_depths=node_depths,
+        node_ranks=node_ranks,
+        edge_ranks=edge_ranks,
+    )
+    crossing_plan: CrossingPlan = build_crossing_plan(topology)
+    info["event_count"] = len(crossing_plan.events)
+    info["stage_count"] = len(crossing_plan.stages)
+
+    jobs_by_edge = {route_edge_key(job): job for job in route_jobs}
+    constraints = []
+    missing_events: list[dict[str, object]] = []
+    crossing_counts_by_net_id: Counter[int] = Counter()
+    crossing_counts_by_net_name: Counter[str] = Counter()
+
+    for event in crossing_plan.events:
+        job_a = jobs_by_edge.get(event.edge_a)
+        job_b = jobs_by_edge.get(event.edge_b)
+        if job_a is None or job_b is None:
+            missing_events.append(
+                {
+                    "edge_a": event.edge_a.net_name,
+                    "edge_b": event.edge_b.net_name,
+                    "edge_a_found": job_a is not None,
+                    "edge_b_found": job_b is not None,
+                    "source_depth": event.source_depth,
+                    "target_depth": event.target_depth,
+                    "level": event.level,
+                }
+            )
+            continue
+
+        constraints.append(
+            rust_backend.CrossingConstraint(
+                int(job_a.net_id),
+                int(job_b.net_id),
+                level=int(event.level),
+                source_depth=int(event.source_depth),
+                target_depth=int(event.target_depth),
+            )
+        )
+        crossing_counts_by_net_id[int(job_a.net_id)] += 1
+        crossing_counts_by_net_id[int(job_b.net_id)] += 1
+        crossing_counts_by_net_name[str(job_a.net_name)] += 1
+        crossing_counts_by_net_name[str(job_b.net_name)] += 1
+
+    router.set_crossing_constraints(constraints)
+    router.set_crossing_config(
+        rust_backend.CrossingConfig(
+            enabled=True,
+            crossing_loss=float(crossing_loss),
+            crossing_half_size_cells=int(crossing_half_size_cells),
+            min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
+            allow_only_expected_pairs=bool(allow_only_expected_crossings),
+        )
+    )
+
+    info["constraint_count"] = len(constraints)
+    info["missing_event_count"] = len(missing_events)
+    info["missing_events"] = missing_events
+    info["expected_crossings_by_net_id"] = dict(sorted(crossing_counts_by_net_id.items()))
+    info["expected_crossings_by_net_name"] = dict(sorted(crossing_counts_by_net_name.items()))
+    info["crossing_loss"] = float(crossing_loss)
+    info["crossing_half_size_cells"] = int(crossing_half_size_cells)
+    info["min_straight_cells_per_crossing"] = int(min_straight_cells_per_crossing)
+    info["allow_only_expected_crossings"] = bool(allow_only_expected_crossings)
+    return info
 
 
 def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
@@ -191,6 +313,14 @@ def route_match_and_realize(
     path_length_match_outputs: bool = False,
     node_types: dict[str, str] | None = None,
     internal_delays_um: dict[str, float] | None = None,
+    enable_crossings: bool = False,
+    node_depths: dict[str, int] | None = None,
+    node_ranks: dict[str, int] | None = None,
+    edge_ranks: dict[str, dict[str, int]] | None = None,
+    crossing_loss: float = 0.0,
+    crossing_half_size_cells: int = 0,
+    min_straight_cells_per_crossing: int = 0,
+    allow_only_expected_crossings: bool = True,
     obstacle_config: object | None = None,
     debug_dir: str | Path | None = None,
     debug_prefix: str = "route",
@@ -251,6 +381,14 @@ def route_match_and_realize(
         collect_attempt_diagnostics=collect_attempt_diagnostics,
         include_heater_obstacles=include_heater_obstacles,
         ripup_reroute_config=ripup_reroute_config,
+        enable_crossings=enable_crossings,
+        node_depths=node_depths,
+        node_ranks=node_ranks,
+        edge_ranks=edge_ranks,
+        crossing_loss=crossing_loss,
+        crossing_half_size_cells=crossing_half_size_cells,
+        min_straight_cells_per_crossing=min_straight_cells_per_crossing,
+        allow_only_expected_crossings=allow_only_expected_crossings,
         defer_realization=True,
         enable_checked_endpoint_correction=enable_grid_endpoint_correction,
     )
@@ -745,6 +883,14 @@ def route_nets_rust(
     collect_attempt_diagnostics: bool = False,
     include_heater_obstacles: bool = False,
     ripup_reroute_config: RipupRerouteConfig | None = None,
+    enable_crossings: bool = False,
+    node_depths: dict[str, int] | None = None,
+    node_ranks: dict[str, int] | None = None,
+    edge_ranks: dict[str, dict[str, int]] | None = None,
+    crossing_loss: float = 0.0,
+    crossing_half_size_cells: int = 0,
+    min_straight_cells_per_crossing: int = 0,
+    allow_only_expected_crossings: bool = True,
     defer_realization: bool = False,
     enable_checked_endpoint_correction: bool = True,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
@@ -797,6 +943,12 @@ def route_nets_rust(
         raise ValueError("route_width_um must be > 0")
     if max_iterations <= 0:
         raise ValueError("max_iterations must be > 0")
+    if crossing_loss < 0:
+        raise ValueError("crossing_loss must be non-negative")
+    if crossing_half_size_cells < 0:
+        raise ValueError("crossing_half_size_cells must be non-negative")
+    if min_straight_cells_per_crossing < 0:
+        raise ValueError("min_straight_cells_per_crossing must be non-negative")
 
     rust_backend = _load_rust_backend()
     if rust_backend is None:
@@ -1319,6 +1471,23 @@ def route_nets_rust(
             endpoint_ports_by_spec.setdefault(port1_spec, (inst1, port1, source_port))
             endpoint_ports_by_spec.setdefault(port2_spec, (inst2, port2, target_port))
     _record_pipeline_timing("route_job_build", t_route_job_build_start)
+
+    t_crossing_context_start = _pipeline_timer_start()
+    crossing_plan_info = _build_crossing_plan_info(
+        rust_backend=rust_backend,
+        router=router,
+        schematic=schematic,
+        route_jobs=route_jobs,
+        enable_crossings=enable_crossings,
+        node_depths=node_depths,
+        node_ranks=node_ranks,
+        edge_ranks=edge_ranks,
+        crossing_loss=float(crossing_loss),
+        crossing_half_size_cells=int(crossing_half_size_cells),
+        min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
+        allow_only_expected_crossings=bool(allow_only_expected_crossings),
+    )
+    _record_pipeline_timing("crossing_context", t_crossing_context_start)
 
     if not hasattr(router, "build_route_port_openings"):
         extension_path = getattr(rust_backend, "__file__", "<unknown>")
@@ -2825,6 +2994,10 @@ def route_nets_rust(
         ),
         route_attempt_records=route_attempt_records,
         route_nets_timings_s=route_nets_timings_s,
+    )
+    debug_artifacts = replace(
+        debug_artifacts,
+        crossing_plan_info=crossing_plan_info,
     )
     _record_pipeline_timing("debug_artifact_assembly", t_debug_artifact_start)
     if collect_pipeline_timing:

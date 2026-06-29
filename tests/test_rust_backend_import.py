@@ -11,6 +11,8 @@ def test_rust_backend_exposes_router_class():
     assert backend is not None
     assert hasattr(backend, "PyPhotonicRouter")
     assert hasattr(backend, "GridSpec")
+    assert hasattr(backend, "CrossingConfig")
+    assert hasattr(backend, "CrossingConstraint")
     assert hasattr(backend, "build_static_obstacle_map_rs")
 
 
@@ -35,3 +37,55 @@ def test_primitive_config_exposes_grid_experiment_flags():
     cfg.grid4_unit_grid = True
     assert cfg.jps4_unit_grid is True
     assert cfg.grid4_unit_grid is True
+
+
+def test_router_crossing_context_is_disabled_by_default():
+    backend = _load_rust_backend()
+    assert backend is not None
+    router = backend.PyPhotonicRouter(
+        backend.GridSpec(20, 20, 1.0, 0.0, 0.0),
+        backend.PrimitiveLibraryConfig(),
+        backend.AStarConfig(),
+    )
+
+    cfg = router.crossing_config()
+    assert cfg.enabled is False
+    assert router.crossing_expected_count(1) == 0
+    assert router.crossing_has_expected_pair(1, 2) is False
+    assert router.crossing_allows_pair(1, 2) is False
+
+
+def test_router_crossing_context_stores_expected_pairs():
+    backend = _load_rust_backend()
+    assert backend is not None
+    router = backend.PyPhotonicRouter(
+        backend.GridSpec(20, 20, 1.0, 0.0, 0.0),
+        backend.PrimitiveLibraryConfig(),
+        backend.AStarConfig(),
+    )
+
+    router.set_crossing_constraints(
+        [
+            backend.CrossingConstraint(1, 3, level=0, source_depth=1, target_depth=2),
+            backend.CrossingConstraint(2, 3, level=1, source_depth=1, target_depth=2),
+        ]
+    )
+    assert router.crossing_expected_count(3) == 2
+    assert router.crossing_has_expected_pair(3, 1) is True
+    assert router.crossing_allows_pair(3, 1) is False
+
+    router.set_crossing_config(
+        backend.CrossingConfig(
+            enabled=True,
+            crossing_loss=4.5,
+            crossing_half_size_cells=3,
+            min_straight_cells_per_crossing=6,
+        )
+    )
+    assert router.crossing_allows_pair(3, 1) is True
+    assert router.crossing_allows_pair(1, 2) is False
+    assert len(router.crossing_constraints()) == 2
+
+    router.clear_crossing_constraints()
+    assert router.crossing_expected_count(3) == 0
+    assert router.crossing_has_expected_pair(3, 1) is False

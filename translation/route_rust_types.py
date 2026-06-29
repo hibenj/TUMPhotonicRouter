@@ -198,6 +198,7 @@ class RustRouteDebugArtifacts:
     realization_grid_spec: tuple[int, int, float, float, float] | None = None
     realization_allow_45_degree_turns: bool = True
     realization_bend_radius_cells: int = 4
+    crossing_plan_info: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

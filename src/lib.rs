@@ -4,6 +4,7 @@
 //! infrastructure. It intentionally does not implement A* yet.
 
 pub mod astar;
+pub mod crossings;
 pub mod geometry_realization;
 pub mod meander;
 pub mod obstacle_map;
@@ -26,6 +27,7 @@ pub use astar::{
     export_route_svg, route_single_net, route_single_net_with_config, AStarConfig, RouteResult,
     State,
 };
+pub use crossings::{CrossingConfig, CrossingConstraint, CrossingContext, CrossingPair};
 pub use geometry_realization::{
     build_port_access, build_port_accesses, cells_in_grid_rect, check_meander_box_free,
     check_meander_box_free_with_prefix, compress_grid_waypoints, compress_route_waypoints,

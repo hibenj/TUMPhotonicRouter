@@ -11,6 +11,7 @@ use crate::astar::{
     try_simple_route_with_dynamic_expansion_config, AStarConfig, HeapTieBreaker, HeuristicMode,
     PrimitiveOrdering, RouteResult, RouteSearchStats, State,
 };
+use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
     cells_in_grid_rect as cells_in_grid_rect_rs, centerline_length_um as centerline_length_um_rs,
@@ -266,6 +267,158 @@ impl PyAStarConfig {
     }
 }
 
+#[pyclass(name = "CrossingConfig")]
+#[derive(Clone)]
+pub struct PyCrossingConfig {
+    #[pyo3(get, set)]
+    pub enabled: bool,
+    #[pyo3(get, set)]
+    pub crossing_loss: f64,
+    #[pyo3(get, set)]
+    pub crossing_half_size_cells: i32,
+    #[pyo3(get, set)]
+    pub min_straight_cells_per_crossing: i32,
+    #[pyo3(get, set)]
+    pub allow_only_expected_pairs: bool,
+}
+
+impl From<&PyCrossingConfig> for CrossingConfig {
+    fn from(value: &PyCrossingConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            crossing_loss: value.crossing_loss,
+            crossing_half_size_cells: value.crossing_half_size_cells,
+            min_straight_cells_per_crossing: value.min_straight_cells_per_crossing,
+            allow_only_expected_pairs: value.allow_only_expected_pairs,
+        }
+    }
+}
+
+impl From<&CrossingConfig> for PyCrossingConfig {
+    fn from(value: &CrossingConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            crossing_loss: value.crossing_loss,
+            crossing_half_size_cells: value.crossing_half_size_cells,
+            min_straight_cells_per_crossing: value.min_straight_cells_per_crossing,
+            allow_only_expected_pairs: value.allow_only_expected_pairs,
+        }
+    }
+}
+
+fn validate_crossing_config(config: &PyCrossingConfig) -> PyResult<()> {
+    if !config.crossing_loss.is_finite() || config.crossing_loss < 0.0 {
+        return Err(PyValueError::new_err(
+            "crossing_loss must be finite and non-negative",
+        ));
+    }
+    if config.crossing_half_size_cells < 0 {
+        return Err(PyValueError::new_err(
+            "crossing_half_size_cells must be non-negative",
+        ));
+    }
+    if config.min_straight_cells_per_crossing < 0 {
+        return Err(PyValueError::new_err(
+            "min_straight_cells_per_crossing must be non-negative",
+        ));
+    }
+    Ok(())
+}
+
+#[pymethods]
+impl PyCrossingConfig {
+    #[new]
+    #[pyo3(signature=(enabled=false,crossing_loss=0.0,crossing_half_size_cells=0,min_straight_cells_per_crossing=0,allow_only_expected_pairs=true))]
+    fn new(
+        enabled: bool,
+        crossing_loss: f64,
+        crossing_half_size_cells: i32,
+        min_straight_cells_per_crossing: i32,
+        allow_only_expected_pairs: bool,
+    ) -> PyResult<Self> {
+        let config = Self {
+            enabled,
+            crossing_loss,
+            crossing_half_size_cells,
+            min_straight_cells_per_crossing,
+            allow_only_expected_pairs,
+        };
+        validate_crossing_config(&config)?;
+        Ok(config)
+    }
+}
+
+#[pyclass(name = "CrossingConstraint")]
+#[derive(Clone)]
+pub struct PyCrossingConstraint {
+    #[pyo3(get, set)]
+    pub net_id: u64,
+    #[pyo3(get, set)]
+    pub partner_net_id: u64,
+    #[pyo3(get, set)]
+    pub level: u32,
+    #[pyo3(get, set)]
+    pub source_depth: u32,
+    #[pyo3(get, set)]
+    pub target_depth: u32,
+}
+
+impl From<&PyCrossingConstraint> for CrossingConstraint {
+    fn from(value: &PyCrossingConstraint) -> Self {
+        Self {
+            net_id: value.net_id,
+            partner_net_id: value.partner_net_id,
+            level: value.level,
+            source_depth: value.source_depth,
+            target_depth: value.target_depth,
+        }
+    }
+}
+
+impl From<&CrossingConstraint> for PyCrossingConstraint {
+    fn from(value: &CrossingConstraint) -> Self {
+        Self {
+            net_id: value.net_id,
+            partner_net_id: value.partner_net_id,
+            level: value.level,
+            source_depth: value.source_depth,
+            target_depth: value.target_depth,
+        }
+    }
+}
+
+fn validate_crossing_constraint(constraint: &PyCrossingConstraint) -> PyResult<()> {
+    if constraint.net_id == constraint.partner_net_id {
+        return Err(PyValueError::new_err(
+            "crossing constraint requires two different net ids",
+        ));
+    }
+    Ok(())
+}
+
+#[pymethods]
+impl PyCrossingConstraint {
+    #[new]
+    #[pyo3(signature=(net_id,partner_net_id,level=0,source_depth=0,target_depth=0))]
+    fn new(
+        net_id: u64,
+        partner_net_id: u64,
+        level: u32,
+        source_depth: u32,
+        target_depth: u32,
+    ) -> PyResult<Self> {
+        let constraint = Self {
+            net_id,
+            partner_net_id,
+            level,
+            source_depth,
+            target_depth,
+        };
+        validate_crossing_constraint(&constraint)?;
+        Ok(constraint)
+    }
+}
+
 #[pyclass(name = "State")]
 #[derive(Clone, Copy)]
 pub struct PyState {
@@ -488,6 +641,7 @@ pub struct PyPhotonicRouter {
     astar_cfg_cached: Result<AStarConfig, String>,
     obstacle_map: ObstacleMap,
     primitives: PrimitiveLibrary,
+    crossing_context: CrossingContext,
     static_cells: FxHashSet<CellKey>,
     port_open_cells: FxHashSet<CellKey>,
     registered_plm: RefCell<RegisteredPlmContext>,
@@ -2652,12 +2806,59 @@ impl PyPhotonicRouter {
             astar_cfg: astar_config,
             astar_cfg_cached,
             primitives,
+            crossing_context: CrossingContext::default(),
             static_cells: FxHashSet::default(),
             port_open_cells: FxHashSet::default(),
             registered_plm: RefCell::new(RegisteredPlmContext::default()),
             last_meander_registration_profile: RefCell::new(None),
         }
     }
+
+    fn crossing_config(&self) -> PyCrossingConfig {
+        PyCrossingConfig::from(self.crossing_context.config())
+    }
+
+    fn set_crossing_config(&mut self, config: PyCrossingConfig) -> PyResult<()> {
+        validate_crossing_config(&config)?;
+        self.crossing_context
+            .set_config(CrossingConfig::from(&config));
+        Ok(())
+    }
+
+    fn crossing_constraints(&self) -> Vec<PyCrossingConstraint> {
+        self.crossing_context
+            .constraints()
+            .iter()
+            .map(PyCrossingConstraint::from)
+            .collect()
+    }
+
+    fn set_crossing_constraints(&mut self, constraints: Vec<PyCrossingConstraint>) -> PyResult<()> {
+        for constraint in &constraints {
+            validate_crossing_constraint(constraint)?;
+        }
+        self.crossing_context
+            .replace_constraints(constraints.iter().map(CrossingConstraint::from).collect());
+        Ok(())
+    }
+
+    fn clear_crossing_constraints(&mut self) {
+        self.crossing_context.clear_constraints();
+    }
+
+    fn crossing_expected_count(&self, net_id: u64) -> u32 {
+        self.crossing_context.expected_crossing_count(net_id)
+    }
+
+    fn crossing_has_expected_pair(&self, net_id: u64, partner_net_id: u64) -> bool {
+        self.crossing_context
+            .has_expected_pair(net_id, partner_net_id)
+    }
+
+    fn crossing_allows_pair(&self, net_id: u64, partner_net_id: u64) -> bool {
+        self.crossing_context.allows_pair(net_id, partner_net_id)
+    }
+
     fn invalidate_meander_base_prefix(&self) {
         self.registered_plm.borrow_mut().invalidate_base_prefix();
     }
@@ -6052,6 +6253,8 @@ pub fn register_py_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGridSpec>()?;
     m.add_class::<PyPrimitiveLibraryConfig>()?;
     m.add_class::<PyAStarConfig>()?;
+    m.add_class::<PyCrossingConfig>()?;
+    m.add_class::<PyCrossingConstraint>()?;
     m.add_class::<PyState>()?;
     m.add_class::<PyRouteResult>()?;
     m.add_class::<PyPortAccess>()?;

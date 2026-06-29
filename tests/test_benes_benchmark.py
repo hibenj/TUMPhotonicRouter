@@ -25,6 +25,90 @@ from photonic_router.path_length_graph import build_graph_from_schematic
 from photonic_router.crossing_plan import build_crossing_plan
 from photonic_router.topology_analysis import analyze_schematic_topology
 from translation.layout_from_schematic import layout_from_schematic
+from translation.route_rust import _build_crossing_plan_info
+from translation.route_rust_types import RouteJob
+
+
+class _FakeCrossingConstraint:
+    def __init__(
+        self,
+        net_id,
+        partner_net_id,
+        *,
+        level=0,
+        source_depth=0,
+        target_depth=0,
+    ):
+        self.net_id = net_id
+        self.partner_net_id = partner_net_id
+        self.level = level
+        self.source_depth = source_depth
+        self.target_depth = target_depth
+
+
+class _FakeCrossingConfig:
+    def __init__(
+        self,
+        *,
+        enabled=False,
+        crossing_loss=0.0,
+        crossing_half_size_cells=0,
+        min_straight_cells_per_crossing=0,
+        allow_only_expected_pairs=True,
+    ):
+        self.enabled = enabled
+        self.crossing_loss = crossing_loss
+        self.crossing_half_size_cells = crossing_half_size_cells
+        self.min_straight_cells_per_crossing = min_straight_cells_per_crossing
+        self.allow_only_expected_pairs = allow_only_expected_pairs
+
+
+class _FakeCrossingBackend:
+    CrossingConstraint = _FakeCrossingConstraint
+    CrossingConfig = _FakeCrossingConfig
+
+
+class _FakeCrossingRouter:
+    def __init__(self):
+        self.config = None
+        self.constraints = []
+
+    def set_crossing_config(self, config):
+        self.config = config
+
+    def set_crossing_constraints(self, constraints):
+        self.constraints = list(constraints)
+
+    def crossing_expected_count(self, net_id):
+        return sum(
+            1
+            for constraint in self.constraints
+            if constraint.net_id == net_id or constraint.partner_net_id == net_id
+        )
+
+
+def _route_jobs_from_schematic(schematic):
+    jobs = []
+    net_id = 1
+    for net_name, bundle in schematic.netlist.routes.items():
+        for port1_spec, port2_spec in bundle.links.items():
+            inst1, port1 = port1_spec.split(",")
+            inst2, port2 = port2_spec.split(",")
+            jobs.append(
+                RouteJob(
+                    net_id=net_id,
+                    route_index=net_id,
+                    net_name=net_name,
+                    inst1=inst1,
+                    port1=port1,
+                    inst2=inst2,
+                    port2=port2,
+                    source_port=object(),
+                    target_port=object(),
+                )
+            )
+            net_id += 1
+    return jobs
 
 
 def _boxes_overlap(a, b) -> bool:
@@ -178,6 +262,38 @@ def test_crossing_plan_orders_4x4_benes_events_by_stage():
     assert "target order:" in summary
     assert "stage 0->1" not in summary
     assert "stage 0->1" in plan.to_text(include_empty_stages=True)
+
+
+def test_benes_crossing_plan_can_be_loaded_into_router_context():
+    schematic = build_schematic()
+    router = _FakeCrossingRouter()
+
+    info = _build_crossing_plan_info(
+        rust_backend=_FakeCrossingBackend,
+        router=router,
+        schematic=schematic,
+        route_jobs=_route_jobs_from_schematic(schematic),
+        enable_crossings=True,
+        node_depths=NODE_DEPTHS,
+        node_ranks=NODE_RANKS,
+        edge_ranks=EDGE_RANKS,
+        crossing_loss=1.25,
+        crossing_half_size_cells=3,
+        min_straight_cells_per_crossing=6,
+        allow_only_expected_crossings=True,
+    )
+
+    assert info["enabled"] is True
+    assert info["event_count"] == 2
+    assert info["constraint_count"] == 2
+    assert info["missing_event_count"] == 0
+    assert router.config.enabled is True
+    assert router.config.crossing_loss == 1.25
+    assert router.config.crossing_half_size_cells == 3
+    assert router.config.min_straight_cells_per_crossing == 6
+    assert len(router.constraints) == 2
+    assert all(constraint.net_id != constraint.partner_net_id for constraint in router.constraints)
+    assert sum(info["expected_crossings_by_net_id"].values()) == 4
 
 
 def test_topology_analysis_matches_8x8_benes_crossing_oracle():
