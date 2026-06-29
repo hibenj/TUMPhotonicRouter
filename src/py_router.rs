@@ -1402,23 +1402,60 @@ fn perpendicular_angles(angle: u8) -> [u8; 2] {
     ]
 }
 
-fn crossing_anchor_score(source: State, target: State, anchor: State, partner_angle: u8) -> f64 {
-    let distance = octile_cells((source.x, source.y), (anchor.x, anchor.y))
-        + octile_cells((anchor.x, anchor.y), (target.x, target.y));
+fn crossing_anchor_score(
+    source: State,
+    target: State,
+    anchor: State,
+    partner_angle: u8,
+    preferred_crossing_angle: Option<u8>,
+) -> f64 {
+    let source_to_anchor = octile_cells((source.x, source.y), (anchor.x, anchor.y));
+    let anchor_to_target = octile_cells((anchor.x, anchor.y), (target.x, target.y));
+    let direct = octile_cells((source.x, source.y), (target.x, target.y));
+    let detour = (source_to_anchor + anchor_to_target - direct).max(0.0);
+    let distance = source_to_anchor + anchor_to_target;
     let (cross_dx, cross_dy) = DIRECTIONS[(anchor.angle % 8) as usize];
+    let source_dx = (anchor.x - source.x).signum();
+    let source_dy = (anchor.y - source.y).signum();
     let target_dx = (target.x - anchor.x).signum();
     let target_dy = (target.y - anchor.y).signum();
-    let direction_penalty = if cross_dx * target_dx + cross_dy * target_dy >= 0 {
+    let source_direction_penalty = if cross_dx * source_dx + cross_dy * source_dy >= 0 {
         0.0
     } else {
-        32.0
+        256.0
     };
+    let target_direction_penalty = if cross_dx * target_dx + cross_dy * target_dy >= 0 {
+        0.0
+    } else {
+        256.0
+    };
+    let preferred_angle_penalty =
+        if preferred_crossing_angle.is_some_and(|angle| angle != anchor.angle) {
+            512.0
+        } else {
+            0.0
+        };
+    let lateral_deviation_penalty = preferred_crossing_angle
+        .map(|angle| {
+            let (dir_x, dir_y) = DIRECTIONS[(angle % 8) as usize];
+            let anchor_dx = anchor.x - source.x;
+            let anchor_dy = anchor.y - source.y;
+            let lateral_cells = (anchor_dx * dir_y - anchor_dy * dir_x).abs() as f64;
+            64.0 * lateral_cells
+        })
+        .unwrap_or(0.0);
     let partner_parallel_penalty = if anchor.angle == partner_angle {
         128.0
     } else {
         0.0
     };
-    distance + direction_penalty + partner_parallel_penalty
+    distance
+        + 4.0 * detour
+        + source_direction_penalty
+        + target_direction_penalty
+        + preferred_angle_penalty
+        + lateral_deviation_penalty
+        + partner_parallel_penalty
 }
 
 fn octile_cells(a: (i32, i32), b: (i32, i32)) -> f64 {
@@ -2319,6 +2356,8 @@ impl PyPhotonicRouter {
             .max(block_radius_cells)
             .max(1);
         let window_radius = cfg.crossing_half_size_cells.max(block_radius_cells).max(0);
+        let preferred_crossing_angle =
+            direction_angle_between_cells((source.x, source.y), (target.x, target.y));
         let mut candidates = Vec::new();
         for partner_id in partner_ids {
             let Some(route_cells) = self.committed_center_routes.get(&partner_id) else {
@@ -2340,6 +2379,7 @@ impl PyPhotonicRouter {
                             target,
                             State::new(x, y, crossing_angle),
                             partner_angle,
+                            preferred_crossing_angle,
                         );
                         let window_keys = crossing_window_keys(
                             x,

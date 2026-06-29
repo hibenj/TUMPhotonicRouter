@@ -120,7 +120,7 @@ def test_crossing_enabled_route_uses_expected_partner_anchor():
         )
     )
 
-    router.route_single_net_and_commit(
+    route = router.route_single_net_and_commit(
         2,
         backend.State(3, 12, 0),
         backend.State(24, 12, 0),
@@ -130,3 +130,4 @@ def test_crossing_enabled_route_uses_expected_partner_anchor():
     net1_core = {tuple(cell) for cell in router.get_net_core_cells(1)}
     net2_core = {tuple(cell) for cell in router.get_net_core_cells(2)}
     assert net1_core & net2_core
+    assert {int(cell[1]) for cell in route.cells} == {12}
