@@ -22,6 +22,7 @@ from benchmarks.benes_8x8 import (
     build_schematic as build_schematic_8x8,
 )
 from photonic_router.path_length_graph import build_graph_from_schematic
+from photonic_router.crossing_plan import build_crossing_plan
 from photonic_router.topology_analysis import analyze_schematic_topology
 from translation.layout_from_schematic import layout_from_schematic
 
@@ -146,6 +147,39 @@ def test_topology_analysis_uses_benes_edge_ranks_for_crossing_oracle():
     assert len(result.crossings_by_depth()[(2, 3)]) == 1
 
 
+def test_crossing_plan_orders_4x4_benes_events_by_stage():
+    topology = analyze_schematic_topology(
+        build_schematic(),
+        node_depths=NODE_DEPTHS,
+        node_ranks=NODE_RANKS,
+        edge_ranks=EDGE_RANKS,
+    )
+    plan = build_crossing_plan(topology)
+
+    assert len(plan.events) == 2
+    assert set(plan.stages) == {(0, 1), (1, 2), (2, 3), (3, 4)}
+    assert {key for key, stage in plan.stages.items() if stage.events} == {
+        (1, 2),
+        (2, 3),
+    }
+    for stage_plan in (stage for stage in plan.stages.values() if stage.events):
+        assert len(stage_plan.events) == 1
+        assert stage_plan.apply_events() == stage_plan.final_edge_order
+    for event in plan.events:
+        assert plan.event_for_pair(event.edge_a, event.edge_b) is event
+        assert event in plan.events_for_edge(event.edge_a)
+        assert event in plan.events_for_edge(event.edge_b)
+
+    summary = str(plan)
+    assert "CrossingPlan: 2 crossing(s), 4 stage(s)" in summary
+    assert "stage 1->2: 1 crossing(s)" in summary
+    assert "level 0:" in summary
+    assert "source order:" in summary
+    assert "target order:" in summary
+    assert "stage 0->1" not in summary
+    assert "stage 0->1" in plan.to_text(include_empty_stages=True)
+
+
 def test_topology_analysis_matches_8x8_benes_crossing_oracle():
     result = analyze_schematic_topology(
         build_schematic_8x8(),
@@ -163,6 +197,33 @@ def test_topology_analysis_matches_8x8_benes_crossing_oracle():
         for crossing in EXPECTED_CROSSINGS_8X8
     }
     assert crossing_pairs == expected_pairs
+
+
+def test_crossing_plan_orders_8x8_benes_events_by_stage():
+    topology = analyze_schematic_topology(
+        build_schematic_8x8(),
+        node_depths=NODE_DEPTHS_8X8,
+        node_ranks=NODE_RANKS_8X8,
+        edge_ranks=EDGE_RANKS_8X8,
+    )
+    plan = build_crossing_plan(topology)
+
+    assert len(plan.events) == 16
+    assert {
+        key: len(stage.events)
+        for key, stage in plan.stages.items()
+        if stage.events
+    } == {
+        (1, 2): 6,
+        (2, 3): 2,
+        (3, 4): 2,
+        (4, 5): 6,
+    }
+    for stage_plan in plan.stages.values():
+        assert stage_plan.apply_events() == stage_plan.final_edge_order
+        assert stage_plan.events == tuple(
+            sorted(stage_plan.events, key=lambda event: (event.level, event.order_index))
+        )
 
 
 def test_benes_switch_cell_contains_two_mmis_and_two_heaters():

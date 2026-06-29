@@ -20,14 +20,17 @@ def test_graph_analysis_context_reuses_one_graph_for_plm_and_topology():
         node_ranks=metadata["node_ranks"],
         edge_ranks=metadata["edge_ranks"],
     )
+    crossing_plan = context.build_crossing_plan()
 
     assert context.timing is timing
     assert context.plm is not None
     assert context.plm.edge_lengths_um == edge_lengths
     assert len(context.plm.edge_missing_lengths_um) > 0
     assert context.topology is topology
+    assert context.crossing_plan is crossing_plan
     assert set(timing.topological_order) == set(topology.topological_order)
     assert len(topology.crossings) == len(metadata["expected_crossings"])
+    assert len(crossing_plan.events) == len(metadata["expected_crossings"])
 
 
 def test_base_graph_edges_do_not_hold_plm_annotations():

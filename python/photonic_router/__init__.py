@@ -32,6 +32,12 @@ from photonic_router.path_length_graph import (
     list_edges_requiring_meander,
 )
 from photonic_router.graph_analysis import GraphAnalysisContext
+from photonic_router.crossing_plan import (
+    CrossingEvent,
+    CrossingPlan,
+    CrossingStagePlan,
+    build_crossing_plan,
+)
 from photonic_router.topology_analysis import (
     TopologyAnalysisResult,
     TopologyCrossing,
@@ -56,6 +62,9 @@ __all__ = [
     "MissingLengthRequirement",
     "DelayInsertionCandidate",
     "GraphAnalysisContext",
+    "CrossingEvent",
+    "CrossingPlan",
+    "CrossingStagePlan",
     "TopologyAnalysisResult",
     "TopologyCrossing",
     "TopologyEdgeRank",
@@ -68,6 +77,7 @@ __all__ = [
     "annotate_edge_lengths",
     "analyze_graph_topology",
     "analyze_schematic_topology",
+    "build_crossing_plan",
     "build_graph_from_schematic",
     "build_static_obstacle_map",
     "extract_benchmark",
