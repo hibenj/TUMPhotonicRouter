@@ -362,6 +362,28 @@ impl ObstacleMap {
         blocked_cells: &[(i32, i32)],
         clearance_exempt_cells: &[(i32, i32)],
     ) -> bool {
+        self.commit_route_with_clearance_and_allowed_core_overlaps(
+            net_id,
+            core_cells,
+            blocked_cells,
+            clearance_exempt_cells,
+            &FxHashSet::default(),
+        )
+    }
+
+    /// Commit a route while allowing core overlaps with selected existing nets.
+    ///
+    /// This is used as a first crossing-aware baseline: search may temporarily
+    /// open expected partner routes, and commit validates that any resulting
+    /// dynamic core overlap belongs only to those expected partners.
+    pub fn commit_route_with_clearance_and_allowed_core_overlaps(
+        &mut self,
+        net_id: NetId,
+        core_cells: &[(i32, i32)],
+        blocked_cells: &[(i32, i32)],
+        clearance_exempt_cells: &[(i32, i32)],
+        allowed_core_overlap_nets: &FxHashSet<NetId>,
+    ) -> bool {
         let mut keys = Vec::with_capacity(blocked_cells.len());
         let mut seen = FxHashSet::default();
         for &(x, y) in blocked_cells {
@@ -409,7 +431,19 @@ impl ObstacleMap {
             let other_core_refs = existing_core_refs.saturating_sub(same_net_core_refs);
             let allowed_clearance_overlap =
                 clearance_exempt_keys.contains(&key) && other_core_refs == 0;
-            if existing_refs > same_net_refs && !allowed_clearance_overlap {
+            let allowed_crossing_overlap = if allowed_core_overlap_nets.is_empty() {
+                false
+            } else {
+                let other_owners = self.dynamic_owners_for_key(key, Some(net_id));
+                !other_owners.is_empty()
+                    && other_owners
+                        .iter()
+                        .all(|owner| allowed_core_overlap_nets.contains(owner))
+            };
+            if existing_refs > same_net_refs
+                && !allowed_clearance_overlap
+                && !allowed_crossing_overlap
+            {
                 return false;
             }
         }
@@ -486,6 +520,11 @@ impl ObstacleMap {
         self.net_routes.get(&net_id).map(Vec::as_slice)
     }
 
+    /// Return the packed core cells owned by `net_id`, if that net has a committed route.
+    pub fn get_net_core_cells(&self, net_id: NetId) -> Option<&[CellKey]> {
+        self.net_core_routes.get(&net_id).map(Vec::as_slice)
+    }
+
     /// Return committed route cells grouped by net id.
     pub fn net_route_entries(&self) -> impl Iterator<Item = (NetId, &[CellKey])> + '_ {
         self.net_routes
@@ -523,6 +562,53 @@ impl ObstacleMap {
             }
         }
         owners
+    }
+
+    fn dynamic_owners_for_key(
+        &self,
+        key: CellKey,
+        exclude_net_id: Option<NetId>,
+    ) -> FxHashSet<NetId> {
+        let mut owners = FxHashSet::default();
+        for (&net_id, route_cells) in &self.net_routes {
+            if exclude_net_id.is_some_and(|excluded| excluded == net_id) {
+                continue;
+            }
+            if route_cells.contains(&key) {
+                owners.insert(net_id);
+            }
+        }
+        owners
+    }
+
+    /// Clear dynamic blocking for cells owned only by the selected nets.
+    ///
+    /// This is intended for cloned search maps. It leaves per-net route records
+    /// untouched, so callers should not use it on the committed routing DB.
+    pub fn clear_dynamic_blocking_for_nets(&mut self, net_ids: &FxHashSet<NetId>) -> usize {
+        if net_ids.is_empty() {
+            return 0;
+        }
+        let mut candidate_keys = FxHashSet::default();
+        for net_id in net_ids {
+            if let Some(route_cells) = self.net_routes.get(net_id) {
+                candidate_keys.extend(route_cells.iter().copied());
+            }
+        }
+
+        let mut cleared = 0usize;
+        for key in candidate_keys {
+            let owners = self.dynamic_owners_for_key(key, None);
+            if owners.is_empty() || !owners.iter().all(|owner| net_ids.contains(owner)) {
+                continue;
+            }
+            let (x, y) = unpack_xy(key);
+            self.dynamic_obstacles.remove(&key);
+            self.dynamic_core_obstacles.remove(&key);
+            self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
+            cleared += 1;
+        }
+        cleared
     }
 
     /// Return a copy whose dynamic obstacles are expanded by `radius_cells`.
@@ -982,6 +1068,50 @@ mod tests {
         assert!(map.commit_route_with_clearance_overlap(1, &[(2, 2)], &[(2, 2), (3, 2)], &[],));
         assert!(map.commit_route_with_clearance_overlap(2, &[(3, 2)], &[(3, 2)], &[(3, 2)],));
         assert!(!map.commit_route_with_clearance_overlap(3, &[(2, 2)], &[(2, 2)], &[(2, 2)],));
+    }
+
+    #[test]
+    fn crossing_commit_allows_expected_core_overlap_only() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route_with_clearance_overlap(1, &[(2, 2)], &[(2, 2)], &[],));
+        assert!(map.commit_route_with_clearance_overlap(3, &[(4, 4)], &[(4, 4)], &[],));
+
+        let mut allowed = FxHashSet::default();
+        allowed.insert(1);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            2,
+            &[(2, 2)],
+            &[(2, 2)],
+            &[],
+            &allowed,
+        ));
+        assert_eq!(map.ref_count(2, 2), 2);
+
+        assert!(!map.commit_route_with_clearance_and_allowed_core_overlaps(
+            4,
+            &[(4, 4)],
+            &[(4, 4)],
+            &[],
+            &allowed,
+        ));
+        assert!(map.get_net_cells(4).is_none());
+    }
+
+    #[test]
+    fn cloned_search_map_can_open_expected_crossing_partner_cells() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route_with_clearance_overlap(1, &[(2, 2)], &[(2, 2), (2, 3)], &[],));
+        assert!(map.commit_route_with_clearance_overlap(3, &[(4, 4)], &[(4, 4)], &[],));
+
+        let mut expected = FxHashSet::default();
+        expected.insert(1);
+        let mut search_map = map.clone();
+        assert_eq!(search_map.clear_dynamic_blocking_for_nets(&expected), 2);
+
+        assert!(!search_map.is_dynamic_blocked(2, 2));
+        assert!(!search_map.is_dynamic_blocked(2, 3));
+        assert!(search_map.is_dynamic_blocked(4, 4));
+        assert!(map.is_dynamic_blocked(2, 2));
     }
 
     #[test]

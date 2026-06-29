@@ -25,7 +25,10 @@ from photonic_router.path_length_graph import build_graph_from_schematic
 from photonic_router.crossing_plan import build_crossing_plan
 from photonic_router.topology_analysis import analyze_schematic_topology
 from translation.layout_from_schematic import layout_from_schematic
-from translation.route_rust import _build_crossing_plan_info
+from translation.route_rust import (
+    _augment_crossing_plan_with_realized_overlaps,
+    _build_crossing_plan_info,
+)
 from translation.route_rust_types import RouteJob
 
 
@@ -72,6 +75,7 @@ class _FakeCrossingRouter:
     def __init__(self):
         self.config = None
         self.constraints = []
+        self.core_cells_by_net_id = {}
 
     def set_crossing_config(self, config):
         self.config = config
@@ -85,6 +89,9 @@ class _FakeCrossingRouter:
             for constraint in self.constraints
             if constraint.net_id == net_id or constraint.partner_net_id == net_id
         )
+
+    def all_net_core_cells(self):
+        return sorted(self.core_cells_by_net_id.items())
 
 
 def _route_jobs_from_schematic(schematic):
@@ -294,6 +301,22 @@ def test_benes_crossing_plan_can_be_loaded_into_router_context():
     assert len(router.constraints) == 2
     assert all(constraint.net_id != constraint.partner_net_id for constraint in router.constraints)
     assert sum(info["expected_crossings_by_net_id"].values()) == 4
+    assert "CrossingPlan:" in info["plan_text"]
+    assert len(info["events"]) == 2
+    assert all(event["loaded"] for event in info["events"])
+
+    first = router.constraints[0]
+    router.core_cells_by_net_id = {
+        first.net_id: [(10, 20), (11, 20)],
+        first.partner_net_id: [(11, 20), (12, 20)],
+    }
+    _augment_crossing_plan_with_realized_overlaps(
+        router=router,
+        crossing_plan_info=info,
+    )
+    assert info["actual_crossing_count"] == 1
+    assert info["actual_crossings"][0]["cell_count"] == 1
+    assert info["unrealized_expected_crossing_count"] == 1
 
 
 def test_topology_analysis_matches_8x8_benes_crossing_oracle():

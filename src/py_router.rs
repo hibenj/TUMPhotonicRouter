@@ -2059,6 +2059,25 @@ impl PyPhotonicRouter {
         Ok(cfg)
     }
 
+    fn crossing_allowed_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
+        if !self.crossing_context.is_enabled() {
+            return FxHashSet::default();
+        }
+        if !self.crossing_context.config().allow_only_expected_pairs {
+            return self
+                .obstacle_map
+                .net_route_entries()
+                .map(|(partner_id, _)| partner_id)
+                .filter(|partner_id| *partner_id != net_id)
+                .collect();
+        }
+        self.crossing_context
+            .allowed_partners_for(net_id)
+            .into_iter()
+            .filter(|partner_id| self.obstacle_map.get_net_cells(*partner_id).is_some())
+            .collect()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn route_single_net_and_commit_native(
         &mut self,
@@ -2113,6 +2132,14 @@ impl PyPhotonicRouter {
             } else {
                 None
             };
+        let crossing_allowed_partner_ids = self.crossing_allowed_partner_set(net_id);
+        let crossing_search_obstacle_map_owned = if crossing_allowed_partner_ids.is_empty() {
+            None
+        } else {
+            let mut crossing_map = self.obstacle_map.clone();
+            crossing_map.clear_dynamic_blocking_for_nets(&crossing_allowed_partner_ids);
+            Some(crossing_map)
+        };
         if let Some(prepare_start) = prepare_start.as_ref() {
             obstacle_map_prepare_time_us += prepare_start.elapsed().as_micros();
         }
@@ -2122,16 +2149,22 @@ impl PyPhotonicRouter {
             } else {
                 None
             };
-            if let Some(mut result) = try_simple_route_with_dynamic_expansion_config(
-                &self.obstacle_map,
-                &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
-                Some(opened_ref),
-                &cfg,
-                block_radius_cells,
-                dynamic_clearance_exempt_keys,
-            ) {
+            let simple_result = {
+                let search_map = crossing_search_obstacle_map_owned
+                    .as_ref()
+                    .unwrap_or(&self.obstacle_map);
+                try_simple_route_with_dynamic_expansion_config(
+                    search_map,
+                    &self.primitives,
+                    State::new(source.x, source.y, source.angle),
+                    State::new(target.x, target.y, target.angle),
+                    Some(opened_ref),
+                    &cfg,
+                    block_radius_cells,
+                    dynamic_clearance_exempt_keys,
+                )
+            };
+            if let Some(mut result) = simple_result {
                 if let Some(simple_start) = simple_start.as_ref() {
                     simple_route_time_us += simple_start.elapsed().as_micros();
                 }
@@ -2162,12 +2195,15 @@ impl PyPhotonicRouter {
                 } else {
                     None
                 };
-                let committed = self.obstacle_map.commit_route_with_clearance_overlap(
-                    net_id,
-                    &core_cells,
-                    &route_cells,
-                    clearance_exempt_cells.unwrap_or(&[]),
-                );
+                let committed = self
+                    .obstacle_map
+                    .commit_route_with_clearance_and_allowed_core_overlaps(
+                        net_id,
+                        &core_cells,
+                        &route_cells,
+                        clearance_exempt_cells.unwrap_or(&[]),
+                        &crossing_allowed_partner_ids,
+                    );
                 if let Some(commit_start) = commit_start.as_ref() {
                     commit_time_us += commit_start.elapsed().as_micros();
                 }
@@ -2197,8 +2233,11 @@ impl PyPhotonicRouter {
             && !search_cfg.enable_jps4;
         let mut opened_dynamic_obstacle_map;
         let mut result = if block_radius_cells > 0 || zero_radius_overlay {
+            let search_map = crossing_search_obstacle_map_owned
+                .as_ref()
+                .unwrap_or(&self.obstacle_map);
             route_single_net_with_dynamic_expansion_config(
-                &self.obstacle_map,
+                search_map,
                 &self.primitives,
                 State::new(source.x, source.y, source.angle),
                 State::new(target.x, target.y, target.angle),
@@ -2209,12 +2248,17 @@ impl PyPhotonicRouter {
             )
         } else {
             let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
-                opened_dynamic_obstacle_map = self.obstacle_map.clone();
+                let base_map = crossing_search_obstacle_map_owned
+                    .as_ref()
+                    .unwrap_or(&self.obstacle_map);
+                opened_dynamic_obstacle_map = base_map.clone();
                 opened_dynamic_obstacle_map
                     .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
                 &opened_dynamic_obstacle_map
             } else {
-                &self.obstacle_map
+                crossing_search_obstacle_map_owned
+                    .as_ref()
+                    .unwrap_or(&self.obstacle_map)
             };
             route_single_net_with_config(
                 search_obstacle_map,
@@ -2258,12 +2302,15 @@ impl PyPhotonicRouter {
         } else {
             None
         };
-        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
-            net_id,
-            &core_cells,
-            &route_cells,
-            clearance_exempt_cells.unwrap_or(&[]),
-        );
+        let committed = self
+            .obstacle_map
+            .commit_route_with_clearance_and_allowed_core_overlaps(
+                net_id,
+                &core_cells,
+                &route_cells,
+                clearance_exempt_cells.unwrap_or(&[]),
+                &crossing_allowed_partner_ids,
+            );
         if let Some(commit_start) = commit_start.as_ref() {
             result.stats.commit_time_us += commit_start.elapsed().as_micros();
         }
@@ -4133,6 +4180,13 @@ impl PyPhotonicRouter {
             .unwrap_or_default()
     }
 
+    fn get_net_core_cells(&self, net_id: u64) -> Vec<(i32, i32)> {
+        self.obstacle_map
+            .get_net_core_cells(net_id)
+            .map(|cells| cells.iter().copied().map(unpack_xy).collect())
+            .unwrap_or_default()
+    }
+
     fn raw_dynamic_obstacle_cells(&self) -> Vec<(i32, i32, u16)> {
         let mut cells: Vec<(i32, i32, u16)> = self
             .obstacle_map
@@ -4168,6 +4222,23 @@ impl PyPhotonicRouter {
                     net_id,
                     cells.iter().copied().map(unpack_xy).collect::<Vec<_>>(),
                 )
+            })
+            .collect();
+        routes.sort_unstable_by_key(|(net_id, _)| *net_id);
+        routes
+    }
+
+    fn all_net_core_cells(&self) -> Vec<(u64, Vec<(i32, i32)>)> {
+        let mut routes: Vec<(u64, Vec<(i32, i32)>)> = self
+            .obstacle_map
+            .net_route_entries()
+            .filter_map(|(net_id, _)| {
+                self.obstacle_map.get_net_core_cells(net_id).map(|cells| {
+                    (
+                        net_id,
+                        cells.iter().copied().map(unpack_xy).collect::<Vec<_>>(),
+                    )
+                })
             })
             .collect();
         routes.sort_unstable_by_key(|(net_id, _)| *net_id);

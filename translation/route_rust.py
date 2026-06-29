@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import math
 import sys
 import time
@@ -122,6 +123,18 @@ def _port_center_um(port: object) -> tuple[float, float] | None:
         return None
 
 
+def _edge_key_to_info(edge_key: object) -> dict[str, object]:
+    source = getattr(edge_key, "source", None)
+    target = getattr(edge_key, "target", None)
+    return {
+        "net_name": str(getattr(edge_key, "net_name", "")),
+        "source_instance": str(getattr(source, "instance", "")),
+        "source_port": str(getattr(source, "port", "")),
+        "target_instance": str(getattr(target, "instance", "")),
+        "target_port": str(getattr(target, "port", "")),
+    }
+
+
 def _build_crossing_plan_info(
     *,
     rust_backend: object,
@@ -143,6 +156,7 @@ def _build_crossing_plan_info(
         "event_count": 0,
         "missing_event_count": 0,
         "missing_events": [],
+        "events": [],
         "expected_crossings_by_net_id": {},
         "expected_crossings_by_net_name": {},
     }
@@ -180,30 +194,50 @@ def _build_crossing_plan_info(
     crossing_plan: CrossingPlan = build_crossing_plan(topology)
     info["event_count"] = len(crossing_plan.events)
     info["stage_count"] = len(crossing_plan.stages)
+    info["plan_text"] = crossing_plan.to_text(include_empty_stages=True)
 
     jobs_by_edge = {route_edge_key(job): job for job in route_jobs}
     constraints = []
     missing_events: list[dict[str, object]] = []
+    event_records: list[dict[str, object]] = []
     crossing_counts_by_net_id: Counter[int] = Counter()
     crossing_counts_by_net_name: Counter[str] = Counter()
 
     for event in crossing_plan.events:
         job_a = jobs_by_edge.get(event.edge_a)
         job_b = jobs_by_edge.get(event.edge_b)
+        event_record: dict[str, object] = {
+            "edge_a": _edge_key_to_info(event.edge_a),
+            "edge_b": _edge_key_to_info(event.edge_b),
+            "source_depth": int(event.source_depth),
+            "target_depth": int(event.target_depth),
+            "level": int(event.level),
+            "order_index": int(event.order_index),
+            "edge_a_source_rank": int(event.edge_a_source_rank),
+            "edge_a_target_rank": int(event.edge_a_target_rank),
+            "edge_b_source_rank": int(event.edge_b_source_rank),
+            "edge_b_target_rank": int(event.edge_b_target_rank),
+        }
         if job_a is None or job_b is None:
-            missing_events.append(
-                {
-                    "edge_a": event.edge_a.net_name,
-                    "edge_b": event.edge_b.net_name,
-                    "edge_a_found": job_a is not None,
-                    "edge_b_found": job_b is not None,
-                    "source_depth": event.source_depth,
-                    "target_depth": event.target_depth,
-                    "level": event.level,
-                }
-            )
+            missing_record = {
+                **event_record,
+                "edge_a_found": job_a is not None,
+                "edge_b_found": job_b is not None,
+            }
+            missing_events.append(missing_record)
+            event_records.append({**event_record, "loaded": False})
             continue
 
+        event_record.update(
+            {
+                "loaded": True,
+                "net_id_a": int(job_a.net_id),
+                "net_id_b": int(job_b.net_id),
+                "net_name_a": str(job_a.net_name),
+                "net_name_b": str(job_b.net_name),
+            }
+        )
+        event_records.append(event_record)
         constraints.append(
             rust_backend.CrossingConstraint(
                 int(job_a.net_id),
@@ -232,6 +266,7 @@ def _build_crossing_plan_info(
     info["constraint_count"] = len(constraints)
     info["missing_event_count"] = len(missing_events)
     info["missing_events"] = missing_events
+    info["events"] = event_records
     info["expected_crossings_by_net_id"] = dict(sorted(crossing_counts_by_net_id.items()))
     info["expected_crossings_by_net_name"] = dict(sorted(crossing_counts_by_net_name.items()))
     info["crossing_loss"] = float(crossing_loss)
@@ -239,6 +274,110 @@ def _build_crossing_plan_info(
     info["min_straight_cells_per_crossing"] = int(min_straight_cells_per_crossing)
     info["allow_only_expected_crossings"] = bool(allow_only_expected_crossings)
     return info
+
+
+def _augment_crossing_plan_with_realized_overlaps(
+    *,
+    router: object,
+    crossing_plan_info: dict[str, object],
+) -> None:
+    if not crossing_plan_info.get("enabled"):
+        return
+    if not hasattr(router, "all_net_core_cells"):
+        crossing_plan_info["actual_crossing_reason"] = "missing_core_cell_api"
+        return
+
+    core_cells_by_net_id: dict[int, set[tuple[int, int]]] = {}
+    for raw_net_id, raw_cells in router.all_net_core_cells():
+        core_cells_by_net_id[int(raw_net_id)] = {
+            (int(cell[0]), int(cell[1])) for cell in raw_cells
+        }
+
+    actual_crossings: list[dict[str, object]] = []
+    unrealized_expected: list[dict[str, object]] = []
+    for raw_event in list(crossing_plan_info.get("events", [])):
+        event = dict(cast(dict[str, object], raw_event))
+        if not event.get("loaded"):
+            continue
+        net_id_a = int(cast(int, event["net_id_a"]))
+        net_id_b = int(cast(int, event["net_id_b"]))
+        overlap = sorted(
+            core_cells_by_net_id.get(net_id_a, set())
+            & core_cells_by_net_id.get(net_id_b, set())
+        )
+        record = {
+            "net_id_a": net_id_a,
+            "net_id_b": net_id_b,
+            "net_name_a": event.get("net_name_a"),
+            "net_name_b": event.get("net_name_b"),
+            "source_depth": event.get("source_depth"),
+            "target_depth": event.get("target_depth"),
+            "level": event.get("level"),
+            "order_index": event.get("order_index"),
+            "cell_count": len(overlap),
+            "cells": [[int(x), int(y)] for x, y in overlap[:32]],
+        }
+        if overlap:
+            actual_crossings.append(record)
+        else:
+            unrealized_expected.append(record)
+
+    crossing_plan_info["actual_crossing_count"] = len(actual_crossings)
+    crossing_plan_info["actual_crossing_cell_count"] = sum(
+        int(record["cell_count"]) for record in actual_crossings
+    )
+    crossing_plan_info["actual_crossings"] = actual_crossings
+    crossing_plan_info["unrealized_expected_crossings"] = unrealized_expected
+    crossing_plan_info["unrealized_expected_crossing_count"] = len(unrealized_expected)
+
+
+def _write_crossing_debug_artifacts(
+    *,
+    debug_path: Path | None,
+    debug_prefix: str,
+    crossing_plan_info: dict[str, object],
+) -> None:
+    if debug_path is None or not crossing_plan_info.get("enabled"):
+        return
+    crossing_dir = debug_path / "crossings"
+    _ensure_dir(crossing_dir)
+    json_path = crossing_dir / f"{debug_prefix}_crossings.json"
+    txt_path = crossing_dir / f"{debug_prefix}_crossings.txt"
+    json_path.write_text(
+        json.dumps(crossing_plan_info, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    lines = [str(crossing_plan_info.get("plan_text", "CrossingPlan: unavailable"))]
+    lines.append("")
+    lines.append(
+        "loaded_constraints="
+        f"{int(crossing_plan_info.get('constraint_count', 0))}/"
+        f"{int(crossing_plan_info.get('event_count', 0))}"
+    )
+    lines.append(
+        "realized_crossings="
+        f"{int(crossing_plan_info.get('actual_crossing_count', 0))}/"
+        f"{int(crossing_plan_info.get('constraint_count', 0))}"
+    )
+    for crossing in cast(list[dict[str, object]], crossing_plan_info.get("actual_crossings", [])):
+        lines.append(
+            "  - "
+            f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')}: "
+            f"{crossing.get('cell_count')} core-overlap cell(s)"
+        )
+    if crossing_plan_info.get("unrealized_expected_crossing_count", 0):
+        lines.append("unrealized_expected:")
+        for crossing in cast(
+            list[dict[str, object]],
+            crossing_plan_info.get("unrealized_expected_crossings", []),
+        ):
+            lines.append(
+                "  - "
+                f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} "
+                f"level={crossing.get('level')}"
+            )
+    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
@@ -2975,6 +3114,16 @@ def route_nets_rust(
             bend_radius_cells=bend_radius_cells,
         )
         _record_pipeline_timing("direct_realization", t_direct_realization_start)
+
+    _augment_crossing_plan_with_realized_overlaps(
+        router=router,
+        crossing_plan_info=crossing_plan_info,
+    )
+    _write_crossing_debug_artifacts(
+        debug_path=debug_path,
+        debug_prefix=debug_prefix,
+        crossing_plan_info=crossing_plan_info,
+    )
 
     t_debug_artifact_start = _pipeline_timer_start()
     debug_artifacts = build_route_debug_artifacts(

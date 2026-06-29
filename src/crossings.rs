@@ -145,6 +145,23 @@ impl CrossingContext {
             .copied()
             .unwrap_or(0)
     }
+
+    pub fn allowed_partners_for(&self, net_id: NetId) -> Vec<NetId> {
+        if !self.config.enabled {
+            return Vec::new();
+        }
+        let mut partners = Vec::new();
+        for constraint in &self.constraints {
+            if constraint.net_id == net_id {
+                partners.push(constraint.partner_net_id);
+            } else if constraint.partner_net_id == net_id {
+                partners.push(constraint.net_id);
+            }
+        }
+        partners.sort_unstable();
+        partners.dedup();
+        partners
+    }
 }
 
 #[cfg(test)]
@@ -184,6 +201,7 @@ mod tests {
         assert_eq!(context.expected_crossing_count(10), 2);
         assert_eq!(context.expected_crossing_count(2), 1);
         assert_eq!(context.expected_crossing_count(99), 0);
+        assert_eq!(context.allowed_partners_for(10), vec![2, 5]);
     }
 
     #[test]
