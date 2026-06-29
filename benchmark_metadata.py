@@ -141,6 +141,11 @@ def load_benchmark_metadata(
     benchmark_module = importlib.import_module(f"benchmarks.{benchmark_name}")
     node_types = getattr(benchmark_module, "NODE_TYPES", {})
     internal_delays_um = dict(getattr(benchmark_module, "INTERNAL_DELAYS_UM", {}))
+    topology_metadata = getattr(benchmark_module, "TOPOLOGY_METADATA", {})
+    node_depths = getattr(benchmark_module, "NODE_DEPTHS", {})
+    node_ranks = getattr(benchmark_module, "NODE_RANKS", {})
+    edge_ranks = getattr(benchmark_module, "EDGE_RANKS", {})
+    expected_crossings = getattr(benchmark_module, "EXPECTED_CROSSINGS", ())
 
     if schematic is None and schematic_loader is not None:
         try:
@@ -167,4 +172,9 @@ def load_benchmark_metadata(
     return {
         "node_types": node_types,
         "internal_delays_um": internal_delays_um,
+        "topology_metadata": topology_metadata,
+        "node_depths": node_depths,
+        "node_ranks": node_ranks,
+        "edge_ranks": edge_ranks,
+        "expected_crossings": expected_crossings,
     }
