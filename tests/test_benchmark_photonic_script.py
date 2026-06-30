@@ -463,6 +463,44 @@ def test_perf_smoke_preset_keeps_explicit_benchmarks(monkeypatch):
     assert args.require_release is True
 
 
+def test_crossing_smoke_preset_applies_benes_stress_defaults(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(
+        sys, "argv", ["benchmark_photonic.py", "--preset", "crossing-smoke"]
+    )
+
+    args = module._parse_args()
+
+    assert args.benchmarks == list(module.CROSSING_SMOKE_BENCHMARKS)
+    assert args.output == module.PROJECT_ROOT / "build" / "crossing_smoke.md"
+    assert (
+        args.write_perf_baseline
+        == module.PROJECT_ROOT / "build" / "crossing_smoke.json"
+    )
+    assert (
+        args.attempt_output
+        == module.PROJECT_ROOT / "build" / "crossing_smoke_attempts.json"
+    )
+    assert args.require_release is True
+    assert args.attempt_diagnostics is True
+    assert args.continue_on_failure is True
+
+
+def test_crossing_smoke_preset_keeps_explicit_benchmarks(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["benchmark_photonic.py", "--preset", "crossing-smoke", "benes_16x16"],
+    )
+
+    args = module._parse_args()
+
+    assert args.benchmarks == ["benes_16x16"]
+    assert args.require_release is True
+    assert args.continue_on_failure is True
+
+
 def test_perf_smoke_worker_command_enables_crossings_only_for_benes(monkeypatch):
     module = _load_benchmark_photonic_module()
     monkeypatch.setattr(sys, "argv", ["benchmark_photonic.py", "--preset", "perf-smoke"])
@@ -480,6 +518,43 @@ def test_perf_smoke_worker_command_enables_crossings_only_for_benes(monkeypatch)
     assert "--crossings" not in clements_command
     assert "--allow-45-degree-turns" not in clements_command
     assert "--include-heater-obstacles" not in clements_command
+
+
+def test_crossing_smoke_worker_command_enables_crossings_for_large_benes(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(
+        sys, "argv", ["benchmark_photonic.py", "--preset", "crossing-smoke"]
+    )
+    args = module._parse_args()
+
+    command = module._worker_command("benes_16x16", args)
+
+    assert "--crossings" in command
+    assert "--allow-45-degree-turns" in command
+    assert "--include-heater-obstacles" in command
+    assert "--continue-on-failure" in command
+    assert command[command.index("--grid-size-um") + 1] == "2.0"
+    assert command[command.index("--waveguide-clearance-um") + 1] == "0.0"
+    assert command[command.index("--heater-clearance-um") + 1] == "10.0"
+
+
+def test_continue_on_failure_records_failed_worker_row(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(
+        sys, "argv", ["benchmark_photonic.py", "--preset", "crossing-smoke"]
+    )
+    args = module._parse_args()
+
+    def fail_route(*_args, **_kwargs):
+        raise RuntimeError("synthetic route failure")
+
+    monkeypatch.setattr(module, "run_routing_flow", fail_route)
+
+    row = module._run_single_benchmark("benes_16x16", args)
+
+    assert row["failed"] is True
+    assert row["route_failures"] == 1
+    assert "synthetic route failure" in row["error"]
 
 
 def test_perf_smoke_worker_command_enables_plm_for_heater(monkeypatch):

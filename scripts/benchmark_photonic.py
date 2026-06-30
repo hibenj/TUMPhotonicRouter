@@ -32,6 +32,7 @@ from routing_flow import (
     SCRIPT_RIPUP_MAX_VICTIMS,
     RipupRerouteConfig,
     RoutingFlowStats,
+    load_benchmark,
     run_routing_flow,
 )
 
@@ -40,6 +41,12 @@ DEFAULT_BENCHMARKS = ("TOY", "mmi_heater", "mmi_heater_8x4_ripup_reroute")
 PERF_SMOKE_BENCHMARKS = ("heater_s_mod", "clements_8x8", "benes_4x4", "benes_8x8")
 PERF_SMOKE_CROSSING_BENCHMARKS = frozenset({"benes_4x4", "benes_8x8"})
 PERF_SMOKE_PLM_BENCHMARKS = frozenset({"heater_s_mod"})
+CROSSING_SMOKE_BENCHMARKS = (
+    "benes_4x4",
+    "benes_8x8",
+    "benes_16x16",
+    "benes_32x32",
+)
 DEFAULT_PERF_BASELINE_PATH = (
     PROJECT_ROOT / "tests" / "baselines" / "photonic_perf_baseline.json"
 )
@@ -562,50 +569,68 @@ def _write_attempt_output(rows: Iterable[dict[str, object]], output_path: Path) 
 
 def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str, object]:
     stats = RoutingFlowStats()
-    routed_layout = run_routing_flow(
-        benchmark,
-        debug_svgs=False,
-        debug_timing=False,
-        show_klayout=False,
-        enable_path_length_matching=args.path_length_matching,
-        path_length_match_outputs=args.path_length_match_outputs,
-        enable_crossings=args.crossings,
-        crossing_half_size_cells=args.crossing_half_size_cells,
-        min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
-        allow_45_degree_turns=args.allow_45_degree_turns,
-        bend_radius_um=args.bend_radius_um,
-        use_indexed_heap=args.use_indexed_heap,
-        enable_simple_routes=args.enable_simple_routes,
-        primitive_ordering=args.primitive_ordering,
-        heuristic_mode=args.heuristic_mode,
-        heap_tie_breaker=args.heap_tie_breaker,
-        max_iterations=args.max_iterations,
-        routing_window_scale=args.routing_window_scale,
-        include_heater_obstacles=args.include_heater_obstacles,
-        grid_size_um=args.grid_size_um,
-        chip_add_x_um=args.chip_add_x_um,
-        chip_add_y_um=args.chip_add_y_um,
-        path_length_meander_height_um=args.path_length_meander_height_um,
-        ripup_reroute_config=RipupRerouteConfig(
-            enabled=args.ripup_reroute,
-            max_rounds=args.ripup_max_rounds,
-            max_victims_per_failure=args.ripup_max_victims,
-            history_weight=args.ripup_history_weight,
-            history_increment=args.ripup_history_increment,
-        ),
-        collect_attempt_diagnostics=getattr(args, "attempt_diagnostics", False),
-        static_obstacle_config=StaticObstacleMapConfig(
+    failed = False
+    error = ""
+    routed_layout = None
+    try:
+        routed_layout = run_routing_flow(
+            benchmark,
+            debug_svgs=False,
+            debug_timing=False,
+            show_klayout=False,
+            enable_path_length_matching=args.path_length_matching,
+            path_length_match_outputs=args.path_length_match_outputs,
+            enable_crossings=args.crossings,
+            crossing_half_size_cells=args.crossing_half_size_cells,
+            min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
+            allow_45_degree_turns=args.allow_45_degree_turns,
+            bend_radius_um=args.bend_radius_um,
+            use_indexed_heap=args.use_indexed_heap,
+            enable_simple_routes=args.enable_simple_routes,
+            primitive_ordering=args.primitive_ordering,
+            heuristic_mode=args.heuristic_mode,
+            heap_tie_breaker=args.heap_tie_breaker,
+            max_iterations=args.max_iterations,
+            routing_window_scale=args.routing_window_scale,
+            include_heater_obstacles=args.include_heater_obstacles,
             grid_size_um=args.grid_size_um,
-            obstacle_mode=args.obstacle_mode,
-            clearance_um=args.waveguide_clearance_um,
-            heater_clearance_um=args.heater_clearance_um,
             chip_add_x_um=args.chip_add_x_um,
             chip_add_y_um=args.chip_add_y_um,
-            clear_port_open_cells_from_static=args.clear_port_open_cells_from_static,
-        ),
-        stats=stats,
-    )
-    layout_info_raw = getattr(routed_layout, "info", {})
+            path_length_meander_height_um=args.path_length_meander_height_um,
+            ripup_reroute_config=RipupRerouteConfig(
+                enabled=args.ripup_reroute,
+                max_rounds=args.ripup_max_rounds,
+                max_victims_per_failure=args.ripup_max_victims,
+                history_weight=args.ripup_history_weight,
+                history_increment=args.ripup_history_increment,
+            ),
+            collect_attempt_diagnostics=getattr(args, "attempt_diagnostics", False),
+            static_obstacle_config=StaticObstacleMapConfig(
+                grid_size_um=args.grid_size_um,
+                obstacle_mode=args.obstacle_mode,
+                clearance_um=args.waveguide_clearance_um,
+                heater_clearance_um=args.heater_clearance_um,
+                chip_add_x_um=args.chip_add_x_um,
+                chip_add_y_um=args.chip_add_y_um,
+                clear_port_open_cells_from_static=args.clear_port_open_cells_from_static,
+            ),
+            stats=stats,
+        )
+    except Exception as exc:
+        if not getattr(args, "continue_on_failure", False):
+            raise
+        failed = True
+        error = f"{type(exc).__name__}: {exc}"
+        if stats.instance_count == 0 and stats.net_count == 0:
+            try:
+                schematic = load_benchmark(benchmark)
+            except Exception:
+                schematic = None
+            if schematic is not None:
+                stats.instance_count = len(schematic.netlist.instances)
+                stats.net_count = len(schematic.netlist.routes)
+
+    layout_info_raw = getattr(routed_layout, "info", {}) if routed_layout is not None else {}
     layout_info: SupportsGet = (
         layout_info_raw if _supports_get(layout_info_raw) else EMPTY_INFO
     )
@@ -630,6 +655,8 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
     }
     return {
         "benchmark": benchmark,
+        "failed": failed,
+        "error": error,
         "path_length_matching_enabled": bool(args.path_length_matching),
         "path_length_match_outputs_enabled": bool(args.path_length_match_outputs),
         "crossings_enabled": bool(args.crossings),
@@ -743,7 +770,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
             "rejected_exact_length_mismatch"
         ),
         "route_attempts": stats.route_attempts,
-        "route_failures": stats.route_failures,
+        "route_failures": max(stats.route_failures, int(failed)),
         "simple_routes": stats.simple_route_count,
         "repairs": stats.repair_count,
         "expanded_states": stats.expanded_states,
@@ -791,22 +818,23 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
     }
 
 
-def _perf_smoke_worker_args(
-    benchmark: str, args: argparse.Namespace
-) -> argparse.Namespace:
-    if args.preset != "perf-smoke":
+def _preset_worker_args(benchmark: str, args: argparse.Namespace) -> argparse.Namespace:
+    if args.preset not in {"perf-smoke", "crossing-smoke"}:
         return args
 
     worker_args = argparse.Namespace(**vars(args))
     worker_args.bend_radius_um = 5.0
 
-    if benchmark in PERF_SMOKE_PLM_BENCHMARKS:
+    if args.preset == "perf-smoke" and benchmark in PERF_SMOKE_PLM_BENCHMARKS:
         worker_args.path_length_matching = True
         worker_args.path_length_match_outputs = True
         worker_args.include_heater_obstacles = True
         return worker_args
 
-    if benchmark in PERF_SMOKE_CROSSING_BENCHMARKS:
+    if (
+        args.preset == "crossing-smoke"
+        or benchmark in PERF_SMOKE_CROSSING_BENCHMARKS
+    ):
         worker_args.allow_45_degree_turns = True
         worker_args.crossings = True
         worker_args.include_heater_obstacles = True
@@ -819,7 +847,7 @@ def _perf_smoke_worker_args(
 
 
 def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
-    args = _perf_smoke_worker_args(benchmark, args)
+    args = _preset_worker_args(benchmark, args)
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -888,6 +916,8 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         command.append("--clear-port-open-cells-from-static")
     if getattr(args, "attempt_diagnostics", False):
         command.append("--attempt-diagnostics")
+    if getattr(args, "continue_on_failure", False):
+        command.append("--continue-on-failure")
     return command
 
 
@@ -1032,6 +1062,8 @@ def _perf_baseline_payload(
             continue
         compact: dict[str, object] = {
             metric: row.get(metric),
+            "failed": row.get("failed", False),
+            "error": row.get("error", ""),
             "grid": row.get("grid"),
             "nets": row.get("nets"),
             "route_attempts": row.get("route_attempts"),
@@ -1317,13 +1349,14 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Repeat runs: `{getattr(args, 'repeat_runs', 1)}`",
         f"- Perf metric: `{getattr(args, 'perf_metric', DEFAULT_PERF_METRIC)}`",
         "",
-        "| Benchmark | Mode | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Cross checks/ok/rej | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
-        "| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Benchmark | Status | Mode | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Cross checks/ok/rej | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
+        "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {benchmark} | {mode} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {crossing_summary} | {heap_pushes}/{heap_pops} | {dup_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
+            "| {benchmark} | {status} | {mode} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {crossing_summary} | {heap_pushes}/{heap_pops} | {dup_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
                 benchmark=row["benchmark"],
+                status="failed" if row.get("failed") else "ok",
                 mode=_row_mode_label(row),
                 instances=row["instances"],
                 nets=row["nets"],
@@ -1353,6 +1386,20 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 fallbacks=_format_int(row["full_grid_fallbacks"]),
             )
         )
+    failed_rows = [row for row in rows if row.get("failed")]
+    if failed_rows:
+        lines.extend(
+            [
+                "",
+                "## Failed Benchmarks",
+                "",
+                "| Benchmark | Error |",
+                "| --- | --- |",
+            ]
+        )
+        for row in failed_rows:
+            error = str(row.get("error", "")).replace("|", "\\|")
+            lines.append(f"| {row['benchmark']} | `{error}` |")
     route_split_rows = [
         row
         for row in rows
@@ -1904,11 +1951,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("benchmarks", nargs="*", default=None)
     parser.add_argument(
         "--preset",
-        choices=("perf-smoke",),
+        choices=("perf-smoke", "crossing-smoke"),
         default=None,
         help=(
             "Apply a benchmark preset. `perf-smoke` runs the critical router "
-            "benchmarks with release-build enforcement."
+            "benchmarks with release-build enforcement; `crossing-smoke` runs "
+            "Benes crossing stress benchmarks."
         ),
     )
     parser.add_argument("--output", type=Path, default=None)
@@ -2056,6 +2104,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--chip-add-x-um", type=float, default=SCRIPT_CHIP_ADD_X_UM)
     parser.add_argument("--chip-add-y-um", type=float, default=SCRIPT_CHIP_ADD_Y_UM)
     parser.add_argument("--clear-port-open-cells-from-static", action="store_true")
+    parser.add_argument(
+        "--continue-on-failure",
+        action="store_true",
+        help=(
+            "Record failed benchmark rows instead of aborting the whole run. "
+            "Enabled by crossing-smoke."
+        ),
+    )
     parser.add_argument("--_worker-benchmark", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
     _apply_preset_defaults(args)
@@ -2065,19 +2121,37 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _apply_preset_defaults(args: argparse.Namespace) -> None:
-    if args.preset != "perf-smoke":
+    if args.preset not in {"perf-smoke", "crossing-smoke"}:
         return
 
     if not args.benchmarks:
-        args.benchmarks = list(PERF_SMOKE_BENCHMARKS)
+        args.benchmarks = list(
+            CROSSING_SMOKE_BENCHMARKS
+            if args.preset == "crossing-smoke"
+            else PERF_SMOKE_BENCHMARKS
+        )
     if args.output is None:
-        args.output = PROJECT_ROOT / "build" / "perf_smoke.md"
+        args.output = PROJECT_ROOT / "build" / (
+            "crossing_smoke.md"
+            if args.preset == "crossing-smoke"
+            else "perf_smoke.md"
+        )
     if args.write_perf_baseline is None:
-        args.write_perf_baseline = PROJECT_ROOT / "build" / "perf_smoke.json"
+        args.write_perf_baseline = PROJECT_ROOT / "build" / (
+            "crossing_smoke.json"
+            if args.preset == "crossing-smoke"
+            else "perf_smoke.json"
+        )
     if args.attempt_output is None:
-        args.attempt_output = PROJECT_ROOT / "build" / "perf_smoke_attempts.json"
+        args.attempt_output = PROJECT_ROOT / "build" / (
+            "crossing_smoke_attempts.json"
+            if args.preset == "crossing-smoke"
+            else "perf_smoke_attempts.json"
+        )
     args.require_release = True
     args.attempt_diagnostics = True
+    if args.preset == "crossing-smoke":
+        args.continue_on_failure = True
 
 
 def main() -> int:
