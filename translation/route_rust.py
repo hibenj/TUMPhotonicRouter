@@ -728,11 +728,13 @@ def route_match_and_realize(
     crossing_loss: float = 0.0,
     crossing_half_size_cells: int = 0,
     min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
+    foreign_port_keepout_cells: int = 0,
     allow_only_expected_crossings: bool = True,
     obstacle_config: object | None = None,
     debug_dir: str | Path | None = None,
     debug_prefix: str = "route",
     debug_route_indices: set[int] | None = None,
+    debug_stop_after_route_index: int | None = None,
     route_width_um: float = 0.5,
     route_layer: tuple[int, int] = (1, 0),
     allow_45_degree_turns: bool = True,
@@ -773,6 +775,7 @@ def route_match_and_realize(
         debug_dir=debug_dir,
         debug_prefix=debug_prefix,
         debug_route_indices=debug_route_indices,
+        debug_stop_after_route_index=debug_stop_after_route_index,
         route_width_um=route_width_um,
         route_layer=route_layer,
         allow_45_degree_turns=allow_45_degree_turns,
@@ -800,6 +803,7 @@ def route_match_and_realize(
         crossing_loss=crossing_loss,
         crossing_half_size_cells=crossing_half_size_cells,
         min_straight_cells_per_crossing=min_straight_cells_per_crossing,
+        foreign_port_keepout_cells=foreign_port_keepout_cells,
         allow_only_expected_crossings=allow_only_expected_crossings,
         defer_realization=True,
         enable_checked_endpoint_correction=enable_grid_endpoint_correction,
@@ -1277,6 +1281,7 @@ def route_nets_rust(
     debug_dir: str | Path | None = None,
     debug_prefix: str = "route",
     debug_route_indices: set[int] | None = None,
+    debug_stop_after_route_index: int | None = None,
     route_width_um: float = 0.5,
     route_layer: tuple[int, int] = (1, 0),
     allow_45_degree_turns: bool = True,
@@ -1304,6 +1309,7 @@ def route_nets_rust(
     crossing_loss: float = 0.0,
     crossing_half_size_cells: int = 0,
     min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
+    foreign_port_keepout_cells: int = 0,
     allow_only_expected_crossings: bool = True,
     defer_realization: bool = False,
     enable_checked_endpoint_correction: bool = True,
@@ -1324,6 +1330,9 @@ def route_nets_rust(
         debug_prefix: Prefix used for debug SVG filenames.
         debug_route_indices: Optional 1-based net indices for per-route SVG
             export. When omitted, every route SVG is exported.
+        debug_stop_after_route_index: Optional 1-based route index where routing
+            stops after building full-netlist debug context. Port keepouts and
+            crossing context are still derived from all schematic routes.
         route_width_um: Realized waveguide width in micrometers.
         route_layer: Target GDS layer/datatype tuple for route polygons.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
@@ -1343,6 +1352,9 @@ def route_nets_rust(
         max_iterations: Maximum A* state expansions per route attempt.
         verbose_route_diagnostics: If True, print per-net route progress and
             detailed A* timing buckets. Failures are always printed.
+        foreign_port_keepout_cells: Additional global keepout distance in front
+            of each endpoint port. Nets connected to the same instance can open
+            that instance's keepout; unrelated nets cannot.
         defer_realization: If True, keep routed RouteResult objects but skip
             polygon realization. This is used for pre-realization transforms
             such as path-length matching/meander insertion.
@@ -1370,6 +1382,10 @@ def route_nets_rust(
         raise ValueError("crossing_half_size_cells must be non-negative")
     if min_straight_cells_per_crossing < 0:
         raise ValueError("min_straight_cells_per_crossing must be non-negative")
+    if foreign_port_keepout_cells < 0:
+        raise ValueError("foreign_port_keepout_cells must be non-negative")
+    if debug_stop_after_route_index is not None and debug_stop_after_route_index < 1:
+        raise ValueError("debug_stop_after_route_index must be >= 1")
 
     rust_backend = _load_rust_backend()
     if rust_backend is None:
@@ -1991,6 +2007,30 @@ def route_nets_rust(
         }
     _record_pipeline_timing("port_opening_batch", t_port_opening_batch_start)
 
+    foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
+    if foreign_port_keepout_cells > 0:
+        t_foreign_keepout_start = _pipeline_timer_start()
+        foreign_length_cells = int(foreign_port_keepout_cells)
+        foreign_half_width_cells = int(foreign_port_keepout_cells)
+        for port_spec, _cells, _candidate_cells, runway_cells in router.build_route_port_openings(
+            port_opening_inputs,
+            raw_static_cells=raw_static_cells_for_openings,
+            raw_static_rects=raw_static_rects_for_openings,
+            route_clearance_um=float(route_clearance_um),
+            port_open_radius_um=float(port_open_radius_um),
+            bend_radius_cells=max(0, foreign_length_cells - 1),
+            commit_radius_cells=foreign_half_width_cells,
+            port_entry_length_cells=int(port_entry_length_cells),
+            port_entry_half_width_cells=int(port_entry_half_width_cells),
+            port_lane_length_cells=int(port_lane_length_cells),
+            port_lane_half_width_cells=int(port_lane_half_width_cells),
+        ):
+            instance_name = str(port_spec).split(",", 1)[0]
+            foreign_port_keepout_cells_by_instance.setdefault(instance_name, set()).update(
+                (int(cell[0]), int(cell[1])) for cell in runway_cells
+            )
+        _record_pipeline_timing("foreign_port_keepout_batch", t_foreign_keepout_start)
+
     def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
         return port_to_grid_state(
             port,
@@ -2046,8 +2086,14 @@ def route_nets_rust(
     port_runway_static_cells: set[tuple[int, int]] = set()
     for cells in port_runway_cells_by_spec.values():
         port_runway_static_cells.update(cells)
+    foreign_port_keepout_static_cells: set[tuple[int, int]] = set()
+    for cells in foreign_port_keepout_cells_by_instance.values():
+        foreign_port_keepout_static_cells.update(cells)
+    debug_port_keepout_cells = set(port_runway_static_cells)
+    debug_port_keepout_cells.update(foreign_port_keepout_static_cells)
     static_blocked_cells_before_port_reservations = set(raw_static_cells)
     static_blocked_cells_before_port_reservations.update(port_runway_static_cells)
+    static_blocked_cells_before_port_reservations.update(foreign_port_keepout_static_cells)
 
     t_static_handoff_start = _pipeline_timer_start()
     blocked_static_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
@@ -2078,15 +2124,38 @@ def route_nets_rust(
         static_cells = set(static_blocked_cells_before_port_reservations)
         sorted_static_cells = sorted(static_cells)
         router.set_static_cells(sorted_static_cells)
-    if port_runway_static_cells:
+    if port_runway_static_cells or foreign_port_keepout_static_cells:
         if not hasattr(router, "add_static_cells"):
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
                 "PyPhotonicRouter.add_static_cells. Rebuild it with "
                 "`maturin develop --release`."
             )
-        router.add_static_cells(sorted(port_runway_static_cells))
+        router.add_static_cells(
+            sorted(port_runway_static_cells | foreign_port_keepout_static_cells)
+        )
     _record_pipeline_timing("static_map_handoff", t_static_handoff_start)
+
+    full_route_jobs = list(route_jobs)
+    full_route_jobs_by_route_index = {int(job.route_index): job for job in full_route_jobs}
+    full_route_count = len(full_route_jobs)
+    if (
+        debug_stop_after_route_index is not None
+        and int(debug_stop_after_route_index) > full_route_count
+    ):
+        raise ValueError(
+            "debug_stop_after_route_index exceeds route count "
+            f"({debug_stop_after_route_index} > {full_route_count})"
+        )
+    if debug_stop_after_route_index is not None:
+        stop_index = int(debug_stop_after_route_index)
+        route_jobs = [job for job in full_route_jobs if int(job.route_index) <= stop_index]
+        if verbose_route_diagnostics or debug_route_indices is not None:
+            print(
+                f"  Debug stop-after-route active: routing {len(route_jobs)} "
+                f"of {full_route_count} full-context routes"
+            )
+
     repair_config = ripup_reroute_config or RipupRerouteConfig()
     route_jobs_by_id = {job.net_id: job for job in route_jobs}
     route_order = [job.net_id for job in route_jobs]
@@ -2207,13 +2276,21 @@ def route_nets_rust(
         port2_spec = f"{job.inst2},{job.port2}"
         source_anchor_cell = (int(source_state.x), int(source_state.y))
         target_anchor_cell = (int(target_state.x), int(target_state.y))
+        instance_keepout_open_cells = set(
+            foreign_port_keepout_cells_by_instance.get(job.inst1, set())
+        )
+        instance_keepout_open_cells.update(
+            foreign_port_keepout_cells_by_instance.get(job.inst2, set())
+        )
         opened_candidate_cells = set(port_access_candidate_cells_by_spec.get(port1_spec, set()))
         opened_candidate_cells.update(port_access_candidate_cells_by_spec.get(port2_spec, set()))
+        opened_candidate_cells.update(instance_keepout_open_cells)
         opened_candidate_cells.update(original_anchor_cells)
         opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
 
         opened_cells_set = set(port_access_cells_by_spec.get(port1_spec, set()))
         opened_cells_set.update(port_access_cells_by_spec.get(port2_spec, set()))
+        opened_cells_set.update(instance_keepout_open_cells)
         opened_cells_set.update(original_anchor_cells)
         opened_cells_set.update({source_anchor_cell, target_anchor_cell})
         return (
@@ -2603,6 +2680,12 @@ def route_nets_rust(
         )
         route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
         route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
+        foreign_keepout_open_cells = set(
+            foreign_port_keepout_cells_by_instance.get(job.inst1, set())
+        )
+        foreign_keepout_open_cells.update(
+            foreign_port_keepout_cells_by_instance.get(job.inst2, set())
+        )
         route_segments: list[str] = []
         if route_obj is not None:
             for segment in cast(list[object], getattr(route_obj, "segments", []) or []):
@@ -2628,6 +2711,9 @@ def route_nets_rust(
             f"target_component={_schematic_instance_component_name(schematic, job.inst2)}",
             f"source_access_rule={port_access_rule_by_spec.get(port1_spec)}",
             f"target_access_rule={port_access_rule_by_spec.get(port2_spec)}",
+            f"foreign_port_keepout_cells={int(foreign_port_keepout_cells)}",
+            f"foreign_port_keepout_static_count={len(foreign_port_keepout_static_cells)}",
+            f"foreign_port_keepout_open_count={len(foreign_keepout_open_cells)}",
             f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
             f"target_state=({target_anchor_cell[0]}, {target_anchor_cell[1]}, {int(target_state.angle)})",
             f"opened_candidate_cells_count={len(opened_candidate_cells)}",
@@ -2687,6 +2773,7 @@ def route_nets_rust(
         *,
         suffix: str = "",
         obstacle_cells: set[tuple[int, int]] | None = None,
+        opened_cells: list[tuple[int, int]] | None = None,
     ) -> None:
         should_export = (
             debug_path is not None
@@ -2706,6 +2793,39 @@ def route_nets_rust(
             )
         else:
             svg_text = router.export_debug_svg(route_obj)
+        if opened_cells is None:
+            try:
+                _, _, _, _, opened_cells = _state_openings_for_job(job)
+            except Exception:
+                opened_cells = []
+        if (
+            debug_stop_after_route_index is not None
+            and int(job.route_index) == int(debug_stop_after_route_index)
+        ):
+            next_job = full_route_jobs_by_route_index.get(
+                int(debug_stop_after_route_index) + 1
+            )
+            if next_job is not None:
+                try:
+                    _, _, _, _, opened_cells = _states_and_openings(next_job)
+                except Exception:
+                    pass
+        red_keepout_cells = debug_port_keepout_cells - {
+            (int(cell[0]), int(cell[1])) for cell in opened_cells
+        }
+        if red_keepout_cells:
+            overlay = ['<g id="port-keepout-cells">']
+            for gx, gy in sorted(red_keepout_cells):
+                if 0 <= gx < grid_width and 0 <= gy < grid_height:
+                    svg_y = grid_height - gy - 1
+                    overlay.append(
+                        f'<rect class="port-keepout" x="{gx}" y="{svg_y}" '
+                        'width="1" height="1" fill="#d93025" opacity="0.38" />'
+                    )
+            overlay.append("</g>")
+            overlay_text = "".join(overlay)
+            if "</svg>" in svg_text and 'id="port-keepout-cells"' not in svg_text:
+                svg_text = svg_text.replace("</svg>", overlay_text + "</svg>", 1)
         route_svg.write_text(svg_text, encoding="utf-8")
         route_svgs.append(route_svg)
 
@@ -2862,7 +2982,12 @@ def route_nets_rust(
                 route_obj=route_obj,
             )
 
-        _export_route_svg(job, route_obj, obstacle_cells=debug_obstacle_cells)
+        _export_route_svg(
+            job,
+            route_obj,
+            obstacle_cells=debug_obstacle_cells,
+            opened_cells=opened_cells,
+        )
 
         if should_print_route:
             print(f"ok {_route_engine_summary(route_obj)}")

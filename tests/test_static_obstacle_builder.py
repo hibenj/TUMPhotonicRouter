@@ -222,8 +222,10 @@ def test_build_static_obstacle_map_and_debug_svg(tmp_path):
     # assert data.raw_blocked_cells == {(0, 0), (1, 0), (0, 1), (1, 1)}
     # assert data.rust_static_cells() == [(0, 0), (0, 1), (1, 0), (1, 1)]
 
-    svg = grid_to_svg(data.grid, data.blocked_cells)
+    svg = grid_to_svg(data.grid, data.blocked_cells, {(1, 1)})
     assert "<svg" in svg
+    assert 'class="port-access"' in svg
+    assert 'fill="#d93025" opacity="0.38"' in svg
     # assert "#202124" in svg
 
     debug_path = tmp_path / "obstacles.svg"

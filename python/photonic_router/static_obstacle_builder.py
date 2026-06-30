@@ -1019,7 +1019,10 @@ def grid_to_svg(
 
     for gx, gy in sorted(port_open_cells):
         svg_y = grid.height - gy - 1
-        parts.append(f'<rect x="{gx}" y="{svg_y}" width="1" height="1" fill="#fbbc04" opacity="0.85" />')
+        parts.append(
+            f'<rect class="port-access" x="{gx}" y="{svg_y}" width="1" height="1" '
+            'fill="#d93025" opacity="0.38" />'
+        )
 
     parts.append("</svg>")
     return "\n".join(parts) + "\n"

@@ -3971,6 +3971,14 @@ fn window_area(bounds: RoutingBounds) -> i64 {
 
 /// Export an SVG string showing obstacles and a routed path.
 pub fn export_route_svg(obstacle_map: &ObstacleMap, route_result: &RouteResult) -> String {
+    export_route_svg_with_port_open_cells(obstacle_map, route_result, None)
+}
+
+pub fn export_route_svg_with_port_open_cells(
+    obstacle_map: &ObstacleMap,
+    route_result: &RouteResult,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+) -> String {
     let width = obstacle_map.width();
     let height = obstacle_map.height();
     if width <= 0 || height <= 0 {
@@ -4014,6 +4022,20 @@ pub fn export_route_svg(obstacle_map: &ObstacleMap, route_result: &RouteResult) 
                 let svg_y = height - y - 1;
                 svg.push_str(&format!(
                     r##"<rect x="{x}" y="{svg_y}" width="1" height="1" fill="#000000" opacity="0.92" />"##
+                ));
+            }
+        }
+    }
+
+    if let Some(port_open_cells) = port_open_cells {
+        let mut cells: Vec<CellKey> = port_open_cells.iter().copied().collect();
+        cells.sort_unstable();
+        for key in cells {
+            let (x, y) = unpack_xy(key);
+            if obstacle_map.in_bounds(x, y) {
+                let svg_y = height - y - 1;
+                svg.push_str(&format!(
+                    r##"<rect class="port-access" x="{x}" y="{svg_y}" width="1" height="1" fill="#d93025" opacity="0.38" />"##
                 ));
             }
         }

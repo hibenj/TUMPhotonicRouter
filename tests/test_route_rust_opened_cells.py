@@ -573,6 +573,130 @@ def test_route_nets_rust_route_to_blocked_port_with_opened_cells(monkeypatch, tm
     assert "route_overlap_effective_opened_static_count=1" in diag_text
 
 
+def test_route_nets_rust_foreign_port_keepout_blocks_unrelated_net(monkeypatch, tmp_path):
+    corridor_y = 10
+    blocked_cells = {
+        (x, y)
+        for x in range(30)
+        for y in range(21)
+        if y != corridor_y
+    }
+
+    def fake_build_static_obstacle_map(_component, config=None):
+        _ = config
+        return _DummyObstacleData(
+            blocked_cells=blocked_cells,
+            raw_blocked_cells=blocked_cells,
+            width=30,
+            height=21,
+        )
+
+    def fake_get_port_from_instance(_layout, inst, port):
+        ports = {
+            ("left", "o1"): SimpleNamespace(center=(1.5, 10.5), orientation=0.0),
+            ("right", "o1"): SimpleNamespace(center=(28.5, 10.5), orientation=180.0),
+            ("mid", "o1"): SimpleNamespace(center=(14.5, 10.5), orientation=0.0),
+            ("future", "o1"): SimpleNamespace(center=(20.5, 10.5), orientation=180.0),
+        }
+        return ports[(inst, port)]
+
+    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
+    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+
+    schematic = _DummySchematic(
+        netlist=_DummyNetlist(
+            routes={
+                "unrelated": _DummyBundle(links={"left,o1": "right,o1"}),
+                "future_mid": _DummyBundle(links={"mid,o1": "future,o1"}),
+            }
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="No route found for unrelated"):
+        route_rust.route_nets_rust(
+            _make_dummy_layout(),
+            schematic,  # type: ignore[arg-type]
+            obstacle_config=StaticObstacleMapConfig(
+                obstacle_mode="rasterized_polygons",
+                grid_size_um=1.0,
+                security_margin_um=0.0,
+                clearance_um=0.0,
+                port_open_radius_um=0.0,
+                die_bbox=(0.0, 0.0, 30.0, 21.0),
+            ),
+            debug_dir=tmp_path,
+            debug_prefix="foreign_keepout_blocks",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            foreign_port_keepout_cells=3,
+            max_iterations=10_000,
+            defer_realization=True,
+        )
+
+
+def test_route_nets_rust_foreign_port_keepout_opens_for_same_instance(monkeypatch, tmp_path):
+    corridor_y = 10
+    blocked_cells = {
+        (x, y)
+        for x in range(30)
+        for y in range(21)
+        if y != corridor_y
+    }
+
+    def fake_build_static_obstacle_map(_component, config=None):
+        _ = config
+        return _DummyObstacleData(
+            blocked_cells=blocked_cells,
+            raw_blocked_cells=blocked_cells,
+            width=30,
+            height=21,
+        )
+
+    def fake_get_port_from_instance(_layout, inst, port):
+        ports = {
+            ("left", "o1"): SimpleNamespace(center=(1.5, 10.5), orientation=0.0),
+            ("mid", "o1"): SimpleNamespace(center=(14.5, 10.5), orientation=180.0),
+        }
+        return ports[(inst, port)]
+
+    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
+    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+
+    schematic = _DummySchematic(
+        netlist=_DummyNetlist(
+            routes={
+                "to_mid": _DummyBundle(links={"left,o1": "mid,o1"}),
+            }
+        )
+    )
+
+    route_rust.route_nets_rust(
+        _make_dummy_layout(),
+        schematic,  # type: ignore[arg-type]
+        obstacle_config=StaticObstacleMapConfig(
+            obstacle_mode="rasterized_polygons",
+            grid_size_um=1.0,
+            security_margin_um=0.0,
+            clearance_um=0.0,
+            port_open_radius_um=0.0,
+            die_bbox=(0.0, 0.0, 30.0, 21.0),
+        ),
+        debug_dir=tmp_path,
+        debug_prefix="foreign_keepout_opens",
+        route_width_um=0.5,
+        allow_45_degree_turns=False,
+        foreign_port_keepout_cells=3,
+        max_iterations=10_000,
+        defer_realization=True,
+    )
+
+    diag_path = tmp_path / "routes" / "foreign_keepout_opens_to_mid_diagnostics.txt"
+    diag_text = diag_path.read_text(encoding="utf-8")
+    assert "status=ok" in diag_text
+    assert "foreign_port_keepout_cells=3" in diag_text
+    assert int(_diagnostic_value(diag_text, "foreign_port_keepout_open_count")) > 0
+
+
 def test_route_nets_rust_clear_port_opening_flag_controls_global_crossing_blocking(monkeypatch, tmp_path):
     def blocked_cells_for_corridor(remove_middle: bool) -> set[tuple[int, int]]:
         blocked = set()

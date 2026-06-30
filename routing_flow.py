@@ -57,6 +57,7 @@ SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = False
 SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = DEFAULT_MEANDER_MAX_HEIGHT_UM
 SCRIPT_ENABLE_CROSSINGS = True
 SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING
+SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS = 0
 SCRIPT_PROACTIVE_CONGESTION_WEIGHT = 0.0
 SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS = 0
 SCRIPT_MAX_ITERATIONS = 5_000_000
@@ -509,6 +510,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=f"Print timing details (default: {str(SCRIPT_DEBUG_TIMING).lower()}).",
     )
     parser.add_argument(
+        "--debug-stop-after-route",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Debug helper: build full-netlist obstacle/crossing context, but "
+            "route only through 1-based route index N."
+        ),
+    )
+    parser.add_argument(
         "--debug-meanders",
         action="store_true",
         default=SCRIPT_DEBUG_MEANDERS,
@@ -597,6 +608,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Minimum straight access cells before and after each crossing "
             f"(default: {SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING})."
+        ),
+    )
+    parser.add_argument(
+        "--foreign-port-keepout-cells",
+        type=int,
+        default=SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
+        metavar="N",
+        help=(
+            "Additional larger port keepout in grid cells. Unrelated nets are "
+            "kept out; nets connected to the same instance can open it "
+            f"(default: {SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS})."
         ),
     )
     parser.add_argument(
@@ -911,6 +933,7 @@ def main(argv: list[str] | None = None) -> Component:
         args.benchmark,
         debug_svgs=args.debug_svgs,
         debug_timing=args.debug_timing,
+        debug_stop_after_route_index=args.debug_stop_after_route,
         debug_meanders=args.debug_meanders,
         verbose_routes=args.verbose_routes,
         show_klayout=args.show_klayout,
@@ -926,6 +949,7 @@ def main(argv: list[str] | None = None) -> Component:
         path_length_meander_height_um=args.path_length_meander_height_um,
         enable_crossings=args.crossings,
         min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
+        foreign_port_keepout_cells=args.foreign_port_keepout_cells,
         proactive_congestion_weight=args.proactive_congestion_weight,
         proactive_congestion_radius_cells=args.proactive_congestion_radius_cells,
         max_iterations=args.max_iterations,
@@ -1153,6 +1177,7 @@ def run_routing_flow(
     show_debug_svgs: DebugSvgSelector | None = None,
     show_static_obstacles_svg: bool | None = None,
     debug_timing: bool = False,
+    debug_stop_after_route_index: int | None = None,
     debug_meanders: bool = False,
     verbose_routes: bool = False,
     show_klayout: bool = False,
@@ -1162,6 +1187,7 @@ def run_routing_flow(
     enable_crossings: bool = False,
     crossing_half_size_cells: int = 0,
     min_straight_cells_per_crossing: int = SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
+    foreign_port_keepout_cells: int = SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
     proactive_congestion_weight: float = SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
     proactive_congestion_radius_cells: int = SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
     allow_45_degree_turns: bool = SCRIPT_ALLOW_45_DEGREE_TURNS,
@@ -1414,12 +1440,14 @@ def run_routing_flow(
             enable_crossings=enable_crossings,
             crossing_half_size_cells=int(crossing_half_size_cells),
             min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
+            foreign_port_keepout_cells=int(foreign_port_keepout_cells),
             node_depths=metadata.get("node_depths"),
             node_ranks=metadata.get("node_ranks"),
             edge_ranks=metadata.get("edge_ranks"),
             debug_dir=debug_dir,
             debug_prefix=benchmark_name.lower(),
             debug_route_indices=debug_route_indices,
+            debug_stop_after_route_index=debug_stop_after_route_index,
             debug_timing=debug_timing,
             verbose_route_diagnostics=verbose_routes or debug_meanders,
             allow_45_degree_turns=allow_45_degree_turns,

@@ -281,10 +281,19 @@ def test_route_debug_svg_can_use_obstacle_snapshot():
         backend.State(12, 14, 0),
         block_radius_cells=0,
     )
+    router.add_port_open_cells([(4, 8)])
 
     final_svg = router.export_debug_svg(first)
     snapshot_svg = router.export_debug_svg_with_obstacle_cells(first, [])
 
     assert 'fill="#000000"' in final_svg
     assert 'fill="#000000"' not in snapshot_svg
+    assert (
+        '<rect class="port-access" x="4" y="23" width="1" height="1" '
+        'fill="#d93025" opacity="0.38" />'
+    ) in final_svg
+    assert (
+        '<rect class="port-access" x="4" y="23" width="1" height="1" '
+        'fill="#d93025" opacity="0.38" />'
+    ) in snapshot_svg
     assert '<rect x="3" y="23" width="1" height="1" fill="#1a73e8" />' in snapshot_svg

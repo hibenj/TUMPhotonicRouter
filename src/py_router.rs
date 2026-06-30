@@ -7,10 +7,11 @@ use pyo3::types::{PyDict, PyList};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::astar::{
-    export_route_svg, route_single_net_with_config, route_single_net_with_crossing_config,
-    route_single_net_with_dynamic_expansion_config, try_simple_route_with_dynamic_expansion_config,
-    AStarConfig, CrossingSearchConfig, CrossingSearchPartner, HeapTieBreaker, HeuristicMode,
-    PrimitiveOrdering, RouteResult, RouteSearchStats, State,
+    export_route_svg_with_port_open_cells, route_single_net_with_config,
+    route_single_net_with_crossing_config, route_single_net_with_dynamic_expansion_config,
+    try_simple_route_with_dynamic_expansion_config, AStarConfig, CrossingSearchConfig,
+    CrossingSearchPartner, HeapTieBreaker, HeuristicMode, PrimitiveOrdering, RouteResult,
+    RouteSearchStats, State,
 };
 use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
 use crate::geometry_realization::{
@@ -2452,6 +2453,32 @@ impl PyPhotonicRouter {
             .all(|partner_id| crossed_partner_ids.contains(partner_id))
     }
 
+    fn crossing_events_have_disjoint_reservations(events: &[CrossingEvent]) -> bool {
+        let mut seen = FxHashSet::default();
+        for event in events {
+            for key in &event.reservation_keys {
+                if !seen.insert(*key) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn crossing_partners_with_overlapping_reservations(events: &[CrossingEvent]) -> FxHashSet<u64> {
+        let mut owner_by_key: FxHashMap<CellKey, u64> = FxHashMap::default();
+        let mut overlapping_partners = FxHashSet::default();
+        for event in events {
+            for key in &event.reservation_keys {
+                if let Some(previous_partner_id) = owner_by_key.insert(*key, event.partner_net_id) {
+                    overlapping_partners.insert(previous_partner_id);
+                    overlapping_partners.insert(event.partner_net_id);
+                }
+            }
+        }
+        overlapping_partners
+    }
+
     fn crossing_route_satisfies_partner_constraints(
         &self,
         route: &RouteResult,
@@ -2464,6 +2491,7 @@ impl PyPhotonicRouter {
         self.invalid_crossing_intersections_for_route(route, partner_ids)
             .is_empty()
             && !crossing_events.is_empty()
+            && Self::crossing_events_have_disjoint_reservations(crossing_events)
             && (!self.crossing_context.config().allow_only_expected_pairs
                 || Self::crossing_events_cover_partners(crossing_events, partner_ids))
     }
@@ -4699,6 +4727,13 @@ impl PyPhotonicRouter {
                         candidate_blockers.push(invalid.partner_net_id);
                     }
                 }
+                for partner_id in
+                    Self::crossing_partners_with_overlapping_reservations(&probe_crossing_events)
+                {
+                    if final_routes.contains_key(&partner_id) {
+                        candidate_blockers.push(partner_id);
+                    }
+                }
                 if self.crossing_context.config().allow_only_expected_pairs {
                     for partner_id in &allowed_crossing_partners {
                         if !legal_crossed_partners.contains(partner_id)
@@ -5418,7 +5453,11 @@ impl PyPhotonicRouter {
     fn export_debug_svg(&self, route: &PyRouteResult) -> String {
         let r = to_route_result(route);
         append_crossing_event_svg_overlay(
-            export_route_svg(&self.obstacle_map, &r),
+            export_route_svg_with_port_open_cells(
+                &self.obstacle_map,
+                &r,
+                Some(&self.port_open_cells),
+            ),
             &self.crossing_events,
             self.grid.height as i32,
         )
@@ -5434,7 +5473,7 @@ impl PyPhotonicRouter {
         obstacle_map.clear_dynamic();
         obstacle_map.add_static_cells(&obstacle_cells);
         append_crossing_event_svg_overlay(
-            export_route_svg(&obstacle_map, &r),
+            export_route_svg_with_port_open_cells(&obstacle_map, &r, Some(&self.port_open_cells)),
             &self.crossing_events,
             self.grid.height as i32,
         )
@@ -7949,6 +7988,107 @@ mod tests {
         let invalid = router.invalid_crossing_intersections_for_route(&kink_route, &partner_ids);
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0].partner_net_id, 1);
+    }
+
+    #[test]
+    fn crossing_events_reject_overlapping_reservation_footprints() {
+        let grid = PyGridSpec::new(32, 32, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                0.0,
+                0,
+                false,
+                false,
+                "library".to_string(),
+                "distance".to_string(),
+                1.0,
+            ),
+        );
+        router.crossing_context.set_config(CrossingConfig {
+            enabled: true,
+            allow_only_expected_pairs: true,
+            crossing_half_size_cells: 2,
+            min_straight_cells_per_crossing: 2,
+            ..CrossingConfig::default()
+        });
+
+        let route = RouteResult {
+            states: Vec::new(),
+            primitives: Vec::new(),
+            cells: Vec::new(),
+            compressed_waypoints: vec![(3, 12), (24, 12)],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target: State::new(24, 12, 0),
+            reached_target: State::new(24, 12, 0),
+            stats: RouteSearchStats::default(),
+        };
+        let mut partner_ids = FxHashSet::default();
+        partner_ids.insert(1);
+        partner_ids.insert(2);
+
+        let mut first_reservation = FxHashSet::default();
+        first_reservation.insert(pack_xy(10, 12));
+        first_reservation.insert(pack_xy(11, 12));
+        let mut second_reservation = FxHashSet::default();
+        second_reservation.insert(pack_xy(11, 12));
+        second_reservation.insert(pack_xy(12, 12));
+        let events = vec![
+            CrossingEvent {
+                net_id: 3,
+                partner_net_id: 1,
+                point: (10.0, 12.0),
+                route_segment: ((3, 12), (24, 12)),
+                partner_segment: ((10, 5), (10, 24)),
+                route_angle: 0,
+                partner_angle: 2,
+                reservation_keys: first_reservation,
+            },
+            CrossingEvent {
+                net_id: 3,
+                partner_net_id: 2,
+                point: (12.0, 12.0),
+                route_segment: ((3, 12), (24, 12)),
+                partner_segment: ((12, 5), (12, 24)),
+                route_angle: 0,
+                partner_angle: 2,
+                reservation_keys: second_reservation,
+            },
+        ];
+
+        assert!(PyPhotonicRouter::crossing_events_cover_partners(
+            &events,
+            &partner_ids
+        ));
+        assert!(!PyPhotonicRouter::crossing_events_have_disjoint_reservations(
+            &events
+        ));
+        assert!(!router.crossing_route_satisfies_partner_constraints(
+            &route,
+            &partner_ids,
+            &events
+        ));
+        assert_eq!(
+            PyPhotonicRouter::crossing_partners_with_overlapping_reservations(&events)
+                .len(),
+            2
+        );
     }
 
     #[test]

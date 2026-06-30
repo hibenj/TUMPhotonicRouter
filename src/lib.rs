@@ -24,8 +24,8 @@ pub use crate::simple_routes::{
     SimpleZRouteConfig,
 };
 pub use astar::{
-    export_route_svg, route_single_net, route_single_net_with_config, AStarConfig, RouteResult,
-    State,
+    export_route_svg, export_route_svg_with_port_open_cells, route_single_net,
+    route_single_net_with_config, AStarConfig, RouteResult, State,
 };
 pub use crossings::{CrossingConfig, CrossingConstraint, CrossingContext, CrossingPair};
 pub use geometry_realization::{
