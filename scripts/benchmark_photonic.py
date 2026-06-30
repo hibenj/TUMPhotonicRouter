@@ -129,6 +129,15 @@ AttemptColumn: TypeAlias = Literal[
     "primitive_footprint_rejects_by_class",
     "primitive_accepted_by_class",
     "footprint_rect_checks",
+    "crossing_candidate_checks",
+    "crossing_accepted",
+    "crossing_reject_non_straight",
+    "crossing_reject_not_perpendicular",
+    "crossing_reject_margin",
+    "crossing_reject_wrong_order",
+    "crossing_reject_unexpected_owner",
+    "crossing_reject_unmatched_owner",
+    "crossing_reject_pending_straight",
     "dense_grid_build_time_s",
     "dense_grid_cells",
     "used_full_grid_fallback",
@@ -175,6 +184,15 @@ ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
     "primitive_footprint_rejects_by_class",
     "primitive_accepted_by_class",
     "footprint_rect_checks",
+    "crossing_candidate_checks",
+    "crossing_accepted",
+    "crossing_reject_non_straight",
+    "crossing_reject_not_perpendicular",
+    "crossing_reject_margin",
+    "crossing_reject_wrong_order",
+    "crossing_reject_unexpected_owner",
+    "crossing_reject_unmatched_owner",
+    "crossing_reject_pending_straight",
     "dense_grid_build_time_s",
     "dense_grid_cells",
     "used_full_grid_fallback",
@@ -735,6 +753,15 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "obstacle_clearance_checks": stats.obstacle_clearance_checks,
         "footprint_checks": stats.footprint_checks,
         "footprint_rect_checks": stats.footprint_rect_checks,
+        "crossing_candidate_checks": stats.crossing_candidate_checks,
+        "crossing_accepted": stats.crossing_accepted,
+        "crossing_reject_non_straight": stats.crossing_reject_non_straight,
+        "crossing_reject_not_perpendicular": stats.crossing_reject_not_perpendicular,
+        "crossing_reject_margin": stats.crossing_reject_margin,
+        "crossing_reject_wrong_order": stats.crossing_reject_wrong_order,
+        "crossing_reject_unexpected_owner": stats.crossing_reject_unexpected_owner,
+        "crossing_reject_unmatched_owner": stats.crossing_reject_unmatched_owner,
+        "crossing_reject_pending_straight": stats.crossing_reject_pending_straight,
         "full_grid_fallbacks": stats.full_grid_fallbacks,
         "neighbor_generation_s": stats.neighbor_generation_time_s,
         "heap_operation_s": stats.heap_operation_time_s,
@@ -993,6 +1020,25 @@ def _perf_baseline_payload(
             "repairs": row.get("repairs"),
             "expanded_states": row.get("expanded_states"),
             "generated_neighbors": row.get("generated_neighbors"),
+            "crossing_candidate_checks": row.get("crossing_candidate_checks", 0),
+            "crossing_accepted": row.get("crossing_accepted", 0),
+            "crossing_reject_non_straight": row.get(
+                "crossing_reject_non_straight", 0
+            ),
+            "crossing_reject_not_perpendicular": row.get(
+                "crossing_reject_not_perpendicular", 0
+            ),
+            "crossing_reject_margin": row.get("crossing_reject_margin", 0),
+            "crossing_reject_wrong_order": row.get("crossing_reject_wrong_order", 0),
+            "crossing_reject_unexpected_owner": row.get(
+                "crossing_reject_unexpected_owner", 0
+            ),
+            "crossing_reject_unmatched_owner": row.get(
+                "crossing_reject_unmatched_owner", 0
+            ),
+            "crossing_reject_pending_straight": row.get(
+                "crossing_reject_pending_straight", 0
+            ),
             "repeat_runs": row.get("repeat_runs", 1),
         }
         benchmarks[name] = compact
@@ -1160,6 +1206,48 @@ def _row_mode_label(row: Mapping[str, object]) -> str:
     return ", ".join(modes) if modes else "default"
 
 
+_CROSSING_REJECT_KEYS = (
+    "crossing_reject_non_straight",
+    "crossing_reject_not_perpendicular",
+    "crossing_reject_margin",
+    "crossing_reject_wrong_order",
+    "crossing_reject_unexpected_owner",
+    "crossing_reject_unmatched_owner",
+    "crossing_reject_pending_straight",
+)
+
+
+def _crossing_reject_total(values: Mapping[str, object]) -> int:
+    return sum(int(values.get(key, 0) or 0) for key in _CROSSING_REJECT_KEYS)
+
+
+def _format_crossing_summary(values: Mapping[str, object]) -> str:
+    checks = int(values.get("crossing_candidate_checks", 0) or 0)
+    accepted = int(values.get("crossing_accepted", 0) or 0)
+    rejected = _crossing_reject_total(values)
+    if checks == 0 and accepted == 0 and rejected == 0:
+        return ""
+    return f"{_format_int(checks)}/{_format_int(accepted)}/{_format_int(rejected)}"
+
+
+def _format_crossing_rejects(values: Mapping[str, object]) -> str:
+    labels = (
+        ("nonstraight", "crossing_reject_non_straight"),
+        ("angle", "crossing_reject_not_perpendicular"),
+        ("margin", "crossing_reject_margin"),
+        ("order", "crossing_reject_wrong_order"),
+        ("unexpected", "crossing_reject_unexpected_owner"),
+        ("unmatched", "crossing_reject_unmatched_owner"),
+        ("pending", "crossing_reject_pending_straight"),
+    )
+    parts = [
+        f"{label}:{_format_int(value)}"
+        for label, key in labels
+        if (value := int(values.get(key, 0) or 0))
+    ]
+    return " ".join(parts)
+
+
 def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace) -> str:
     rust_extension_info = _rust_extension_info()
     rust_extension_size = rust_extension_info.get("size_bytes")
@@ -1193,12 +1281,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Repeat runs: `{getattr(args, 'repeat_runs', 1)}`",
         f"- Perf metric: `{getattr(args, 'perf_metric', DEFAULT_PERF_METRIC)}`",
         "",
-        "| Benchmark | Mode | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
-        "| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Benchmark | Mode | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Cross checks/ok/rej | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
+        "| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {benchmark} | {mode} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {dup_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
+            "| {benchmark} | {mode} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {crossing_summary} | {heap_pushes}/{heap_pops} | {dup_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
                 benchmark=row["benchmark"],
                 mode=_row_mode_label(row),
                 instances=row["instances"],
@@ -1212,6 +1300,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 repairs=_format_int(row["repairs"]),
                 expanded=_format_int(row["expanded_states"]),
                 generated=_format_int(row["generated_neighbors"]),
+                crossing_summary=_format_crossing_summary(row),
                 heap_pushes=_format_int(row["heap_pushes"]),
                 heap_pops=_format_int(row["heap_pops"]),
                 dup_skips=_format_int(row["duplicate_heap_skips"]),
@@ -1613,13 +1702,13 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 "",
                 "## Slowest Route Attempts",
                 "",
-                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Window cells | Expanded | Generated | Primitive gen | Primitive accepted | Primitive footprint rejects | Heap push/pop | Stale gen/closed | Max heap | Dense MiB | Rect checks | Dense build s | Failed |",
-                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+                "| Benchmark | Attempt | Bucket | Route | Net | Time s | Window cells | Expanded | Generated | Primitive gen | Primitive accepted | Primitive footprint rejects | Cross checks/ok/rej | Cross rejects | Heap push/pop | Stale gen/closed | Max heap | Dense MiB | Rect checks | Dense build s | Failed |",
+                "| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for record in slow_attempts:
             lines.append(
-                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {window_area} | {expanded} | {generated} | {primitive_generated} | {primitive_accepted} | {primitive_footprint_rejects} | {heap_pushes}/{heap_pops} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {rect_checks} | {dense_build_s} | {failed} |".format(
+                "| {benchmark} | {attempt} | {bucket} | {route} | {net} | {time_s} | {window_area} | {expanded} | {generated} | {primitive_generated} | {primitive_accepted} | {primitive_footprint_rejects} | {crossing_summary} | {crossing_rejects} | {heap_pushes}/{heap_pops} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {rect_checks} | {dense_build_s} | {failed} |".format(
                     benchmark=record.get("benchmark", ""),
                     attempt=record.get("attempt_index", ""),
                     bucket=record.get("bucket_name", ""),
@@ -1638,6 +1727,8 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     primitive_footprint_rejects=_format_primitive_counter(
                         record.get("primitive_footprint_rejects_by_class")
                     ),
+                    crossing_summary=_format_crossing_summary(record),
+                    crossing_rejects=_format_crossing_rejects(record),
                     heap_pushes=_format_int(record.get("heap_pushes")),
                     heap_pops=_format_int(record.get("heap_pops")),
                     stale_generation_heap_entries=_format_int(
@@ -1655,6 +1746,45 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     failed=record.get("failed", ""),
                 )
             )
+    crossing_attempts = sorted(
+        (
+            record
+            for record in all_attempts
+            if _format_crossing_summary(record)
+        ),
+        key=lambda record: (
+            _crossing_reject_total(record),
+            int(record.get("crossing_accepted", 0) or 0),
+            _attempt_seconds(record),
+        ),
+        reverse=True,
+    )[:8]
+    if crossing_attempts:
+        lines.extend(
+            [
+                "",
+                "## Crossing Route Attempts",
+                "",
+                "| Benchmark | Attempt | Route | Net | Time s | Expanded | Generated | Cross checks/ok/rej | Cross rejects | Rect checks |",
+                "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | ---: |",
+            ]
+        )
+        for record in crossing_attempts:
+            lines.append(
+                "| {benchmark} | {attempt} | {route} | {net} | {time_s} | {expanded} | {generated} | {crossing_summary} | {crossing_rejects} | {rect_checks} |".format(
+                    benchmark=record.get("benchmark", ""),
+                    attempt=record.get("attempt_index", ""),
+                    route=record.get("route_index", ""),
+                    net=record.get("net_name", ""),
+                    time_s=_format_seconds(_attempt_seconds(record)),
+                    expanded=_format_int(record.get("expanded_states")),
+                    generated=_format_int(record.get("generated_neighbors")),
+                    crossing_summary=_format_crossing_summary(record),
+                    crossing_rejects=_format_crossing_rejects(record),
+                    rect_checks=_format_int(record.get("footprint_rect_checks")),
+                )
+            )
+    if slow_attempts:
         diagnostic_attempts = [
             record for record in slow_attempts if _record_diagnostics(record)
         ]

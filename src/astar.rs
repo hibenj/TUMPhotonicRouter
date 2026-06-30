@@ -216,6 +216,15 @@ pub struct RouteSearchStats {
     pub primitive_footprint_cells_tested: usize,
     pub primitive_footprint_rect_checks: usize,
     pub primitive_footprint_rect_rejects: usize,
+    pub crossing_candidate_checks: usize,
+    pub crossing_accepted: usize,
+    pub crossing_reject_non_straight: usize,
+    pub crossing_reject_not_perpendicular: usize,
+    pub crossing_reject_margin: usize,
+    pub crossing_reject_wrong_order: usize,
+    pub crossing_reject_unexpected_owner: usize,
+    pub crossing_reject_unmatched_owner: usize,
+    pub crossing_reject_pending_straight: usize,
     pub dense_grid_build_failures: usize,
     pub max_window_area_cells: i64,
     pub dense_grid_cells: usize,
@@ -3263,6 +3272,7 @@ fn route_single_net_with_bounds_crossing(
             stats.primitive_generated_by_class[primitive_class] += 1;
             if key.pending_after_crossing_cells > 0 && !primitive_class_is_straight(primitive_class)
             {
+                stats.crossing_reject_pending_straight += 1;
                 continue;
             }
             let next_x = state.x.checked_add(primitive.dx)?;
@@ -3315,6 +3325,7 @@ fn route_single_net_with_bounds_crossing(
                 required_margin,
                 capped_required_margin,
                 &partner_index_by_id,
+                stats,
             ) else {
                 continue;
             };
@@ -3452,6 +3463,7 @@ fn crossing_move_outcome(
     required_margin: i32,
     capped_required_margin: i32,
     partner_index_by_id: &FxHashMap<NetId, usize>,
+    stats: &mut RouteSearchStats,
 ) -> Option<CrossingMoveOutcome> {
     let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
     let mut straight_run = if is_straight && primitive.end_angle == state.angle {
@@ -3502,18 +3514,22 @@ fn crossing_move_outcome(
                 ) else {
                     continue;
                 };
+                stats.crossing_candidate_checks += 1;
                 if crossed_mask & bit != 0 && t <= 1.0e-9 {
                     continue;
                 }
                 if crossed_mask & bit != 0 {
+                    stats.crossing_reject_wrong_order += 1;
                     return None;
                 }
                 if !grid_axes_are_perpendicular(route_angle, partner_angle) {
+                    stats.crossing_reject_not_perpendicular += 1;
                     return None;
                 }
                 let partner_len = grid_segment_length(partner_segment[0], partner_segment[1]);
                 let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
                 if partner_margin + 1.0e-9 < f64::from(required_margin) {
+                    stats.crossing_reject_margin += 1;
                     return None;
                 }
                 route_intersections.push((t, x, y, bit));
@@ -3524,10 +3540,12 @@ fn crossing_move_outcome(
 
     for &(t, _x, _y, bit) in &route_intersections {
         if pending_after > 0 {
+            stats.crossing_reject_pending_straight += 1;
             return None;
         }
         let distance_before = current_key.straight_run_cells as f64 + t * primitive_steps as f64;
         if distance_before + 1.0e-9 < f64::from(required_margin) {
+            stats.crossing_reject_margin += 1;
             return None;
         }
         let distance_after = (1.0 - t) * primitive_steps as f64;
@@ -3539,6 +3557,7 @@ fn crossing_move_outcome(
             next_partner_index = next_partner_index.checked_add(1)?;
         }
         crossing_count += 1;
+        stats.crossing_accepted += 1;
     }
 
     for (dx, dy) in primitive.footprint.iter().copied() {
@@ -3551,13 +3570,16 @@ fn crossing_move_outcome(
             continue;
         }
         let Some(partner_idx) = partner_index_by_id.get(&owner).copied() else {
+            stats.crossing_reject_unexpected_owner += 1;
             return None;
         };
         let bit = 1u64 << partner_idx;
         if crossed_mask & bit == 0 {
+            stats.crossing_reject_unmatched_owner += 1;
             return None;
         }
         if !is_straight {
+            stats.crossing_reject_non_straight += 1;
             return None;
         }
     }
@@ -6319,6 +6341,7 @@ mod tests {
             straight_run_cells: 12,
             pending_after_crossing_cells: 0,
         };
+        let mut stats = RouteSearchStats::default();
         while key.state.x < 630 {
             let next_state = State::new(key.state.x + 4, key.state.y + 4, 1);
             let outcome = crossing_move_outcome(
@@ -6332,6 +6355,7 @@ mod tests {
                 2,
                 2,
                 &partner_index_by_id,
+                &mut stats,
             )
             .unwrap_or_else(|| {
                 panic!(
@@ -6349,6 +6373,8 @@ mod tests {
         }
         assert_eq!(key.next_partner_index, 3);
         assert_eq!(key.crossed_mask, 0b111);
+        assert_eq!(stats.crossing_accepted, 3);
+        assert!(stats.crossing_candidate_checks >= 3);
     }
 
     #[test]
@@ -6409,6 +6435,7 @@ mod tests {
             straight_run_cells: 12,
             pending_after_crossing_cells: 0,
         };
+        let mut stats = RouteSearchStats::default();
         while key.state.x < 520 {
             let next_state = State::new(key.state.x + 4, key.state.y + 4, 1);
             let outcome = crossing_move_outcome(
@@ -6422,6 +6449,7 @@ mod tests {
                 2,
                 2,
                 &partner_index_by_id,
+                &mut stats,
             )
             .unwrap_or_else(|| {
                 panic!(
@@ -6439,6 +6467,8 @@ mod tests {
         }
         assert_eq!(key.next_partner_index, 2);
         assert_eq!(key.crossed_mask, 0b11);
+        assert_eq!(stats.crossing_accepted, 2);
+        assert!(stats.crossing_candidate_checks >= 2);
     }
 
     fn rasterize_waypoints_for_test(waypoints: &[(i32, i32)]) -> Vec<(i32, i32)> {

@@ -556,6 +556,10 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
                     obstacle_clearance_checks=99,
                     footprint_checks=88,
                     footprint_rect_checks=77,
+                    crossing_candidate_checks=12,
+                    crossing_accepted=3,
+                    crossing_reject_not_perpendicular=4,
+                    crossing_reject_margin=5,
                     full_grid_fallbacks=1,
                     neighbor_generation_time_us=11_000,
                     heap_operation_time_us=22_000,
@@ -586,6 +590,10 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
                         parent_updates=300,
                         obstacle_clearance_checks=99,
                         footprint_rect_checks=77,
+                        crossing_candidate_checks=12,
+                        crossing_accepted=3,
+                        crossing_reject_not_perpendicular=4,
+                        crossing_reject_margin=5,
                     )
                 ],
             ),
@@ -628,6 +636,10 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
     assert stats.obstacle_clearance_checks == 99
     assert stats.footprint_checks == 88
     assert stats.footprint_rect_checks == 77
+    assert stats.crossing_candidate_checks == 12
+    assert stats.crossing_accepted == 3
+    assert stats.crossing_reject_not_perpendicular == 4
+    assert stats.crossing_reject_margin == 5
     assert stats.full_grid_fallbacks == 1
     assert stats.neighbor_generation_time_s == 0.011
     assert stats.heap_operation_time_s == 0.022
@@ -683,6 +695,15 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "primitive_accepted_by_class": zero_primitive_counters,
             "footprint_checks": 0,
             "footprint_rect_checks": 77,
+            "crossing_candidate_checks": 12,
+            "crossing_accepted": 3,
+            "crossing_reject_non_straight": 0,
+            "crossing_reject_not_perpendicular": 4,
+            "crossing_reject_margin": 5,
+            "crossing_reject_wrong_order": 0,
+            "crossing_reject_unexpected_owner": 0,
+            "crossing_reject_unmatched_owner": 0,
+            "crossing_reject_pending_straight": 0,
             "route_search_total_time_s": 0.0,
             "dense_grid_build_time_s": 0.0,
             "dense_grid_cells": 0,

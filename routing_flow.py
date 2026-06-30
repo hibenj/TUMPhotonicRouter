@@ -119,6 +119,15 @@ class RoutingFlowStats:
     obstacle_clearance_checks: int = 0
     footprint_checks: int = 0
     footprint_rect_checks: int = 0
+    crossing_candidate_checks: int = 0
+    crossing_accepted: int = 0
+    crossing_reject_non_straight: int = 0
+    crossing_reject_not_perpendicular: int = 0
+    crossing_reject_margin: int = 0
+    crossing_reject_wrong_order: int = 0
+    crossing_reject_unexpected_owner: int = 0
+    crossing_reject_unmatched_owner: int = 0
+    crossing_reject_pending_straight: int = 0
     full_grid_fallbacks: int = 0
     search_loop_time_s: float = 0.0
     obstacle_map_prepare_time_s: float = 0.0
@@ -167,6 +176,15 @@ class RoutingFlowStats:
             "obstacle_clearance_checks": self.obstacle_clearance_checks,
             "footprint_checks": self.footprint_checks,
             "footprint_rect_checks": self.footprint_rect_checks,
+            "crossing_candidate_checks": self.crossing_candidate_checks,
+            "crossing_accepted": self.crossing_accepted,
+            "crossing_reject_non_straight": self.crossing_reject_non_straight,
+            "crossing_reject_not_perpendicular": self.crossing_reject_not_perpendicular,
+            "crossing_reject_margin": self.crossing_reject_margin,
+            "crossing_reject_wrong_order": self.crossing_reject_wrong_order,
+            "crossing_reject_unexpected_owner": self.crossing_reject_unexpected_owner,
+            "crossing_reject_unmatched_owner": self.crossing_reject_unmatched_owner,
+            "crossing_reject_pending_straight": self.crossing_reject_pending_straight,
             "full_grid_fallbacks": self.full_grid_fallbacks,
             "search_loop_time_s": self.search_loop_time_s,
             "obstacle_map_prepare_time_s": self.obstacle_map_prepare_time_s,
@@ -1468,6 +1486,25 @@ def run_routing_flow(
         stats.obstacle_clearance_checks = int(route_summary.obstacle_clearance_checks)
         stats.footprint_checks = int(route_summary.footprint_checks)
         stats.footprint_rect_checks = int(route_summary.footprint_rect_checks)
+        stats.crossing_candidate_checks = int(route_summary.crossing_candidate_checks)
+        stats.crossing_accepted = int(route_summary.crossing_accepted)
+        stats.crossing_reject_non_straight = int(
+            route_summary.crossing_reject_non_straight
+        )
+        stats.crossing_reject_not_perpendicular = int(
+            route_summary.crossing_reject_not_perpendicular
+        )
+        stats.crossing_reject_margin = int(route_summary.crossing_reject_margin)
+        stats.crossing_reject_wrong_order = int(route_summary.crossing_reject_wrong_order)
+        stats.crossing_reject_unexpected_owner = int(
+            route_summary.crossing_reject_unexpected_owner
+        )
+        stats.crossing_reject_unmatched_owner = int(
+            route_summary.crossing_reject_unmatched_owner
+        )
+        stats.crossing_reject_pending_straight = int(
+            route_summary.crossing_reject_pending_straight
+        )
         stats.full_grid_fallbacks = int(route_summary.full_grid_fallbacks)
         stats.neighbor_generation_time_s = (
             float(route_summary.neighbor_generation_time_us) / 1_000_000.0
