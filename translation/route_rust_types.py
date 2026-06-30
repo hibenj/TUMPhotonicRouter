@@ -297,6 +297,8 @@ class RouteTimingBucket:
     crossing_reject_unmatched_owner: int = 0
     crossing_reject_unmatched_centerline: int = 0
     crossing_reject_unmatched_footprint: int = 0
+    crossing_reject_unmatched_route_centerline: int = 0
+    crossing_reject_unmatched_route_footprint: int = 0
     crossing_reject_pending_straight: int = 0
     dense_grid_build_failures: int = 0
     dense_grid_cells: int = 0
@@ -437,6 +439,12 @@ class RouteTimingBucket:
         self.crossing_reject_unmatched_footprint += _get_route_int_stat(
             route_obj, "crossing_reject_unmatched_footprint"
         )
+        self.crossing_reject_unmatched_route_centerline += _get_route_int_stat(
+            route_obj, "crossing_reject_unmatched_route_centerline"
+        )
+        self.crossing_reject_unmatched_route_footprint += _get_route_int_stat(
+            route_obj, "crossing_reject_unmatched_route_footprint"
+        )
         self.crossing_reject_pending_straight += _get_route_int_stat(
             route_obj, "crossing_reject_pending_straight"
         )
@@ -564,6 +572,8 @@ class RouteAttemptRecord:
     crossing_reject_unmatched_owner: int = 0
     crossing_reject_unmatched_centerline: int = 0
     crossing_reject_unmatched_footprint: int = 0
+    crossing_reject_unmatched_route_centerline: int = 0
+    crossing_reject_unmatched_route_footprint: int = 0
     crossing_reject_pending_straight: int = 0
     route_search_total_time_us: int = 0
     dense_grid_build_time_us: int = 0
@@ -654,6 +664,12 @@ class RouteAttemptRecord:
             ),
             "crossing_reject_unmatched_footprint": (
                 self.crossing_reject_unmatched_footprint
+            ),
+            "crossing_reject_unmatched_route_centerline": (
+                self.crossing_reject_unmatched_route_centerline
+            ),
+            "crossing_reject_unmatched_route_footprint": (
+                self.crossing_reject_unmatched_route_footprint
             ),
             "crossing_reject_pending_straight": (
                 self.crossing_reject_pending_straight
@@ -809,6 +825,12 @@ def route_attempt_record_from_route(
         crossing_reject_unmatched_footprint=_get_route_int_stat(
             route_obj, "crossing_reject_unmatched_footprint"
         ),
+        crossing_reject_unmatched_route_centerline=_get_route_int_stat(
+            route_obj, "crossing_reject_unmatched_route_centerline"
+        ),
+        crossing_reject_unmatched_route_footprint=_get_route_int_stat(
+            route_obj, "crossing_reject_unmatched_route_footprint"
+        ),
         crossing_reject_pending_straight=_get_route_int_stat(
             route_obj, "crossing_reject_pending_straight"
         ),
@@ -925,6 +947,8 @@ class RouteSearchSummary:
     crossing_reject_unmatched_owner: int = 0
     crossing_reject_unmatched_centerline: int = 0
     crossing_reject_unmatched_footprint: int = 0
+    crossing_reject_unmatched_route_centerline: int = 0
+    crossing_reject_unmatched_route_footprint: int = 0
     crossing_reject_pending_straight: int = 0
     route_search_total_time_us: int = 0
     dense_grid_build_time_us: int = 0
@@ -1052,6 +1076,12 @@ def summarize_route_search(
         ),
         crossing_reject_unmatched_footprint=sum(
             bucket.crossing_reject_unmatched_footprint for bucket in buckets
+        ),
+        crossing_reject_unmatched_route_centerline=sum(
+            bucket.crossing_reject_unmatched_route_centerline for bucket in buckets
+        ),
+        crossing_reject_unmatched_route_footprint=sum(
+            bucket.crossing_reject_unmatched_route_footprint for bucket in buckets
         ),
         crossing_reject_pending_straight=sum(
             bucket.crossing_reject_pending_straight for bucket in buckets

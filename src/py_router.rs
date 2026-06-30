@@ -562,6 +562,10 @@ pub struct PyRouteResult {
     #[pyo3(get)]
     pub crossing_reject_unmatched_footprint: usize,
     #[pyo3(get)]
+    pub crossing_reject_unmatched_route_centerline: usize,
+    #[pyo3(get)]
+    pub crossing_reject_unmatched_route_footprint: usize,
+    #[pyo3(get)]
     pub crossing_reject_pending_straight: usize,
     #[pyo3(get)]
     pub dense_grid_cells: usize,
@@ -7628,6 +7632,12 @@ fn convert_result(
         crossing_reject_unmatched_owner: r.stats.crossing_reject_unmatched_owner,
         crossing_reject_unmatched_centerline: r.stats.crossing_reject_unmatched_centerline,
         crossing_reject_unmatched_footprint: r.stats.crossing_reject_unmatched_footprint,
+        crossing_reject_unmatched_route_centerline: r
+            .stats
+            .crossing_reject_unmatched_route_centerline,
+        crossing_reject_unmatched_route_footprint: r
+            .stats
+            .crossing_reject_unmatched_route_footprint,
         crossing_reject_pending_straight: r.stats.crossing_reject_pending_straight,
         dense_grid_cells: r.stats.dense_grid_cells,
         route_search_total_time_us: {
@@ -7772,6 +7782,10 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             crossing_reject_unmatched_owner: route.crossing_reject_unmatched_owner,
             crossing_reject_unmatched_centerline: route.crossing_reject_unmatched_centerline,
             crossing_reject_unmatched_footprint: route.crossing_reject_unmatched_footprint,
+            crossing_reject_unmatched_route_centerline: route
+                .crossing_reject_unmatched_route_centerline,
+            crossing_reject_unmatched_route_footprint: route
+                .crossing_reject_unmatched_route_footprint,
             crossing_reject_pending_straight: route.crossing_reject_pending_straight,
             dense_grid_cells: route.dense_grid_cells,
             route_search_total_time_us: u128::from(route.route_search_total_time_us),
@@ -8045,6 +8059,8 @@ mod tests {
             crossing_reject_unmatched_owner: 0,
             crossing_reject_unmatched_centerline: 0,
             crossing_reject_unmatched_footprint: 0,
+            crossing_reject_unmatched_route_centerline: 0,
+            crossing_reject_unmatched_route_footprint: 0,
             crossing_reject_pending_straight: 0,
             dense_grid_cells: 0,
             route_search_total_time_us: 0,
@@ -8166,6 +8182,8 @@ mod tests {
             crossing_reject_unmatched_owner: 0,
             crossing_reject_unmatched_centerline: 0,
             crossing_reject_unmatched_footprint: 0,
+            crossing_reject_unmatched_route_centerline: 0,
+            crossing_reject_unmatched_route_footprint: 0,
             crossing_reject_pending_straight: 0,
             dense_grid_cells: 0,
             route_search_total_time_us: 0,
@@ -8304,6 +8322,8 @@ mod tests {
             crossing_reject_unmatched_owner: 0,
             crossing_reject_unmatched_centerline: 0,
             crossing_reject_unmatched_footprint: 0,
+            crossing_reject_unmatched_route_centerline: 0,
+            crossing_reject_unmatched_route_footprint: 0,
             crossing_reject_pending_straight: 0,
             dense_grid_cells: 0,
             route_search_total_time_us: 0,
@@ -8434,6 +8454,8 @@ mod tests {
             crossing_reject_unmatched_owner: 0,
             crossing_reject_unmatched_centerline: 0,
             crossing_reject_unmatched_footprint: 0,
+            crossing_reject_unmatched_route_centerline: 0,
+            crossing_reject_unmatched_route_footprint: 0,
             crossing_reject_pending_straight: 0,
             dense_grid_cells: 0,
             route_search_total_time_us: 0,
@@ -8601,6 +8623,8 @@ mod tests {
             crossing_reject_unmatched_owner: 0,
             crossing_reject_unmatched_centerline: 0,
             crossing_reject_unmatched_footprint: 0,
+            crossing_reject_unmatched_route_centerline: 0,
+            crossing_reject_unmatched_route_footprint: 0,
             crossing_reject_pending_straight: 0,
             dense_grid_cells: 0,
             route_search_total_time_us: 0,
@@ -8739,6 +8763,8 @@ mod tests {
             crossing_reject_unmatched_owner: 0,
             crossing_reject_unmatched_centerline: 0,
             crossing_reject_unmatched_footprint: 0,
+            crossing_reject_unmatched_route_centerline: 0,
+            crossing_reject_unmatched_route_footprint: 0,
             crossing_reject_pending_straight: 0,
             dense_grid_cells: 0,
             route_search_total_time_us: 0,
@@ -8866,6 +8892,8 @@ mod tests {
             crossing_reject_unmatched_owner: 0,
             crossing_reject_unmatched_centerline: 0,
             crossing_reject_unmatched_footprint: 0,
+            crossing_reject_unmatched_route_centerline: 0,
+            crossing_reject_unmatched_route_footprint: 0,
             crossing_reject_pending_straight: 0,
             dense_grid_cells: 0,
             route_search_total_time_us: 0,
@@ -9112,6 +9140,8 @@ mod tests {
             crossing_reject_unmatched_owner: 0,
             crossing_reject_unmatched_centerline: 0,
             crossing_reject_unmatched_footprint: 0,
+            crossing_reject_unmatched_route_centerline: 0,
+            crossing_reject_unmatched_route_footprint: 0,
             crossing_reject_pending_straight: 0,
             dense_grid_cells: 0,
             route_search_total_time_us: 0,
@@ -9285,6 +9315,8 @@ mod tests {
             crossing_reject_unmatched_owner: 0,
             crossing_reject_unmatched_centerline: 0,
             crossing_reject_unmatched_footprint: 0,
+            crossing_reject_unmatched_route_centerline: 0,
+            crossing_reject_unmatched_route_footprint: 0,
             crossing_reject_pending_straight: 0,
             dense_grid_cells: 0,
             route_search_total_time_us: 0,

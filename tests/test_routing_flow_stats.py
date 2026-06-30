@@ -705,6 +705,8 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "crossing_reject_unmatched_owner": 0,
             "crossing_reject_unmatched_centerline": 0,
             "crossing_reject_unmatched_footprint": 0,
+            "crossing_reject_unmatched_route_centerline": 0,
+            "crossing_reject_unmatched_route_footprint": 0,
             "crossing_reject_pending_straight": 0,
             "route_search_total_time_s": 0.0,
             "dense_grid_build_time_s": 0.0,

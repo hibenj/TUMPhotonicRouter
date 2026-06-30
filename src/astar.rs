@@ -226,6 +226,8 @@ pub struct RouteSearchStats {
     pub crossing_reject_unmatched_owner: usize,
     pub crossing_reject_unmatched_centerline: usize,
     pub crossing_reject_unmatched_footprint: usize,
+    pub crossing_reject_unmatched_route_centerline: usize,
+    pub crossing_reject_unmatched_route_footprint: usize,
     pub crossing_reject_pending_straight: usize,
     pub dense_grid_build_failures: usize,
     pub max_window_area_cells: i64,
@@ -3598,6 +3600,17 @@ fn crossing_move_outcome(
                 stats.crossing_reject_unmatched_owner += 1;
                 if partner_contains_grid_cell(&crossing.partners[partner_idx], (x, y)) {
                     stats.crossing_reject_unmatched_centerline += 1;
+                    if grid_point_on_segment_with_param(
+                        (x, y),
+                        (state.x, state.y),
+                        (next_state.x, next_state.y),
+                    )
+                    .is_some()
+                    {
+                        stats.crossing_reject_unmatched_route_centerline += 1;
+                    } else {
+                        stats.crossing_reject_unmatched_route_footprint += 1;
+                    }
                 } else {
                     stats.crossing_reject_unmatched_footprint += 1;
                 }
