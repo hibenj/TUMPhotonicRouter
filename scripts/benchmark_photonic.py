@@ -137,6 +137,8 @@ AttemptColumn: TypeAlias = Literal[
     "crossing_reject_wrong_order",
     "crossing_reject_unexpected_owner",
     "crossing_reject_unmatched_owner",
+    "crossing_reject_unmatched_centerline",
+    "crossing_reject_unmatched_footprint",
     "crossing_reject_pending_straight",
     "dense_grid_build_time_s",
     "dense_grid_cells",
@@ -192,6 +194,8 @@ ATTEMPT_COLUMNS: tuple[AttemptColumn, ...] = (
     "crossing_reject_wrong_order",
     "crossing_reject_unexpected_owner",
     "crossing_reject_unmatched_owner",
+    "crossing_reject_unmatched_centerline",
+    "crossing_reject_unmatched_footprint",
     "crossing_reject_pending_straight",
     "dense_grid_build_time_s",
     "dense_grid_cells",
@@ -761,6 +765,12 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "crossing_reject_wrong_order": stats.crossing_reject_wrong_order,
         "crossing_reject_unexpected_owner": stats.crossing_reject_unexpected_owner,
         "crossing_reject_unmatched_owner": stats.crossing_reject_unmatched_owner,
+        "crossing_reject_unmatched_centerline": (
+            stats.crossing_reject_unmatched_centerline
+        ),
+        "crossing_reject_unmatched_footprint": (
+            stats.crossing_reject_unmatched_footprint
+        ),
         "crossing_reject_pending_straight": stats.crossing_reject_pending_straight,
         "full_grid_fallbacks": stats.full_grid_fallbacks,
         "neighbor_generation_s": stats.neighbor_generation_time_s,
@@ -1036,6 +1046,12 @@ def _perf_baseline_payload(
             "crossing_reject_unmatched_owner": row.get(
                 "crossing_reject_unmatched_owner", 0
             ),
+            "crossing_reject_unmatched_centerline": row.get(
+                "crossing_reject_unmatched_centerline", 0
+            ),
+            "crossing_reject_unmatched_footprint": row.get(
+                "crossing_reject_unmatched_footprint", 0
+            ),
             "crossing_reject_pending_straight": row.get(
                 "crossing_reject_pending_straight", 0
             ),
@@ -1238,6 +1254,8 @@ def _format_crossing_rejects(values: Mapping[str, object]) -> str:
         ("order", "crossing_reject_wrong_order"),
         ("unexpected", "crossing_reject_unexpected_owner"),
         ("unmatched", "crossing_reject_unmatched_owner"),
+        ("center", "crossing_reject_unmatched_centerline"),
+        ("footprint", "crossing_reject_unmatched_footprint"),
         ("pending", "crossing_reject_pending_straight"),
     )
     parts = [

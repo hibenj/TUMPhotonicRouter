@@ -224,6 +224,8 @@ pub struct RouteSearchStats {
     pub crossing_reject_wrong_order: usize,
     pub crossing_reject_unexpected_owner: usize,
     pub crossing_reject_unmatched_owner: usize,
+    pub crossing_reject_unmatched_centerline: usize,
+    pub crossing_reject_unmatched_footprint: usize,
     pub crossing_reject_pending_straight: usize,
     pub dense_grid_build_failures: usize,
     pub max_window_area_cells: i64,
@@ -3563,7 +3565,7 @@ fn crossing_move_outcome(
     for (dx, dy) in primitive.footprint.iter().copied() {
         let x = state.x + dx;
         let y = state.y + dy;
-        let Some(owner) = obstacle_map.dynamic_owner_at(x, y) else {
+        let Some(owner) = obstacle_map.dynamic_core_owner_at(x, y) else {
             continue;
         };
         if owner == crossing.net_id {
@@ -3575,8 +3577,53 @@ fn crossing_move_outcome(
         };
         let bit = 1u64 << partner_idx;
         if crossed_mask & bit == 0 {
-            stats.crossing_reject_unmatched_owner += 1;
-            return None;
+            if crossing.require_all_partners
+                && partner_idx != usize::from(current_key.next_partner_index)
+            {
+                stats.crossing_reject_wrong_order += 1;
+                return None;
+            }
+            let overlap_crossing = if is_straight && primitive_steps > 0 {
+                crossing_overlap_cell_with_partner(
+                    (state.x, state.y),
+                    (next_state.x, next_state.y),
+                    (x, y),
+                    &crossing.partners[partner_idx],
+                    required_margin,
+                )
+            } else {
+                None
+            };
+            let Some((t, _u)) = overlap_crossing else {
+                stats.crossing_reject_unmatched_owner += 1;
+                if partner_contains_grid_cell(&crossing.partners[partner_idx], (x, y)) {
+                    stats.crossing_reject_unmatched_centerline += 1;
+                } else {
+                    stats.crossing_reject_unmatched_footprint += 1;
+                }
+                return None;
+            };
+            if pending_after > 0 {
+                stats.crossing_reject_pending_straight += 1;
+                return None;
+            }
+            let distance_before =
+                current_key.straight_run_cells as f64 + t * primitive_steps as f64;
+            if distance_before + 1.0e-9 < f64::from(required_margin) {
+                stats.crossing_reject_margin += 1;
+                return None;
+            }
+            let distance_after = (1.0 - t) * primitive_steps as f64;
+            pending_after = (f64::from(required_margin) - distance_after)
+                .ceil()
+                .max(0.0) as i32;
+            crossed_mask |= bit;
+            if crossing.require_all_partners {
+                next_partner_index = next_partner_index.checked_add(1)?;
+            }
+            crossing_count += 1;
+            stats.crossing_accepted += 1;
+            continue;
         }
         if !is_straight {
             stats.crossing_reject_non_straight += 1;
@@ -3595,6 +3642,74 @@ fn crossing_move_outcome(
         pending_after_crossing_cells: pending_after.min(capped_required_margin),
         crossing_count,
     })
+}
+
+fn crossing_overlap_cell_with_partner(
+    route_start: (i32, i32),
+    route_end: (i32, i32),
+    overlap_cell: (i32, i32),
+    partner: &CrossingSearchPartner,
+    required_margin: i32,
+) -> Option<(f64, f64)> {
+    let route_angle = direction_angle_between_grid_cells(route_start, route_end)?;
+    let route_t = grid_point_on_segment_with_param(overlap_cell, route_start, route_end)?;
+    let route_len = grid_segment_length(route_start, route_end);
+    let route_margin = (route_t * route_len).min((1.0 - route_t) * route_len);
+    if route_margin + 1.0e-9 < f64::from(required_margin) {
+        return None;
+    }
+    for partner_segment in partner.waypoints.windows(2) {
+        let partner_start = partner_segment[0];
+        let partner_end = partner_segment[1];
+        let Some(partner_angle) = direction_angle_between_grid_cells(partner_start, partner_end)
+        else {
+            continue;
+        };
+        if !grid_axes_are_perpendicular(route_angle, partner_angle) {
+            continue;
+        }
+        let Some(partner_u) =
+            grid_point_on_segment_with_param(overlap_cell, partner_start, partner_end)
+        else {
+            continue;
+        };
+        let partner_len = grid_segment_length(partner_start, partner_end);
+        let partner_margin = (partner_u * partner_len).min((1.0 - partner_u) * partner_len);
+        if partner_margin + 1.0e-9 >= f64::from(required_margin) {
+            return Some((route_t, partner_u));
+        }
+    }
+    None
+}
+
+fn partner_contains_grid_cell(partner: &CrossingSearchPartner, cell: (i32, i32)) -> bool {
+    partner
+        .waypoints
+        .windows(2)
+        .any(|segment| grid_point_on_segment_with_param(cell, segment[0], segment[1]).is_some())
+}
+
+fn grid_point_on_segment_with_param(
+    point: (i32, i32),
+    start: (i32, i32),
+    end: (i32, i32),
+) -> Option<f64> {
+    let dx = i64::from(end.0 - start.0);
+    let dy = i64::from(end.1 - start.1);
+    if dx == 0 && dy == 0 {
+        return None;
+    }
+    let qx = i64::from(point.0 - start.0);
+    let qy = i64::from(point.1 - start.1);
+    if qx * dy - qy * dx != 0 {
+        return None;
+    }
+    let dot = qx * dx + qy * dy;
+    let len_sq = dx * dx + dy * dy;
+    if dot < 0 || dot > len_sq {
+        return None;
+    }
+    Some(dot as f64 / len_sq as f64)
 }
 
 fn reconstruct_route_crossing(
@@ -6469,6 +6584,72 @@ mod tests {
         assert_eq!(key.crossed_mask, 0b11);
         assert_eq!(stats.crossing_accepted, 2);
         assert!(stats.crossing_candidate_checks >= 2);
+    }
+
+    #[test]
+    fn crossing_move_accepts_perpendicular_shared_core_cell() {
+        let mut map = ObstacleMap::new(16, 16);
+        assert!(map.commit_route_with_clearance_overlap(
+            2,
+            &[(6, 5), (6, 6), (6, 7)],
+            &[(6, 5), (6, 6), (6, 7)],
+            &[],
+        ));
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: vec![CrossingSearchPartner {
+                net_id: 2,
+                waypoints: vec![(6, 5), (6, 7)],
+            }],
+            min_straight_cells: 1,
+            crossing_half_size_cells: 0,
+            crossing_loss: 0.0,
+            require_all_partners: true,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = crossing
+            .partners
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| (p.net_id, idx))
+            .collect();
+        let primitive = Primitive {
+            id: 0,
+            start_angle: 0,
+            end_angle: 0,
+            dx: 4,
+            dy: 0,
+            footprint: vec![(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)],
+            length_um: 4.0,
+            bend_cost: 0.0,
+            geometry: PrimitiveGeometry::Straight { length_um: 4.0 },
+        };
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(4, 6, 0),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 2,
+                pending_after_crossing_cells: 0,
+            },
+            State::new(4, 6, 0),
+            State::new(8, 6, 0),
+            &primitive,
+            true,
+            1,
+            1,
+            &partner_index_by_id,
+            &mut stats,
+        )
+        .expect("shared perpendicular core cell should be a valid crossing");
+
+        assert_eq!(outcome.crossed_mask, 0b1);
+        assert_eq!(outcome.next_partner_index, 1);
+        assert_eq!(outcome.crossing_count, 1);
+        assert_eq!(stats.crossing_accepted, 1);
+        assert_eq!(stats.crossing_reject_unmatched_owner, 0);
     }
 
     fn rasterize_waypoints_for_test(waypoints: &[(i32, i32)]) -> Vec<(i32, i32)> {

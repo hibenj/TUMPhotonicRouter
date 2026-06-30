@@ -127,6 +127,8 @@ class RoutingFlowStats:
     crossing_reject_wrong_order: int = 0
     crossing_reject_unexpected_owner: int = 0
     crossing_reject_unmatched_owner: int = 0
+    crossing_reject_unmatched_centerline: int = 0
+    crossing_reject_unmatched_footprint: int = 0
     crossing_reject_pending_straight: int = 0
     full_grid_fallbacks: int = 0
     search_loop_time_s: float = 0.0
@@ -184,6 +186,12 @@ class RoutingFlowStats:
             "crossing_reject_wrong_order": self.crossing_reject_wrong_order,
             "crossing_reject_unexpected_owner": self.crossing_reject_unexpected_owner,
             "crossing_reject_unmatched_owner": self.crossing_reject_unmatched_owner,
+            "crossing_reject_unmatched_centerline": (
+                self.crossing_reject_unmatched_centerline
+            ),
+            "crossing_reject_unmatched_footprint": (
+                self.crossing_reject_unmatched_footprint
+            ),
             "crossing_reject_pending_straight": self.crossing_reject_pending_straight,
             "full_grid_fallbacks": self.full_grid_fallbacks,
             "search_loop_time_s": self.search_loop_time_s,
@@ -1501,6 +1509,12 @@ def run_routing_flow(
         )
         stats.crossing_reject_unmatched_owner = int(
             route_summary.crossing_reject_unmatched_owner
+        )
+        stats.crossing_reject_unmatched_centerline = int(
+            route_summary.crossing_reject_unmatched_centerline
+        )
+        stats.crossing_reject_unmatched_footprint = int(
+            route_summary.crossing_reject_unmatched_footprint
         )
         stats.crossing_reject_pending_straight = int(
             route_summary.crossing_reject_pending_straight

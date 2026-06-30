@@ -600,6 +600,17 @@ impl ObstacleMap {
             .find_map(|(&net_id, cells)| cells.contains(&key).then_some(net_id))
     }
 
+    /// Return the committed dynamic core-route owner of a cell, if any.
+    pub fn dynamic_core_owner_at(&self, x: i32, y: i32) -> Option<NetId> {
+        if !self.in_bounds(x, y) {
+            return None;
+        }
+        let key = pack_xy(x, y);
+        self.net_core_routes
+            .iter()
+            .find_map(|(&net_id, cells)| cells.contains(&key).then_some(net_id))
+    }
+
     /// Return all dynamic-route owners intersecting the provided cells.
     pub fn dynamic_owners_for_cells(&self, cells: &[(i32, i32)]) -> FxHashSet<NetId> {
         let query: FxHashSet<CellKey> = cells
@@ -1211,6 +1222,7 @@ mod tests {
         assert!(map.commit_route(11, &[(2, 2), (3, 2)]));
         assert_eq!(map.dynamic_owner_at(2, 2), Some(11));
         assert_eq!(map.dynamic_owner_at(3, 2), Some(11));
+        assert_eq!(map.dynamic_core_owner_at(2, 2), Some(11));
 
         let owners = map.dynamic_owners_for_cells(&[(1, 1), (2, 2), (3, 2)]);
         assert_eq!(owners.len(), 1);
@@ -1219,8 +1231,22 @@ mod tests {
         assert!(map.commit_route(11, &[(4, 2)]));
         assert_eq!(map.dynamic_owner_at(2, 2), None);
         assert_eq!(map.dynamic_owner_at(4, 2), Some(11));
+        assert_eq!(map.dynamic_core_owner_at(2, 2), None);
+        assert_eq!(map.dynamic_core_owner_at(4, 2), Some(11));
         assert!(map.ripup_route(11));
         assert_eq!(map.dynamic_owner_at(4, 2), None);
+        assert_eq!(map.dynamic_core_owner_at(4, 2), None);
+    }
+
+    #[test]
+    fn dynamic_core_owner_ignores_clearance_only_cells() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route_with_clearance_overlap(11, &[(2, 2)], &[(2, 2), (2, 3)], &[],));
+
+        assert_eq!(map.dynamic_owner_at(2, 2), Some(11));
+        assert_eq!(map.dynamic_owner_at(2, 3), Some(11));
+        assert_eq!(map.dynamic_core_owner_at(2, 2), Some(11));
+        assert_eq!(map.dynamic_core_owner_at(2, 3), None);
     }
 
     #[test]
