@@ -162,6 +162,28 @@ impl CrossingContext {
         partners.dedup();
         partners
     }
+
+    pub fn ordered_constraints_for(&self, net_id: NetId) -> Vec<CrossingConstraint> {
+        if !self.config.enabled {
+            return Vec::new();
+        }
+        let mut constraints: Vec<_> = self
+            .constraints
+            .iter()
+            .filter(|constraint| constraint.net_id == net_id || constraint.partner_net_id == net_id)
+            .cloned()
+            .collect();
+        constraints.sort_by_key(|constraint| {
+            (
+                constraint.source_depth,
+                constraint.target_depth,
+                constraint.level,
+                constraint.net_id.min(constraint.partner_net_id),
+                constraint.net_id.max(constraint.partner_net_id),
+            )
+        });
+        constraints
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +224,14 @@ mod tests {
         assert_eq!(context.expected_crossing_count(2), 1);
         assert_eq!(context.expected_crossing_count(99), 0);
         assert_eq!(context.allowed_partners_for(10), vec![2, 5]);
+        assert_eq!(
+            context
+                .ordered_constraints_for(10)
+                .into_iter()
+                .map(|constraint| constraint.partner_net_id)
+                .collect::<Vec<_>>(),
+            vec![2, 5]
+        );
     }
 
     #[test]

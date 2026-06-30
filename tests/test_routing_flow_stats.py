@@ -345,6 +345,10 @@ def test_electrical_cli_flags_parse_into_namespace():
             "32",
             "--electrical-pad-pitch-um",
             "160",
+            "--proactive-congestion-weight",
+            "3.5",
+            "--proactive-congestion-radius-cells",
+            "4",
             "--verbose-routes",
         ]
     )
@@ -358,6 +362,8 @@ def test_electrical_cli_flags_parse_into_namespace():
     assert args.electrical_bus_width_um == 24.0
     assert args.electrical_terminal_contact_width_um == 32.0
     assert args.electrical_pad_pitch_um == 160.0
+    assert args.proactive_congestion_weight == 3.5
+    assert args.proactive_congestion_radius_cells == 4
     assert args.verbose_routes is True
 
 

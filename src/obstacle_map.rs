@@ -258,6 +258,29 @@ impl ObstacleMap {
         removed
     }
 
+    /// Remove many packed static obstacle references.
+    ///
+    /// This decrements the same reference counters used by [`Self::add_static_keys`],
+    /// so derived reservations can be removed without clearing unrelated static
+    /// geometry that happens to share a cell.
+    pub fn remove_static_keys(&mut self, keys: &FxHashSet<CellKey>) -> usize {
+        let mut removed_count = 0;
+        for &key in keys {
+            let (x, y) = unpack_xy(key);
+            if !self.in_bounds(x, y) {
+                continue;
+            }
+            let removed = Self::decrement_ref(&mut self.static_obstacles, key);
+            if removed {
+                removed_count += 1;
+            }
+            if removed && !self.static_obstacles.contains_key(&key) {
+                self.clear_occupancy_bit(x, y, STATIC_BIT);
+            }
+        }
+        removed_count
+    }
+
     /// Return true if a static obstacle blocks this in-bounds cell.
     ///
     /// Out-of-bounds cells are not static obstacles, but they are considered
@@ -344,6 +367,7 @@ impl ObstacleMap {
                 self.set_occupancy_bit(x, y, DYNAMIC_BIT);
             }
             Self::increment_ref(&mut self.dynamic_core_obstacles, key);
+            self.dynamic_cell_owner.entry(key).or_insert(net_id);
         }
         self.net_core_routes.insert(net_id, keys.clone());
         self.net_routes.insert(net_id, keys);
@@ -475,6 +499,7 @@ impl ObstacleMap {
             if Self::increment_ref(&mut self.dynamic_obstacles, key) {
                 self.set_occupancy_bit(x, y, DYNAMIC_BIT);
             }
+            self.dynamic_cell_owner.entry(key).or_insert(net_id);
         }
         for &key in &core_keys {
             Self::increment_ref(&mut self.dynamic_core_obstacles, key);
@@ -495,6 +520,15 @@ impl ObstacleMap {
             let removed = Self::decrement_ref(&mut self.dynamic_obstacles, key);
             if removed && !self.dynamic_obstacles.contains_key(&key) {
                 self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
+            }
+            if self.dynamic_cell_owner.get(&key).copied() == Some(net_id) {
+                self.dynamic_cell_owner.remove(&key);
+                for (&other_net_id, route_cells) in &self.net_routes {
+                    if other_net_id != net_id && route_cells.contains(&key) {
+                        self.dynamic_cell_owner.insert(key, other_net_id);
+                        break;
+                    }
+                }
             }
         }
         if let Some(core_keys) = self.net_core_routes.remove(&net_id) {

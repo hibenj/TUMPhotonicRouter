@@ -21,6 +21,8 @@ from benchmarks.benes_8x8 import (
     NODE_RANKS as NODE_RANKS_8X8,
     build_schematic as build_schematic_8x8,
 )
+from benchmarks.benes_16x16 import build_schematic as build_schematic_16x16
+from benchmarks.benes_32x32 import build_schematic as build_schematic_32x32
 from photonic_router.path_length_graph import build_graph_from_schematic
 from photonic_router.crossing_plan import build_crossing_plan
 from photonic_router.topology_analysis import analyze_schematic_topology
@@ -28,6 +30,7 @@ from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import (
     _augment_crossing_plan_with_realized_overlaps,
     _build_crossing_plan_info,
+    _resolve_crossing_half_size_cells,
 )
 from translation.route_rust_types import RouteJob
 
@@ -92,6 +95,16 @@ class _FakeCrossingRouter:
 
     def all_net_core_cells(self):
         return sorted(self.core_cells_by_net_id.items())
+
+
+class _FakeRouteObj:
+    def __init__(self, compressed_waypoints):
+        self.compressed_waypoints = compressed_waypoints
+
+
+class _FakeRouteRecord:
+    def __init__(self, route_obj):
+        self.route_obj = route_obj
 
 
 def _route_jobs_from_schematic(schematic):
@@ -160,11 +173,70 @@ def test_benes_8x8_topology_shape_is_available_for_next_benchmark():
     }
 
 
+def test_larger_benes_topology_shapes_are_available_for_stress_benchmarks():
+    cases = {
+        16: {
+            "stage_count": 7,
+            "switches_per_stage": 8,
+            "interstage_edges": 96,
+            "crossings": 88,
+            "crossings_by_stage": {0: 28, 1: 12, 2: 4, 3: 4, 4: 12, 5: 28},
+        },
+        32: {
+            "stage_count": 9,
+            "switches_per_stage": 16,
+            "interstage_edges": 256,
+            "crossings": 416,
+            "crossings_by_stage": {
+                0: 120,
+                1: 56,
+                2: 24,
+                3: 8,
+                4: 8,
+                5: 24,
+                6: 56,
+                7: 120,
+            },
+        },
+    }
+
+    for size, expected in cases.items():
+        metadata = benes_topology_metadata(size)
+        assert metadata["stage_count"] == expected["stage_count"]
+        assert metadata["switches_per_stage"] == expected["switches_per_stage"]
+        assert len(metadata["interstage_edges"]) == expected["interstage_edges"]
+        assert len(metadata["crossings"]) == expected["crossings"]
+        assert {
+            stage: len(crossings)
+            for stage, crossings in metadata["crossings_by_stage"].items()
+        } == expected["crossings_by_stage"]
+
+
 def test_benes_8x8_schematic_can_be_built():
     schematic = build_schematic_8x8()
 
     assert len(schematic.netlist.instances) == 36
     assert len(schematic.netlist.routes) == 48
+
+
+def test_larger_benes_schematics_can_be_built():
+    schematic_16 = build_schematic_16x16()
+    schematic_32 = build_schematic_32x32()
+
+    assert len(schematic_16.netlist.instances) == 88
+    assert len(schematic_16.netlist.routes) == 128
+    assert len(schematic_32.netlist.instances) == 208
+    assert len(schematic_32.netlist.routes) == 320
+
+
+def test_larger_benes_metadata_loader_exposes_crossing_oracles():
+    metadata_16 = load_benchmark_metadata("benes_16x16")
+    metadata_32 = load_benchmark_metadata("benes_32x32")
+
+    assert len(metadata_16["expected_crossings"]) == 88
+    assert len(metadata_16["edge_ranks"]) == 96
+    assert len(metadata_32["expected_crossings"]) == 416
+    assert len(metadata_32["edge_ranks"]) == 256
 
 
 def test_benes_8x8_top_level_placements_do_not_overlap():
@@ -317,6 +389,148 @@ def test_benes_crossing_plan_can_be_loaded_into_router_context():
     assert info["actual_crossing_count"] == 1
     assert info["actual_crossings"][0]["cell_count"] == 1
     assert info["unrealized_expected_crossing_count"] == 1
+
+
+def test_benes_crossing_plan_counts_geometric_route_intersections():
+    schematic = build_schematic()
+    router = _FakeCrossingRouter()
+
+    info = _build_crossing_plan_info(
+        rust_backend=_FakeCrossingBackend,
+        router=router,
+        schematic=schematic,
+        route_jobs=_route_jobs_from_schematic(schematic),
+        enable_crossings=True,
+        node_depths=NODE_DEPTHS,
+        node_ranks=NODE_RANKS,
+        edge_ranks=EDGE_RANKS,
+        crossing_loss=1.25,
+        crossing_half_size_cells=3,
+        min_straight_cells_per_crossing=5,
+        allow_only_expected_crossings=True,
+    )
+
+    first = router.constraints[0]
+    router.core_cells_by_net_id = {}
+    _augment_crossing_plan_with_realized_overlaps(
+        router=router,
+        crossing_plan_info=info,
+        routed_records_by_net_id={
+            first.net_id: _FakeRouteRecord(
+                _FakeRouteObj([(0, 0), (10, 10)]),
+            ),
+            first.partner_net_id: _FakeRouteRecord(
+                _FakeRouteObj([(0, 10), (10, 0)]),
+            ),
+        },
+    )
+
+    assert info["actual_crossing_count"] == 1
+    assert info["actual_geometric_crossing_count"] == 1
+    assert info["actual_crossing_cell_count"] == 0
+    assert info["actual_crossings"][0]["geometric"] is True
+    assert info["actual_crossings"][0]["point"] == [5.0, 5.0]
+    assert info["unrealized_expected_crossing_count"] == 1
+
+
+def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
+    schematic = build_schematic()
+    router = _FakeCrossingRouter()
+
+    info = _build_crossing_plan_info(
+        rust_backend=_FakeCrossingBackend,
+        router=router,
+        schematic=schematic,
+        route_jobs=_route_jobs_from_schematic(schematic),
+        enable_crossings=True,
+        node_depths=NODE_DEPTHS,
+        node_ranks=NODE_RANKS,
+        edge_ranks=EDGE_RANKS,
+        crossing_loss=1.25,
+        crossing_half_size_cells=3,
+        min_straight_cells_per_crossing=6,
+        allow_only_expected_crossings=True,
+    )
+
+    first = router.constraints[0]
+    router.core_cells_by_net_id = {}
+    _augment_crossing_plan_with_realized_overlaps(
+        router=router,
+        crossing_plan_info=info,
+        routed_records_by_net_id={
+            first.net_id: _FakeRouteRecord(
+                _FakeRouteObj([(0, 0), (10, 10)]),
+            ),
+            first.partner_net_id: _FakeRouteRecord(
+                _FakeRouteObj([(0, 10), (10, 0)]),
+            ),
+        },
+    )
+
+    assert info["actual_crossing_count"] == 0
+    assert info["unrealized_expected_crossing_count"] == 2
+    invalid = next(
+        crossing
+        for crossing in info["unrealized_expected_crossings"]
+        if crossing.get("unrealized_reason") == "insufficient_straight_margin"
+    )
+    assert invalid["geometric"] is True
+    assert invalid["unrealized_reason"] == "insufficient_straight_margin"
+    assert invalid["required_margin_cells"] == 6
+
+
+def test_benes_crossing_plan_rejects_non_perpendicular_route_intersections():
+    schematic = build_schematic()
+    router = _FakeCrossingRouter()
+
+    info = _build_crossing_plan_info(
+        rust_backend=_FakeCrossingBackend,
+        router=router,
+        schematic=schematic,
+        route_jobs=_route_jobs_from_schematic(schematic),
+        enable_crossings=True,
+        node_depths=NODE_DEPTHS,
+        node_ranks=NODE_RANKS,
+        edge_ranks=EDGE_RANKS,
+        crossing_loss=1.25,
+        crossing_half_size_cells=3,
+        min_straight_cells_per_crossing=6,
+        allow_only_expected_crossings=True,
+    )
+
+    first = router.constraints[0]
+    router.core_cells_by_net_id = {}
+    _augment_crossing_plan_with_realized_overlaps(
+        router=router,
+        crossing_plan_info=info,
+        routed_records_by_net_id={
+            first.net_id: _FakeRouteRecord(
+                _FakeRouteObj([(0, 5), (10, 5)]),
+            ),
+            first.partner_net_id: _FakeRouteRecord(
+                _FakeRouteObj([(0, 0), (10, 10)]),
+            ),
+        },
+    )
+
+    assert info["actual_crossing_count"] == 0
+    assert info["actual_geometric_crossing_count"] == 0
+    assert info["unrealized_expected_crossing_count"] == 2
+
+
+def test_crossing_keepout_size_can_be_derived_from_pdk_component():
+    half_size_cells, info = _resolve_crossing_half_size_cells(
+        requested_half_size_cells=0,
+        enable_crossings=True,
+        grid_size_um=2.0,
+        clearance_um=0.0,
+    )
+
+    assert half_size_cells >= 1
+    assert info["derived_from_component"] is True
+    assert info["half_size_cells"] == half_size_cells
+    assert info["component_bbox_um"][0] > 0
+    assert info["component_bbox_um"][1] > 0
 
 
 def test_topology_analysis_matches_8x8_benes_crossing_oracle():

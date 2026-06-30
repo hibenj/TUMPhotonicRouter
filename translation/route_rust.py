@@ -10,13 +10,14 @@ import time
 from collections import Counter
 from dataclasses import is_dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable, cast
+from typing import Any, Iterable, Mapping, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SOURCE = PROJECT_ROOT / "python"
 if str(PYTHON_SOURCE) not in sys.path:
     sys.path.insert(0, str(PYTHON_SOURCE))
 
+import gdsfactory as gf
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 from gdsfactory.typings import Port
@@ -76,6 +77,8 @@ StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
 build_static_obstacle_map = _sob.build_static_obstacle_map
 _load_rust_backend = _sob._load_rust_backend
 
+DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING = 2
+
 
 def _format_route_indices(indices: set[int]) -> str:
     if not indices:
@@ -107,6 +110,208 @@ def _centerline_tuple(points: object) -> tuple[tuple[float, float], ...]:
         except (TypeError, ValueError):
             return ()
     return tuple(out)
+
+
+def _route_waypoints_from_obj(route_obj: object | None) -> tuple[tuple[float, float], ...]:
+    if route_obj is None:
+        return ()
+
+    for attr_name in ("compressed_waypoints", "cells"):
+        raw_points = getattr(route_obj, attr_name, None)
+        if raw_points is None:
+            continue
+        points: list[tuple[float, float]] = []
+        for point in cast(Iterable[Any], raw_points):
+            if not isinstance(point, (tuple, list)) or len(point) != 2:
+                points = []
+                break
+            try:
+                points.append((float(point[0]), float(point[1])))
+            except (TypeError, ValueError):
+                points = []
+                break
+        if len(points) >= 2:
+            return tuple(points)
+
+    raw_states = getattr(route_obj, "states", None)
+    if raw_states is None:
+        return ()
+    points = []
+    for state in cast(Iterable[Any], raw_states):
+        try:
+            points.append((float(getattr(state, "x")), float(getattr(state, "y"))))
+        except (TypeError, ValueError):
+            return ()
+    return tuple(points) if len(points) >= 2 else ()
+
+
+def _route_segments_from_waypoints(
+    waypoints: tuple[tuple[float, float], ...],
+) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for start, end in zip(waypoints, waypoints[1:]):
+        if start == end:
+            continue
+        segments.append((start, end))
+    return tuple(segments)
+
+
+def _segment_intersection_with_params(
+    a0: tuple[float, float],
+    a1: tuple[float, float],
+    b0: tuple[float, float],
+    b1: tuple[float, float],
+) -> tuple[float, float, float, float] | None:
+    ax = a1[0] - a0[0]
+    ay = a1[1] - a0[1]
+    bx = b1[0] - b0[0]
+    by = b1[1] - b0[1]
+    denom = ax * by - ay * bx
+    if abs(denom) < 1e-9:
+        return None
+
+    cx = b0[0] - a0[0]
+    cy = b0[1] - a0[1]
+    t = (cx * by - cy * bx) / denom
+    u = (cx * ay - cy * ax) / denom
+    eps = 1e-9
+    if -eps <= t <= 1.0 + eps and -eps <= u <= 1.0 + eps:
+        return (a0[0] + t * ax, a0[1] + t * ay, t, u)
+    return None
+
+
+def _segment_length_cells(
+    segment: tuple[tuple[float, float], tuple[float, float]],
+) -> float:
+    start, end = segment
+    return max(abs(end[0] - start[0]), abs(end[1] - start[1]))
+
+
+def _segments_are_perpendicular(
+    segment_a: tuple[tuple[float, float], tuple[float, float]],
+    segment_b: tuple[tuple[float, float], tuple[float, float]],
+) -> bool:
+    a0, a1 = segment_a
+    b0, b1 = segment_b
+    av = (a1[0] - a0[0], a1[1] - a0[1])
+    bv = (b1[0] - b0[0], b1[1] - b0[1])
+    return abs(av[0] * bv[0] + av[1] * bv[1]) < 1e-9
+
+
+def _first_perpendicular_route_intersection(
+    route_obj_a: object | None,
+    route_obj_b: object | None,
+) -> dict[str, object] | None:
+    waypoints_a = _route_waypoints_from_obj(route_obj_a)
+    waypoints_b = _route_waypoints_from_obj(route_obj_b)
+    if not waypoints_a or not waypoints_b:
+        return None
+
+    for segment_a in _route_segments_from_waypoints(waypoints_a):
+        a0, a1 = segment_a
+        for segment_b in _route_segments_from_waypoints(waypoints_b):
+            b0, b1 = segment_b
+            if not _segments_are_perpendicular(segment_a, segment_b):
+                continue
+            intersection = _segment_intersection_with_params(a0, a1, b0, b1)
+            if intersection is None:
+                continue
+            point_x, point_y, t, u = intersection
+            len_a = _segment_length_cells(segment_a)
+            len_b = _segment_length_cells(segment_b)
+            margin_a = min(max(t, 0.0) * len_a, max(1.0 - t, 0.0) * len_a)
+            margin_b = min(max(u, 0.0) * len_b, max(1.0 - u, 0.0) * len_b)
+            return {
+                "point": [round(float(point_x), 6), round(float(point_y), 6)],
+                "segment_a": [
+                    [round(float(a0[0]), 6), round(float(a0[1]), 6)],
+                    [round(float(a1[0]), 6), round(float(a1[1]), 6)],
+                ],
+                "segment_b": [
+                    [round(float(b0[0]), 6), round(float(b0[1]), 6)],
+                    [round(float(b1[0]), 6), round(float(b1[1]), 6)],
+                ],
+                "segment_a_margin_cells": round(float(margin_a), 6),
+                "segment_b_margin_cells": round(float(margin_b), 6),
+            }
+    return None
+
+
+def _bbox_size_um(component: Component) -> tuple[float, float] | None:
+    try:
+        bbox = component.dbbox() if callable(component.dbbox) else component.dbbox
+    except (AttributeError, TypeError):
+        try:
+            bbox = component.bbox() if callable(component.bbox) else component.bbox
+        except (AttributeError, TypeError):
+            return None
+    try:
+        width = float(bbox.right) - float(bbox.left)
+        height = float(bbox.top) - float(bbox.bottom)
+    except AttributeError:
+        try:
+            left, bottom, right, top = cast(Any, bbox)
+            width = float(right) - float(left)
+            height = float(top) - float(bottom)
+        except (TypeError, ValueError):
+            return None
+    if not math.isfinite(width) or not math.isfinite(height) or width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _crossing_component_bbox_size_um() -> tuple[str, float, float] | None:
+    try:
+        component = gf.components.crossing()
+    except Exception:
+        try:
+            from gdsfactory.gpdk import get_generic_pdk
+
+            get_generic_pdk().activate()
+            component = gf.components.crossing()
+        except Exception:
+            return None
+    size = _bbox_size_um(component)
+    if size is None:
+        return None
+    return str(component.name), float(size[0]), float(size[1])
+
+
+def _resolve_crossing_half_size_cells(
+    *,
+    requested_half_size_cells: int,
+    enable_crossings: bool,
+    grid_size_um: float,
+    clearance_um: float,
+) -> tuple[int, dict[str, object]]:
+    info: dict[str, object] = {
+        "requested_half_size_cells": int(requested_half_size_cells),
+        "derived_from_component": False,
+    }
+    if requested_half_size_cells > 0 or not enable_crossings:
+        info["half_size_cells"] = int(requested_half_size_cells)
+        return int(requested_half_size_cells), info
+
+    component_size = _crossing_component_bbox_size_um()
+    if component_size is None:
+        info["reason"] = "crossing_component_unavailable"
+        info["half_size_cells"] = 0
+        return 0, info
+
+    component_name, width_um, height_um = component_size
+    half_extent_um = max(width_um, height_um) / 2.0 + max(0.0, float(clearance_um))
+    half_size_cells = int(math.ceil(half_extent_um / float(grid_size_um)))
+    info.update(
+        {
+            "component_name": component_name,
+            "component_bbox_um": [width_um, height_um],
+            "clearance_um": float(clearance_um),
+            "grid_size_um": float(grid_size_um),
+            "half_size_cells": half_size_cells,
+            "derived_from_component": True,
+        }
+    )
+    return half_size_cells, info
 
 
 def _port_center_um(port: object) -> tuple[float, float] | None:
@@ -285,6 +490,7 @@ def _augment_crossing_plan_with_realized_overlaps(
     *,
     router: object,
     crossing_plan_info: dict[str, object],
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord] | None = None,
 ) -> None:
     if not crossing_plan_info.get("enabled"):
         return
@@ -300,6 +506,10 @@ def _augment_crossing_plan_with_realized_overlaps(
 
     actual_crossings: list[dict[str, object]] = []
     unrealized_expected: list[dict[str, object]] = []
+    required_crossing_margin_cells = max(
+        int(crossing_plan_info.get("min_straight_cells_per_crossing", 0) or 0),
+        int(crossing_plan_info.get("crossing_half_size_cells", 0) or 0),
+    )
     for raw_event in list(crossing_plan_info.get("events", [])):
         event = dict(cast(dict[str, object], raw_event))
         if not event.get("loaded"):
@@ -310,6 +520,14 @@ def _augment_crossing_plan_with_realized_overlaps(
             core_cells_by_net_id.get(net_id_a, set())
             & core_cells_by_net_id.get(net_id_b, set())
         )
+        geometric_crossing = None
+        if routed_records_by_net_id is not None:
+            record_a = routed_records_by_net_id.get(net_id_a)
+            record_b = routed_records_by_net_id.get(net_id_b)
+            geometric_crossing = _first_perpendicular_route_intersection(
+                record_a.route_obj if record_a is not None else None,
+                record_b.route_obj if record_b is not None else None,
+            )
         record = {
             "net_id_a": net_id_a,
             "net_id_b": net_id_b,
@@ -322,7 +540,29 @@ def _augment_crossing_plan_with_realized_overlaps(
             "cell_count": len(overlap),
             "cells": [[int(x), int(y)] for x, y in overlap[:32]],
         }
-        if overlap:
+        if geometric_crossing is not None:
+            record["geometric"] = True
+            record["point"] = geometric_crossing["point"]
+            record["segment_a"] = geometric_crossing["segment_a"]
+            record["segment_b"] = geometric_crossing["segment_b"]
+            record["segment_a_margin_cells"] = geometric_crossing[
+                "segment_a_margin_cells"
+            ]
+            record["segment_b_margin_cells"] = geometric_crossing[
+                "segment_b_margin_cells"
+            ]
+            margin_a = float(geometric_crossing["segment_a_margin_cells"])
+            margin_b = float(geometric_crossing["segment_b_margin_cells"])
+            record["valid_crossing_geometry"] = (
+                margin_a + 1e-9 >= required_crossing_margin_cells
+                and margin_b + 1e-9 >= required_crossing_margin_cells
+            )
+            if not record["valid_crossing_geometry"]:
+                record["unrealized_reason"] = "insufficient_straight_margin"
+                record["required_margin_cells"] = required_crossing_margin_cells
+        if geometric_crossing is not None and record.get("valid_crossing_geometry"):
+            actual_crossings.append(record)
+        elif overlap and routed_records_by_net_id is None:
             actual_crossings.append(record)
         else:
             unrealized_expected.append(record)
@@ -330,6 +570,9 @@ def _augment_crossing_plan_with_realized_overlaps(
     crossing_plan_info["actual_crossing_count"] = len(actual_crossings)
     crossing_plan_info["actual_crossing_cell_count"] = sum(
         int(record["cell_count"]) for record in actual_crossings
+    )
+    crossing_plan_info["actual_geometric_crossing_count"] = sum(
+        1 for record in actual_crossings if record.get("geometric")
     )
     crossing_plan_info["actual_crossings"] = actual_crossings
     crossing_plan_info["unrealized_expected_crossings"] = unrealized_expected
@@ -365,7 +608,17 @@ def _write_crossing_debug_artifacts(
         f"{int(crossing_plan_info.get('actual_crossing_count', 0))}/"
         f"{int(crossing_plan_info.get('constraint_count', 0))}"
     )
-    for crossing in cast(list[dict[str, object]], crossing_plan_info.get("actual_crossings", [])):
+    for crossing in cast(
+        list[dict[str, object]],
+        crossing_plan_info.get("actual_crossings", []),
+    ):
+        if crossing.get("geometric"):
+            lines.append(
+                "  - "
+                f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')}: "
+                f"segment intersection at {crossing.get('point')}"
+            )
+            continue
         lines.append(
             "  - "
             f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')}: "
@@ -377,10 +630,21 @@ def _write_crossing_debug_artifacts(
             list[dict[str, object]],
             crossing_plan_info.get("unrealized_expected_crossings", []),
         ):
+            details = [f"level={crossing.get('level')}"]
+            if crossing.get("unrealized_reason"):
+                details.append(f"reason={crossing.get('unrealized_reason')}")
+            if crossing.get("point"):
+                details.append(f"point={crossing.get('point')}")
+            if crossing.get("required_margin_cells") is not None:
+                details.append(f"required_margin={crossing.get('required_margin_cells')}")
+            if crossing.get("segment_a_margin_cells") is not None:
+                details.append(f"margin_a={crossing.get('segment_a_margin_cells')}")
+            if crossing.get("segment_b_margin_cells") is not None:
+                details.append(f"margin_b={crossing.get('segment_b_margin_cells')}")
             lines.append(
                 "  - "
                 f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} "
-                f"level={crossing.get('level')}"
+                + " ".join(details)
             )
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -463,7 +727,7 @@ def route_match_and_realize(
     edge_ranks: dict[str, dict[str, int]] | None = None,
     crossing_loss: float = 0.0,
     crossing_half_size_cells: int = 0,
-    min_straight_cells_per_crossing: int = 0,
+    min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     allow_only_expected_crossings: bool = True,
     obstacle_config: object | None = None,
     debug_dir: str | Path | None = None,
@@ -479,6 +743,8 @@ def route_match_and_realize(
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
     heap_tie_breaker: str = "smaller_g",
+    proactive_congestion_weight: float = 0.0,
+    proactive_congestion_radius_cells: int = 0,
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
@@ -517,6 +783,8 @@ def route_match_and_realize(
         primitive_ordering=primitive_ordering,
         heuristic_mode=heuristic_mode,
         heap_tie_breaker=heap_tie_breaker,
+        proactive_congestion_weight=proactive_congestion_weight,
+        proactive_congestion_radius_cells=proactive_congestion_radius_cells,
         max_iterations=max_iterations,
         routing_window_scale=routing_window_scale,
         debug_timing=debug_timing,
@@ -1019,6 +1287,8 @@ def route_nets_rust(
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
     heap_tie_breaker: str = "smaller_g",
+    proactive_congestion_weight: float = 0.0,
+    proactive_congestion_radius_cells: int = 0,
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
     debug_timing: bool = False,
@@ -1033,7 +1303,7 @@ def route_nets_rust(
     edge_ranks: dict[str, dict[str, int]] | None = None,
     crossing_loss: float = 0.0,
     crossing_half_size_cells: int = 0,
-    min_straight_cells_per_crossing: int = 0,
+    min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     allow_only_expected_crossings: bool = True,
     defer_realization: bool = False,
     enable_checked_endpoint_correction: bool = True,
@@ -1087,6 +1357,13 @@ def route_nets_rust(
         raise ValueError("route_width_um must be > 0")
     if max_iterations <= 0:
         raise ValueError("max_iterations must be > 0")
+    if (
+        not math.isfinite(float(proactive_congestion_weight))
+        or proactive_congestion_weight < 0
+    ):
+        raise ValueError("proactive_congestion_weight must be finite and non-negative")
+    if proactive_congestion_radius_cells < 0:
+        raise ValueError("proactive_congestion_radius_cells must be non-negative")
     if crossing_loss < 0:
         raise ValueError("crossing_loss must be non-negative")
     if crossing_half_size_cells < 0:
@@ -1132,6 +1409,17 @@ def route_nets_rust(
             f"{route_nets_timings_s.get('obstacle_map', 0.0):.4f} s"
         )
     grid = obstacle_map.grid
+    resolved_crossing_half_size_cells, crossing_device_info = (
+        _resolve_crossing_half_size_cells(
+            requested_half_size_cells=int(crossing_half_size_cells),
+            enable_crossings=bool(enable_crossings),
+            grid_size_um=float(grid.grid_size_um),
+            clearance_um=_as_float(
+                getattr(resolved_obstacle_config, "clearance_um", 0.0),
+                0.0,
+            ),
+        )
+    )
 
     debug_path = Path(debug_dir) if debug_dir is not None else None
     diagnostics_enabled = debug_path is not None
@@ -1208,6 +1496,10 @@ def route_nets_rust(
     if allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":
         effective_heap_tie_breaker = "larger_g"
     astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
+    if hasattr(astar_cfg, "proactive_congestion_weight"):
+        astar_cfg.proactive_congestion_weight = float(proactive_congestion_weight)
+    if hasattr(astar_cfg, "proactive_congestion_radius_cells"):
+        astar_cfg.proactive_congestion_radius_cells = int(proactive_congestion_radius_cells)
     if routing_window_scale is not None:
         astar_cfg.routing_window_scale = float(routing_window_scale)
 
@@ -1627,10 +1919,11 @@ def route_nets_rust(
         node_ranks=node_ranks,
         edge_ranks=edge_ranks,
         crossing_loss=float(crossing_loss),
-        crossing_half_size_cells=int(crossing_half_size_cells),
+        crossing_half_size_cells=int(resolved_crossing_half_size_cells),
         min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
         allow_only_expected_crossings=bool(allow_only_expected_crossings),
     )
+    crossing_plan_info["crossing_device"] = crossing_device_info
     _record_pipeline_timing("crossing_context", t_crossing_context_start)
 
     if not hasattr(router, "build_route_port_openings"):
@@ -2271,6 +2564,7 @@ def route_nets_rust(
         status: str,
         error_text: str | None = None,
         route_cells: set[tuple[int, int]] | None = None,
+        route_obj: Any | None = None,
         repair_note: str | None = None,
     ) -> None:
         if diag_txt is None:
@@ -2309,6 +2603,22 @@ def route_nets_rust(
         )
         route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
         route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
+        route_segments: list[str] = []
+        if route_obj is not None:
+            for segment in cast(list[object], getattr(route_obj, "segments", []) or []):
+                try:
+                    entry = dict(cast(Any, segment))
+                except (TypeError, ValueError):
+                    continue
+                route_segments.append(
+                    "{kind}:{start}->{end}@{start_angle}->{end_angle}".format(
+                        kind=entry.get("kind"),
+                        start=entry.get("start"),
+                        end=entry.get("end"),
+                        start_angle=entry.get("start_angle"),
+                        end_angle=entry.get("end_angle"),
+                    )
+                )
         lines = [
             f"net_name={job.net_name}",
             f"status={status}",
@@ -2346,6 +2656,8 @@ def route_nets_rust(
             f"route_overlap_effective_opened_dynamic_count={len(route_overlap_with_effective_opened_dynamic)}",
             f"route_overlap_dynamic_clearance_exempt_count={len(route_overlap_with_dynamic_exempt)}",
         ]
+        if route_segments:
+            lines.append("route_segments=" + "; ".join(route_segments))
         if repair_note is not None:
             lines.append(f"repair={repair_note}")
         if error_text is not None:
@@ -2369,7 +2681,13 @@ def route_nets_rust(
             corrected_total_length_um=corrected_total_length_um,
         )
 
-    def _export_route_svg(job: RouteJob, route_obj: Any, *, suffix: str = "") -> None:
+    def _export_route_svg(
+        job: RouteJob,
+        route_obj: Any,
+        *,
+        suffix: str = "",
+        obstacle_cells: set[tuple[int, int]] | None = None,
+    ) -> None:
         should_export = (
             debug_path is not None
             and (debug_route_indices is None or job.route_index in debug_route_indices)
@@ -2379,7 +2697,16 @@ def route_nets_rust(
         route_dir = debug_path / "routes"
         _ensure_dir(route_dir)
         route_svg = route_dir / f"{debug_prefix}_{job.net_name}{suffix}.svg"
-        route_svg.write_text(router.export_debug_svg(route_obj), encoding="utf-8")
+        if obstacle_cells is not None and hasattr(
+            router, "export_debug_svg_with_obstacle_cells"
+        ):
+            svg_text = router.export_debug_svg_with_obstacle_cells(
+                route_obj,
+                sorted(obstacle_cells),
+            )
+        else:
+            svg_text = router.export_debug_svg(route_obj)
+        route_svg.write_text(svg_text, encoding="utf-8")
         route_svgs.append(route_svg)
 
     def _route_engine_summary(route_obj: Any) -> str:
@@ -2506,6 +2833,7 @@ def route_nets_rust(
         *,
         should_print_route: bool,
         diag_txt: Path | None,
+        debug_obstacle_cells: set[tuple[int, int]] | None = None,
     ) -> None:
         nonlocal total_expanded_states, simple_route_count
         expanded_states = int(getattr(route_obj, "expanded_states", 0))
@@ -2531,9 +2859,10 @@ def route_nets_rust(
                 diag_txt=diag_txt,
                 status="ok",
                 route_cells=route_cells,
+                route_obj=route_obj,
             )
 
-        _export_route_svg(job, route_obj)
+        _export_route_svg(job, route_obj, obstacle_cells=debug_obstacle_cells)
 
         if should_print_route:
             print(f"ok {_route_engine_summary(route_obj)}")
@@ -2622,6 +2951,7 @@ def route_nets_rust(
                 if repair_round_raw is not None
                 else None
             )
+            attempt_index = len(route_attempt_records) + 1
             candidate_blockers = [
                 int(value)
                 for value in cast(list[object], attempt.get("candidate_blockers", []))
@@ -2630,6 +2960,18 @@ def route_nets_rust(
                 int(value)
                 for value in cast(list[object], attempt.get("ripup_ids", []))
             ]
+            if (
+                route_obj is not None
+                and not failed
+                and bucket_name != "normal_route"
+                and debug_path is not None
+                and (debug_route_indices is None or job.route_index in debug_route_indices)
+            ):
+                _export_route_svg(
+                    job,
+                    route_obj,
+                    suffix=f"_attempt{attempt_index}_{bucket_name}",
+                )
             if collect_timing:
                 if route_obj is not None and not failed:
                     route_timing_buckets[bucket_name].record_route(
@@ -2643,7 +2985,7 @@ def route_nets_rust(
                     )
                 route_attempt_records.append(
                     route_attempt_record_from_route(
-                        attempt_index=len(route_attempt_records) + 1,
+                        attempt_index=attempt_index,
                         bucket_name=bucket_name,
                         net_id=job.net_id,
                         route_index=job.route_index,
@@ -3123,7 +3465,15 @@ def route_nets_rust(
     _augment_crossing_plan_with_realized_overlaps(
         router=router,
         crossing_plan_info=crossing_plan_info,
+        routed_records_by_net_id=route_bookkeeping.records_by_id,
     )
+    if hasattr(router, "crossing_events"):
+        try:
+            native_crossing_events = list(cast(Iterable[Any], router.crossing_events()))
+        except Exception:
+            native_crossing_events = []
+        crossing_plan_info["native_crossing_events"] = native_crossing_events
+        crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
     _write_crossing_debug_artifacts(
         debug_path=debug_path,
         debug_prefix=debug_prefix,

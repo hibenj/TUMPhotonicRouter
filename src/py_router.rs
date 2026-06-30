@@ -7,8 +7,9 @@ use pyo3::types::{PyDict, PyList};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::astar::{
-    export_route_svg, route_single_net_with_config, route_single_net_with_dynamic_expansion_config,
-    try_simple_route_with_dynamic_expansion_config, AStarConfig, HeapTieBreaker, HeuristicMode,
+    export_route_svg, route_single_net_with_config, route_single_net_with_crossing_config,
+    route_single_net_with_dynamic_expansion_config, try_simple_route_with_dynamic_expansion_config,
+    AStarConfig, CrossingSearchConfig, CrossingSearchPartner, HeapTieBreaker, HeuristicMode,
     PrimitiveOrdering, RouteResult, RouteSearchStats, State,
 };
 use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
@@ -200,6 +201,10 @@ pub struct PyAStarConfig {
     #[pyo3(get, set)]
     pub history_weight: f64,
     #[pyo3(get, set)]
+    pub proactive_congestion_weight: f64,
+    #[pyo3(get, set)]
+    pub proactive_congestion_radius_cells: i32,
+    #[pyo3(get, set)]
     pub collect_detailed_timing: bool,
     #[pyo3(get, set)]
     pub enable_jps4: bool,
@@ -217,7 +222,7 @@ pub struct PyAStarConfig {
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string(),heuristic_mode="heading_aware".to_string(),heuristic_weight=1.0))]
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,proactive_congestion_weight=0.0,proactive_congestion_radius_cells=0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string(),heuristic_mode="heading_aware".to_string(),heuristic_weight=1.0))]
     fn new(
         max_iterations: usize,
         bend_weight: f64,
@@ -233,6 +238,8 @@ impl PyAStarConfig {
         max_dense_obstacle_cells: usize,
         ignore_dynamic_obstacles: bool,
         history_weight: f64,
+        proactive_congestion_weight: f64,
+        proactive_congestion_radius_cells: i32,
         collect_detailed_timing: bool,
         use_indexed_heap: bool,
         primitive_ordering: String,
@@ -257,6 +264,8 @@ impl PyAStarConfig {
             simple_route_min_leg_len_cells: 1,
             ignore_dynamic_obstacles,
             history_weight,
+            proactive_congestion_weight,
+            proactive_congestion_radius_cells,
             collect_detailed_timing,
             enable_jps4: false,
             use_indexed_heap,
@@ -644,6 +653,7 @@ pub struct PyPhotonicRouter {
     primitives: PrimitiveLibrary,
     crossing_context: CrossingContext,
     committed_center_routes: FxHashMap<u64, Vec<(i32, i32)>>,
+    crossing_events: Vec<CrossingEvent>,
     static_cells: FxHashSet<CellKey>,
     port_open_cells: FxHashSet<CellKey>,
     registered_plm: RefCell<RegisteredPlmContext>,
@@ -693,6 +703,23 @@ struct NativeRouteAttempt {
     repair_round: Option<u32>,
     candidate_blockers: Vec<u64>,
     ripup_ids: Vec<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct CrossingEvent {
+    net_id: u64,
+    partner_net_id: u64,
+    point: (f64, f64),
+    route_segment: ((i32, i32), (i32, i32)),
+    partner_segment: ((i32, i32), (i32, i32)),
+    route_angle: u8,
+    partner_angle: u8,
+    reservation_keys: FxHashSet<CellKey>,
+}
+
+#[derive(Clone, Debug)]
+struct InvalidCrossingIntersection {
+    partner_net_id: u64,
 }
 
 #[derive(Default)]
@@ -1342,51 +1369,6 @@ fn cells_with_other_dynamic_owner(
         .collect()
 }
 
-#[derive(Clone)]
-struct CrossingAnchorCandidate {
-    partner_net_id: u64,
-    state: State,
-    window_keys: FxHashSet<CellKey>,
-    score: f64,
-}
-
-fn straight_runs(cells: &[(i32, i32)]) -> Vec<(usize, usize, u8)> {
-    if cells.len() < 3 {
-        return Vec::new();
-    }
-    let mut runs = Vec::new();
-    let mut run_start = 0usize;
-    let mut current_angle = match direction_angle_between_cells(cells[0], cells[1]) {
-        Some(angle) => angle,
-        None => return runs,
-    };
-    for index in 1..(cells.len() - 1) {
-        let Some(next_angle) = direction_angle_between_cells(cells[index], cells[index + 1]) else {
-            if index > run_start {
-                runs.push((run_start, index, current_angle));
-            }
-            run_start = index + 1;
-            if run_start + 1 < cells.len() {
-                if let Some(angle) =
-                    direction_angle_between_cells(cells[run_start], cells[run_start + 1])
-                {
-                    current_angle = angle;
-                }
-            }
-            continue;
-        };
-        if next_angle != current_angle {
-            runs.push((run_start, index, current_angle));
-            run_start = index;
-            current_angle = next_angle;
-        }
-    }
-    if cells.len() - 1 > run_start {
-        runs.push((run_start, cells.len() - 1, current_angle));
-    }
-    runs
-}
-
 fn direction_angle_between_cells(a: (i32, i32), b: (i32, i32)) -> Option<u8> {
     let step = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
     DIRECTIONS
@@ -1395,207 +1377,189 @@ fn direction_angle_between_cells(a: (i32, i32), b: (i32, i32)) -> Option<u8> {
         .map(|idx| idx as u8)
 }
 
-fn perpendicular_angles(angle: u8) -> [u8; 2] {
-    [
-        ((angle as i32 + 2).rem_euclid(8)) as u8,
-        ((angle as i32 + 6).rem_euclid(8)) as u8,
-    ]
+fn axes_are_perpendicular(angle_a: u8, angle_b: u8) -> bool {
+    (i16::from(angle_a % 4) - i16::from(angle_b % 4)).rem_euclid(4) == 2
 }
 
-fn crossing_anchor_score(
-    source: State,
-    target: State,
-    anchor: State,
-    partner_angle: u8,
-    preferred_crossing_angle: Option<u8>,
-) -> f64 {
-    let source_to_anchor = octile_cells((source.x, source.y), (anchor.x, anchor.y));
-    let anchor_to_target = octile_cells((anchor.x, anchor.y), (target.x, target.y));
-    let direct = octile_cells((source.x, source.y), (target.x, target.y));
-    let detour = (source_to_anchor + anchor_to_target - direct).max(0.0);
-    let distance = source_to_anchor + anchor_to_target;
-    let (cross_dx, cross_dy) = DIRECTIONS[(anchor.angle % 8) as usize];
-    let source_dx = (anchor.x - source.x).signum();
-    let source_dy = (anchor.y - source.y).signum();
-    let target_dx = (target.x - anchor.x).signum();
-    let target_dy = (target.y - anchor.y).signum();
-    let source_direction_penalty = if cross_dx * source_dx + cross_dy * source_dy >= 0 {
-        0.0
-    } else {
-        256.0
-    };
-    let target_direction_penalty = if cross_dx * target_dx + cross_dy * target_dy >= 0 {
-        0.0
-    } else {
-        256.0
-    };
-    let preferred_angle_penalty =
-        if preferred_crossing_angle.is_some_and(|angle| angle != anchor.angle) {
-            512.0
-        } else {
-            0.0
-        };
-    let lateral_deviation_penalty = preferred_crossing_angle
-        .map(|angle| {
-            let (dir_x, dir_y) = DIRECTIONS[(angle % 8) as usize];
-            let anchor_dx = anchor.x - source.x;
-            let anchor_dy = anchor.y - source.y;
-            let lateral_cells = (anchor_dx * dir_y - anchor_dy * dir_x).abs() as f64;
-            64.0 * lateral_cells
-        })
-        .unwrap_or(0.0);
-    let partner_parallel_penalty = if anchor.angle == partner_angle {
-        128.0
-    } else {
-        0.0
-    };
-    distance
-        + 4.0 * detour
-        + source_direction_penalty
-        + target_direction_penalty
-        + preferred_angle_penalty
-        + lateral_deviation_penalty
-        + partner_parallel_penalty
+fn segment_length_cells(a: (i32, i32), b: (i32, i32)) -> f64 {
+    f64::from((a.0 - b.0).abs().max((a.1 - b.1).abs()))
 }
 
-fn octile_cells(a: (i32, i32), b: (i32, i32)) -> f64 {
-    let dx = (a.0 - b.0).abs() as f64;
-    let dy = (a.1 - b.1).abs() as f64;
-    dx.max(dy)
+fn segment_intersection_with_params(
+    a0: (i32, i32),
+    a1: (i32, i32),
+    b0: (i32, i32),
+    b1: (i32, i32),
+) -> Option<(f64, f64, f64, f64)> {
+    let ax = f64::from(a1.0 - a0.0);
+    let ay = f64::from(a1.1 - a0.1);
+    let bx = f64::from(b1.0 - b0.0);
+    let by = f64::from(b1.1 - b0.1);
+    let denom = ax * by - ay * bx;
+    if denom.abs() < 1e-9 {
+        return None;
+    }
+
+    let cx = f64::from(b0.0 - a0.0);
+    let cy = f64::from(b0.1 - a0.1);
+    let t = (cx * by - cy * bx) / denom;
+    let u = (cx * ay - cy * ax) / denom;
+    let eps = 1e-9;
+    if (-eps..=(1.0 + eps)).contains(&t) && (-eps..=(1.0 + eps)).contains(&u) {
+        Some((f64::from(a0.0) + t * ax, f64::from(a0.1) + t * ay, t, u))
+    } else {
+        None
+    }
 }
 
-fn crossing_window_keys(
-    x: i32,
-    y: i32,
-    radius: i32,
+fn crossing_reservation_window_keys(
+    center_x: f64,
+    center_y: f64,
+    half_size_cells: i32,
     width: i32,
     height: i32,
 ) -> FxHashSet<CellKey> {
     let mut keys = FxHashSet::default();
-    for dx in -radius..=radius {
-        for dy in -radius..=radius {
-            let nx = x + dx;
-            let ny = y + dy;
-            if nx >= 0 && nx < width && ny >= 0 && ny < height {
-                keys.insert(pack_xy(nx, ny));
+    if half_size_cells < 0 {
+        return keys;
+    }
+    insert_crossing_reservation_window(
+        &mut keys,
+        center_x,
+        center_y,
+        half_size_cells,
+        width,
+        height,
+    );
+    keys
+}
+
+fn crossing_events_for_partner(
+    net_id: u64,
+    partner_net_id: u64,
+    route_waypoints: &[(i32, i32)],
+    partner_waypoints: &[(i32, i32)],
+    min_straight_cells: i32,
+    half_size_cells: i32,
+    width: i32,
+    height: i32,
+) -> Vec<CrossingEvent> {
+    if route_waypoints.len() < 2 || partner_waypoints.len() < 2 {
+        return Vec::new();
+    }
+    let required_margin = f64::from(min_straight_cells.max(half_size_cells).max(0));
+    let mut events = Vec::new();
+    let mut seen_centers = FxHashSet::default();
+    for seg_a in route_waypoints.windows(2) {
+        let Some(angle_a) = direction_angle_between_cells(seg_a[0], seg_a[1]) else {
+            continue;
+        };
+        let len_a = segment_length_cells(seg_a[0], seg_a[1]);
+        if len_a <= 0.0 {
+            continue;
+        }
+        for seg_b in partner_waypoints.windows(2) {
+            let Some(angle_b) = direction_angle_between_cells(seg_b[0], seg_b[1]) else {
+                continue;
+            };
+            if !axes_are_perpendicular(angle_a, angle_b) {
+                continue;
+            }
+            let len_b = segment_length_cells(seg_b[0], seg_b[1]);
+            if len_b <= 0.0 {
+                continue;
+            }
+            let Some((x, y, t, u)) =
+                segment_intersection_with_params(seg_a[0], seg_a[1], seg_b[0], seg_b[1])
+            else {
+                continue;
+            };
+            let margin_a = (t * len_a).min((1.0 - t) * len_a);
+            let margin_b = (u * len_b).min((1.0 - u) * len_b);
+            if margin_a + 1e-9 < required_margin || margin_b + 1e-9 < required_margin {
+                continue;
+            }
+            let rounded_center = (
+                (x * 1_000_000.0).round() as i64,
+                (y * 1_000_000.0).round() as i64,
+            );
+            if !seen_centers.insert(rounded_center) {
+                continue;
+            }
+            let reservation_keys =
+                crossing_reservation_window_keys(x, y, half_size_cells, width, height);
+            events.push(CrossingEvent {
+                net_id,
+                partner_net_id,
+                point: (x, y),
+                route_segment: (seg_a[0], seg_a[1]),
+                partner_segment: (seg_b[0], seg_b[1]),
+                route_angle: angle_a,
+                partner_angle: angle_b,
+                reservation_keys,
+            });
+        }
+    }
+    events
+}
+
+fn crossing_candidate_keys_for_partner(
+    partner_waypoints: &[(i32, i32)],
+    min_straight_cells: i32,
+    half_size_cells: i32,
+    width: i32,
+    height: i32,
+) -> FxHashSet<CellKey> {
+    let mut keys = FxHashSet::default();
+    if partner_waypoints.len() < 2 {
+        return keys;
+    }
+    let required_margin = min_straight_cells.max(half_size_cells).max(0);
+    for segment in partner_waypoints.windows(2) {
+        if direction_angle_between_cells(segment[0], segment[1]).is_none() {
+            continue;
+        }
+        let dx = (segment[1].0 - segment[0].0).signum();
+        let dy = (segment[1].1 - segment[0].1).signum();
+        let steps = (segment[1].0 - segment[0].0)
+            .abs()
+            .max((segment[1].1 - segment[0].1).abs());
+        if steps <= 0 || steps < 2 * required_margin {
+            continue;
+        }
+        for step in required_margin..=(steps - required_margin) {
+            let x = segment[0].0 + dx * step;
+            let y = segment[0].1 + dy * step;
+            if x >= 0 && x < width && y >= 0 && y < height {
+                keys.insert(pack_xy(x, y));
             }
         }
     }
     keys
 }
 
-fn compressed_waypoints_for_path(path: &[(i32, i32)]) -> Vec<(i32, i32)> {
-    if path.len() <= 2 {
-        return path.to_vec();
-    }
-    let mut waypoints = Vec::new();
-    push_unique_point(&mut waypoints, path[0]);
-    let mut prev_dir = (
-        (path[1].0 - path[0].0).signum(),
-        (path[1].1 - path[0].1).signum(),
-    );
-    for index in 2..path.len() {
-        let dir = (
-            (path[index].0 - path[index - 1].0).signum(),
-            (path[index].1 - path[index - 1].1).signum(),
-        );
-        if dir != prev_dir {
-            push_unique_point(&mut waypoints, path[index - 1]);
+fn insert_crossing_reservation_window(
+    keys: &mut FxHashSet<CellKey>,
+    center_x: f64,
+    center_y: f64,
+    half_size_cells: i32,
+    width: i32,
+    height: i32,
+) {
+    let min_x = (center_x - f64::from(half_size_cells)).floor() as i32;
+    let max_x = (center_x + f64::from(half_size_cells)).ceil() as i32;
+    let min_y = (center_y - f64::from(half_size_cells)).floor() as i32;
+    let max_y = (center_y + f64::from(half_size_cells)).ceil() as i32;
+    for x in min_x..=max_x {
+        if x < 0 || x >= width {
+            continue;
         }
-        prev_dir = dir;
-    }
-    push_unique_point(&mut waypoints, path[path.len() - 1]);
-    waypoints
-}
-
-fn push_unique_point(points: &mut Vec<(i32, i32)>, point: (i32, i32)) {
-    if points.last().copied() != Some(point) {
-        points.push(point);
-    }
-}
-
-fn combine_route_search_stats(mut a: RouteSearchStats, b: RouteSearchStats) -> RouteSearchStats {
-    a.window_attempts += b.window_attempts;
-    a.used_full_grid_fallback |= b.used_full_grid_fallback;
-    a.expanded_states += b.expanded_states;
-    a.generated_neighbors += b.generated_neighbors;
-    a.heap_pushes += b.heap_pushes;
-    a.heap_pops += b.heap_pops;
-    a.skipped_duplicate_heap_entries += b.skipped_duplicate_heap_entries;
-    a.stale_generation_heap_entries += b.stale_generation_heap_entries;
-    a.closed_heap_entries += b.closed_heap_entries;
-    a.max_heap_size = a.max_heap_size.max(b.max_heap_size);
-    a.dense_search_states += b.dense_search_states;
-    a.dense_search_storage_bytes += b.dense_search_storage_bytes;
-    a.best_cost_updates += b.best_cost_updates;
-    a.parent_updates += b.parent_updates;
-    a.obstacle_clearance_checks += b.obstacle_clearance_checks;
-    a.window_rejects += b.window_rejects;
-    a.footprint_rejects += b.footprint_rejects;
-    for idx in 0..a.primitive_generated_by_class.len() {
-        a.primitive_generated_by_class[idx] += b.primitive_generated_by_class[idx];
-        a.primitive_bounds_rejects_by_class[idx] += b.primitive_bounds_rejects_by_class[idx];
-        a.primitive_closed_rejects_by_class[idx] += b.primitive_closed_rejects_by_class[idx];
-        a.primitive_cost_pruned_by_class[idx] += b.primitive_cost_pruned_by_class[idx];
-        a.primitive_footprint_checks_by_class[idx] += b.primitive_footprint_checks_by_class[idx];
-        a.primitive_footprint_rejects_by_class[idx] += b.primitive_footprint_rejects_by_class[idx];
-        a.primitive_accepted_by_class[idx] += b.primitive_accepted_by_class[idx];
-    }
-    a.primitive_footprint_checks += b.primitive_footprint_checks;
-    a.primitive_footprint_cells_tested += b.primitive_footprint_cells_tested;
-    a.primitive_footprint_rect_checks += b.primitive_footprint_rect_checks;
-    a.primitive_footprint_rect_rejects += b.primitive_footprint_rect_rejects;
-    a.dense_grid_build_failures += b.dense_grid_build_failures;
-    a.max_window_area_cells = a.max_window_area_cells.max(b.max_window_area_cells);
-    a.dense_grid_cells += b.dense_grid_cells;
-    a.route_search_total_time_us += b.route_search_total_time_us;
-    a.dense_grid_build_time_us += b.dense_grid_build_time_us;
-    a.search_loop_time_us += b.search_loop_time_us;
-    a.obstacle_map_prepare_time_us += b.obstacle_map_prepare_time_us;
-    a.simple_route_time_us += b.simple_route_time_us;
-    a.commit_prepare_time_us += b.commit_prepare_time_us;
-    a.commit_time_us += b.commit_time_us;
-    a.neighbor_generation_time_us += b.neighbor_generation_time_us;
-    a.heap_operation_time_us += b.heap_operation_time_us;
-    a.legality_check_time_us += b.legality_check_time_us;
-    a.reconstruction_time_us += b.reconstruction_time_us;
-    a.jps4_requested |= b.jps4_requested;
-    a.jps4_eligible &= b.jps4_eligible;
-    a.jps4_used |= b.jps4_used;
-    a.jps4_fallbacks += b.jps4_fallbacks;
-    if a.jps4_fallback_reason.is_empty() {
-        a.jps4_fallback_reason = b.jps4_fallback_reason;
-    }
-    a
-}
-
-fn combine_anchor_route(first: RouteResult, second: RouteResult) -> RouteResult {
-    let mut states = first.states.clone();
-    states.extend(second.states.iter().copied().skip(1));
-    let mut primitives = first.primitives.clone();
-    primitives.extend(second.primitives.iter().copied());
-    let mut cells = Vec::new();
-    let mut seen = FxHashSet::default();
-    for cell in first.cells.iter().chain(second.cells.iter()).copied() {
-        if seen.insert(pack_xy(cell.0, cell.1)) {
-            cells.push(cell);
+        for y in min_y..=max_y {
+            if y < 0 || y >= height {
+                continue;
+            }
+            keys.insert(pack_xy(x, y));
         }
-    }
-    let mut ordered_path = first.compressed_waypoints.clone();
-    for point in &second.compressed_waypoints {
-        push_unique_point(&mut ordered_path, *point);
-    }
-    let stats = combine_route_search_stats(first.stats.clone(), second.stats.clone());
-    RouteResult {
-        states,
-        primitives,
-        cells,
-        compressed_waypoints: compressed_waypoints_for_path(&ordered_path),
-        total_length_um: first.total_length_um + second.total_length_um,
-        total_cost: first.total_cost + second.total_cost,
-        requested_target: second.requested_target,
-        reached_target: second.reached_target,
-        stats,
     }
 }
 
@@ -1608,6 +1572,53 @@ fn primitive_kind(p: &Primitive) -> String {
     } else {
         "turn90".into()
     }
+}
+
+fn crossing_event_svg_overlay(events: &[CrossingEvent], height: i32) -> String {
+    if events.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str(r##"<g id="crossing-events">"##);
+    for event in events {
+        out.push_str(&format!(
+            r##"<g class="crossing-event" data-net-id="{}" data-partner-net-id="{}">"##,
+            event.net_id, event.partner_net_id
+        ));
+        out.push_str(&format!(
+            "<title>crossing: net {} x net {} at ({:.3}, {:.3})</title>",
+            event.net_id, event.partner_net_id, event.point.0, event.point.1
+        ));
+        let mut reservation_cells: Vec<CellKey> = event.reservation_keys.iter().copied().collect();
+        reservation_cells.sort_unstable();
+        for key in reservation_cells {
+            let (x, y) = unpack_xy(key);
+            let svg_y = height - y - 1;
+            out.push_str(&format!(
+                r##"<rect x="{x}" y="{svg_y}" width="1" height="1" fill="#8a8a8a" opacity="0.45" />"##
+            ));
+        }
+        out.push_str("</g>");
+    }
+    out.push_str("</g>");
+    out
+}
+
+fn append_crossing_event_svg_overlay(
+    mut svg: String,
+    events: &[CrossingEvent],
+    height: i32,
+) -> String {
+    let overlay = crossing_event_svg_overlay(events, height);
+    if overlay.is_empty() {
+        return svg;
+    }
+    if let Some(index) = svg.rfind("</svg>") {
+        svg.insert_str(index, &overlay);
+    } else {
+        svg.push_str(&overlay);
+    }
+    svg
 }
 
 fn allowed_angles_to_mask(angles: Option<&Vec<u8>>) -> PyResult<Option<u8>> {
@@ -1675,6 +1686,18 @@ fn astar_config_from_py(
     let primitive_ordering = parse_primitive_ordering(&astar_cfg.primitive_ordering)?;
     let heuristic_mode = parse_heuristic_mode(&astar_cfg.heuristic_mode)?;
     let heap_tie_breaker = parse_heap_tie_breaker(&astar_cfg.heap_tie_breaker)?;
+    if !astar_cfg.proactive_congestion_weight.is_finite()
+        || astar_cfg.proactive_congestion_weight < 0.0
+    {
+        return Err(PyValueError::new_err(
+            "proactive_congestion_weight must be finite and non-negative",
+        ));
+    }
+    if astar_cfg.proactive_congestion_radius_cells < 0 {
+        return Err(PyValueError::new_err(
+            "proactive_congestion_radius_cells must be non-negative",
+        ));
+    }
     Ok(AStarConfig {
         max_iterations: astar_cfg.max_iterations,
         bend_weight: astar_cfg.bend_weight * primitive_cfg.bend_weight,
@@ -1695,6 +1718,8 @@ fn astar_config_from_py(
         ignore_dynamic_obstacles: ignore_dynamic_obstacles
             .unwrap_or(astar_cfg.ignore_dynamic_obstacles),
         history_weight: history_weight.unwrap_or(astar_cfg.history_weight),
+        proactive_congestion_weight: astar_cfg.proactive_congestion_weight,
+        proactive_congestion_radius_cells: astar_cfg.proactive_congestion_radius_cells,
         collect_detailed_timing: astar_cfg.collect_detailed_timing,
         enable_jps4: astar_cfg.enable_jps4,
         use_indexed_heap: astar_cfg.use_indexed_heap,
@@ -2337,82 +2362,247 @@ impl PyPhotonicRouter {
             .collect()
     }
 
-    fn crossing_anchor_candidates(
+    fn crossing_events_for_route(
         &self,
         net_id: u64,
-        source: State,
-        target: State,
-        block_radius_cells: i32,
-    ) -> Vec<CrossingAnchorCandidate> {
-        let partner_ids = self.crossing_allowed_partner_set(net_id);
-        if partner_ids.is_empty() {
-            return Vec::new();
-        }
-
-        let cfg = self.crossing_context.config();
-        let min_margin = cfg
-            .min_straight_cells_per_crossing
-            .max(cfg.crossing_half_size_cells)
-            .max(block_radius_cells)
-            .max(1);
-        let window_radius = cfg.crossing_half_size_cells.max(block_radius_cells).max(0);
-        let preferred_crossing_angle =
-            direction_angle_between_cells((source.x, source.y), (target.x, target.y));
-        let mut candidates = Vec::new();
+        route: &RouteResult,
+        partner_ids: &FxHashSet<u64>,
+    ) -> Vec<CrossingEvent> {
+        let config = self.crossing_context.config();
+        let mut events = Vec::new();
         for partner_id in partner_ids {
-            let Some(route_cells) = self.committed_center_routes.get(&partner_id) else {
+            let Some(partner_waypoints) = self.committed_center_routes.get(partner_id) else {
                 continue;
             };
-            for (run_start, run_end, partner_angle) in straight_runs(route_cells) {
-                if run_end <= run_start {
+            events.extend(crossing_events_for_partner(
+                net_id,
+                *partner_id,
+                &route.compressed_waypoints,
+                partner_waypoints,
+                config.min_straight_cells_per_crossing,
+                config.crossing_half_size_cells,
+                self.grid.width as i32,
+                self.grid.height as i32,
+            ));
+        }
+        events
+    }
+
+    fn crossing_candidate_keys_for_partners(
+        &self,
+        partner_ids: &FxHashSet<u64>,
+    ) -> FxHashSet<CellKey> {
+        let config = self.crossing_context.config();
+        let mut keys = FxHashSet::default();
+        for partner_id in partner_ids {
+            let Some(partner_waypoints) = self.committed_center_routes.get(partner_id) else {
+                continue;
+            };
+            keys.extend(crossing_candidate_keys_for_partner(
+                partner_waypoints,
+                config.min_straight_cells_per_crossing,
+                config.crossing_half_size_cells,
+                self.grid.width as i32,
+                self.grid.height as i32,
+            ));
+        }
+        keys
+    }
+
+    fn crossing_partner_ids_from_events(events: &[CrossingEvent]) -> FxHashSet<u64> {
+        events.iter().map(|event| event.partner_net_id).collect()
+    }
+
+    fn crossing_events_cover_partners(
+        events: &[CrossingEvent],
+        partner_ids: &FxHashSet<u64>,
+    ) -> bool {
+        if partner_ids.is_empty() {
+            return true;
+        }
+        let crossed_partner_ids = Self::crossing_partner_ids_from_events(events);
+        partner_ids
+            .iter()
+            .all(|partner_id| crossed_partner_ids.contains(partner_id))
+    }
+
+    fn crossing_route_satisfies_partner_constraints(
+        &self,
+        route: &RouteResult,
+        partner_ids: &FxHashSet<u64>,
+        crossing_events: &[CrossingEvent],
+    ) -> bool {
+        if partner_ids.is_empty() {
+            return true;
+        }
+        self.invalid_crossing_intersections_for_route(route, partner_ids)
+            .is_empty()
+            && !crossing_events.is_empty()
+            && (!self.crossing_context.config().allow_only_expected_pairs
+                || Self::crossing_events_cover_partners(crossing_events, partner_ids))
+    }
+
+    fn invalid_crossing_intersections_for_route(
+        &self,
+        route: &RouteResult,
+        partner_ids: &FxHashSet<u64>,
+    ) -> Vec<InvalidCrossingIntersection> {
+        if route.compressed_waypoints.len() < 2 || partner_ids.is_empty() {
+            return Vec::new();
+        }
+        let config = self.crossing_context.config();
+        let required_margin = f64::from(
+            config
+                .min_straight_cells_per_crossing
+                .max(config.crossing_half_size_cells)
+                .max(0),
+        );
+        let mut invalid = Vec::new();
+        let mut seen_centers = FxHashSet::default();
+        for route_segment in route.compressed_waypoints.windows(2) {
+            let Some(route_angle) =
+                direction_angle_between_cells(route_segment[0], route_segment[1])
+            else {
+                continue;
+            };
+            let route_len = segment_length_cells(route_segment[0], route_segment[1]);
+            if route_len <= 0.0 {
+                continue;
+            }
+            for partner_id in partner_ids {
+                let Some(partner_waypoints) = self.committed_center_routes.get(partner_id) else {
                     continue;
-                }
-                let run_len = (run_end - run_start) as i32;
-                if run_len < min_margin * 2 {
-                    continue;
-                }
-                for index in (run_start + min_margin as usize)..=(run_end - min_margin as usize) {
-                    let (x, y) = route_cells[index];
-                    for crossing_angle in perpendicular_angles(partner_angle) {
-                        let score = crossing_anchor_score(
-                            source,
-                            target,
-                            State::new(x, y, crossing_angle),
-                            partner_angle,
-                            preferred_crossing_angle,
-                        );
-                        let window_keys = crossing_window_keys(
-                            x,
-                            y,
-                            window_radius,
-                            self.grid.width as i32,
-                            self.grid.height as i32,
-                        );
-                        candidates.push(CrossingAnchorCandidate {
-                            partner_net_id: partner_id,
-                            state: State::new(x, y, crossing_angle),
-                            window_keys,
-                            score,
-                        });
+                };
+                for partner_segment in partner_waypoints.windows(2) {
+                    let Some(partner_angle) =
+                        direction_angle_between_cells(partner_segment[0], partner_segment[1])
+                    else {
+                        continue;
+                    };
+                    if !axes_are_perpendicular(route_angle, partner_angle) {
+                        continue;
                     }
+                    let partner_len = segment_length_cells(partner_segment[0], partner_segment[1]);
+                    if partner_len <= 0.0 {
+                        continue;
+                    }
+                    let Some((x, y, t, u)) = segment_intersection_with_params(
+                        route_segment[0],
+                        route_segment[1],
+                        partner_segment[0],
+                        partner_segment[1],
+                    ) else {
+                        continue;
+                    };
+                    let route_margin = (t * route_len).min((1.0 - t) * route_len);
+                    let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
+                    if route_margin + 1e-9 >= required_margin
+                        && partner_margin + 1e-9 >= required_margin
+                    {
+                        continue;
+                    }
+                    let rounded_center = (
+                        (x * 1_000_000.0).round() as i64,
+                        (y * 1_000_000.0).round() as i64,
+                    );
+                    if !seen_centers.insert(rounded_center) {
+                        continue;
+                    }
+                    invalid.push(InvalidCrossingIntersection {
+                        partner_net_id: *partner_id,
+                    });
                 }
             }
         }
-        candidates.sort_by(|a, b| {
-            a.score
-                .partial_cmp(&b.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.partner_net_id.cmp(&b.partner_net_id))
-                .then_with(|| a.state.x.cmp(&b.state.x))
-                .then_with(|| a.state.y.cmp(&b.state.y))
-                .then_with(|| a.state.angle.cmp(&b.state.angle))
-        });
-        candidates.truncate(24);
-        candidates
+        invalid
+    }
+
+    fn register_geometric_crossing_events_for_route(&mut self, net_id: u64, route: &RouteResult) {
+        if !self.crossing_context.is_enabled() {
+            return;
+        }
+        let partner_ids = self.crossing_allowed_partner_set(net_id);
+        if partner_ids.is_empty() {
+            return;
+        }
+        let crossing_events = self.crossing_events_for_route(net_id, route, &partner_ids);
+        if crossing_events.is_empty() {
+            return;
+        }
+        self.add_crossing_events(crossing_events);
+    }
+
+    fn crossing_reservation_keys_for_events(events: &[CrossingEvent]) -> FxHashSet<CellKey> {
+        let mut keys = FxHashSet::default();
+        for event in events {
+            keys.extend(event.reservation_keys.iter().copied());
+        }
+        keys
+    }
+
+    fn remove_crossing_events_for_net(&mut self, net_id: u64) {
+        if self.crossing_events.is_empty() {
+            return;
+        }
+        let mut remaining = Vec::with_capacity(self.crossing_events.len());
+        let mut removed_keys = FxHashSet::default();
+        for event in self.crossing_events.drain(..) {
+            if event.net_id == net_id || event.partner_net_id == net_id {
+                removed_keys.extend(event.reservation_keys.iter().copied());
+            } else {
+                remaining.push(event);
+            }
+        }
+        self.crossing_events = remaining;
+        if removed_keys.is_empty() {
+            return;
+        }
+        self.obstacle_map.remove_static_keys(&removed_keys);
+        for key in removed_keys {
+            let (x, y) = unpack_xy(key);
+            if !self.obstacle_map.is_static_blocked(x, y) {
+                self.static_cells.remove(&key);
+            }
+        }
+        self.invalidate_meander_base_prefix();
+    }
+
+    fn remove_crossing_events_for_all_routes(&mut self) {
+        if self.crossing_events.is_empty() {
+            return;
+        }
+        let mut removed_keys = FxHashSet::default();
+        for event in self.crossing_events.drain(..) {
+            removed_keys.extend(event.reservation_keys.iter().copied());
+        }
+        if removed_keys.is_empty() {
+            return;
+        }
+        self.obstacle_map.remove_static_keys(&removed_keys);
+        for key in removed_keys {
+            let (x, y) = unpack_xy(key);
+            if !self.obstacle_map.is_static_blocked(x, y) {
+                self.static_cells.remove(&key);
+            }
+        }
+        self.invalidate_meander_base_prefix();
+    }
+
+    fn add_crossing_events(&mut self, events: Vec<CrossingEvent>) {
+        if events.is_empty() {
+            return;
+        }
+        let reservation_keys = Self::crossing_reservation_keys_for_events(&events);
+        if !reservation_keys.is_empty() {
+            self.obstacle_map.add_static_keys(&reservation_keys);
+            self.static_cells.extend(reservation_keys);
+            self.invalidate_meander_base_prefix();
+        }
+        self.crossing_events.extend(events);
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn try_route_via_crossing_anchor(
+    fn try_route_through_expected_crossing_partner(
         &self,
         net_id: u64,
         source: State,
@@ -2421,44 +2611,145 @@ impl PyPhotonicRouter {
         search_cfg: &AStarConfig,
         block_radius_cells: i32,
         dynamic_clearance_exempt_keys: Option<&FxHashSet<CellKey>>,
-    ) -> Option<(RouteResult, CrossingAnchorCandidate)> {
-        let candidates =
-            self.crossing_anchor_candidates(net_id, source, target, block_radius_cells);
-        for candidate in candidates {
-            let mut allowed_partner_ids = FxHashSet::default();
-            allowed_partner_ids.insert(candidate.partner_net_id);
-            let mut search_map = self.obstacle_map.clone();
-            search_map.clear_dynamic_blocking_in_cells_for_nets(
-                &candidate.window_keys,
-                &allowed_partner_ids,
+    ) -> Option<(RouteResult, Vec<CrossingEvent>)> {
+        let partner_ids = self.crossing_allowed_partner_set(net_id);
+        if partner_ids.is_empty() {
+            return None;
+        }
+        let require_all_expected_partners =
+            self.crossing_context.config().allow_only_expected_pairs;
+
+        let mut crossing_search_cfg = search_cfg.clone();
+        crossing_search_cfg.require_terminal_straights = false;
+        crossing_search_cfg.enable_simple_routes = false;
+        let crossing_cfg = self.crossing_context.config();
+        let crossing_partners: Vec<CrossingSearchPartner> = self
+            .crossing_context
+            .ordered_constraints_for(net_id)
+            .into_iter()
+            .filter_map(|constraint| {
+                let partner_id = if constraint.net_id == net_id {
+                    constraint.partner_net_id
+                } else {
+                    constraint.net_id
+                };
+                if !partner_ids.contains(&partner_id) {
+                    return None;
+                }
+                self.committed_center_routes
+                    .get(&partner_id)
+                    .map(|waypoints| CrossingSearchPartner {
+                        net_id: partner_id,
+                        waypoints: waypoints.clone(),
+                    })
+            })
+            .collect();
+        if crossing_partners.is_empty() {
+            return None;
+        }
+        let crossing_search = CrossingSearchConfig {
+            net_id,
+            partners: crossing_partners,
+            min_straight_cells: crossing_cfg.min_straight_cells_per_crossing,
+            crossing_half_size_cells: crossing_cfg.crossing_half_size_cells,
+            crossing_loss: crossing_cfg.crossing_loss,
+            require_all_partners: require_all_expected_partners,
+        };
+        let trace_crossing = std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING").is_some();
+        if trace_crossing {
+            eprintln!(
+                "crossing-search start net={} partners={:?} max_iterations={} block_radius={} min_straight={} half_size={}",
+                net_id,
+                crossing_search
+                    .partners
+                    .iter()
+                    .map(|partner| partner.net_id)
+                    .collect::<Vec<_>>(),
+                crossing_search_cfg.max_iterations,
+                block_radius_cells,
+                crossing_search.min_straight_cells,
+                crossing_search.crossing_half_size_cells,
             );
-            let mut opened_with_anchor = opened_ref.clone();
-            opened_with_anchor.extend(candidate.window_keys.iter().copied());
-            let Some(first) = route_single_net_with_dynamic_expansion_config(
+        }
+
+        let crossing_candidate_keys = self.crossing_candidate_keys_for_partners(&partner_ids);
+        if !crossing_candidate_keys.is_empty() {
+            let mut search_map = self.obstacle_map.clone();
+            search_map
+                .clear_dynamic_blocking_in_cells_for_nets(&crossing_candidate_keys, &partner_ids);
+            if trace_crossing {
+                eprintln!(
+                    "crossing-search candidate-phase net={} candidate_keys={}",
+                    net_id,
+                    crossing_candidate_keys.len()
+                );
+            }
+            if let Some(result) = route_single_net_with_crossing_config(
                 &search_map,
                 &self.primitives,
                 source,
-                candidate.state,
-                Some(&opened_with_anchor),
-                search_cfg,
-                block_radius_cells.max(0),
-                dynamic_clearance_exempt_keys,
-            ) else {
-                continue;
-            };
-            let Some(second) = route_single_net_with_dynamic_expansion_config(
-                &search_map,
-                &self.primitives,
-                candidate.state,
                 target,
-                Some(&opened_with_anchor),
-                search_cfg,
+                Some(opened_ref),
+                &crossing_search_cfg,
                 block_radius_cells.max(0),
                 dynamic_clearance_exempt_keys,
-            ) else {
-                continue;
-            };
-            return Some((combine_anchor_route(first, second), candidate));
+                &crossing_search,
+            ) {
+                if trace_crossing {
+                    eprintln!(
+                        "crossing-search candidate-result net={} expanded={} generated={} heap={} events={}",
+                        net_id,
+                        result.stats.expanded_states,
+                        result.stats.generated_neighbors,
+                        result.stats.max_heap_size,
+                        self.crossing_events_for_route(net_id, &result, &partner_ids).len(),
+                    );
+                }
+                let crossing_events = self.crossing_events_for_route(net_id, &result, &partner_ids);
+                if self.crossing_route_satisfies_partner_constraints(
+                    &result,
+                    &partner_ids,
+                    &crossing_events,
+                ) {
+                    return Some((result, crossing_events));
+                }
+            }
+        }
+
+        let mut search_map = self.obstacle_map.clone();
+        search_map.clear_dynamic_blocking_for_nets(&partner_ids);
+        if trace_crossing {
+            eprintln!("crossing-search broad-phase net={}", net_id);
+        }
+        let result = route_single_net_with_crossing_config(
+            &search_map,
+            &self.primitives,
+            source,
+            target,
+            Some(opened_ref),
+            &crossing_search_cfg,
+            block_radius_cells.max(0),
+            dynamic_clearance_exempt_keys,
+            &crossing_search,
+        )?;
+        if trace_crossing {
+            eprintln!(
+                "crossing-search broad-result net={} expanded={} generated={} heap={} events={}",
+                net_id,
+                result.stats.expanded_states,
+                result.stats.generated_neighbors,
+                result.stats.max_heap_size,
+                self.crossing_events_for_route(net_id, &result, &partner_ids)
+                    .len(),
+            );
+        }
+        let crossing_events = self.crossing_events_for_route(net_id, &result, &partner_ids);
+        if self.crossing_route_satisfies_partner_constraints(
+            &result,
+            &partner_ids,
+            &crossing_events,
+        ) {
+            return Some((result, crossing_events));
         }
         None
     }
@@ -2522,22 +2813,31 @@ impl PyPhotonicRouter {
         }
         let source_state = State::new(source.x, source.y, source.angle);
         let target_state = State::new(target.x, target.y, target.angle);
-        if let Some((mut anchored_result, anchor)) = self.try_route_via_crossing_anchor(
-            net_id,
-            source_state,
-            target_state,
-            opened_ref,
-            &cfg,
-            block_radius_cells,
-            dynamic_clearance_exempt_keys,
-        ) {
+        let expected_crossing_partner_ids = self.crossing_allowed_partner_set(net_id);
+        let require_crossing_compliant_route = self.crossing_context.is_enabled()
+            && self.crossing_context.config().allow_only_expected_pairs
+            && !expected_crossing_partner_ids.is_empty();
+        if let Some((mut crossing_result, crossing_events)) = self
+            .try_route_through_expected_crossing_partner(
+                net_id,
+                source_state,
+                target_state,
+                opened_ref,
+                &cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys,
+            )
+        {
+            let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
+            let allowed_crossing_core_keys =
+                Self::crossing_reservation_keys_for_events(&crossing_events);
             let commit_prepare_start = if collect_timing {
                 Some(Instant::now())
             } else {
                 None
             };
             let route_cells = route_commit_cells(
-                &anchored_result.cells,
+                &crossing_result.cells,
                 block_radius_cells,
                 commit_radius_cells.unwrap_or(block_radius_cells),
                 clearance_exempt_cells,
@@ -2545,7 +2845,7 @@ impl PyPhotonicRouter {
                 self.grid.height as i32,
             );
             let core_cells = route_core_cells(
-                &anchored_result.cells,
+                &crossing_result.cells,
                 core_radius_cells.unwrap_or(block_radius_cells),
                 self.grid.width as i32,
                 self.grid.height as i32,
@@ -2553,8 +2853,6 @@ impl PyPhotonicRouter {
             if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
                 commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
             }
-            let mut allowed_partner_ids = FxHashSet::default();
-            allowed_partner_ids.insert(anchor.partner_net_id);
             let commit_start = if collect_timing {
                 Some(Instant::now())
             } else {
@@ -2567,24 +2865,29 @@ impl PyPhotonicRouter {
                     &core_cells,
                     &route_cells,
                     clearance_exempt_cells.unwrap_or(&[]),
-                    &allowed_partner_ids,
-                    Some(&anchor.window_keys),
+                    &crossed_partner_ids,
+                    Some(&allowed_crossing_core_keys),
                 );
             if let Some(commit_start) = commit_start.as_ref() {
                 commit_time_us += commit_start.elapsed().as_micros();
             }
             if committed {
+                self.remove_crossing_events_for_net(net_id);
+                self.add_crossing_events(crossing_events);
                 if collect_timing {
-                    anchored_result.stats.obstacle_map_prepare_time_us +=
+                    crossing_result.stats.obstacle_map_prepare_time_us +=
                         obstacle_map_prepare_time_us;
-                    anchored_result.stats.commit_prepare_time_us += commit_prepare_time_us;
-                    anchored_result.stats.commit_time_us += commit_time_us;
+                    crossing_result.stats.commit_prepare_time_us += commit_prepare_time_us;
+                    crossing_result.stats.commit_time_us += commit_time_us;
                 }
                 self.committed_center_routes
-                    .insert(net_id, anchored_result.cells.clone());
+                    .insert(net_id, crossing_result.compressed_waypoints.clone());
                 self.invalidate_meander_base_prefix();
-                return Ok(anchored_result);
+                return Ok(crossing_result);
             }
+        }
+        if require_crossing_compliant_route {
+            return Err("No crossing-compliant route found".to_string());
         }
         if block_radius_cells > 0 {
             let simple_start = if collect_timing {
@@ -2649,6 +2952,8 @@ impl PyPhotonicRouter {
                     commit_time_us += commit_start.elapsed().as_micros();
                 }
                 if committed {
+                    self.remove_crossing_events_for_net(net_id);
+                    self.register_geometric_crossing_events_for_route(net_id, &result);
                     if collect_timing {
                         result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
                         result.stats.simple_route_time_us += simple_route_time_us;
@@ -2656,7 +2961,7 @@ impl PyPhotonicRouter {
                         result.stats.commit_time_us += commit_time_us;
                     }
                     self.committed_center_routes
-                        .insert(net_id, result.cells.clone());
+                        .insert(net_id, result.compressed_waypoints.clone());
                     self.invalidate_meander_base_prefix();
                     return Ok(result);
                 }
@@ -2753,8 +3058,10 @@ impl PyPhotonicRouter {
         if !committed {
             return Err("Failed to commit routed cells to obstacle map".to_string());
         }
+        self.remove_crossing_events_for_net(net_id);
+        self.register_geometric_crossing_events_for_route(net_id, &result);
         self.committed_center_routes
-            .insert(net_id, result.cells.clone());
+            .insert(net_id, result.compressed_waypoints.clone());
         self.invalidate_meander_base_prefix();
 
         Ok(result)
@@ -2814,6 +3121,83 @@ impl PyPhotonicRouter {
         let obstacle_map_prepare_time_us = prepare_start
             .as_ref()
             .map_or(0, |start| start.elapsed().as_micros());
+        let source_state = State::new(source.x, source.y, source.angle);
+        let target_state = State::new(target.x, target.y, target.angle);
+        let expected_crossing_partner_ids = self.crossing_allowed_partner_set(net_id);
+        let require_crossing_compliant_route = self.crossing_context.is_enabled()
+            && self.crossing_context.config().allow_only_expected_pairs
+            && !expected_crossing_partner_ids.is_empty();
+        if let Some((mut crossing_result, crossing_events)) = self
+            .try_route_through_expected_crossing_partner(
+                net_id,
+                source_state,
+                target_state,
+                opened_ref,
+                &cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys,
+            )
+        {
+            let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
+            let allowed_crossing_core_keys =
+                Self::crossing_reservation_keys_for_events(&crossing_events);
+            let commit_prepare_start = if collect_timing {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            let route_cells = route_commit_cells(
+                &crossing_result.cells,
+                block_radius_cells,
+                commit_radius_cells.unwrap_or(block_radius_cells),
+                clearance_exempt_cells,
+                self.grid.width as i32,
+                self.grid.height as i32,
+            );
+            let core_cells = route_core_cells(
+                &crossing_result.cells,
+                core_radius_cells.unwrap_or(block_radius_cells),
+                self.grid.width as i32,
+                self.grid.height as i32,
+            );
+            if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
+                crossing_result.stats.commit_prepare_time_us +=
+                    commit_prepare_start.elapsed().as_micros();
+            }
+            let commit_start = if collect_timing {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            let committed = self
+                .obstacle_map
+                .commit_route_with_clearance_and_allowed_core_overlap_cells(
+                    net_id,
+                    &core_cells,
+                    &route_cells,
+                    clearance_exempt_cells.unwrap_or(&[]),
+                    &crossed_partner_ids,
+                    Some(&allowed_crossing_core_keys),
+                );
+            if let Some(commit_start) = commit_start.as_ref() {
+                crossing_result.stats.commit_time_us += commit_start.elapsed().as_micros();
+            }
+            if committed {
+                self.remove_crossing_events_for_net(net_id);
+                self.add_crossing_events(crossing_events);
+                if collect_timing {
+                    crossing_result.stats.obstacle_map_prepare_time_us +=
+                        obstacle_map_prepare_time_us;
+                }
+                self.committed_center_routes
+                    .insert(net_id, crossing_result.compressed_waypoints.clone());
+                self.invalidate_meander_base_prefix();
+                return Ok(crossing_result);
+            }
+        }
+        if require_crossing_compliant_route {
+            return Err("No crossing-compliant route found".to_string());
+        }
         let zero_radius_overlay =
             block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some() && !cfg.enable_jps4;
         let mut opened_dynamic_obstacle_map;
@@ -2821,8 +3205,8 @@ impl PyPhotonicRouter {
             route_single_net_with_dynamic_expansion_config(
                 &self.obstacle_map,
                 &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
+                source_state,
+                target_state,
                 Some(opened_ref),
                 &cfg,
                 block_radius_cells.max(0),
@@ -2840,8 +3224,8 @@ impl PyPhotonicRouter {
             route_single_net_with_config(
                 search_obstacle_map,
                 &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
+                source_state,
+                target_state,
                 Some(opened_ref),
                 &cfg,
             )
@@ -2890,6 +3274,10 @@ impl PyPhotonicRouter {
         if !committed {
             return Err("Failed to commit routed cells to obstacle map".to_string());
         }
+        self.remove_crossing_events_for_net(net_id);
+        self.register_geometric_crossing_events_for_route(net_id, &result);
+        self.committed_center_routes
+            .insert(net_id, result.compressed_waypoints.clone());
         self.invalidate_meander_base_prefix();
 
         Ok(result)
@@ -2959,8 +3347,10 @@ impl PyPhotonicRouter {
             clearance_exempt_cells,
         );
         if committed {
+            self.remove_crossing_events_for_net(net_id);
+            self.register_geometric_crossing_events_for_route(net_id, route);
             self.committed_center_routes
-                .insert(net_id, route.cells.clone());
+                .insert(net_id, route.compressed_waypoints.clone());
             self.invalidate_meander_base_prefix();
         }
         committed
@@ -3295,6 +3685,7 @@ impl PyPhotonicRouter {
             primitives,
             crossing_context: CrossingContext::default(),
             committed_center_routes: FxHashMap::default(),
+            crossing_events: Vec::new(),
             static_cells: FxHashSet::default(),
             port_open_cells: FxHashSet::default(),
             registered_plm: RefCell::new(RegisteredPlmContext::default()),
@@ -3347,6 +3738,30 @@ impl PyPhotonicRouter {
         self.crossing_context.allows_pair(net_id, partner_net_id)
     }
 
+    fn crossing_events(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        let mut out = Vec::with_capacity(self.crossing_events.len());
+        for event in &self.crossing_events {
+            let d = PyDict::new_bound(py);
+            let mut reservation_cells: Vec<(i32, i32)> = event
+                .reservation_keys
+                .iter()
+                .copied()
+                .map(unpack_xy)
+                .collect();
+            reservation_cells.sort_unstable();
+            d.set_item("net_id", event.net_id)?;
+            d.set_item("partner_net_id", event.partner_net_id)?;
+            d.set_item("point", event.point)?;
+            d.set_item("route_segment", event.route_segment)?;
+            d.set_item("partner_segment", event.partner_segment)?;
+            d.set_item("route_angle", event.route_angle)?;
+            d.set_item("partner_angle", event.partner_angle)?;
+            d.set_item("reservation_cells", reservation_cells)?;
+            out.push(d.into());
+        }
+        Ok(out)
+    }
+
     fn invalidate_meander_base_prefix(&self) {
         self.registered_plm.borrow_mut().invalidate_base_prefix();
     }
@@ -3379,6 +3794,7 @@ impl PyPhotonicRouter {
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.static_cells.clear();
         self.committed_center_routes.clear();
+        self.crossing_events.clear();
         let mut plm = self.registered_plm.borrow_mut();
         plm.clear_registered_routes();
         plm.clear_reserved_cells_and_invalidate_index();
@@ -3593,6 +4009,7 @@ impl PyPhotonicRouter {
         self.invalidate_meander_base_prefix();
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.committed_center_routes.clear();
+        self.crossing_events.clear();
         profile.reset_s += reset_start.elapsed().as_secs_f64();
         let base_static_pack_start = Instant::now();
         let base_static_keys = pack_cells(&base_static_cells);
@@ -3682,6 +4099,7 @@ impl PyPhotonicRouter {
         self.invalidate_meander_base_prefix();
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.committed_center_routes.clear();
+        self.crossing_events.clear();
         self.static_cells = base_static_keys.clone();
         {
             let mut plm = self.registered_plm.borrow_mut();
@@ -4214,6 +4632,57 @@ impl PyPhotonicRouter {
                 .into_iter()
                 .filter(|owner| *owner != job.net_id && final_routes.contains_key(owner))
                 .collect();
+            let crossing_repair_enabled = self.crossing_context.is_enabled();
+            let allowed_crossing_partners: FxHashSet<u64> = if crossing_repair_enabled {
+                self.crossing_context
+                    .allowed_partners_for(job.net_id)
+                    .into_iter()
+                    .filter(|partner_id| final_routes.contains_key(partner_id))
+                    .collect()
+            } else {
+                FxHashSet::default()
+            };
+            let probe_crossing_events = if crossing_repair_enabled
+                && !allowed_crossing_partners.is_empty()
+            {
+                self.crossing_events_for_route(job.net_id, &probe_route, &allowed_crossing_partners)
+            } else {
+                Vec::new()
+            };
+            let strict_expected_crossing_probe = crossing_repair_enabled
+                && self.crossing_context.config().allow_only_expected_pairs
+                && !allowed_crossing_partners.is_empty();
+            let probe_crossing_compliant = crossing_repair_enabled
+                && self.crossing_route_satisfies_partner_constraints(
+                    &probe_route,
+                    &allowed_crossing_partners,
+                    &probe_crossing_events,
+                );
+            if crossing_repair_enabled {
+                let legal_crossed_partners =
+                    Self::crossing_partner_ids_from_events(&probe_crossing_events);
+                candidate_blockers.retain(|owner| !legal_crossed_partners.contains(owner));
+                for invalid in self
+                    .invalid_crossing_intersections_for_route(
+                        &probe_route,
+                        &allowed_crossing_partners,
+                    )
+                    .into_iter()
+                {
+                    if final_routes.contains_key(&invalid.partner_net_id) {
+                        candidate_blockers.push(invalid.partner_net_id);
+                    }
+                }
+                if self.crossing_context.config().allow_only_expected_pairs {
+                    for partner_id in &allowed_crossing_partners {
+                        if !legal_crossed_partners.contains(partner_id)
+                            && final_routes.contains_key(partner_id)
+                        {
+                            candidate_blockers.push(*partner_id);
+                        }
+                    }
+                }
+            }
             candidate_blockers.sort_unstable_by_key(|owner| {
                 order_by_id.get(owner).copied().unwrap_or(usize::MAX)
             });
@@ -4221,6 +4690,58 @@ impl PyPhotonicRouter {
             timings.repair_probe_victim_selection_us +=
                 native_batch_elapsed_us(victim_selection_start);
             if candidate_blockers.is_empty() {
+                if probe_crossing_compliant {
+                    {
+                        let commit_start = native_batch_timer(collect_native_timing);
+                        let crossed_partner_ids =
+                            Self::crossing_partner_ids_from_events(&probe_crossing_events);
+                        let allowed_crossing_core_keys =
+                            Self::crossing_reservation_keys_for_events(&probe_crossing_events);
+                        let route_cells = route_commit_cells(
+                            &probe_route.cells,
+                            block_radius_cells,
+                            commit_radius_cells.unwrap_or(block_radius_cells),
+                            Some(&job.clearance_exempt_cells),
+                            self.grid.width as i32,
+                            self.grid.height as i32,
+                        );
+                        let core_cells = route_core_cells(
+                            &probe_route.cells,
+                            core_radius_cells.unwrap_or(block_radius_cells),
+                            self.grid.width as i32,
+                            self.grid.height as i32,
+                        );
+                        if self
+                            .obstacle_map
+                            .commit_route_with_clearance_and_allowed_core_overlap_cells(
+                                job.net_id,
+                                &core_cells,
+                                &route_cells,
+                                &job.clearance_exempt_cells,
+                                &crossed_partner_ids,
+                                Some(&allowed_crossing_core_keys),
+                            )
+                        {
+                            timings.commit_update_dynamic_map_us +=
+                                native_batch_elapsed_us(commit_start);
+                            self.remove_crossing_events_for_net(job.net_id);
+                            self.add_crossing_events(probe_crossing_events);
+                            self.committed_center_routes
+                                .insert(job.net_id, probe_route.compressed_waypoints.clone());
+                            self.invalidate_meander_base_prefix();
+                            final_routes.insert(job.net_id, probe_route);
+                            continue;
+                        }
+                        timings.commit_update_dynamic_map_us +=
+                            native_batch_elapsed_us(commit_start);
+                    }
+                }
+                if strict_expected_crossing_probe {
+                    failed_net_id = Some(job.net_id);
+                    failed_error =
+                        Some("Probe route violates expected crossing constraints".to_string());
+                    break;
+                }
                 let commit_start = native_batch_timer(collect_native_timing);
                 if self.commit_native_route_with_clearance(
                     job.net_id,
@@ -4248,24 +4769,65 @@ impl PyPhotonicRouter {
             let mut repaired = false;
             let round_base_map = self.obstacle_map.clone();
             let round_base_center_routes = self.committed_center_routes.clone();
+            let round_base_crossing_events = self.crossing_events.clone();
             let round_base_routes = final_routes.clone();
 
+            let mut repair_victim_sets: Vec<(u32, Vec<u64>)> = Vec::new();
+            if crossing_repair_enabled {
+                let single_victim_limit = candidate_blockers
+                    .len()
+                    .min(max_rounds as usize)
+                    .min(max_victims);
+                for owner in candidate_blockers.iter().take(single_victim_limit) {
+                    repair_victim_sets.push((1, vec![*owner]));
+                }
+            }
             for round_idx in 1..=max_rounds {
                 let ripup_ids: Vec<u64> = candidate_blockers
                     .iter()
                     .take((max_victims * round_idx as usize).min(candidate_blockers.len()))
                     .copied()
                     .collect();
-                if ripup_ids.is_empty() {
-                    continue;
+                if !ripup_ids.is_empty()
+                    && !repair_victim_sets
+                        .iter()
+                        .any(|(_, existing)| existing == &ripup_ids)
+                {
+                    repair_victim_sets.push((round_idx, ripup_ids));
                 }
+            }
+
+            for (round_idx, ripup_ids) in repair_victim_sets {
                 for victim_first in [false, true] {
                     let reset_start = native_batch_timer(collect_native_timing);
                     self.obstacle_map = round_base_map.clone();
                     self.committed_center_routes = round_base_center_routes.clone();
+                    self.crossing_events = round_base_crossing_events.clone();
                     self.invalidate_meander_base_prefix();
                     final_routes = round_base_routes.clone();
                     timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
+
+                    let temporary_probe_reservation: FxHashSet<CellKey> = if victim_first {
+                        let probe_keys: FxHashSet<CellKey> = probe_route
+                            .cells
+                            .iter()
+                            .map(|(x, y)| pack_xy(*x, *y))
+                            .collect();
+                        let mut conflict_keys = FxHashSet::default();
+                        for old_id in &ripup_ids {
+                            if let Some(old_route) = final_routes.get(old_id) {
+                                for (x, y) in &old_route.cells {
+                                    let key = pack_xy(*x, *y);
+                                    if probe_keys.contains(&key) {
+                                        conflict_keys.insert(key);
+                                    }
+                                }
+                            }
+                        }
+                        conflict_keys
+                    } else {
+                        FxHashSet::default()
+                    };
 
                     for old_id in &ripup_ids {
                         if let Some(old_route) = final_routes.get(old_id).cloned() {
@@ -4278,6 +4840,7 @@ impl PyPhotonicRouter {
                             timings.history_update_us += native_batch_elapsed_us(history_start);
                         }
                         let ripup_start = native_batch_timer(collect_native_timing);
+                        self.remove_crossing_events_for_net(*old_id);
                         self.obstacle_map.ripup_route(*old_id);
                         self.committed_center_routes.remove(old_id);
                         timings.ripup_us += native_batch_elapsed_us(ripup_start);
@@ -4333,6 +4896,11 @@ impl PyPhotonicRouter {
                                 mode_failed = true;
                             }
                         }
+                    }
+
+                    if !temporary_probe_reservation.is_empty() {
+                        self.obstacle_map
+                            .add_static_keys(&temporary_probe_reservation);
                     }
 
                     if !mode_failed {
@@ -4430,6 +4998,11 @@ impl PyPhotonicRouter {
                             });
                             final_routes.insert(victim_job.net_id, route);
                         }
+                    }
+
+                    if !temporary_probe_reservation.is_empty() {
+                        self.obstacle_map
+                            .remove_static_keys(&temporary_probe_reservation);
                     }
 
                     if !mode_failed && victim_first {
@@ -4536,6 +5109,7 @@ impl PyPhotonicRouter {
                 let reset_start = native_batch_timer(collect_native_timing);
                 self.obstacle_map = round_base_map;
                 self.committed_center_routes = round_base_center_routes;
+                self.crossing_events = round_base_crossing_events;
                 self.invalidate_meander_base_prefix();
                 final_routes = round_base_routes;
                 timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
@@ -4609,6 +5183,7 @@ impl PyPhotonicRouter {
     }
 
     fn ripup_route(&mut self, net_id: u64) -> bool {
+        self.remove_crossing_events_for_net(net_id);
         let removed = self.obstacle_map.ripup_route(net_id);
         if removed {
             self.committed_center_routes.remove(&net_id);
@@ -4618,8 +5193,10 @@ impl PyPhotonicRouter {
     }
 
     fn clear_dynamic(&mut self) {
+        self.remove_crossing_events_for_all_routes();
         self.obstacle_map.clear_dynamic();
         self.committed_center_routes.clear();
+        self.crossing_events.clear();
         self.invalidate_meander_base_prefix();
     }
 
@@ -4645,6 +5222,16 @@ impl PyPhotonicRouter {
                 let (x, y) = unpack_xy(key);
                 (x, y, refs)
             })
+            .collect();
+        cells.sort_unstable();
+        cells
+    }
+
+    fn raw_static_obstacle_cells(&self) -> Vec<(i32, i32)> {
+        let mut cells: Vec<(i32, i32)> = self
+            .obstacle_map
+            .static_obstacle_keys()
+            .map(unpack_xy)
             .collect();
         cells.sort_unstable();
         cells
@@ -4734,6 +5321,7 @@ impl PyPhotonicRouter {
             clearance_exempt_cells.as_deref().unwrap_or(&[]),
         );
         if committed {
+            self.remove_crossing_events_for_net(net_id);
             self.invalidate_meander_base_prefix();
         }
         committed
@@ -4803,8 +5391,29 @@ impl PyPhotonicRouter {
 
     fn export_debug_svg(&self, route: &PyRouteResult) -> String {
         let r = to_route_result(route);
-        export_route_svg(&self.obstacle_map, &r)
+        append_crossing_event_svg_overlay(
+            export_route_svg(&self.obstacle_map, &r),
+            &self.crossing_events,
+            self.grid.height as i32,
+        )
     }
+
+    fn export_debug_svg_with_obstacle_cells(
+        &self,
+        route: &PyRouteResult,
+        obstacle_cells: Vec<(i32, i32)>,
+    ) -> String {
+        let r = to_route_result(route);
+        let mut obstacle_map = self.obstacle_map.clone();
+        obstacle_map.clear_dynamic();
+        obstacle_map.add_static_cells(&obstacle_cells);
+        append_crossing_event_svg_overlay(
+            export_route_svg(&obstacle_map, &r),
+            &self.crossing_events,
+            self.grid.height as i32,
+        )
+    }
+
     #[pyo3(signature=(port_name,x_um,y_um,orientation=None,min_straight_um=0.0,max_anchor_search_cells=8,min_bend_radius_um=0.0))]
     fn build_port_access(
         &self,
@@ -7171,6 +7780,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -7194,6 +7805,107 @@ mod tests {
         assert!(!committed_keys.contains(&pack_xy(4, 3)));
         assert!(!committed_keys.contains(&pack_xy(4, 5)));
         assert!(committed_keys.contains(&pack_xy(5, 3)));
+    }
+
+    #[test]
+    fn crossing_events_require_straight_margin_around_intersection() {
+        let partner = vec![(10, 5), (10, 24)];
+        let clean = crossing_events_for_partner(2, 1, &[(3, 12), (24, 12)], &partner, 2, 2, 32, 32);
+        assert_eq!(clean.len(), 1);
+        assert_eq!(clean[0].point, (10.0, 12.0));
+
+        let bend_endpoint = crossing_events_for_partner(
+            2,
+            1,
+            &[(3, 12), (10, 12), (10, 20)],
+            &partner,
+            2,
+            2,
+            32,
+            32,
+        );
+        assert!(bend_endpoint.is_empty());
+    }
+
+    #[test]
+    fn invalid_crossing_intersections_block_kink_crossings() {
+        let grid = PyGridSpec::new(32, 32, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                0.0,
+                0,
+                false,
+                false,
+                "library".to_string(),
+                "distance".to_string(),
+                1.0,
+            ),
+        );
+        router.crossing_context.set_config(CrossingConfig {
+            enabled: true,
+            crossing_half_size_cells: 2,
+            min_straight_cells_per_crossing: 2,
+            ..CrossingConfig::default()
+        });
+        router
+            .committed_center_routes
+            .insert(1, vec![(10, 5), (10, 24)]);
+        let mut partner_ids = FxHashSet::default();
+        partner_ids.insert(1);
+
+        let clean_route = RouteResult {
+            states: Vec::new(),
+            primitives: Vec::new(),
+            cells: Vec::new(),
+            compressed_waypoints: vec![(3, 12), (24, 12)],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target: State::new(24, 12, 0),
+            reached_target: State::new(24, 12, 0),
+            stats: RouteSearchStats::default(),
+        };
+        assert!(router
+            .invalid_crossing_intersections_for_route(&clean_route, &partner_ids)
+            .is_empty());
+
+        let kink_route = RouteResult {
+            compressed_waypoints: vec![(3, 12), (10, 12), (10, 20)],
+            ..clean_route
+        };
+        let invalid = router.invalid_crossing_intersections_for_route(&kink_route, &partner_ids);
+        assert_eq!(invalid.len(), 1);
+        assert_eq!(invalid[0].partner_net_id, 1);
+    }
+
+    #[test]
+    fn crossing_candidate_keys_keep_partner_bends_blocked() {
+        let partner = vec![(10, 5), (10, 12), (15, 12)];
+        let keys = crossing_candidate_keys_for_partner(&partner, 2, 2, 32, 32);
+
+        assert!(keys.contains(&pack_xy(10, 7)));
+        assert!(keys.contains(&pack_xy(10, 10)));
+        assert!(!keys.contains(&pack_xy(10, 5)));
+        assert!(!keys.contains(&pack_xy(10, 11)));
+        assert!(!keys.contains(&pack_xy(10, 12)));
+        assert!(keys.contains(&pack_xy(12, 12)));
+        assert!(keys.contains(&pack_xy(13, 12)));
+        assert!(!keys.contains(&pack_xy(14, 12)));
     }
 
     #[test]
@@ -7225,6 +7937,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -7333,6 +8047,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -7458,6 +8174,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -7574,6 +8292,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -7685,6 +8405,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -7727,6 +8449,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -7852,6 +8576,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -7966,6 +8692,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -8079,6 +8807,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -8111,6 +8841,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -8144,6 +8876,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -8193,6 +8927,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -8353,6 +9089,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -8494,6 +9232,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -8567,6 +9307,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),
@@ -8623,6 +9365,8 @@ mod tests {
                 10_000_000,
                 false,
                 0.0,
+                0.0,
+                0,
                 false,
                 false,
                 "library".to_string(),

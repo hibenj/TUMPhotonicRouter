@@ -33,6 +33,7 @@ from translation.electrical import (
 )
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import (
+    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     RipupRerouteConfig,
     route_match_and_realize,
 )
@@ -43,8 +44,8 @@ DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, 
 
 # Edit these values when running `routing_flow.py` directly from an IDE or file.
 # Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "benes_4x4"
-SCRIPT_DEBUG_SVGS: DebugSvgSelector = True  # Examples: True, "all", "5-10", "2,5-10"
+SCRIPT_BENCHMARK = "benes_8x8"
+SCRIPT_DEBUG_SVGS: DebugSvgSelector = False # Examples: True, "all", "5-10", "2,5-10"
 SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
 SCRIPT_VERBOSE_ROUTES = False
@@ -55,6 +56,9 @@ SCRIPT_ENABLE_PATH_LENGTH_MATCHING = False
 SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = False
 SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = DEFAULT_MEANDER_MAX_HEIGHT_UM
 SCRIPT_ENABLE_CROSSINGS = True
+SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING
+SCRIPT_PROACTIVE_CONGESTION_WEIGHT = 0.0
+SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS = 0
 SCRIPT_MAX_ITERATIONS = 5_000_000
 SCRIPT_ROUTING_WINDOW_SCALE = 0.05
 SCRIPT_INCLUDE_HEATER_OBSTACLES = True
@@ -552,6 +556,36 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--min-straight-cells-per-crossing",
+        type=int,
+        default=SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
+        metavar="N",
+        help=(
+            "Minimum straight access cells before and after each crossing "
+            f"(default: {SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING})."
+        ),
+    )
+    parser.add_argument(
+        "--proactive-congestion-weight",
+        type=float,
+        default=SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
+        metavar="COST",
+        help=(
+            "Soft A* cost per nearby blocked cell beside straight moves "
+            f"(default: {SCRIPT_PROACTIVE_CONGESTION_WEIGHT})."
+        ),
+    )
+    parser.add_argument(
+        "--proactive-congestion-radius-cells",
+        type=int,
+        default=SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
+        metavar="N",
+        help=(
+            "Sideways grid radius used for proactive congestion counting "
+            f"(default: {SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS})."
+        ),
+    )
+    parser.add_argument(
         "--max-iterations",
         type=int,
         default=SCRIPT_MAX_ITERATIONS,
@@ -857,6 +891,9 @@ def main(argv: list[str] | None = None) -> Component:
         path_length_match_outputs=args.path_length_match_outputs,
         path_length_meander_height_um=args.path_length_meander_height_um,
         enable_crossings=args.crossings,
+        min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
+        proactive_congestion_weight=args.proactive_congestion_weight,
+        proactive_congestion_radius_cells=args.proactive_congestion_radius_cells,
         max_iterations=args.max_iterations,
         enable_simple_routes=args.enable_simple_routes,
         routing_window_scale=args.routing_window_scale,
@@ -1089,6 +1126,10 @@ def run_routing_flow(
     path_length_match_outputs: bool = False,
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     enable_crossings: bool = False,
+    crossing_half_size_cells: int = 0,
+    min_straight_cells_per_crossing: int = SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
+    proactive_congestion_weight: float = SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
+    proactive_congestion_radius_cells: int = SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
     allow_45_degree_turns: bool = SCRIPT_ALLOW_45_DEGREE_TURNS,
     bend_radius_um: float = SCRIPT_BEND_RADIUS_UM,
     enable_jps4: bool = False,
@@ -1142,6 +1183,14 @@ def run_routing_flow(
                       requirements after local path-length matching.
         path_length_meander_height_um: Maximum meander height used when
                       inserting path-length matching meanders.
+        crossing_half_size_cells: Crossing keepout half-size in grid cells.
+                      The default 0 derives it from the crossing component bbox.
+        min_straight_cells_per_crossing: Minimum straight access length on each
+                      side of a crossing in grid cells.
+        proactive_congestion_weight: Soft A* cost per blocked side-neighbor
+                      cell beside straight moves.
+        proactive_congestion_radius_cells: Sideways grid radius used for
+                      proactive congestion counting.
         allow_45_degree_turns: If False, omit ±45-degree turn primitives.
         bend_radius_um: Minimum optical waveguide bend radius. Rounded up to
                       the active routing grid before primitive generation.
@@ -1235,6 +1284,8 @@ def run_routing_flow(
             f"build/routes/{prefix}_*.svg",
             f"build/routes/{prefix}_*_diagnostics.txt",
             f"build/routes/{prefix}_*_FAILED.txt",
+            f"build/crossings/{prefix}_*.json",
+            f"build/crossings/{prefix}_*.txt",
             f"build/electrical/{prefix}_*.svg",
         ):
             for path in Path(".").glob(pattern):
@@ -1327,6 +1378,8 @@ def run_routing_flow(
             node_types=metadata.get("node_types"),
             internal_delays_um=metadata.get("internal_delays_um"),
             enable_crossings=enable_crossings,
+            crossing_half_size_cells=int(crossing_half_size_cells),
+            min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
             node_depths=metadata.get("node_depths"),
             node_ranks=metadata.get("node_ranks"),
             edge_ranks=metadata.get("edge_ranks"),
@@ -1343,6 +1396,8 @@ def run_routing_flow(
             primitive_ordering=primitive_ordering,
             heuristic_mode=heuristic_mode,
             heap_tie_breaker=heap_tie_breaker,
+            proactive_congestion_weight=float(proactive_congestion_weight),
+            proactive_congestion_radius_cells=int(proactive_congestion_radius_cells),
             max_iterations=max_iterations,
             routing_window_scale=routing_window_scale,
             collect_route_stats=collect_route_stats or stats is not None,
