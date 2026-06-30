@@ -427,6 +427,108 @@ def test_parser_defaults_keep_losing_experiments_gated(monkeypatch):
     assert args.heap_tie_breaker == "smaller_g"
 
 
+def test_perf_smoke_preset_applies_release_benchmark_defaults(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(
+        sys, "argv", ["benchmark_photonic.py", "--preset", "perf-smoke"]
+    )
+
+    args = module._parse_args()
+
+    assert args.benchmarks == list(module.PERF_SMOKE_BENCHMARKS)
+    assert args.output == module.PROJECT_ROOT / "build" / "perf_smoke.md"
+    assert args.write_perf_baseline == module.PROJECT_ROOT / "build" / "perf_smoke.json"
+    assert (
+        args.attempt_output
+        == module.PROJECT_ROOT / "build" / "perf_smoke_attempts.json"
+    )
+    assert args.require_release is True
+    assert args.allow_45_degree_turns is False
+    assert args.crossings is False
+    assert args.include_heater_obstacles is False
+    assert args.attempt_diagnostics is True
+
+
+def test_perf_smoke_preset_keeps_explicit_benchmarks(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["benchmark_photonic.py", "--preset", "perf-smoke", "benes_4x4"],
+    )
+
+    args = module._parse_args()
+
+    assert args.benchmarks == ["benes_4x4"]
+    assert args.require_release is True
+
+
+def test_perf_smoke_worker_command_enables_crossings_only_for_benes(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(sys, "argv", ["benchmark_photonic.py", "--preset", "perf-smoke"])
+    args = module._parse_args()
+
+    benes_command = module._worker_command("benes_4x4", args)
+    clements_command = module._worker_command("clements_8x8", args)
+
+    assert "--crossings" in benes_command
+    assert "--allow-45-degree-turns" in benes_command
+    assert "--include-heater-obstacles" in benes_command
+    assert benes_command[
+        benes_command.index("--waveguide-clearance-um") + 1
+    ] == "0.0"
+    assert "--crossings" not in clements_command
+    assert "--allow-45-degree-turns" not in clements_command
+    assert "--include-heater-obstacles" not in clements_command
+
+
+def test_perf_smoke_worker_command_enables_plm_for_heater(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(sys, "argv", ["benchmark_photonic.py", "--preset", "perf-smoke"])
+    args = module._parse_args()
+
+    heater_command = module._worker_command("heater_s_mod", args)
+
+    assert "--path-length-matching" in heater_command
+    assert "--path-length-match-outputs" in heater_command
+    assert "--include-heater-obstacles" in heater_command
+    assert "--crossings" not in heater_command
+    assert "--allow-45-degree-turns" not in heater_command
+
+
+def test_require_release_rejects_debug_like_extension(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(
+        module,
+        "_rust_extension_info",
+        lambda: {
+            "path": "/tmp/photonic_router/_rust.abi3.so",
+            "size_bytes": 50_000_000,
+            "release_like": False,
+            "reason": "extension looks like a debug build",
+        },
+    )
+
+    with pytest.raises(SystemExit, match="release Rust extension"):
+        module._ensure_release_extension()
+
+
+def test_require_release_accepts_release_like_extension(monkeypatch):
+    module = _load_benchmark_photonic_module()
+    monkeypatch.setattr(
+        module,
+        "_rust_extension_info",
+        lambda: {
+            "path": "/tmp/photonic_router/_rust.abi3.so",
+            "size_bytes": 2_000_000,
+            "release_like": True,
+            "reason": "",
+        },
+    )
+
+    module._ensure_release_extension()
+
+
 def test_write_attempt_output_supports_json_and_csv(tmp_path):
     module = _load_benchmark_photonic_module()
     rows = [_row_with_attempts()]

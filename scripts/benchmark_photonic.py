@@ -37,6 +37,9 @@ from routing_flow import (
 
 
 DEFAULT_BENCHMARKS = ("TOY", "mmi_heater", "mmi_heater_8x4_ripup_reroute")
+PERF_SMOKE_BENCHMARKS = ("heater_s_mod", "clements_8x8", "benes_4x4", "benes_8x8")
+PERF_SMOKE_CROSSING_BENCHMARKS = frozenset({"benes_4x4", "benes_8x8"})
+PERF_SMOKE_PLM_BENCHMARKS = frozenset({"heater_s_mod"})
 DEFAULT_PERF_BASELINE_PATH = (
     PROJECT_ROOT / "tests" / "baselines" / "photonic_perf_baseline.json"
 )
@@ -44,6 +47,7 @@ DEFAULT_PERF_METRIC = "route_nets_s"
 DEFAULT_PERF_RELATIVE_TOLERANCE = 0.10
 DEFAULT_PERF_ABSOLUTE_TOLERANCE_S = 0.05
 DEFAULT_PERF_COUNTER_RELATIVE_TOLERANCE = 0.10
+RELEASE_EXTENSION_MAX_BYTES = 8_000_000
 WORKER_MARKER = "PHOTONIC_BENCHMARK_JSON:"
 ROUTE_NETS_TIMING_KEYS = (
     "obstacle_map",
@@ -205,6 +209,61 @@ def _git_rev() -> str:
         ).strip()
     except Exception:
         return "unknown"
+
+
+def _rust_extension_path() -> Path | None:
+    try:
+        import photonic_router._rust as rust_backend
+    except Exception:
+        return None
+    raw_path = getattr(rust_backend, "__file__", None)
+    if raw_path is None:
+        return None
+    return Path(str(raw_path))
+
+
+def _rust_extension_info() -> dict[str, object]:
+    path = _rust_extension_path()
+    if path is None:
+        return {
+            "path": "",
+            "size_bytes": None,
+            "release_like": False,
+            "reason": "photonic_router._rust could not be imported",
+        }
+    try:
+        size_bytes = path.stat().st_size
+    except OSError as exc:
+        return {
+            "path": str(path),
+            "size_bytes": None,
+            "release_like": False,
+            "reason": f"could not stat extension: {exc}",
+        }
+    release_like = (
+        size_bytes <= RELEASE_EXTENSION_MAX_BYTES and "target/debug" not in str(path)
+    )
+    return {
+        "path": str(path),
+        "size_bytes": int(size_bytes),
+        "release_like": bool(release_like),
+        "reason": "" if release_like else "extension looks like a debug build",
+    }
+
+
+def _ensure_release_extension() -> None:
+    info = _rust_extension_info()
+    if info["release_like"]:
+        return
+    size = info.get("size_bytes")
+    size_text = (
+        "unknown size" if size is None else f"{int(size) / (1024 * 1024):.1f} MiB"
+    )
+    raise SystemExit(
+        "Performance smoke requires a release Rust extension. "
+        f"Imported: {info.get('path') or 'unavailable'} ({size_text}). "
+        "Run `.venv/bin/maturin develop --release` first."
+    )
 
 
 def _format_seconds(value: float | None) -> str:
@@ -484,6 +543,9 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         show_klayout=False,
         enable_path_length_matching=args.path_length_matching,
         path_length_match_outputs=args.path_length_match_outputs,
+        enable_crossings=args.crossings,
+        crossing_half_size_cells=args.crossing_half_size_cells,
+        min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
         allow_45_degree_turns=args.allow_45_degree_turns,
         bend_radius_um=args.bend_radius_um,
         use_indexed_heap=args.use_indexed_heap,
@@ -542,6 +604,11 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
     }
     return {
         "benchmark": benchmark,
+        "path_length_matching_enabled": bool(args.path_length_matching),
+        "path_length_match_outputs_enabled": bool(args.path_length_match_outputs),
+        "crossings_enabled": bool(args.crossings),
+        "allow_45_degree_turns_enabled": bool(args.allow_45_degree_turns),
+        "heater_obstacles_enabled": bool(args.include_heater_obstacles),
         "instances": stats.instance_count,
         "nets": stats.net_count,
         "grid": (
@@ -677,7 +744,35 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
     }
 
 
+def _perf_smoke_worker_args(
+    benchmark: str, args: argparse.Namespace
+) -> argparse.Namespace:
+    if args.preset != "perf-smoke":
+        return args
+
+    worker_args = argparse.Namespace(**vars(args))
+    worker_args.bend_radius_um = 5.0
+
+    if benchmark in PERF_SMOKE_PLM_BENCHMARKS:
+        worker_args.path_length_matching = True
+        worker_args.path_length_match_outputs = True
+        worker_args.include_heater_obstacles = True
+        return worker_args
+
+    if benchmark in PERF_SMOKE_CROSSING_BENCHMARKS:
+        worker_args.allow_45_degree_turns = True
+        worker_args.crossings = True
+        worker_args.include_heater_obstacles = True
+        worker_args.grid_size_um = 2.0
+        worker_args.waveguide_clearance_um = 0.0
+        worker_args.heater_clearance_um = 10.0
+        return worker_args
+
+    return worker_args
+
+
 def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
+    args = _perf_smoke_worker_args(benchmark, args)
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -726,6 +821,16 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         command.append("--path-length-matching")
     if args.path_length_match_outputs:
         command.append("--path-length-match-outputs")
+    if args.crossings:
+        command.append("--crossings")
+    command.extend(
+        [
+            "--crossing-half-size-cells",
+            str(args.crossing_half_size_cells),
+            "--min-straight-cells-per-crossing",
+            str(args.min_straight_cells_per_crossing),
+        ]
+    )
     if args.allow_45_degree_turns:
         command.append("--allow-45-degree-turns")
     if args.include_heater_obstacles:
@@ -1040,16 +1145,42 @@ def _has_perf_baseline_violations(rows: Iterable[Mapping[str, object]]) -> bool:
     return any(bool(row.get("perf_baseline_violations")) for row in rows)
 
 
+def _row_mode_label(row: Mapping[str, object]) -> str:
+    modes: list[str] = []
+    if row.get("path_length_matching_enabled"):
+        modes.append("PLM")
+    if row.get("path_length_match_outputs_enabled"):
+        modes.append("PLM outputs")
+    if row.get("crossings_enabled"):
+        modes.append("crossings")
+    if row.get("allow_45_degree_turns_enabled"):
+        modes.append("45-degree")
+    if row.get("heater_obstacles_enabled"):
+        modes.append("heater obstacles")
+    return ", ".join(modes) if modes else "default"
+
+
 def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace) -> str:
+    rust_extension_info = _rust_extension_info()
+    rust_extension_size = rust_extension_info.get("size_bytes")
+    rust_extension_size_text = (
+        "unknown"
+        if rust_extension_size is None
+        else f"{int(rust_extension_size) / (1024 * 1024):.1f} MiB"
+    )
     lines = [
         "# Photonic Routing Baseline",
         "",
         f"- Captured: {datetime.now().astimezone().isoformat(timespec='seconds')}",
         f"- Git revision: `{_git_rev()}`",
         f"- Python: `{platform.python_version()}`",
+        f"- Preset: `{getattr(args, 'preset', None) or 'custom'}`",
+        f"- Require release build: `{getattr(args, 'require_release', False)}`",
+        f"- Rust extension: `{rust_extension_info.get('path') or 'unavailable'}` ({rust_extension_size_text})",
         f"- Path-length matching: `{args.path_length_matching}`",
         f"- Path-length match outputs: `{getattr(args, 'path_length_match_outputs', False)}`",
         f"- 45-degree turns: `{args.allow_45_degree_turns}`",
+        f"- Crossings: `{getattr(args, 'crossings', False)}`",
         f"- Heater obstacles: `{args.include_heater_obstacles}`",
         f"- Obstacle mode: `{args.obstacle_mode}`",
         f"- Max iterations: `{args.max_iterations}`",
@@ -1062,13 +1193,14 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Repeat runs: `{getattr(args, 'repeat_runs', 1)}`",
         f"- Perf metric: `{getattr(args, 'perf_metric', DEFAULT_PERF_METRIC)}`",
         "",
-        "| Benchmark | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
-        "| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Benchmark | Mode | Instances | Nets | Grid | Total s | Route s | A* s | Attempts | Simple | Repairs | Expanded | Generated | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense MiB | Obstacle checks | Footprint rect checks | Full fallback |",
+        "| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {benchmark} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {dup_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
+            "| {benchmark} | {mode} | {instances} | {nets} | {grid} | {total_s} | {route_s} | {astar_s} | {attempts} | {simple} | {repairs} | {expanded} | {generated} | {heap_pushes}/{heap_pops} | {dup_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_storage_mib} | {obstacle_checks} | {footprint_rect_checks} | {fallbacks} |".format(
                 benchmark=row["benchmark"],
+                mode=_row_mode_label(row),
                 instances=row["instances"],
                 nets=row["nets"],
                 grid=row["grid"],
@@ -1603,7 +1735,16 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("benchmarks", nargs="*", default=list(DEFAULT_BENCHMARKS))
+    parser.add_argument("benchmarks", nargs="*", default=None)
+    parser.add_argument(
+        "--preset",
+        choices=("perf-smoke",),
+        default=None,
+        help=(
+            "Apply a benchmark preset. `perf-smoke` runs the critical router "
+            "benchmarks with release-build enforcement."
+        ),
+    )
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
         "--repeat-runs",
@@ -1662,6 +1803,15 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Write per-route-attempt records as JSON, or CSV when the suffix is .csv.",
     )
+    parser.add_argument(
+        "--require-release",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Require the imported Rust extension to look like an optimized "
+            "release build before running benchmarks."
+        ),
+    )
     parser.add_argument("--path-length-matching", action="store_true")
     parser.add_argument("--path-length-match-outputs", action="store_true")
     parser.add_argument(
@@ -1679,6 +1829,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-iterations", type=int, default=5_000_000)
     parser.add_argument("--routing-window-scale", type=float, default=0.05)
     parser.add_argument("--include-heater-obstacles", action="store_true")
+    parser.add_argument("--crossings", action="store_true")
+    parser.add_argument("--crossing-half-size-cells", type=int, default=0)
+    parser.add_argument("--min-straight-cells-per-crossing", type=int, default=2)
     parser.add_argument("--ripup-reroute", action="store_true")
     parser.add_argument("--ripup-max-rounds", type=int, default=SCRIPT_RIPUP_MAX_ROUNDS)
     parser.add_argument(
@@ -1738,7 +1891,27 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--chip-add-y-um", type=float, default=SCRIPT_CHIP_ADD_Y_UM)
     parser.add_argument("--clear-port-open-cells-from-static", action="store_true")
     parser.add_argument("--_worker-benchmark", default=None, help=argparse.SUPPRESS)
-    return parser.parse_args()
+    args = parser.parse_args()
+    _apply_preset_defaults(args)
+    if not args.benchmarks:
+        args.benchmarks = list(DEFAULT_BENCHMARKS)
+    return args
+
+
+def _apply_preset_defaults(args: argparse.Namespace) -> None:
+    if args.preset != "perf-smoke":
+        return
+
+    if not args.benchmarks:
+        args.benchmarks = list(PERF_SMOKE_BENCHMARKS)
+    if args.output is None:
+        args.output = PROJECT_ROOT / "build" / "perf_smoke.md"
+    if args.write_perf_baseline is None:
+        args.write_perf_baseline = PROJECT_ROOT / "build" / "perf_smoke.json"
+    if args.attempt_output is None:
+        args.attempt_output = PROJECT_ROOT / "build" / "perf_smoke_attempts.json"
+    args.require_release = True
+    args.attempt_diagnostics = True
 
 
 def main() -> int:
@@ -1747,6 +1920,9 @@ def main() -> int:
         row = _run_single_benchmark(args._worker_benchmark, args)
         print(f"{WORKER_MARKER}{json.dumps(row, sort_keys=True)}")
         return 0
+
+    if args.require_release:
+        _ensure_release_extension()
 
     rows = _benchmark_rows(args)
     if args.compare_perf_baseline is not None:
