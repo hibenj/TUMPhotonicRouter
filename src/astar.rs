@@ -3536,6 +3536,17 @@ fn crossing_move_outcome(
                     stats.crossing_reject_margin += 1;
                     return None;
                 }
+                if !crossing_reservation_window_is_clear(
+                    obstacle_map,
+                    crossing.net_id,
+                    partner.net_id,
+                    x,
+                    y,
+                    crossing.crossing_half_size_cells,
+                ) {
+                    stats.crossing_reject_unmatched_footprint += 1;
+                    return None;
+                }
                 route_intersections.push((t, x, y, bit));
             }
         }
@@ -3616,6 +3627,17 @@ fn crossing_move_outcome(
                 }
                 return None;
             };
+            if !crossing_reservation_window_is_clear(
+                obstacle_map,
+                crossing.net_id,
+                crossing.partners[partner_idx].net_id,
+                f64::from(x),
+                f64::from(y),
+                crossing.crossing_half_size_cells,
+            ) {
+                stats.crossing_reject_unmatched_footprint += 1;
+                return None;
+            }
             if pending_after > 0 {
                 stats.crossing_reject_pending_straight += 1;
                 return None;
@@ -3693,6 +3715,36 @@ fn crossing_overlap_cell_with_partner(
         }
     }
     None
+}
+
+fn crossing_reservation_window_is_clear(
+    obstacle_map: &ObstacleMap,
+    net_id: NetId,
+    partner_net_id: NetId,
+    center_x: f64,
+    center_y: f64,
+    half_size_cells: i32,
+) -> bool {
+    if half_size_cells < 0 {
+        return false;
+    }
+    let min_x = (center_x - f64::from(half_size_cells)).floor() as i32;
+    let max_x = (center_x + f64::from(half_size_cells)).ceil() as i32;
+    let min_y = (center_y - f64::from(half_size_cells)).floor() as i32;
+    let max_y = (center_y + f64::from(half_size_cells)).ceil() as i32;
+    for x in min_x..=max_x {
+        for y in min_y..=max_y {
+            if !obstacle_map.in_bounds(x, y) || obstacle_map.is_static_blocked(x, y) {
+                return false;
+            }
+            for owner in obstacle_map.dynamic_owners_at(x, y) {
+                if owner != net_id && owner != partner_net_id {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 fn partner_contains_grid_cell(partner: &CrossingSearchPartner, cell: (i32, i32)) -> bool {
@@ -6685,6 +6737,26 @@ mod tests {
         assert_eq!(outcome.crossing_count, 1);
         assert_eq!(stats.crossing_accepted, 1);
         assert_eq!(stats.crossing_reject_unmatched_owner, 0);
+    }
+
+    #[test]
+    fn crossing_reservation_window_rejects_static_and_unrelated_dynamic_cells() {
+        let mut map = ObstacleMap::new(32, 32);
+        assert!(map.commit_route(1, &[(10, 12)]));
+        assert!(crossing_reservation_window_is_clear(
+            &map, 3, 1, 10.0, 12.0, 1
+        ));
+
+        assert!(map.commit_route(4, &[(11, 12)]));
+        assert!(!crossing_reservation_window_is_clear(
+            &map, 3, 1, 10.0, 12.0, 1
+        ));
+        assert!(map.ripup_route(4));
+
+        map.add_static_cells(&[(11, 12)]);
+        assert!(!crossing_reservation_window_is_clear(
+            &map, 3, 1, 10.0, 12.0, 1
+        ));
     }
 
     fn rasterize_waypoints_for_test(waypoints: &[(i32, i32)]) -> Vec<(i32, i32)> {

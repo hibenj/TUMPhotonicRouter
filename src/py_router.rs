@@ -750,6 +750,18 @@ struct InvalidCrossingIntersection {
 }
 
 #[derive(Default)]
+struct CrossingReservationBlockers {
+    has_static_blocker: bool,
+    dynamic_blockers: FxHashSet<u64>,
+}
+
+impl CrossingReservationBlockers {
+    fn is_clear(&self) -> bool {
+        !self.has_static_blocker && self.dynamic_blockers.is_empty()
+    }
+}
+
+#[derive(Default)]
 struct NativeBatchTimings {
     route_job_unpack_us: u128,
     obstacle_map_prepare_us: u128,
@@ -2479,8 +2491,35 @@ impl PyPhotonicRouter {
         overlapping_partners
     }
 
+    fn crossing_reservation_blockers(
+        &self,
+        net_id: u64,
+        events: &[CrossingEvent],
+    ) -> CrossingReservationBlockers {
+        let mut blockers = CrossingReservationBlockers::default();
+        for event in events {
+            for key in &event.reservation_keys {
+                let (x, y) = unpack_xy(*key);
+                if !self.obstacle_map.in_bounds(x, y) {
+                    blockers.has_static_blocker = true;
+                    continue;
+                }
+                if self.obstacle_map.is_static_blocked(x, y) {
+                    blockers.has_static_blocker = true;
+                }
+                for owner in self.obstacle_map.dynamic_owners_for_cells(&[(x, y)]) {
+                    if owner != net_id && owner != event.partner_net_id {
+                        blockers.dynamic_blockers.insert(owner);
+                    }
+                }
+            }
+        }
+        blockers
+    }
+
     fn crossing_route_satisfies_partner_constraints(
         &self,
+        net_id: u64,
         route: &RouteResult,
         partner_ids: &FxHashSet<u64>,
         crossing_events: &[CrossingEvent],
@@ -2488,10 +2527,12 @@ impl PyPhotonicRouter {
         if partner_ids.is_empty() {
             return true;
         }
+        let reservation_blockers = self.crossing_reservation_blockers(net_id, crossing_events);
         self.invalid_crossing_intersections_for_route(route, partner_ids)
             .is_empty()
             && !crossing_events.is_empty()
             && Self::crossing_events_have_disjoint_reservations(crossing_events)
+            && reservation_blockers.is_clear()
             && (!self.crossing_context.config().allow_only_expected_pairs
                 || Self::crossing_events_cover_partners(crossing_events, partner_ids))
     }
@@ -2761,6 +2802,7 @@ impl PyPhotonicRouter {
                 }
                 let crossing_events = self.crossing_events_for_route(net_id, &result, &partner_ids);
                 if self.crossing_route_satisfies_partner_constraints(
+                    net_id,
                     &result,
                     &partner_ids,
                     &crossing_events,
@@ -2799,6 +2841,7 @@ impl PyPhotonicRouter {
         }
         let crossing_events = self.crossing_events_for_route(net_id, &result, &partner_ids);
         if self.crossing_route_satisfies_partner_constraints(
+            net_id,
             &result,
             &partner_ids,
             &crossing_events,
@@ -4681,11 +4724,18 @@ impl PyPhotonicRouter {
             let victim_selection_start = native_batch_timer(collect_native_timing);
             let owner_lookup_radius_cells =
                 block_radius_cells.max(commit_radius_cells.unwrap_or(block_radius_cells));
-            let mut candidate_blockers: Vec<u64> = self
-                .dynamic_owners_for_native_route(&probe_route, owner_lookup_radius_cells)
-                .into_iter()
-                .filter(|owner| *owner != job.net_id && final_routes.contains_key(owner))
-                .collect();
+            let dynamic_probe_owners = self
+                .dynamic_owners_for_native_route(&probe_route, owner_lookup_radius_cells);
+            let mut candidate_blocker_priority: FxHashMap<u64, u8> = FxHashMap::default();
+            let mut add_candidate_blocker = |owner: u64, priority: u8| {
+                if owner == job.net_id || !final_routes.contains_key(&owner) {
+                    return;
+                }
+                candidate_blocker_priority
+                    .entry(owner)
+                    .and_modify(|existing| *existing = (*existing).min(priority))
+                    .or_insert(priority);
+            };
             let crossing_repair_enabled = self.crossing_context.is_enabled();
             let allowed_crossing_partners: FxHashSet<u64> = if crossing_repair_enabled {
                 self.crossing_context
@@ -4708,6 +4758,7 @@ impl PyPhotonicRouter {
                 && !allowed_crossing_partners.is_empty();
             let probe_crossing_compliant = crossing_repair_enabled
                 && self.crossing_route_satisfies_partner_constraints(
+                    job.net_id,
                     &probe_route,
                     &allowed_crossing_partners,
                     &probe_crossing_events,
@@ -4715,7 +4766,11 @@ impl PyPhotonicRouter {
             if crossing_repair_enabled {
                 let legal_crossed_partners =
                     Self::crossing_partner_ids_from_events(&probe_crossing_events);
-                candidate_blockers.retain(|owner| !legal_crossed_partners.contains(owner));
+                for owner in dynamic_probe_owners {
+                    if !legal_crossed_partners.contains(&owner) {
+                        add_candidate_blocker(owner, 0);
+                    }
+                }
                 for invalid in self
                     .invalid_crossing_intersections_for_route(
                         &probe_route,
@@ -4723,15 +4778,21 @@ impl PyPhotonicRouter {
                     )
                     .into_iter()
                 {
-                    if final_routes.contains_key(&invalid.partner_net_id) {
-                        candidate_blockers.push(invalid.partner_net_id);
-                    }
+                    add_candidate_blocker(invalid.partner_net_id, 1);
                 }
                 for partner_id in
                     Self::crossing_partners_with_overlapping_reservations(&probe_crossing_events)
                 {
-                    if final_routes.contains_key(&partner_id) {
-                        candidate_blockers.push(partner_id);
+                    add_candidate_blocker(partner_id, 1);
+                }
+                let reservation_blockers =
+                    self.crossing_reservation_blockers(job.net_id, &probe_crossing_events);
+                for owner in reservation_blockers.dynamic_blockers {
+                    add_candidate_blocker(owner, 0);
+                }
+                if reservation_blockers.has_static_blocker {
+                    for event in &probe_crossing_events {
+                        add_candidate_blocker(event.partner_net_id, 1);
                     }
                 }
                 if self.crossing_context.config().allow_only_expected_pairs {
@@ -4739,15 +4800,26 @@ impl PyPhotonicRouter {
                         if !legal_crossed_partners.contains(partner_id)
                             && final_routes.contains_key(partner_id)
                         {
-                            candidate_blockers.push(*partner_id);
+                            add_candidate_blocker(*partner_id, 2);
                         }
                     }
                 }
+            } else {
+                for owner in dynamic_probe_owners {
+                    add_candidate_blocker(owner, 0);
+                }
             }
+            let mut candidate_blockers: Vec<u64> =
+                candidate_blocker_priority.keys().copied().collect();
             candidate_blockers.sort_unstable_by_key(|owner| {
-                order_by_id.get(owner).copied().unwrap_or(usize::MAX)
+                (
+                    candidate_blocker_priority
+                        .get(owner)
+                        .copied()
+                        .unwrap_or(u8::MAX),
+                    order_by_id.get(owner).copied().unwrap_or(usize::MAX),
+                )
             });
-            candidate_blockers.dedup();
             timings.repair_probe_victim_selection_us +=
                 native_batch_elapsed_us(victim_selection_start);
             if candidate_blockers.is_empty() {
@@ -4837,7 +4909,6 @@ impl PyPhotonicRouter {
             if crossing_repair_enabled {
                 let single_victim_limit = candidate_blockers
                     .len()
-                    .min(max_rounds as usize)
                     .min(max_victims);
                 for owner in candidate_blockers.iter().take(single_victim_limit) {
                     repair_victim_sets.push((1, vec![*owner]));
@@ -8080,6 +8151,7 @@ mod tests {
             &events
         ));
         assert!(!router.crossing_route_satisfies_partner_constraints(
+            3,
             &route,
             &partner_ids,
             &events
@@ -8089,6 +8161,99 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn crossing_events_reject_static_and_unrelated_dynamic_reservation_blockers() {
+        let grid = PyGridSpec::new(32, 32, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                0.0,
+                0,
+                false,
+                false,
+                "library".to_string(),
+                "distance".to_string(),
+                1.0,
+            ),
+        );
+        router.crossing_context.set_config(CrossingConfig {
+            enabled: true,
+            allow_only_expected_pairs: true,
+            crossing_half_size_cells: 2,
+            min_straight_cells_per_crossing: 2,
+            ..CrossingConfig::default()
+        });
+        let route = RouteResult {
+            states: Vec::new(),
+            primitives: Vec::new(),
+            cells: Vec::new(),
+            compressed_waypoints: vec![(3, 12), (24, 12)],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target: State::new(24, 12, 0),
+            reached_target: State::new(24, 12, 0),
+            stats: RouteSearchStats::default(),
+        };
+        let mut partner_ids = FxHashSet::default();
+        partner_ids.insert(1);
+        let mut reservation = FxHashSet::default();
+        reservation.insert(pack_xy(10, 12));
+        reservation.insert(pack_xy(10, 13));
+        let events = vec![CrossingEvent {
+            net_id: 3,
+            partner_net_id: 1,
+            point: (10.0, 12.0),
+            route_segment: ((3, 12), (24, 12)),
+            partner_segment: ((10, 5), (10, 24)),
+            route_angle: 0,
+            partner_angle: 2,
+            reservation_keys: reservation,
+        }];
+
+        assert!(router.crossing_route_satisfies_partner_constraints(
+            3,
+            &route,
+            &partner_ids,
+            &events
+        ));
+
+        router.obstacle_map.add_static_cells(&[(10, 13)]);
+        assert!(!router.crossing_route_satisfies_partner_constraints(
+            3,
+            &route,
+            &partner_ids,
+            &events
+        ));
+        let static_cleanup = [pack_xy(10, 13)].into_iter().collect();
+        router.obstacle_map.remove_static_keys(&static_cleanup);
+
+        assert!(router.obstacle_map.commit_route(4, &[(10, 13)]));
+        let blockers = router.crossing_reservation_blockers(3, &events);
+        assert!(!blockers.is_clear());
+        assert!(blockers.dynamic_blockers.contains(&4));
+        assert!(!router.crossing_route_satisfies_partner_constraints(
+            3,
+            &route,
+            &partner_ids,
+            &events
+        ));
     }
 
     #[test]

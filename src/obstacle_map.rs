@@ -600,6 +600,14 @@ impl ObstacleMap {
             .find_map(|(&net_id, cells)| cells.contains(&key).then_some(net_id))
     }
 
+    /// Return all committed dynamic-route owners of a cell.
+    pub fn dynamic_owners_at(&self, x: i32, y: i32) -> FxHashSet<NetId> {
+        if !self.in_bounds(x, y) {
+            return FxHashSet::default();
+        }
+        self.dynamic_owners_for_key(pack_xy(x, y), None)
+    }
+
     /// Return the committed dynamic core-route owner of a cell, if any.
     pub fn dynamic_core_owner_at(&self, x: i32, y: i32) -> Option<NetId> {
         if !self.in_bounds(x, y) {
