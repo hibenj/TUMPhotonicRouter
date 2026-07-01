@@ -219,6 +219,8 @@ cargo test crossing
 ## Related Notes
 
 - `docs/tumphotonicrouter_vs_lidar.md` - code-based comparison with LiDAR.
+- `docs/tumphotonicrouter_vs_lidar2_functionality.md` - functionality-only
+  comparison with the local LiDAR 2.0 paper.
 - `docs/profiling.md` - profiling workflow and optimization notes.
 - `docs/photonic_baseline.md` - local baseline timing snapshot.
 - `Agent_implementation_files/ROUTING_FLOW_ARCHITECTURE.md` - older architecture notes.
