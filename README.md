@@ -218,6 +218,8 @@ cargo test crossing
 
 ## Related Notes
 
+- `docs/repository_finished_state.md` - focused finished-state target for
+  crossings and PLM.
 - `docs/tumphotonicrouter_vs_lidar.md` - code-based comparison with LiDAR.
 - `docs/tumphotonicrouter_vs_lidar2_functionality.md` - functionality-only
   comparison with the local LiDAR 2.0 paper.
