@@ -33,6 +33,25 @@ When this phase is finished, the repository should support:
 | PLM | Match path lengths with a planner that can choose between at least bump meanders and a parallel foldback delay structure. |
 | Documentation | Keep the comparison clear: LiDAR-like mode is for fair baseline parity, topology-precomputed mode is the proposed faster approach. |
 
+## Immediate Implementation Priority
+
+For the next implementation agent, crossings come first. PLM remains part of
+the finished-state target, but it should not be the first work item unless
+crossing routing is already stable on the benchmark set.
+
+The immediate crossing milestone is:
+
+| Step | Goal | Done when |
+| --- | --- | --- |
+| 1 | Stabilize the current topology-precomputed crossing mode on local Benes cases | Local Benes benchmarks route with strict expected-pair validation, crossing diagnostics, and no verification failures attributable to crossing geometry. |
+| 2 | Add route-induced insertion-loss accounting | Reports contain length, bend penalty, crossing count, and route-induced IL for every routed net and benchmark aggregate. |
+| 3 | Add a LiDAR-like loss-guided crossing mode | The router can run without topology expected pairs and can decide whether to cross from length/bend/crossing cost. |
+| 4 | Run both modes on the same local benchmark definitions | Benchmark reports distinguish LiDAR-like mode from topology-precomputed mode. |
+| 5 | Expand benchmark coverage toward LiDAR 2.0 | Missing LiDAR 2.0 benchmark families are added or imported in priority order. |
+
+Do not start by extending metal routing. Do not start by building hierarchy
+unless crossing benchmark coverage is blocked without it.
+
 ## Crossing Goal
 
 Crossing support should become the main comparison axis against LiDAR 2.0.
@@ -95,6 +114,56 @@ Required benchmark work:
 
 Current local benchmark references include Benes and Clements-style cases, but
 the full LiDAR 2.0 benchmark set still needs to be inventoried and mirrored.
+
+### LiDAR 2.0 Benchmark Inventory
+
+The paper lists the following photonic benchmark families. The local repository
+does not need to reproduce LiDAR's YAML format exactly, but it should provide
+equivalent benchmark definitions that both crossing modes can run.
+
+| Paper benchmark | Paper crossing character | Local status | Crossing priority |
+| --- | --- | --- | --- |
+| `Clements_8x8` | No inherent topological crossings | Partial: `benchmarks/clements_8x8.py` exists | Low; useful sanity baseline |
+| `Clements_16x16` | No inherent topological crossings | Missing | Low; scale sanity baseline |
+| `Clements_8x8_C` | Compact, no inherent topological crossings | Missing | Low; congestion baseline |
+| `Clements_16x16_C` | Compact, no inherent topological crossings | Missing | Low; congestion baseline |
+| `ADEPT_8x8` | Moderate inherent crossings | Missing | High |
+| `ADEPT_16x16` | Higher inherent crossings | Missing | High |
+| `ADEPT_32x32` | Large inherent crossing count | Missing | High |
+| `ADEPT_8x8_C` | Compact crossing-heavy tensor-core case | Missing | Very high |
+| `ADEPT_16x16_C` | Compact crossing-heavy tensor-core case | Missing | Very high |
+| `ADEPT_32x32_C` | Large compact crossing-heavy tensor-core case | Missing | Very high, after smaller ADEPT works |
+| `TeMPO_8x8_C` | Hierarchical/reusable, crossing-heavy compact case | Missing | Very high |
+| `TeMPO_16x16_C` | Larger TeMPO compact case | Missing | Very high, after 8x8 works |
+| `TeMPO_32x32_C` | Very large TeMPO compact case | Missing | Later scale target |
+| `GWOR_16x16_C` | Optical-switch benchmark with routing-order pressure | Missing | High |
+| `GWOR_32x32_C` | Larger GWOR case | Missing | High, after 16x16 works |
+| `Benes_16x16_C` | Structured hierarchical topology with very high crossing density | Partial local equivalent: `benchmarks/benes_16x16.py` exists, compactness parity unknown | Very high |
+| `Benes_32x32_C` | Large high-crossing Benes case | Partial local equivalent: `benchmarks/benes_32x32.py` exists, compactness parity unknown | Very high scale target |
+| `Light_a`, `Light_b`, `Light_c`, `Light_d` | Optical-switch cases; paper reports no routed topological crossings after optimization | Missing | Medium; useful loss/crossing tradeoff cases |
+
+Existing local crossing-oriented benchmarks:
+
+| Local benchmark | Current role |
+| --- | --- |
+| `benes.py` | Base Benes generator/reference. |
+| `benes_4x4.py` | Small crossing smoke test. |
+| `benes_8x8.py` | Medium local crossing test. |
+| `benes_16x16.py` | Larger local crossing test. |
+| `benes_32x32.py` | Scale/stress crossing test. |
+| `clements_8x8.py` | No-crossing or low-crossing baseline imported from LiDAR-style data. |
+
+Recommended crossing-first benchmark order:
+
+1. Local `benes_4x4` and `benes_8x8` for fast strict-crossing correctness.
+2. Local `benes_16x16` and `benes_32x32` for structured high-crossing scale.
+3. Add/import `ADEPT_8x8_C` and `ADEPT_16x16_C` for dense multi-port crossing
+   pressure.
+4. Add/import `TeMPO_8x8_C` and `TeMPO_16x16_C` for hierarchy/reuse-like
+   crossing pressure, even before full hierarchy reuse is implemented.
+5. Add/import `GWOR_16x16_C` and `GWOR_32x32_C` for routing-order pressure.
+6. Fill in Clements, Light, and larger variants for the final paper-style
+   comparison table.
 
 ## PLM Goal
 
@@ -189,7 +258,7 @@ visible.
 | 1 | Define a route-induced insertion-loss model shared by reports and LiDAR-like routing mode | `src/astar.rs`, `src/primitives.rs`, `translation/route_rust.py`, benchmark scripts |
 | 2 | Add LiDAR-like crossing discovery mode without topology expected pairs | `src/astar.rs`, `src/crossings.rs`, `src/py_router.rs` |
 | 3 | Keep topology-precomputed crossing mode as a separately selectable mode | `python/photonic_router/topology_analysis.py`, `python/photonic_router/crossing_plan.py`, `translation/route_rust.py`, `src/crossings.rs` |
-| 4 | Build a LiDAR 2.0 benchmark inventory and local conversion status table | `benchmarks/`, `benchmark_metadata.py`, `scripts/benchmark_photonic.py` |
+| 4 | Add the missing high-priority LiDAR 2.0 crossing benchmarks | `benchmarks/`, `benchmark_metadata.py`, `scripts/benchmark_photonic.py` |
 | 5 | Finish physical crossing realization if route reports contain accepted crossings | `translation/route_rust.py`, `src/geometry_realization.rs`, primitive/crossing component helpers |
 | 6 | Add parallel-foldback PLM candidate planning | `src/meander.rs`, `translation/route_rust_meanders.py`, `translation/path_length_candidates.py` |
 | 7 | Extend PLM reports to include structure type and rejected-candidate reasons | `translation/path_length_diagnostics.py`, `translation/route_rust_types.py` |
