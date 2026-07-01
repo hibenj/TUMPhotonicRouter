@@ -1,301 +1,242 @@
-# TUMPhotonicRouter vs LiDAR
+# TUMPhotonicRouter vs LiDAR 2.0 / LiDAR 3.0
 
-This is a code-based comparison between this repository and [ScopeX-ASU/LiDAR](https://github.com/ScopeX-ASU/LiDAR). I inspected the LiDAR repository source, not only the paper/README claims.
+This is a code-based comparison between this repository and
+[ScopeX-ASU/LiDAR](https://github.com/ScopeX-ASU/LiDAR), plus a paper-level
+comparison against LiDAR 3.0 for electrical routing:
 
-The short version: LiDAR is a useful published PIC detailed-router baseline, but TUMPhotonicRouter is architecturally broader and has a stronger implementation foundation for the direction of this project: Rust kernels, detailed profiling, PLM, meanders, electrical routing, and future placement/routing co-optimization.
+- LiDAR / LiDAR 2.0: photonic waveguide detailed routing.
+- LiDAR 3.0: photonics-aware automated electrical routing for active PICs,
+  described in the ISPD 2026 paper
+  [LiDAR 3.0: Photonics-Aware Planning-Guided Automated Electrical Routing for Large-Scale Active Photonic Integrated Circuits](https://dl.acm.org/doi/10.1145/3764386.3779589).
+
+The conclusion is split accordingly. For optical/photonic routing,
+TUMPhotonicRouter has the stronger implementation foundation for fast,
+extensible routing. For electrical routing, LiDAR 3.0 appears ahead right now:
+this repository has a useful heater-routing prototype, but not yet the same
+paper-level planning-guided electrical router.
 
 ## Executive Takeaway
 
-TUMPhotonicRouter is not just another Python A* router. It is becoming a full routing framework:
+For photonic waveguide routing, TUMPhotonicRouter is faster by design because
+its bottlenecks are not Python object operations. It keeps routing state,
+obstacle data, legality checks, route commitment, rip-up, crossing repair, and
+many geometry queries inside Rust data structures.
 
-- schematic-to-layout orchestration
-- Rust accelerated optical routing
-- curvy/primitive-aware obstacle legality
-- fast straight/L/Z route shortcuts
-- rip-up/reroute with history costs
-- physical gdsfactory realization
-- path-length matching and meander insertion
-- heater electrical routing
-- detailed profiling and debug artifacts
-- planned placer that reasons about crossings before routing
+The two most important speed reasons are:
 
-LiDAR's main current code-level advantage is that it already contains crossing insertion logic and published benchmark examples. For this project, that is not a fundamental architectural advantage: crossings are better handled earlier by placement and exposed to the router intentionally, instead of only being inserted reactively when a detailed-route neighbor hits an existing waveguide.
+- Obstacle handling is compiled and compact: static/dynamic obstacles use
+  packed cell keys, dense occupancy bits, compact rectangles, and prefix tables.
+- Crossing work is constrained by topology: expected crossing pairs are derived
+  before detailed routing, so the router can focus search/repair on valid
+  partner nets instead of treating every collision as a generic local surprise.
 
-## Code Structure Comparison
+Against LiDAR 2.0, this repository's photonic-routing advantages are the Rust
+routing kernel, stronger obstacle-map representation, topology-derived crossing
+constraints, richer repair/profiling, PLM/meanders, and a cleaner path toward
+larger integrated flows.
 
-| Area | TUMPhotonicRouter | LiDAR |
+Against LiDAR 3.0, the electrical-routing comparison is different. LiDAR 3.0 is
+specifically about large-scale active-PIC electrical routing with
+photonics-aware planning. TUMPhotonicRouter currently has heater electrical
+routing, pad planning, realization, and verification, but it is narrower and
+less mature.
+
+## Photonic Routing: vs LiDAR 2.0
+
+This section is the photonic/waveguide comparison. It should be read against
+LiDAR and LiDAR 2.0, not LiDAR 3.0's electrical-routing paper.
+
+| Area | TUMPhotonicRouter | LiDAR 2.0 |
 | --- | --- | --- |
-| Core language | Rust routing kernels + Python orchestration | Python router |
-| Backend module | PyO3 extension `photonic_router._rust` | No native routing backend found |
-| Hot loop storage | Dense arrays, bitsets, prefix tables | Python objects, dicts, numpy object bitmap |
-| Routing state | `(x, y, angle)` with 8 headings | `(x, y, orientation)` with 45-degree support |
-| Neighbor model | Photonic primitives with explicit footprints and geometry | Step tables and DRC checks in Python |
-| Simple fast paths | Straight, L, Z before A* | No equivalent source-level fast path found |
-| Cost objective | Length, bend cost, history/congestion, physical route length | Propagation, bend, crossing, congestion weights |
-| PLM/meanders | Integrated | Not found |
-| Heater electrical routing | Integrated | Not found as a routing flow |
-| Profiling | Per-attempt counters and timing buckets | Logging/evaluation output, less kernel instrumentation |
-| Benchmark style | Python/gdsfactory schematic functions | YAML/netlist-style benchmark/config flow |
-| Future direction | Placer + crossing-aware routing | Detailed router with reactive crossing insertion |
+| Core implementation | Python orchestration with Rust/PyO3 routing kernels | Python routing implementation |
+| A* state | Dense indexed `(x, y, angle)` arrays | Python `GridAstarNode` objects |
+| Queue/bookkeeping | Rust heap, generation counters, dense closed-state bitsets | Python custom heap/dict structures |
+| Static obstacles | Rust builder, compact bbox rectangles, optional materialized cells | Python/NumPy bitmap object grid |
+| Dynamic obstacles | Rust route database with owners, core/clearance cells, rip-up, rollback | Python bitmap/DRC state |
+| Legality checks | Primitive footprints, prefix-sum rectangle/segment checks, fallback per-cell checks | Python DRC walks and bitmap-node checks |
+| Simple routes | Straight, L, Z, and turnaround candidates before A* | No equivalent pre-A* layer found in inspected source |
+| Crossing strategy | Topology-derived expected pairs, Rust crossing search, reservations, validation, local repair | Reactive detailed-route crossing insertion |
+| Crossing realization | Crossing reservations and realized-overlap diagnostics; crossing component size used for keepout | Inserts `gf.components.crossing()` in the routing/post-processing flow |
+| Repair | Transactional route attempts, blocker discovery, victim rip-up, rollback, history costs | Rip-up/reroute behavior tied to Python route/DRC logic |
+| PLM/meanders | Integrated graph analysis and Rust-backed analytic meander planning | Not found as an integrated routing stack |
+| Diagnostics | Per-attempt counters, timing buckets, primitive-class counters, SVGs, crossing JSON/text | Logging/evaluation output, less kernel-level instrumentation |
+| Benchmarks | Native Python/gdsfactory benchmarks plus imported LiDAR-style Clements benchmark | Published benchmark/config flow |
 
-## What LiDAR Actually Does in Code
+## Why TUMPhotonicRouter Scales Better
 
-LiDAR's main detailed router is under:
+### Obstacle Map And Legality
 
-- `/tmp/lidar-code/src/picroute/routing/astarsearch.py`
-- `/tmp/lidar-code/src/picroute/routing/drgridroute.py`
-- `/tmp/lidar-code/src/picroute/drc/drcmanager.py`
-- `/tmp/lidar-code/src/picroute/drc/bitmap.py`
-- `/tmp/lidar-code/src/picroute/queue/heapdict.py`
+LiDAR's inspected routing path keeps much of the detailed-router state in
+Python objects: A* nodes, heap entries, DRC calls, and a NumPy array of
+`bitmapNode` cells. That structure is convenient, but expensive in the hot loop.
+Every candidate expansion can involve Python dispatch, object access, and
+branch-heavy DRC logic.
 
-Important observations:
+TUMPhotonicRouter uses a different layout:
 
-- A* nodes are Python `GridAstarNode` objects with `__slots__`.
-- The open set is a custom Python `heapdict`.
-- The global grid is a `numpy` array of Python `bitmapNode` objects.
-- DRC and crossing checks are performed in Python with many branch-heavy per-cell checks.
-- Neighbor transitions are stored in Python dictionaries such as `nextSteps`.
-- Cost uses weighted propagation, bend, crossing, congestion, and history terms.
-- Crossing insertion exists and is routed through DRC checks and post-processing that inserts `gf.components.crossing()`.
-- The comp config sets `loss_crossing: 0`, while evaluation uses `il_cross`.
-- I did not find an integrated PLM/meander routing stack.
-- I did not find a Rust/native backend.
-- I did not find a heater electrical routing flow comparable to this repository.
+| Mechanism | Why it is faster |
+| --- | --- |
+| Packed `u64` cell keys | Sparse cells can be stored and compared cheaply without tuple/object overhead |
+| Dense occupancy bits | Common blocked/free checks become cache-friendly bit lookups |
+| Compact static rectangles | Bounding-box obstacles do not have to be expanded into large cell sets before handoff |
+| Summed-area tables | Horizontal, vertical, and rectangular footprint checks become O(1) prefix queries |
+| Primitive profiles | Regular footprints take the prefix path; irregular footprints are the exception |
+| Rust route database | Commit, rip-up, owner lookup, core/clearance overlap rules, and history costs stay native |
 
-LiDAR is therefore a good algorithmic reference for crossing insertion and PIC-specific DRC checks, but its implementation is much more Python-object-heavy.
+This matters because detailed routing is dominated by repeated local queries:
+"is this primitive legal?", "which route owns this blocked region?", "can this
+reservation be opened?", and "what history cost applies here?". Moving those
+queries out of Python is a structural speedup, not just an implementation tweak.
 
-## What TUMPhotonicRouter Does Better
+Relevant TUMPhotonicRouter files:
 
-### 1. Faster Core Architecture
-
-TUMPhotonicRouter puts the expensive router operations in Rust:
-
-- A* expansion
-- primitive legality checks
-- dense obstacle map construction
-- route commitment
-- rip-up
-- history costs
-- route reconstruction
-- meander geometry probing
-
-This matters because routing spends most time in repeated local operations. Keeping those operations in Python makes every node expansion and DRC check pay interpreter/object overhead.
-
-Relevant files:
-
-- `src/astar.rs`
 - `src/obstacle_map.rs`
+- `src/static_obstacle_builder.rs`
+- `src/astar.rs`
 - `src/primitives.rs`
-- `src/geometry_realization.rs`
-- `src/py_router.rs`
+- `python/photonic_router/static_obstacle_builder.py`
 
-### 2. Better Low-Level Data Structures
+### Search State
 
-TUMPhotonicRouter's A* state is indexed directly:
+TUMPhotonicRouter maps each routed state directly to a dense index:
 
 ```text
 idx = ((local_y * width) + local_x) * 8 + angle
 ```
 
-That enables:
+That enables compact `Vec` storage for costs, parents, primitive IDs,
+generations, and closed-state bookkeeping. LiDAR's source uses Python node
+objects and heap/dict structures for comparable state. On large grids, dense
+native arrays have much better memory locality and much lower per-expansion
+overhead.
 
-- `Vec<f64>` for costs
-- `Vec<u32>` for parent indices and generations
-- `Vec<u16>` for parent primitive IDs
-- dense closed-state bitsets
-- packed `u64` sparse cell keys
-- fast `FxHashMap`/`FxHashSet` where sparse maps are still needed
+### Fast Path Before A*
 
-LiDAR's bitmap is a `numpy` object array containing Python `bitmapNode` instances. That is convenient, but it is not a strong foundation for a high-performance detailed router.
+Many photonic nets do not need full graph search. TUMPhotonicRouter checks
+deterministic route candidates first, including straight, L, Z, and turnaround
+variants. If one is legal, the route completes without heap traffic and without
+expanding A* states.
 
-### 3. Prefix-Sum Obstacle Checks
-
-TUMPhotonicRouter builds summed-area tables for dense occupancy and history costs. Rectangular collision checks become:
-
-```text
-sum(rect) = A + D - B - C
-```
-
-This is a major difference. Many routing primitives are straight segments or rectangular footprints, so legality can be checked by table lookup instead of iterating through every touched cell.
-
-LiDAR checks route legality through Python DRC methods such as `bViolateDRC()`, which repeatedly calls bitmap-node checks while walking a candidate step.
-
-Relevant files:
-
-- `src/astar.rs`
-- `src/geometry_realization.rs`
-
-### 4. Simple Routes Avoid A*
-
-TUMPhotonicRouter checks deterministic routes before A*:
-
-- straight
-- L route
-- Z route
-
-If one is legal, the route finishes with zero A* expanded states. This is exactly the kind of pragmatic optimization that matters in large circuits because many nets are not hard enough to justify full search.
-
-I did not find an equivalent straight/L/Z pre-route layer in LiDAR's source.
+This is especially important in larger circuits: the hard nets should pay for
+A*, but easy nets should not.
 
 Relevant file:
 
 - `src/simple_routes.rs`
 
-### 5. Stronger Physical Framework
+## Crossing Handling
 
-LiDAR is focused on optical detailed routing. TUMPhotonicRouter already reaches beyond that:
+TUMPhotonicRouter now has topology-derived crossing support:
 
-- optical waveguide routing
-- path-length graph analysis
-- local and output path-length matching
-- analytic meander insertion
-- meander obstacle registration
-- heater electrical terminal extraction
-- pad planning
-- electrical bus/detail routing
-- electrical verification
+1. Benchmarks can expose node depths, node ranks, and edge ranks.
+2. Python analyzes rank inversions between topology stages.
+3. A crossing plan turns those inversions into ordered expected crossing events.
+4. Python passes compact `CrossingConstraint` records into Rust.
+5. Rust only allows/repairs core overlaps that match the expected partner set
+   when strict expected-pair mode is active.
+6. The router reserves crossing windows, rejects invalid geometry such as
+   non-perpendicular or insufficient-straight crossings, and writes crossing
+   debug artifacts.
+7. The current implementation also adds spacing history around viable crossing
+   windows and preemptive local rip-up for expected crossing partners when
+   history shows an existing route is blocking the likely crossing region.
 
-That makes this project closer to a full PIC layout automation framework, not only a waveguide router.
+This is different from LiDAR's reactive insertion model. LiDAR can insert a
+crossing component when detailed routing finds a crossing opportunity. This
+repository instead precomputes which nets are supposed to cross from topology,
+then uses that information to guide search, validation, and repair.
 
-Relevant files:
+That topology-first approach is faster and cleaner for structured PIC networks
+because the router does not have to rediscover the crossing graph from local
+collisions. It already knows the valid partner set and can reject unrelated
+overlaps early.
 
-- `translation/path_length_requirements.py`
-- `translation/path_length_candidates.py`
-- `translation/route_rust_meanders.py`
-- `src/meander.rs`
-- `src/geometry_realization.rs`
-- `translation/electrical/`
+Relevant TUMPhotonicRouter files:
 
-### 6. Better Debuggability
+- `python/photonic_router/topology_analysis.py`
+- `python/photonic_router/crossing_plan.py`
+- `src/crossings.rs`
+- `src/astar.rs`
+- `src/py_router.rs`
+- `translation/route_rust.py`
+- `benchmarks/benes.py`
 
-TUMPhotonicRouter records detailed route-attempt data:
+## Electrical Routing: vs LiDAR 3.0
 
-- expanded states
-- generated neighbors
-- heap pushes/pops
-- stale generation skips
-- closed-entry skips
-- dense state count
-- memory use
-- footprint checks
-- rectangle checks
-- primitive-class reject counters
-- routing-window areas
-- full-grid fallbacks
-- timing split by neighbor generation, heap operation, legality check, reconstruction
+LiDAR 3.0 changes the electrical-routing comparison. The paper title and public
+metadata describe a photonics-aware, planning-guided automated electrical router
+for large-scale active PICs. That is a more ambitious and probably stronger
+electrical-routing contribution than the current TUMPhotonicRouter electrical
+stack.
 
-This is much better for router development than only checking whether a route succeeded.
+TUMPhotonicRouter's electrical routing is still valuable: it extracts heater
+terminals, builds an electrical obstacle grid, routes a common bus, plans pad
+slots, routes individual terminals, realizes metal, and verifies the result.
+But it is currently a milestone implementation around heater access and pad
+escape, not a full LiDAR 3.0-class electrical router.
 
-Relevant files:
-
-- `translation/route_rust_types.py`
-- `translation/route_rust_records.py`
-- `scripts/profile_astar.py`
-- `scripts/benchmark_photonic.py`
-
-### 7. Cleaner Python/Rust Boundary
-
-TUMPhotonicRouter keeps a useful separation:
-
-- Python owns gdsfactory, schematic loading, high-level orchestration, debug output, and final layout construction.
-- Rust owns the route search, route database, collision acceleration, and geometry-heavy helpers.
-
-This is the right split for a research router: high-level workflows remain easy to change, while performance-sensitive code is compiled and measurable.
-
-LiDAR keeps nearly all routing behavior in Python. That is easier to start with, but it becomes limiting when the bottleneck is search and legality checking.
-
-### 8. Cost Function Is Not a LiDAR Advantage
-
-LiDAR exposes propagation, bending, crossing, congestion, and history costs. That sounds like an insertion-loss objective, but in practice the useful routing goals are:
-
-- shorter waveguides
-- fewer bends
-- fewer crossings
-- less congestion
-- legal spacing
-
-TUMPhotonicRouter already optimizes the same core physical drivers through:
-
-- primitive length cost
-- bend cost
-- dynamic obstacle avoidance
-- history cost during repair
-- path-length analysis and matching after routing
-- route realization diagnostics
-
-Crossing count is not yet a first-class objective because the planned design is to handle crossing opportunities earlier through placement and intentional crossing reservation.
-
-## Current LiDAR Advantages That Still Matter
-
-After source inspection, the remaining LiDAR advantages are narrower than the public positioning suggests:
-
-| LiDAR point | Why it matters | Why it is not a fundamental blocker here |
-| --- | --- | --- |
-| Existing crossing insertion | It can insert `gf.components.crossing()` during/post routing | This repo plans a placer that handles crossings before routing, which is a stronger long-term architecture |
-| Published benchmark context | It has ISPD paper context and example benchmark sets | This repo can import/run LiDAR-style benchmarks later for direct comparison |
-| Existing YAML benchmark/config flow | Useful for reproducible batch experiments | This repo's Python benchmarks are more flexible; YAML import can be added if needed |
-
-I would not frame LiDAR as stronger overall for this project. It has a published optical-router baseline and crossing insertion implementation. TUMPhotonicRouter has the stronger framework architecture.
-
-## Future Work: Placer Before Router
-
-The most important next architectural step is a placer.
-
-The placer should:
-
-- position components with routing demand in mind
-- estimate unavoidable crossings before detailed routing
-- reserve intentional crossing regions
-- expose crossing opportunities to the router as legal resources
-- reduce crossings by placement before the router starts
-- keep the router focused on detailed legal realization
-
-This is better than treating crossing insertion only as a local repair when a route hits another route. A crossing-aware placer can reduce the problem before A* sees it.
-
-## Core Functionality Comparison
-
-These are framework-level capabilities, not just A* implementation details.
-
-| Capability | TUMPhotonicRouter | LiDAR | Why this is better here |
+| Electrical-routing area | TUMPhotonicRouter today | LiDAR 3.0 paper direction | Current position |
 | --- | --- | --- | --- |
-| Native router backend | Rust/PyO3 backend behind Python orchestration | Python router | Keeps gdsfactory flexibility while compiling the expensive search, legality, commitment, rip-up, and geometry helper loops. |
-| Full routing pipeline | Optical routing + PLM + meanders + heater electrical routing | Optical detailed routing | This repository is becoming a PIC routing framework, not only a single optical router. |
-| Path-length matching + meanders | Integrated graph analysis and obstacle-aware analytic meander insertion | Not found | Routed designs can be corrected for arrival/edge length requirements instead of stopping at shortest legal routes. |
-| Electrical heater routing | Heater terminal extraction, pad planning, metal realization, verification | Not found as a routing flow | Optical and heater-metal concerns can be handled in one layout pipeline. |
-| Debug/profiling artifacts | SVGs, failed-route logs, route-attempt records, timing buckets, per-class counters | More limited logging/evaluation output | Failures and performance regressions can be diagnosed at the route-attempt and primitive-class level. |
-| Crossing strategy | Planned placer + intentional crossing reservation before detailed routing | Reactive detailed-route crossing insertion | Handling crossings during placement can reduce conflicts before A* sees them, instead of discovering crossings only after route collision. |
-| Benchmark publication | Local baselines today | Published ISPD 2025 baseline | LiDAR is stronger here today; this repository is set up to import those benchmarks and compare with deeper profiling. |
+| Scope | Heater terminal extraction, common bus, pad slots, individual escape, metal realization | Large-scale active-PIC electrical routing | LiDAR 3.0 is broader |
+| Planning level | Local/common-bus topology plus pad-side escape planning | Photonics-aware planning-guided electrical routing | LiDAR 3.0 is likely stronger |
+| Optical awareness | Uses extracted layout obstacles and heater/metal obstacle layers in one local flow | Paper-level framing targets waveguide-aware electrical routing around photonic constraints | LiDAR 3.0 is likely stronger |
+| Congestion/DRC | Grid obstacles, clearances, pad spacing, verification, debug SVGs | Public descriptions emphasize congestion/DRC-aware planning and guidance-driven detailed routing | LiDAR 3.0 is likely stronger |
+| Multi-net electrical strategy | Common-bus plus one-sided individual terminal routing | Large-scale metal-wire routing for active PICs | LiDAR 3.0 is likely stronger |
+| Implementation maturity | Prototype-quality but inspectable code in `translation/electrical/` | Published ISPD 2026 paper result | LiDAR 3.0 is more mature |
+| Debuggability | Strong local SVG snapshots and verification objects | Paper-level comparison only here; source not inspected in this repo pass | Unclear without source |
+| Integration with this repo | Already callable from `routing_flow.py` and shares local benchmark/debug infrastructure | External LiDAR 3.0 flow | TUMPhotonicRouter is easier to evolve inside this codebase |
 
-## Shared Router Features, Better Kernel
+The fair summary: TUMPhotonicRouter is stronger today for the Rust-backed
+photonic routing kernel, but weaker today for electrical routing if compared to
+LiDAR 3.0's stated scope.
 
-Both projects have grid-based A* concepts, oriented routing states, curvy/bend-aware movement, costs, DRC-style legality, history/congestion ideas, and rip-up/reroute behavior. The difference is how those ideas are implemented.
+## Framework Scope
 
-| Shared feature | TUMPhotonicRouter implementation | LiDAR implementation | Which is better here and why |
-| --- | --- | --- | --- |
-| A* runtime | Rust dense A* kernel | Python A* over `GridAstarNode` objects | TUMPhotonicRouter is better for speed because expansion, queue work, cost updates, legality checks, and reconstruction avoid interpreter overhead. |
-| State storage | Direct dense index: `((local_y * width) + local_x) * 8 + angle` | Python node objects stored in dictionaries/heapdict | Dense arrays improve locality and avoid object allocation/hash lookup in the hot path. |
-| Closed/open bookkeeping | Closed-state bitset, generation counters, optional indexed heap | Python custom `heapdict` and node flags | Bitsets and generation counters are cheaper and make stale-entry handling measurable. |
-| Obstacle map | Sparse packed `u64` keys plus dense blocked bitsets | `numpy` object array of `bitmapNode` instances | Packed keys and bitsets are much more compact than per-cell Python objects. |
-| Footprint legality | Primitive footprint profiles with fast rectangle/segment paths | Python DRC walks candidate cells through bitmap checks | TUMPhotonicRouter avoids many per-cell checks by recognizing simple footprints once. |
-| Prefix-sum checks | Blocked-cell and history summed-area tables | No equivalent found | Rectangular/segment checks become O(1), which directly speeds repeated legality queries. |
-| Routing windows | Configurable source-target search windows with growth and fallback | Net bounding regions | TUMPhotonicRouter exposes detailed window counters and can tune search area without losing fallback behavior. |
-| Simple-route bypass | Straight, L, and Z candidates before A* | No equivalent found | Easy nets finish with zero A* expanded states, no heap traffic, and no broad search. |
-| Heuristic | Distance or heading-aware lower bound with target-angle handling | Manhattan/custom heuristic with bend terms | Heading-aware mode keeps admissible distance behavior while adding unavoidable bend lower bounds. |
-| Primitive ordering | Library, long-straight-first, target-biased experiments | Python `nextSteps` order | TUMPhotonicRouter can benchmark ordering changes without changing route semantics. |
-| Cost drivers | Length, bend cost, dynamic conflicts, history cost, PLM validation | Propagation, bend, crossing, congestion weights | The same physical goals are covered, plus timing/path-length is analyzed and repaired after routing. |
-| Rip-up/reroute | Probe route, blocker discovery, victim rip-up, history update, rollback | Failed-net rip-up and local crossing-net rip-up | TUMPhotonicRouter's repair is more instrumented and transactional. |
-| Curvy/bend awareness | Primitive footprints checked against obstacles, then physically realized | Parametric bend/neighbor DRC in Python | Both are curvy-aware; TUMPhotonicRouter has the stronger compiled legality and realization path. |
-| Diagnostics | Per-attempt counters for expansions, heap, rejects, footprint checks, dense memory, timing | Logs and final evaluations | TUMPhotonicRouter makes algorithmic improvements measurable instead of relying mainly on wall time or final success. |
+| Capability | Status here |
+| --- | --- |
+| Schematic-to-layout orchestration | Implemented in `routing_flow.py` and translation modules |
+| Optical primitive routing | Rust A* and simple-route candidates |
+| Path-length matching | Graph analysis, output matching, analytic meander insertion |
+| Meander planning | Rust-backed candidate/sequence/split/final planners |
+| Heater electrical routing | Terminal extraction, pad planning, detailed routing, verification |
+| Benchmark diagnostics | Markdown/CSV/JSON reports and route-attempt records |
+| LiDAR-style benchmark import | `benchmarks/clements_8x8.py` exists as a converted Clements benchmark |
 
-## Bottom Line
+This broader scope matters because PIC layout automation is not only shortest
+legal waveguides. Timing/path length, heater metal, pad escape, and debugging
+all affect whether a routed layout is usable.
 
-LiDAR is a good reference for crossing-aware photonic detailed routing. But after reading the code, the implementation is mostly a Python A* router with object-grid DRC checks and crossing insertion logic.
+## LiDAR Advantages That Still Matter
 
-TUMPhotonicRouter is a stronger foundation for a full PIC routing framework because it already combines a compiled routing kernel, richer diagnostics, PLM/meanders, electrical routing, and a path toward crossing-aware placement before detailed routing.
+| LiDAR advantage | Practical meaning |
+| --- | --- |
+| Published baseline | Easier to cite and compare against in papers |
+| Existing crossing-device insertion | It has a mature flow for placing `gf.components.crossing()` as part of routing/post-processing |
+| LiDAR 3.0 electrical-routing paper | Stronger current position for large-scale active-PIC electrical routing |
+| Benchmark ecosystem | Its YAML/config benchmarks are useful for reproducibility |
+| Algorithmic reference value | Its crossing and DRC logic remain useful to study |
+
+These are real advantages, but they are not the same as having a stronger
+photonic-routing performance foundation. For waveguide routing speed,
+TUMPhotonicRouter's Rust obstacle/search kernel is the more scalable
+architecture.
+
+## Claim Boundaries
+
+- The performance argument here is code-structure based. Use
+  `docs/photonic_baseline.md`, `scripts/benchmark_photonic.py`, and
+  `scripts/profile_astar.py` for measured local numbers.
+- The comparison should not be read as a final quality benchmark until the same
+  benchmark suite is run through both projects on the same machine and process.
+- TUMPhotonicRouter currently has crossing constraints/reservations and
+  realization diagnostics; full physical crossing-device placement should be
+  described separately when that implementation is complete.
+- The LiDAR 3.0 electrical-routing section is paper-level. I did not inspect
+  LiDAR 3.0 source code in this repository pass.
 
 ## Source Notes
 
-LiDAR source inspected from:
+LiDAR source areas inspected:
 
 - `src/picroute/routing/astarsearch.py`
 - `src/picroute/routing/drgridroute.py`
@@ -305,13 +246,26 @@ LiDAR source inspected from:
 - `src/picroute/config/default_config.yml`
 - `src/picroute/config/comp_LiDAR.yml`
 
-TUMPhotonicRouter source inspected from:
+LiDAR 3.0 paper/source note:
 
+- DOI: `10.1145/3764386.3779589`
+- ACM page: `https://dl.acm.org/doi/10.1145/3764386.3779589`
+- PDF link supplied by the user: `https://dl.acm.org/doi/pdf/10.1145/3764386.3779589`
+- Used here as a paper-level electrical-routing reference, not as inspected
+  source code.
+
+TUMPhotonicRouter source areas inspected:
+
+- `routing_flow.py`
+- `translation/route_rust.py`
+- `python/photonic_router/static_obstacle_builder.py`
+- `python/photonic_router/topology_analysis.py`
+- `python/photonic_router/crossing_plan.py`
 - `src/astar.rs`
 - `src/simple_routes.rs`
 - `src/obstacle_map.rs`
-- `src/geometry_realization.rs`
+- `src/static_obstacle_builder.rs`
+- `src/crossings.rs`
 - `src/py_router.rs`
-- `translation/route_rust.py`
 - `translation/route_rust_meanders.py`
 - `translation/electrical/`

@@ -1,27 +1,32 @@
 # TUMPhotonicRouter
 
-A Rust + Python framework for automated photonic integrated circuit routing.
+TUMPhotonicRouter is a Rust + Python framework for automated photonic
+integrated circuit routing. Python owns gdsfactory integration, benchmark
+loading, layout realization, path-length matching, and electrical orchestration;
+Rust owns the routing database, obstacle-map acceleration, A* search, crossing
+constraints, rip-up/repair, and geometry-heavy planning kernels.
 
-TUMPhotonicRouter takes a gdsfactory schematic, builds an unrouted layout, rasterizes obstacles, routes optical waveguides with a Rust A* backend, optionally performs path-length matching with meanders, and can route heater electrical metal in the same flow.
+The project is an active research/prototype router, but it is already more than
+a standalone optical detailed router: it contains schematic translation, optical
+routing, topology-derived crossing support, path-length matching with meanders,
+heater electrical routing, diagnostics, and benchmarking.
 
-The project is currently an active research/prototype router, but the architecture is already broader than a standalone optical detailed router: it combines schematic translation, fast routing kernels, physical realization, PLM, electrical routing, diagnostics, and benchmarking.
+## Current Capabilities
 
-## Highlights
-
-| Area | What is implemented |
+| Area | Implemented behavior |
 | --- | --- |
-| Optical routing | 8-heading primitive A* with straight, 45-degree, and 90-degree moves |
-| Curvy-aware legality | Bend/route footprints are checked against grid obstacles before acceptance |
-| Fast paths | Deterministic straight, L, and Z routes before full A* |
-| Rust acceleration | Dense state arrays, bitsets, prefix-sum obstacle tables, PyO3 bindings |
-| Dynamic routing database | Static obstacles, committed routed nets, rip-up, reroute, history costs |
-| Path-length matching | Graph analysis, missing-length requirements, analytic meander insertion |
-| Electrical routing | Heater terminal extraction, pad planning, bus/detail routing, verification |
-| Realization | Rust route records become gdsfactory polygons/components |
-| Debugging | Obstacle SVGs, route SVGs, failed-route logs, timing and attempt counters |
-| Benchmarks | Python/gdsfactory benchmarks plus profiling scripts |
+| Schematic flow | Load Python/gdsfactory benchmarks, build unrouted layouts, route and write GDS/debug artifacts |
+| Optical routing | 8-heading primitive router with straight, 45-degree, and 90-degree transitions |
+| Fast optical paths | Straight, L, Z, and turnaround candidates are tried before dense A* where legal |
+| Obstacle handling | Rust static/dynamic obstacle database with compact rectangles, packed cell keys, dense bitsets, and prefix tables |
+| Crossing support | Optional topology-derived crossing constraints, expected-pair validation, crossing reservations, and local crossing repair |
+| Repair | Dynamic route commitment, rip-up/reroute, rollback, and history costs |
+| Path-length matching | Graph analysis, missing-length requirements, analytic meander insertion, and Rust meander planners |
+| Electrical routing | Heater terminal extraction, pad planning, bus/detail routing, and verification |
+| Realization | Rust route records are converted into gdsfactory geometry/components |
+| Diagnostics | Obstacle SVGs, route SVGs, crossing reports, failed-route logs, timing buckets, and per-attempt counters |
 
-## Flow
+## Routing Flow
 
 ```text
 Python benchmark schematic
@@ -30,18 +35,22 @@ Python benchmark schematic
 gdsfactory unrouted layout
         |
         v
-static obstacle grid + port openings
+static obstacle grid, compact rectangles, and port openings
+        |
+        v
+optional topology crossing plan
         |
         v
 Rust optical routing
-  - straight/L/Z fast path
-  - primitive A*
+  - simple-route candidates
+  - dense primitive A*
+  - expected crossing search
   - rip-up/reroute repair
         |
         v
 physical route realization
         |
-        +--> optional PLM + meanders
+        +--> optional path-length matching and meanders
         |
         +--> optional heater electrical routing
         |
@@ -49,38 +58,48 @@ physical route realization
 routed Component / GDS / debug artifacts
 ```
 
-## Why This Router Is Fast
+## Why It Is Fast
 
-| Technique | Why it matters |
+The main speed difference is not a single heuristic. It comes from keeping the
+high-frequency routing operations in compiled, cache-friendly data structures.
+
+| Technique | Effect |
 | --- | --- |
-| Rust inner loop | A* expansion, legality checks, queue work, and reconstruction avoid Python overhead |
-| Dense state index | `(x, y, angle)` maps to one array index, avoiding hash maps in the hot path |
-| Bitsets | Closed states and dense blocked cells are compact and cache-friendly |
-| Packed cell keys | Sparse grid cells are stored as reversible `u64` keys |
-| Prefix-sum tables | Rectangular/segment obstacle checks become constant-time table queries |
-| Footprint profiles | Straight and rectangular primitive footprints use fast prefix checks |
-| Routing windows | A* searches near the source/target first, with controlled growth |
-| Simple-route fast path | Direct, L, and Z routes avoid graph search entirely when legal |
-| Heading-aware heuristic | Adds a conservative bend lower bound to the distance heuristic |
-| Instrumentation | Every optimization can be measured with route-attempt counters |
+| Rust hot path | A* expansion, primitive legality, route commitment, rip-up, history updates, and crossing checks avoid Python interpreter/object overhead |
+| Direct state indexing | `(x, y, angle)` maps to dense arrays for cost, parent, generation, and closed-state data |
+| Compact obstacle map | Static/dynamic cells use packed `u64` keys and dense occupancy bits instead of per-cell Python objects |
+| Compact static rectangles | Bounding-box obstacles can stay as rectangles instead of being fully materialized into millions of cells |
+| Prefix-sum occupancy | Segment and rectangular footprint checks become constant-time table queries inside routing windows |
+| Primitive footprint profiles | Straight and rectangular footprints take the fast prefix path; only irregular footprints fall back to per-cell checks |
+| Simple-route bypass | Easy nets finish without heap traffic or broad graph search |
+| Routing windows | A* first searches a source-target window and only expands/falls back when needed |
+| Topology-derived crossings | Expected crossing partners are precomputed from net topology, so crossing search and repair can focus on valid pairs instead of discovering arbitrary overlaps |
+| Native repair database | Committed routes, owners, rollback snapshots, history costs, and crossing reservations are maintained in Rust |
 
-The cost model targets the physical goals that matter in PIC routing: short waveguides, fewer bends, conflict avoidance, and congestion/history avoidance. Crossing-aware placement/routing is planned as part of the future placer work.
+This design makes obstacle queries and bookkeeping cheap enough that the router
+can spend its time on actual search decisions. The checked-in baseline numbers
+are in `docs/photonic_baseline.md`; they are local measurements, not portable
+hardware-independent guarantees.
 
-## Core Files
+## Important Files
 
 | File | Role |
 | --- | --- |
-| `routing_flow.py` | End-to-end benchmark, layout, optical, PLM, and electrical flow |
-| `translation/route_rust.py` | Python bridge into the Rust optical router |
-| `src/astar.rs` | Primitive A*, dense search storage, routing windows, JPS experiments |
-| `src/simple_routes.rs` | Straight, L, and Z candidate routing |
-| `src/obstacle_map.rs` | Static/dynamic obstacle database, rip-up, history costs |
-| `src/primitives.rs` | Photonic movement primitives and footprints |
-| `src/geometry_realization.rs` | Route polygons, port access, meander geometry |
-| `translation/route_rust_meanders.py` | PLM/meander orchestration |
+| `routing_flow.py` | End-to-end benchmark, layout, optical, PLM, crossing, and electrical flow |
+| `translation/route_rust.py` | Python bridge into the Rust optical router and crossing context builder |
+| `python/photonic_router/static_obstacle_builder.py` | Static obstacle extraction, Rust fallback handling, compact bbox payloads |
+| `python/photonic_router/topology_analysis.py` | Depth/rank analysis used for crossing-aware routing |
+| `python/photonic_router/crossing_plan.py` | Converts topology rank inversions into ordered crossing events |
+| `src/astar.rs` | Dense primitive A*, routing windows, prefix occupancy, and search counters |
+| `src/obstacle_map.rs` | Static/dynamic route database, packed cells, rip-up, history costs |
+| `src/crossings.rs` | Crossing constraints and expected-pair context |
+| `src/py_router.rs` | PyO3 router API, route batch/repair logic, crossing repair, meander helpers |
+| `src/simple_routes.rs` | Deterministic straight/L/Z/turnaround route candidates |
+| `src/primitives.rs` | Photonic movement primitives and footprint metadata |
+| `src/geometry_realization.rs` | Route polygons, port access, and meander geometry |
 | `translation/electrical/` | Heater electrical routing stack |
 | `scripts/benchmark_photonic.py` | End-to-end photonic benchmark runner |
-| `scripts/profile_astar.py` | Isolated Rust A* profiling |
+| `scripts/profile_astar.py` | Isolated Rust A* profiler |
 
 ## Build
 
@@ -108,7 +127,15 @@ Default flow:
 python3 routing_flow.py
 ```
 
-Run a benchmark with timing:
+Run a benchmark with crossings and timing:
+
+```bash
+python3 routing_flow.py benes_16x16 \
+  --crossings \
+  --debug-timing
+```
+
+Run a heater-obstacle rip-up benchmark:
 
 ```bash
 python3 routing_flow.py mmi_heater_8x4_ripup_reroute \
@@ -136,14 +163,17 @@ python3 routing_flow.py heater_s \
 
 ## Debug Output
 
-When debug SVGs are enabled, artifacts are written under `build/`:
+When debug SVGs or crossing diagnostics are enabled, artifacts are written under
+`build/`:
 
 | Output | Meaning |
 | --- | --- |
-| `build/static_obstacles/*_obstacles.svg` | Rasterized blocked/open grid cells |
+| `build/static_obstacles/*_obstacles.svg` | Rasterized/compact obstacle view and port openings |
 | `build/routes/*.svg` | Per-net routed paths |
 | `build/routes/*_FAILED.txt` | Failure diagnostics |
 | `build/routes/*_diagnostics.txt` | Port/opening/occupancy details |
+| `build/crossings/*_crossings.json` | Expected and realized crossing metadata |
+| `build/crossings/*_crossings.txt` | Human-readable crossing plan and realization summary |
 | `build/electrical/*.svg` | Electrical routing snapshots |
 | `build/routed_<benchmark>.gds` | Final routed layout |
 
@@ -169,14 +199,6 @@ python3 scripts/benchmark_electrical.py
 
 Current checked-in baseline: `docs/photonic_baseline.md`.
 
-| Benchmark | Instances | Nets | Grid | Total s |
-| --- | ---: | ---: | --- | ---: |
-| `TOY` | 5 | 4 | 645x332 | 0.0591 |
-| `mmi_heater` | 7 | 7 | 1805x292 | 0.1797 |
-| `mmi_heater_8x4` | 61 | 78 | 13005x1252 | 1.0004 |
-
-These are local baseline numbers, not general hardware-independent guarantees.
-
 ## Tests
 
 ```bash
@@ -191,18 +213,12 @@ python3 -m pytest tests/test_rust_backend_import.py -v
 python3 -m pytest tests/test_routing_flow_stats.py -v
 python3 -m pytest tests/test_route_rust_records.py -v
 python3 -m pytest tests/test_electrical_routing.py -v
+cargo test crossing
 ```
-
-## Roadmap
-
-- Import and run LiDAR-style benchmark suites for direct measurement.
-- Add a placement stage that reasons about crossings before detailed routing.
-- Use placement/routing co-optimization to reduce crossings before the router has to repair them.
-- Extend crossing-aware routing once the placer can reserve and expose intentional crossing sites.
-- Continue optimizing Rust kernels around dense occupancy, route windows, and meander planning.
 
 ## Related Notes
 
 - `docs/tumphotonicrouter_vs_lidar.md` - code-based comparison with LiDAR.
 - `docs/profiling.md` - profiling workflow and optimization notes.
+- `docs/photonic_baseline.md` - local baseline timing snapshot.
 - `Agent_implementation_files/ROUTING_FLOW_ARCHITECTURE.md` - older architecture notes.
