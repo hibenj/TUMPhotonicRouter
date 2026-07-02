@@ -156,6 +156,32 @@ def _route_segments_from_waypoints(
     return tuple(segments)
 
 
+def _points_are_collinear(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+) -> bool:
+    ab = (b[0] - a[0], b[1] - a[1])
+    bc = (c[0] - b[0], c[1] - b[1])
+    cross = ab[0] * bc[1] - ab[1] * bc[0]
+    dot = ab[0] * bc[0] + ab[1] * bc[1]
+    return abs(cross) < 1e-9 and dot >= -1e-9
+
+
+def _compress_centerline(
+    points: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    if len(points) < 3:
+        return points
+    out: list[tuple[float, float]] = []
+    for point in points:
+        if len(out) >= 2 and _points_are_collinear(out[-2], out[-1], point):
+            out.pop()
+        if not out or out[-1] != point:
+            out.append(point)
+    return tuple(out)
+
+
 def _segment_intersection_with_params(
     a0: tuple[float, float],
     a1: tuple[float, float],
@@ -235,6 +261,179 @@ def _first_perpendicular_route_intersection(
                 "segment_b_margin_cells": round(float(margin_b), 6),
             }
     return None
+
+
+def _record_centerline_um(
+    record: RoutedNetRecord,
+    *,
+    grid_size_um: float,
+    origin_x_um: float,
+    origin_y_um: float,
+) -> tuple[tuple[float, float], ...]:
+    if record.corrected_centerline_um:
+        return _compress_centerline(record.corrected_centerline_um)
+    waypoints = _route_waypoints_from_obj(record.route_obj)
+    if not waypoints:
+        return ()
+    return _compress_centerline(
+        tuple(
+        (
+            float(origin_x_um) + float(x) * float(grid_size_um),
+            float(origin_y_um) + float(y) * float(grid_size_um),
+        )
+        for x, y in waypoints
+        )
+    )
+
+
+def _rounded_point(point: tuple[float, float]) -> list[float]:
+    return [round(float(point[0]), 6), round(float(point[1]), 6)]
+
+
+def _rounded_segment(
+    segment: tuple[tuple[float, float], tuple[float, float]],
+) -> list[list[float]]:
+    return [_rounded_point(segment[0]), _rounded_point(segment[1])]
+
+
+def _verify_realized_route_intersections(
+    *,
+    crossing_plan_info: dict[str, object],
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord],
+    realization_grid_spec: tuple[int, int, float, float, float],
+) -> list[dict[str, object]]:
+    if not crossing_plan_info.get("enabled"):
+        crossing_plan_info["realized_intersections"] = []
+        crossing_plan_info["illegal_realized_crossings"] = []
+        crossing_plan_info["illegal_realized_crossing_count"] = 0
+        return []
+
+    _width, _height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
+    required_margin_um = float(grid_size_um) * max(
+        int(crossing_plan_info.get("min_straight_cells_per_crossing", 0) or 0),
+        int(crossing_plan_info.get("crossing_half_size_cells", 0) or 0),
+    )
+    allowed_pairs: set[frozenset[int]] = set()
+    net_names: dict[int, str] = {}
+    for raw_event in cast(Iterable[object], crossing_plan_info.get("events", [])):
+        event = dict(cast(dict[str, object], raw_event))
+        if not event.get("loaded"):
+            continue
+        net_id_a = int(cast(int, event["net_id_a"]))
+        net_id_b = int(cast(int, event["net_id_b"]))
+        allowed_pairs.add(frozenset((net_id_a, net_id_b)))
+        net_names[net_id_a] = str(event.get("net_name_a", net_id_a))
+        net_names[net_id_b] = str(event.get("net_name_b", net_id_b))
+
+    records = sorted(routed_records_by_net_id.items())
+    centerlines_by_id = {
+        net_id: _record_centerline_um(
+            record,
+            grid_size_um=float(grid_size_um),
+            origin_x_um=float(origin_x_um),
+            origin_y_um=float(origin_y_um),
+        )
+        for net_id, record in records
+    }
+    for net_id, record in records:
+        net_names.setdefault(net_id, record.net_name)
+
+    allow_unexpected = not bool(crossing_plan_info.get("allow_only_expected_crossings", True))
+    realized: list[dict[str, object]] = []
+    illegal: list[dict[str, object]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+    eps = 1e-9
+    for index_a, (net_id_a, record_a) in enumerate(records):
+        segments_a = _route_segments_from_waypoints(centerlines_by_id.get(net_id_a, ()))
+        if not segments_a:
+            continue
+        for net_id_b, record_b in records[index_a + 1 :]:
+            segments_b = _route_segments_from_waypoints(centerlines_by_id.get(net_id_b, ()))
+            if not segments_b:
+                continue
+            pair = frozenset((net_id_a, net_id_b))
+            pair_expected = pair in allowed_pairs
+            pair_allowed = allow_unexpected or pair_expected
+            for segment_a in segments_a:
+                len_a = _segment_length_cells(segment_a)
+                if len_a <= 0.0:
+                    continue
+                for segment_b in segments_b:
+                    len_b = _segment_length_cells(segment_b)
+                    if len_b <= 0.0:
+                        continue
+                    intersection = _segment_intersection_with_params(
+                        segment_a[0],
+                        segment_a[1],
+                        segment_b[0],
+                        segment_b[1],
+                    )
+                    if intersection is None:
+                        continue
+                    point_x, point_y, t, u = intersection
+                    key = (
+                        min(net_id_a, net_id_b),
+                        max(net_id_a, net_id_b),
+                        round(point_x * 1_000_000),
+                        round(point_y * 1_000_000),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    margin_a = min(max(t, 0.0) * len_a, max(1.0 - t, 0.0) * len_a)
+                    margin_b = min(max(u, 0.0) * len_b, max(1.0 - u, 0.0) * len_b)
+                    perpendicular = _segments_are_perpendicular(segment_a, segment_b)
+                    contact_adjacent = margin_a <= eps and margin_b <= eps
+                    legal = (
+                        pair_allowed
+                        and perpendicular
+                        and margin_a + eps >= required_margin_um
+                        and margin_b + eps >= required_margin_um
+                    )
+                    if legal:
+                        classification = (
+                            "legal_expected_crossing"
+                            if pair_expected
+                            else "legal_unexpected_crossing"
+                        )
+                        reason = None
+                    elif contact_adjacent:
+                        classification = "contact_adjacent_geometry"
+                        reason = "shared_segment_endpoint"
+                    else:
+                        classification = "illegal_unexpected_crossing"
+                        if not pair_allowed:
+                            reason = "unexpected_pair"
+                        elif not perpendicular:
+                            reason = "not_perpendicular"
+                        else:
+                            reason = "insufficient_straight_margin"
+                    record = {
+                        "net_id_a": int(net_id_a),
+                        "net_id_b": int(net_id_b),
+                        "net_name_a": record_a.net_name,
+                        "net_name_b": record_b.net_name,
+                        "point_um": _rounded_point((point_x, point_y)),
+                        "segment_a_um": _rounded_segment(segment_a),
+                        "segment_b_um": _rounded_segment(segment_b),
+                        "segment_a_margin_um": round(float(margin_a), 6),
+                        "segment_b_margin_um": round(float(margin_b), 6),
+                        "required_margin_um": round(float(required_margin_um), 6),
+                        "expected_pair": bool(pair_expected),
+                        "perpendicular": bool(perpendicular),
+                        "classification": classification,
+                    }
+                    if reason is not None:
+                        record["reason"] = reason
+                    realized.append(record)
+                    if classification.startswith("illegal_"):
+                        illegal.append(record)
+
+    crossing_plan_info["realized_intersections"] = realized
+    crossing_plan_info["realized_intersection_count"] = len(realized)
+    crossing_plan_info["illegal_realized_crossings"] = illegal
+    crossing_plan_info["illegal_realized_crossing_count"] = len(illegal)
+    return illegal
 
 
 def _bbox_size_um(component: Component) -> tuple[float, float] | None:
@@ -645,6 +844,21 @@ def _write_crossing_debug_artifacts(
                 "  - "
                 f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} "
                 + " ".join(details)
+            )
+    if crossing_plan_info.get("illegal_realized_crossing_count", 0):
+        lines.append("illegal_realized_crossings:")
+        for crossing in cast(
+            list[dict[str, object]],
+            crossing_plan_info.get("illegal_realized_crossings", []),
+        ):
+            lines.append(
+                "  - "
+                f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} "
+                f"point={crossing.get('point_um')} "
+                f"reason={crossing.get('reason')} "
+                f"margin_a={crossing.get('segment_a_margin_um')} "
+                f"margin_b={crossing.get('segment_b_margin_um')} "
+                f"required={crossing.get('required_margin_um')}"
             )
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -3199,7 +3413,8 @@ def route_nets_rust(
                 f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
                 f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
                 f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                f"allow_45_degree_turns={allow_45_degree_turns}"
+                f"allow_45_degree_turns={allow_45_degree_turns}. "
+                f"error={error_text}"
             )
 
     else:
@@ -3601,11 +3816,29 @@ def route_nets_rust(
             native_crossing_events = []
         crossing_plan_info["native_crossing_events"] = native_crossing_events
         crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
+    illegal_realized_crossings = _verify_realized_route_intersections(
+        crossing_plan_info=crossing_plan_info,
+        routed_records_by_net_id=route_bookkeeping.records_by_id,
+        realization_grid_spec=realization_grid_spec,
+    )
     _write_crossing_debug_artifacts(
         debug_path=debug_path,
         debug_prefix=debug_prefix,
         crossing_plan_info=crossing_plan_info,
     )
+    if illegal_realized_crossings:
+        preview = "; ".join(
+            f"{item.get('net_name_a')} x {item.get('net_name_b')} "
+            f"at {item.get('point_um')} ({item.get('reason')}, "
+            f"margins={item.get('segment_a_margin_um')}/"
+            f"{item.get('segment_b_margin_um')}, "
+            f"required={item.get('required_margin_um')})"
+            for item in illegal_realized_crossings[:5]
+        )
+        raise RuntimeError(
+            "Illegal realized route crossing(s) after endpoint correction: "
+            f"{len(illegal_realized_crossings)} found. {preview}"
+        )
 
     t_debug_artifact_start = _pipeline_timer_start()
     debug_artifacts = build_route_debug_artifacts(
