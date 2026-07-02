@@ -52,6 +52,23 @@ The immediate crossing milestone is:
 Do not start by extending metal routing. Do not start by building hierarchy
 unless crossing benchmark coverage is blocked without it.
 
+### Immediate Crossing Correctness Blocker
+
+Before adding physical crossing-cell insertion or expanding to more benchmarks,
+fix the illegal crossing geometry currently visible in `benes_16x16`: some nets
+still cross other waveguides at or near bends instead of at a valid
+straight-straight crossing window. This is a first-order design-rule issue, not
+only an SVG/debug artifact.
+
+The next implementation pass should:
+
+| Work item | Done when |
+| --- | --- |
+| Detect all geometric intersections after routing and endpoint correction | Every route/route intersection is classified as expected legal crossing, illegal unexpected crossing, or same-net/contact-adjacent geometry. |
+| Reject bend or near-bend crossings | A crossing is legal only when both involved realized centerlines have sufficient straight access before and after the crossing point. |
+| Keep logical crossing reservations aligned with realized geometry | The grey crossing footprint in debug SVG/GDS corresponds to the actual straight-straight route intersection, not a nearby bend or shifted path segment. |
+| Repair illegal realized crossings | If post-route verification finds an illegal bend crossing, local ripup/reroute should choose a blocking route and re-route until the crossing is legal or the benchmark fails explicitly. |
+
 ## Crossing Goal
 
 Crossing support should become the main comparison axis against LiDAR 2.0.
