@@ -2949,10 +2949,40 @@ impl PyPhotonicRouter {
                     .max(config.crossing_half_size_cells)
                     .max(0),
             );
-        let Ok(route_centerline) = self.realized_centerline_for_route(route) else {
-            return Vec::new();
-        };
+        let route_centerline_owned;
+        let route_centerline =
+            if let Some(centerline) = self.committed_realized_center_routes.get(&net_id) {
+                centerline
+            } else {
+                let Ok(centerline) = self.realized_centerline_for_route(route) else {
+                    return Vec::new();
+                };
+                route_centerline_owned = centerline;
+                &route_centerline_owned
+            };
         if route_centerline.len() < 2 {
+            return Vec::new();
+        }
+        let partner_centerlines: Vec<(u64, Vec<(f64, f64)>)> = self
+            .committed_center_routes
+            .iter()
+            .filter_map(|(partner_id, partner_grid_waypoints)| {
+                if *partner_id == net_id {
+                    return None;
+                }
+                let centerline = self
+                    .committed_realized_center_routes
+                    .get(partner_id)
+                    .cloned()
+                    .unwrap_or_else(|| self.grid_waypoints_to_centerline(partner_grid_waypoints));
+                if centerline.len() < 2 {
+                    None
+                } else {
+                    Some((*partner_id, centerline))
+                }
+            })
+            .collect();
+        if partner_centerlines.is_empty() {
             return Vec::new();
         }
         let mut invalid = Vec::new();
@@ -2962,18 +2992,7 @@ impl PyPhotonicRouter {
             if route_len <= 0.0 {
                 continue;
             }
-            for (partner_id, partner_grid_waypoints) in &self.committed_center_routes {
-                if *partner_id == net_id {
-                    continue;
-                }
-                let partner_centerline = self
-                    .committed_realized_center_routes
-                    .get(partner_id)
-                    .cloned()
-                    .unwrap_or_else(|| self.grid_waypoints_to_centerline(partner_grid_waypoints));
-                if partner_centerline.len() < 2 {
-                    continue;
-                }
+            for (partner_id, partner_centerline) in &partner_centerlines {
                 for partner_segment in partner_centerline.windows(2) {
                     let partner_len =
                         physical_segment_length(partner_segment[0], partner_segment[1]);
@@ -3203,7 +3222,13 @@ impl PyPhotonicRouter {
             crossing_loss: crossing_cfg.crossing_loss,
             require_all_partners: require_all_expected_partners,
         };
-        let trace_crossing = std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING").is_some();
+        let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map_or_else(
+                || std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING").is_some(),
+                |trace_net_id| trace_net_id == net_id,
+            );
         if trace_crossing {
             eprintln!(
                 "crossing-search start net={} partners={:?} max_iterations={} block_radius={} min_straight={} half_size={}",
@@ -5146,9 +5171,18 @@ impl PyPhotonicRouter {
         let mut failed_net_id: Option<u64> = None;
         let mut failed_error: Option<String> = None;
         let trace_native_progress = std::env::var_os("PHOTONIC_ROUTER_NATIVE_PROGRESS").is_some();
+        let mut trace_last_route_start: Option<Instant> = None;
 
         'route_jobs: for (job_index, job) in native_jobs.iter().enumerate() {
             if trace_native_progress {
+                let now = Instant::now();
+                if let Some(last_start) = trace_last_route_start.replace(now) {
+                    eprintln!(
+                        "native_route_elapsed previous_index={} elapsed_s={:.6}",
+                        job_index,
+                        last_start.elapsed().as_secs_f64()
+                    );
+                }
                 eprintln!(
                     "native_route_start index={} net_id={} source=({}, {}, {}) target=({}, {}, {})",
                     job_index + 1,
@@ -6107,6 +6141,15 @@ impl PyPhotonicRouter {
                     "No repair route found; candidate_blockers={candidate_blockers:?}; recent_errors={recent_errors:?}"
                 ));
                 break;
+            }
+        }
+        if trace_native_progress {
+            if let Some(last_start) = trace_last_route_start {
+                eprintln!(
+                    "native_route_elapsed previous_index={} elapsed_s={:.6}",
+                    native_jobs.len(),
+                    last_start.elapsed().as_secs_f64()
+                );
             }
         }
 
