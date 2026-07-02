@@ -2178,6 +2178,7 @@ def route_nets_rust(
         for name in (
             "normal_route",
             "probe_route",
+            "preemptive_crossing_ripup",
             "repair_failed_net",
             "reroute_victims",
             "endpoint_correction",
@@ -3517,6 +3518,7 @@ def route_nets_rust(
         for bucket_name in (
             "normal_route",
             "probe_route",
+            "preemptive_crossing_ripup",
             "repair_failed_net",
             "reroute_victims",
             "endpoint_correction",

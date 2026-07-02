@@ -121,18 +121,39 @@ The paper lists the following photonic benchmark families. The local repository
 does not need to reproduce LiDAR's YAML format exactly, but it should provide
 equivalent benchmark definitions that both crossing modes can run.
 
+Local LiDAR source checkouts are available at:
+
+```text
+/home/benjamin/Documents/Repositories/working/LiDAR
+/home/benjamin/Documents/Repositories/original/LiDAR
+```
+
+Important naming note: the LiDAR 2.0 paper calls the ADEPT tensor-core
+benchmarks `ADEPT_*`, but the local LiDAR code stores these as
+`multiportmmi_*` benchmarks:
+
+```text
+/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute/benchmarks/multiportmmi_8x8/multiportmmi_8x8.yml
+/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute/benchmarks/multiportmmi_16x16/multiportmmi_16x16.yml
+/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute/benchmarks/multiportmmi_32x32/multiportmmi_32x32.yml
+```
+
+The `original/LiDAR` checkout also contains corresponding `.layout.yml` files
+for the 16x16 and 32x32 `multiportmmi` cases, which may be useful when
+reconstructing placements.
+
 | Paper benchmark | Paper crossing character | Local status | Crossing priority |
 | --- | --- | --- | --- |
 | `Clements_8x8` | No inherent topological crossings | Partial: `benchmarks/clements_8x8.py` exists | Low; useful sanity baseline |
 | `Clements_16x16` | No inherent topological crossings | Missing | Low; scale sanity baseline |
 | `Clements_8x8_C` | Compact, no inherent topological crossings | Missing | Low; congestion baseline |
 | `Clements_16x16_C` | Compact, no inherent topological crossings | Missing | Low; congestion baseline |
-| `ADEPT_8x8` | Moderate inherent crossings | Missing | High |
-| `ADEPT_16x16` | Higher inherent crossings | Missing | High |
-| `ADEPT_32x32` | Large inherent crossing count | Missing | High |
-| `ADEPT_8x8_C` | Compact crossing-heavy tensor-core case | Missing | Very high |
-| `ADEPT_16x16_C` | Compact crossing-heavy tensor-core case | Missing | Very high |
-| `ADEPT_32x32_C` | Large compact crossing-heavy tensor-core case | Missing | Very high, after smaller ADEPT works |
+| `ADEPT_8x8` | Moderate inherent crossings | Missing locally; source data is LiDAR `multiportmmi_8x8` | High |
+| `ADEPT_16x16` | Higher inherent crossings | Missing locally; source data is LiDAR `multiportmmi_16x16` | High |
+| `ADEPT_32x32` | Large inherent crossing count | Missing locally; source data is LiDAR `multiportmmi_32x32` | High |
+| `ADEPT_8x8_C` | Compact crossing-heavy tensor-core case | Missing locally; start from LiDAR `multiportmmi_8x8` and compact placement if needed | Very high |
+| `ADEPT_16x16_C` | Compact crossing-heavy tensor-core case | Missing locally; start from LiDAR `multiportmmi_16x16` and compact placement if needed | Very high |
+| `ADEPT_32x32_C` | Large compact crossing-heavy tensor-core case | Missing locally; start from LiDAR `multiportmmi_32x32` and compact placement if needed | Very high, after smaller ADEPT works |
 | `TeMPO_8x8_C` | Hierarchical/reusable, crossing-heavy compact case | Missing | Very high |
 | `TeMPO_16x16_C` | Larger TeMPO compact case | Missing | Very high, after 8x8 works |
 | `TeMPO_32x32_C` | Very large TeMPO compact case | Missing | Later scale target |

@@ -755,6 +755,11 @@ struct CrossingReservationBlockers {
     dynamic_blockers: FxHashSet<u64>,
 }
 
+const CROSSING_SPACING_HISTORY_AMOUNT: u32 = 1;
+const CROSSING_LOCAL_RIPUP_MIN_SOURCE_DEPTH: u32 = 2;
+const CROSSING_LOCAL_RIPUP_MIN_OVERLAP_CELLS: u32 = 64;
+const CROSSING_LOCAL_RIPUP_MIN_EXTRA_SUM: u64 = 64;
+
 impl CrossingReservationBlockers {
     fn is_clear(&self) -> bool {
         !self.has_static_blocker && self.dynamic_blockers.is_empty()
@@ -1577,6 +1582,46 @@ fn crossing_candidate_keys_for_partner(
     keys
 }
 
+fn crossing_spacing_history_cells_for_route(
+    route_waypoints: &[(i32, i32)],
+    min_straight_cells: i32,
+    half_size_cells: i32,
+    width: i32,
+    height: i32,
+) -> Vec<(i32, i32)> {
+    let mut keys = FxHashSet::default();
+    if route_waypoints.len() < 2 {
+        return Vec::new();
+    }
+    let required_margin = min_straight_cells.max(half_size_cells).max(0);
+    for segment in route_waypoints.windows(2) {
+        if direction_angle_between_cells(segment[0], segment[1]).is_none() {
+            continue;
+        }
+        let dx = (segment[1].0 - segment[0].0).signum();
+        let dy = (segment[1].1 - segment[0].1).signum();
+        let steps = (segment[1].0 - segment[0].0)
+            .abs()
+            .max((segment[1].1 - segment[0].1).abs());
+        if steps <= 0 || steps < 2 * required_margin {
+            continue;
+        }
+        for step in required_margin..=(steps - required_margin) {
+            let x = segment[0].0 + dx * step;
+            let y = segment[0].1 + dy * step;
+            insert_crossing_reservation_window(
+                &mut keys,
+                f64::from(x),
+                f64::from(y),
+                half_size_cells,
+                width,
+                height,
+            );
+        }
+    }
+    keys.into_iter().map(unpack_xy).collect()
+}
+
 fn insert_crossing_reservation_window(
     keys: &mut FxHashSet<CellKey>,
     center_x: f64,
@@ -2382,6 +2427,91 @@ impl PyPhotonicRouter {
         Ok(cfg)
     }
 
+    fn net_has_crossing_requirements(&self, net_id: u64) -> bool {
+        self.crossing_context.is_enabled()
+            && self.crossing_context.expected_crossing_count(net_id) > 0
+    }
+
+    fn add_crossing_spacing_history_for_route(&mut self, net_id: u64, route: &RouteResult) {
+        if !self.net_has_crossing_requirements(net_id) {
+            return;
+        }
+        let config = self.crossing_context.config();
+        let cells = crossing_spacing_history_cells_for_route(
+            &route.compressed_waypoints,
+            config.min_straight_cells_per_crossing,
+            config.crossing_half_size_cells,
+            self.grid.width as i32,
+            self.grid.height as i32,
+        );
+        self.add_history_cells(cells, CROSSING_SPACING_HISTORY_AMOUNT);
+    }
+
+    fn crossing_local_ripup_candidates(&self, net_id: u64, limit: usize) -> Vec<u64> {
+        if limit == 0 || !self.crossing_context.is_enabled() {
+            return Vec::new();
+        }
+        let min_source_depth = self
+            .crossing_context
+            .ordered_constraints_for(net_id)
+            .into_iter()
+            .map(|constraint| constraint.source_depth)
+            .min()
+            .unwrap_or(0);
+        if min_source_depth < CROSSING_LOCAL_RIPUP_MIN_SOURCE_DEPTH {
+            return Vec::new();
+        }
+        let config = self.crossing_context.config();
+        let mut scored: Vec<(u32, u32, u64, u64)> = self
+            .crossing_allowed_partner_set(net_id)
+            .into_iter()
+            .filter_map(|partner_id| {
+                let waypoints = self.committed_center_routes.get(&partner_id)?;
+                let keys = crossing_candidate_keys_for_partner(
+                    waypoints,
+                    config.min_straight_cells_per_crossing,
+                    config.crossing_half_size_cells,
+                    self.grid.width as i32,
+                    self.grid.height as i32,
+                );
+                if keys.is_empty() {
+                    return None;
+                }
+                let mut max_extra_history = 0u32;
+                let mut overlap_count = 0u32;
+                let mut extra_sum = 0u64;
+                for key in keys {
+                    let (x, y) = unpack_xy(key);
+                    let extra = self.obstacle_map.get_history_cost(x, y).saturating_sub(1);
+                    if extra == 0 {
+                        continue;
+                    }
+                    max_extra_history = max_extra_history.max(extra);
+                    overlap_count = overlap_count.saturating_add(1);
+                    extra_sum = extra_sum.saturating_add(u64::from(extra));
+                }
+                if max_extra_history == 0
+                    || overlap_count < CROSSING_LOCAL_RIPUP_MIN_OVERLAP_CELLS
+                    || extra_sum < CROSSING_LOCAL_RIPUP_MIN_EXTRA_SUM
+                {
+                    return None;
+                }
+                Some((max_extra_history, overlap_count, extra_sum, partner_id))
+            })
+            .collect();
+        scored.sort_unstable_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| a.3.cmp(&b.3))
+        });
+        scored
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, _, partner_id)| partner_id)
+            .collect()
+    }
+
     fn crossing_allowed_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
         if !self.crossing_context.is_enabled() {
             return FxHashSet::default();
@@ -2717,6 +2847,7 @@ impl PyPhotonicRouter {
         let mut crossing_search_cfg = search_cfg.clone();
         crossing_search_cfg.require_terminal_straights = false;
         crossing_search_cfg.enable_simple_routes = false;
+        crossing_search_cfg.history_weight = 0.0;
         let crossing_cfg = self.crossing_context.config();
         let crossing_partners: Vec<CrossingSearchPartner> = self
             .crossing_context
@@ -2979,6 +3110,7 @@ impl PyPhotonicRouter {
                 }
                 self.committed_center_routes
                     .insert(net_id, crossing_result.compressed_waypoints.clone());
+                self.add_crossing_spacing_history_for_route(net_id, &crossing_result);
                 self.invalidate_meander_base_prefix();
                 return Ok(crossing_result);
             }
@@ -3059,6 +3191,7 @@ impl PyPhotonicRouter {
                     }
                     self.committed_center_routes
                         .insert(net_id, result.compressed_waypoints.clone());
+                    self.add_crossing_spacing_history_for_route(net_id, &result);
                     self.invalidate_meander_base_prefix();
                     return Ok(result);
                 }
@@ -3159,6 +3292,7 @@ impl PyPhotonicRouter {
         self.register_geometric_crossing_events_for_route(net_id, &result);
         self.committed_center_routes
             .insert(net_id, result.compressed_waypoints.clone());
+        self.add_crossing_spacing_history_for_route(net_id, &result);
         self.invalidate_meander_base_prefix();
 
         Ok(result)
@@ -3288,6 +3422,7 @@ impl PyPhotonicRouter {
                 }
                 self.committed_center_routes
                     .insert(net_id, crossing_result.compressed_waypoints.clone());
+                self.add_crossing_spacing_history_for_route(net_id, &crossing_result);
                 self.invalidate_meander_base_prefix();
                 return Ok(crossing_result);
             }
@@ -3375,6 +3510,7 @@ impl PyPhotonicRouter {
         self.register_geometric_crossing_events_for_route(net_id, &result);
         self.committed_center_routes
             .insert(net_id, result.compressed_waypoints.clone());
+        self.add_crossing_spacing_history_for_route(net_id, &result);
         self.invalidate_meander_base_prefix();
 
         Ok(result)
@@ -3448,6 +3584,7 @@ impl PyPhotonicRouter {
             self.register_geometric_crossing_events_for_route(net_id, route);
             self.committed_center_routes
                 .insert(net_id, route.compressed_waypoints.clone());
+            self.add_crossing_spacing_history_for_route(net_id, route);
             self.invalidate_meander_base_prefix();
         }
         committed
@@ -4632,7 +4769,175 @@ impl PyPhotonicRouter {
         let mut failed_net_id: Option<u64> = None;
         let mut failed_error: Option<String> = None;
 
-        for job in &native_jobs {
+        'route_jobs: for job in &native_jobs {
+            let preemptive_crossing_victims =
+                self.crossing_local_ripup_candidates(job.net_id, max_victims_per_failure.min(4));
+            if !preemptive_crossing_victims.is_empty() {
+                let base_map = self.obstacle_map.clone();
+                let base_center_routes = self.committed_center_routes.clone();
+                let base_crossing_events = self.crossing_events.clone();
+                let base_routes = final_routes.clone();
+
+                for victim_id in preemptive_crossing_victims {
+                    let Some(victim_job) = job_by_id.get(&victim_id) else {
+                        continue;
+                    };
+
+                    self.obstacle_map = base_map.clone();
+                    self.committed_center_routes = base_center_routes.clone();
+                    self.crossing_events = base_crossing_events.clone();
+                    final_routes = base_routes.clone();
+                    self.invalidate_meander_base_prefix();
+
+                    if let Some(old_route) = final_routes.get(&victim_id).cloned() {
+                        let history_start = native_batch_timer(collect_native_timing);
+                        self.add_history_for_native_route(
+                            &old_route,
+                            block_radius_cells,
+                            history_increment,
+                        );
+                        timings.history_update_us += native_batch_elapsed_us(history_start);
+                    }
+                    let ripup_start = native_batch_timer(collect_native_timing);
+                    self.remove_crossing_events_for_net(victim_id);
+                    self.obstacle_map.ripup_route(victim_id);
+                    self.committed_center_routes.remove(&victim_id);
+                    final_routes.remove(&victim_id);
+                    timings.ripup_us += native_batch_elapsed_us(ripup_start);
+
+                    let route_start = native_batch_timer(collect_native_timing);
+                    let route_result = self.route_single_net_and_commit_native(
+                        job.net_id,
+                        job.source,
+                        job.target,
+                        block_radius_cells,
+                        Some(&job.opened_cells),
+                        Some(&job.opened_cell_keys),
+                        commit_radius_cells,
+                        Some(&job.clearance_exempt_cells),
+                        Some(&job.clearance_exempt_cell_keys),
+                        core_radius_cells,
+                    );
+                    let route_elapsed_us = native_batch_elapsed_us(route_start);
+                    timings.repair_failed_net_wall_us += route_elapsed_us;
+                    let current_route = match route_result {
+                        Ok(route) => {
+                            timings.add_route_result_stats_if(collect_native_timing, &route);
+                            route
+                        }
+                        Err(error) => {
+                            timings.repair_failed_net_failed_wall_us += route_elapsed_us;
+                            attempts.push(NativeRouteAttempt {
+                                bucket_name: "preemptive_crossing_ripup",
+                                net_id: job.net_id,
+                                route: None,
+                                failed: true,
+                                error: Some(error),
+                                repair_round: Some(0),
+                                candidate_blockers: vec![victim_id],
+                                ripup_ids: vec![victim_id],
+                            });
+                            continue;
+                        }
+                    };
+
+                    let reroute_start = native_batch_timer(collect_native_timing);
+                    let reroute_result = self.route_single_net_and_commit_native(
+                        victim_job.net_id,
+                        victim_job.source,
+                        victim_job.target,
+                        block_radius_cells,
+                        Some(&victim_job.opened_cells),
+                        Some(&victim_job.opened_cell_keys),
+                        commit_radius_cells,
+                        Some(&victim_job.clearance_exempt_cells),
+                        Some(&victim_job.clearance_exempt_cell_keys),
+                        core_radius_cells,
+                    );
+                    let reroute_elapsed_us = native_batch_elapsed_us(reroute_start);
+                    timings.reroute_victims_wall_us += reroute_elapsed_us;
+                    let victim_route = match reroute_result {
+                        Ok(route) => {
+                            timings.add_route_result_stats_if(collect_native_timing, &route);
+                            route
+                        }
+                        Err(normal_error) => {
+                            timings.reroute_victims_failed_wall_us += reroute_elapsed_us;
+                            let repair_start = native_batch_timer(collect_native_timing);
+                            let repair_result = self.route_single_net_and_commit_repair_native(
+                                victim_job.net_id,
+                                victim_job.source,
+                                victim_job.target,
+                                block_radius_cells,
+                                Some(&victim_job.opened_cells),
+                                Some(&victim_job.opened_cell_keys),
+                                history_weight,
+                                commit_radius_cells,
+                                Some(&victim_job.clearance_exempt_cells),
+                                Some(&victim_job.clearance_exempt_cell_keys),
+                                core_radius_cells,
+                            );
+                            let repair_elapsed_us = native_batch_elapsed_us(repair_start);
+                            timings.reroute_victims_wall_us += repair_elapsed_us;
+                            match repair_result {
+                                Ok(route) => {
+                                    timings
+                                        .add_route_result_stats_if(collect_native_timing, &route);
+                                    route
+                                }
+                                Err(error) => {
+                                    timings.reroute_victims_failed_wall_us += repair_elapsed_us;
+                                    attempts.push(NativeRouteAttempt {
+                                        bucket_name: "preemptive_crossing_ripup",
+                                        net_id: victim_job.net_id,
+                                        route: None,
+                                        failed: true,
+                                        error: Some(format!(
+                                            "{normal_error}; repair fallback: {error}"
+                                        )),
+                                        repair_round: Some(0),
+                                        candidate_blockers: vec![victim_id],
+                                        ripup_ids: vec![victim_id],
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+
+                    attempts.push(NativeRouteAttempt {
+                        bucket_name: "preemptive_crossing_ripup",
+                        net_id: job.net_id,
+                        route: Some(current_route.clone()),
+                        failed: false,
+                        error: None,
+                        repair_round: Some(0),
+                        candidate_blockers: vec![victim_id],
+                        ripup_ids: vec![victim_id],
+                    });
+                    attempts.push(NativeRouteAttempt {
+                        bucket_name: "preemptive_crossing_ripup",
+                        net_id: victim_job.net_id,
+                        route: Some(victim_route.clone()),
+                        failed: false,
+                        error: None,
+                        repair_round: Some(0),
+                        candidate_blockers: vec![victim_id],
+                        ripup_ids: vec![victim_id],
+                    });
+                    final_routes.insert(job.net_id, current_route);
+                    final_routes.insert(victim_job.net_id, victim_route);
+                    repair_count = repair_count.saturating_add(1);
+                    continue 'route_jobs;
+                }
+
+                self.obstacle_map = base_map;
+                self.committed_center_routes = base_center_routes;
+                self.crossing_events = base_crossing_events;
+                final_routes = base_routes;
+                self.invalidate_meander_base_prefix();
+            }
+
             let route_start = native_batch_timer(collect_native_timing);
             let route_result = self.route_single_net_and_commit_native(
                 job.net_id,
@@ -4724,8 +5029,8 @@ impl PyPhotonicRouter {
             let victim_selection_start = native_batch_timer(collect_native_timing);
             let owner_lookup_radius_cells =
                 block_radius_cells.max(commit_radius_cells.unwrap_or(block_radius_cells));
-            let dynamic_probe_owners = self
-                .dynamic_owners_for_native_route(&probe_route, owner_lookup_radius_cells);
+            let dynamic_probe_owners =
+                self.dynamic_owners_for_native_route(&probe_route, owner_lookup_radius_cells);
             let mut candidate_blocker_priority: FxHashMap<u64, u8> = FxHashMap::default();
             let mut add_candidate_blocker = |owner: u64, priority: u8| {
                 if owner == job.net_id || !final_routes.contains_key(&owner) {
@@ -4861,6 +5166,7 @@ impl PyPhotonicRouter {
                             self.add_crossing_events(probe_crossing_events);
                             self.committed_center_routes
                                 .insert(job.net_id, probe_route.compressed_waypoints.clone());
+                            self.add_crossing_spacing_history_for_route(job.net_id, &probe_route);
                             self.invalidate_meander_base_prefix();
                             final_routes.insert(job.net_id, probe_route);
                             continue;
@@ -4907,9 +5213,7 @@ impl PyPhotonicRouter {
 
             let mut repair_victim_sets: Vec<(u32, Vec<u64>)> = Vec::new();
             if crossing_repair_enabled {
-                let single_victim_limit = candidate_blockers
-                    .len()
-                    .min(max_victims);
+                let single_victim_limit = candidate_blockers.len().min(max_victims);
                 for owner in candidate_blockers.iter().take(single_victim_limit) {
                     repair_victim_sets.push((1, vec![*owner]));
                 }
@@ -8147,9 +8451,7 @@ mod tests {
             &events,
             &partner_ids
         ));
-        assert!(!PyPhotonicRouter::crossing_events_have_disjoint_reservations(
-            &events
-        ));
+        assert!(!PyPhotonicRouter::crossing_events_have_disjoint_reservations(&events));
         assert!(!router.crossing_route_satisfies_partner_constraints(
             3,
             &route,
@@ -8157,8 +8459,7 @@ mod tests {
             &events
         ));
         assert_eq!(
-            PyPhotonicRouter::crossing_partners_with_overlapping_reservations(&events)
-                .len(),
+            PyPhotonicRouter::crossing_partners_with_overlapping_reservations(&events).len(),
             2
         );
     }
@@ -8269,6 +8570,23 @@ mod tests {
         assert!(keys.contains(&pack_xy(12, 12)));
         assert!(keys.contains(&pack_xy(13, 12)));
         assert!(!keys.contains(&pack_xy(14, 12)));
+    }
+
+    #[test]
+    fn crossing_spacing_history_uses_valid_straight_windows() {
+        let route = vec![(2, 10), (12, 10), (12, 16)];
+        let cells = crossing_spacing_history_cells_for_route(&route, 2, 1, 32, 32);
+        let keys: FxHashSet<CellKey> = cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
+
+        assert!(keys.contains(&pack_xy(6, 9)));
+        assert!(keys.contains(&pack_xy(6, 10)));
+        assert!(keys.contains(&pack_xy(6, 11)));
+        assert!(keys.contains(&pack_xy(11, 14)));
+        assert!(keys.contains(&pack_xy(12, 14)));
+        assert!(keys.contains(&pack_xy(13, 14)));
+        assert!(!keys.contains(&pack_xy(2, 10)));
+        assert!(!keys.contains(&pack_xy(12, 10)));
+        assert!(!keys.contains(&pack_xy(12, 16)));
     }
 
     #[test]
