@@ -68,6 +68,7 @@ SCRIPT_GRID_SIZE_UM = 2.0
 SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.0
 SCRIPT_HEATER_CLEARANCE_UM = 10.0
 SCRIPT_CHIP_ADD_X_UM = 0.0
+SCRIPT_CROSSING_MODE = "lidar-pure"
 SCRIPT_CHIP_ADD_Y_UM = 40.0
 SCRIPT_OBSTACLE_CLEARANCE_UM = SCRIPT_WAVEGUIDE_CLEARANCE_UM
 SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC = False
@@ -603,13 +604,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--crossing-mode",
         choices=("window", "collision", "lidar-pure"),
-        default="window",
+        default=SCRIPT_CROSSING_MODE,
         help=(
             "Crossing search mode. 'window' preserves the existing expected-partner "
             "window search; 'collision' enables LiDAR-style collision-driven "
             "crossing legalization constrained by topology; 'lidar-pure' enables "
             "collision-driven crossing legalization without topology pair permissions "
-            "(default: window)."
+            f"(default: {SCRIPT_CROSSING_MODE})."
         ),
     )
     parser.add_argument(

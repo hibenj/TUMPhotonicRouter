@@ -50,6 +50,10 @@ The current implementation reports the route-dependent terms. `device_loss`,
 explicit per-net crossing budgets, and nonzero propagation/bend loss defaults
 are left as follow-up knobs.
 
+On this branch, `routing_flow.py` defaults `--crossing-mode` to `lidar-pure`.
+Pass `--crossing-mode window` or `--crossing-mode collision` explicitly when a
+comparison run needs one of the other modes.
+
 ## Benchmark Snapshot
 
 All runs used `--crossings true`; `benes_16x16` runs used
