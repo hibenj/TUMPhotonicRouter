@@ -296,6 +296,216 @@ def _rounded_segment(
     return [_rounded_point(segment[0]), _rounded_point(segment[1])]
 
 
+def _crossing_footprint_half_extent_um(
+    *,
+    crossing_plan_info: Mapping[str, object],
+    grid_size_um: float,
+) -> float:
+    crossing_device = crossing_plan_info.get("crossing_device", {})
+    if isinstance(crossing_device, Mapping):
+        component_bbox = crossing_device.get("component_bbox_um")
+        if isinstance(component_bbox, (list, tuple)) and len(component_bbox) >= 2:
+            try:
+                footprint_um = max(float(component_bbox[0]), float(component_bbox[1]))
+            except (TypeError, ValueError):
+                footprint_um = 0.0
+            if math.isfinite(footprint_um) and footprint_um > 0.0:
+                return 0.5 * float(footprint_um)
+
+    half_size_cells = max(
+        0,
+        int(crossing_plan_info.get("crossing_half_size_cells", 0) or 0),
+    )
+    return float(half_size_cells) * float(grid_size_um)
+
+
+def _segment_length_um(
+    segment: tuple[tuple[float, float], tuple[float, float]],
+) -> float:
+    start, end = segment
+    return math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
+
+
+def _segment_unit_vector(
+    segment: tuple[tuple[float, float], tuple[float, float]],
+) -> tuple[float, float] | None:
+    start, end = segment
+    dx = float(end[0]) - float(start[0])
+    dy = float(end[1]) - float(start[1])
+    length = math.hypot(dx, dy)
+    if length <= 1e-9:
+        return None
+    return (dx / length, dy / length)
+
+
+def _crossing_footprint_polygon(
+    *,
+    center: tuple[float, float],
+    axis_u: tuple[float, float],
+    axis_v: tuple[float, float],
+    half_extent_um: float,
+) -> list[tuple[float, float]]:
+    cx, cy = center
+    ux, uy = axis_u
+    vx, vy = axis_v
+    half = float(half_extent_um)
+    return [
+        (cx + sx * half * ux + sy * half * vx, cy + sx * half * uy + sy * half * vy)
+        for sx, sy in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
+    ]
+
+
+def _polygon_axes(
+    polygon: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    axes: list[tuple[float, float]] = []
+    for start, end in zip(polygon, polygon[1:] + polygon[:1]):
+        ex = end[0] - start[0]
+        ey = end[1] - start[1]
+        length = math.hypot(ex, ey)
+        if length <= 1e-9:
+            continue
+        axes.append((-ey / length, ex / length))
+    return axes
+
+
+def _project_polygon(
+    polygon: list[tuple[float, float]],
+    axis: tuple[float, float],
+) -> tuple[float, float]:
+    projections = [point[0] * axis[0] + point[1] * axis[1] for point in polygon]
+    return (min(projections), max(projections))
+
+
+def _convex_polygons_overlap_with_area(
+    polygon_a: list[tuple[float, float]],
+    polygon_b: list[tuple[float, float]],
+    *,
+    eps: float = 1e-9,
+) -> bool:
+    for axis in _polygon_axes(polygon_a) + _polygon_axes(polygon_b):
+        min_a, max_a = _project_polygon(polygon_a, axis)
+        min_b, max_b = _project_polygon(polygon_b, axis)
+        if max_a <= min_b + eps or max_b <= min_a + eps:
+            return False
+    return True
+
+
+def _same_undirected_segment(
+    segment_a: tuple[tuple[float, float], tuple[float, float]],
+    segment_b: tuple[tuple[float, float], tuple[float, float]],
+    *,
+    eps: float = 1e-9,
+) -> bool:
+    def same_point(
+        point_a: tuple[float, float],
+        point_b: tuple[float, float],
+    ) -> bool:
+        return (
+            abs(float(point_a[0]) - float(point_b[0])) <= eps
+            and abs(float(point_a[1]) - float(point_b[1])) <= eps
+        )
+
+    return (
+        same_point(segment_a[0], segment_b[0])
+        and same_point(segment_a[1], segment_b[1])
+    ) or (
+        same_point(segment_a[0], segment_b[1])
+        and same_point(segment_a[1], segment_b[0])
+    )
+
+
+def _segment_intersects_crossing_footprint_interior(
+    segment: tuple[tuple[float, float], tuple[float, float]],
+    *,
+    center: tuple[float, float],
+    axis_u: tuple[float, float],
+    axis_v: tuple[float, float],
+    half_extent_um: float,
+    eps: float = 1e-9,
+) -> bool:
+    def to_local(point: tuple[float, float]) -> tuple[float, float]:
+        dx = float(point[0]) - float(center[0])
+        dy = float(point[1]) - float(center[1])
+        return (dx * axis_u[0] + dy * axis_u[1], dx * axis_v[0] + dy * axis_v[1])
+
+    p0 = to_local(segment[0])
+    p1 = to_local(segment[1])
+    half = float(half_extent_um)
+
+    def strictly_inside(point: tuple[float, float]) -> bool:
+        return abs(point[0]) < half - eps and abs(point[1]) < half - eps
+
+    if strictly_inside(p0) or strictly_inside(p1):
+        return True
+
+    dx = p1[0] - p0[0]
+    dy = p1[1] - p0[1]
+    t0 = 0.0
+    t1 = 1.0
+    for p, q in (
+        (-dx, p0[0] + half),
+        (dx, half - p0[0]),
+        (-dy, p0[1] + half),
+        (dy, half - p0[1]),
+    ):
+        if abs(p) <= eps:
+            if q < -eps:
+                return False
+            continue
+        r = q / p
+        if p < 0.0:
+            if r > t1 + eps:
+                return False
+            t0 = max(t0, r)
+        else:
+            if r < t0 - eps:
+                return False
+            t1 = min(t1, r)
+    if t1 <= t0 + eps:
+        return False
+    mid_t = 0.5 * (max(0.0, t0) + min(1.0, t1))
+    midpoint = (p0[0] + mid_t * dx, p0[1] + mid_t * dy)
+    return strictly_inside(midpoint)
+
+
+def _crossing_footprint_blockers(
+    *,
+    center: tuple[float, float],
+    axis_u: tuple[float, float],
+    axis_v: tuple[float, float],
+    half_extent_um: float,
+    segments_by_net_id: Mapping[
+        int, tuple[tuple[tuple[float, float], tuple[float, float]], ...]
+    ],
+    allowed_segments: Mapping[
+        int, tuple[tuple[tuple[float, float], tuple[float, float]], ...]
+    ],
+    net_names: Mapping[int, str],
+) -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    for net_id, segments in segments_by_net_id.items():
+        allowed_for_net = allowed_segments.get(net_id, ())
+        for segment in segments:
+            if any(_same_undirected_segment(segment, allowed) for allowed in allowed_for_net):
+                continue
+            if _segment_intersects_crossing_footprint_interior(
+                segment,
+                center=center,
+                axis_u=axis_u,
+                axis_v=axis_v,
+                half_extent_um=half_extent_um,
+            ):
+                blockers.append(
+                    {
+                        "net_id": int(net_id),
+                        "net_name": net_names.get(net_id, str(net_id)),
+                        "segment_um": _rounded_segment(segment),
+                    }
+                )
+    return blockers
+
+
 def _verify_realized_route_intersections(
     *,
     crossing_plan_info: dict[str, object],
@@ -309,9 +519,9 @@ def _verify_realized_route_intersections(
         return []
 
     _width, _height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
-    required_margin_um = float(grid_size_um) * max(
-        int(crossing_plan_info.get("min_straight_cells_per_crossing", 0) or 0),
-        int(crossing_plan_info.get("crossing_half_size_cells", 0) or 0),
+    footprint_half_um = _crossing_footprint_half_extent_um(
+        crossing_plan_info=crossing_plan_info,
+        grid_size_um=float(grid_size_um),
     )
     allowed_pairs: set[frozenset[int]] = set()
     net_names: dict[int, str] = {}
@@ -337,6 +547,11 @@ def _verify_realized_route_intersections(
     }
     for net_id, record in records:
         net_names.setdefault(net_id, record.net_name)
+    segments_by_net_id = {
+        net_id: _route_segments_from_waypoints(centerline)
+        for net_id, centerline in centerlines_by_id.items()
+        if len(centerline) >= 2
+    }
 
     allow_unexpected = not bool(crossing_plan_info.get("allow_only_expected_crossings", True))
     realized: list[dict[str, object]] = []
@@ -344,22 +559,22 @@ def _verify_realized_route_intersections(
     seen: set[tuple[int, int, int, int]] = set()
     eps = 1e-9
     for index_a, (net_id_a, record_a) in enumerate(records):
-        segments_a = _route_segments_from_waypoints(centerlines_by_id.get(net_id_a, ()))
+        segments_a = segments_by_net_id.get(net_id_a, ())
         if not segments_a:
             continue
         for net_id_b, record_b in records[index_a + 1 :]:
-            segments_b = _route_segments_from_waypoints(centerlines_by_id.get(net_id_b, ()))
+            segments_b = segments_by_net_id.get(net_id_b, ())
             if not segments_b:
                 continue
             pair = frozenset((net_id_a, net_id_b))
             pair_expected = pair in allowed_pairs
             pair_allowed = allow_unexpected or pair_expected
             for segment_a in segments_a:
-                len_a = _segment_length_cells(segment_a)
+                len_a = _segment_length_um(segment_a)
                 if len_a <= 0.0:
                     continue
                 for segment_b in segments_b:
-                    len_b = _segment_length_cells(segment_b)
+                    len_b = _segment_length_um(segment_b)
                     if len_b <= 0.0:
                         continue
                     intersection = _segment_intersection_with_params(
@@ -384,11 +599,47 @@ def _verify_realized_route_intersections(
                     margin_b = min(max(u, 0.0) * len_b, max(1.0 - u, 0.0) * len_b)
                     perpendicular = _segments_are_perpendicular(segment_a, segment_b)
                     contact_adjacent = margin_a <= eps and margin_b <= eps
+                    axis_u = _segment_unit_vector(segment_a)
+                    axis_v = _segment_unit_vector(segment_b)
+                    footprint_polygon: list[tuple[float, float]] = []
+                    footprint_blockers: list[dict[str, object]] = []
+                    footprint_straight = (
+                        footprint_half_um <= eps
+                        or (
+                            margin_a + eps >= footprint_half_um
+                            and margin_b + eps >= footprint_half_um
+                        )
+                    )
+                    if (
+                        axis_u is not None
+                        and axis_v is not None
+                        and perpendicular
+                        and footprint_half_um > eps
+                    ):
+                        footprint_polygon = _crossing_footprint_polygon(
+                            center=(point_x, point_y),
+                            axis_u=axis_u,
+                            axis_v=axis_v,
+                            half_extent_um=footprint_half_um,
+                        )
+                        if pair_allowed and footprint_straight:
+                            footprint_blockers = _crossing_footprint_blockers(
+                                center=(point_x, point_y),
+                                axis_u=axis_u,
+                                axis_v=axis_v,
+                                half_extent_um=footprint_half_um,
+                                segments_by_net_id=segments_by_net_id,
+                                allowed_segments={
+                                    net_id_a: (segment_a,),
+                                    net_id_b: (segment_b,),
+                                },
+                                net_names=net_names,
+                            )
                     legal = (
                         pair_allowed
                         and perpendicular
-                        and margin_a + eps >= required_margin_um
-                        and margin_b + eps >= required_margin_um
+                        and footprint_straight
+                        and not footprint_blockers
                     )
                     if legal:
                         classification = (
@@ -406,8 +657,12 @@ def _verify_realized_route_intersections(
                             reason = "unexpected_pair"
                         elif not perpendicular:
                             reason = "not_perpendicular"
+                        elif not footprint_straight:
+                            reason = "crossing_footprint_contains_bend"
+                        elif footprint_blockers:
+                            reason = "crossing_footprint_contains_route_geometry"
                         else:
-                            reason = "insufficient_straight_margin"
+                            reason = "crossing_footprint_invalid"
                     record = {
                         "net_id_a": int(net_id_a),
                         "net_id_b": int(net_id_b),
@@ -418,7 +673,19 @@ def _verify_realized_route_intersections(
                         "segment_b_um": _rounded_segment(segment_b),
                         "segment_a_margin_um": round(float(margin_a), 6),
                         "segment_b_margin_um": round(float(margin_b), 6),
-                        "required_margin_um": round(float(required_margin_um), 6),
+                        "required_margin_um": round(float(footprint_half_um), 6),
+                        "crossing_footprint_half_um": round(
+                            float(footprint_half_um),
+                            6,
+                        ),
+                        "crossing_footprint_um": round(
+                            2.0 * float(footprint_half_um),
+                            6,
+                        ),
+                        "crossing_footprint_polygon_um": [
+                            _rounded_point(point) for point in footprint_polygon
+                        ],
+                        "crossing_footprint_blockers": footprint_blockers,
                         "expected_pair": bool(pair_expected),
                         "perpendicular": bool(perpendicular),
                         "classification": classification,
@@ -428,6 +695,59 @@ def _verify_realized_route_intersections(
                     realized.append(record)
                     if classification.startswith("illegal_"):
                         illegal.append(record)
+
+    legal_crossing_indices = [
+        index
+        for index, item in enumerate(realized)
+        if str(item.get("classification", "")).startswith("legal_")
+        and item.get("crossing_footprint_polygon_um")
+    ]
+    for offset, index_a in enumerate(legal_crossing_indices):
+        crossing_a = realized[index_a]
+        polygon_a = [
+            (float(point[0]), float(point[1]))
+            for point in cast(
+                list[list[float]],
+                crossing_a.get("crossing_footprint_polygon_um", []),
+            )
+        ]
+        for index_b in legal_crossing_indices[offset + 1 :]:
+            crossing_b = realized[index_b]
+            polygon_b = [
+                (float(point[0]), float(point[1]))
+                for point in cast(
+                    list[list[float]],
+                    crossing_b.get("crossing_footprint_polygon_um", []),
+                )
+            ]
+            if not polygon_a or not polygon_b:
+                continue
+            if not _convex_polygons_overlap_with_area(polygon_a, polygon_b):
+                continue
+            overlap_peer_a = {
+                "net_id_a": crossing_b.get("net_id_a"),
+                "net_id_b": crossing_b.get("net_id_b"),
+                "net_name_a": crossing_b.get("net_name_a"),
+                "net_name_b": crossing_b.get("net_name_b"),
+                "point_um": crossing_b.get("point_um"),
+            }
+            overlap_peer_b = {
+                "net_id_a": crossing_a.get("net_id_a"),
+                "net_id_b": crossing_a.get("net_id_b"),
+                "net_name_a": crossing_a.get("net_name_a"),
+                "net_name_b": crossing_a.get("net_name_b"),
+                "point_um": crossing_a.get("point_um"),
+            }
+            for crossing, peer in (
+                (crossing_a, overlap_peer_a),
+                (crossing_b, overlap_peer_b),
+            ):
+                if str(crossing.get("classification", "")).startswith("illegal_"):
+                    continue
+                crossing["classification"] = "illegal_unexpected_crossing"
+                crossing["reason"] = "crossing_footprint_overlap"
+                crossing["overlapping_crossing"] = peer
+                illegal.append(crossing)
 
     crossing_plan_info["realized_intersections"] = realized
     crossing_plan_info["realized_intersection_count"] = len(realized)
