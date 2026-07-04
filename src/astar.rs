@@ -1719,6 +1719,140 @@ pub fn route_single_net_with_dynamic_expansion_config(
     None
 }
 
+pub fn route_single_net_with_collision_crossing_config(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    dynamic_expansion_radius_cells: i32,
+    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+    crossing: &CrossingSearchConfig,
+) -> Option<RouteResult> {
+    if crossing.partners.is_empty() || crossing.partners.len() > u64::BITS as usize {
+        return None;
+    }
+    if config.target_tolerance_cells < 0 {
+        return None;
+    }
+    if let Some(mask) = config.allowed_target_angles_mask {
+        if mask == 0 {
+            return None;
+        }
+    }
+    if target.angle > 7 {
+        return None;
+    }
+    if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
+        return None;
+    }
+    let mut anchor_open_cells = FxHashSet::default();
+    if let Some(port_open_cells) = port_open_cells {
+        anchor_open_cells.extend(port_open_cells.iter().copied());
+    }
+    anchor_open_cells.insert(pack_xy(source.x, source.y));
+    anchor_open_cells.insert(pack_xy(target.x, target.y));
+
+    let mut stats = RouteSearchStats::default();
+    let route_search_total_start = if config.collect_detailed_timing {
+        Some(Instant::now())
+    } else {
+        None
+    };
+    stats.jps4_requested = config.enable_jps4;
+    stats.jps4_eligible = false;
+    stats.jps4_fallback_reason = "collision crossing search uses augmented A*".to_string();
+    if config.enable_jps4 {
+        stats.jps4_fallbacks += 1;
+    }
+
+    if !config.use_routing_window {
+        return route_single_net_with_bounds_crossing(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            None,
+            &mut stats,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+            crossing,
+        )
+        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+    }
+
+    let mut last_bounds: Option<RoutingBounds> = None;
+    for expansion_idx in 0..=config.routing_window_max_expansions {
+        let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
+        if last_bounds == Some(bounds) {
+            continue;
+        }
+        last_bounds = Some(bounds);
+        stats.window_attempts += 1;
+        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(bounds));
+        stats.last_window_min_x = bounds.min_x;
+        stats.last_window_max_x = bounds.max_x;
+        stats.last_window_min_y = bounds.min_y;
+        stats.last_window_max_y = bounds.max_y;
+        stats.last_window_area_cells = window_area(bounds);
+
+        if let Some(route) = route_single_net_with_bounds_crossing(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            Some(bounds),
+            &mut stats,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+            crossing,
+        ) {
+            return Some(with_route_search_total_time(
+                route,
+                route_search_total_start.as_ref(),
+            ));
+        }
+    }
+
+    if config.routing_window_fallback_full_grid {
+        stats.window_attempts += 1;
+        stats.used_full_grid_fallback = true;
+        let full_bounds = RoutingBounds {
+            min_x: 0,
+            max_x: obstacle_map.width() - 1,
+            min_y: 0,
+            max_y: obstacle_map.height() - 1,
+        };
+        stats.last_window_min_x = full_bounds.min_x;
+        stats.last_window_max_x = full_bounds.max_x;
+        stats.last_window_min_y = full_bounds.min_y;
+        stats.last_window_max_y = full_bounds.max_y;
+        stats.last_window_area_cells = window_area(full_bounds);
+        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
+        return route_single_net_with_bounds_crossing(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            None,
+            &mut stats,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+            crossing,
+        )
+        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+    }
+
+    None
+}
+
 pub fn route_single_net_with_crossing_config(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
@@ -3309,14 +3443,6 @@ fn route_single_net_with_bounds_crossing(
             stats.primitive_footprint_checks += 1;
             stats.primitive_footprint_checks_by_class[primitive_class] += 1;
             stats.obstacle_clearance_checks += 1;
-            if !footprint_free {
-                stats.footprint_rejects += 1;
-                stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
-                if profile.is_full_rect {
-                    stats.primitive_footprint_rect_rejects += 1;
-                }
-                continue;
-            }
 
             let Some(crossing_outcome) = crossing_move_outcome(
                 obstacle_map,
@@ -3331,8 +3457,23 @@ fn route_single_net_with_bounds_crossing(
                 &partner_index_by_id,
                 stats,
             ) else {
+                if !footprint_free {
+                    stats.footprint_rejects += 1;
+                    stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                    if profile.is_full_rect {
+                        stats.primitive_footprint_rect_rejects += 1;
+                    }
+                }
                 continue;
             };
+            if !footprint_free && crossing_outcome.crossing_count == 0 {
+                stats.footprint_rejects += 1;
+                stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                if profile.is_full_rect {
+                    stats.primitive_footprint_rect_rejects += 1;
+                }
+                continue;
+            }
 
             let next_key = CrossingAStarKey {
                 state: next_state,
@@ -6426,6 +6567,58 @@ mod tests {
             },
         );
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn collision_crossing_search_accepts_expected_dynamic_core_collision() {
+        let mut map = ObstacleMap::new(20, 14);
+        for x in 3..=13 {
+            map.add_static_cell(x, 5);
+            map.add_static_cell(x, 7);
+        }
+        let partner_cells: Vec<(i32, i32)> = (2..=10).map(|y| (8, y)).collect();
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            1,
+            &partner_cells,
+            &partner_cells,
+            &[],
+            &FxHashSet::default()
+        ));
+
+        let library = primitive_library_no45_bend1();
+        let crossing = CrossingSearchConfig {
+            net_id: 2,
+            partners: vec![CrossingSearchPartner {
+                net_id: 1,
+                waypoints: vec![(8, 2), (8, 10)],
+            }],
+            min_straight_cells: 1,
+            crossing_half_size_cells: 0,
+            crossing_loss: 3.0,
+            require_all_partners: false,
+        };
+        let route = route_single_net_with_collision_crossing_config(
+            &map,
+            &library,
+            State::new(2, 6, 0),
+            State::new(14, 6, 0),
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                require_target_angle: false,
+                ..AStarConfig::default()
+            },
+            0,
+            None,
+            &crossing,
+        )
+        .expect("collision crossing route should be legal");
+
+        assert_eq!(route.compressed_waypoints, vec![(2, 6), (14, 6)]);
+        assert!(route.stats.crossing_accepted >= 1);
+        assert!(route.stats.crossing_candidate_checks >= 1);
+        assert!(route.total_cost >= route.total_length_um + crossing.crossing_loss);
     }
 
     #[test]

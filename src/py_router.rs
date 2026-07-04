@@ -7,11 +7,11 @@ use pyo3::types::{PyDict, PyList};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::astar::{
-    export_route_svg_with_port_open_cells, route_single_net_with_config,
-    route_single_net_with_crossing_config, route_single_net_with_dynamic_expansion_config,
-    try_simple_route_with_dynamic_expansion_config, AStarConfig, CrossingSearchConfig,
-    CrossingSearchPartner, HeapTieBreaker, HeuristicMode, PrimitiveOrdering, RouteResult,
-    RouteSearchStats, State,
+    export_route_svg_with_port_open_cells, route_single_net_with_collision_crossing_config,
+    route_single_net_with_config, route_single_net_with_crossing_config,
+    route_single_net_with_dynamic_expansion_config, try_simple_route_with_dynamic_expansion_config,
+    AStarConfig, CrossingSearchConfig, CrossingSearchPartner, HeapTieBreaker, HeuristicMode,
+    PrimitiveOrdering, RouteResult, RouteSearchStats, State,
 };
 use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
 use crate::geometry_realization::{
@@ -684,6 +684,7 @@ pub struct PyPhotonicRouter {
     committed_center_routes: FxHashMap<u64, Vec<(i32, i32)>>,
     committed_realized_center_routes: FxHashMap<u64, Vec<(f64, f64)>>,
     crossing_events: Vec<CrossingEvent>,
+    use_collision_crossing_routing: bool,
     static_cells: FxHashSet<CellKey>,
     port_open_cells: FxHashSet<CellKey>,
     registered_plm: RefCell<RegisteredPlmContext>,
@@ -2803,6 +2804,156 @@ impl PyPhotonicRouter {
                 || Self::crossing_events_cover_partners(crossing_events, partner_ids))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_route_with_collision_crossings(
+        &self,
+        net_id: u64,
+        source: State,
+        target: State,
+        opened_ref: &FxHashSet<CellKey>,
+        search_cfg: &AStarConfig,
+        block_radius_cells: i32,
+        dynamic_clearance_exempt_keys: Option<&FxHashSet<CellKey>>,
+        partner_ids: &FxHashSet<u64>,
+    ) -> Option<(RouteResult, Vec<CrossingEvent>)> {
+        if !self.crossing_context.is_enabled() || partner_ids.is_empty() {
+            return None;
+        }
+        let crossing_cfg = self.crossing_context.config();
+        let crossing_partners: Vec<CrossingSearchPartner> =
+            if crossing_cfg.allow_only_expected_pairs {
+                self.crossing_context
+                    .ordered_constraints_for(net_id)
+                    .into_iter()
+                    .filter_map(|constraint| {
+                        let partner_id = if constraint.net_id == net_id {
+                            constraint.partner_net_id
+                        } else {
+                            constraint.net_id
+                        };
+                        if !partner_ids.contains(&partner_id) {
+                            return None;
+                        }
+                        self.committed_center_routes
+                            .get(&partner_id)
+                            .map(|waypoints| CrossingSearchPartner {
+                                net_id: partner_id,
+                                waypoints: waypoints.clone(),
+                            })
+                    })
+                    .collect()
+            } else {
+                partner_ids
+                    .iter()
+                    .filter_map(|partner_id| {
+                        self.committed_center_routes
+                            .get(partner_id)
+                            .map(|waypoints| CrossingSearchPartner {
+                                net_id: *partner_id,
+                                waypoints: waypoints.clone(),
+                            })
+                    })
+                    .collect()
+            };
+        if crossing_partners.is_empty() {
+            return None;
+        }
+        let crossing_search = CrossingSearchConfig {
+            net_id,
+            partners: crossing_partners,
+            min_straight_cells: crossing_cfg.min_straight_cells_per_crossing,
+            crossing_half_size_cells: crossing_cfg.crossing_half_size_cells,
+            crossing_loss: crossing_cfg.crossing_loss,
+            require_all_partners: crossing_cfg.allow_only_expected_pairs,
+        };
+        let mut crossing_search_cfg = search_cfg.clone();
+        crossing_search_cfg.enable_simple_routes = false;
+        crossing_search_cfg.enable_jps4 = false;
+        let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map_or_else(
+                || std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING").is_some(),
+                |trace_net_id| trace_net_id == net_id,
+            );
+        if trace_crossing {
+            eprintln!(
+                "collision-crossing start net={} partners={:?} block_radius={} min_straight={} half_size={}",
+                net_id,
+                crossing_search
+                    .partners
+                    .iter()
+                    .map(|partner| partner.net_id)
+                    .collect::<Vec<_>>(),
+                block_radius_cells,
+                crossing_search.min_straight_cells,
+                crossing_search.crossing_half_size_cells,
+            );
+        }
+        let result = route_single_net_with_collision_crossing_config(
+            &self.obstacle_map,
+            &self.primitives,
+            source,
+            target,
+            Some(opened_ref),
+            &crossing_search_cfg,
+            block_radius_cells.max(0),
+            dynamic_clearance_exempt_keys,
+            &crossing_search,
+        )?;
+        if trace_crossing {
+            eprintln!(
+                "collision-crossing result net={} expanded={} generated={} accepted={} candidates={} cost={} waypoints={:?}",
+                net_id,
+                result.stats.expanded_states,
+                result.stats.generated_neighbors,
+                result.stats.crossing_accepted,
+                result.stats.crossing_candidate_checks,
+                result.total_cost,
+                result.compressed_waypoints,
+            );
+        }
+        if result.stats.crossing_accepted == 0 {
+            return None;
+        }
+        let crossing_events = self.crossing_events_for_route(net_id, &result, partner_ids);
+        if trace_crossing {
+            eprintln!(
+                "collision-crossing events net={} events={:?}",
+                net_id,
+                crossing_events
+                    .iter()
+                    .map(|event| (event.partner_net_id, event.point, event.route_angle, event.partner_angle))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        if crossing_events.is_empty() {
+            return None;
+        }
+        let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
+        let required_partner_ids = if crossing_cfg.allow_only_expected_pairs {
+            partner_ids
+        } else {
+            &crossed_partner_ids
+        };
+        let satisfies = self.crossing_route_satisfies_partner_constraints(
+            net_id,
+            &result,
+            required_partner_ids,
+            &crossing_events,
+        );
+        if trace_crossing {
+            eprintln!(
+                "collision-crossing validation net={} crossed={:?} satisfies={}",
+                net_id, crossed_partner_ids, satisfies,
+            );
+        }
+        if satisfies {
+            return Some((result, crossing_events));
+        }
+        None
+    }
+
     fn invalid_crossing_intersections_for_route(
         &self,
         net_id: u64,
@@ -3390,10 +3541,22 @@ impl PyPhotonicRouter {
         let target_state = State::new(target.x, target.y, target.angle);
         let expected_crossing_partner_ids = self.crossing_allowed_partner_set(net_id);
         let require_crossing_compliant_route = self.crossing_context.is_enabled()
+            && !self.use_collision_crossing_routing
             && self.crossing_context.config().allow_only_expected_pairs
             && !expected_crossing_partner_ids.is_empty();
-        if let Some((mut crossing_result, crossing_events)) = self
-            .try_route_through_expected_crossing_partner(
+        let crossing_attempt = if self.use_collision_crossing_routing {
+            self.try_route_with_collision_crossings(
+                net_id,
+                source_state,
+                target_state,
+                opened_ref,
+                &cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys,
+                &expected_crossing_partner_ids,
+            )
+        } else {
+            self.try_route_through_expected_crossing_partner(
                 net_id,
                 source_state,
                 target_state,
@@ -3402,7 +3565,8 @@ impl PyPhotonicRouter {
                 block_radius_cells,
                 dynamic_clearance_exempt_keys,
             )
-        {
+        };
+        if let Some((mut crossing_result, crossing_events)) = crossing_attempt {
             let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
             let allowed_crossing_core_keys =
                 Self::crossing_reservation_keys_for_events(&crossing_events);
@@ -3726,10 +3890,22 @@ impl PyPhotonicRouter {
         let target_state = State::new(target.x, target.y, target.angle);
         let expected_crossing_partner_ids = self.crossing_allowed_partner_set(net_id);
         let require_crossing_compliant_route = self.crossing_context.is_enabled()
+            && !self.use_collision_crossing_routing
             && self.crossing_context.config().allow_only_expected_pairs
             && !expected_crossing_partner_ids.is_empty();
-        if let Some((mut crossing_result, crossing_events)) = self
-            .try_route_through_expected_crossing_partner(
+        let crossing_attempt = if self.use_collision_crossing_routing {
+            self.try_route_with_collision_crossings(
+                net_id,
+                source_state,
+                target_state,
+                opened_ref,
+                &cfg,
+                block_radius_cells,
+                dynamic_clearance_exempt_keys,
+                &expected_crossing_partner_ids,
+            )
+        } else {
+            self.try_route_through_expected_crossing_partner(
                 net_id,
                 source_state,
                 target_state,
@@ -3738,7 +3914,8 @@ impl PyPhotonicRouter {
                 block_radius_cells,
                 dynamic_clearance_exempt_keys,
             )
-        {
+        };
+        if let Some((mut crossing_result, crossing_events)) = crossing_attempt {
             let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
             let allowed_crossing_core_keys =
                 Self::crossing_reservation_keys_for_events(&crossing_events);
@@ -4319,6 +4496,7 @@ impl PyPhotonicRouter {
             committed_center_routes: FxHashMap::default(),
             committed_realized_center_routes: FxHashMap::default(),
             crossing_events: Vec::new(),
+            use_collision_crossing_routing: false,
             static_cells: FxHashSet::default(),
             port_open_cells: FxHashSet::default(),
             registered_plm: RefCell::new(RegisteredPlmContext::default()),
@@ -4369,6 +4547,10 @@ impl PyPhotonicRouter {
 
     fn crossing_allows_pair(&self, net_id: u64, partner_net_id: u64) -> bool {
         self.crossing_context.allows_pair(net_id, partner_net_id)
+    }
+
+    fn set_collision_crossing_routing(&mut self, enabled: bool) {
+        self.use_collision_crossing_routing = enabled;
     }
 
     fn crossing_events(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {

@@ -1260,6 +1260,7 @@ def route_match_and_realize(
     node_ranks: dict[str, int] | None = None,
     edge_ranks: dict[str, dict[str, int]] | None = None,
     crossing_loss: float = 0.0,
+    crossing_mode: str = "window",
     crossing_half_size_cells: int = 0,
     min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     foreign_port_keepout_cells: int = 0,
@@ -1335,6 +1336,7 @@ def route_match_and_realize(
         node_ranks=node_ranks,
         edge_ranks=edge_ranks,
         crossing_loss=crossing_loss,
+        crossing_mode=crossing_mode,
         crossing_half_size_cells=crossing_half_size_cells,
         min_straight_cells_per_crossing=min_straight_cells_per_crossing,
         foreign_port_keepout_cells=foreign_port_keepout_cells,
@@ -1841,6 +1843,7 @@ def route_nets_rust(
     node_ranks: dict[str, int] | None = None,
     edge_ranks: dict[str, dict[str, int]] | None = None,
     crossing_loss: float = 0.0,
+    crossing_mode: str = "window",
     crossing_half_size_cells: int = 0,
     min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     foreign_port_keepout_cells: int = 0,
@@ -1912,6 +1915,9 @@ def route_nets_rust(
         raise ValueError("proactive_congestion_radius_cells must be non-negative")
     if crossing_loss < 0:
         raise ValueError("crossing_loss must be non-negative")
+    crossing_mode = str(crossing_mode).strip().lower()
+    if crossing_mode not in {"window", "collision"}:
+        raise ValueError("crossing_mode must be either 'window' or 'collision'")
     if crossing_half_size_cells < 0:
         raise ValueError("crossing_half_size_cells must be non-negative")
     if min_straight_cells_per_crossing < 0:
@@ -2473,7 +2479,20 @@ def route_nets_rust(
         min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
         allow_only_expected_crossings=bool(allow_only_expected_crossings),
     )
+    crossing_plan_info["crossing_mode"] = crossing_mode
     crossing_plan_info["crossing_device"] = crossing_device_info
+    if bool(enable_crossings) and crossing_mode == "collision":
+        if not hasattr(router, "set_collision_crossing_routing"):
+            extension_path = getattr(rust_backend, "__file__", "<unknown>")
+            raise RuntimeError(
+                "The loaded photonic_router._rust extension does not expose "
+                "PyPhotonicRouter.set_collision_crossing_routing. Rebuild it with "
+                "`maturin develop --release`. "
+                f"Loaded extension: {extension_path}"
+            )
+        router.set_collision_crossing_routing(True)
+    elif hasattr(router, "set_collision_crossing_routing"):
+        router.set_collision_crossing_routing(False)
     _record_pipeline_timing("crossing_context", t_crossing_context_start)
 
     if not hasattr(router, "build_route_port_openings"):

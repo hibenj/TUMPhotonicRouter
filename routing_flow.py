@@ -601,6 +601,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--crossing-mode",
+        choices=("window", "collision"),
+        default="window",
+        help=(
+            "Crossing search mode. 'window' preserves the existing expected-partner "
+            "window search; 'collision' enables LiDAR-style collision-driven "
+            "crossing legalization (default: window)."
+        ),
+    )
+    parser.add_argument(
         "--min-straight-cells-per-crossing",
         type=int,
         default=SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
@@ -948,6 +958,7 @@ def main(argv: list[str] | None = None) -> Component:
         path_length_match_outputs=args.path_length_match_outputs,
         path_length_meander_height_um=args.path_length_meander_height_um,
         enable_crossings=args.crossings,
+        crossing_mode=args.crossing_mode,
         min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
         foreign_port_keepout_cells=args.foreign_port_keepout_cells,
         proactive_congestion_weight=args.proactive_congestion_weight,
@@ -1185,6 +1196,7 @@ def run_routing_flow(
     path_length_match_outputs: bool = False,
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     enable_crossings: bool = False,
+    crossing_mode: str = "window",
     crossing_half_size_cells: int = 0,
     min_straight_cells_per_crossing: int = SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     foreign_port_keepout_cells: int = SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
@@ -1245,6 +1257,10 @@ def run_routing_flow(
                       inserting path-length matching meanders.
         crossing_half_size_cells: Crossing keepout half-size in grid cells.
                       The default 0 derives it from the crossing component bbox.
+        crossing_mode: Crossing routing mode. "window" uses the existing
+                      expected-partner crossing search; "collision" only
+                      legalizes crossings after A* collides with committed
+                      route geometry.
         min_straight_cells_per_crossing: Minimum straight access length on each
                       side of a crossing in grid cells.
         proactive_congestion_weight: Soft A* cost per blocked side-neighbor
@@ -1438,6 +1454,7 @@ def run_routing_flow(
             node_types=metadata.get("node_types"),
             internal_delays_um=metadata.get("internal_delays_um"),
             enable_crossings=enable_crossings,
+            crossing_mode=crossing_mode,
             crossing_half_size_cells=int(crossing_half_size_cells),
             min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
             foreign_port_keepout_cells=int(foreign_port_keepout_cells),
