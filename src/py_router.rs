@@ -2942,13 +2942,20 @@ impl PyPhotonicRouter {
             required_partner_ids,
             &crossing_events,
         );
+        let realized_violations = self.crossing_violations_for_route(net_id, &result);
         if trace_crossing {
             eprintln!(
-                "collision-crossing validation net={} crossed={:?} satisfies={}",
-                net_id, crossed_partner_ids, satisfies,
+                "collision-crossing validation net={} crossed={:?} satisfies={} realized_violations={:?}",
+                net_id,
+                crossed_partner_ids,
+                satisfies,
+                realized_violations
+                    .iter()
+                    .map(|violation| (violation.partner_net_id, violation.point, violation.reason))
+                    .collect::<Vec<_>>(),
             );
         }
-        if satisfies {
+        if satisfies && realized_violations.is_empty() {
             return Some((result, crossing_events));
         }
         None

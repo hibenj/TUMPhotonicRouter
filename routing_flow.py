@@ -602,12 +602,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--crossing-mode",
-        choices=("window", "collision"),
+        choices=("window", "collision", "lidar-pure"),
         default="window",
         help=(
             "Crossing search mode. 'window' preserves the existing expected-partner "
             "window search; 'collision' enables LiDAR-style collision-driven "
-            "crossing legalization (default: window)."
+            "crossing legalization constrained by topology; 'lidar-pure' enables "
+            "collision-driven crossing legalization without topology pair permissions "
+            "(default: window)."
         ),
     )
     parser.add_argument(
@@ -1258,9 +1260,10 @@ def run_routing_flow(
         crossing_half_size_cells: Crossing keepout half-size in grid cells.
                       The default 0 derives it from the crossing component bbox.
         crossing_mode: Crossing routing mode. "window" uses the existing
-                      expected-partner crossing search; "collision" only
-                      legalizes crossings after A* collides with committed
-                      route geometry.
+                      expected-partner crossing search; "collision" legalizes
+                      crossings after A* collides with topology-allowed route
+                      geometry; "lidar-pure" uses dynamic DRC-style crossing
+                      permission against any committed route.
         min_straight_cells_per_crossing: Minimum straight access length on each
                       side of a crossing in grid cells.
         proactive_congestion_weight: Soft A* cost per blocked side-neighbor

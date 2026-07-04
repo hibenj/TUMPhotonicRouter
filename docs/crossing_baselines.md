@@ -9,7 +9,7 @@ LiDAR-style variants do not get conflated.
 | --- | --- | --- | --- | --- |
 | `window` | `crossing-clean-baseline` | Precomputed topology crossing constraints | Opens expected crossing windows before search | Existing baseline |
 | `collision` | `baseline/lidar-topology-crossings` | Precomputed topology crossing constraints | Routes normally, then legalizes collisions with expected/allowed committed routes | Implemented |
-| `lidar-pure` | `baseline/lidar-pure-crossings` | Dynamic DRC and crossing budgets only | Routes normally, then legalizes collisions with any committed route that passes DRC/budget checks | Planned |
+| `lidar-pure` | `baseline/lidar-pure-crossings` | Dynamic DRC-style checks, not precomputed topology pairs | Routes normally, then legalizes collisions with any committed route that passes local crossing checks | Implemented on this branch |
 
 ## Current Baseline: `collision`
 
@@ -24,18 +24,17 @@ orientation is valid, the straight-margin rule holds, the physical crossing
 reservation is clear, and the final realized crossing validator accepts the
 route. Crossing moves add `crossing_loss` to the A* cost.
 
-## Planned Baseline: `lidar-pure`
+## Current Branch: `lidar-pure`
 
-`lidar-pure` should match LiDAR more directly:
+`lidar-pure` matches LiDAR more directly than `collision`:
 
-- Do not precompute crossing pairs as a permission table.
+- Do not use precomputed crossing pairs as a permission table.
 - On collision, inspect the actual committed route owner.
-- Allow the crossing when crossings are enabled, both nets have remaining
-  crossing budget/count allowance, orientations are valid, the crossing
-  footprint fits, and unrelated geometry is absent from the footprint.
+- Allow the crossing when crossings are enabled, orientations are valid, the
+  crossing footprint fits, and unrelated geometry is absent from the footprint.
 - Add `crossing_loss` to A* cost for crossing moves.
 - Track actual crossing events and crossing counts.
-- Report insertion loss as:
+- Report insertion loss diagnostics as:
 
 ```text
 insertion_loss =
@@ -44,6 +43,10 @@ insertion_loss =
   + crossing_count * crossing_loss
   + device_loss
 ```
+
+The current implementation reports the route-dependent terms. `device_loss`,
+explicit per-net crossing budgets, and nonzero propagation/bend loss defaults
+are left as follow-up knobs.
 
 ## Benchmark Snapshot
 
@@ -54,6 +57,7 @@ All runs used `--crossings true`; `benes_16x16` runs used
 | --- | --- | --- | ---: | ---: |
 | `benes_8x8` | `window` | pass | 0.942 s | 3,094 |
 | `benes_8x8` | `collision` | pass | 1.224 s | 3,098 |
+| `benes_8x8` | `lidar-pure` | fails at route 15 | 33.696 s | n/a |
 | `benes_16x16 --debug-stop-after-route 31` | `window` | pass | 23.298 s | 90,782 |
 | `benes_16x16 --debug-stop-after-route 31` | `collision` | pass | 27.259 s | 87,491 |
 | `benes_16x16 --debug-stop-after-route 105` | `window` | pass | 45.931 s | 97,631 |
@@ -66,5 +70,9 @@ All runs used `--crossings true`; `benes_16x16` runs used
 - `collision` expands slightly fewer states on the `benes_16x16` cases, but its
   wall time is higher because each candidate crossing move runs more legality
   checks.
+- `lidar-pure` currently fails on `benes_8x8` route 15. Without the topology
+  permission/order table, A* finds lower-cost partial crossing candidates; the
+  realized-crossing validator rejects them because they create non-perpendicular
+  physical intersections or crossing footprints with unrelated route geometry.
 - The untracked file `docs/photonic_router_graph_crossing_plm_full.tex` is an
   intentional local document and should not be included in these commits.

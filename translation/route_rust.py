@@ -905,6 +905,17 @@ def _build_crossing_plan_info(
             f"Missing backend attrs: {missing_backend}; missing router attrs: {missing_router}."
         )
 
+    router.set_crossing_constraints([])
+    router.set_crossing_config(
+        rust_backend.CrossingConfig(
+            enabled=True,
+            crossing_loss=float(crossing_loss),
+            crossing_half_size_cells=int(crossing_half_size_cells),
+            min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
+            allow_only_expected_pairs=bool(allow_only_expected_crossings),
+        )
+    )
+
     if node_depths is None or node_ranks is None or edge_ranks is None:
         info["reason"] = "missing_topology_metadata"
         return info
@@ -982,15 +993,6 @@ def _build_crossing_plan_info(
         crossing_counts_by_net_name[str(job_b.net_name)] += 1
 
     router.set_crossing_constraints(constraints)
-    router.set_crossing_config(
-        rust_backend.CrossingConfig(
-            enabled=True,
-            crossing_loss=float(crossing_loss),
-            crossing_half_size_cells=int(crossing_half_size_cells),
-            min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
-            allow_only_expected_pairs=bool(allow_only_expected_crossings),
-        )
-    )
 
     info["constraint_count"] = len(constraints)
     info["missing_event_count"] = len(missing_events)
@@ -1003,6 +1005,96 @@ def _build_crossing_plan_info(
     info["min_straight_cells_per_crossing"] = int(min_straight_cells_per_crossing)
     info["allow_only_expected_crossings"] = bool(allow_only_expected_crossings)
     return info
+
+
+def _segment_bend_units(route_obj: object) -> float:
+    bend_units = 0.0
+    for raw_segment in getattr(route_obj, "segments", []) or []:
+        try:
+            kind = str(raw_segment.get("kind", ""))
+        except AttributeError:
+            continue
+        if kind == "turn45":
+            bend_units += 0.5
+        elif kind == "turn90":
+            bend_units += 1.0
+        elif kind and kind != "straight":
+            bend_units += 1.0
+    return bend_units
+
+
+def _augment_insertion_loss_report(
+    *,
+    crossing_plan_info: dict[str, object],
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord],
+    native_crossing_events: Iterable[object],
+    propagation_loss_per_um: float = 0.0,
+    bend_loss_per_90deg: float = 0.0,
+) -> None:
+    if not crossing_plan_info.get("enabled"):
+        return
+    crossing_loss = float(crossing_plan_info.get("crossing_loss", 0.0) or 0.0)
+    crossing_counts_by_net_id: Counter[int] = Counter()
+    for raw_event in native_crossing_events:
+        try:
+            net_id = int(raw_event["net_id"])
+            partner_net_id = int(raw_event["partner_net_id"])
+        except (TypeError, KeyError, ValueError):
+            continue
+        crossing_counts_by_net_id[net_id] += 1
+        crossing_counts_by_net_id[partner_net_id] += 1
+
+    per_net: list[dict[str, object]] = []
+    total_length_um = 0.0
+    total_bend_units = 0.0
+    total_crossing_count = 0
+    total_insertion_loss = 0.0
+    for net_id, record in sorted(routed_records_by_net_id.items()):
+        length_um = float(record.total_length_um)
+        bend_units = _segment_bend_units(record.route_obj)
+        crossing_count = int(crossing_counts_by_net_id.get(int(net_id), 0))
+        insertion_loss = (
+            length_um * propagation_loss_per_um
+            + bend_units * bend_loss_per_90deg
+            + crossing_count * crossing_loss
+        )
+        total_length_um += length_um
+        total_bend_units += bend_units
+        total_crossing_count += crossing_count
+        total_insertion_loss += insertion_loss
+        per_net.append(
+            {
+                "net_id": int(net_id),
+                "net_name": record.net_name,
+                "length_um": length_um,
+                "bend_90deg_units": bend_units,
+                "crossing_count": crossing_count,
+                "propagation_loss": length_um * propagation_loss_per_um,
+                "bend_loss": bend_units * bend_loss_per_90deg,
+                "crossing_loss": crossing_count * crossing_loss,
+                "insertion_loss": insertion_loss,
+            }
+        )
+
+    crossing_plan_info["insertion_loss_model"] = {
+        "propagation_loss_per_um": propagation_loss_per_um,
+        "bend_loss_per_90deg": bend_loss_per_90deg,
+        "crossing_loss": crossing_loss,
+        "device_loss_included": False,
+        "formula": (
+            "length_um * propagation_loss_per_um + "
+            "bend_90deg_units * bend_loss_per_90deg + "
+            "crossing_count * crossing_loss"
+        ),
+    }
+    crossing_plan_info["insertion_loss_summary"] = {
+        "net_count": len(per_net),
+        "total_length_um": total_length_um,
+        "total_bend_90deg_units": total_bend_units,
+        "total_crossing_count": total_crossing_count,
+        "total_insertion_loss": total_insertion_loss,
+    }
+    crossing_plan_info["insertion_loss_by_net"] = per_net
 
 
 def _augment_crossing_plan_with_realized_overlaps(
@@ -1916,8 +2008,15 @@ def route_nets_rust(
     if crossing_loss < 0:
         raise ValueError("crossing_loss must be non-negative")
     crossing_mode = str(crossing_mode).strip().lower()
-    if crossing_mode not in {"window", "collision"}:
-        raise ValueError("crossing_mode must be either 'window' or 'collision'")
+    if crossing_mode in {"pure", "lidar"}:
+        crossing_mode = "lidar-pure"
+    if crossing_mode not in {"window", "collision", "lidar-pure"}:
+        raise ValueError(
+            "crossing_mode must be one of 'window', 'collision', or 'lidar-pure'"
+        )
+    effective_allow_only_expected_crossings = bool(allow_only_expected_crossings)
+    if crossing_mode == "lidar-pure":
+        effective_allow_only_expected_crossings = False
     if crossing_half_size_cells < 0:
         raise ValueError("crossing_half_size_cells must be non-negative")
     if min_straight_cells_per_crossing < 0:
@@ -2477,11 +2576,14 @@ def route_nets_rust(
         crossing_loss=float(crossing_loss),
         crossing_half_size_cells=int(resolved_crossing_half_size_cells),
         min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
-        allow_only_expected_crossings=bool(allow_only_expected_crossings),
+        allow_only_expected_crossings=effective_allow_only_expected_crossings,
     )
     crossing_plan_info["crossing_mode"] = crossing_mode
+    crossing_plan_info["requested_allow_only_expected_crossings"] = bool(
+        allow_only_expected_crossings
+    )
     crossing_plan_info["crossing_device"] = crossing_device_info
-    if bool(enable_crossings) and crossing_mode == "collision":
+    if bool(enable_crossings) and crossing_mode in {"collision", "lidar-pure"}:
         if not hasattr(router, "set_collision_crossing_routing"):
             extension_path = getattr(rust_backend, "__file__", "<unknown>")
             raise RuntimeError(
@@ -4155,6 +4257,11 @@ def route_nets_rust(
             native_crossing_events = []
         crossing_plan_info["native_crossing_events"] = native_crossing_events
         crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
+        _augment_insertion_loss_report(
+            crossing_plan_info=crossing_plan_info,
+            routed_records_by_net_id=route_bookkeeping.records_by_id,
+            native_crossing_events=native_crossing_events,
+        )
     illegal_realized_crossings = _verify_realized_route_intersections(
         crossing_plan_info=crossing_plan_info,
         routed_records_by_net_id=route_bookkeeping.records_by_id,
