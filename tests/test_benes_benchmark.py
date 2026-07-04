@@ -406,7 +406,7 @@ def test_benes_crossing_plan_counts_geometric_route_intersections():
         edge_ranks=EDGE_RANKS,
         crossing_loss=1.25,
         crossing_half_size_cells=3,
-        min_straight_cells_per_crossing=5,
+        min_straight_cells_per_crossing=4,
         allow_only_expected_crossings=True,
     )
 
@@ -417,10 +417,10 @@ def test_benes_crossing_plan_counts_geometric_route_intersections():
         crossing_plan_info=info,
         routed_records_by_net_id={
             first.net_id: _FakeRouteRecord(
-                _FakeRouteObj([(0, 0), (10, 10)]),
+                _FakeRouteObj([(-5, -5), (15, 15)]),
             ),
             first.partner_net_id: _FakeRouteRecord(
-                _FakeRouteObj([(0, 10), (10, 0)]),
+                _FakeRouteObj([(-5, 15), (15, -5)]),
             ),
         },
     )
@@ -476,7 +476,7 @@ def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
     )
     assert invalid["geometric"] is True
     assert invalid["unrealized_reason"] == "insufficient_straight_margin"
-    assert invalid["required_margin_cells"] == 6
+    assert invalid["required_margin_cells"] == 9
 
 
 def test_benes_crossing_plan_rejects_non_perpendicular_route_intersections():

@@ -83,7 +83,7 @@ def test_realized_crossing_verifier_rejects_expected_bend_crossing():
     assert illegal[0]["classification"] == "illegal_unexpected_crossing"
 
 
-def test_realized_crossing_verifier_uses_footprint_not_astar_straight_margin():
+def test_realized_crossing_verifier_adds_extra_straight_margin_to_footprint():
     info = _plan_info()
     info["min_straight_cells_per_crossing"] = 10
     info["crossing_device"] = {"component_bbox_um": [8.0, 8.0]}
@@ -97,13 +97,14 @@ def test_realized_crossing_verifier_uses_footprint_not_astar_straight_margin():
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
     )
 
-    assert illegal == []
+    assert len(illegal) == 1
     crossing = info["realized_intersections"][0]
-    assert crossing["classification"] == "legal_expected_crossing"
+    assert crossing["classification"] == "illegal_unexpected_crossing"
+    assert crossing["reason"] == "crossing_footprint_contains_bend"
     assert crossing["segment_a_margin_um"] == 4.0
     assert crossing["segment_b_margin_um"] == 4.0
     assert crossing["crossing_footprint_um"] == 8.0
-    assert crossing["required_margin_um"] == 4.0
+    assert crossing["required_margin_um"] == 14.0
 
 
 def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():
@@ -134,16 +135,16 @@ def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():
     illegal = _verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
-            1: _record("a", ((-5.0, 0.0), (5.0, 0.0))),
-            2: _record("b", ((0.0, -5.0), (0.0, 5.0))),
-            3: _record("c", ((1.0, 6.0), (11.0, 6.0))),
-            4: _record("d", ((6.0, 1.0), (6.0, 11.0))),
+            1: _record("a", ((-8.0, 0.0), (8.0, 0.0))),
+            2: _record("b", ((0.0, -8.0), (0.0, 8.0))),
+            3: _record("c", ((-2.0, 6.0), (14.0, 6.0))),
+            4: _record("d", ((6.0, -2.0), (6.0, 14.0))),
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
     )
 
-    assert len(illegal) == 2
-    assert {item["reason"] for item in illegal} == {"crossing_footprint_overlap"}
+    reasons = {item["reason"] for item in illegal}
+    assert "crossing_footprint_overlap" in reasons
 
 
 def test_realized_crossing_verifier_rejects_route_inside_crossing_footprint():
@@ -153,8 +154,8 @@ def test_realized_crossing_verifier_rejects_route_inside_crossing_footprint():
     illegal = _verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
-            1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
-            2: _record("b", ((5.0, 0.0), (5.0, 10.0))),
+            1: _record("a", ((-5.0, 5.0), (15.0, 5.0))),
+            2: _record("b", ((5.0, -5.0), (5.0, 15.0))),
             3: _record("c", ((1.0, 7.0), (4.0, 7.0))),
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),

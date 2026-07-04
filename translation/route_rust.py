@@ -523,6 +523,10 @@ def _verify_realized_route_intersections(
         crossing_plan_info=crossing_plan_info,
         grid_size_um=float(grid_size_um),
     )
+    required_margin_um = footprint_half_um + float(grid_size_um) * (
+        int(crossing_plan_info.get("min_straight_cells_per_crossing", 0) or 0)
+        + int(crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0)
+    )
     allowed_pairs: set[frozenset[int]] = set()
     net_names: dict[int, str] = {}
     for raw_event in cast(Iterable[object], crossing_plan_info.get("events", [])):
@@ -604,10 +608,10 @@ def _verify_realized_route_intersections(
                     footprint_polygon: list[tuple[float, float]] = []
                     footprint_blockers: list[dict[str, object]] = []
                     footprint_straight = (
-                        footprint_half_um <= eps
+                        required_margin_um <= eps
                         or (
-                            margin_a + eps >= footprint_half_um
-                            and margin_b + eps >= footprint_half_um
+                            margin_a + eps >= required_margin_um
+                            and margin_b + eps >= required_margin_um
                         )
                     )
                     if (
@@ -673,7 +677,7 @@ def _verify_realized_route_intersections(
                         "segment_b_um": _rounded_segment(segment_b),
                         "segment_a_margin_um": round(float(margin_a), 6),
                         "segment_b_margin_um": round(float(margin_b), 6),
-                        "required_margin_um": round(float(footprint_half_um), 6),
+                        "required_margin_um": round(float(required_margin_um), 6),
                         "crossing_footprint_half_um": round(
                             float(footprint_half_um),
                             6,
@@ -1117,9 +1121,10 @@ def _augment_crossing_plan_with_realized_overlaps(
 
     actual_crossings: list[dict[str, object]] = []
     unrealized_expected: list[dict[str, object]] = []
-    required_crossing_margin_cells = max(
-        int(crossing_plan_info.get("min_straight_cells_per_crossing", 0) or 0),
-        int(crossing_plan_info.get("crossing_half_size_cells", 0) or 0),
+    required_crossing_margin_cells = (
+        int(crossing_plan_info.get("crossing_half_size_cells", 0) or 0)
+        + int(crossing_plan_info.get("min_straight_cells_per_crossing", 0) or 0)
+        + int(crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0)
     )
     for raw_event in list(crossing_plan_info.get("events", [])):
         event = dict(cast(dict[str, object], raw_event))
@@ -2581,6 +2586,12 @@ def route_nets_rust(
     crossing_plan_info["crossing_mode"] = crossing_mode
     crossing_plan_info["requested_allow_only_expected_crossings"] = bool(
         allow_only_expected_crossings
+    )
+    crossing_plan_info["bend_runout_cells_per_crossing"] = int(bend_radius_cells)
+    crossing_plan_info["required_straight_margin_cells_per_crossing"] = (
+        int(resolved_crossing_half_size_cells)
+        + int(min_straight_cells_per_crossing)
+        + int(bend_radius_cells)
     )
     crossing_plan_info["crossing_device"] = crossing_device_info
     if bool(enable_crossings) and crossing_mode in {"collision", "lidar-pure"}:

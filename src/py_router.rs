@@ -1615,6 +1615,14 @@ fn crossing_reservation_window_keys(
     keys
 }
 
+fn crossing_required_margin_cells(
+    crossing_half_size_cells: i32,
+    min_straight_cells: i32,
+    bend_runout_cells: i32,
+) -> i32 {
+    crossing_half_size_cells.max(0) + min_straight_cells.max(0) + bend_runout_cells.max(0)
+}
+
 fn crossing_events_for_partner(
     net_id: u64,
     partner_net_id: u64,
@@ -1622,13 +1630,18 @@ fn crossing_events_for_partner(
     partner_waypoints: &[(i32, i32)],
     min_straight_cells: i32,
     half_size_cells: i32,
+    bend_runout_cells: i32,
     width: i32,
     height: i32,
 ) -> Vec<CrossingEvent> {
     if route_waypoints.len() < 2 || partner_waypoints.len() < 2 {
         return Vec::new();
     }
-    let required_margin = f64::from(min_straight_cells.max(half_size_cells).max(0));
+    let required_margin = f64::from(crossing_required_margin_cells(
+        half_size_cells,
+        min_straight_cells,
+        bend_runout_cells,
+    ));
     let mut events = Vec::new();
     let mut seen_centers = FxHashSet::default();
     for seg_a in route_waypoints.windows(2) {
@@ -1688,6 +1701,7 @@ fn crossing_candidate_keys_for_partner(
     partner_waypoints: &[(i32, i32)],
     min_straight_cells: i32,
     half_size_cells: i32,
+    bend_runout_cells: i32,
     width: i32,
     height: i32,
 ) -> FxHashSet<CellKey> {
@@ -1695,7 +1709,8 @@ fn crossing_candidate_keys_for_partner(
     if partner_waypoints.len() < 2 {
         return keys;
     }
-    let required_margin = min_straight_cells.max(half_size_cells).max(0);
+    let required_margin =
+        crossing_required_margin_cells(half_size_cells, min_straight_cells, bend_runout_cells);
     for segment in partner_waypoints.windows(2) {
         if direction_angle_between_cells(segment[0], segment[1]).is_none() {
             continue;
@@ -1723,6 +1738,7 @@ fn crossing_spacing_history_cells_for_route(
     route_waypoints: &[(i32, i32)],
     min_straight_cells: i32,
     half_size_cells: i32,
+    bend_runout_cells: i32,
     width: i32,
     height: i32,
 ) -> Vec<(i32, i32)> {
@@ -1730,7 +1746,8 @@ fn crossing_spacing_history_cells_for_route(
     if route_waypoints.len() < 2 {
         return Vec::new();
     }
-    let required_margin = min_straight_cells.max(half_size_cells).max(0);
+    let required_margin =
+        crossing_required_margin_cells(half_size_cells, min_straight_cells, bend_runout_cells);
     for segment in route_waypoints.windows(2) {
         if direction_angle_between_cells(segment[0], segment[1]).is_none() {
             continue;
@@ -2578,6 +2595,7 @@ impl PyPhotonicRouter {
             &route.compressed_waypoints,
             config.min_straight_cells_per_crossing,
             config.crossing_half_size_cells,
+            self.primitive_cfg.bend_radius_cells,
             self.grid.width as i32,
             self.grid.height as i32,
         );
@@ -2608,6 +2626,7 @@ impl PyPhotonicRouter {
                     waypoints,
                     config.min_straight_cells_per_crossing,
                     config.crossing_half_size_cells,
+                    self.primitive_cfg.bend_radius_cells,
                     self.grid.width as i32,
                     self.grid.height as i32,
                 );
@@ -2687,6 +2706,7 @@ impl PyPhotonicRouter {
                 partner_waypoints,
                 config.min_straight_cells_per_crossing,
                 config.crossing_half_size_cells,
+                self.primitive_cfg.bend_radius_cells,
                 self.grid.width as i32,
                 self.grid.height as i32,
             ));
@@ -2708,6 +2728,7 @@ impl PyPhotonicRouter {
                 partner_waypoints,
                 config.min_straight_cells_per_crossing,
                 config.crossing_half_size_cells,
+                self.primitive_cfg.bend_radius_cells,
                 self.grid.width as i32,
                 self.grid.height as i32,
             ));
@@ -2923,7 +2944,12 @@ impl PyPhotonicRouter {
                 net_id,
                 crossing_events
                     .iter()
-                    .map(|event| (event.partner_net_id, event.point, event.route_angle, event.partner_angle))
+                    .map(|event| (
+                        event.partner_net_id,
+                        event.point,
+                        event.route_angle,
+                        event.partner_angle
+                    ))
                     .collect::<Vec<_>>(),
             );
         }
@@ -2971,12 +2997,11 @@ impl PyPhotonicRouter {
             return Vec::new();
         }
         let config = self.crossing_context.config();
-        let required_margin = f64::from(
-            config
-                .min_straight_cells_per_crossing
-                .max(config.crossing_half_size_cells)
-                .max(0),
-        );
+        let required_margin = f64::from(crossing_required_margin_cells(
+            config.crossing_half_size_cells,
+            config.min_straight_cells_per_crossing,
+            self.primitive_cfg.bend_radius_cells,
+        ));
         let mut invalid = Vec::new();
         let mut seen_centers = FxHashSet::default();
         for route_segment in route.compressed_waypoints.windows(2) {
@@ -3101,12 +3126,11 @@ impl PyPhotonicRouter {
         }
         let config = self.crossing_context.config();
         let required_margin = self.grid.grid_size_um
-            * f64::from(
-                config
-                    .min_straight_cells_per_crossing
-                    .max(config.crossing_half_size_cells)
-                    .max(0),
-            );
+            * f64::from(crossing_required_margin_cells(
+                config.crossing_half_size_cells,
+                config.min_straight_cells_per_crossing,
+                self.primitive_cfg.bend_radius_cells,
+            ));
         let route_centerline_owned;
         let route_centerline =
             if let Some(centerline) = self.committed_realized_center_routes.get(&net_id) {
@@ -9071,7 +9095,8 @@ mod tests {
     #[test]
     fn crossing_events_require_straight_margin_around_intersection() {
         let partner = vec![(10, 5), (10, 24)];
-        let clean = crossing_events_for_partner(2, 1, &[(3, 12), (24, 12)], &partner, 2, 2, 32, 32);
+        let clean =
+            crossing_events_for_partner(2, 1, &[(3, 12), (24, 12)], &partner, 2, 2, 0, 32, 32);
         assert_eq!(clean.len(), 1);
         assert_eq!(clean[0].point, (10.0, 12.0));
 
@@ -9082,6 +9107,7 @@ mod tests {
             &partner,
             2,
             2,
+            0,
             32,
             32,
         );
@@ -9415,23 +9441,23 @@ mod tests {
 
     #[test]
     fn crossing_candidate_keys_keep_partner_bends_blocked() {
-        let partner = vec![(10, 5), (10, 12), (15, 12)];
-        let keys = crossing_candidate_keys_for_partner(&partner, 2, 2, 32, 32);
+        let partner = vec![(10, 5), (10, 15), (18, 15)];
+        let keys = crossing_candidate_keys_for_partner(&partner, 2, 2, 0, 32, 32);
 
-        assert!(keys.contains(&pack_xy(10, 7)));
         assert!(keys.contains(&pack_xy(10, 10)));
+        assert!(keys.contains(&pack_xy(10, 11)));
         assert!(!keys.contains(&pack_xy(10, 5)));
-        assert!(!keys.contains(&pack_xy(10, 11)));
-        assert!(!keys.contains(&pack_xy(10, 12)));
-        assert!(keys.contains(&pack_xy(12, 12)));
-        assert!(keys.contains(&pack_xy(13, 12)));
-        assert!(!keys.contains(&pack_xy(14, 12)));
+        assert!(!keys.contains(&pack_xy(10, 14)));
+        assert!(!keys.contains(&pack_xy(10, 15)));
+        assert!(keys.contains(&pack_xy(14, 15)));
+        assert!(!keys.contains(&pack_xy(17, 15)));
+        assert!(!keys.contains(&pack_xy(18, 15)));
     }
 
     #[test]
     fn crossing_spacing_history_uses_valid_straight_windows() {
         let route = vec![(2, 10), (12, 10), (12, 16)];
-        let cells = crossing_spacing_history_cells_for_route(&route, 2, 1, 32, 32);
+        let cells = crossing_spacing_history_cells_for_route(&route, 2, 1, 0, 32, 32);
         let keys: FxHashSet<CellKey> = cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
 
         assert!(keys.contains(&pack_xy(6, 9)));

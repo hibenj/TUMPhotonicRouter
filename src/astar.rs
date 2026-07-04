@@ -175,6 +175,14 @@ pub struct CrossingSearchConfig {
     pub require_all_partners: bool,
 }
 
+fn crossing_required_margin_cells(
+    crossing_half_size_cells: i32,
+    min_straight_cells: i32,
+    bend_runout_cells: i32,
+) -> i32 {
+    crossing_half_size_cells.max(0) + min_straight_cells.max(0) + bend_runout_cells.max(0)
+}
+
 const PRIMITIVE_TRANSITION_CLASS_COUNT: usize = 4;
 const PRIMITIVE_STRAIGHT_SHORT: usize = 0;
 const PRIMITIVE_STRAIGHT_LONG: usize = 1;
@@ -3278,10 +3286,12 @@ fn route_single_net_with_bounds_crossing(
                 .collect()
         })
         .collect();
-    let required_margin = crossing
-        .min_straight_cells
-        .max(crossing.crossing_half_size_cells)
-        .max(0);
+    let bend_runout_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
+    let required_margin = crossing_required_margin_cells(
+        crossing.crossing_half_size_cells,
+        crossing.min_straight_cells,
+        bend_runout_cells,
+    );
     let capped_required_margin = required_margin.max(1);
     let all_partner_mask = if crossing.require_all_partners {
         (1u64 << crossing.partners.len()) - 1
@@ -3326,7 +3336,12 @@ fn route_single_net_with_bounds_crossing(
     let generation = next_search_generation(&mut counter)?;
     open_set.push(OpenEntry {
         f_score: search_heuristic.estimate(source)
-            + crossing_progress_heuristic(source_key, crossing, primitives.grid_size_um()),
+            + crossing_progress_heuristic(
+                source_key,
+                crossing,
+                required_margin,
+                primitives.grid_size_um(),
+            ),
         tie_score: heap_tie_score(0.0, config.heap_tie_breaker),
         g_score: 0.0,
         counter: generation,
@@ -3533,7 +3548,12 @@ fn route_single_net_with_bounds_crossing(
             open_set.push(OpenEntry {
                 f_score: tentative_g
                     + search_heuristic.estimate(next_state)
-                    + crossing_progress_heuristic(next_key, crossing, primitives.grid_size_um()),
+                    + crossing_progress_heuristic(
+                        next_key,
+                        crossing,
+                        required_margin,
+                        primitives.grid_size_um(),
+                    ),
                 tie_score: heap_tie_score(tentative_g, config.heap_tie_breaker),
                 g_score: tentative_g,
                 counter: generation,
@@ -3983,6 +4003,7 @@ fn reconstruct_route_crossing(
 fn crossing_progress_heuristic(
     key: CrossingAStarKey,
     crossing: &CrossingSearchConfig,
+    required_margin: i32,
     grid_size_um: f64,
 ) -> f64 {
     if !crossing.require_all_partners {
@@ -3995,10 +4016,6 @@ fn crossing_progress_heuristic(
     let Some(partner) = crossing.partners.get(next_idx) else {
         return -progress_bonus;
     };
-    let required_margin = crossing
-        .min_straight_cells
-        .max(crossing.crossing_half_size_cells)
-        .max(0);
     let point = (f64::from(key.state.x), f64::from(key.state.y));
     let mut best_distance = f64::INFINITY;
     for segment in partner.waypoints.windows(2) {

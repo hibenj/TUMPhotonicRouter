@@ -32,6 +32,8 @@ route. Crossing moves add `crossing_loss` to the A* cost.
 - On collision, inspect the actual committed route owner.
 - Allow the crossing when crossings are enabled, orientations are valid, the
   crossing footprint fits, and unrelated geometry is absent from the footprint.
+- Require straight access on both route arms equal to
+  `crossing_half_size_cells + min_straight_cells_per_crossing + bend_runout_cells`.
 - Add `crossing_loss` to A* cost for crossing moves.
 - Track actual crossing events and crossing counts.
 - Report insertion loss diagnostics as:
@@ -57,7 +59,7 @@ All runs used `--crossings true`; `benes_16x16` runs used
 | --- | --- | --- | ---: | ---: |
 | `benes_8x8` | `window` | pass | 0.942 s | 3,094 |
 | `benes_8x8` | `collision` | pass | 1.224 s | 3,098 |
-| `benes_8x8` | `lidar-pure` | fails at route 15 | 33.696 s | n/a |
+| `benes_8x8` | `lidar-pure` | pass | 29.351 s | 23,361 |
 | `benes_16x16 --debug-stop-after-route 31` | `window` | pass | 23.298 s | 90,782 |
 | `benes_16x16 --debug-stop-after-route 31` | `collision` | pass | 27.259 s | 87,491 |
 | `benes_16x16 --debug-stop-after-route 105` | `window` | pass | 45.931 s | 97,631 |
@@ -70,9 +72,9 @@ All runs used `--crossings true`; `benes_16x16` runs used
 - `collision` expands slightly fewer states on the `benes_16x16` cases, but its
   wall time is higher because each candidate crossing move runs more legality
   checks.
-- `lidar-pure` currently fails on `benes_8x8` route 15. Without the topology
-  permission/order table, A* finds lower-cost partial crossing candidates; the
-  realized-crossing validator rejects them because they create non-perpendicular
-  physical intersections or crossing footprints with unrelated route geometry.
+- `lidar-pure` now passes `benes_8x8` after using the same additive straight
+  access rule in A* and realized-geometry validation. Without the topology
+  permission/order table it still does more crossing legality work than
+  `collision`.
 - The untracked file `docs/photonic_router_graph_crossing_plm_full.tex` is an
   intentional local document and should not be included in these commits.
