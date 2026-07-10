@@ -147,6 +147,47 @@ def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():
     assert "crossing_footprint_overlap" in reasons
 
 
+def test_realized_crossing_verifier_rejects_overlapping_required_straight_windows():
+    info: dict[str, object] = {
+        "enabled": True,
+        "allow_only_expected_crossings": True,
+        "crossing_half_size_cells": 1,
+        "min_straight_cells_per_crossing": 4,
+        "bend_runout_cells_per_crossing": 0,
+        "crossing_device": {"component_bbox_um": [2.0, 2.0]},
+        "events": [
+            {
+                "loaded": True,
+                "net_id_a": 1,
+                "net_id_b": 2,
+                "net_name_a": "a",
+                "net_name_b": "b",
+            },
+            {
+                "loaded": True,
+                "net_id_a": 3,
+                "net_id_b": 4,
+                "net_name_a": "c",
+                "net_name_b": "d",
+            },
+        ],
+    }
+
+    illegal = _verify_realized_route_intersections(
+        crossing_plan_info=info,
+        routed_records_by_net_id={
+            1: _record("a", ((-8.0, 0.0), (8.0, 0.0))),
+            2: _record("b", ((0.0, -8.0), (0.0, 8.0))),
+            3: _record("c", ((-2.0, 6.0), (14.0, 6.0))),
+            4: _record("d", ((6.0, -2.0), (6.0, 14.0))),
+        },
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+    )
+
+    reasons = {item["reason"] for item in illegal}
+    assert "crossing_required_straight_window_overlap" in reasons
+
+
 def test_realized_crossing_verifier_rejects_route_inside_crossing_footprint():
     info = _plan_info()
     info["crossing_device"] = {"component_bbox_um": [8.0, 8.0]}

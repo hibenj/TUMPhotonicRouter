@@ -77,6 +77,7 @@ pub struct ObstacleMap {
     net_routes: FxHashMap<NetId, Vec<CellKey>>,
     net_core_routes: FxHashMap<NetId, Vec<CellKey>>,
     history_cost: FxHashMap<CellKey, u32>,
+    oriented_history_cost: FxHashMap<(CellKey, u8), u32>,
 }
 
 impl ObstacleMap {
@@ -106,6 +107,7 @@ impl ObstacleMap {
             net_routes: FxHashMap::default(),
             net_core_routes: FxHashMap::default(),
             history_cost: FxHashMap::default(),
+            oriented_history_cost: FxHashMap::default(),
         }
     }
 
@@ -234,6 +236,13 @@ impl ObstacleMap {
     /// Packed cell keys with accumulated rip-up history costs.
     pub fn history_entries(&self) -> impl Iterator<Item = (CellKey, u32)> + '_ {
         self.history_cost.iter().map(|(&key, &cost)| (key, cost))
+    }
+
+    /// Packed cell keys, orientation, and accumulated orientation-specific history costs.
+    pub fn oriented_history_entries(&self) -> impl Iterator<Item = (CellKey, u8, u32)> + '_ {
+        self.oriented_history_cost
+            .iter()
+            .map(|(&(key, angle), &cost)| (key, angle, cost))
     }
 
     /// Remove every static obstacle entry (compact + cell-based).
@@ -736,6 +745,7 @@ impl ObstacleMap {
             net_routes: FxHashMap::default(),
             net_core_routes: FxHashMap::default(),
             history_cost: self.history_cost.clone(),
+            oriented_history_cost: self.oriented_history_cost.clone(),
         };
         for key in self.dynamic_obstacles.keys().copied() {
             let (x, y) = unpack_xy(key);
@@ -826,6 +836,18 @@ impl ObstacleMap {
         true
     }
 
+    /// Add an orientation-specific history/congestion penalty to an in-bounds cell.
+    pub fn add_oriented_history_cost(&mut self, x: i32, y: i32, angle: u8, amount: u32) -> bool {
+        if !self.in_bounds(x, y) {
+            return false;
+        }
+
+        let key = (pack_xy(x, y), angle % 8);
+        let entry = self.oriented_history_cost.entry(key).or_insert(0);
+        *entry = entry.saturating_add(amount);
+        true
+    }
+
     /// Return the history/congestion cost for a cell, or zero if none exists.
     pub fn get_history_cost(&self, x: i32, y: i32) -> u32 {
         if !self.in_bounds(x, y) {
@@ -837,6 +859,7 @@ impl ObstacleMap {
     /// Clear all history/congestion penalties.
     pub fn clear_history(&mut self) {
         self.history_cost.clear();
+        self.oriented_history_cost.clear();
     }
 
     /// Check whether every listed cell is in bounds and free.

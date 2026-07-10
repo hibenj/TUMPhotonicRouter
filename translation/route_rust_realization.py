@@ -109,6 +109,7 @@ def realize_routed_net_records(
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool = True,
     bend_radius_cells: int = 4,
+    enable_endpoint_correction: bool = True,
 ) -> None:
     """Phase B: realize routed records into polygons on the target layout."""
     if route_width_um <= 0:
@@ -142,7 +143,7 @@ def realize_routed_net_records(
             router,
             record,
             realization_grid_spec=realization_grid_spec,
-            enable_endpoint_correction=True,
+            enable_endpoint_correction=enable_endpoint_correction,
             allow_unchecked_bumps=not allow_45_degree_turns,
         )
         if record.meander_auto_plan is not None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import os
 import sys
 import time
 from collections import Counter
@@ -78,6 +79,8 @@ build_static_obstacle_map = _sob.build_static_obstacle_map
 _load_rust_backend = _sob._load_rust_backend
 
 DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING = 2
+MAX_DEBUG_ROUTE_SVG_EXPORTS = 10
+DEFAULT_LIDAR_FANOUT_CONGESTION_HISTORY_AMOUNT = 250
 
 
 def _format_route_indices(indices: set[int]) -> str:
@@ -606,6 +609,7 @@ def _verify_realized_route_intersections(
                     axis_u = _segment_unit_vector(segment_a)
                     axis_v = _segment_unit_vector(segment_b)
                     footprint_polygon: list[tuple[float, float]] = []
+                    required_window_polygon: list[tuple[float, float]] = []
                     footprint_blockers: list[dict[str, object]] = []
                     footprint_straight = (
                         required_margin_um <= eps
@@ -626,19 +630,37 @@ def _verify_realized_route_intersections(
                             axis_v=axis_v,
                             half_extent_um=footprint_half_um,
                         )
-                        if pair_allowed and footprint_straight:
-                            footprint_blockers = _crossing_footprint_blockers(
-                                center=(point_x, point_y),
-                                axis_u=axis_u,
-                                axis_v=axis_v,
-                                half_extent_um=footprint_half_um,
-                                segments_by_net_id=segments_by_net_id,
-                                allowed_segments={
-                                    net_id_a: (segment_a,),
-                                    net_id_b: (segment_b,),
-                                },
-                                net_names=net_names,
-                            )
+                    if (
+                        axis_u is not None
+                        and axis_v is not None
+                        and perpendicular
+                        and required_margin_um > eps
+                    ):
+                        required_window_polygon = _crossing_footprint_polygon(
+                            center=(point_x, point_y),
+                            axis_u=axis_u,
+                            axis_v=axis_v,
+                            half_extent_um=required_margin_um,
+                        )
+                    if (
+                        pair_allowed
+                        and footprint_straight
+                        and footprint_polygon
+                        and axis_u is not None
+                        and axis_v is not None
+                    ):
+                        footprint_blockers = _crossing_footprint_blockers(
+                            center=(point_x, point_y),
+                            axis_u=axis_u,
+                            axis_v=axis_v,
+                            half_extent_um=footprint_half_um,
+                            segments_by_net_id=segments_by_net_id,
+                            allowed_segments={
+                                net_id_a: (segment_a,),
+                                net_id_b: (segment_b,),
+                            },
+                            net_names=net_names,
+                        )
                     legal = (
                         pair_allowed
                         and perpendicular
@@ -689,6 +711,9 @@ def _verify_realized_route_intersections(
                         "crossing_footprint_polygon_um": [
                             _rounded_point(point) for point in footprint_polygon
                         ],
+                        "crossing_required_window_polygon_um": [
+                            _rounded_point(point) for point in required_window_polygon
+                        ],
                         "crossing_footprint_blockers": footprint_blockers,
                         "expected_pair": bool(pair_expected),
                         "perpendicular": bool(perpendicular),
@@ -704,7 +729,10 @@ def _verify_realized_route_intersections(
         index
         for index, item in enumerate(realized)
         if str(item.get("classification", "")).startswith("legal_")
-        and item.get("crossing_footprint_polygon_um")
+        and (
+            item.get("crossing_footprint_polygon_um")
+            or item.get("crossing_required_window_polygon_um")
+        )
     ]
     for offset, index_a in enumerate(legal_crossing_indices):
         crossing_a = realized[index_a]
@@ -715,19 +743,45 @@ def _verify_realized_route_intersections(
                 crossing_a.get("crossing_footprint_polygon_um", []),
             )
         ]
+        required_polygon_a = [
+            (float(point[0]), float(point[1]))
+            for point in cast(
+                list[list[float]],
+                crossing_a.get("crossing_required_window_polygon_um", []),
+            )
+        ]
         for index_b in legal_crossing_indices[offset + 1 :]:
             crossing_b = realized[index_b]
             polygon_b = [
                 (float(point[0]), float(point[1]))
                 for point in cast(
                     list[list[float]],
-                    crossing_b.get("crossing_footprint_polygon_um", []),
+                crossing_b.get("crossing_footprint_polygon_um", []),
+            )
+        ]
+            required_polygon_b = [
+                (float(point[0]), float(point[1]))
+                for point in cast(
+                    list[list[float]],
+                    crossing_b.get("crossing_required_window_polygon_um", []),
                 )
             ]
-            if not polygon_a or not polygon_b:
+            footprint_overlap = bool(polygon_a and polygon_b) and (
+                _convex_polygons_overlap_with_area(polygon_a, polygon_b)
+            )
+            required_window_overlap = bool(required_polygon_a and required_polygon_b) and (
+                _convex_polygons_overlap_with_area(
+                    required_polygon_a,
+                    required_polygon_b,
+                )
+            )
+            if not footprint_overlap and not required_window_overlap:
                 continue
-            if not _convex_polygons_overlap_with_area(polygon_a, polygon_b):
-                continue
+            overlap_reason = (
+                "crossing_footprint_overlap"
+                if footprint_overlap
+                else "crossing_required_straight_window_overlap"
+            )
             overlap_peer_a = {
                 "net_id_a": crossing_b.get("net_id_a"),
                 "net_id_b": crossing_b.get("net_id_b"),
@@ -749,7 +803,7 @@ def _verify_realized_route_intersections(
                 if str(crossing.get("classification", "")).startswith("illegal_"):
                     continue
                 crossing["classification"] = "illegal_unexpected_crossing"
-                crossing["reason"] = "crossing_footprint_overlap"
+                crossing["reason"] = overlap_reason
                 crossing["overlapping_crossing"] = peer
                 illegal.append(crossing)
 
@@ -887,6 +941,10 @@ def _build_crossing_plan_info(
         "events": [],
         "expected_crossings_by_net_id": {},
         "expected_crossings_by_net_name": {},
+        "crossing_loss": float(crossing_loss),
+        "crossing_half_size_cells": int(crossing_half_size_cells),
+        "min_straight_cells_per_crossing": int(min_straight_cells_per_crossing),
+        "allow_only_expected_crossings": bool(allow_only_expected_crossings),
     }
     if not enable_crossings:
         return info
@@ -1004,10 +1062,6 @@ def _build_crossing_plan_info(
     info["events"] = event_records
     info["expected_crossings_by_net_id"] = dict(sorted(crossing_counts_by_net_id.items()))
     info["expected_crossings_by_net_name"] = dict(sorted(crossing_counts_by_net_name.items()))
-    info["crossing_loss"] = float(crossing_loss)
-    info["crossing_half_size_cells"] = int(crossing_half_size_cells)
-    info["min_straight_cells_per_crossing"] = int(min_straight_cells_per_crossing)
-    info["allow_only_expected_crossings"] = bool(allow_only_expected_crossings)
     return info
 
 
@@ -1391,6 +1445,9 @@ def route_match_and_realize(
     enable_grid_endpoint_correction: bool = True,
 ) -> RouteRustPipelineResult:
     """Run Phase A->(optional M1)->B entirely in route_rust."""
+    effective_grid_endpoint_correction = bool(enable_grid_endpoint_correction) and (
+        str(crossing_mode).strip().lower() not in {"pure", "lidar", "lidar-pure"}
+    )
     route_obstacle_config = obstacle_config
     if debug_dir is None:
         route_obstacle_config = _with_bbox_cell_materialization(
@@ -1439,7 +1496,7 @@ def route_match_and_realize(
         foreign_port_keepout_cells=foreign_port_keepout_cells,
         allow_only_expected_crossings=allow_only_expected_crossings,
         defer_realization=True,
-        enable_checked_endpoint_correction=enable_grid_endpoint_correction,
+        enable_checked_endpoint_correction=effective_grid_endpoint_correction,
     )
     pipeline_timings_s: dict[str, float] = {
         "route_nets": time.perf_counter() - t_route_nets_start,
@@ -1457,7 +1514,7 @@ def route_match_and_realize(
             f"(obstacle map + A* + repairs): {pipeline_timings_s['route_nets']:.4f} s"
         )
 
-    if enable_grid_endpoint_correction:
+    if effective_grid_endpoint_correction:
         t_endpoint_correction_start = time.perf_counter()
         debug_artifacts = _apply_endpoint_corrections_to_debug_artifacts(debug_artifacts)
         pipeline_timings_s["route_endpoint_correction"] = (
@@ -1672,6 +1729,7 @@ def route_match_and_realize(
         realization_grid_spec=debug_artifacts.realization_grid_spec,
         allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
         bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+        enable_endpoint_correction=effective_grid_endpoint_correction,
     )
     t_realization_end = time.perf_counter()
     pipeline_timings_s["route_realization"] = t_realization_end - t_realization_start
@@ -2082,6 +2140,11 @@ def route_nets_rust(
     )
 
     debug_path = Path(debug_dir) if debug_dir is not None else None
+    trace_all_attempt_paths = bool(
+        debug_path is not None
+        and os.environ.get("PHOTONIC_ROUTER_TRACE_ALL_ATTEMPT_PATHS", "").strip()
+        not in {"", "0", "false", "False", "FALSE"}
+    )
     diagnostics_enabled = debug_path is not None
     obstacle_svg = None
     route_svgs: list[Path] = []
@@ -2096,6 +2159,13 @@ def route_nets_rust(
             for old_artifact in route_dir.glob(f"{debug_prefix}_*"):
                 if old_artifact.is_file() and old_artifact.suffix.lower() in {".svg", ".txt"}:
                     old_artifact.unlink()
+            for trace_name in (
+                f"{debug_prefix}_attempt_paths.jsonl",
+                f"{debug_prefix}_native_probe_debug.jsonl",
+            ):
+                trace_path = route_dir / trace_name
+                if trace_path.is_file():
+                    trace_path.unlink()
 
     nets = schematic.netlist.routes
     if debug_route_indices is None:
@@ -2133,7 +2203,9 @@ def route_nets_rust(
     )
     bend_radius_cells = int(primitive_cfg.bend_radius_cells)
     astar_cfg = rust_backend.AStarConfig(max_iterations=int(max_iterations))
-    astar_cfg.enable_simple_routes = bool(enable_simple_routes)
+    astar_cfg.enable_simple_routes = bool(enable_simple_routes) and not (
+        bool(enable_crossings) and crossing_mode in {"collision", "lidar-pure"}
+    )
     astar_cfg.enable_jps4 = bool(enable_jps4)
     astar_cfg.use_indexed_heap = bool(use_indexed_heap or allow_45_degree_turns)
     astar_cfg.collect_detailed_timing = bool(
@@ -2144,8 +2216,6 @@ def route_nets_rust(
     if allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
         effective_heuristic_mode = "diagonal_aware"
     astar_cfg.heuristic_mode = effective_heuristic_mode
-    if allow_45_degree_turns and hasattr(astar_cfg, "max_iterations"):
-        astar_cfg.max_iterations = min(int(astar_cfg.max_iterations), 50_000)
     if allow_45_degree_turns and hasattr(astar_cfg, "heuristic_weight"):
         astar_cfg.heuristic_weight = max(float(astar_cfg.heuristic_weight), 1.25)
     if allow_45_degree_turns and hasattr(astar_cfg, "bend_weight"):
@@ -2156,10 +2226,14 @@ def route_nets_rust(
     if allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":
         effective_heap_tie_breaker = "larger_g"
     astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
+    effective_proactive_congestion_weight = float(proactive_congestion_weight)
+    effective_proactive_congestion_radius_cells = int(proactive_congestion_radius_cells)
     if hasattr(astar_cfg, "proactive_congestion_weight"):
-        astar_cfg.proactive_congestion_weight = float(proactive_congestion_weight)
+        astar_cfg.proactive_congestion_weight = float(effective_proactive_congestion_weight)
     if hasattr(astar_cfg, "proactive_congestion_radius_cells"):
-        astar_cfg.proactive_congestion_radius_cells = int(proactive_congestion_radius_cells)
+        astar_cfg.proactive_congestion_radius_cells = int(
+            effective_proactive_congestion_radius_cells
+        )
     if routing_window_scale is not None:
         astar_cfg.routing_window_scale = float(routing_window_scale)
 
@@ -2541,6 +2615,17 @@ def route_nets_rust(
     port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_access_rule_by_spec: dict[str, str | None] = {}
+    lidar_port_fanout_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
+    lidar_port_fanout_path_by_spec: dict[str, tuple[tuple[int, int], ...]] = {}
+    lidar_port_fanout_anchor_by_spec: dict[str, tuple[int, int]] = {}
+    lidar_port_fanout_keepout_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
+    lidar_port_fanout_group_by_spec: dict[str, tuple[str, int]] = {}
+    lidar_port_fanout_route_order_by_spec: dict[str, int] = {}
+    lidar_group_fanout_keepout_cells: set[tuple[int, int]] = set()
+    lidar_fanout_instances: set[str] = set()
+    lidar_fanout_congestion_cells: set[tuple[int, int]] = set()
+    lidar_fanout_congestion_radius_cells = 0
+    lidar_fanout_congestion_history_amount = 0
     next_net_id = 1
     t_route_job_build_start = _pipeline_timer_start()
     for net_name, bundle in nets.items():
@@ -2594,6 +2679,38 @@ def route_nets_rust(
         + int(bend_radius_cells)
     )
     crossing_plan_info["crossing_device"] = crossing_device_info
+    enforce_realized_crossing_validation = bool(enable_crossings)
+    crossing_plan_info["enforce_realized_crossing_validation"] = bool(
+        enforce_realized_crossing_validation
+    )
+    if hasattr(router, "set_enforce_realized_crossing_validation"):
+        router.set_enforce_realized_crossing_validation(
+            bool(enforce_realized_crossing_validation)
+        )
+    elif not enforce_realized_crossing_validation:
+        extension_path = getattr(rust_backend, "__file__", "<unknown>")
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.set_enforce_realized_crossing_validation. Rebuild it with "
+            "`maturin develop --release`. "
+            f"Loaded extension: {extension_path}"
+        )
+    use_lidar_global_relaxed_repair_only = bool(enable_crossings) and crossing_mode == "lidar-pure"
+    crossing_plan_info["lidar_global_relaxed_repair_only"] = bool(
+        use_lidar_global_relaxed_repair_only
+    )
+    if hasattr(router, "set_lidar_global_relaxed_repair_only"):
+        router.set_lidar_global_relaxed_repair_only(
+            bool(use_lidar_global_relaxed_repair_only)
+        )
+    elif use_lidar_global_relaxed_repair_only:
+        extension_path = getattr(rust_backend, "__file__", "<unknown>")
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.set_lidar_global_relaxed_repair_only. Rebuild it with "
+            "`maturin develop --release`. "
+            f"Loaded extension: {extension_path}"
+        )
     if bool(enable_crossings) and crossing_mode in {"collision", "lidar-pure"}:
         if not hasattr(router, "set_collision_crossing_routing"):
             extension_path = getattr(rust_backend, "__file__", "<unknown>")
@@ -2673,6 +2790,188 @@ def route_nets_rust(
         }
     _record_pipeline_timing("port_opening_batch", t_port_opening_batch_start)
 
+    # LiDAR routes dense same-side ports from staggered straight fanout lanes,
+    # then keeps those lanes reserved so unrelated routes cannot cut through.
+    t_lidar_port_fanout_start = _pipeline_timer_start()
+    lidar_port_length_cells = max(
+        1,
+        math.ceil(10.0 / float(grid.grid_size_um)) + int(bend_radius_cells),
+    )
+    lidar_side_groups: dict[tuple[str, int], list[tuple[str, Port]]] = {}
+    for port_spec, (_instance_name, _port_name, port) in endpoint_ports_by_spec.items():
+        if _port_type_name(port) != "optical":
+            continue
+        orientation = getattr(port, "orientation", None)
+        if orientation is None:
+            continue
+        port_angle = _orientation_to_angle(float(orientation), flip=False)
+        if port_angle % 2 != 0:
+            continue
+        instance_name = str(port_spec).split(",", 1)[0]
+        lidar_side_groups.setdefault((instance_name, port_angle), []).append((port_spec, port))
+
+    def _grid_cell_from_port_center(port: Port) -> tuple[int, int]:
+        center = _port_center_um(port)
+        if center is None:
+            return (0, 0)
+        gx = int((float(center[0]) - origin_x_um) // float(grid.grid_size_um))
+        gy = int((float(center[1]) - origin_y_um) // float(grid.grid_size_um))
+        return gx, gy
+
+    def _first_unblocked_side_origin(
+        origin_x: int,
+        origin_y: int,
+        step_x: int,
+        step_y: int,
+    ) -> tuple[int, int] | None:
+        x = int(origin_x)
+        y = int(origin_y)
+        max_probe = max(grid_width, grid_height)
+        for _ in range(max_probe + 1):
+            if not _in_bounds(x, y):
+                return None
+            if not _cell_in_raw_static((x, y)):
+                return x, y
+            x += step_x
+            y += step_y
+        return None
+
+    def _inflate_lidar_fanout_lane(
+        cells: Iterable[tuple[int, int]],
+        lateral_x: int,
+        lateral_y: int,
+        half_width_cells: int,
+    ) -> set[tuple[int, int]]:
+        inflated: set[tuple[int, int]] = set()
+        for x, y in cells:
+            for offset in range(-half_width_cells, half_width_cells + 1):
+                nx = int(x) + int(lateral_x) * offset
+                ny = int(y) + int(lateral_y) * offset
+                if _in_bounds(nx, ny):
+                    inflated.add((nx, ny))
+        return inflated
+
+    def _inflate_lidar_fanout_congestion_cells(
+        cells: Iterable[tuple[int, int]],
+        radius_cells: int,
+    ) -> set[tuple[int, int]]:
+        radius = max(0, int(radius_cells))
+        if radius <= 0:
+            return set()
+        inflated: set[tuple[int, int]] = set()
+        for x, y in cells:
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    nx = int(x) + dx
+                    ny = int(y) + dy
+                    if _in_bounds(nx, ny):
+                        inflated.add((nx, ny))
+        return inflated
+
+    for (_instance_name, port_angle), side_ports in lidar_side_groups.items():
+        if len(side_ports) < 3:
+            continue
+        step_x, step_y = _angle_to_step(port_angle)
+        lateral_x, lateral_y = -step_y, step_x
+        if (step_x, step_y) == (0, 0) or (lateral_x, lateral_y) == (0, 0):
+            continue
+
+        def _lateral_position(item: tuple[str, Port]) -> float:
+            center = _port_center_um(item[1])
+            if center is None:
+                return 0.0
+            return float(center[0]) * lateral_x + float(center[1]) * lateral_y
+
+        ordered_ports = sorted(side_ports, key=_lateral_position)
+        endpoint_cells = {
+            port_spec: _grid_cell_from_port_center(port)
+            for port_spec, port in ordered_ports
+        }
+        first_cell = endpoint_cells[ordered_ports[0][0]]
+        last_cell = endpoint_cells[ordered_ports[-1][0]]
+        mean_x = int(round((first_cell[0] + last_cell[0]) / 2.0))
+        mean_y = int(round((first_cell[1] + last_cell[1]) / 2.0))
+        side_origin = _first_unblocked_side_origin(mean_x, mean_y, step_x, step_y)
+        if side_origin is None:
+            continue
+        origin_axis_value = side_origin[0] if step_x else side_origin[1]
+        half_port_count = len(ordered_ports) / 2.0
+
+        fanout_specs: list[tuple[str, int, int, int]] = []
+        for index, (port_spec, _port) in enumerate(ordered_ports):
+            base_x, base_y = endpoint_cells[port_spec]
+            if step_x:
+                start_x, start_y = origin_axis_value, base_y
+            else:
+                start_x, start_y = base_x, origin_axis_value
+            if len(ordered_ports) <= 2:
+                fanout_len = max(1, 4 * int(bend_radius_cells))
+            elif index < half_port_count - 1:
+                fanout_len = index * lidar_port_length_cells + int(bend_radius_cells)
+            elif index == int(half_port_count - 1):
+                fanout_len = (index + 1) * lidar_port_length_cells + int(bend_radius_cells)
+            else:
+                fanout_len = (
+                    len(ordered_ports) - index - 1
+                ) * lidar_port_length_cells + int(bend_radius_cells)
+            fanout_len = max(fanout_len, int(port_lane_length_cells))
+            fanout_specs.append((port_spec, start_x, start_y, int(fanout_len)))
+
+        if not fanout_specs:
+            continue
+        group_fanout_len = max(
+            fanout_len for _port_spec, _start_x, _start_y, fanout_len in fanout_specs
+        ) + max(int(bend_radius_cells), int(port_lane_length_cells))
+        group_half_width = max(1, int(port_lane_half_width_cells))
+        group_cells: set[tuple[int, int]] = set()
+        for _port_spec, start_x, start_y, _fanout_len in fanout_specs:
+            x, y = start_x, start_y
+            for _ in range(group_fanout_len):
+                for offset in range(-group_half_width, group_half_width + 1):
+                    nx = x + lateral_x * offset
+                    ny = y + lateral_y * offset
+                    if _in_bounds(nx, ny):
+                        group_cells.add((nx, ny))
+                x += step_x
+                y += step_y
+        lidar_group_fanout_keepout_cells.update(group_cells)
+
+        fanout_route_group = (_instance_name, int(port_angle))
+        for route_order, (port_spec, start_x, start_y, fanout_len) in enumerate(fanout_specs):
+            cells: list[tuple[int, int]] = []
+            x, y = start_x, start_y
+            for _ in range(int(fanout_len)):
+                if _in_bounds(x, y):
+                    cells.append((x, y))
+                x += step_x
+                y += step_y
+            if not cells:
+                continue
+            cell_set = set(cells)
+            keepout_set = _inflate_lidar_fanout_lane(
+                [
+                    (start_x + step_x * distance, start_y + step_y * distance)
+                    for distance in range(group_fanout_len)
+                    if _in_bounds(
+                        start_x + step_x * distance,
+                        start_y + step_y * distance,
+                    )
+                ],
+                lateral_x,
+                lateral_y,
+                group_half_width,
+            )
+            anchor_cell = cells[-1]
+            lidar_port_fanout_cells_by_spec[port_spec] = cell_set
+            lidar_port_fanout_path_by_spec[port_spec] = tuple(cells)
+            lidar_port_fanout_keepout_cells_by_spec[port_spec] = keepout_set
+            lidar_port_fanout_anchor_by_spec[port_spec] = anchor_cell
+            lidar_port_fanout_group_by_spec[port_spec] = fanout_route_group
+            lidar_port_fanout_route_order_by_spec[port_spec] = int(route_order)
+            lidar_fanout_instances.add(str(port_spec).split(",", 1)[0])
+            port_runway_cells_by_spec.setdefault(port_spec, set()).update(keepout_set)
+    _record_pipeline_timing("lidar_port_fanout", t_lidar_port_fanout_start)
+
     foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
     if foreign_port_keepout_cells > 0:
         t_foreign_keepout_start = _pipeline_timer_start()
@@ -2712,6 +3011,8 @@ def route_nets_rust(
             (f"{job.inst1},{job.port1}", job.source_port, False),
             (f"{job.inst2},{job.port2}", job.target_port, True),
         ):
+            if port_spec in lidar_port_fanout_anchor_by_spec:
+                continue
             state = _endpoint_state_for_lane_assignment(port, as_target=as_target)
             key = (int(state.x), int(state.y), int(state.angle) % 8)
             endpoint_ports_by_key.setdefault(key, []).append((port_spec, as_target, port))
@@ -2755,6 +3056,28 @@ def route_nets_rust(
     foreign_port_keepout_static_cells: set[tuple[int, int]] = set()
     for cells in foreign_port_keepout_cells_by_instance.values():
         foreign_port_keepout_static_cells.update(cells)
+    if crossing_mode in {"collision", "lidar-pure"} and lidar_group_fanout_keepout_cells:
+        lidar_fanout_congestion_radius_cells = max(
+            1,
+            int(bend_radius_cells),
+            int(port_lane_half_width_cells),
+            int(foreign_port_keepout_cells),
+        )
+        lidar_fanout_congestion_history_amount = (
+            DEFAULT_LIDAR_FANOUT_CONGESTION_HISTORY_AMOUNT
+        )
+        lidar_fanout_congestion_cells = _inflate_lidar_fanout_congestion_cells(
+            lidar_group_fanout_keepout_cells,
+            lidar_fanout_congestion_radius_cells,
+        )
+        hard_or_static_fanout_cells = set(port_runway_static_cells)
+        hard_or_static_fanout_cells.update(foreign_port_keepout_static_cells)
+        lidar_fanout_congestion_cells.difference_update(hard_or_static_fanout_cells)
+        lidar_fanout_congestion_cells = {
+            cell
+            for cell in lidar_fanout_congestion_cells
+            if not _cell_in_raw_static(cell)
+        }
     debug_port_keepout_cells = set(port_runway_static_cells)
     debug_port_keepout_cells.update(foreign_port_keepout_static_cells)
     static_blocked_cells_before_port_reservations = set(raw_static_cells)
@@ -2823,6 +3146,67 @@ def route_nets_rust(
             )
 
     repair_config = ripup_reroute_config or RipupRerouteConfig()
+    if (
+        lidar_fanout_congestion_cells
+        and lidar_fanout_congestion_history_amount > 0
+        and float(repair_config.history_weight) > 0.0
+    ):
+        if not hasattr(router, "add_history_cells"):
+            raise RuntimeError(
+                "The loaded photonic_router._rust extension does not expose "
+                "PyPhotonicRouter.add_history_cells. Rebuild it with "
+                "`maturin develop --release`."
+            )
+        t_lidar_fanout_congestion_start = _pipeline_timer_start()
+        router.add_history_cells(
+            sorted(lidar_fanout_congestion_cells),
+            int(lidar_fanout_congestion_history_amount),
+        )
+        _record_pipeline_timing(
+            "lidar_fanout_congestion_handoff",
+            t_lidar_fanout_congestion_start,
+        )
+
+    def _lidar_route_group_for_job(job: RouteJob) -> tuple[str, int] | None:
+        port1_spec = f"{job.inst1},{job.port1}"
+        port2_spec = f"{job.inst2},{job.port2}"
+        return (
+            lidar_port_fanout_group_by_spec.get(port1_spec)
+            or lidar_port_fanout_group_by_spec.get(port2_spec)
+        )
+
+    def _lidar_route_group_order_for_job(job: RouteJob) -> int:
+        port1_spec = f"{job.inst1},{job.port1}"
+        port2_spec = f"{job.inst2},{job.port2}"
+        return min(
+            lidar_port_fanout_route_order_by_spec.get(port1_spec, 1_000_000),
+            lidar_port_fanout_route_order_by_spec.get(port2_spec, 1_000_000),
+        )
+
+    lidar_group_first_route_index: dict[tuple[str, int], int] = {}
+    for job in route_jobs:
+        route_group = _lidar_route_group_for_job(job)
+        if route_group is None:
+            continue
+        current = lidar_group_first_route_index.get(route_group)
+        if current is None or int(job.route_index) < current:
+            lidar_group_first_route_index[route_group] = int(job.route_index)
+    if lidar_group_first_route_index:
+        route_jobs.sort(
+            key=lambda job: (
+                lidar_group_first_route_index.get(
+                    _lidar_route_group_for_job(job),
+                    int(job.route_index),
+                ),
+                0 if _lidar_route_group_for_job(job) is not None else 1,
+                _lidar_route_group_order_for_job(job),
+                int(job.route_index),
+            )
+        )
+    lidar_group_id_by_key = {
+        group_key: group_index + 1
+        for group_index, group_key in enumerate(sorted(lidar_group_first_route_index))
+    }
     route_jobs_by_id = {job.net_id: job for job in route_jobs}
     route_order = [job.net_id for job in route_jobs]
     collect_timing = debug_timing or collect_route_stats or collect_attempt_diagnostics
@@ -2831,6 +3215,7 @@ def route_nets_rust(
         route_order=route_order,
         diagnostics_enabled=track_dynamic_cells,
     )
+    lidar_search_reversed_by_id: dict[int, bool] = {}
 
     t_astar_start = 0.0
     if collect_timing:
@@ -2839,11 +3224,14 @@ def route_nets_rust(
     simple_route_count = 0
     repair_count = 0
     route_attempt_records = []
+    batch_returned_debug_partial = False
     route_timing_buckets: dict[str, RouteTimingBucket] = {
         name: RouteTimingBucket()
         for name in (
             "normal_route",
             "probe_route",
+            "relaxed_conflict_probe",
+            "relaxed_conflict_route",
             "preemptive_crossing_ripup",
             "repair_failed_net",
             "reroute_victims",
@@ -2898,31 +3286,74 @@ def route_nets_rust(
             for cell in router.get_net_cells(int(net_id))
         }
 
+    def _lidar_fanout_target_cell(port_spec: str) -> tuple[int, int] | None:
+        path = lidar_port_fanout_path_by_spec.get(port_spec)
+        if not path:
+            return lidar_port_fanout_anchor_by_spec.get(port_spec)
+        access_grid = max(1, int(bend_radius_cells))
+        index_from_end = min(access_grid, len(path))
+        return path[-index_from_end]
+
     def _states_and_openings(
         job: RouteJob,
     ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
+        port1_spec = f"{job.inst1},{job.port1}"
+        port2_spec = f"{job.inst2},{job.port2}"
+        reverse_search = (
+            port1_spec in lidar_port_fanout_anchor_by_spec
+            and port2_spec not in lidar_port_fanout_anchor_by_spec
+        )
+        lidar_search_reversed_by_id[int(job.net_id)] = bool(reverse_search)
+        if reverse_search:
+            search_source_spec = port2_spec
+            search_target_spec = port1_spec
+            search_source_port = job.target_port
+            search_target_port = job.source_port
+        else:
+            search_source_spec = port1_spec
+            search_target_spec = port2_spec
+            search_source_port = job.source_port
+            search_target_port = job.target_port
+
         source_state = port_to_grid_state(
-            job.source_port,
+            search_source_port,
             origin_x_um,
             origin_y_um,
             float(grid.grid_size_um),
             as_target=False,
         )
         target_state = port_to_grid_state(
-            job.target_port,
+            search_target_port,
             origin_x_um,
             origin_y_um,
             float(grid.grid_size_um),
             as_target=True,
         )
-        source_lane_offset = port_state_lane_offsets.get((f"{job.inst1},{job.port1}", False))
+        source_fanout_anchor = lidar_port_fanout_anchor_by_spec.get(search_source_spec)
+        if source_fanout_anchor is not None:
+            source_state = rust_backend.State(
+                int(source_fanout_anchor[0]),
+                int(source_fanout_anchor[1]),
+                int(source_state.angle),
+            )
+        target_fanout_anchor = lidar_port_fanout_anchor_by_spec.get(search_target_spec)
+        if target_fanout_anchor is not None:
+            target_fanout_cell = (
+                _lidar_fanout_target_cell(search_target_spec) or target_fanout_anchor
+            )
+            target_state = rust_backend.State(
+                int(target_fanout_cell[0]),
+                int(target_fanout_cell[1]),
+                int(target_state.angle),
+            )
+        source_lane_offset = port_state_lane_offsets.get((search_source_spec, False))
         if source_lane_offset is not None:
             source_state = rust_backend.State(
                 int(source_state.x) + int(source_lane_offset[0]),
                 int(source_state.y) + int(source_lane_offset[1]),
                 int(source_state.angle),
             )
-        target_lane_offset = port_state_lane_offsets.get((f"{job.inst2},{job.port2}", True))
+        target_lane_offset = port_state_lane_offsets.get((search_target_spec, True))
         if target_lane_offset is not None:
             target_state = rust_backend.State(
                 int(target_state.x) + int(target_lane_offset[0]),
@@ -2932,31 +3363,115 @@ def route_nets_rust(
         source_state, target_state, original_anchor_cells = _snap_nearly_collinear_states(
             source_state,
             target_state,
-            job.source_port,
-            job.target_port,
+            search_source_port,
+            search_target_port,
         )
         source_state, target_state, snapped_anchor_cells = (
             _snap_same_heading_minimum_bend_offset(source_state, target_state)
         )
         original_anchor_cells.update(snapped_anchor_cells)
-        port1_spec = f"{job.inst1},{job.port1}"
-        port2_spec = f"{job.inst2},{job.port2}"
         source_anchor_cell = (int(source_state.x), int(source_state.y))
         target_anchor_cell = (int(target_state.x), int(target_state.y))
-        instance_keepout_open_cells = set(
-            foreign_port_keepout_cells_by_instance.get(job.inst1, set())
+        def _generic_instance_keepout_open_cells(instance_name: str) -> set[tuple[int, int]]:
+            if instance_name in lidar_fanout_instances:
+                return set()
+            return set(foreign_port_keepout_cells_by_instance.get(instance_name, set()))
+
+        instance_keepout_open_cells = _generic_instance_keepout_open_cells(job.inst1)
+        instance_keepout_open_cells.update(_generic_instance_keepout_open_cells(job.inst2))
+        fanout_anchor_cells = {
+            (int(anchor[0]), int(anchor[1]))
+            for anchor in (source_fanout_anchor, target_fanout_anchor)
+            if anchor is not None
+        }
+        own_fanout_centerline_cells = set(
+            lidar_port_fanout_cells_by_spec.get(port1_spec, set())
         )
-        instance_keepout_open_cells.update(
-            foreign_port_keepout_cells_by_instance.get(job.inst2, set())
+        own_fanout_centerline_cells.update(
+            lidar_port_fanout_cells_by_spec.get(port2_spec, set())
         )
-        opened_candidate_cells = set(port_access_candidate_cells_by_spec.get(port1_spec, set()))
-        opened_candidate_cells.update(port_access_candidate_cells_by_spec.get(port2_spec, set()))
+        own_fanout_keepout_cells = set(
+            lidar_port_fanout_keepout_cells_by_spec.get(port1_spec, set())
+        )
+        own_fanout_keepout_cells.update(
+            lidar_port_fanout_keepout_cells_by_spec.get(port2_spec, set())
+        )
+        fanout_terminal_open_cells = set(fanout_anchor_cells)
+
+        def _fanout_terminal_throat_cells(
+            anchor: tuple[int, int] | None,
+            route_angle: int,
+            *,
+            as_target: bool,
+        ) -> set[tuple[int, int]]:
+            if anchor is None:
+                return set()
+            step_x, step_y = _angle_to_step(route_angle)
+            if as_target:
+                step_x = -step_x
+                step_y = -step_y
+            cells: set[tuple[int, int]] = set()
+            throat_len = max(
+                1,
+                int(port_lane_length_cells) + int(bend_radius_cells),
+            )
+            for distance in range(throat_len + 1):
+                x = int(anchor[0]) + step_x * distance
+                y = int(anchor[1]) + step_y * distance
+                if _in_bounds(x, y):
+                    cells.add((x, y))
+            return cells
+
+        fanout_terminal_open_cells.update(
+            _fanout_terminal_throat_cells(
+                source_fanout_anchor,
+                int(source_state.angle),
+                as_target=False,
+            )
+        )
+        fanout_terminal_open_cells.update(
+            _fanout_terminal_throat_cells(
+                target_fanout_anchor,
+                int(target_state.angle),
+                as_target=True,
+            )
+        )
+        endpoint_instance_fanout_keepout_cells: set[tuple[int, int]] = set()
+        for fanout_port_spec, fanout_keepout_cells in (
+            lidar_port_fanout_keepout_cells_by_spec.items()
+        ):
+            fanout_instance = str(fanout_port_spec).split(",", 1)[0]
+            if fanout_instance in {job.inst1, job.inst2}:
+                endpoint_instance_fanout_keepout_cells.update(fanout_keepout_cells)
+        instance_keepout_open_cells.difference_update(endpoint_instance_fanout_keepout_cells)
+
+        def _port_opening_cells(
+            cells_by_spec: Mapping[str, set[tuple[int, int]]],
+            port_spec: str,
+        ) -> set[tuple[int, int]]:
+            if port_spec in lidar_port_fanout_anchor_by_spec:
+                return set()
+            return set(cells_by_spec.get(port_spec, set()))
+
+        opened_candidate_cells = _port_opening_cells(
+            port_access_candidate_cells_by_spec,
+            port1_spec,
+        )
+        opened_candidate_cells.update(
+            _port_opening_cells(port_access_candidate_cells_by_spec, port2_spec)
+        )
+        opened_candidate_cells.update(own_fanout_centerline_cells)
+        opened_candidate_cells.update(own_fanout_keepout_cells)
+        opened_candidate_cells.update(fanout_terminal_open_cells)
         opened_candidate_cells.update(instance_keepout_open_cells)
         opened_candidate_cells.update(original_anchor_cells)
         opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
 
-        opened_cells_set = set(port_access_cells_by_spec.get(port1_spec, set()))
-        opened_cells_set.update(port_access_cells_by_spec.get(port2_spec, set()))
+        opened_cells_set = _port_opening_cells(port_access_cells_by_spec, port1_spec)
+        opened_cells_set.update(_port_opening_cells(port_access_cells_by_spec, port2_spec))
+        opened_cells_set.update(own_fanout_centerline_cells)
+        opened_cells_set.update(own_fanout_keepout_cells)
+        opened_cells_set.update(fanout_terminal_open_cells)
         opened_cells_set.update(instance_keepout_open_cells)
         opened_cells_set.update(original_anchor_cells)
         opened_cells_set.update({source_anchor_cell, target_anchor_cell})
@@ -3353,6 +3868,24 @@ def route_nets_rust(
         foreign_keepout_open_cells.update(
             foreign_port_keepout_cells_by_instance.get(job.inst2, set())
         )
+        own_fanout_static_cells = set(
+            lidar_port_fanout_keepout_cells_by_spec.get(port1_spec, set())
+        )
+        own_fanout_static_cells.update(
+            lidar_port_fanout_keepout_cells_by_spec.get(port2_spec, set())
+        )
+        sibling_fanout_static_cells: set[tuple[int, int]] = set()
+        for fanout_port_spec, fanout_keepout_cells in (
+            lidar_port_fanout_keepout_cells_by_spec.items()
+        ):
+            fanout_instance = str(fanout_port_spec).split(",", 1)[0]
+            if (
+                fanout_instance in {job.inst1, job.inst2}
+                and fanout_port_spec not in {port1_spec, port2_spec}
+            ):
+                sibling_fanout_static_cells.update(fanout_keepout_cells)
+        route_overlap_own_fanout_static = route_cells & own_fanout_static_cells
+        route_overlap_sibling_fanout_static = route_cells & sibling_fanout_static_cells
         route_segments: list[str] = []
         if route_obj is not None:
             for segment in cast(list[object], getattr(route_obj, "segments", []) or []):
@@ -3374,10 +3907,22 @@ def route_nets_rust(
             f"status={status}",
             f"source_spec={port1_spec}",
             f"target_spec={port2_spec}",
+            f"lidar_search_reversed={lidar_search_reversed_by_id.get(int(job.net_id), False)}",
             f"source_component={_schematic_instance_component_name(schematic, job.inst1)}",
             f"target_component={_schematic_instance_component_name(schematic, job.inst2)}",
             f"source_access_rule={port_access_rule_by_spec.get(port1_spec)}",
             f"target_access_rule={port_access_rule_by_spec.get(port2_spec)}",
+            f"source_lidar_fanout_anchor={lidar_port_fanout_anchor_by_spec.get(port1_spec)}",
+            f"target_lidar_fanout_anchor={lidar_port_fanout_anchor_by_spec.get(port2_spec)}",
+            f"source_lidar_fanout_target_cell={_lidar_fanout_target_cell(port1_spec)}",
+            f"target_lidar_fanout_target_cell={_lidar_fanout_target_cell(port2_spec)}",
+            f"source_lidar_fanout_cells={len(lidar_port_fanout_cells_by_spec.get(port1_spec, set()))}",
+            f"target_lidar_fanout_cells={len(lidar_port_fanout_cells_by_spec.get(port2_spec, set()))}",
+            f"source_lidar_fanout_keepout_cells={len(lidar_port_fanout_keepout_cells_by_spec.get(port1_spec, set()))}",
+            f"target_lidar_fanout_keepout_cells={len(lidar_port_fanout_keepout_cells_by_spec.get(port2_spec, set()))}",
+            f"lidar_fanout_congestion_cells={len(lidar_fanout_congestion_cells)}",
+            f"lidar_fanout_congestion_radius_cells={lidar_fanout_congestion_radius_cells}",
+            f"lidar_fanout_congestion_history_amount={lidar_fanout_congestion_history_amount}",
             f"foreign_port_keepout_cells={int(foreign_port_keepout_cells)}",
             f"foreign_port_keepout_static_count={len(foreign_port_keepout_static_cells)}",
             f"foreign_port_keepout_open_count={len(foreign_keepout_open_cells)}",
@@ -3403,6 +3948,8 @@ def route_nets_rust(
             f"route_static_blocked_overlap_bbox={_cells_bbox(route_static_overlap)}",
             f"route_dynamic_overlap_count={len(route_dynamic_overlap)}",
             f"route_dynamic_overlap_bbox={_cells_bbox(route_dynamic_overlap)}",
+            f"route_overlap_own_fanout_static_count={len(route_overlap_own_fanout_static)}",
+            f"route_overlap_sibling_fanout_static_count={len(route_overlap_sibling_fanout_static)}",
             f"route_overlap_candidate_opened_static_count={len(route_overlap_with_candidate_opened_static)}",
             f"route_overlap_effective_opened_static_count={len(route_overlap_with_effective_opened_static)}",
             f"route_overlap_candidate_opened_dynamic_count={len(route_overlap_with_candidate_opened_dynamic)}",
@@ -3425,11 +3972,19 @@ def route_nets_rust(
         corrected_centerline_um: tuple[tuple[float, float], ...] = (),
         corrected_total_length_um: float | None = None,
     ) -> None:
+        if lidar_search_reversed_by_id.get(int(job.net_id), False):
+            route_source_port = job.target_port
+            route_target_port = job.source_port
+        else:
+            route_source_port = job.source_port
+            route_target_port = job.target_port
         route_bookkeeping.record_route(
             job,
             route_obj,
             opened_cells,
             route_cells=_route_cells_from_router(job.net_id) if track_dynamic_cells else None,
+            route_source_port=route_source_port,
+            route_target_port=route_target_port,
             corrected_centerline_um=corrected_centerline_um,
             corrected_total_length_um=corrected_total_length_um,
         )
@@ -3447,6 +4002,8 @@ def route_nets_rust(
             and (debug_route_indices is None or job.route_index in debug_route_indices)
         )
         if not should_export:
+            return
+        if len(route_svgs) >= MAX_DEBUG_ROUTE_SVG_EXPORTS:
             return
         route_dir = debug_path / "routes"
         _ensure_dir(route_dir)
@@ -3535,6 +4092,7 @@ def route_nets_rust(
             f"net_name={job.net_name}",
             f"source_spec={port1_spec}",
             f"target_spec={port2_spec}",
+            f"lidar_search_reversed={lidar_search_reversed_by_id.get(int(job.net_id), False)}",
             f"source_state=({int(source_state.x)}, {int(source_state.y)}, {int(source_state.angle)})",
             f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
             f"allow_45_degree_turns={allow_45_degree_turns}",
@@ -3550,6 +4108,17 @@ def route_nets_rust(
             f"port_entry_half_width_cells={port_entry_half_width_cells}",
             f"port_lane_length_cells={port_lane_length_cells}",
             f"port_lane_half_width_cells={port_lane_half_width_cells}",
+            f"source_lidar_fanout_anchor={lidar_port_fanout_anchor_by_spec.get(port1_spec)}",
+            f"target_lidar_fanout_anchor={lidar_port_fanout_anchor_by_spec.get(port2_spec)}",
+            f"source_lidar_fanout_target_cell={_lidar_fanout_target_cell(port1_spec)}",
+            f"target_lidar_fanout_target_cell={_lidar_fanout_target_cell(port2_spec)}",
+            f"source_lidar_fanout_cells={len(lidar_port_fanout_cells_by_spec.get(port1_spec, set()))}",
+            f"target_lidar_fanout_cells={len(lidar_port_fanout_cells_by_spec.get(port2_spec, set()))}",
+            f"source_lidar_fanout_keepout_cells={len(lidar_port_fanout_keepout_cells_by_spec.get(port1_spec, set()))}",
+            f"target_lidar_fanout_keepout_cells={len(lidar_port_fanout_keepout_cells_by_spec.get(port2_spec, set()))}",
+            f"lidar_fanout_congestion_cells={len(lidar_fanout_congestion_cells)}",
+            f"lidar_fanout_congestion_radius_cells={lidar_fanout_congestion_radius_cells}",
+            f"lidar_fanout_congestion_history_amount={lidar_fanout_congestion_history_amount}",
             f"opened_candidate_cells_count={len(opened_candidate_cells)}",
             f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
             f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
@@ -3613,6 +4182,139 @@ def route_nets_rust(
                 )
         fail_txt.write_text("\n".join(fail_lines) + "\n", encoding="utf-8")
 
+    def _write_attempt_path_trace(
+        job: RouteJob,
+        route_obj: Any | None,
+        *,
+        attempt_index: int,
+        bucket_name: str,
+        failed: bool,
+        repair_round: int | None,
+        candidate_blockers: list[int],
+        ripup_ids: list[int],
+        error_text: str | None,
+    ) -> None:
+        if debug_path is None or route_obj is None:
+            return
+        if debug_route_indices is not None and job.route_index not in debug_route_indices:
+            if not trace_all_attempt_paths:
+                return
+        route_dir = debug_path / "routes"
+        _ensure_dir(route_dir)
+
+        def _state_triplet(value: Any) -> list[int] | None:
+            try:
+                return [int(value.x), int(value.y), int(value.angle)]
+            except (AttributeError, TypeError, ValueError):
+                return None
+
+        segments: list[dict[str, object]] = []
+        for segment in cast(list[object], getattr(route_obj, "segments", []) or []):
+            try:
+                segments.append(dict(cast(Any, segment)))
+            except (TypeError, ValueError):
+                continue
+        record = {
+            "attempt_index": int(attempt_index),
+            "bucket_name": bucket_name,
+            "failed": bool(failed),
+            "error": error_text,
+            "repair_round": repair_round,
+            "candidate_blockers": candidate_blockers,
+            "candidate_blocker_route_indices": [
+                route_jobs_by_id[net_id].route_index
+                for net_id in candidate_blockers
+                if net_id in route_jobs_by_id
+            ],
+            "ripup_ids": ripup_ids,
+            "ripup_route_indices": [
+                route_jobs_by_id[net_id].route_index
+                for net_id in ripup_ids
+                if net_id in route_jobs_by_id
+            ],
+            "net_id": int(job.net_id),
+            "route_index": int(job.route_index),
+            "net_name": job.net_name,
+            "source": f"{job.inst1},{job.port1}",
+            "target": f"{job.inst2},{job.port2}",
+            "states": [
+                state
+                for state in (
+                    _state_triplet(value)
+                    for value in cast(list[object], getattr(route_obj, "states", []) or [])
+                )
+                if state is not None
+            ],
+            "primitive_ids": [
+                int(value)
+                for value in cast(list[object], getattr(route_obj, "primitive_ids", []) or [])
+            ],
+            "cells": [
+                [int(cell[0]), int(cell[1])]
+                for cell in cast(list[tuple[int, int]], getattr(route_obj, "cells", []) or [])
+            ],
+            "compressed_waypoints": [
+                [int(cell[0]), int(cell[1])]
+                for cell in cast(
+                    list[tuple[int, int]],
+                    getattr(route_obj, "compressed_waypoints", []) or [],
+                )
+            ],
+            "segments": segments,
+            "total_length_um": float(getattr(route_obj, "total_length_um", 0.0)),
+            "total_cost": float(getattr(route_obj, "total_cost", 0.0)),
+        }
+        trace_path = route_dir / f"{debug_prefix}_attempt_paths.jsonl"
+        with trace_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True) + "\n")
+
+    def _write_native_probe_debug(raw_records: Iterable[Any]) -> None:
+        if debug_path is None:
+            return
+        records: list[dict[str, object]] = []
+        for raw_record in raw_records:
+            record = dict(cast(Any, raw_record))
+            try:
+                net_id = int(record.get("net_id", -1))
+            except (TypeError, ValueError):
+                net_id = -1
+            job = route_jobs_by_id.get(net_id)
+            if job is not None:
+                record["route_index"] = int(job.route_index)
+                record["net_name"] = job.net_name
+            for key in (
+                "candidate_blockers",
+                "dynamic_probe_owners",
+                "legal_crossed_partners",
+                "invalid_intersection_partners",
+                "realized_violation_partners",
+                "overlapping_reservation_partners",
+                "reservation_dynamic_blockers",
+            ):
+                try:
+                    values = [int(value) for value in cast(Iterable[Any], record.get(key, []))]
+                except (TypeError, ValueError):
+                    values = []
+                record[f"{key}_route_indices"] = [
+                    int(route_jobs_by_id[value].route_index)
+                    for value in values
+                    if value in route_jobs_by_id
+                ]
+                record[f"{key}_net_names"] = [
+                    route_jobs_by_id[value].net_name
+                    for value in values
+                    if value in route_jobs_by_id
+                ]
+            records.append(record)
+        if not records:
+            return
+        route_dir = debug_path / "routes"
+        _ensure_dir(route_dir)
+        trace_path = route_dir / f"{debug_prefix}_native_probe_debug.jsonl"
+        with trace_path.open("w", encoding="utf-8") as stream:
+            for record in records:
+                stream.write(json.dumps(record, sort_keys=True) + "\n")
+
     def _finalize_committed_route(
         job: RouteJob,
         route_obj: Any,
@@ -3667,7 +4369,17 @@ def route_nets_rust(
                 "`maturin develop --release`; Python repair fallback has been removed."
             )
         batch_jobs: list[
-            tuple[int, Any, Any, list[tuple[int, int]], list[tuple[int, int]]]
+            tuple[
+                int,
+                Any,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                int | None,
+                int,
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
         ] = []
         batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
         batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
@@ -3699,6 +4411,14 @@ def route_nets_rust(
                     target_state,
                     opened_cells,
                     clearance_exempt_cells,
+                    (
+                        lidar_group_id_by_key.get(_lidar_route_group_for_job(job))
+                        if _lidar_route_group_for_job(job) is not None
+                        else None
+                    ),
+                    int(_lidar_route_group_order_for_job(job)),
+                    _port_center_um(job.source_port),
+                    _port_center_um(job.target_port),
                 )
             )
             batch_opened_cells_by_id[int(job.net_id)] = opened_cells
@@ -3720,6 +4440,7 @@ def route_nets_rust(
         _record_pipeline_timing("native_route_batch", batch_start)
         t_batch_result_processing_start = _pipeline_timer_start()
         batch_result = dict(raw_batch_result)
+        _write_native_probe_debug(cast(Iterable[Any], batch_result.get("probe_debug", [])))
         _record_native_batch_timings(batch_result)
         raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
         per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
@@ -3752,6 +4473,17 @@ def route_nets_rust(
                 int(value)
                 for value in cast(list[object], attempt.get("ripup_ids", []))
             ]
+            _write_attempt_path_trace(
+                job,
+                route_obj if route_obj is not None and not failed else None,
+                attempt_index=attempt_index,
+                bucket_name=bucket_name,
+                failed=failed,
+                repair_round=repair_round,
+                candidate_blockers=candidate_blockers,
+                ripup_ids=ripup_ids,
+                error_text=error_text,
+            )
             if (
                 route_obj is not None
                 and not failed
@@ -3822,7 +4554,19 @@ def route_nets_rust(
             t_batch_result_processing_start,
         )
 
-        if str(batch_result.get("status", "")) != "routed":
+        batch_status = str(batch_result.get("status", ""))
+        if batch_status == "partial":
+            batch_returned_debug_partial = True
+            print(
+                "  Native route batch returned debug partial: "
+                f"{int(batch_result.get('partial_route_count', len(raw_routes)) or 0)}/"
+                f"{int(batch_result.get('requested_route_count', len(route_jobs)) or 0)} "
+                "routes"
+            )
+            partial_reason = batch_result.get("partial_reason")
+            if partial_reason is not None:
+                print(f"    reason: {partial_reason}")
+        elif batch_status != "routed":
             failed_net_id = int(batch_result.get("failed_net_id", -1))
             failed_job = route_jobs_by_id.get(failed_net_id)
             error_text = str(batch_result.get("error", "No route found"))
@@ -4185,6 +4929,8 @@ def route_nets_rust(
         for bucket_name in (
             "normal_route",
             "probe_route",
+            "relaxed_conflict_probe",
+            "relaxed_conflict_route",
             "preemptive_crossing_ripup",
             "repair_failed_net",
             "reroute_victims",
@@ -4253,6 +4999,7 @@ def route_nets_rust(
             realization_grid_spec=realization_grid_spec,
             allow_45_degree_turns=allow_45_degree_turns,
             bend_radius_cells=bend_radius_cells,
+            enable_endpoint_correction=enable_checked_endpoint_correction,
         )
         _record_pipeline_timing("direct_realization", t_direct_realization_start)
 
@@ -4283,7 +5030,11 @@ def route_nets_rust(
         debug_prefix=debug_prefix,
         crossing_plan_info=crossing_plan_info,
     )
-    if illegal_realized_crossings:
+    if (
+        illegal_realized_crossings
+        and enforce_realized_crossing_validation
+        and not batch_returned_debug_partial
+    ):
         preview = "; ".join(
             f"{item.get('net_name_a')} x {item.get('net_name_b')} "
             f"at {item.get('point_um')} ({item.get('reason')}, "

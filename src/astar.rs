@@ -60,8 +60,11 @@ pub struct AStarConfig {
     pub simple_route_min_leg_len_cells: i32,
     pub ignore_dynamic_obstacles: bool,
     pub history_weight: f64,
+    pub dynamic_conflict_penalty: f64,
     pub proactive_congestion_weight: f64,
     pub proactive_congestion_radius_cells: i32,
+    pub proactive_congestion_diagonal_radius_cells: i32,
+    pub proactive_congestion_exempt_net_ids: FxHashSet<NetId>,
     pub collect_detailed_timing: bool,
     pub enable_jps4: bool,
     pub use_indexed_heap: bool,
@@ -93,8 +96,11 @@ impl Default for AStarConfig {
             simple_route_min_leg_len_cells: 1,
             ignore_dynamic_obstacles: false,
             history_weight: 0.0,
+            dynamic_conflict_penalty: 0.0,
             proactive_congestion_weight: 0.0,
             proactive_congestion_radius_cells: 0,
+            proactive_congestion_diagonal_radius_cells: 0,
+            proactive_congestion_exempt_net_ids: FxHashSet::default(),
             collect_detailed_timing: false,
             enable_jps4: false,
             use_indexed_heap: false,
@@ -152,6 +158,7 @@ pub struct RouteResult {
     pub primitives: Vec<u16>,
     pub cells: Vec<(i32, i32)>,
     pub compressed_waypoints: Vec<(i32, i32)>,
+    pub crossing_events: Vec<RouteCrossing>,
     pub total_length_um: f64,
     pub total_cost: f64,
     pub requested_target: State,
@@ -160,9 +167,21 @@ pub struct RouteResult {
 }
 
 #[derive(Clone, Debug)]
+pub struct RouteCrossing {
+    pub partner_net_id: NetId,
+    pub point: (f64, f64),
+    pub route_segment: ((i32, i32), (i32, i32)),
+    pub partner_segment: ((i32, i32), (i32, i32)),
+    pub route_angle: u8,
+    pub partner_angle: u8,
+    pub partner_distance: f64,
+}
+
+#[derive(Clone, Debug)]
 pub struct CrossingSearchPartner {
     pub net_id: NetId,
     pub waypoints: Vec<(i32, i32)>,
+    pub forbidden_crossing_distances: Vec<f64>,
 }
 
 #[derive(Clone, Debug)]
@@ -181,6 +200,10 @@ fn crossing_required_margin_cells(
     bend_runout_cells: i32,
 ) -> i32 {
     crossing_half_size_cells.max(0) + min_straight_cells.max(0) + bend_runout_cells.max(0)
+}
+
+fn crossing_required_straight_margin_cells(min_straight_cells: i32) -> i32 {
+    min_straight_cells.max(0)
 }
 
 const PRIMITIVE_TRANSITION_CLASS_COUNT: usize = 4;
@@ -266,6 +289,122 @@ fn with_route_search_total_time(
         route.stats.route_search_total_time_us += route_search_total_start.elapsed().as_micros();
     }
     route
+}
+
+pub fn validate_route_has_no_self_intersection(route: &RouteResult) -> Result<(), String> {
+    validate_waypoints_have_no_self_intersection(&route.compressed_waypoints)
+}
+
+fn validate_waypoints_have_no_self_intersection(points: &[(i32, i32)]) -> Result<(), String> {
+    if points.len() < 2 {
+        return Ok(());
+    }
+
+    for (idx, segment) in points.windows(2).enumerate() {
+        if segment[0] == segment[1] {
+            return Err(format!(
+                "route self-overlap: zero-length segment at waypoint {idx} ({}, {})",
+                segment[0].0, segment[0].1
+            ));
+        }
+    }
+
+    for i in 0..points.len() - 1 {
+        let a = points[i];
+        let b = points[i + 1];
+        for j in i + 2..points.len() - 1 {
+            let c = points[j];
+            let d = points[j + 1];
+            if a == c || a == d || b == c || b == d {
+                continue;
+            }
+            if route_segments_intersect(a, b, c, d) {
+                return Err(format!(
+                    "route self-intersection: segment {i} ({}, {}) -> ({}, {}) intersects segment {j} ({}, {}) -> ({}, {})",
+                    a.0, a.1, b.0, b.1, c.0, c.1, d.0, d.1
+                ));
+            }
+        }
+    }
+
+    validate_waypoints_have_no_repeated_nonadjacent_cells(points)?;
+
+    Ok(())
+}
+
+fn validate_waypoints_have_no_repeated_nonadjacent_cells(
+    points: &[(i32, i32)],
+) -> Result<(), String> {
+    let mut seen: FxHashMap<CellKey, (usize, usize, (i32, i32))> = FxHashMap::default();
+    for (segment_idx, segment) in points.windows(2).enumerate() {
+        let a = segment[0];
+        let b = segment[1];
+        let dx = (b.0 - a.0).signum();
+        let dy = (b.1 - a.1).signum();
+        let steps = (b.0 - a.0).abs().max((b.1 - a.1).abs());
+        if steps == 0 {
+            continue;
+        }
+        for step in 0..=steps {
+            let cell = (a.0 + dx * step, a.1 + dy * step);
+            let key = pack_xy(cell.0, cell.1);
+            if let Some((previous_segment_idx, previous_step, previous_cell)) = seen.get(&key) {
+                let adjacent_shared_endpoint = *previous_segment_idx + 1 == segment_idx
+                    && *previous_step
+                        == (points[*previous_segment_idx + 1].0 - points[*previous_segment_idx].0)
+                            .abs()
+                            .max(
+                                (points[*previous_segment_idx + 1].1
+                                    - points[*previous_segment_idx].1)
+                                    .abs(),
+                            ) as usize
+                    && step == 0;
+                if !adjacent_shared_endpoint {
+                    return Err(format!(
+                        "route self-overlap: cell ({}, {}) repeats between segment {} and segment {}",
+                        previous_cell.0, previous_cell.1, previous_segment_idx, segment_idx
+                    ));
+                }
+            } else {
+                seen.insert(key, (segment_idx, step as usize, cell));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn route_segments_intersect(a: (i32, i32), b: (i32, i32), c: (i32, i32), d: (i32, i32)) -> bool {
+    let o1 = route_orientation(a, b, c);
+    let o2 = route_orientation(a, b, d);
+    let o3 = route_orientation(c, d, a);
+    let o4 = route_orientation(c, d, b);
+
+    if o1 == 0 && route_point_on_segment(a, c, b) {
+        return true;
+    }
+    if o2 == 0 && route_point_on_segment(a, d, b) {
+        return true;
+    }
+    if o3 == 0 && route_point_on_segment(c, a, d) {
+        return true;
+    }
+    if o4 == 0 && route_point_on_segment(c, b, d) {
+        return true;
+    }
+
+    (o1 > 0) != (o2 > 0) && (o3 > 0) != (o4 > 0)
+}
+
+fn route_orientation(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> i64 {
+    i64::from(b.0 - a.0) * i64::from(c.1 - a.1) - i64::from(b.1 - a.1) * i64::from(c.0 - a.0)
+}
+
+fn route_point_on_segment(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> bool {
+    route_orientation(a, c, b) == 0
+        && a.0.min(c.0) <= b.0
+        && b.0 <= a.0.max(c.0)
+        && a.1.min(c.1) <= b.1
+        && b.1 <= a.1.max(c.1)
 }
 
 #[derive(Clone, Debug)]
@@ -520,8 +659,11 @@ struct DenseRoutingGrid {
     width: i32,
     height: i32,
     blocked_bits: DenseBitset,
+    congestion_bits: DenseBitset,
     blocked_prefix: Option<Vec<u32>>,
+    congestion_prefix: Option<Vec<u32>>,
     history: Option<Vec<u32>>,
+    oriented_history: Option<Vec<[u32; 8]>>,
     history_prefix: Option<Vec<u64>>,
     blocked_count: usize,
     build_time_us: u128,
@@ -548,6 +690,7 @@ impl DenseRoutingGrid {
         max_dense_obstacle_cells: usize,
         ignore_dynamic_obstacles: bool,
         build_history: bool,
+        proactive_congestion_exempt_net_ids: &FxHashSet<NetId>,
     ) -> Option<Self> {
         Self::from_obstacle_map_with_dynamic_expansion(
             obstacle_map,
@@ -558,6 +701,7 @@ impl DenseRoutingGrid {
             build_history,
             0,
             None,
+            proactive_congestion_exempt_net_ids,
         )
     }
 
@@ -570,6 +714,7 @@ impl DenseRoutingGrid {
         build_history: bool,
         dynamic_expansion_radius_cells: i32,
         dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+        proactive_congestion_exempt_net_ids: &FxHashSet<NetId>,
     ) -> Option<Self> {
         let start = Instant::now();
         let width = bounds.max_x.checked_sub(bounds.min_x)?.checked_add(1)?;
@@ -586,9 +731,16 @@ impl DenseRoutingGrid {
         }
 
         let mut blocked_cells = vec![0u8; cell_count];
+        let mut congestion_cells = vec![0u8; cell_count];
         let mut blocked_bits = DenseBitset::new(cell_count)?;
+        let mut congestion_bits = DenseBitset::new(cell_count)?;
         let mut history = if build_history {
             Some(vec![0u32; cell_count])
+        } else {
+            None
+        };
+        let mut oriented_history = if build_history {
+            Some(vec![[0u32; 8]; cell_count])
         } else {
             None
         };
@@ -617,12 +769,30 @@ impl DenseRoutingGrid {
                 .unwrap_or(false)
                 && !obstacle_map.is_dynamic_core_blocked(x, y)
         };
+        let dynamic_counts_for_congestion = |key: CellKey| -> bool {
+            if proactive_congestion_exempt_net_ids.is_empty() {
+                return true;
+            }
+            let (x, y) = unpack_xy(key);
+            let owners = obstacle_map.dynamic_owners_at(x, y);
+            owners.is_empty()
+                || owners
+                    .iter()
+                    .any(|owner| !proactive_congestion_exempt_net_ids.contains(owner))
+        };
 
         let mark_blocked = |idx: usize,
+                            mark_congestion: bool,
                             blocked_cells: &mut [u8],
+                            congestion_cells: &mut [u8],
                             blocked_bits: &mut DenseBitset,
+                            congestion_bits: &mut DenseBitset,
                             blocked_count: &mut usize|
          -> Option<()> {
+            if mark_congestion {
+                congestion_cells[idx] = 1;
+                congestion_bits.set(idx)?;
+            }
             if blocked_cells[idx] == 0 {
                 blocked_cells[idx] = 1;
                 blocked_bits.set(idx)?;
@@ -643,8 +813,11 @@ impl DenseRoutingGrid {
                     let idx = local_idx(x, y)?;
                     mark_blocked(
                         idx,
+                        true,
                         &mut blocked_cells,
+                        &mut congestion_cells,
                         &mut blocked_bits,
+                        &mut congestion_bits,
                         &mut blocked_count,
                     )?;
                 }
@@ -661,10 +834,24 @@ impl DenseRoutingGrid {
             };
             mark_blocked(
                 idx,
+                true,
                 &mut blocked_cells,
+                &mut congestion_cells,
                 &mut blocked_bits,
+                &mut congestion_bits,
                 &mut blocked_count,
             )?;
+        }
+
+        for key in obstacle_map.dynamic_obstacle_keys() {
+            let (x, y) = unpack_xy(key);
+            let Some(idx) = local_idx(x, y) else {
+                continue;
+            };
+            if dynamic_counts_for_congestion(key) {
+                congestion_cells[idx] = 1;
+                congestion_bits.set(idx)?;
+            }
         }
 
         if !ignore_dynamic_obstacles {
@@ -687,8 +874,11 @@ impl DenseRoutingGrid {
                         };
                         mark_blocked(
                             idx,
+                            dynamic_counts_for_congestion(key),
                             &mut blocked_cells,
+                            &mut congestion_cells,
                             &mut blocked_bits,
+                            &mut congestion_bits,
                             &mut blocked_count,
                         )?;
                     }
@@ -705,9 +895,22 @@ impl DenseRoutingGrid {
                 history[idx] = cost;
             }
         }
+        if let Some(oriented_history) = oriented_history.as_mut() {
+            for (key, angle, cost) in obstacle_map.oriented_history_entries() {
+                let (x, y) = unpack_xy(key);
+                let Some(idx) = local_idx(x, y) else {
+                    continue;
+                };
+                let angle_idx = usize::from(angle % 8);
+                oriented_history[idx][angle_idx] =
+                    oriented_history[idx][angle_idx].saturating_add(cost);
+            }
+        }
 
         let stride = usize::try_from(width).ok()?.checked_add(1)?;
         let mut blocked_prefix =
+            vec![0u32; stride.checked_mul(usize::try_from(height).ok()?.checked_add(1)?)?];
+        let mut congestion_prefix =
             vec![0u32; stride.checked_mul(usize::try_from(height).ok()?.checked_add(1)?)?];
         let mut history_prefix = if build_history {
             Some(vec![
@@ -721,6 +924,7 @@ impl DenseRoutingGrid {
         };
         for local_y in 0..height {
             let mut row_sum = 0u32;
+            let mut congestion_row_sum = 0u32;
             let mut history_row_sum = 0u64;
             let y_base = usize::try_from(local_y).ok()?;
             let src_base = y_base.checked_mul(width_usize)?;
@@ -730,6 +934,8 @@ impl DenseRoutingGrid {
                 let x_idx = usize::try_from(local_x).ok()?;
                 let blocked_idx = src_base.checked_add(x_idx)?;
                 row_sum = row_sum.saturating_add(u32::from(blocked_cells[blocked_idx]));
+                congestion_row_sum =
+                    congestion_row_sum.saturating_add(u32::from(congestion_cells[blocked_idx]));
                 if let Some(history) = history.as_ref() {
                     history_row_sum =
                         history_row_sum.saturating_add(u64::from(history[blocked_idx]));
@@ -737,6 +943,8 @@ impl DenseRoutingGrid {
                 let prefix_idx = prefix_row.checked_add(x_idx + 1)?;
                 let above = blocked_prefix[prefix_above + x_idx + 1];
                 blocked_prefix[prefix_idx] = above.saturating_add(row_sum);
+                let congestion_above = congestion_prefix[prefix_above + x_idx + 1];
+                congestion_prefix[prefix_idx] = congestion_above.saturating_add(congestion_row_sum);
                 if let Some(history_prefix) = history_prefix.as_mut() {
                     let history_above = history_prefix[prefix_above + x_idx + 1];
                     history_prefix[prefix_idx] = history_above.saturating_add(history_row_sum);
@@ -749,8 +957,11 @@ impl DenseRoutingGrid {
             width,
             height,
             blocked_bits,
+            congestion_bits,
             blocked_prefix: Some(blocked_prefix),
+            congestion_prefix: Some(congestion_prefix),
             history,
+            oriented_history,
             history_prefix,
             blocked_count,
             build_time_us: start.elapsed().as_micros(),
@@ -767,6 +978,14 @@ impl DenseRoutingGrid {
         match self.idx_of(x, y) {
             Some(idx) => self.blocked_bits.get(idx),
             None => true,
+        }
+    }
+
+    #[inline]
+    fn is_congested(&self, x: i32, y: i32) -> bool {
+        match self.idx_of(x, y) {
+            Some(idx) => self.congestion_bits.get(idx),
+            None => false,
         }
     }
 
@@ -824,6 +1043,58 @@ impl DenseRoutingGrid {
         let local_min_y = min_y.checked_sub(self.bounds.min_y)?;
         let local_max_y = max_y.checked_sub(self.bounds.min_y)?;
         self.blocked_count_in_local_rect(local_min_x, local_max_x, local_min_y, local_max_y)
+    }
+
+    #[inline]
+    fn congestion_count_in_rect(
+        &self,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> Option<u32> {
+        let local_min_x = min_x.checked_sub(self.bounds.min_x)?;
+        let local_max_x = max_x.checked_sub(self.bounds.min_x)?;
+        let local_min_y = min_y.checked_sub(self.bounds.min_y)?;
+        let local_max_y = max_y.checked_sub(self.bounds.min_y)?;
+        self.congestion_count_in_local_rect(local_min_x, local_max_x, local_min_y, local_max_y)
+    }
+
+    #[inline]
+    fn congestion_count_in_local_rect(
+        &self,
+        local_min_x: i32,
+        local_max_x: i32,
+        local_min_y: i32,
+        local_max_y: i32,
+    ) -> Option<u32> {
+        let width = self.width;
+        if local_min_x > local_max_x || local_min_y > local_max_y {
+            return None;
+        }
+        if local_min_x < 0 || local_min_y < 0 || local_max_x >= width || local_max_y >= self.height
+        {
+            return None;
+        }
+
+        let prefix = self.congestion_prefix.as_ref()?;
+        let width_usize = usize::try_from(width).ok()?;
+        let stride = width_usize.checked_add(1)?;
+        let x1 = usize::try_from(local_min_x).ok()?;
+        let y1 = usize::try_from(local_min_y).ok()?;
+        let x2 = usize::try_from(local_max_x).ok()?;
+        let y2 = usize::try_from(local_max_y).ok()?;
+
+        let a = i64::from(prefix[(y2 + 1).checked_mul(stride)? + (x2 + 1)]);
+        let b = i64::from(prefix[y1.checked_mul(stride)? + (x2 + 1)]);
+        let c = i64::from(prefix[(y2 + 1).checked_mul(stride)? + x1]);
+        let d = i64::from(prefix[y1.checked_mul(stride)? + x1]);
+        let total = a + d - b - c;
+        if total < 0 {
+            Some(0)
+        } else {
+            u32::try_from(total).ok()
+        }
     }
 
     #[inline]
@@ -942,8 +1213,9 @@ impl DenseRoutingGrid {
         origin_y: i32,
         footprint: &[(i32, i32)],
         profile: &FootprintCollisionProfile,
+        angle: u8,
     ) -> u64 {
-        if profile.is_full_rect {
+        if profile.is_full_rect && self.oriented_history.is_none() {
             let Some(rect_min_x) = origin_x.checked_add(profile.min_dx) else {
                 return u64::MAX;
             };
@@ -974,9 +1246,12 @@ impl DenseRoutingGrid {
         }
 
         let mut total = 0u64;
-        let Some(history) = self.history.as_ref() else {
+        let history = self.history.as_ref();
+        let oriented_history = self.oriented_history.as_ref();
+        if history.is_none() && oriented_history.is_none() {
             return 0;
-        };
+        }
+        let angle_idx = usize::from(angle % 8);
         for (dx, dy) in footprint.iter().copied() {
             let Some(x) = origin_x.checked_add(dx) else {
                 return u64::MAX;
@@ -987,9 +1262,55 @@ impl DenseRoutingGrid {
             let Some(idx) = self.idx_of(x, y) else {
                 return u64::MAX;
             };
-            total = total.saturating_add(u64::from(history[idx]));
+            if let Some(history) = history {
+                total = total.saturating_add(u64::from(history[idx]));
+            }
+            if let Some(oriented_history) = oriented_history {
+                total = total.saturating_add(u64::from(oriented_history[idx][angle_idx]));
+            }
         }
         total
+    }
+
+    #[inline]
+    fn primitive_footprint_congestion_with_profile(
+        &self,
+        origin_x: i32,
+        origin_y: i32,
+        footprint: &[(i32, i32)],
+        profile: &FootprintCollisionProfile,
+    ) -> u32 {
+        if profile.is_full_rect {
+            let Some(rect_min_x) = origin_x.checked_add(profile.min_dx) else {
+                return u32::MAX;
+            };
+            let Some(rect_max_x) = origin_x.checked_add(profile.max_dx) else {
+                return u32::MAX;
+            };
+            let Some(rect_min_y) = origin_y.checked_add(profile.min_dy) else {
+                return u32::MAX;
+            };
+            let Some(rect_max_y) = origin_y.checked_add(profile.max_dy) else {
+                return u32::MAX;
+            };
+            return self
+                .congestion_count_in_rect(rect_min_x, rect_max_x, rect_min_y, rect_max_y)
+                .unwrap_or(u32::MAX);
+        }
+
+        let mut count = 0u32;
+        for (dx, dy) in footprint.iter().copied() {
+            let Some(x) = origin_x.checked_add(dx) else {
+                return u32::MAX;
+            };
+            let Some(y) = origin_y.checked_add(dy) else {
+                return u32::MAX;
+            };
+            if self.is_congested(x, y) {
+                count = count.saturating_add(1);
+            }
+        }
+        count
     }
 
     #[inline]
@@ -1028,7 +1349,7 @@ impl DenseRoutingGrid {
                         continue;
                     }
                     let key = pack_xy(x, y);
-                    if seen.insert(key) && self.is_blocked(x, y) {
+                    if seen.insert(key) && self.is_congested(x, y) {
                         count = count.saturating_add(1);
                     }
                 }
@@ -1524,7 +1845,7 @@ pub fn route_single_net_with_config(
     }
 
     if !config.use_routing_window {
-        return route_single_net_with_bounds(
+        let route = route_single_net_with_bounds(
             obstacle_map,
             primitives,
             source,
@@ -1535,6 +1856,10 @@ pub fn route_single_net_with_config(
             &mut stats,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        if route.is_none() {
+            trace_astar_failure("normal_full_bounds", source, target, config, &stats);
+        }
+        return route;
     }
 
     let mut last_bounds: Option<RoutingBounds> = None;
@@ -1584,7 +1909,7 @@ pub fn route_single_net_with_config(
         stats.last_window_max_y = full_bounds.max_y;
         stats.last_window_area_cells = window_area(full_bounds);
         stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        return route_single_net_with_bounds(
+        let route = route_single_net_with_bounds(
             obstacle_map,
             primitives,
             source,
@@ -1595,8 +1920,13 @@ pub fn route_single_net_with_config(
             &mut stats,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        if route.is_none() {
+            trace_astar_failure("normal_full_grid_fallback", source, target, config, &stats);
+        }
+        return route;
     }
 
+    trace_astar_failure("normal", source, target, config, &stats);
     None
 }
 
@@ -1645,7 +1975,7 @@ pub fn route_single_net_with_dynamic_expansion_config(
     }
 
     if !config.use_routing_window {
-        return route_single_net_with_bounds_dynamic_expansion(
+        let route = route_single_net_with_bounds_dynamic_expansion(
             obstacle_map,
             primitives,
             source,
@@ -1656,8 +1986,19 @@ pub fn route_single_net_with_dynamic_expansion_config(
             &mut stats,
             dynamic_expansion_radius_cells,
             dynamic_clearance_exempt_cells,
+            None,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        if route.is_none() {
+            trace_astar_failure(
+                "dynamic_expansion_full_bounds",
+                source,
+                target,
+                config,
+                &stats,
+            );
+        }
+        return route;
     }
 
     let mut last_bounds: Option<RoutingBounds> = None;
@@ -1686,6 +2027,7 @@ pub fn route_single_net_with_dynamic_expansion_config(
             &mut stats,
             dynamic_expansion_radius_cells,
             dynamic_clearance_exempt_cells,
+            None,
         ) {
             return Some(with_route_search_total_time(
                 route,
@@ -1709,7 +2051,7 @@ pub fn route_single_net_with_dynamic_expansion_config(
         stats.last_window_max_y = full_bounds.max_y;
         stats.last_window_area_cells = window_area(full_bounds);
         stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        return route_single_net_with_bounds_dynamic_expansion(
+        let route = route_single_net_with_bounds_dynamic_expansion(
             obstacle_map,
             primitives,
             source,
@@ -1720,10 +2062,174 @@ pub fn route_single_net_with_dynamic_expansion_config(
             &mut stats,
             dynamic_expansion_radius_cells,
             dynamic_clearance_exempt_cells,
+            None,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        if route.is_none() {
+            trace_astar_failure(
+                "dynamic_expansion_full_grid_fallback",
+                source,
+                target,
+                config,
+                &stats,
+            );
+        }
+        return route;
     }
 
+    trace_astar_failure("dynamic_expansion", source, target, config, &stats);
+    None
+}
+
+pub fn route_single_net_with_slim_collision_crossing_config(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    dynamic_expansion_radius_cells: i32,
+    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+    crossing: &CrossingSearchConfig,
+) -> Option<RouteResult> {
+    if crossing.require_all_partners
+        || crossing.partners.is_empty()
+        || crossing.partners.len() > u128::BITS as usize
+    {
+        return None;
+    }
+    if config.target_tolerance_cells < 0 {
+        return None;
+    }
+    if let Some(mask) = config.allowed_target_angles_mask {
+        if mask == 0 {
+            return None;
+        }
+    }
+    if target.angle > 7 {
+        return None;
+    }
+    if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
+        return None;
+    }
+    let mut anchor_open_cells = FxHashSet::default();
+    if let Some(port_open_cells) = port_open_cells {
+        anchor_open_cells.extend(port_open_cells.iter().copied());
+    }
+    anchor_open_cells.insert(pack_xy(source.x, source.y));
+    anchor_open_cells.insert(pack_xy(target.x, target.y));
+
+    let mut stats = RouteSearchStats::default();
+    let route_search_total_start = if config.collect_detailed_timing {
+        Some(Instant::now())
+    } else {
+        None
+    };
+    stats.jps4_requested = config.enable_jps4;
+    stats.jps4_eligible = false;
+    stats.jps4_fallback_reason = "slim collision crossing search uses dense A*".to_string();
+    if config.enable_jps4 {
+        stats.jps4_fallbacks += 1;
+    }
+
+    if !config.use_routing_window {
+        let route = route_single_net_with_bounds_dynamic_expansion(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            None,
+            &mut stats,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+            Some(crossing),
+        )
+        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        if route.is_none() {
+            trace_astar_failure("slim_collision_full_bounds", source, target, config, &stats);
+        }
+        return route;
+    }
+
+    let mut last_bounds: Option<RoutingBounds> = None;
+    for expansion_idx in 0..=config.routing_window_max_expansions {
+        let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
+        if last_bounds == Some(bounds) {
+            continue;
+        }
+        last_bounds = Some(bounds);
+        stats.window_attempts += 1;
+        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(bounds));
+        stats.last_window_min_x = bounds.min_x;
+        stats.last_window_max_x = bounds.max_x;
+        stats.last_window_min_y = bounds.min_y;
+        stats.last_window_max_y = bounds.max_y;
+        stats.last_window_area_cells = window_area(bounds);
+
+        if let Some(route) = route_single_net_with_bounds_dynamic_expansion(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            Some(bounds),
+            &mut stats,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+            Some(crossing),
+        ) {
+            return Some(with_route_search_total_time(
+                route,
+                route_search_total_start.as_ref(),
+            ));
+        }
+    }
+
+    if config.routing_window_fallback_full_grid {
+        stats.window_attempts += 1;
+        stats.used_full_grid_fallback = true;
+        let full_bounds = RoutingBounds {
+            min_x: 0,
+            max_x: obstacle_map.width() - 1,
+            min_y: 0,
+            max_y: obstacle_map.height() - 1,
+        };
+        stats.last_window_min_x = full_bounds.min_x;
+        stats.last_window_max_x = full_bounds.max_x;
+        stats.last_window_min_y = full_bounds.min_y;
+        stats.last_window_max_y = full_bounds.max_y;
+        stats.last_window_area_cells = window_area(full_bounds);
+        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
+        let route = route_single_net_with_bounds_dynamic_expansion(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            Some(&anchor_open_cells),
+            config,
+            None,
+            &mut stats,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+            Some(crossing),
+        )
+        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        if route.is_none() {
+            trace_astar_failure(
+                "slim_collision_full_grid_fallback",
+                source,
+                target,
+                config,
+                &stats,
+            );
+        }
+        return route;
+    }
+
+    trace_astar_failure("slim_collision", source, target, config, &stats);
     None
 }
 
@@ -1738,7 +2244,7 @@ pub fn route_single_net_with_collision_crossing_config(
     dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
     crossing: &CrossingSearchConfig,
 ) -> Option<RouteResult> {
-    if crossing.partners.is_empty() || crossing.partners.len() > u64::BITS as usize {
+    if crossing.partners.is_empty() || crossing.partners.len() > u128::BITS as usize {
         return None;
     }
     if config.target_tolerance_cells < 0 {
@@ -2108,6 +2614,7 @@ fn route_single_net_jps4(
         config.max_dense_obstacle_cells,
         config.ignore_dynamic_obstacles,
         false,
+        &config.proactive_congestion_exempt_net_ids,
     )?;
     stats.dense_grid_cells = dense_grid.blocked_count();
     stats.dense_grid_build_time_us = dense_grid.build_time_us();
@@ -2124,6 +2631,7 @@ fn route_single_net_jps4(
             primitives: Vec::new(),
             cells: vec![(source.x, source.y)],
             compressed_waypoints: vec![(source.x, source.y)],
+            crossing_events: Vec::new(),
             total_length_um: 0.0,
             total_cost: 0.0,
             requested_target: target,
@@ -2378,6 +2886,7 @@ fn reconstruct_jps4_route(
         primitives: Vec::new(),
         cells,
         compressed_waypoints,
+        crossing_events: Vec::new(),
         total_length_um: total_cost,
         total_cost,
         requested_target: target,
@@ -2538,6 +3047,7 @@ fn simple_candidate_to_route_result(
         primitives: primitive_ids,
         cells,
         compressed_waypoints,
+        crossing_events: Vec::new(),
         total_length_um,
         total_cost: total_length_um,
         requested_target: target,
@@ -2826,6 +3336,7 @@ fn route_single_net_with_bounds(
         stats,
         0,
         None,
+        None,
     )
 }
 
@@ -2840,6 +3351,7 @@ fn route_single_net_with_bounds_dynamic_expansion(
     stats: &mut RouteSearchStats,
     dynamic_expansion_radius_cells: i32,
     dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+    slim_crossing: Option<&CrossingSearchConfig>,
 ) -> Option<RouteResult> {
     let bounds = if let Some(bounds) = routing_bounds {
         if !bounds.contains(source.x, source.y) || !bounds.contains(target.x, target.y) {
@@ -2867,6 +3379,7 @@ fn route_single_net_with_bounds_dynamic_expansion(
         config.history_weight > 0.0,
         dynamic_expansion_radius_cells,
         dynamic_clearance_exempt_cells,
+        &config.proactive_congestion_exempt_net_ids,
     ) {
         Some(grid) => grid,
         None => {
@@ -2877,6 +3390,44 @@ fn route_single_net_with_bounds_dynamic_expansion(
     stats.dense_grid_cells = dense_grid.blocked_count();
     stats.dense_grid_build_time_us = dense_grid.build_time_us();
     let search_heuristic = SearchHeuristic::new(target, primitives, config);
+    let slim_crossing = slim_crossing.filter(|crossing| {
+        !crossing.require_all_partners
+            && !crossing.partners.is_empty()
+            && crossing.partners.len() <= u128::BITS as usize
+    });
+    let slim_bend_runout_cells = if slim_crossing.is_some() {
+        infer_bend_radius_cells(primitives).unwrap_or(0)
+    } else {
+        0
+    };
+    let slim_reservation_margin = slim_crossing
+        .map(|crossing| {
+            crossing_required_margin_cells(
+                crossing.crossing_half_size_cells,
+                crossing.min_straight_cells,
+                slim_bend_runout_cells,
+            )
+        })
+        .unwrap_or(0);
+    let slim_required_margin = slim_crossing
+        .map(|crossing| crossing_required_straight_margin_cells(crossing.min_straight_cells))
+        .unwrap_or(0);
+    let slim_capped_required_margin = slim_required_margin.max(1);
+    let slim_bend_corner_exclusion_radius = slim_crossing
+        .map(|crossing| crossing.crossing_half_size_cells.max(1).saturating_add(1))
+        .unwrap_or(0);
+    let slim_partner_index_by_id = slim_crossing.map(|crossing| {
+        crossing
+            .partners
+            .iter()
+            .enumerate()
+            .map(|(idx, partner)| (partner.net_id, idx))
+            .collect::<FxHashMap<NetId, usize>>()
+    });
+    let slim_diagonal_crossing_index = slim_crossing.map(DiagonalCrossingIndex::new);
+    let mut slim_straight_run_cells = slim_crossing.map(|_| vec![0i32; storage.state_count()]);
+    let mut slim_pending_after_crossing_cells =
+        slim_crossing.map(|_| vec![0i32; storage.state_count()]);
 
     let primitive_buckets: [&[Primitive]; 8] =
         std::array::from_fn(|angle| primitives.get_primitives_for_angle(angle as u8));
@@ -2974,9 +3525,14 @@ fn route_single_net_with_bounds_dynamic_expansion(
             continue;
         }
         let state = storage.idx_to_state(idx);
+        let target_pending_clear = slim_pending_after_crossing_cells
+            .as_ref()
+            .map(|pending| pending[idx] == 0)
+            .unwrap_or(true);
         if (state.x - target.x).abs() <= target_tolerance
             && (state.y - target.y).abs() <= target_tolerance
             && accepted_target_angles[state.angle as usize]
+            && target_pending_clear
         {
             if let Some(search_loop_start) = search_loop_start.as_ref() {
                 stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
@@ -3097,7 +3653,96 @@ fn route_single_net_with_bounds_dynamic_expansion(
                     stats,
                 )
             };
-            if !footprint_free {
+            let mut crossing_count = 0u32;
+            let mut next_straight_run_cells = 0i32;
+            let mut next_pending_after_crossing_cells = 0i32;
+            if let Some(crossing) = slim_crossing {
+                let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
+                let current_straight_run_cells = slim_straight_run_cells
+                    .as_ref()
+                    .and_then(|values| values.get(idx).copied())
+                    .unwrap_or(0);
+                let current_pending_after_crossing_cells = slim_pending_after_crossing_cells
+                    .as_ref()
+                    .and_then(|values| values.get(idx).copied())
+                    .unwrap_or(0);
+                let is_same_straight = primitive_class_is_straight(primitive_class)
+                    && primitive.end_angle == state.angle
+                    && primitive_steps > 0;
+                let diagonal_crossing_candidate = is_same_straight
+                    && slim_diagonal_crossing_index
+                        .as_ref()
+                        .map(|index| index.has_opposite_edge_for_primitive(state, primitive))
+                        .unwrap_or(false);
+                if !is_same_straight
+                    && bend_corner_window_hits_dynamic_core(
+                        obstacle_map,
+                        state,
+                        primitive,
+                        slim_bend_runout_cells,
+                        slim_bend_corner_exclusion_radius,
+                    )
+                {
+                    stats.crossing_reject_non_straight += 1;
+                    continue;
+                }
+                if !footprint_free || diagonal_crossing_candidate {
+                    let current_key = CrossingAStarKey {
+                        state,
+                        crossed_mask: 0,
+                        next_partner_index: 0,
+                        straight_run_cells: current_straight_run_cells,
+                        pending_after_crossing_cells: current_pending_after_crossing_cells,
+                    };
+                    let next_state = State::new(next_x, next_y, next_angle);
+                    let Some(crossing_outcome) = crossing_move_outcome(
+                        obstacle_map,
+                        crossing,
+                        current_key,
+                        state,
+                        next_state,
+                        primitive,
+                        is_same_straight,
+                        slim_required_margin,
+                        slim_capped_required_margin,
+                        slim_reservation_margin,
+                        slim_partner_index_by_id.as_ref()?,
+                        slim_diagonal_crossing_index.as_ref()?,
+                        stats,
+                    ) else {
+                        if !footprint_free {
+                            stats.footprint_rejects += 1;
+                            stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                            if profile.is_full_rect {
+                                stats.primitive_footprint_rect_rejects += 1;
+                            }
+                        }
+                        continue;
+                    };
+                    if !footprint_free && crossing_outcome.crossing_count == 0 {
+                        stats.footprint_rejects += 1;
+                        stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                        if profile.is_full_rect {
+                            stats.primitive_footprint_rect_rejects += 1;
+                        }
+                        continue;
+                    }
+                    crossing_count = crossing_outcome.crossing_count;
+                    next_straight_run_cells = crossing_outcome.straight_run_cells;
+                    next_pending_after_crossing_cells =
+                        crossing_outcome.pending_after_crossing_cells;
+                } else if is_same_straight {
+                    next_straight_run_cells = current_straight_run_cells
+                        .saturating_add(primitive_steps)
+                        .min(slim_capped_required_margin);
+                    next_pending_after_crossing_cells = current_pending_after_crossing_cells
+                        .saturating_sub(primitive_steps)
+                        .max(0);
+                } else if current_pending_after_crossing_cells > 0 {
+                    stats.crossing_reject_pending_straight += 1;
+                    continue;
+                }
+            } else if !footprint_free {
                 stats.footprint_rejects += 1;
                 stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
                 if profile.is_full_rect {
@@ -3112,13 +3757,21 @@ fn route_single_net_with_bounds_dynamic_expansion(
                     state.y,
                     &primitive.footprint,
                     profile,
+                    primitive.start_angle,
                 ) as f64
                     * config.history_weight
             } else {
                 0.0
             };
+            let congestion_radius_cells = if primitive.start_angle % 2 == 0 {
+                config.proactive_congestion_radius_cells
+            } else if config.proactive_congestion_diagonal_radius_cells > 0 {
+                config.proactive_congestion_diagonal_radius_cells
+            } else {
+                config.proactive_congestion_radius_cells
+            };
             let congestion_cost = if config.proactive_congestion_weight > 0.0
-                && config.proactive_congestion_radius_cells > 0
+                && congestion_radius_cells > 0
                 && primitive_class_is_straight(primitive_class)
             {
                 f64::from(dense_grid.primitive_lateral_congestion(
@@ -3126,12 +3779,29 @@ fn route_single_net_with_bounds_dynamic_expansion(
                     state.y,
                     &primitive.footprint,
                     primitive.start_angle,
-                    config.proactive_congestion_radius_cells,
+                    congestion_radius_cells,
                 )) * config.proactive_congestion_weight
             } else {
                 0.0
             };
-            let step_cost = base_step_cost + history_cost + congestion_cost;
+            let dynamic_conflict_cost =
+                if config.ignore_dynamic_obstacles && config.dynamic_conflict_penalty > 0.0 {
+                    f64::from(dense_grid.primitive_footprint_congestion_with_profile(
+                        state.x,
+                        state.y,
+                        &primitive.footprint,
+                        profile,
+                    )) * config.dynamic_conflict_penalty
+                } else {
+                    0.0
+                };
+            let step_cost = base_step_cost
+                + history_cost
+                + congestion_cost
+                + dynamic_conflict_cost
+                + slim_crossing
+                    .map(|crossing| f64::from(crossing_count) * crossing.crossing_loss)
+                    .unwrap_or(0.0);
             let tentative_g = current_g + step_cost;
             if tentative_g >= storage.g_costs[next_idx] {
                 stats.primitive_cost_pruned_by_class[primitive_class] += 1;
@@ -3142,6 +3812,12 @@ fn route_single_net_with_bounds_dynamic_expansion(
             storage.parent_idx[next_idx] = idx as u32;
             storage.parent_primitive[next_idx] = primitive.id;
             storage.g_costs[next_idx] = tentative_g;
+            if let Some(straight_run_cells) = slim_straight_run_cells.as_mut() {
+                straight_run_cells[next_idx] = next_straight_run_cells;
+            }
+            if let Some(pending_after_crossing_cells) = slim_pending_after_crossing_cells.as_mut() {
+                pending_after_crossing_cells[next_idx] = next_pending_after_crossing_cells;
+            }
             let generation = next_search_generation(&mut counter)?;
             storage.best_generation[next_idx] = generation;
             stats.best_cost_updates += 1;
@@ -3194,7 +3870,7 @@ fn route_single_net_with_bounds_dynamic_expansion(
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct CrossingAStarKey {
     state: State,
-    crossed_mask: u64,
+    crossed_mask: u128,
     next_partner_index: u8,
     straight_run_cells: i32,
     pending_after_crossing_cells: i32,
@@ -3206,15 +3882,127 @@ struct CrossingAStarNode {
     parent_idx: Option<usize>,
     primitive_id: u16,
     g_score: f64,
+    crossing_events: Vec<RouteCrossing>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct CrossingMoveOutcome {
-    crossed_mask: u64,
+    crossed_mask: u128,
     next_partner_index: u8,
     straight_run_cells: i32,
     pending_after_crossing_cells: i32,
     crossing_count: u32,
+    crossing_events: Vec<RouteCrossing>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DiagonalCrossingEdge {
+    partner_idx: usize,
+    partner_start: (i32, i32),
+    partner_end: (i32, i32),
+    center_x: f64,
+    center_y: f64,
+    partner_u: f64,
+    partner_len: f64,
+    partner_distance: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DiagonalCrossingIndex {
+    edges_by_square: FxHashMap<(i32, i32, u8), Vec<DiagonalCrossingEdge>>,
+}
+
+impl DiagonalCrossingIndex {
+    fn new(crossing: &CrossingSearchConfig) -> Self {
+        let mut edges_by_square: FxHashMap<(i32, i32, u8), Vec<DiagonalCrossingEdge>> =
+            FxHashMap::default();
+        for (partner_idx, partner) in crossing.partners.iter().enumerate() {
+            let mut prefix_distance = 0.0;
+            for segment in partner.waypoints.windows(2) {
+                let dx = (segment[1].0 - segment[0].0).signum();
+                let dy = (segment[1].1 - segment[0].1).signum();
+                let steps = (segment[1].0 - segment[0].0)
+                    .abs()
+                    .max((segment[1].1 - segment[0].1).abs());
+                if steps <= 0 || dx == 0 || dy == 0 {
+                    prefix_distance += grid_segment_length(segment[0], segment[1]);
+                    continue;
+                }
+                let orientation = diagonal_edge_orientation(dx, dy);
+                let partner_len = grid_segment_length(segment[0], segment[1]);
+                for step in 0..steps {
+                    let x0 = segment[0].0 + dx * step;
+                    let y0 = segment[0].1 + dy * step;
+                    let x1 = x0 + dx;
+                    let y1 = y0 + dy;
+                    let square_x = x0.min(x1);
+                    let square_y = y0.min(y1);
+                    edges_by_square
+                        .entry((square_x, square_y, orientation))
+                        .or_default()
+                        .push(DiagonalCrossingEdge {
+                            partner_idx,
+                            partner_start: segment[0],
+                            partner_end: segment[1],
+                            center_x: f64::from(square_x) + 0.5,
+                            center_y: f64::from(square_y) + 0.5,
+                            partner_u: (f64::from(step) + 0.5) / f64::from(steps),
+                            partner_len,
+                            partner_distance: prefix_distance
+                                + (f64::from(step) + 0.5) / f64::from(steps) * partner_len,
+                        });
+                }
+                prefix_distance += partner_len;
+            }
+        }
+        Self { edges_by_square }
+    }
+
+    fn opposite_edges_for_step(
+        &self,
+        x0: i32,
+        y0: i32,
+        dx: i32,
+        dy: i32,
+    ) -> Option<&[DiagonalCrossingEdge]> {
+        if dx == 0 || dy == 0 {
+            return None;
+        }
+        let x1 = x0 + dx;
+        let y1 = y0 + dy;
+        let square_x = x0.min(x1);
+        let square_y = y0.min(y1);
+        let opposite_orientation = 1 - diagonal_edge_orientation(dx, dy);
+        self.edges_by_square
+            .get(&(square_x, square_y, opposite_orientation))
+            .map(Vec::as_slice)
+    }
+
+    fn has_opposite_edge_for_primitive(&self, state: State, primitive: &Primitive) -> bool {
+        let steps = primitive.dx.abs().max(primitive.dy.abs());
+        if steps <= 0 {
+            return false;
+        }
+        let step_dx = primitive.dx.signum();
+        let step_dy = primitive.dy.signum();
+        if step_dx == 0 || step_dy == 0 {
+            return false;
+        }
+        (0..steps).any(|step| {
+            let x0 = state.x + step_dx * step;
+            let y0 = state.y + step_dy * step;
+            self.opposite_edges_for_step(x0, y0, step_dx, step_dy)
+                .is_some_and(|edges| !edges.is_empty())
+        })
+    }
+}
+
+fn diagonal_edge_orientation(dx: i32, dy: i32) -> u8 {
+    if dx.signum() == dy.signum() {
+        0
+    } else {
+        1
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3254,6 +4042,7 @@ fn route_single_net_with_bounds_crossing(
         config.history_weight > 0.0,
         dynamic_expansion_radius_cells,
         dynamic_clearance_exempt_cells,
+        &config.proactive_congestion_exempt_net_ids,
     ) {
         Some(grid) => grid,
         None => {
@@ -3287,14 +4076,19 @@ fn route_single_net_with_bounds_crossing(
         })
         .collect();
     let bend_runout_cells = infer_bend_radius_cells(primitives).unwrap_or(0);
-    let required_margin = crossing_required_margin_cells(
+    let reservation_margin = crossing_required_margin_cells(
         crossing.crossing_half_size_cells,
         crossing.min_straight_cells,
         bend_runout_cells,
     );
+    let required_margin = crossing_required_straight_margin_cells(crossing.min_straight_cells);
     let capped_required_margin = required_margin.max(1);
     let all_partner_mask = if crossing.require_all_partners {
-        (1u64 << crossing.partners.len()) - 1
+        if crossing.partners.len() == u128::BITS as usize {
+            u128::MAX
+        } else {
+            (1u128 << crossing.partners.len()) - 1
+        }
     } else {
         0
     };
@@ -3305,15 +4099,9 @@ fn route_single_net_with_bounds_crossing(
         .enumerate()
         .map(|(idx, partner)| (partner.net_id, idx))
         .collect();
+    let diagonal_crossing_index = DiagonalCrossingIndex::new(crossing);
     let target_tolerance = config.target_tolerance_cells.max(0);
     let accepted_target_angles = target_angle_acceptance(target, config);
-    let monotonic_axis_x = (target.x - source.x).abs() >= (target.y - source.y).abs();
-    let monotonic_sign = if monotonic_axis_x {
-        (target.x - source.x).signum()
-    } else {
-        (target.y - source.y).signum()
-    };
-
     let mut nodes = Vec::new();
     let source_key = CrossingAStarKey {
         state: source,
@@ -3327,6 +4115,7 @@ fn route_single_net_with_bounds_crossing(
         parent_idx: None,
         primitive_id: 0,
         g_score: 0.0,
+        crossing_events: Vec::new(),
     });
     let mut best_costs = FxHashMap::default();
     best_costs.insert(source_key, 0.0);
@@ -3393,14 +4182,19 @@ fn route_single_net_with_bounds_crossing(
             if let Some(search_loop_start) = search_loop_start.as_ref() {
                 stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
             }
-            return reconstruct_route_crossing(
+            let route = reconstruct_route_crossing(
                 entry.idx,
                 target,
                 primitives,
                 node.g_score,
                 stats.clone(),
                 &nodes,
-            );
+            )?;
+            if !crossing.require_all_partners && route.crossing_events.is_empty() {
+                stats.crossing_reject_unmatched_owner += 1;
+                continue;
+            }
+            return Some(route);
         }
 
         stats.expanded_states += 1;
@@ -3431,16 +4225,6 @@ fn route_single_net_with_bounds_crossing(
             let next_x = state.x.checked_add(primitive.dx)?;
             let next_y = state.y.checked_add(primitive.dy)?;
             let next_angle = primitive.end_angle % 8;
-            if monotonic_sign != 0 {
-                let progress_delta = if monotonic_axis_x {
-                    next_x - state.x
-                } else {
-                    next_y - state.y
-                };
-                if progress_delta.signum() == -monotonic_sign {
-                    continue;
-                }
-            }
             if !bounds.contains(next_x, next_y) {
                 stats.window_rejects += 1;
                 stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
@@ -3469,7 +4253,9 @@ fn route_single_net_with_bounds_crossing(
                 primitive_class_is_straight(primitive_class),
                 required_margin,
                 capped_required_margin,
+                reservation_margin,
                 &partner_index_by_id,
+                &diagonal_crossing_index,
                 stats,
             ) else {
                 if !footprint_free {
@@ -3507,13 +4293,21 @@ fn route_single_net_with_bounds_crossing(
                     state.y,
                     &primitive.footprint,
                     profile,
+                    primitive.start_angle,
                 ) as f64
                     * config.history_weight
             } else {
                 0.0
             };
+            let congestion_radius_cells = if primitive.start_angle % 2 == 0 {
+                config.proactive_congestion_radius_cells
+            } else if config.proactive_congestion_diagonal_radius_cells > 0 {
+                config.proactive_congestion_diagonal_radius_cells
+            } else {
+                config.proactive_congestion_radius_cells
+            };
             let congestion_cost = if config.proactive_congestion_weight > 0.0
-                && config.proactive_congestion_radius_cells > 0
+                && congestion_radius_cells > 0
                 && primitive_class_is_straight(primitive_class)
             {
                 f64::from(dense_grid.primitive_lateral_congestion(
@@ -3521,14 +4315,26 @@ fn route_single_net_with_bounds_crossing(
                     state.y,
                     &primitive.footprint,
                     primitive.start_angle,
-                    config.proactive_congestion_radius_cells,
+                    congestion_radius_cells,
                 )) * config.proactive_congestion_weight
             } else {
                 0.0
             };
+            let dynamic_conflict_cost =
+                if config.ignore_dynamic_obstacles && config.dynamic_conflict_penalty > 0.0 {
+                    f64::from(dense_grid.primitive_footprint_congestion_with_profile(
+                        state.x,
+                        state.y,
+                        &primitive.footprint,
+                        profile,
+                    )) * config.dynamic_conflict_penalty
+                } else {
+                    0.0
+                };
             let step_cost = metadata.base_step_cost
                 + history_cost
                 + congestion_cost
+                + dynamic_conflict_cost
                 + f64::from(crossing_outcome.crossing_count) * crossing.crossing_loss;
             let tentative_g = node_g_score + step_cost;
             if tentative_g >= best_costs.get(&next_key).copied().unwrap_or(f64::INFINITY) {
@@ -3542,6 +4348,7 @@ fn route_single_net_with_bounds_crossing(
                 parent_idx: Some(entry.idx),
                 primitive_id: primitive.id,
                 g_score: tentative_g,
+                crossing_events: crossing_outcome.crossing_events,
             });
             best_costs.insert(next_key, tentative_g);
             let generation = next_search_generation(&mut counter)?;
@@ -3581,11 +4388,18 @@ fn trace_crossing_search_exhausted(
     nodes: &[CrossingAStarNode],
     open_len: usize,
 ) {
-    if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING").is_none() {
+    let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
+        .ok()
+        .and_then(|value| value.parse::<NetId>().ok())
+        .map_or_else(
+            || std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING").is_some(),
+            |trace_net_id| trace_net_id == crossing.net_id,
+        );
+    if !trace_crossing {
         return;
     }
     let mut by_next_partner = vec![0usize; crossing.partners.len() + 1];
-    let mut by_crossed_mask: FxHashMap<u64, usize> = FxHashMap::default();
+    let mut by_crossed_mask: FxHashMap<u128, usize> = FxHashMap::default();
     for node in nodes {
         let idx = usize::from(node.key.next_partner_index).min(by_next_partner.len() - 1);
         by_next_partner[idx] += 1;
@@ -3595,7 +4409,7 @@ fn trace_crossing_search_exhausted(
     masks.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     masks.truncate(8);
     eprintln!(
-        "crossing-search exhausted net={} partners={:?} bounds=({},{}..{}, {}) expanded={} generated={} heap={} open={} nodes={} by_next={:?} masks={:?}",
+        "crossing-search exhausted net={} partners={:?} bounds=({},{}..{}, {}) expanded={} generated={} heap={} open={} nodes={} by_next={:?} masks={:?} reject_non_straight={} reject_not_perpendicular={} reject_margin={} reject_wrong_order={} reject_unexpected_owner={} reject_unmatched_owner={} reject_unmatched_centerline={} reject_unmatched_footprint={} reject_unmatched_route_centerline={} reject_unmatched_route_footprint={} reject_pending_straight={}",
         crossing.net_id,
         crossing
             .partners
@@ -3613,6 +4427,17 @@ fn trace_crossing_search_exhausted(
         nodes.len(),
         by_next_partner,
         masks,
+        stats.crossing_reject_non_straight,
+        stats.crossing_reject_not_perpendicular,
+        stats.crossing_reject_margin,
+        stats.crossing_reject_wrong_order,
+        stats.crossing_reject_unexpected_owner,
+        stats.crossing_reject_unmatched_owner,
+        stats.crossing_reject_unmatched_centerline,
+        stats.crossing_reject_unmatched_footprint,
+        stats.crossing_reject_unmatched_route_centerline,
+        stats.crossing_reject_unmatched_route_footprint,
+        stats.crossing_reject_pending_straight,
     );
 }
 
@@ -3627,10 +4452,13 @@ fn crossing_move_outcome(
     is_straight: bool,
     required_margin: i32,
     capped_required_margin: i32,
+    reservation_margin: i32,
     partner_index_by_id: &FxHashMap<NetId, usize>,
+    diagonal_crossing_index: &DiagonalCrossingIndex,
     stats: &mut RouteSearchStats,
 ) -> Option<CrossingMoveOutcome> {
     let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
+    let primitive_distance = grid_segment_length((state.x, state.y), (next_state.x, next_state.y));
     let mut straight_run = if is_straight && primitive.end_angle == state.angle {
         current_key
             .straight_run_cells
@@ -3651,87 +4479,112 @@ fn crossing_move_outcome(
     };
     let mut crossed_mask = current_key.crossed_mask;
     let mut next_partner_index = current_key.next_partner_index;
+    let track_crossed_partners = crossing.require_all_partners;
     let mut crossing_count = 0u32;
+    let mut crossing_events = Vec::new();
+    let min_crossing_spacing = 2.0 * f64::from(required_margin);
     let mut route_intersections = Vec::new();
     if is_straight && primitive_steps > 0 {
-        let route_segment = ((state.x, state.y), (next_state.x, next_state.y));
-        let route_angle = direction_angle_between_grid_cells(route_segment.0, route_segment.1)?;
-        let partner_range = if crossing.require_all_partners {
-            let next_idx = usize::from(next_partner_index);
-            next_idx..next_idx.saturating_add(1).min(crossing.partners.len())
-        } else {
-            0..crossing.partners.len()
-        };
-        for partner_idx in partner_range {
-            let partner = &crossing.partners[partner_idx];
-            let bit = 1u64 << partner_idx;
-            for partner_segment in partner.waypoints.windows(2) {
-                let Some(partner_angle) =
-                    direction_angle_between_grid_cells(partner_segment[0], partner_segment[1])
+        let step_dx = primitive.dx.signum();
+        let step_dy = primitive.dy.signum();
+        if step_dx != 0 && step_dy != 0 {
+            for step in 0..primitive_steps {
+                let x0 = state.x + step_dx * step;
+                let y0 = state.y + step_dy * step;
+                let Some(edges) =
+                    diagonal_crossing_index.opposite_edges_for_step(x0, y0, step_dx, step_dy)
                 else {
                     continue;
                 };
-                let Some((x, y, t, u)) = grid_segment_intersection_with_params(
-                    route_segment.0,
-                    route_segment.1,
-                    partner_segment[0],
-                    partner_segment[1],
-                ) else {
-                    continue;
-                };
-                stats.crossing_candidate_checks += 1;
-                if crossed_mask & bit != 0 && t <= 1.0e-9 {
-                    continue;
+                for edge in edges {
+                    let partner_idx = edge.partner_idx;
+                    if crossing.require_all_partners
+                        && partner_idx != usize::from(next_partner_index)
+                    {
+                        continue;
+                    }
+                    let bit = 1u128 << partner_idx;
+                    let t = (f64::from(step) + 0.5) / f64::from(primitive_steps);
+                    stats.crossing_candidate_checks += 1;
+                    if track_crossed_partners && crossed_mask & bit != 0 && t <= 1.0e-9 {
+                        continue;
+                    }
+                    if track_crossed_partners && crossed_mask & bit != 0 {
+                        stats.crossing_reject_wrong_order += 1;
+                        return None;
+                    }
+                    let partner_margin = (edge.partner_u * edge.partner_len)
+                        .min((1.0 - edge.partner_u) * edge.partner_len);
+                    if partner_margin + 1.0e-9 < f64::from(required_margin) {
+                        stats.crossing_reject_margin += 1;
+                        return None;
+                    }
+                    let partner = &crossing.partners[partner_idx];
+                    if !crossing_reservation_window_is_clear(
+                        obstacle_map,
+                        crossing.net_id,
+                        partner.net_id,
+                        edge.center_x,
+                        edge.center_y,
+                        reservation_margin,
+                        ((state.x, state.y), (next_state.x, next_state.y)),
+                        (edge.partner_start, edge.partner_end),
+                    ) {
+                        stats.crossing_reject_unmatched_footprint += 1;
+                        return None;
+                    }
+                    if crossing_distance_is_forbidden(
+                        &partner.forbidden_crossing_distances,
+                        edge.partner_distance,
+                        min_crossing_spacing,
+                    ) {
+                        stats.crossing_reject_margin += 1;
+                        return None;
+                    }
+                    let route_angle = direction_angle_between_grid_cells(
+                        (state.x, state.y),
+                        (next_state.x, next_state.y),
+                    )?;
+                    let partner_angle =
+                        direction_angle_between_grid_cells(edge.partner_start, edge.partner_end)?;
+                    route_intersections.push((
+                        t,
+                        bit,
+                        RouteCrossing {
+                            partner_net_id: partner.net_id,
+                            point: (edge.center_x, edge.center_y),
+                            route_segment: ((state.x, state.y), (next_state.x, next_state.y)),
+                            partner_segment: (edge.partner_start, edge.partner_end),
+                            route_angle,
+                            partner_angle,
+                            partner_distance: edge.partner_distance,
+                        },
+                    ));
                 }
-                if crossed_mask & bit != 0 {
-                    stats.crossing_reject_wrong_order += 1;
-                    return None;
-                }
-                if !grid_axes_are_perpendicular(route_angle, partner_angle) {
-                    stats.crossing_reject_not_perpendicular += 1;
-                    return None;
-                }
-                let partner_len = grid_segment_length(partner_segment[0], partner_segment[1]);
-                let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
-                if partner_margin + 1.0e-9 < f64::from(required_margin) {
-                    stats.crossing_reject_margin += 1;
-                    return None;
-                }
-                if !crossing_reservation_window_is_clear(
-                    obstacle_map,
-                    crossing.net_id,
-                    partner.net_id,
-                    x,
-                    y,
-                    crossing.crossing_half_size_cells,
-                ) {
-                    stats.crossing_reject_unmatched_footprint += 1;
-                    return None;
-                }
-                route_intersections.push((t, x, y, bit));
             }
+            route_intersections.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
         }
-        route_intersections.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
     }
 
-    for &(t, _x, _y, bit) in &route_intersections {
+    for (t, bit, event) in route_intersections {
         if pending_after > 0 {
             stats.crossing_reject_pending_straight += 1;
             return None;
         }
-        let distance_before = current_key.straight_run_cells as f64 + t * primitive_steps as f64;
+        let distance_before = current_key.straight_run_cells as f64 + t * primitive_distance;
         if distance_before + 1.0e-9 < f64::from(required_margin) {
             stats.crossing_reject_margin += 1;
             return None;
         }
-        let distance_after = (1.0 - t) * primitive_steps as f64;
+        let distance_after = (1.0 - t) * primitive_distance;
         pending_after = (f64::from(required_margin) - distance_after)
             .ceil()
             .max(0.0) as i32;
-        crossed_mask |= bit;
-        if crossing.require_all_partners {
+        if track_crossed_partners {
+            crossed_mask |= bit;
             next_partner_index = next_partner_index.checked_add(1)?;
         }
+        crossing_events.push(event);
         crossing_count += 1;
         stats.crossing_accepted += 1;
     }
@@ -3749,8 +4602,9 @@ fn crossing_move_outcome(
             stats.crossing_reject_unexpected_owner += 1;
             return None;
         };
-        let bit = 1u64 << partner_idx;
-        if crossed_mask & bit == 0 {
+        let bit = 1u128 << partner_idx;
+        let already_crossed = track_crossed_partners && crossed_mask & bit != 0;
+        if !already_crossed {
             if crossing.require_all_partners
                 && partner_idx != usize::from(current_key.next_partner_index)
             {
@@ -3768,7 +4622,7 @@ fn crossing_move_outcome(
             } else {
                 None
             };
-            let Some((t, _u)) = overlap_crossing else {
+            let Some((t, partner_distance, partner_start, partner_end)) = overlap_crossing else {
                 stats.crossing_reject_unmatched_owner += 1;
                 if partner_contains_grid_cell(&crossing.partners[partner_idx], (x, y)) {
                     stats.crossing_reject_unmatched_centerline += 1;
@@ -3788,13 +4642,27 @@ fn crossing_move_outcome(
                 }
                 return None;
             };
+            if !track_crossed_partners && t <= 1.0e-9 {
+                continue;
+            }
+            let partner = &crossing.partners[partner_idx];
+            if crossing_distance_is_forbidden(
+                &partner.forbidden_crossing_distances,
+                partner_distance,
+                min_crossing_spacing,
+            ) {
+                stats.crossing_reject_margin += 1;
+                return None;
+            }
             if !crossing_reservation_window_is_clear(
                 obstacle_map,
                 crossing.net_id,
-                crossing.partners[partner_idx].net_id,
+                partner.net_id,
                 f64::from(x),
                 f64::from(y),
-                crossing.crossing_half_size_cells,
+                reservation_margin,
+                ((state.x, state.y), (next_state.x, next_state.y)),
+                (partner_start, partner_end),
             ) {
                 stats.crossing_reject_unmatched_footprint += 1;
                 return None;
@@ -3803,20 +4671,33 @@ fn crossing_move_outcome(
                 stats.crossing_reject_pending_straight += 1;
                 return None;
             }
-            let distance_before =
-                current_key.straight_run_cells as f64 + t * primitive_steps as f64;
+            let distance_before = current_key.straight_run_cells as f64 + t * primitive_distance;
             if distance_before + 1.0e-9 < f64::from(required_margin) {
                 stats.crossing_reject_margin += 1;
                 return None;
             }
-            let distance_after = (1.0 - t) * primitive_steps as f64;
+            let distance_after = (1.0 - t) * primitive_distance;
             pending_after = (f64::from(required_margin) - distance_after)
                 .ceil()
                 .max(0.0) as i32;
-            crossed_mask |= bit;
-            if crossing.require_all_partners {
+            if track_crossed_partners {
+                crossed_mask |= bit;
                 next_partner_index = next_partner_index.checked_add(1)?;
             }
+            let route_angle = direction_angle_between_grid_cells(
+                (state.x, state.y),
+                (next_state.x, next_state.y),
+            )?;
+            let partner_angle = direction_angle_between_grid_cells(partner_start, partner_end)?;
+            crossing_events.push(RouteCrossing {
+                partner_net_id: partner.net_id,
+                point: (f64::from(x), f64::from(y)),
+                route_segment: ((state.x, state.y), (next_state.x, next_state.y)),
+                partner_segment: (partner_start, partner_end),
+                route_angle,
+                partner_angle,
+                partner_distance,
+            });
             crossing_count += 1;
             stats.crossing_accepted += 1;
             continue;
@@ -3837,7 +4718,87 @@ fn crossing_move_outcome(
         straight_run_cells: straight_run,
         pending_after_crossing_cells: pending_after.min(capped_required_margin),
         crossing_count,
+        crossing_events,
     })
+}
+
+fn crossing_distance_is_forbidden(
+    forbidden_distances: &[f64],
+    candidate_distance: f64,
+    min_spacing: f64,
+) -> bool {
+    min_spacing > 0.0
+        && forbidden_distances
+            .iter()
+            .any(|distance| (candidate_distance - *distance).abs() + 1.0e-9 < min_spacing)
+}
+
+fn bend_corner_window_hits_dynamic_core(
+    obstacle_map: &ObstacleMap,
+    state: State,
+    primitive: &Primitive,
+    bend_runout_cells: i32,
+    exclusion_radius_cells: i32,
+) -> bool {
+    if bend_runout_cells <= 0 || exclusion_radius_cells <= 0 {
+        return false;
+    }
+    let PrimitiveGeometry::Bend { angle_delta, .. } = primitive.geometry else {
+        return false;
+    };
+    let start_dir = DIRECTIONS[usize::from(primitive.start_angle % 8)];
+    let end_dir = DIRECTIONS[usize::from(primitive.end_angle % 8)];
+    let Some(corner_x) = state
+        .x
+        .checked_add(start_dir.0.saturating_mul(bend_runout_cells))
+    else {
+        return true;
+    };
+    let Some(corner_y) = state
+        .y
+        .checked_add(start_dir.1.saturating_mul(bend_runout_cells))
+    else {
+        return true;
+    };
+    for dx in -exclusion_radius_cells..=exclusion_radius_cells {
+        for dy in -exclusion_radius_cells..=exclusion_radius_cells {
+            let Some(x) = corner_x.checked_add(dx) else {
+                return true;
+            };
+            let Some(y) = corner_y.checked_add(dy) else {
+                return true;
+            };
+            if bend_wedge_contains_offset((dx, dy), start_dir, end_dir, angle_delta)
+                && obstacle_map.is_dynamic_core_blocked(x, y)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn bend_wedge_contains_offset(
+    offset: (i32, i32),
+    start_dir: (i32, i32),
+    end_dir: (i32, i32),
+    angle_delta: i8,
+) -> bool {
+    if offset == (0, 0) || angle_delta == 0 {
+        return false;
+    }
+    let cross_start_offset = cross_i32(start_dir, offset);
+    let cross_offset_end = cross_i32(offset, end_dir);
+    if angle_delta > 0 {
+        cross_start_offset >= 0 && cross_offset_end <= 0
+    } else {
+        cross_start_offset <= 0 && cross_offset_end >= 0
+    }
+}
+
+fn cross_i32(a: (i32, i32), b: (i32, i32)) -> i32 {
+    a.0.saturating_mul(b.1)
+        .saturating_sub(a.1.saturating_mul(b.0))
 }
 
 fn crossing_overlap_cell_with_partner(
@@ -3846,34 +4807,39 @@ fn crossing_overlap_cell_with_partner(
     overlap_cell: (i32, i32),
     partner: &CrossingSearchPartner,
     required_margin: i32,
-) -> Option<(f64, f64)> {
+) -> Option<(f64, f64, (i32, i32), (i32, i32))> {
     let route_angle = direction_angle_between_grid_cells(route_start, route_end)?;
     let route_t = grid_point_on_segment_with_param(overlap_cell, route_start, route_end)?;
-    let route_len = grid_segment_length(route_start, route_end);
-    let route_margin = (route_t * route_len).min((1.0 - route_t) * route_len);
-    if route_margin + 1.0e-9 < f64::from(required_margin) {
-        return None;
-    }
+    let mut prefix_distance = 0.0;
     for partner_segment in partner.waypoints.windows(2) {
         let partner_start = partner_segment[0];
         let partner_end = partner_segment[1];
+        let partner_len = grid_segment_length(partner_start, partner_end);
         let Some(partner_angle) = direction_angle_between_grid_cells(partner_start, partner_end)
         else {
+            prefix_distance += partner_len;
             continue;
         };
         if !grid_axes_are_perpendicular(route_angle, partner_angle) {
+            prefix_distance += partner_len;
             continue;
         }
         let Some(partner_u) =
             grid_point_on_segment_with_param(overlap_cell, partner_start, partner_end)
         else {
+            prefix_distance += partner_len;
             continue;
         };
-        let partner_len = grid_segment_length(partner_start, partner_end);
         let partner_margin = (partner_u * partner_len).min((1.0 - partner_u) * partner_len);
         if partner_margin + 1.0e-9 >= f64::from(required_margin) {
-            return Some((route_t, partner_u));
+            return Some((
+                route_t,
+                prefix_distance + partner_u * partner_len,
+                partner_start,
+                partner_end,
+            ));
         }
+        prefix_distance += partner_len;
     }
     None
 }
@@ -3885,6 +4851,8 @@ fn crossing_reservation_window_is_clear(
     center_x: f64,
     center_y: f64,
     half_size_cells: i32,
+    route_segment: ((i32, i32), (i32, i32)),
+    partner_segment: ((i32, i32), (i32, i32)),
 ) -> bool {
     if half_size_cells < 0 {
         return false;
@@ -3902,10 +4870,35 @@ fn crossing_reservation_window_is_clear(
                 if owner != net_id && owner != partner_net_id {
                     return false;
                 }
+                let key = pack_xy(x, y);
+                if owner == net_id
+                    && core_route_contains_cell(obstacle_map, owner, key)
+                    && grid_point_on_segment_with_param((x, y), route_segment.0, route_segment.1)
+                        .is_none()
+                {
+                    return false;
+                }
+                if owner == partner_net_id
+                    && core_route_contains_cell(obstacle_map, owner, key)
+                    && grid_point_on_segment_with_param(
+                        (x, y),
+                        partner_segment.0,
+                        partner_segment.1,
+                    )
+                    .is_none()
+                {
+                    return false;
+                }
             }
         }
     }
     true
+}
+
+fn core_route_contains_cell(obstacle_map: &ObstacleMap, net_id: NetId, key: CellKey) -> bool {
+    obstacle_map
+        .get_net_core_cells(net_id)
+        .is_some_and(|cells| cells.contains(&key))
 }
 
 fn partner_contains_grid_cell(partner: &CrossingSearchPartner, cell: (i32, i32)) -> bool {
@@ -3948,6 +4941,7 @@ fn reconstruct_route_crossing(
 ) -> Option<RouteResult> {
     let mut states_reversed = Vec::new();
     let mut primitive_steps_reversed = Vec::new();
+    let mut crossing_events_reversed: Vec<Vec<RouteCrossing>> = Vec::new();
     let mut current_idx = reached_idx;
     loop {
         let node = nodes.get(current_idx)?;
@@ -3955,6 +4949,7 @@ fn reconstruct_route_crossing(
         if let Some(parent_idx) = node.parent_idx {
             let previous = nodes.get(parent_idx)?.key.state;
             primitive_steps_reversed.push((previous, node.primitive_id));
+            crossing_events_reversed.push(node.crossing_events.clone());
             current_idx = parent_idx;
         } else {
             break;
@@ -3962,6 +4957,7 @@ fn reconstruct_route_crossing(
     }
     states_reversed.reverse();
     primitive_steps_reversed.reverse();
+    crossing_events_reversed.reverse();
 
     let source = *states_reversed.first()?;
     let reached_target = *states_reversed.last()?;
@@ -3986,12 +4982,17 @@ fn reconstruct_route_crossing(
     }
     push_if_different(&mut ordered_path, (reached_target.x, reached_target.y));
     let compressed_waypoints = compress_grid_waypoints(&ordered_path);
+    let crossing_events = crossing_events_reversed
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
     Some(RouteResult {
         states: states_reversed,
         primitives: primitive_ids,
         cells,
         compressed_waypoints,
+        crossing_events,
         total_length_um,
         total_cost,
         requested_target,
@@ -4095,39 +5096,6 @@ fn grid_segment_length(a: (i32, i32), b: (i32, i32)) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
-fn grid_segment_intersection_with_params(
-    a0: (i32, i32),
-    a1: (i32, i32),
-    b0: (i32, i32),
-    b1: (i32, i32),
-) -> Option<(f64, f64, f64, f64)> {
-    let ax = f64::from(a0.0);
-    let ay = f64::from(a0.1);
-    let arx = f64::from(a1.0 - a0.0);
-    let ary = f64::from(a1.1 - a0.1);
-    let bx = f64::from(b0.0);
-    let by = f64::from(b0.1);
-    let brx = f64::from(b1.0 - b0.0);
-    let bry = f64::from(b1.1 - b0.1);
-    let denom = arx * bry - ary * brx;
-    if denom.abs() < 1.0e-9 {
-        return None;
-    }
-    let qpx = bx - ax;
-    let qpy = by - ay;
-    let t = (qpx * bry - qpy * brx) / denom;
-    let u = (qpx * ary - qpy * arx) / denom;
-    if !(-1.0e-9..=1.0 + 1.0e-9).contains(&t) || !(-1.0e-9..=1.0 + 1.0e-9).contains(&u) {
-        return None;
-    }
-    Some((
-        ax + t * arx,
-        ay + t * ary,
-        t.clamp(0.0, 1.0),
-        u.clamp(0.0, 1.0),
-    ))
-}
-
 fn compute_routing_bounds(
     obstacle_map: &ObstacleMap,
     source: State,
@@ -4177,6 +5145,53 @@ fn window_area(bounds: RoutingBounds) -> i64 {
     let width = (bounds.max_x - bounds.min_x + 1).max(0) as i64;
     let height = (bounds.max_y - bounds.min_y + 1).max(0) as i64;
     width * height
+}
+
+fn trace_astar_failure(
+    entry: &str,
+    source: State,
+    target: State,
+    config: &AStarConfig,
+    stats: &RouteSearchStats,
+) {
+    if std::env::var_os("PHOTONIC_ROUTER_TRACE_ASTAR_FAILURE").is_none() {
+        return;
+    }
+    eprintln!(
+        "astar_failure entry={} source=({}, {}, {}) target=({}, {}, {}) windows={} full_grid={} last_bounds=({},{}..{}, {}) last_area={} max_area={} expanded={} generated={} heap_pushes={} heap_pops={} max_heap={} dense_cells={} dense_build_failures={} window_rejects={} footprint_rejects={} bounds_rejects={:?} footprint_rejects_by_class={:?} cost_pruned={:?} ignore_dynamic={} congestion_weight={} congestion_radius={} congestion_diag_radius={} history_weight={}",
+        entry,
+        source.x,
+        source.y,
+        source.angle,
+        target.x,
+        target.y,
+        target.angle,
+        stats.window_attempts,
+        stats.used_full_grid_fallback,
+        stats.last_window_min_x,
+        stats.last_window_min_y,
+        stats.last_window_max_x,
+        stats.last_window_max_y,
+        stats.last_window_area_cells,
+        stats.max_window_area_cells,
+        stats.expanded_states,
+        stats.generated_neighbors,
+        stats.heap_pushes,
+        stats.heap_pops,
+        stats.max_heap_size,
+        stats.dense_grid_cells,
+        stats.dense_grid_build_failures,
+        stats.window_rejects,
+        stats.footprint_rejects,
+        stats.primitive_bounds_rejects_by_class,
+        stats.primitive_footprint_rejects_by_class,
+        stats.primitive_cost_pruned_by_class,
+        config.ignore_dynamic_obstacles,
+        config.proactive_congestion_weight,
+        config.proactive_congestion_radius_cells,
+        config.proactive_congestion_diagonal_radius_cells,
+        config.history_weight
+    );
 }
 
 /// Export an SVG string showing obstacles and a routed path.
@@ -4582,6 +5597,7 @@ fn reconstruct_route_dense(
         primitives: primitive_ids,
         cells,
         compressed_waypoints,
+        crossing_events: Vec::new(),
         total_length_um,
         total_cost,
         requested_target,
@@ -4654,6 +5670,78 @@ mod tests {
             bend_radius_cells: 1,
             allow_45_degree_turns: true,
         })
+    }
+
+    fn route_result_with_waypoints(waypoints: Vec<(i32, i32)>) -> RouteResult {
+        let requested_target = waypoints
+            .last()
+            .copied()
+            .map(|(x, y)| State::new(x, y, 0))
+            .unwrap_or_else(|| State::new(0, 0, 0));
+        RouteResult {
+            states: Vec::new(),
+            primitives: Vec::new(),
+            cells: waypoints.clone(),
+            compressed_waypoints: waypoints,
+            crossing_events: Vec::new(),
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target,
+            reached_target: requested_target,
+            stats: RouteSearchStats::default(),
+        }
+    }
+
+    #[test]
+    fn route_sanity_rejects_known_n33_self_intersection() {
+        let route = route_result_with_waypoints(vec![
+            (767, 143),
+            (763, 143),
+            (757, 137),
+            (757, 131),
+            (750, 131),
+            (728, 153),
+            (722, 153),
+            (722, 147),
+            (739, 147),
+            (749, 157),
+            (739, 167),
+            (730, 167),
+        ]);
+
+        let error = validate_route_has_no_self_intersection(&route)
+            .expect_err("known bad route should be rejected");
+
+        assert!(error.contains("route self-intersection"));
+        assert!(error.contains("segment 4"));
+        assert!(error.contains("segment 7"));
+    }
+
+    #[test]
+    fn route_sanity_allows_adjacent_shared_endpoint() {
+        let route = route_result_with_waypoints(vec![(0, 0), (4, 0), (4, 4)]);
+
+        validate_route_has_no_self_intersection(&route)
+            .expect("ordinary bend with adjacent shared endpoint should be valid");
+    }
+
+    #[test]
+    fn route_sanity_allows_non_intersecting_detour() {
+        let route =
+            route_result_with_waypoints(vec![(0, 0), (4, 0), (8, 4), (8, 8), (2, 8), (2, 10)]);
+
+        validate_route_has_no_self_intersection(&route)
+            .expect("non-intersecting detour should be valid");
+    }
+
+    #[test]
+    fn route_sanity_rejects_repeated_nonadjacent_cell() {
+        let route = route_result_with_waypoints(vec![(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]);
+
+        let error = validate_route_has_no_self_intersection(&route)
+            .expect_err("loop returning to an old cell should be rejected");
+
+        assert!(error.contains("route self-overlap"));
     }
 
     fn primitive_library_no45_bend2() -> PrimitiveLibrary {
@@ -6236,14 +7324,28 @@ mod tests {
             max_y: 4,
         };
 
-        let closed_grid =
-            DenseRoutingGrid::from_obstacle_map(&map, bounds, None, 1_000, false, false)
-                .expect("grid");
+        let closed_grid = DenseRoutingGrid::from_obstacle_map(
+            &map,
+            bounds,
+            None,
+            1_000,
+            false,
+            false,
+            &FxHashSet::default(),
+        )
+        .expect("grid");
         assert!(closed_grid.is_blocked(3, 2));
 
-        let opened_grid =
-            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000, false, false)
-                .expect("grid");
+        let opened_grid = DenseRoutingGrid::from_obstacle_map(
+            &map,
+            bounds,
+            Some(&opened),
+            1_000,
+            false,
+            false,
+            &FxHashSet::default(),
+        )
+        .expect("grid");
         assert!(!opened_grid.is_blocked(3, 2));
     }
 
@@ -6260,9 +7362,16 @@ mod tests {
             max_y: 4,
         };
 
-        let opened_grid =
-            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000, false, false)
-                .expect("grid");
+        let opened_grid = DenseRoutingGrid::from_obstacle_map(
+            &map,
+            bounds,
+            Some(&opened),
+            1_000,
+            false,
+            false,
+            &FxHashSet::default(),
+        )
+        .expect("grid");
         assert!(opened_grid.is_blocked(3, 2));
     }
 
@@ -6316,6 +7425,7 @@ mod tests {
             1_000,
             false,
             false,
+            &FxHashSet::default(),
         )
         .expect("grid");
         assert!(grid.is_blocked(1, 1));
@@ -6343,6 +7453,7 @@ mod tests {
             1_000,
             false,
             false,
+            &FxHashSet::default(),
         )
         .expect("grid");
 
@@ -6372,6 +7483,7 @@ mod tests {
             1_000,
             false,
             false,
+            &FxHashSet::default(),
         )
         .expect("grid");
 
@@ -6399,6 +7511,7 @@ mod tests {
             1_000,
             false,
             false,
+            &FxHashSet::default(),
         )
         .expect("grid");
         let mut stats = RouteSearchStats::default();
@@ -6434,6 +7547,7 @@ mod tests {
             1_000,
             false,
             false,
+            &FxHashSet::default(),
         )
         .expect("grid");
         let footprint = &[(0, 0), (1, 0), (1, 1)];
@@ -6466,6 +7580,7 @@ mod tests {
             1_000,
             false,
             false,
+            &FxHashSet::default(),
         )
         .expect("grid");
         let footprint = &[(0, 0), (1, 0), (2, 0)];
@@ -6589,10 +7704,6 @@ mod tests {
     #[test]
     fn collision_crossing_search_accepts_expected_dynamic_core_collision() {
         let mut map = ObstacleMap::new(20, 14);
-        for x in 3..=13 {
-            map.add_static_cell(x, 5);
-            map.add_static_cell(x, 7);
-        }
         let partner_cells: Vec<(i32, i32)> = (2..=10).map(|y| (8, y)).collect();
         assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
             1,
@@ -6608,6 +7719,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 1,
                 waypoints: vec![(8, 2), (8, 10)],
+                forbidden_crossing_distances: Vec::new(),
             }],
             min_straight_cells: 1,
             crossing_half_size_cells: 0,
@@ -6634,7 +7746,7 @@ mod tests {
 
         assert_eq!(route.compressed_waypoints, vec![(2, 6), (14, 6)]);
         assert!(route.stats.crossing_accepted >= 1);
-        assert!(route.stats.crossing_candidate_checks >= 1);
+        assert_eq!(route.stats.crossing_candidate_checks, 0);
         assert!(route.total_cost >= route.total_length_um + crossing.crossing_loss);
     }
 
@@ -6692,20 +7804,74 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_conflict_penalty_discourages_ignored_dynamic_lane() {
+        let mut map = ObstacleMap::new(12, 7);
+        let dynamic_cells: Vec<(i32, i32)> = (2..=8).map(|x| (x, 3)).collect();
+        assert!(map.commit_route_with_clearance_overlap(99, &dynamic_cells, &dynamic_cells, &[]));
+        let dynamic_cell_set: FxHashSet<CellKey> =
+            dynamic_cells.iter().map(|&(x, y)| pack_xy(x, y)).collect();
+        let library = create_grid4_unit_grid_primitive_library(1.0);
+        let source = State::new(1, 3, 0);
+        let target = State::new(9, 3, 0);
+        let base_config = AStarConfig {
+            use_routing_window: false,
+            enable_simple_routes: false,
+            require_target_angle: false,
+            ignore_dynamic_obstacles: true,
+            ..AStarConfig::default()
+        };
+
+        let baseline =
+            route_single_net_with_config(&map, &library, source, target, None, &base_config)
+                .expect("ignore-dynamic baseline route should exist");
+        assert!(
+            baseline
+                .cells
+                .iter()
+                .any(|&(x, y)| dynamic_cell_set.contains(&pack_xy(x, y))),
+            "baseline should be allowed to use dynamic cells"
+        );
+
+        let penalized = route_single_net_with_config(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &AStarConfig {
+                dynamic_conflict_penalty: 20.0,
+                ..base_config
+            },
+        )
+        .expect("penalized ignore-dynamic route should exist");
+        assert!(
+            !penalized
+                .cells
+                .iter()
+                .any(|&(x, y)| dynamic_cell_set.contains(&pack_xy(x, y))),
+            "penalized route should detour around dynamic cells"
+        );
+        assert!(penalized.total_length_um > baseline.total_length_um);
+    }
+
+    #[test]
     fn crossing_move_accepts_benes8_route15_diagonal_sequence() {
         let mut map = ObstacleMap::new(700, 450);
         let partners = vec![
             CrossingSearchPartner {
                 net_id: 14,
                 waypoints: vec![(364, 168), (444, 168), (553, 59), (634, 59)],
+                forbidden_crossing_distances: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 12,
                 waypoints: vec![(364, 278), (444, 278), (554, 168), (634, 168)],
+                forbidden_crossing_distances: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 10,
                 waypoints: vec![(364, 388), (414, 388), (627, 175), (634, 169)],
+                forbidden_crossing_distances: Vec::new(),
             },
         ];
         let mut committed_partner_ids = FxHashSet::default();
@@ -6734,6 +7900,7 @@ mod tests {
             .enumerate()
             .map(|(idx, partner)| (partner.net_id, idx))
             .collect();
+        let diagonal_crossing_index = DiagonalCrossingIndex::new(&crossing);
         let length_um = 4.0 * 2.0_f64.sqrt();
         let primitive = Primitive {
             id: 0,
@@ -6766,7 +7933,9 @@ mod tests {
                 true,
                 2,
                 2,
+                2,
                 &partner_index_by_id,
+                &diagonal_crossing_index,
                 &mut stats,
             )
             .unwrap_or_else(|| {
@@ -6796,10 +7965,12 @@ mod tests {
             CrossingSearchPartner {
                 net_id: 12,
                 waypoints: vec![(364, 278), (444, 278), (554, 168), (634, 168)],
+                forbidden_crossing_distances: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 10,
                 waypoints: vec![(364, 388), (414, 388), (627, 175), (634, 169)],
+                forbidden_crossing_distances: Vec::new(),
             },
         ];
         let mut committed_partner_ids = FxHashSet::default();
@@ -6828,6 +7999,7 @@ mod tests {
             .enumerate()
             .map(|(idx, partner)| (partner.net_id, idx))
             .collect();
+        let diagonal_crossing_index = DiagonalCrossingIndex::new(&crossing);
         let length_um = 4.0 * 2.0_f64.sqrt();
         let primitive = Primitive {
             id: 0,
@@ -6860,7 +8032,9 @@ mod tests {
                 true,
                 2,
                 2,
+                2,
                 &partner_index_by_id,
+                &diagonal_crossing_index,
                 &mut stats,
             )
             .unwrap_or_else(|| {
@@ -6897,6 +8071,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
                 waypoints: vec![(6, 5), (6, 7)],
+                forbidden_crossing_distances: Vec::new(),
             }],
             min_straight_cells: 1,
             crossing_half_size_cells: 0,
@@ -6909,6 +8084,7 @@ mod tests {
             .enumerate()
             .map(|(idx, p)| (p.net_id, idx))
             .collect();
+        let diagonal_crossing_index = DiagonalCrossingIndex::new(&crossing);
         let primitive = Primitive {
             id: 0,
             start_angle: 0,
@@ -6937,7 +8113,9 @@ mod tests {
             true,
             1,
             1,
+            1,
             &partner_index_by_id,
+            &diagonal_crossing_index,
             &mut stats,
         )
         .expect("shared perpendicular core cell should be a valid crossing");
@@ -6950,22 +8128,354 @@ mod tests {
     }
 
     #[test]
+    fn crossing_move_rejects_forbidden_partner_spacing() {
+        let mut map = ObstacleMap::new(16, 16);
+        assert!(map.commit_route_with_clearance_overlap(
+            2,
+            &[(6, 5), (6, 6), (6, 7)],
+            &[(6, 5), (6, 6), (6, 7)],
+            &[],
+        ));
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: vec![CrossingSearchPartner {
+                net_id: 2,
+                waypoints: vec![(6, 0), (6, 12)],
+                forbidden_crossing_distances: vec![6.0],
+            }],
+            min_straight_cells: 1,
+            crossing_half_size_cells: 0,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = crossing
+            .partners
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| (p.net_id, idx))
+            .collect();
+        let diagonal_crossing_index = DiagonalCrossingIndex::new(&crossing);
+        let primitive = Primitive {
+            id: 0,
+            start_angle: 0,
+            end_angle: 0,
+            dx: 4,
+            dy: 0,
+            footprint: vec![(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)],
+            length_um: 4.0,
+            bend_cost: 0.0,
+            geometry: PrimitiveGeometry::Straight { length_um: 4.0 },
+        };
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(4, 6, 0),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 2,
+                pending_after_crossing_cells: 0,
+            },
+            State::new(4, 6, 0),
+            State::new(8, 6, 0),
+            &primitive,
+            true,
+            1,
+            1,
+            1,
+            &partner_index_by_id,
+            &diagonal_crossing_index,
+            &mut stats,
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(stats.crossing_reject_margin, 1);
+        assert_eq!(stats.crossing_accepted, 0);
+    }
+
+    #[test]
+    fn slim_collision_crossing_routes_through_dynamic_core_wall() {
+        let mut map = ObstacleMap::new(16, 13);
+        let partner_cells: Vec<(i32, i32)> = (0..=12).map(|y| (6, y)).collect();
+        assert!(map.commit_route_with_clearance_overlap(2, &partner_cells, &partner_cells, &[],));
+        let library = primitive_library_no45_bend1();
+        let config = AStarConfig {
+            use_routing_window: false,
+            enable_simple_routes: false,
+            require_target_angle: true,
+            ..AStarConfig::default()
+        };
+        let source = State::new(2, 6, 0);
+        let target = State::new(10, 6, 0);
+        let blocked = route_single_net_with_config(&map, &library, source, target, None, &config);
+        assert!(blocked.is_none());
+
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: vec![CrossingSearchPartner {
+                net_id: 2,
+                waypoints: vec![(6, 0), (6, 12)],
+                forbidden_crossing_distances: Vec::new(),
+            }],
+            min_straight_cells: 1,
+            crossing_half_size_cells: 0,
+            crossing_loss: 3.0,
+            require_all_partners: false,
+        };
+        let route = route_single_net_with_slim_collision_crossing_config(
+            &map, &library, source, target, None, &config, 0, None, &crossing,
+        )
+        .expect("slim collision crossing should pass through dynamic wall");
+
+        assert_eq!(route.reached_target, target);
+        assert!(route.stats.crossing_accepted >= 1);
+        assert!((route.total_cost - (route.total_length_um + crossing.crossing_loss)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pure_crossing_move_does_not_track_crossed_partner_mask() {
+        let mut map = ObstacleMap::new(16, 16);
+        assert!(map.commit_route_with_clearance_overlap(
+            2,
+            &[(6, 5), (6, 6), (6, 7)],
+            &[(6, 5), (6, 6), (6, 7)],
+            &[],
+        ));
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: vec![CrossingSearchPartner {
+                net_id: 2,
+                waypoints: vec![(6, 5), (6, 7)],
+                forbidden_crossing_distances: Vec::new(),
+            }],
+            min_straight_cells: 1,
+            crossing_half_size_cells: 0,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = crossing
+            .partners
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| (p.net_id, idx))
+            .collect();
+        let diagonal_crossing_index = DiagonalCrossingIndex::new(&crossing);
+        let primitive = Primitive {
+            id: 0,
+            start_angle: 0,
+            end_angle: 0,
+            dx: 4,
+            dy: 0,
+            footprint: vec![(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)],
+            length_um: 4.0,
+            bend_cost: 0.0,
+            geometry: PrimitiveGeometry::Straight { length_um: 4.0 },
+        };
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(4, 6, 0),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 2,
+                pending_after_crossing_cells: 0,
+            },
+            State::new(4, 6, 0),
+            State::new(8, 6, 0),
+            &primitive,
+            true,
+            1,
+            1,
+            1,
+            &partner_index_by_id,
+            &diagonal_crossing_index,
+            &mut stats,
+        )
+        .expect("pure collision crossing should be accepted");
+
+        assert_eq!(outcome.crossed_mask, 0);
+        assert_eq!(outcome.next_partner_index, 0);
+        assert_eq!(outcome.crossing_count, 1);
+        assert_eq!(stats.crossing_accepted, 1);
+    }
+
+    #[test]
+    fn crossing_move_rejects_off_cell_intersection_without_required_margin() {
+        let map = ObstacleMap::new(800, 260);
+        let crossing = CrossingSearchConfig {
+            net_id: 33,
+            partners: vec![CrossingSearchPartner {
+                net_id: 32,
+                waypoints: vec![(745, 168), (739, 162)],
+                forbidden_crossing_distances: Vec::new(),
+            }],
+            min_straight_cells: 2,
+            crossing_half_size_cells: 2,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = crossing
+            .partners
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| (p.net_id, idx))
+            .collect();
+        let diagonal_crossing_index = DiagonalCrossingIndex::new(&crossing);
+        let length_um = 6.0 * 2.0_f64.sqrt();
+        let primitive = Primitive {
+            id: 0,
+            start_angle: 3,
+            end_angle: 3,
+            dx: -6,
+            dy: 6,
+            footprint: vec![(0, 0), (-1, 1), (-2, 2), (-3, 3), (-4, 4), (-5, 5), (-6, 6)],
+            length_um,
+            bend_cost: 0.0,
+            geometry: PrimitiveGeometry::Straight { length_um },
+        };
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(745, 159, 3),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 0,
+                pending_after_crossing_cells: 0,
+            },
+            State::new(745, 159, 3),
+            State::new(739, 165, 3),
+            &primitive,
+            true,
+            7,
+            7,
+            7,
+            &partner_index_by_id,
+            &diagonal_crossing_index,
+            &mut stats,
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(stats.crossing_candidate_checks, 1);
+        assert_eq!(stats.crossing_reject_margin, 1);
+    }
+
+    #[test]
     fn crossing_reservation_window_rejects_static_and_unrelated_dynamic_cells() {
         let mut map = ObstacleMap::new(32, 32);
         assert!(map.commit_route(1, &[(10, 12)]));
         assert!(crossing_reservation_window_is_clear(
-            &map, 3, 1, 10.0, 12.0, 1
+            &map,
+            3,
+            1,
+            10.0,
+            12.0,
+            1,
+            ((8, 12), (12, 12)),
+            ((10, 10), (10, 14)),
         ));
 
         assert!(map.commit_route(4, &[(11, 12)]));
         assert!(!crossing_reservation_window_is_clear(
-            &map, 3, 1, 10.0, 12.0, 1
+            &map,
+            3,
+            1,
+            10.0,
+            12.0,
+            1,
+            ((8, 12), (12, 12)),
+            ((10, 10), (10, 14)),
         ));
         assert!(map.ripup_route(4));
 
         map.add_static_cells(&[(11, 12)]);
         assert!(!crossing_reservation_window_is_clear(
-            &map, 3, 1, 10.0, 12.0, 1
+            &map,
+            3,
+            1,
+            10.0,
+            12.0,
+            1,
+            ((8, 12), (12, 12)),
+            ((10, 10), (10, 14)),
+        ));
+    }
+
+    #[test]
+    fn crossing_reservation_window_rejects_partner_bend_inside_required_window() {
+        let mut map = ObstacleMap::new(32, 32);
+        assert!(map.commit_route(1, &[(8, 12), (9, 12), (10, 12), (11, 12), (11, 13)]));
+
+        assert!(!crossing_reservation_window_is_clear(
+            &map,
+            3,
+            1,
+            10.0,
+            12.0,
+            2,
+            ((8, 12), (12, 12)),
+            ((8, 12), (12, 12)),
+        ));
+    }
+
+    #[test]
+    fn bend_corner_window_rejects_nearby_dynamic_core() {
+        let mut map = ObstacleMap::new(32, 32);
+        assert!(map.commit_route(1, &[(11, 10)]));
+
+        let bend = Primitive {
+            id: 0,
+            start_angle: 2,
+            end_angle: 1,
+            dx: 2,
+            dy: 4,
+            footprint: vec![(0, 0), (0, 1), (0, 2), (1, 3), (2, 4)],
+            length_um: 1.0,
+            bend_cost: 1.0,
+            geometry: PrimitiveGeometry::Bend {
+                radius_um: 1.0,
+                angle_delta: -1,
+            },
+        };
+        let straight = Primitive {
+            geometry: PrimitiveGeometry::Straight { length_um: 1.0 },
+            ..bend.clone()
+        };
+
+        assert!(bend_corner_window_hits_dynamic_core(
+            &map,
+            State::new(10, 8, 2),
+            &bend,
+            2,
+            1,
+        ));
+        assert!(!bend_corner_window_hits_dynamic_core(
+            &map,
+            State::new(10, 8, 2),
+            &straight,
+            2,
+            1,
+        ));
+        assert!(!bend_corner_window_hits_dynamic_core(
+            &map,
+            State::new(2, 10, 0),
+            &bend,
+            2,
+            1,
+        ));
+
+        let mut opposite_side_map = ObstacleMap::new(32, 32);
+        assert!(opposite_side_map.commit_route(1, &[(9, 10)]));
+        assert!(!bend_corner_window_hits_dynamic_core(
+            &opposite_side_map,
+            State::new(10, 8, 2),
+            &bend,
+            2,
+            1,
         ));
     }
 

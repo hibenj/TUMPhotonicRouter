@@ -331,6 +331,8 @@ class RouteBookkeeping:
         opened_cells: list[tuple[int, int]],
         *,
         route_cells: set[tuple[int, int]] | None = None,
+        route_source_port: object | None = None,
+        route_target_port: object | None = None,
         corrected_centerline_um: tuple[tuple[float, float], ...] = (),
         corrected_total_length_um: float | None = None,
     ) -> None:
@@ -348,10 +350,14 @@ class RouteBookkeeping:
             route_obj=route_obj,
             total_length_um=total_length_um,
             opened_cells=tuple(opened_cells),
-            source_port_center_um=_port_center_um(job.source_port),
-            target_port_center_um=_port_center_um(job.target_port),
-            source_port_orientation_deg=_port_orientation_deg(job.source_port),
-            target_port_orientation_deg=_port_orientation_deg(job.target_port),
+            source_port_center_um=_port_center_um(route_source_port or job.source_port),
+            target_port_center_um=_port_center_um(route_target_port or job.target_port),
+            source_port_orientation_deg=_port_orientation_deg(
+                route_source_port or job.source_port
+            ),
+            target_port_orientation_deg=_port_orientation_deg(
+                route_target_port or job.target_port
+            ),
             base_total_length_um=(
                 route_total_length_um if corrected_centerline_um else None
             ),

@@ -65,6 +65,12 @@ def test_router_crossing_context_is_disabled_by_default():
 
     cfg = router.crossing_config()
     assert cfg.enabled is False
+    assert router.enforce_realized_crossing_validation() is True
+    router.set_enforce_realized_crossing_validation(False)
+    assert router.enforce_realized_crossing_validation() is False
+    assert router.lidar_global_relaxed_repair_only() is False
+    router.set_lidar_global_relaxed_repair_only(True)
+    assert router.lidar_global_relaxed_repair_only() is True
     assert router.crossing_expected_count(1) == 0
     assert router.crossing_has_expected_pair(1, 2) is False
     assert router.crossing_allows_pair(1, 2) is False

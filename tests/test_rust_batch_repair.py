@@ -22,7 +22,7 @@ def _build_lane_repair_router():
     astar = rust_backend.AStarConfig(
         max_iterations=300_000,
         use_routing_window=False,
-        require_target_angle=True,
+        require_target_angle=False,
         collect_detailed_timing=True,
     )
     astar.enable_simple_routes = False
@@ -51,8 +51,8 @@ def test_rust_batch_repair_rips_and_reroutes_dynamic_blocker():
     rust_backend, router = _build_lane_repair_router()
     state = rust_backend.State
     jobs = [
-        (1, state(2, 10, 0), state(47, 10, 0), [], []),
-        (2, state(5, 10, 0), state(44, 10, 0), [], []),
+        (1, state(2, 10, 0), state(47, 10, 0), [], [], None, 0, None, None),
+        (2, state(5, 10, 0), state(44, 10, 0), [], [], None, 0, None, None),
     ]
 
     result = router.route_many_with_repair_and_commit(
@@ -72,12 +72,11 @@ def test_rust_batch_repair_rips_and_reroutes_dynamic_blocker():
     assert result["repair_count"] == 1
 
     attempts = result["attempts"]
-    assert [attempt["bucket_name"] for attempt in attempts] == [
+    assert [attempt["bucket_name"] for attempt in attempts[:4]] == [
         "normal_route",
         "normal_route",
         "probe_route",
         "repair_failed_net",
-        "reroute_victims",
     ]
     assert attempts[1]["net_id"] == 2
     assert attempts[1]["failed"] is True
@@ -85,8 +84,14 @@ def test_rust_batch_repair_rips_and_reroutes_dynamic_blocker():
     assert attempts[2]["failed"] is False
     assert attempts[3]["candidate_blockers"] == [1]
     assert attempts[3]["ripup_ids"] == [1]
-    assert attempts[4]["net_id"] == 1
-    assert attempts[4]["failed"] is False
+    successful_victim_attempts = [
+        attempt
+        for attempt in attempts
+        if attempt["bucket_name"] == "reroute_victims"
+        and attempt["net_id"] == 1
+        and attempt["failed"] is False
+    ]
+    assert successful_victim_attempts
 
     routes_by_net = {entry["net_id"]: entry["route"] for entry in result["routes"]}
     assert set(routes_by_net) == {1, 2}

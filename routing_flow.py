@@ -38,13 +38,15 @@ from translation.route_rust import (
     route_match_and_realize,
 )
 from translation.route_rust_types import DEFAULT_MEANDER_MAX_HEIGHT_UM
+
+MAX_AUTOMATIC_DEBUG_ROUTE_SVG_TABS = 10
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, ...]
 
 # Edit these values when running `routing_flow.py` directly from an IDE or file.
 # Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "benes_16x16"
+SCRIPT_BENCHMARK = "benes_8x8"
 SCRIPT_DEBUG_SVGS: DebugSvgSelector = False # Examples: True, "all", "5-10", "2,5-10"
 SCRIPT_DEBUG_TIMING = True
 SCRIPT_DEBUG_MEANDERS = False
@@ -1396,13 +1398,18 @@ def run_routing_flow(
         print(f"        route SVGs: {len(route_svgs)}")
         print(f"        electrical SVGs: {len(electrical_svgs)}")
         print(f"        failure logs: {len(failed_logs)}")
+        if len(route_svgs) > MAX_AUTOMATIC_DEBUG_ROUTE_SVG_TABS:
+            print(
+                "        opening route SVGs: "
+                f"first {MAX_AUTOMATIC_DEBUG_ROUTE_SVG_TABS} only"
+            )
         for failed_log in failed_logs:
             print(f"        failure log: {failed_log}")
 
         try:
             for svg_path in obstacle_svgs:
                 webbrowser.open_new_tab(svg_path.resolve().as_uri())
-            for svg_path in route_svgs:
+            for svg_path in route_svgs[:MAX_AUTOMATIC_DEBUG_ROUTE_SVG_TABS]:
                 webbrowser.open_new_tab(svg_path.resolve().as_uri())
             for svg_path in electrical_svgs:
                 webbrowser.open_new_tab(svg_path.resolve().as_uri())
@@ -2126,6 +2133,11 @@ def run_routing_flow(
                 f"      - Route SVGs: {len(debug_artifacts.route_svgs)} "
                 f"selected file(s), route indices: {selected}"
             )
+        if len(debug_artifacts.route_svgs or []) > MAX_AUTOMATIC_DEBUG_ROUTE_SVG_TABS:
+            print(
+                "      - Opening route SVGs: "
+                f"first {MAX_AUTOMATIC_DEBUG_ROUTE_SVG_TABS} only"
+            )
 
         # Open generated SVGs in the default browser/viewer so the user can inspect them.
         try:
@@ -2133,7 +2145,9 @@ def run_routing_flow(
                 obs_path = Path(debug_artifacts.obstacle_svg)
                 if obs_path.exists():
                     webbrowser.open_new_tab(obs_path.resolve().as_uri())
-            for svg in debug_artifacts.route_svgs or []:
+            for svg in (debug_artifacts.route_svgs or [])[
+                :MAX_AUTOMATIC_DEBUG_ROUTE_SVG_TABS
+            ]:
                 svg_path = Path(svg)
                 if svg_path.exists():
                     webbrowser.open_new_tab(svg_path.resolve().as_uri())
