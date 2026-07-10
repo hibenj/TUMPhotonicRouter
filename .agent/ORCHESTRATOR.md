@@ -42,6 +42,9 @@ The orchestrator owns coordination, not every implementation detail. It should:
 - Protect the current `lidar-pure` / router-discovered crossing path from
   topology-precomputed crossing hints.
 - Require structured verification evidence before declaring routing progress.
+- Treat `baseline/lidar-pure-crossings` and its WIP prototype snapshot as
+  reference material only. Do not merge that branch wholesale into the clean
+  `crossings/verification-foundation` implementation path.
 
 The orchestrator must not treat subagent output as automatically correct. It
 should review diffs, check assumptions, and run or request validation.
@@ -104,6 +107,10 @@ For `.agent/execplans/2026-07-10-crossing-verification-foundation.md`, use:
 
 Do not start `multiportmmi_8x8` heuristic tuning until the smaller benchmark
 verification path produces actionable pass/fail evidence.
+
+Do not port implementation from `baseline/lidar-pure-crossings` until the
+Planner / Technical Lead has audited the relevant files and the QA / Harness
+Engineer has defined how the port will be verified.
 
 ## Subagent Prompt Contract
 

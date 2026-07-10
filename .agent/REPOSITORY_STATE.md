@@ -7,10 +7,8 @@ ExecPlan.
 ## Current Snapshot
 
 - Date: 2026-07-10
-- Branch: `baseline/lidar-pure-crossings`
-- Baseline before documentation cleanup: `fdc20e4`
-- This repository-state checkpoint was introduced by the documentation/workflow
-  cleanup commit. Run `git rev-parse --short HEAD` for the current commit.
+- Branch: `crossings/verification-foundation`
+- Current clean-branch base: `731d0a9`
 - Active ExecPlan:
   `.agent/execplans/2026-07-10-crossing-verification-foundation.md`
 
@@ -23,73 +21,36 @@ crossing component realization.
 
 ## Worktree State
 
-The worktree is currently dirty. Several modified Rust/Python/test files appear
-to come from earlier crossing-routing work. The `.agent/` documentation and
-workflow files are also currently untracked or modified.
+This worktree is intended to be the clean implementation path for crossing
+verification and router-discovered crossing work. It should stay reviewable and
+should not receive wholesale merges from the experimental branch.
 
-Current dirty file summary from `git status --short`:
+At creation, this worktree was clean at `731d0a9`.
 
-    M AGENTS.md
-    M docs/repository_finished_state.md
-    M routing_flow.py
-    M src/astar.rs
-    M src/geometry_realization.rs
-    M src/obstacle_map.rs
-    M src/py_router.rs
-    M tests/test_realized_crossing_verification.py
-    M tests/test_rust_backend_import.py
-    M tests/test_rust_batch_repair.py
-    M translation/route_rust.py
-    M translation/route_rust_realization.py
-    M translation/route_rust_records.py
-    ?? .agent/
-    ?? benchmarks/data/
-    ?? benchmarks/multiportmmi_8x8.py
-    ?? docs/photonic_router_graph_crossing_plm_full.tex
-    ?? tests/test_multiportmmi_benchmark.py
+## Reference Branches
 
-Do not revert these files without explicit user instruction.
+The branch `baseline/lidar-pure-crossings` contains a WIP prototype snapshot at:
 
-## Known Documentation Changes In Progress
+    69ab9fd wip: snapshot experimental lidar-pure crossing prototype
 
-The new agentic workflow structure includes:
+Treat that branch as reference material only. It may contain useful ideas,
+tests, benchmark imports, or implementation fragments, but it is not the clean
+implementation path. Do not merge it wholesale into
+`crossings/verification-foundation`.
 
-- `.agent/PROJECT_GOAL.md`
-- `.agent/WORKFLOW.md`
-- `.agent/ORCHESTRATOR.md`
-- `.agent/GIT_WORKFLOW.md`
-- `.agent/roles/`
-- `.agent/execplans/2026-07-10-crossing-verification-foundation.md`
+If code is needed from the WIP branch:
 
-The older multiport LiDAR-style ExecPlan is marked as paused/historical.
+1. Audit the relevant diff or file in the WIP branch.
+2. Confirm the idea fits `.agent/PROJECT_GOAL.md` and the active ExecPlan.
+3. Port the smallest useful piece manually or cherry-pick a narrow commit only
+   after review.
+4. Add focused verification before considering the port complete.
 
-## Recommended Next Action
+The old ExecPlan
+`.agent/execplans/2026-07-06-match-lidar-multiportmmi-routing.md` is also
+reference-only unless the user explicitly resumes it.
 
-Before implementation, group and commit the documentation/workflow changes
-separately from the large existing routing-code changes. Do not use `git add .`
-until the commit groups are clear.
-
-Recommended first commit group:
-
-- `AGENTS.md`
-- `.agent/PROJECT_GOAL.md`
-- `.agent/WORKFLOW.md`
-- `.agent/ORCHESTRATOR.md`
-- `.agent/GIT_WORKFLOW.md`
-- `.agent/REPOSITORY_STATE.md`
-- `.agent/roles/`
-- `.agent/execplans/2026-07-10-crossing-verification-foundation.md`
-- `.agent/execplans/2026-07-06-match-lidar-multiportmmi-routing.md`
-- `docs/repository_finished_state.md`
-
-Suggested commit message:
-
-    docs: add agent workflow and crossing project goal
-
-No code tests are required for that documentation-only commit, but the diff
-should be reviewed before staging.
-
-## Next Engineering Step After Git Cleanup
+## Next Engineering Step
 
 Activate the Planner / Technical Lead role from `.agent/ORCHESTRATOR.md` to
 audit:
