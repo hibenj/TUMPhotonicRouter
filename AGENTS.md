@@ -1,5 +1,37 @@
 # AGENTS.md - TUMPhotonicRouter AI Agent Guide
 
+## Agentic Coding Workflow
+
+This file is the stable repository guide for agents. It should describe the
+project architecture, common commands, and local conventions that are true
+across many tasks.
+
+The repository-level goal lives in `.agent/PROJECT_GOAL.md`. Task-specific
+plans belong in `.agent/execplans/`, not in this file. Before creating or
+revising a task plan, read `.agent/PLANS.md` and follow its ExecPlan format.
+For multi-agent collaboration, role boundaries, handoff rules, and validation
+expectations, read `.agent/WORKFLOW.md`. If acting as a lead agent that
+delegates to subagents, also read `.agent/ORCHESTRATOR.md`.
+For commits and repository state checkpoints, read `.agent/GIT_WORKFLOW.md` and
+keep `.agent/REPOSITORY_STATE.md` current at least every 10 commits.
+
+Use this operating sequence for non-trivial work:
+
+1. Orient: read this file, the relevant code, and any active ExecPlan.
+2. Plan: create or update one self-contained ExecPlan in `.agent/execplans/`
+   when the work spans multiple files, algorithms, or validation stages.
+3. Implement: keep changes scoped to the plan and update the ExecPlan as
+   discoveries or decisions occur.
+4. Review: run a review pass focused on correctness, regressions, missing
+   tests, and repository fit before considering the task complete.
+5. Validate: run the narrowest meaningful checks first, then broader test or
+   benchmark commands when the risk warrants it. Record evidence in the
+   ExecPlan for large tasks.
+
+Do not treat old task plans in `Agent_implementation_files/` or
+`.agent/execplans/` as standing policy. They are historical or task-specific
+artifacts unless the current user request explicitly resumes them.
+
 ## Project Overview
 
 **TUMPhotonicRouter** is a hybrid Rust+Python photonic integrated circuit (PIC) routing system. It translates circuit schematics to unrouted layouts, then routes photonic waveguides using a grid-based A* algorithm with primitive-based path primitives (straights and angle-quantized bends).
@@ -304,4 +336,3 @@ Known Issue: `bend_euler_all_angle()` may not exist in older gdsfactory; `primit
 ---
 
 **Last Updated**: May 2026 | **Codebase Version**: 0.1.0 (Rust+Python hybrid)
-

@@ -1,8 +1,11 @@
 # Repository Finished-State Target
 
 This document defines the intended finished state for the current research
-direction of TUMPhotonicRouter. It is not a full project roadmap. It narrows the
-near-term goal to photonic crossings and path-length matching (PLM).
+direction of TUMPhotonicRouter. It is not a full project roadmap. The broader
+repository goal is a very fast Rust/Python photonic router that can run
+benchmark designs end to end and verify that the final physical geometry is
+correct. This document narrows the near-term goal to photonic crossings and
+path-length matching (PLM).
 
 Metal/electrical routing is intentionally out of scope for this phase. The
 existing electrical code should remain in the repository, but comparisons,
@@ -13,12 +16,16 @@ architecture decisions, and success criteria here should not depend on it.
 The repository should be evaluated as a photonic routing framework with two
 core themes:
 
-1. Crossing-aware optical routing that can run the LiDAR 2.0 benchmark family.
+1. Router-discovered crossing-aware optical routing that can run the current
+   crossing benchmark targets.
 2. PLM that can insert delay using multiple physical structures, not only the
    current bump-meander structure.
 
-The comparison target is LiDAR 2.0 for photonic routing. LiDAR 3.0 and metal
-routing are separate topics and should not drive this phase.
+LiDAR can provide guidance for the concept of crossings being explored by the
+router during search. This repository is not trying to reimplement LiDAR. The
+target is a faster Rust-backed router with its own architecture, strong
+verification, and reproducible benchmark evidence. LiDAR 3.0 and metal routing
+are separate topics and should not drive this phase.
 
 ## Finished-State Summary
 
@@ -26,12 +33,13 @@ When this phase is finished, the repository should support:
 
 | Area | Finished-state expectation |
 | --- | --- |
-| Benchmark coverage | Run all benchmark families used in the LiDAR 2.0 evaluation, including the high-crossing cases relevant to crossing insertion. |
-| LiDAR-like crossing mode | Route with an insertion-loss cost function that weighs path length, bends, and crossings; crossing insertion is discovered during routing and chosen only after competing paths have been explored. |
-| Topology-precomputed crossing mode | Route with expected crossings derived before detailed routing from topology/rank information; the detailed router uses those expectations to constrain, reserve, and repair crossings quickly. |
-| Comparison protocol | Run both modes on the same benchmark inputs and report success, runtime, insertion-loss terms, crossings, bends, route length, DRV/verification issues, and debug artifacts. |
-| PLM | Match path lengths with a planner that can choose between at least bump meanders and a parallel foldback delay structure. |
-| Documentation | Keep the comparison clear: LiDAR-like mode is for fair baseline parity, topology-precomputed mode is the proposed faster approach. |
+| Benchmark coverage | Run current crossing targets first: `benes_4x4`, `benes_8x8`, and `multiportmmi_8x8`; expand only after these have reliable verification evidence. |
+| Router-discovered crossing mode | Route with crossings explored during search, using legal crossing geometry and cost tradeoffs instead of requiring precomputed expected crossing pairs. |
+| Verification | Report whether final geometry is correct, including legal crossings, illegal bend/near-bend intersections, unexpected intersections, self-intersections, and realization or port-snapping mismatches. |
+| Pipeline integrity | Preserve crossing decisions through path-length matching, port snapping, and geometry realization. Port snapping may adjust only endpoint-to-first-crossing and last-crossing-to-endpoint access geometry. |
+| PDK crossing realization | Use the active PDK/gdsfactory crossing component for physical crossing insertion; its footprint drives keepout, straight-access, spacing, and verification checks. |
+| PLM | Preserve existing path-length-matching regression behavior and grow toward multiple delay structures when crossing correctness is stable. |
+| Documentation | Keep the comparison clear: LiDAR is a reference for router-explored crossings, not the implementation target. |
 
 ## Immediate Implementation Priority
 
@@ -43,11 +51,11 @@ The immediate crossing milestone is:
 
 | Step | Goal | Done when |
 | --- | --- | --- |
-| 1 | Stabilize the current topology-precomputed crossing mode on local Benes cases | Local Benes benchmarks route with strict expected-pair validation, crossing diagnostics, and no verification failures attributable to crossing geometry. |
-| 2 | Add route-induced insertion-loss accounting | Reports contain length, bend penalty, crossing count, and route-induced IL for every routed net and benchmark aggregate. |
-| 3 | Add a LiDAR-like loss-guided crossing mode | The router can run without topology expected pairs and can decide whether to cross from length/bend/crossing cost. |
-| 4 | Run both modes on the same local benchmark definitions | Benchmark reports distinguish LiDAR-like mode from topology-precomputed mode. |
-| 5 | Expand benchmark coverage toward LiDAR 2.0 | Missing LiDAR 2.0 benchmark families are added or imported in priority order. |
+| 1 | Stabilize final-geometry verification for crossings | The harness classifies legal crossings, illegal intersections, self-intersections, realization mismatches, and port-snapping protected-segment changes. |
+| 2 | Stabilize router-discovered crossings on `benes_4x4` and `benes_8x8` | Both benchmarks have exact commands, debug artifacts, and verification results showing legal final geometry or classified failures. |
+| 3 | Resume `multiportmmi_8x8` crossing debugging | Failures are classified by the same harness instead of inferred from screenshots or partial traces. |
+| 4 | Preserve existing PLM regressions | Heater/path-length-matching tests such as `heater_s_mod` remain passing or any failure is documented and fixed. |
+| 5 | Add route-induced insertion-loss accounting and broader benchmark reports | Reports contain length, bend penalty, crossing count, route-induced IL, runtime, and verification status. |
 
 Do not start by extending metal routing. Do not start by building hierarchy
 unless crossing benchmark coverage is blocked without it.
@@ -71,34 +79,44 @@ The next implementation pass should:
 
 ## Crossing Goal
 
-Crossing support should become the main comparison axis against LiDAR 2.0.
-There should be two intentional router variants.
+Crossing support should become the main near-term feature. The primary crossing
+mode for this phase is router-discovered: the search itself explores legal
+crossing candidates and chooses them when they improve the route. Topology
+precomputation may remain useful later, but it is not the current functional
+goal.
 
-### Variant A: LiDAR-Like Loss-Guided Mode
+The current `lidar-pure` / router-discovered path must not use
+topology-precomputed crossing hints. Topology-precomputed crossings can remain
+as a later separately selectable comparison or optimization mode.
 
-This mode should behave similarly to LiDAR 2.0 at the decision level. It is not
-required to copy LiDAR's Python implementation, but it should expose a fair
-functional baseline.
+### Primary Variant: Router-Discovered Loss-Guided Crossings
+
+This mode should discover crossings during detailed routing. LiDAR is relevant
+because it demonstrates this kind of crossing decision, not because this router
+must copy LiDAR's queueing, ripup, or implementation structure.
 
 Expected behavior:
 
 | Requirement | Meaning |
 | --- | --- |
-| Insertion-loss cost | The route cost should explicitly combine path length, bend loss, and crossing loss. Device loss can be included in reports, but route selection between fixed endpoints is mainly driven by length, bends, and crossings. |
+| Insertion-loss cost | A* route selection should explicitly combine path length, bend loss, and crossing loss. Device loss can be included in reports, but route selection between fixed endpoints is mainly driven by physical route-induced loss from length, bends, and crossings. |
 | Crossing as a routing decision | The router should not assume an expected crossing pair from topology. It should discover legal crossing opportunities during detailed routing. |
 | Competing alternatives | The router should try many legal non-crossing and crossing alternatives before accepting a crossing, because crossings are costly and should not be inserted only because they are locally convenient. |
 | Legal crossing geometry | Crossings must satisfy perpendicularity, straight access margin, footprint/keepout, layer/type compatibility where applicable, and spacing to other crossings or obstacles. |
+| Physical crossing component | Accepted crossings must be realized with the active PDK/gdsfactory crossing component, not only as route-record metadata or debug marks. |
 | Loss reporting | Reports should break out length, bend count or bend-angle penalty, crossing count, and resulting route-induced insertion loss. |
-| Benchmark role | This mode is the fair comparison mode against LiDAR 2.0's crossing behavior. |
+| Benchmark role | This mode is the main current crossing mode for `benes_4x4`, `benes_8x8`, and `multiportmmi_8x8`. |
 
-This mode should answer: "If we route in the same conceptual style as LiDAR,
-how does this Rust-backed framework perform and what route quality does it get?"
+This mode should answer: "Can this Rust-backed router quickly discover legal
+crossings and prove the final geometry is correct?"
 
-### Variant B: Topology-Precomputed Crossing Mode
+### Possible Later Variant: Topology-Precomputed Crossings
 
-This is the intended differentiated version of TUMPhotonicRouter. It should use
-the network topology to precompute which nets are expected to cross, then guide
-the detailed router with that information.
+This remains a possible optimization or comparison mode. It uses network
+topology to precompute which nets are expected to cross, then guides detailed
+routing with that information. Do not prioritize this mode until the
+router-discovered crossing mode has stable verification on the current
+benchmarks.
 
 Expected behavior:
 
@@ -108,8 +126,8 @@ Expected behavior:
 | Expected-pair validation | Rust should allow crossing overlaps only when they match the expected partner set in strict mode. |
 | Crossing reservation | The router should reserve crossing windows and reject invalid crossing locations early. |
 | Local repair | If an expected crossing is blocked by its intended partner, the router can rip up or locally repair the partner instead of treating the conflict as an arbitrary obstacle. |
-| Speed goal | This mode should be much faster than the LiDAR-like mode on structured crossing-heavy benchmarks because it avoids discovering the crossing graph from local collisions. |
-| Quality goal | The mode should keep insertion loss competitive with the LiDAR-like mode; any extra crossings or detours must be visible in the report. |
+| Speed goal | This mode should be faster than router-discovered crossing search on structured crossing-heavy benchmarks because it avoids discovering the crossing graph from local collisions. |
+| Quality goal | The mode should keep insertion loss competitive with router-discovered crossing mode; any extra crossings or detours must be visible in the report. |
 
 This mode should answer: "How much speed do we gain when the crossing structure
 is known from topology before detailed routing?"
@@ -270,13 +288,16 @@ visible.
 
 | Metric | Why it matters |
 | --- | --- |
-| Runtime | Shows whether topology-precomputed crossings provide the expected speedup. |
+| Runtime | Shows whether the Rust-backed router is meeting the speed goal and whether later crossing variants improve throughput. |
 | Routed nets / failed nets | Basic completion signal. |
 | Total route length | Propagation-loss component. |
 | Bend count or bend-angle penalty | Bend-loss component. |
 | Crossing count | Crossing-loss component. |
 | Route-induced insertion loss | Unified route-quality score from length, bends, and crossings. |
+| Search-guidance penalties | Congestion, history, repair, or dynamic-conflict costs that influenced search but are not physical optical loss. |
 | Verification issues | Ensures speed and loss are not hiding invalid geometry. |
+| Verification JSON | Gives agents, tests, and humans the same structured pass/fail evidence for benchmark runs. |
+| Crossing component footprint | Records which PDK/gdsfactory crossing component and bbox were used for legality and realization. |
 | PLM requested/inserted/residual length | Shows whether timing/path-length constraints were actually met. |
 | PLM structure mix | Shows when bump meanders versus parallel foldbacks are used. |
 
@@ -293,22 +314,22 @@ visible.
 
 | Priority | Task | Main files likely involved |
 | --- | --- | --- |
-| 1 | Define a route-induced insertion-loss model shared by reports and LiDAR-like routing mode | `src/astar.rs`, `src/primitives.rs`, `translation/route_rust.py`, benchmark scripts |
-| 2 | Add LiDAR-like crossing discovery mode without topology expected pairs | `src/astar.rs`, `src/crossings.rs`, `src/py_router.rs` |
-| 3 | Keep topology-precomputed crossing mode as a separately selectable mode | `python/photonic_router/topology_analysis.py`, `python/photonic_router/crossing_plan.py`, `translation/route_rust.py`, `src/crossings.rs` |
-| 4 | Add the missing high-priority LiDAR 2.0 crossing benchmarks | `benchmarks/`, `benchmark_metadata.py`, `scripts/benchmark_photonic.py` |
-| 5 | Finish physical crossing realization if route reports contain accepted crossings | `translation/route_rust.py`, `src/geometry_realization.rs`, primitive/crossing component helpers |
-| 6 | Add parallel-foldback PLM candidate planning | `src/meander.rs`, `translation/route_rust_meanders.py`, `translation/path_length_candidates.py` |
-| 7 | Extend PLM reports to include structure type and rejected-candidate reasons | `translation/path_length_diagnostics.py`, `translation/route_rust_types.py` |
-| 8 | Add same-input benchmark reports comparing LiDAR-like and topology-precomputed modes | `scripts/benchmark_photonic.py`, `scripts/crossing_benchmark_report.py`, `docs/` |
+| 1 | Stabilize final-geometry verification for crossing correctness | `translation/photonic_verification.py`, `translation/route_rust_realization.py`, `translation/route_rust_records.py`, crossing verification tests |
+| 2 | Stabilize router-discovered crossing search without topology expected pairs | `src/astar.rs`, `src/crossings.rs`, `src/py_router.rs`, `translation/route_rust.py` |
+| 3 | Preserve crossing decisions through port snapping and geometry realization | `translation/route_rust_realization.py`, `src/geometry_realization.rs`, route record types, primitive/crossing component helpers |
+| 4 | Prove `benes_4x4`, `benes_8x8`, and `multiportmmi_8x8` with exact commands, artifacts, and verification status | `benchmarks/`, `benchmark_metadata.py`, `scripts/benchmark_photonic.py`, `routing_flow.py` |
+| 5 | Preserve existing PLM regression behavior while crossing work changes route records | `src/meander.rs`, `translation/route_rust_meanders.py`, `translation/path_length_candidates.py`, PLM tests |
+| 6 | Define a route-induced insertion-loss model shared by A* route selection and reports | `src/astar.rs`, `src/primitives.rs`, `translation/route_rust.py`, benchmark scripts |
+| 7 | Add parallel-foldback PLM candidate planning | `src/meander.rs`, `translation/route_rust_meanders.py`, `translation/path_length_candidates.py` |
+| 8 | Optionally keep topology-precomputed crossing mode as a separately selectable later comparison mode | `python/photonic_router/topology_analysis.py`, `python/photonic_router/crossing_plan.py`, `translation/route_rust.py`, `src/crossings.rs` |
 
 ## Success Criterion
 
-The phase is successful when the repository can run a LiDAR 2.0-style photonic
-benchmark suite in both crossing modes, produce valid routed GDS/debug artifacts,
-report route-induced insertion loss from length/bends/crossings, and perform PLM
-with both bump-meander and parallel-foldback delay structures.
+The phase is successful when the repository can run the current crossing
+benchmark targets, produce valid routed GDS/debug artifacts, classify final
+geometry correctness, report route-induced insertion loss from
+length/bends/crossings, and preserve existing PLM regression behavior.
 
-The expected result is that the LiDAR-like mode is a fair baseline, while the
-topology-precomputed crossing mode routes structured crossing-heavy benchmarks
-substantially faster with comparable route-induced insertion loss.
+After that foundation is stable, success can expand to additional benchmark
+families, parallel-foldback PLM, and optional comparisons between
+router-discovered and topology-precomputed crossing modes.
