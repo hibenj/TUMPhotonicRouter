@@ -112,8 +112,14 @@ Built from placed instances in layout:
 ### Quick Start: Run Existing Benchmark
 
 ```bash
-cd /home/benjamin/Documents/Repositories/working/TUMPhotonicRouter
+# From the repository root
 python routing_flow.py  # Runs TOY benchmark with debug enabled
+```
+
+On Windows, use the project virtualenv executable when present:
+
+```powershell
+.\.venv\Scripts\python.exe routing_flow.py
 ```
 
 Produces:

@@ -24,7 +24,22 @@ The first visible outcome is a repeatable harness that proves small crossing ben
 
 ## Surprises & Discoveries
 
-No implementation discoveries have been recorded yet for this plan.
+- Observation: The current Windows checkout is at
+  `C:\Users\benja\Documents\Repositorys\TUMPhotonicRouter`, not the older
+  Ubuntu path used in historical notes.
+  Evidence: `git status --short --branch` was run from that path on 2026-07-10.
+
+- Observation: The current Windows shell is not ready to run the full router
+  validation ladder yet.
+  Evidence: `.venv` is absent, `python`, `py`, `cargo`, `rustc`, and `maturin`
+  are not available on `PATH`, and Codex's bundled Python does not have
+  `pytest`, `maturin`, or `gdsfactory` installed.
+
+- Observation: A local LiDAR checkout exists on this Windows machine at
+  `C:\Users\benja\Documents\Repositorys\LiDAR`.
+  Evidence: `Test-Path "C:\Users\benja\Documents\Repositorys\LiDAR"` returned
+  true. The old Ubuntu `working/LiDAR` path and the local paper PDF path were
+  not present in this Windows environment.
 
 ## Decision Log
 
@@ -115,7 +130,10 @@ Sixth, only after the smaller benchmarks have classified evidence, resume `multi
 
 Work from the repository root:
 
-    cd /home/benjamin/Documents/Repositories/working/TUMPhotonicRouter
+    cd C:\Users\benja\Documents\Repositorys\TUMPhotonicRouter
+
+On Linux, use the local checkout path instead. Do not hard-code the historical
+Ubuntu path in new subagent prompts.
 
 Start with a status check:
 
@@ -129,6 +147,10 @@ Run focused existing tests before changing behavior, if the Python extension is 
 
     PYTHONPATH=. .venv/bin/pytest -q tests/test_realized_crossing_verification.py tests/test_photonic_verification.py tests/test_route_rust_geometry.py
 
+Windows PowerShell equivalent:
+
+    $env:PYTHONPATH='.'; .\.venv\Scripts\pytest.exe -q tests\test_realized_crossing_verification.py tests\test_photonic_verification.py tests\test_route_rust_geometry.py
+
 Run Rust checks around crossing and route geometry:
 
     cargo test crossing
@@ -138,12 +160,24 @@ After implementing harness or verification changes, run the narrow tests that co
 
     .venv/bin/maturin develop --release
 
+Windows PowerShell equivalent:
+
+    .\.venv\Scripts\maturin.exe develop --release
+
 Then run the relevant Python tests again.
 
 For benchmark evidence, use `BROWSER=/bin/true` so debug output does not open many browser tabs. The exact crossing flags must be confirmed from `routing_flow.py` before running, but the command shape should be:
 
-    BROWSER=/bin/true .venv/bin/python routing_flow.py benes_4x4 --crossings --debug-timing
-    BROWSER=/bin/true .venv/bin/python routing_flow.py benes_8x8 --crossings --debug-timing
+    BROWSER=/bin/true .venv/bin/python routing_flow.py benes_4x4 --crossings true --debug-timing true
+    BROWSER=/bin/true .venv/bin/python routing_flow.py benes_8x8 --crossings true --debug-timing true
+
+Windows PowerShell equivalent:
+
+    .\.venv\Scripts\python.exe routing_flow.py benes_4x4 --crossings true --debug-timing true
+    .\.venv\Scripts\python.exe routing_flow.py benes_8x8 --crossings true --debug-timing true
+
+On Windows, note whether debug SVG generation opens browser tabs; the current
+script opens generated SVGs automatically when debug SVGs are enabled.
 
 Record the exact commands, outputs, and artifact paths here after they are run.
 

@@ -67,6 +67,39 @@ work local when the next step is tightly coupled, urgent, or hard to specify.
 If real subagents are not available, the orchestrator should run the same roles
 sequentially in one session using the role briefs in `.agent/roles/`.
 
+## Model And Reasoning Policy
+
+Use the same model for the orchestrator and spawned subagents by default. If the
+subagent tooling inherits the parent model when no override is supplied, omit
+the model field. Only set a different model when the user explicitly asks for
+one or when a narrow task-specific reason is documented in the active ExecPlan.
+
+Vary reasoning effort by role and risk:
+
+- Orchestrator: `high` for substantial coordination and milestone decisions.
+- Planner / Technical Lead: `high`, especially before cross Rust/Python routing
+  or verification changes.
+- Explorer / codebase audit: `medium` for bounded file/path questions; `high`
+  for architecture questions that cross routing, realization, verification, or
+  the Python/Rust boundary.
+- QA / Harness Engineer: `high` when designing verification strategy or failure
+  classification; `medium` when running known validation commands and recording
+  evidence.
+- Implementation Engineer: `medium` for scoped edits; `high` when touching A*,
+  crossing legality, route realization, PyO3 bindings, or shared verification
+  behavior.
+- Reviewer: `high` by default.
+- Routine status, documentation cleanup, and mechanical bookkeeping: `low` or
+  `medium`.
+- `xhigh` or stronger settings: reserve for long-horizon, ambiguous, or
+  repeatedly failing work where prior `medium` or `high` attempts did not
+  produce actionable evidence.
+
+If the current runtime cannot configure model or reasoning effort for subagents,
+state that limitation before delegating. Do not silently downgrade critical
+planning, review, or verification work for cost or latency; first establish
+correctness evidence, then optimize.
+
 ## Standard Orchestration Loop
 
 Use this loop for the current crossing work:
@@ -116,7 +149,8 @@ Engineer has defined how the port will be verified.
 
 Every subagent prompt should include this minimum contract:
 
-    You are working in /home/benjamin/Documents/Repositories/working/TUMPhotonicRouter.
+    You are working in the TUMPhotonicRouter repository root. Do not assume a
+    fixed absolute path; this checkout may be on Windows or Linux.
     Read AGENTS.md, .agent/PROJECT_GOAL.md, .agent/WORKFLOW.md, and the active
     ExecPlan before acting.
     Do not revert user or other-agent changes.

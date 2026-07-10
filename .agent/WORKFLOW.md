@@ -209,14 +209,31 @@ Choose the highest rung justified by the change.
 
        PYTHONPATH=. .venv/bin/pytest -q tests/<test_file>.py
 
+   Windows PowerShell equivalent:
+
+       $env:PYTHONPATH='.'; .\.venv\Scripts\pytest.exe -q tests\<test_file>.py
+
 4. Full local suites when shared behavior changed:
 
        cargo test
        PYTHONPATH=. .venv/bin/pytest -q
 
+   Windows PowerShell equivalent:
+
+       cargo test
+       $env:PYTHONPATH='.'; .\.venv\Scripts\pytest.exe -q
+
 5. Benchmark or debug runs for routing behavior:
 
        BROWSER=/bin/true .venv/bin/python routing_flow.py <benchmark> <flags>
+
+   Windows PowerShell equivalent:
+
+       .\.venv\Scripts\python.exe routing_flow.py <benchmark> <flags>
+
+   On Windows, `routing_flow.py` currently opens debug SVGs with the default
+   browser when debug SVG generation is enabled. Record that behavior if it
+   affects a validation run.
 
 6. Physical-layout and artifact checks for crossing or PLM work:
 

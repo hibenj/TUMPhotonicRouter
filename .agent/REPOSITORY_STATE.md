@@ -27,6 +27,15 @@ should not receive wholesale merges from the experimental branch.
 
 At creation, this worktree was clean at `731d0a9`.
 
+Current Windows checkout note:
+
+- Repository path: `C:\Users\benja\Documents\Repositorys\TUMPhotonicRouter`
+- Local LiDAR reference checkout observed at:
+  `C:\Users\benja\Documents\Repositorys\LiDAR`
+- As of 2026-07-10, this Windows shell did not have a project `.venv`, `python`
+  or `py` on `PATH`, Rust/Cargo on `PATH`, or `maturin` on `PATH`. Set up the
+  Windows toolchain before running the validation ladder locally.
+
 ## Reference Branches
 
 The branch `baseline/lidar-pure-crossings` contains a WIP prototype snapshot at:
