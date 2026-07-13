@@ -1161,6 +1161,60 @@ pub fn route_to_port_corrected_centerline_with_options(
     Ok(centerline)
 }
 
+/// Replay the primitive centerline and connect physical ports only at the
+/// terminal endpoints. Unlike the general endpoint correction, this deliberately
+/// does not shift existing straight or diagonal runs. Crossing-aware routing
+/// uses this when the grid route must remain the geometry authority.
+pub fn route_to_grid_locked_port_centerline(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    let mut centerline = route_to_primitive_centerline(route, primitives, grid)?;
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    if centerline.iter().any(|&point| !is_finite_point(point)) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+
+    if let Some(source) = source_port_um {
+        if !is_finite_point(source) {
+            return Err(GeometryError::NonFiniteCoordinate);
+        }
+        if distance(source, centerline[0]) > EPS {
+            centerline.insert(0, source);
+        } else {
+            centerline[0] = source;
+        }
+    }
+    if let Some(target) = target_port_um {
+        if !is_finite_point(target) {
+            return Err(GeometryError::NonFiniteCoordinate);
+        }
+        let last = centerline.len() - 1;
+        if distance(target, centerline[last]) > EPS {
+            centerline.push(target);
+        } else {
+            centerline[last] = target;
+        }
+    }
+
+    let mut deduped = Vec::with_capacity(centerline.len());
+    for point in centerline.iter().copied() {
+        push_physical_if_different(&mut deduped, point);
+    }
+    if deduped.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    if deduped.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
+        return Err(GeometryError::ZeroLengthSegment);
+    }
+    Ok(deduped)
+}
+
 pub fn full_straight_offset_bump_candidates(
     route: &RouteResult,
     primitives: &PrimitiveLibrary,
@@ -5722,6 +5776,39 @@ mod tests {
         let mut centerline = vec![(0.5, 0.5), (2.5, 0.5)];
         snap_centerline_endpoints(&mut centerline, Some((0.0, 0.0)), Some((3.0, 0.0))).unwrap();
         assert_eq!(centerline, vec![(0.0, 0.0), (3.0, 0.0)]);
+    }
+
+    #[test]
+    fn grid_locked_port_centerline_keeps_primitive_interior_on_grid() {
+        let lib = test_lib();
+        let straight_east = primitive_id_for(&lib, 0, |p| {
+            p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
+        });
+        let route = RouteResult {
+            states: vec![State::new(1, 2, 0), State::new(5, 2, 0), State::new(9, 2, 0)],
+            primitives: vec![straight_east, straight_east],
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 8.0,
+            total_cost: 8.0,
+            requested_target: State::new(9, 2, 0),
+            reached_target: State::new(9, 2, 0),
+            stats: Default::default(),
+        };
+
+        let corrected = route_to_grid_locked_port_centerline(
+            &route,
+            &lib,
+            &grid(),
+            Some((0.8, 2.75)),
+            Some((9.9, 2.75)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            corrected,
+            vec![(0.8, 2.75), (1.5, 2.5), (5.5, 2.5), (9.5, 2.5), (9.9, 2.75)]
+        );
     }
 
     #[test]

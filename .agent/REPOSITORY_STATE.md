@@ -3027,3 +3027,59 @@ Route-35 `n_34` / `n_31` reject trace:
 - Next recommended action remains the primitive/centerline model refactor:
   define explicit optical/crossable primitive segments and stop using
   footprint-compressed waypoints as crossing-search truth.
+
+Primitive/centerline model fix work in progress:
+
+- The earlier optical-segment partner fallback direction was rejected by the
+  user and backed out from `src/astar.rs` and `src/py_router.rs`.
+- Implemented the correct first model slice instead: crossing-enabled internal
+  endpoint correction now uses a new grid-locked centerline helper,
+  `route_to_grid_locked_port_centerline`, which inserts physical port points
+  locally but preserves the primitive/grid interior. This prevents port
+  correction from shifting the whole route parallel to the A* grid path.
+- Added a Rust geometry regression proving grid-locked port correction keeps
+  primitive interior points on the original grid line.
+- A trace of `n_34` versus partner `n_31` confirmed the long diagonal is no
+  longer parallel-shifted by endpoint correction: realized straight portions
+  lie on the same grid line and are only shortened by bend runout.
+- Two attempted quick fixes were tested and rejected:
+  - disabling bend primitives as crossable route-side segments caused `n_32` to
+    fail before the `n_34` cluster;
+  - naively augmenting bend primitive footprints with sampled bend-centerline
+    cells also caused `n_32` to fail.
+- Current conclusion: the remaining bug requires a proper Primitive segment
+  model in A*: straight/crossable portions and bend/non-crossable portions must
+  be explicit per primitive, while footprint occupancy stays separately
+  conservative. Quick guards around existing footprint windows are too coarse.
+- Validation:
+  - `cargo +stable-x86_64-pc-windows-gnullvm check` passed.
+  - `cargo +stable-x86_64-pc-windows-gnullvm test --no-run` passed.
+  - `maturin develop --release` passed after the grid-locked endpoint helper.
+  - Specific Rust test execution still cannot run in this Windows toolchain
+    because the test executable exits with `STATUS_DLL_NOT_FOUND`.
+  - Targeted no-SVG cluster run with only grid-locked endpoint correction still
+    fails at `n_34` because A* can accept candidates whose realized bend/route
+    geometry later intersects `n_31` without a legal crossing event. This is the
+    remaining Primitive segment-model issue.
+- `cargo fmt` could not run because `rustfmt` is not installed for either the
+  default MSVC toolchain or `stable-x86_64-pc-windows-gnullvm`.
+
+Focused `n_34` / `n_31` trace after rebuilding the current clean source:
+
+- Regenerated `build/routed_multiportmmi_8x8.gds` with
+  `multiportmmi_8x8 --crossings true --crossing-mode lidar-pure
+  --debug-stop-after-route 34 --debug-svgs false --debug-timing false
+  --attempt-diagnostics`; this is the layout state immediately before routing
+  `n_34` (route index 35 / Rust net 35).
+- A temporary env-gated diagnostic counted crossing candidate attempts for
+  Rust net 35 (`n_34`) against Rust net 32 (`n_31`):
+  - total candidate checks against that partner: 85,867
+  - `not_perpendicular`: 49,520
+  - `margin`: 27,266
+  - `unmatched_footprint`: 9,081
+- The final failing run still reports `No route found for n_34` with
+  `candidate_blockers=[32, 34]`; recent repair failures include illegal
+  realized intersections with net 32 at `not_perpendicular` and
+  `insufficient_straight_margin`.
+- The temporary per-partner diagnostic hook was removed before committing; it
+  was only used to derive the numbers above.

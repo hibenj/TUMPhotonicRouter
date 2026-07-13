@@ -38,6 +38,7 @@ use crate::geometry_realization::{
     realize_route_polygon_with_endpoint_correction as realize_route_polygon_with_endpoint_correction_rs,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     route_to_grid_path as route_to_grid_path_rs,
+    route_to_grid_locked_port_centerline as route_to_grid_locked_port_centerline_rs,
     route_to_port_corrected_centerline_with_options as route_to_port_corrected_centerline_with_options_rs,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
     splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
@@ -4090,16 +4091,25 @@ impl PyPhotonicRouter {
             return None;
         }
         let grid = self.geometry_grid().ok()?;
-        route_to_port_corrected_centerline_with_options_rs(
-            route,
-            &self.primitives,
-            &grid,
-            source_port_um,
-            target_port_um,
-            !self.primitive_cfg.allow_45_degree_turns,
-        )
-        .ok()
-        .map(compress_physical_centerline)
+        let centerline = if self.crossing_context.is_enabled() {
+            route_to_grid_locked_port_centerline_rs(
+                route,
+                &self.primitives,
+                &grid,
+                source_port_um,
+                target_port_um,
+            )
+        } else {
+            route_to_port_corrected_centerline_with_options_rs(
+                route,
+                &self.primitives,
+                &grid,
+                source_port_um,
+                target_port_um,
+                !self.primitive_cfg.allow_45_degree_turns,
+            )
+        };
+        centerline.ok().map(compress_physical_centerline)
     }
 
     fn remember_committed_route_centerlines_with_ports(
