@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+from collections.abc import Mapping
 from typing import Any, Iterable
 
 from gdsfactory.component import Component
@@ -15,6 +16,7 @@ from translation.route_rust_types import RoutedNetRecord
 Layer = tuple[int, int]
 PortEndpoint = tuple[str, str]
 RouteKey = tuple[str, PortEndpoint, PortEndpoint]
+NetIdPair = tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,19 @@ def verify_photonic_routing(
     bend_radius_cells: int = 4,
     port_contact_radius_um: float | None = None,
     port_obstacle_exemption_radius_um: float = 25.0,
+    legal_overlap_polygons_um: Iterable[Iterable[tuple[float, float]]] = (),
+    legal_overlap_polygons_by_net_id_pair_um: Mapping[
+        NetIdPair,
+        Iterable[Iterable[tuple[float, float]]],
+    ]
+    | None = None,
+    crossing_component_footprints_um: Iterable[Mapping[str, object] | Iterable[tuple[float, float]]] = (),
+    check_route_coverage: bool = True,
+    min_route_overlap_area_um2: float = 2.0,
+    min_obstacle_overlap_area_um2: float = 2.0,
+    min_crossing_component_route_overlap_area_um2: float = 0.25,
+    min_crossing_component_overlap_area_um2: float = 0.25,
+    check_endpoint_connectivity: bool = True,
 ) -> PhotonicVerificationResult:
     """Verify routed optical topology and realized waveguide geometry.
 
@@ -104,18 +119,51 @@ def verify_photonic_routing(
     expected_keys = _expected_route_keys(schematic)
     actual_keys = [_record_key(record) for record in records]
 
-    _verify_record_coverage(issues, expected_keys, actual_keys)
+    if check_route_coverage:
+        _verify_record_coverage(issues, expected_keys, actual_keys)
 
     dbu = _component_dbu(routed_layout)
-    all_port_windows = kdb.Region()
+    all_port_contact_windows = kdb.Region()
+    route_obstacle_windows_by_key: dict[RouteKey, kdb.Region] = {}
+    non_route_obstacle_windows_by_key: dict[RouteKey, kdb.Region] = {}
+    legal_route_overlap_region = _polygons_region_um(legal_overlap_polygons_um, dbu)
+    legal_route_overlap_regions_by_pair = _polygon_regions_by_pair_um(
+        legal_overlap_polygons_by_net_id_pair_um or {},
+        dbu,
+    )
     route_regions_by_key: dict[RouteKey, kdb.Region] = {}
     record_by_key: dict[RouteKey, RoutedNetRecord] = {}
+    net_id_by_key: dict[RouteKey, int] = {}
+    crossing_component_footprints = tuple(crossing_component_footprints_um)
+    crossing_clip_intersections: list[dict[str, object]] = []
+    for pair, polygons in (legal_overlap_polygons_by_net_id_pair_um or {}).items():
+        try:
+            net_id_a = int(pair[0])
+            net_id_b = int(pair[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        for polygon in polygons:
+            crossing_clip_intersections.append(
+                {
+                    "classification": "legal_verification_clip",
+                    "net_id_a": net_id_a,
+                    "net_id_b": net_id_b,
+                    "crossing_footprint_polygon_um": polygon,
+                }
+            )
+    crossing_clip_plan_info = (
+        {"enabled": True, "realized_intersections": crossing_clip_intersections}
+        if crossing_clip_intersections
+        else None
+    )
 
     for record in records:
         key = _record_key(record)
         if key in record_by_key:
             continue
         record_by_key[key] = record
+        if record.net_id is not None:
+            net_id_by_key[key] = int(record.net_id)
         route_region = _realized_record_region(
             record,
             route_layer=route_layer,
@@ -123,6 +171,8 @@ def verify_photonic_routing(
             realization_grid_spec=realization_grid_spec,
             allow_45_degree_turns=allow_45_degree_turns,
             bend_radius_cells=bend_radius_cells,
+            crossing_plan_info=crossing_clip_plan_info,
+            enable_endpoint_correction=check_endpoint_connectivity,
         )
         route_regions_by_key[key] = route_region
         _verify_record_connectivity(
@@ -131,8 +181,23 @@ def verify_photonic_routing(
             route_region,
             dbu=dbu,
             port_contact_radius_um=float(port_contact_radius_um),
+            check_endpoint_connectivity=check_endpoint_connectivity,
         )
-        all_port_windows += _record_port_windows_region(
+        all_port_contact_windows += _record_port_windows_region(
+            record,
+            dbu=dbu,
+            radius_um=float(port_contact_radius_um),
+        )
+        obstacle_port_contact_radius_um = min(
+            float(port_contact_radius_um),
+            float(port_obstacle_exemption_radius_um),
+        )
+        route_obstacle_windows_by_key[key] = _record_port_windows_region(
+            record,
+            dbu=dbu,
+            radius_um=max(0.0, obstacle_port_contact_radius_um),
+        )
+        non_route_obstacle_windows_by_key[key] = _record_port_windows_region(
             record,
             dbu=dbu,
             radius_um=max(
@@ -145,17 +210,47 @@ def verify_photonic_routing(
         issues,
         route_regions_by_key,
         dbu=dbu,
-        legal_overlap_region=all_port_windows,
+        legal_overlap_region=_combined_region(
+            all_port_contact_windows,
+            legal_route_overlap_region,
+        ),
+        net_id_by_key=net_id_by_key,
+        legal_overlap_regions_by_net_id_pair=legal_route_overlap_regions_by_pair,
+        min_overlap_area_um2=float(min_route_overlap_area_um2),
     )
+    normalized_obstacle_layers = tuple(
+        _normalize_layer(layer) for layer in obstacle_layers
+    )
+    normalized_route_layer = _normalize_layer(route_layer)
     obstacle_overlap_count = _verify_route_obstacle_overlaps(
         issues,
         route_regions_by_key,
         obstacle_component=unrouted_layout,
         routed_layout=routed_layout,
         route_layer=route_layer,
-        obstacle_layers=tuple(_normalize_layer(layer) for layer in obstacle_layers),
+        obstacle_layers=normalized_obstacle_layers,
         dbu=dbu,
-        legal_overlap_region=all_port_windows,
+        legal_overlap_region=legal_route_overlap_region,
+        legal_overlap_regions_by_key=route_obstacle_windows_by_key,
+        legal_overlap_regions_by_layer={
+            layer: non_route_obstacle_windows_by_key
+            for layer in normalized_obstacle_layers
+            if layer != normalized_route_layer
+        },
+        min_overlap_area_um2=float(min_obstacle_overlap_area_um2),
+    )
+    crossing_component_route_overlap_count = _verify_crossing_component_route_overlaps(
+        issues,
+        route_regions_by_key,
+        crossing_component_footprints,
+        dbu=dbu,
+        min_overlap_area_um2=float(min_crossing_component_route_overlap_area_um2),
+    )
+    crossing_component_overlap_count = _verify_crossing_component_overlaps(
+        issues,
+        crossing_component_footprints,
+        dbu=dbu,
+        min_overlap_area_um2=float(min_crossing_component_overlap_area_um2),
     )
 
     return PhotonicVerificationResult(
@@ -166,6 +261,10 @@ def verify_photonic_routing(
             "unique_routed_record_count": len(set(actual_keys)),
             "cross_net_waveguide_overlap_count": cross_net_overlap_count,
             "waveguide_obstacle_overlap_count": obstacle_overlap_count,
+            "crossing_component_route_overlap_count": (
+                crossing_component_route_overlap_count
+            ),
+            "crossing_component_overlap_count": crossing_component_overlap_count,
         },
     )
 
@@ -245,6 +344,8 @@ def _realized_record_region(
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool,
     bend_radius_cells: int,
+    crossing_plan_info: Mapping[str, object] | None = None,
+    enable_endpoint_correction: bool = True,
 ) -> kdb.Region:
     temp = Component()
     realize_routed_net_records(
@@ -255,6 +356,8 @@ def _realized_record_region(
         realization_grid_spec=realization_grid_spec,
         allow_45_degree_turns=allow_45_degree_turns,
         bend_radius_cells=bend_radius_cells,
+        crossing_plan_info=crossing_plan_info,
+        enable_endpoint_correction=enable_endpoint_correction,
     )
     return _component_layer_region(temp, route_layer)
 
@@ -266,6 +369,7 @@ def _verify_record_connectivity(
     *,
     dbu: float,
     port_contact_radius_um: float,
+    check_endpoint_connectivity: bool = True,
 ) -> None:
     if route_region.is_empty():
         issues.append(
@@ -275,6 +379,8 @@ def _verify_record_connectivity(
                 net_name=record.net_name,
             )
         )
+        return
+    if not check_endpoint_connectivity:
         return
     if record.endpoint_correction_error is not None:
         issues.append(
@@ -389,6 +495,9 @@ def _verify_cross_net_route_overlaps(
     *,
     dbu: float,
     legal_overlap_region: kdb.Region,
+    net_id_by_key: Mapping[RouteKey, int] | None = None,
+    legal_overlap_regions_by_net_id_pair: Mapping[NetIdPair, kdb.Region] | None = None,
+    min_overlap_area_um2: float = 0.0,
 ) -> int:
     overlap_count = 0
     items = list(route_regions_by_key.items())
@@ -398,8 +507,25 @@ def _verify_cross_net_route_overlaps(
         for right_key, right_region in items[index + 1:]:
             if right_region.is_empty():
                 continue
-            overlap = (left_region & right_region) - legal_overlap_region
+            allowed_region = legal_overlap_region
+            if (
+                net_id_by_key is not None
+                and legal_overlap_regions_by_net_id_pair is not None
+                and left_key in net_id_by_key
+                and right_key in net_id_by_key
+            ):
+                allowed_region = _combined_region(
+                    legal_overlap_region,
+                    legal_overlap_regions_by_net_id_pair.get(
+                        _net_id_pair(net_id_by_key[left_key], net_id_by_key[right_key]),
+                        kdb.Region(),
+                    ),
+                )
+            overlap = (left_region & right_region) - allowed_region
             if overlap.is_empty():
+                continue
+            overlap_area_um2 = _region_area_um2(overlap, dbu)
+            if overlap_area_um2 <= float(min_overlap_area_um2):
                 continue
             overlap_count += 1
             issues.append(
@@ -412,7 +538,7 @@ def _verify_cross_net_route_overlaps(
                     net_name=left_key[0],
                     details={
                         "other_net_name": right_key[0],
-                        "overlap_area_um2": _region_area_um2(overlap, dbu),
+                        "overlap_area_um2": overlap_area_um2,
                         "overlap_bbox_um": _region_bbox_um(overlap, dbu),
                     },
                 )
@@ -430,6 +556,13 @@ def _verify_route_obstacle_overlaps(
     obstacle_layers: tuple[Layer, ...],
     dbu: float,
     legal_overlap_region: kdb.Region,
+    legal_overlap_regions_by_key: Mapping[RouteKey, kdb.Region] | None = None,
+    legal_overlap_regions_by_layer: Mapping[
+        Layer,
+        Mapping[RouteKey, kdb.Region],
+    ]
+    | None = None,
+    min_overlap_area_um2: float = 0.0,
 ) -> int:
     overlap_count = 0
     for layer in obstacle_layers:
@@ -442,8 +575,23 @@ def _verify_route_obstacle_overlaps(
         if obstacle_region.is_empty():
             continue
         for key, route_region in route_regions_by_key.items():
-            overlap = (route_region & obstacle_region) - legal_overlap_region
+            allowed_region = legal_overlap_region
+            per_key_regions = legal_overlap_regions_by_key
+            if legal_overlap_regions_by_layer is not None:
+                per_key_regions = legal_overlap_regions_by_layer.get(
+                    layer,
+                    per_key_regions,
+                )
+            if per_key_regions is not None:
+                allowed_region = _combined_region(
+                    legal_overlap_region,
+                    per_key_regions.get(key, kdb.Region()),
+                )
+            overlap = (route_region & obstacle_region) - allowed_region
             if overlap.is_empty():
+                continue
+            overlap_area_um2 = _region_area_um2(overlap, dbu)
+            if overlap_area_um2 <= float(min_overlap_area_um2):
                 continue
             overlap_count += 1
             issues.append(
@@ -453,12 +601,189 @@ def _verify_route_obstacle_overlaps(
                     net_name=key[0],
                     details={
                         "obstacle_layer": layer,
-                        "overlap_area_um2": _region_area_um2(overlap, dbu),
+                        "overlap_area_um2": overlap_area_um2,
                         "overlap_bbox_um": _region_bbox_um(overlap, dbu),
                     },
                 )
             )
     return overlap_count
+
+
+@dataclass(frozen=True)
+class _CrossingFootprint:
+    region: kdb.Region
+    details: dict[str, object]
+
+
+def _verify_crossing_component_route_overlaps(
+    issues: list[PhotonicVerificationIssue],
+    route_regions_by_key: Mapping[RouteKey, kdb.Region],
+    crossing_component_footprints_um: Iterable[
+        Mapping[str, object] | Iterable[tuple[float, float]]
+    ],
+    *,
+    dbu: float,
+    min_overlap_area_um2: float = 0.0,
+) -> int:
+    overlap_count = 0
+    footprints = _crossing_footprints_from_metadata(
+        crossing_component_footprints_um,
+        dbu=dbu,
+    )
+    for footprint_index, footprint in enumerate(footprints):
+        owner_net_names = _crossing_footprint_owner_net_names(footprint.details)
+        for key, route_region in route_regions_by_key.items():
+            if route_region.is_empty():
+                continue
+            if key[0] in owner_net_names:
+                continue
+            overlap = route_region & footprint.region
+            if overlap.is_empty():
+                continue
+            overlap_area_um2 = _region_area_um2(overlap, dbu)
+            if overlap_area_um2 <= float(min_overlap_area_um2):
+                continue
+            overlap_count += 1
+            issues.append(
+                PhotonicVerificationIssue(
+                    code="crossing_component_route_overlap",
+                    message=(
+                        f"Waveguide for {key[0]} overlaps a realized crossing "
+                        "component footprint."
+                    ),
+                    net_name=key[0],
+                    details={
+                        "crossing_index": footprint_index,
+                        "crossing": dict(footprint.details),
+                        "overlap_area_um2": overlap_area_um2,
+                        "overlap_bbox_um": _region_bbox_um(overlap, dbu),
+                    },
+                )
+            )
+    return overlap_count
+
+
+def _crossing_footprint_owner_net_names(
+    details: Mapping[str, object],
+) -> set[str]:
+    names: set[str] = set()
+    for key in ("net_name_a", "net_name_b"):
+        value = details.get(key)
+        if isinstance(value, str) and value:
+            names.add(value)
+    raw_shared_names = details.get("shared_owner_net_names")
+    if isinstance(raw_shared_names, Iterable) and not isinstance(
+        raw_shared_names,
+        (str, bytes, bytearray),
+    ):
+        for value in raw_shared_names:
+            if isinstance(value, str) and value:
+                names.add(value)
+    return names
+
+
+def _verify_crossing_component_overlaps(
+    issues: list[PhotonicVerificationIssue],
+    crossing_component_footprints_um: Iterable[
+        Mapping[str, object] | Iterable[tuple[float, float]]
+    ],
+    *,
+    dbu: float,
+    min_overlap_area_um2: float = 0.0,
+) -> int:
+    overlap_count = 0
+    footprints = _crossing_footprints_from_metadata(
+        crossing_component_footprints_um,
+        dbu=dbu,
+    )
+    for left_index, left in enumerate(footprints):
+        if left.region.is_empty():
+            continue
+        for right_index, right in enumerate(footprints[left_index + 1 :], start=left_index + 1):
+            if right.region.is_empty():
+                continue
+            overlap = left.region & right.region
+            if overlap.is_empty():
+                continue
+            overlap_area_um2 = _region_area_um2(overlap, dbu)
+            if overlap_area_um2 <= float(min_overlap_area_um2):
+                continue
+            overlap_count += 1
+            issues.append(
+                PhotonicVerificationIssue(
+                    code="crossing_component_overlap",
+                    message="Realized crossing component footprints overlap.",
+                    net_name=_footprint_net_name(left.details),
+                    details={
+                        "left_crossing_index": left_index,
+                        "right_crossing_index": right_index,
+                        "left_crossing": dict(left.details),
+                        "right_crossing": dict(right.details),
+                        "overlap_area_um2": overlap_area_um2,
+                        "overlap_bbox_um": _region_bbox_um(overlap, dbu),
+                    },
+                )
+            )
+    return overlap_count
+
+
+def _crossing_footprints_from_metadata(
+    crossing_component_footprints_um: Iterable[
+        Mapping[str, object] | Iterable[tuple[float, float]]
+    ],
+    *,
+    dbu: float,
+) -> tuple[_CrossingFootprint, ...]:
+    footprints: list[_CrossingFootprint] = []
+    for raw in crossing_component_footprints_um:
+        details = dict(raw) if isinstance(raw, Mapping) else {}
+        region = _crossing_footprint_region(raw, dbu=dbu)
+        if region.is_empty():
+            continue
+        footprints.append(_CrossingFootprint(region=region, details=details))
+    return tuple(footprints)
+
+
+def _crossing_footprint_region(
+    raw: Mapping[str, object] | Iterable[tuple[float, float]],
+    *,
+    dbu: float,
+) -> kdb.Region:
+    if isinstance(raw, Mapping):
+        polygon = raw.get(
+            "crossing_footprint_polygon_um",
+            raw.get("footprint_polygon_um", raw.get("polygon_um")),
+        )
+        if isinstance(polygon, Iterable) and not isinstance(
+            polygon,
+            (str, bytes, bytearray),
+        ):
+            region = _polygons_region_um((polygon,), dbu)
+            if not region.is_empty():
+                return region
+        center = _as_point(raw.get("point_um", raw.get("center_um")))
+        bbox = _as_point(raw.get("component_bbox_um"))
+        if center is None or bbox is None:
+            return kdb.Region()
+        half_width = max(0.0, float(bbox[0]) / 2.0)
+        half_height = max(0.0, float(bbox[1]) / 2.0)
+        return kdb.Region(
+            kdb.Box(
+                _um_to_dbu(float(center[0]) - half_width, dbu),
+                _um_to_dbu(float(center[1]) - half_height, dbu),
+                _um_to_dbu(float(center[0]) + half_width, dbu),
+                _um_to_dbu(float(center[1]) + half_height, dbu),
+            )
+        )
+    return _polygons_region_um((raw,), dbu)
+
+
+def _footprint_net_name(details: Mapping[str, object]) -> str | None:
+    for key in ("net_name_a", "net_name_b", "net_name"):
+        value = details.get(key)
+        if value is not None:
+            return str(value)
+    return None
 
 
 def _record_port_windows_region(
@@ -480,6 +805,55 @@ def _component_layer_region(component: Component, layer: Layer) -> kdb.Region:
     for polygon in component.get_polygons(merge=False, by="tuple").get(layer, []):
         region.insert(polygon)
     return region
+
+
+def _combined_region(*regions: kdb.Region) -> kdb.Region:
+    combined = kdb.Region()
+    for region in regions:
+        combined += region
+    return combined
+
+
+def _polygons_region_um(
+    polygons_um: Iterable[Iterable[tuple[float, float]]],
+    dbu: float,
+) -> kdb.Region:
+    region = kdb.Region()
+    for polygon in polygons_um:
+        points: list[kdb.Point] = []
+        for raw_point in polygon:
+            if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
+                points = []
+                break
+            points.append(
+                kdb.Point(
+                    _um_to_dbu(float(raw_point[0]), dbu),
+                    _um_to_dbu(float(raw_point[1]), dbu),
+                )
+            )
+        if len(points) < 3:
+            continue
+        region.insert(kdb.Polygon(points))
+    return region
+
+
+def _polygon_regions_by_pair_um(
+    polygons_by_pair: Mapping[
+        NetIdPair,
+        Iterable[Iterable[tuple[float, float]]],
+    ],
+    dbu: float,
+) -> dict[NetIdPair, kdb.Region]:
+    return {
+        _net_id_pair(pair[0], pair[1]): _polygons_region_um(polygons, dbu)
+        for pair, polygons in polygons_by_pair.items()
+    }
+
+
+def _net_id_pair(net_id_a: int, net_id_b: int) -> NetIdPair:
+    a = int(net_id_a)
+    b = int(net_id_b)
+    return (a, b) if a <= b else (b, a)
 
 
 def _box_region_around(
@@ -529,6 +903,19 @@ def _region_bbox_um(region: kdb.Region, dbu: float) -> tuple[float, float, float
         _dbu_to_um(bbox.right, dbu),
         _dbu_to_um(bbox.top, dbu),
     )
+
+
+def _as_point(value: object) -> tuple[float, float] | None:
+    if not isinstance(value, (tuple, list)) or len(value) < 2:
+        return None
+    try:
+        x = float(value[0])
+        y = float(value[1])
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x) or not math.isfinite(y):
+        return None
+    return x, y
 
 
 def _normalize_layer(layer: Iterable[int]) -> Layer:

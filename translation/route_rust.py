@@ -5,9 +5,12 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import os
+import re
 import sys
 import time
 from collections import Counter
+from collections.abc import Iterable as IterableABC
 from dataclasses import is_dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, cast
@@ -45,6 +48,11 @@ from translation.route_rust_analysis import (
     requirement_to_dict,
 )
 from translation import route_rust_meanders as _meander_impl
+from translation.photonic_verification import (
+    PhotonicVerificationIssue,
+    PhotonicVerificationResult,
+    verify_photonic_routing,
+)
 from translation.route_rust_realization import realize_routed_net_records
 from translation.route_rust_records import (
     EndpointCorrectionRouter,
@@ -52,6 +60,7 @@ from translation.route_rust_records import (
     apply_port_endpoint_corrections,
     build_port_alignment_diagnostics,
     build_route_debug_artifacts,
+    format_port_endpoint_correction_error,
     route_edge_key,
     routed_edge_lengths_from_records,
 )
@@ -78,6 +87,15 @@ build_static_obstacle_map = _sob.build_static_obstacle_map
 _load_rust_backend = _sob._load_rust_backend
 
 DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING = 2
+DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM = 50.0
+
+_ILLEGAL_REALIZED_CROSSING_RE = re.compile(
+    r"Illegal realized crossing:\s*net\s+"
+    r"(?P<net_a>\d+)\s+intersects\s+net\s+"
+    r"(?P<net_b>\d+)\s+at\s+\("
+    r"(?P<x>[-+0-9.eE]+),\s*(?P<y>[-+0-9.eE]+)\)\s+"
+    r"\((?P<reason>[^)]+)\)"
+)
 
 
 def _format_route_indices(indices: set[int]) -> str:
@@ -96,6 +114,90 @@ def _format_route_indices(indices: set[int]) -> str:
         previous = index
     ranges.append(f"{start}" if start == previous else f"{start}-{previous}")
     return ",".join(ranges)
+
+
+def _illegal_crossing_root_causes_from_texts(
+    texts: Iterable[str | None],
+) -> list[dict[str, object]]:
+    root_causes: list[dict[str, object]] = []
+    seen: set[tuple[int, int, float, float, str]] = set()
+    for text in texts:
+        if not text:
+            continue
+        for match in _ILLEGAL_REALIZED_CROSSING_RE.finditer(str(text)):
+            try:
+                net_a = int(match.group("net_a"))
+                net_b = int(match.group("net_b"))
+                x_um = float(match.group("x"))
+                y_um = float(match.group("y"))
+            except ValueError:
+                continue
+            reason = match.group("reason")
+            key = (net_a, net_b, round(x_um, 6), round(y_um, 6), reason)
+            if key in seen:
+                continue
+            seen.add(key)
+            root_causes.append(
+                {
+                    "net_a": net_a,
+                    "net_b": net_b,
+                    "x_um": x_um,
+                    "y_um": y_um,
+                    "reason": reason,
+                }
+            )
+    return root_causes
+
+
+def _format_illegal_crossing_root_causes_line(
+    texts: Iterable[str | None],
+) -> str | None:
+    root_causes = _illegal_crossing_root_causes_from_texts(texts)
+    if not root_causes:
+        return None
+    return "root_cause_illegal_crossings=" + json.dumps(root_causes, sort_keys=True)
+
+
+def _format_native_repair_trace_lines(
+    records: Iterable[Mapping[str, object]],
+    *,
+    tail: int = 16,
+) -> list[str]:
+    normalized: list[dict[str, object]] = []
+    for record in records:
+        entry: dict[str, object] = {}
+        for key in ("event", "route_order", "action", "error"):
+            value = record.get(key)
+            if value is not None:
+                entry[key] = str(value)
+        for key in ("net_id", "repair_round", "repair_set_index"):
+            value = record.get(key)
+            if value is not None:
+                try:
+                    entry[key] = int(value)
+                except (TypeError, ValueError):
+                    continue
+        for key in ("candidate_blockers", "ripup_ids", "victim_order"):
+            value = record.get(key)
+            if value is None:
+                continue
+            try:
+                entry[key] = [int(item) for item in cast(Iterable[object], value)]
+            except (TypeError, ValueError):
+                continue
+        for key in ("victim_first", "reverse_victim_order", "success"):
+            value = record.get(key)
+            if value is not None:
+                entry[key] = bool(value)
+        if entry:
+            normalized.append(entry)
+    if not normalized:
+        return []
+    trace_tail = normalized[-tail:] if tail > 0 else []
+    return [
+        f"native_repair_trace_count={len(normalized)}",
+        "native_repair_trace_tail=" + json.dumps(trace_tail, sort_keys=True),
+    ]
 
 
 def _centerline_tuple(points: object) -> tuple[tuple[float, float], ...]:
@@ -206,6 +308,55 @@ def _segment_intersection_with_params(
     return None
 
 
+def _collinear_segment_overlap_with_params(
+    a0: tuple[float, float],
+    a1: tuple[float, float],
+    b0: tuple[float, float],
+    b1: tuple[float, float],
+) -> tuple[
+    tuple[float, float],
+    tuple[float, float],
+    float,
+    float,
+    float,
+    float,
+] | None:
+    ax = a1[0] - a0[0]
+    ay = a1[1] - a0[1]
+    bx = b1[0] - b0[0]
+    by = b1[1] - b0[1]
+    eps = 1e-9
+    if abs(ax) < eps and abs(ay) < eps:
+        return None
+    if abs(bx) < eps and abs(by) < eps:
+        return None
+    if abs(ax * by - ay * bx) >= eps:
+        return None
+    offset_x = b0[0] - a0[0]
+    offset_y = b0[1] - a0[1]
+    if abs(offset_x * ay - offset_y * ax) >= eps:
+        return None
+
+    axis = 0 if abs(ax) >= abs(ay) else 1
+    a_denom = ax if axis == 0 else ay
+    b_denom = bx if axis == 0 else by
+    if abs(a_denom) < eps or abs(b_denom) < eps:
+        return None
+
+    b_t0 = (b0[axis] - a0[axis]) / a_denom
+    b_t1 = (b1[axis] - a0[axis]) / a_denom
+    t_start = max(0.0, min(b_t0, b_t1))
+    t_end = min(1.0, max(b_t0, b_t1))
+    if t_end - t_start <= eps:
+        return None
+
+    overlap_start = (a0[0] + t_start * ax, a0[1] + t_start * ay)
+    overlap_end = (a0[0] + t_end * ax, a0[1] + t_end * ay)
+    u_start = (overlap_start[axis] - b0[axis]) / b_denom
+    u_end = (overlap_end[axis] - b0[axis]) / b_denom
+    return (overlap_start, overlap_end, t_start, t_end, u_start, u_end)
+
+
 def _segment_length_cells(
     segment: tuple[tuple[float, float], tuple[float, float]],
 ) -> float:
@@ -284,6 +435,99 @@ def _record_centerline_um(
         for x, y in waypoints
         )
     )
+
+
+def _physical_point_to_grid_cell(
+    point: tuple[float, float],
+    *,
+    grid_size_um: float,
+    origin_x_um: float,
+    origin_y_um: float,
+) -> tuple[int, int] | None:
+    if grid_size_um <= 0.0:
+        return None
+    x, y = float(point[0]), float(point[1])
+    if not math.isfinite(x) or not math.isfinite(y):
+        return None
+    return (
+        int(math.floor((x - float(origin_x_um)) / float(grid_size_um))),
+        int(math.floor((y - float(origin_y_um)) / float(grid_size_um))),
+    )
+
+
+def _grid_cell_neighborhood(
+    cell: tuple[int, int],
+    *,
+    radius: int,
+) -> set[tuple[int, int]]:
+    cx, cy = int(cell[0]), int(cell[1])
+    r = max(0, int(radius))
+    return {
+        (cx + dx, cy + dy)
+        for dx in range(-r, r + 1)
+        for dy in range(-r, r + 1)
+    }
+
+
+def _point_distance_um(
+    a: tuple[float, float],
+    b: tuple[float, float],
+) -> float:
+    return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
+
+
+def _point_near_route_endpoint(
+    point: tuple[float, float],
+    centerline: tuple[tuple[float, float], ...],
+    *,
+    tolerance_um: float,
+) -> bool:
+    if not centerline:
+        return False
+    return (
+        _point_distance_um(point, centerline[0]) <= float(tolerance_um)
+        or _point_distance_um(point, centerline[-1]) <= float(tolerance_um)
+    )
+
+
+def _point_route_endpoint_distance_um(
+    point: tuple[float, float],
+    centerline: tuple[tuple[float, float], ...],
+) -> float | None:
+    if not centerline:
+        return None
+    return min(
+        _point_distance_um(point, centerline[0]),
+        _point_distance_um(point, centerline[-1]),
+    )
+
+
+def _point_near_record_port_endpoint(
+    point: tuple[float, float],
+    record: RoutedNetRecord,
+    *,
+    tolerance_um: float,
+) -> bool:
+    for endpoint in (record.source_port_center_um, record.target_port_center_um):
+        if endpoint is None:
+            continue
+        if _point_distance_um(point, endpoint) <= float(tolerance_um):
+            return True
+    return False
+
+
+def _point_record_port_endpoint_distance_um(
+    point: tuple[float, float],
+    record: RoutedNetRecord,
+) -> float | None:
+    distances = [
+        _point_distance_um(point, endpoint)
+        for endpoint in (record.source_port_center_um, record.target_port_center_um)
+        if endpoint is not None
+    ]
+    if not distances:
+        return None
+    return min(distances)
 
 
 def _rounded_point(point: tuple[float, float]) -> list[float]:
@@ -523,10 +767,11 @@ def _verify_realized_route_intersections(
         crossing_plan_info=crossing_plan_info,
         grid_size_um=float(grid_size_um),
     )
-    required_margin_um = footprint_half_um + float(grid_size_um) * (
+    search_required_margin_um = footprint_half_um + float(grid_size_um) * (
         int(crossing_plan_info.get("min_straight_cells_per_crossing", 0) or 0)
         + int(crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0)
     )
+    required_margin_um = footprint_half_um
     allowed_pairs: set[frozenset[int]] = set()
     net_names: dict[int, str] = {}
     for raw_event in cast(Iterable[object], crossing_plan_info.get("events", [])):
@@ -540,27 +785,69 @@ def _verify_realized_route_intersections(
         net_names[net_id_b] = str(event.get("net_name_b", net_id_b))
 
     records = sorted(routed_records_by_net_id.items())
-    centerlines_by_id = {
-        net_id: _record_centerline_um(
+    centerlines_by_id: dict[int, tuple[tuple[float, float], ...]] = {}
+    missing_centerline_illegal: list[dict[str, object]] = []
+    for net_id, record in records:
+        centerline = _record_centerline_um(
             record,
             grid_size_um=float(grid_size_um),
             origin_x_um=float(origin_x_um),
             origin_y_um=float(origin_y_um),
         )
-        for net_id, record in records
-    }
+        if centerline:
+            centerlines_by_id[net_id] = centerline
+            continue
+
+        reason = (
+            "endpoint_correction_error"
+            if record.endpoint_correction_error is not None
+            else "missing_corrected_centerline"
+        )
+        missing_centerline_illegal.append(
+            {
+                "net_id_a": int(net_id),
+                "net_id_b": None,
+                "net_name_a": record.net_name,
+                "net_name_b": None,
+                "point_um": None,
+                "grid_cell": None,
+                "classification": "illegal_route_geometry",
+                "reason": reason,
+                "message": (
+                    record.endpoint_correction_error
+                    if record.endpoint_correction_error is not None
+                    else (
+                        "Route has no corrected physical centerline; crossing "
+                        "verification cannot use compressed route waypoints."
+                    )
+                ),
+                "route_waypoint_fallback_available": bool(
+                    _route_waypoints_from_obj(record.route_obj)
+                ),
+            }
+        )
+        centerlines_by_id[net_id] = ()
     for net_id, record in records:
         net_names.setdefault(net_id, record.net_name)
+    opened_cells_by_id = {
+        net_id: {(int(x), int(y)) for x, y in record.opened_cells}
+        for net_id, record in records
+    }
     segments_by_net_id = {
         net_id: _route_segments_from_waypoints(centerline)
         for net_id, centerline in centerlines_by_id.items()
         if len(centerline) >= 2
     }
 
-    allow_unexpected = not bool(crossing_plan_info.get("allow_only_expected_crossings", True))
+    crossing_mode = str(crossing_plan_info.get("crossing_mode", "") or "").strip().lower()
+    allow_unexpected = (
+        crossing_mode == "lidar-pure"
+        or not bool(crossing_plan_info.get("allow_only_expected_crossings", True))
+    )
     realized: list[dict[str, object]] = []
     illegal: list[dict[str, object]] = []
-    seen: set[tuple[int, int, int, int]] = set()
+    ignored_endpoint_access: list[dict[str, object]] = []
+    seen: set[tuple[object, ...]] = set()
     eps = 1e-9
     for index_a, (net_id_a, record_a) in enumerate(records):
         segments_a = segments_by_net_id.get(net_id_a, ())
@@ -581,6 +868,103 @@ def _verify_realized_route_intersections(
                     len_b = _segment_length_um(segment_b)
                     if len_b <= 0.0:
                         continue
+                    overlap = _collinear_segment_overlap_with_params(
+                        segment_a[0],
+                        segment_a[1],
+                        segment_b[0],
+                        segment_b[1],
+                    )
+                    if overlap is not None:
+                        (
+                            overlap_start,
+                            overlap_end,
+                            t_start,
+                            t_end,
+                            u_start,
+                            u_end,
+                        ) = overlap
+                        overlap_length_um = _segment_length_um(
+                            (overlap_start, overlap_end)
+                        )
+                        if overlap_length_um <= eps:
+                            continue
+                        start_key = (
+                            round(overlap_start[0] * 1_000_000),
+                            round(overlap_start[1] * 1_000_000),
+                        )
+                        end_key = (
+                            round(overlap_end[0] * 1_000_000),
+                            round(overlap_end[1] * 1_000_000),
+                        )
+                        ordered_overlap_key = tuple(sorted((start_key, end_key)))
+                        key = (
+                            min(net_id_a, net_id_b),
+                            max(net_id_a, net_id_b),
+                            ordered_overlap_key[0],
+                            ordered_overlap_key[1],
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        midpoint = (
+                            0.5 * (overlap_start[0] + overlap_end[0]),
+                            0.5 * (overlap_start[1] + overlap_end[1]),
+                        )
+                        grid_cell = _physical_point_to_grid_cell(
+                            midpoint,
+                            grid_size_um=float(grid_size_um),
+                            origin_x_um=float(origin_x_um),
+                            origin_y_um=float(origin_y_um),
+                        )
+                        margin_a = min(
+                            max(t_start, 0.0) * len_a,
+                            max(1.0 - t_start, 0.0) * len_a,
+                            max(t_end, 0.0) * len_a,
+                            max(1.0 - t_end, 0.0) * len_a,
+                        )
+                        margin_b = min(
+                            max(u_start, 0.0) * len_b,
+                            max(1.0 - u_start, 0.0) * len_b,
+                            max(u_end, 0.0) * len_b,
+                            max(1.0 - u_end, 0.0) * len_b,
+                        )
+                        record = {
+                            "net_id_a": int(net_id_a),
+                            "net_id_b": int(net_id_b),
+                            "net_name_a": record_a.net_name,
+                            "net_name_b": record_b.net_name,
+                            "point_um": _rounded_point(midpoint),
+                            "grid_cell": (
+                                [int(grid_cell[0]), int(grid_cell[1])]
+                                if grid_cell is not None
+                                else None
+                            ),
+                            "overlap_start_um": _rounded_point(overlap_start),
+                            "overlap_end_um": _rounded_point(overlap_end),
+                            "overlap_length_um": round(float(overlap_length_um), 6),
+                            "segment_a_um": _rounded_segment(segment_a),
+                            "segment_b_um": _rounded_segment(segment_b),
+                            "segment_a_margin_um": round(float(margin_a), 6),
+                            "segment_b_margin_um": round(float(margin_b), 6),
+                            "required_margin_um": round(float(required_margin_um), 6),
+                            "crossing_footprint_half_um": round(
+                                float(footprint_half_um),
+                                6,
+                            ),
+                            "crossing_footprint_um": round(
+                                2.0 * float(footprint_half_um),
+                                6,
+                            ),
+                            "crossing_footprint_polygon_um": [],
+                            "crossing_footprint_blockers": [],
+                            "expected_pair": bool(pair_expected),
+                            "perpendicular": False,
+                            "classification": "illegal_unexpected_crossing",
+                            "reason": "collinear_route_overlap",
+                        }
+                        realized.append(record)
+                        illegal.append(record)
+                        continue
                     intersection = _segment_intersection_with_params(
                         segment_a[0],
                         segment_a[1],
@@ -599,8 +983,130 @@ def _verify_realized_route_intersections(
                     if key in seen:
                         continue
                     seen.add(key)
+                    grid_cell = _physical_point_to_grid_cell(
+                        (point_x, point_y),
+                        grid_size_um=float(grid_size_um),
+                        origin_x_um=float(origin_x_um),
+                        origin_y_um=float(origin_y_um),
+                    )
                     margin_a = min(max(t, 0.0) * len_a, max(1.0 - t, 0.0) * len_a)
                     margin_b = min(max(u, 0.0) * len_b, max(1.0 - u, 0.0) * len_b)
+                    endpoint_margin_tolerance_um = float(grid_size_um) + eps
+                    port_access_tolerance_um = endpoint_margin_tolerance_um
+                    if grid_cell is not None and (
+                        grid_cell in opened_cells_by_id.get(net_id_a, set())
+                        or grid_cell in opened_cells_by_id.get(net_id_b, set())
+                    ):
+                        point = (point_x, point_y)
+                        if _point_near_route_endpoint(
+                            point,
+                            centerlines_by_id.get(net_id_a, ()),
+                            tolerance_um=port_access_tolerance_um,
+                        ) or _point_near_route_endpoint(
+                            point,
+                            centerlines_by_id.get(net_id_b, ()),
+                            tolerance_um=port_access_tolerance_um,
+                        ) or _point_near_record_port_endpoint(
+                            point,
+                            record_a,
+                            tolerance_um=port_access_tolerance_um,
+                        ) or _point_near_record_port_endpoint(
+                            point,
+                            record_b,
+                            tolerance_um=port_access_tolerance_um,
+                        ):
+                            ignored_endpoint_access.append(
+                                {
+                                    "net_id_a": int(net_id_a),
+                                    "net_id_b": int(net_id_b),
+                                    "net_name_a": record_a.net_name,
+                                    "net_name_b": record_b.net_name,
+                                    "point_um": _rounded_point(point),
+                                    "grid_cell": [int(grid_cell[0]), int(grid_cell[1])],
+                                    "reason": "route_endpoint_access",
+                                }
+                            )
+                            continue
+                    if min(margin_a, margin_b) <= endpoint_margin_tolerance_um:
+                        point = (point_x, point_y)
+                        if _point_near_route_endpoint(
+                            point,
+                            centerlines_by_id.get(net_id_a, ()),
+                            tolerance_um=endpoint_margin_tolerance_um,
+                        ) or _point_near_route_endpoint(
+                            point,
+                            centerlines_by_id.get(net_id_b, ()),
+                            tolerance_um=endpoint_margin_tolerance_um,
+                        ) or _point_near_record_port_endpoint(
+                            point,
+                            record_a,
+                            tolerance_um=endpoint_margin_tolerance_um,
+                        ) or _point_near_record_port_endpoint(
+                            point,
+                            record_b,
+                            tolerance_um=endpoint_margin_tolerance_um,
+                        ):
+                            ignored_endpoint_access.append(
+                                {
+                                    "net_id_a": int(net_id_a),
+                                    "net_id_b": int(net_id_b),
+                                    "net_name_a": record_a.net_name,
+                                    "net_name_b": record_b.net_name,
+                                    "point_um": _rounded_point(point),
+                                    "grid_cell": (
+                                        [int(grid_cell[0]), int(grid_cell[1])]
+                                        if grid_cell is not None
+                                        else None
+                                    ),
+                                    "reason": "route_endpoint_access",
+                                }
+                            )
+                            continue
+                    if grid_cell is not None and min(margin_a, margin_b) <= (
+                        endpoint_margin_tolerance_um
+                    ):
+                        nearby_cells = _grid_cell_neighborhood(grid_cell, radius=1)
+                        if nearby_cells.intersection(
+                            opened_cells_by_id.get(net_id_a, set())
+                        ) or nearby_cells.intersection(
+                            opened_cells_by_id.get(net_id_b, set())
+                        ):
+                            point = (point_x, point_y)
+                            nearby_endpoint_tolerance_um = (
+                                endpoint_margin_tolerance_um + float(grid_size_um)
+                            )
+                            if _point_near_route_endpoint(
+                                point,
+                                centerlines_by_id.get(net_id_a, ()),
+                                tolerance_um=nearby_endpoint_tolerance_um,
+                            ) or _point_near_route_endpoint(
+                                point,
+                                centerlines_by_id.get(net_id_b, ()),
+                                tolerance_um=nearby_endpoint_tolerance_um,
+                            ) or _point_near_record_port_endpoint(
+                                point,
+                                record_a,
+                                tolerance_um=nearby_endpoint_tolerance_um,
+                            ) or _point_near_record_port_endpoint(
+                                point,
+                                record_b,
+                                tolerance_um=nearby_endpoint_tolerance_um,
+                            ):
+                                ignored_endpoint_access.append(
+                                    {
+                                        "net_id_a": int(net_id_a),
+                                        "net_id_b": int(net_id_b),
+                                        "net_name_a": record_a.net_name,
+                                        "net_name_b": record_b.net_name,
+                                        "point_um": _rounded_point((point_x, point_y)),
+                                        "grid_cell": [
+                                            int(grid_cell[0]),
+                                            int(grid_cell[1]),
+                                        ],
+                                        "reason": "near_endpoint_access_cell",
+                                    }
+                                )
+                                continue
                     perpendicular = _segments_are_perpendicular(segment_a, segment_b)
                     contact_adjacent = margin_a <= eps and margin_b <= eps
                     axis_u = _segment_unit_vector(segment_a)
@@ -617,20 +1123,28 @@ def _verify_realized_route_intersections(
                     if (
                         axis_u is not None
                         and axis_v is not None
-                        and perpendicular
                         and footprint_half_um > eps
                     ):
+                        footprint_axis_u = axis_u
+                        footprint_axis_v = axis_v
+                        if (
+                            crossing_mode == "lidar-pure"
+                            and pair_allowed
+                            and (not perpendicular or not footprint_straight)
+                        ):
+                            footprint_axis_u = (1.0, 0.0)
+                            footprint_axis_v = (0.0, 1.0)
                         footprint_polygon = _crossing_footprint_polygon(
                             center=(point_x, point_y),
-                            axis_u=axis_u,
-                            axis_v=axis_v,
+                            axis_u=footprint_axis_u,
+                            axis_v=footprint_axis_v,
                             half_extent_um=footprint_half_um,
                         )
                         if pair_allowed and footprint_straight:
                             footprint_blockers = _crossing_footprint_blockers(
                                 center=(point_x, point_y),
-                                axis_u=axis_u,
-                                axis_v=axis_v,
+                                axis_u=footprint_axis_u,
+                                axis_v=footprint_axis_v,
                                 half_extent_um=footprint_half_um,
                                 segments_by_net_id=segments_by_net_id,
                                 allowed_segments={
@@ -652,27 +1166,83 @@ def _verify_realized_route_intersections(
                             else "legal_unexpected_crossing"
                         )
                         reason = None
+                        degraded_reason = None
                     elif contact_adjacent:
                         classification = "contact_adjacent_geometry"
                         reason = "shared_segment_endpoint"
+                        degraded_reason = None
                     else:
                         classification = "illegal_unexpected_crossing"
                         if not pair_allowed:
                             reason = "unexpected_pair"
-                        elif not perpendicular:
-                            reason = "not_perpendicular"
                         elif not footprint_straight:
                             reason = "crossing_footprint_contains_bend"
+                        elif not perpendicular:
+                            reason = "not_perpendicular"
                         elif footprint_blockers:
                             reason = "crossing_footprint_contains_route_geometry"
                         else:
                             reason = "crossing_footprint_invalid"
+                        degraded_reason = None
                     record = {
                         "net_id_a": int(net_id_a),
                         "net_id_b": int(net_id_b),
                         "net_name_a": record_a.net_name,
                         "net_name_b": record_b.net_name,
                         "point_um": _rounded_point((point_x, point_y)),
+                        "grid_cell": (
+                            [int(grid_cell[0]), int(grid_cell[1])]
+                            if grid_cell is not None
+                            else None
+                        ),
+                        "route_endpoint_distance_a_um": (
+                            round(float(route_endpoint_distance_a), 6)
+                            if (
+                                route_endpoint_distance_a
+                                := _point_route_endpoint_distance_um(
+                                    (point_x, point_y),
+                                    centerlines_by_id.get(net_id_a, ()),
+                                )
+                            )
+                            is not None
+                            else None
+                        ),
+                        "route_endpoint_distance_b_um": (
+                            round(float(route_endpoint_distance_b), 6)
+                            if (
+                                route_endpoint_distance_b
+                                := _point_route_endpoint_distance_um(
+                                    (point_x, point_y),
+                                    centerlines_by_id.get(net_id_b, ()),
+                                )
+                            )
+                            is not None
+                            else None
+                        ),
+                        "port_endpoint_distance_a_um": (
+                            round(float(port_endpoint_distance_a), 6)
+                            if (
+                                port_endpoint_distance_a
+                                := _point_record_port_endpoint_distance_um(
+                                    (point_x, point_y),
+                                    record_a,
+                                )
+                            )
+                            is not None
+                            else None
+                        ),
+                        "port_endpoint_distance_b_um": (
+                            round(float(port_endpoint_distance_b), 6)
+                            if (
+                                port_endpoint_distance_b
+                                := _point_record_port_endpoint_distance_um(
+                                    (point_x, point_y),
+                                    record_b,
+                                )
+                            )
+                            is not None
+                            else None
+                        ),
                         "segment_a_um": _rounded_segment(segment_a),
                         "segment_b_um": _rounded_segment(segment_b),
                         "segment_a_margin_um": round(float(margin_a), 6),
@@ -686,6 +1256,10 @@ def _verify_realized_route_intersections(
                             2.0 * float(footprint_half_um),
                             6,
                         ),
+                        "search_required_margin_um": round(
+                            float(search_required_margin_um),
+                            6,
+                        ),
                         "crossing_footprint_polygon_um": [
                             _rounded_point(point) for point in footprint_polygon
                         ],
@@ -696,6 +1270,8 @@ def _verify_realized_route_intersections(
                     }
                     if reason is not None:
                         record["reason"] = reason
+                    if degraded_reason is not None:
+                        record["degraded_reason"] = degraded_reason
                     realized.append(record)
                     if classification.startswith("illegal_"):
                         illegal.append(record)
@@ -706,6 +1282,23 @@ def _verify_realized_route_intersections(
         if str(item.get("classification", "")).startswith("legal_")
         and item.get("crossing_footprint_polygon_um")
     ]
+    def _add_overlap_peer(
+        crossing: dict[str, object],
+        *,
+        peer: dict[str, object],
+        peer_index: int,
+    ) -> None:
+        crossing["overlapping_crossing"] = peer
+        crossing["overlapping_crossing_index"] = int(peer_index)
+        raw_indices = crossing.get("overlapping_crossing_indices")
+        if isinstance(raw_indices, list):
+            indices = raw_indices
+        else:
+            indices = []
+        if int(peer_index) not in indices:
+            indices.append(int(peer_index))
+        crossing["overlapping_crossing_indices"] = indices
+
     for offset, index_a in enumerate(legal_crossing_indices):
         crossing_a = realized[index_a]
         polygon_a = [
@@ -734,6 +1327,9 @@ def _verify_realized_route_intersections(
                 "net_name_a": crossing_b.get("net_name_a"),
                 "net_name_b": crossing_b.get("net_name_b"),
                 "point_um": crossing_b.get("point_um"),
+                "crossing_footprint_polygon_um": crossing_b.get(
+                    "crossing_footprint_polygon_um",
+                ),
             }
             overlap_peer_b = {
                 "net_id_a": crossing_a.get("net_id_a"),
@@ -741,7 +1337,43 @@ def _verify_realized_route_intersections(
                 "net_name_a": crossing_a.get("net_name_a"),
                 "net_name_b": crossing_a.get("net_name_b"),
                 "point_um": crossing_a.get("point_um"),
+                "crossing_footprint_polygon_um": crossing_a.get(
+                    "crossing_footprint_polygon_um",
+                ),
             }
+            ids_a = {
+                int(value)
+                for value in (crossing_a.get("net_id_a"), crossing_a.get("net_id_b"))
+                if isinstance(value, int)
+            }
+            ids_b = {
+                int(value)
+                for value in (crossing_b.get("net_id_a"), crossing_b.get("net_id_b"))
+                if isinstance(value, int)
+            }
+            if (
+                crossing_mode == "lidar-pure"
+                and crossing_a.get("degraded_reason") is not None
+                and crossing_b.get("degraded_reason") is not None
+                and ids_a.intersection(ids_b)
+            ):
+                crossing_a["footprint_overlap_policy"] = (
+                    "allowed_lidar_pure_degraded_cluster"
+                )
+                _add_overlap_peer(
+                    crossing_a,
+                    peer=overlap_peer_a,
+                    peer_index=int(index_b),
+                )
+                crossing_b["footprint_overlap_policy"] = (
+                    "allowed_lidar_pure_degraded_cluster"
+                )
+                _add_overlap_peer(
+                    crossing_b,
+                    peer=overlap_peer_b,
+                    peer_index=int(index_a),
+                )
+                continue
             for crossing, peer in (
                 (crossing_a, overlap_peer_a),
                 (crossing_b, overlap_peer_b),
@@ -750,11 +1382,23 @@ def _verify_realized_route_intersections(
                     continue
                 crossing["classification"] = "illegal_unexpected_crossing"
                 crossing["reason"] = "crossing_footprint_overlap"
-                crossing["overlapping_crossing"] = peer
+                _add_overlap_peer(
+                    crossing,
+                    peer=peer,
+                    peer_index=int(index_b if crossing is crossing_a else index_a),
+                )
                 illegal.append(crossing)
 
     crossing_plan_info["realized_intersections"] = realized
     crossing_plan_info["realized_intersection_count"] = len(realized)
+    crossing_plan_info["routes_missing_corrected_centerline"] = missing_centerline_illegal
+    crossing_plan_info["routes_missing_corrected_centerline_count"] = len(
+        missing_centerline_illegal
+    )
+    crossing_plan_info["ignored_endpoint_access_intersections"] = ignored_endpoint_access
+    crossing_plan_info["ignored_endpoint_access_intersection_count"] = len(
+        ignored_endpoint_access
+    )
     crossing_plan_info["illegal_realized_crossings"] = illegal
     crossing_plan_info["illegal_realized_crossing_count"] = len(illegal)
     return illegal
@@ -783,21 +1427,445 @@ def _bbox_size_um(component: Component) -> tuple[float, float] | None:
     return width, height
 
 
-def _crossing_component_bbox_size_um() -> tuple[str, float, float] | None:
+def _bbox_center_um(ref: Any) -> tuple[float, float] | None:
     try:
-        component = gf.components.crossing()
+        bbox = ref.dbbox() if callable(ref.dbbox) else ref.dbbox
+    except (AttributeError, TypeError):
+        try:
+            bbox = ref.bbox() if callable(ref.bbox) else ref.bbox
+        except (AttributeError, TypeError):
+            return None
+    try:
+        left = float(bbox.left)
+        right = float(bbox.right)
+        bottom = float(bbox.bottom)
+        top = float(bbox.top)
+    except AttributeError:
+        try:
+            left, bottom, right, top = cast(Any, bbox)
+            left = float(left)
+            right = float(right)
+            bottom = float(bottom)
+            top = float(top)
+        except (TypeError, ValueError):
+            return None
+    if not all(math.isfinite(value) for value in (left, right, bottom, top)):
+        return None
+    return (left + right) / 2.0, (bottom + top) / 2.0
+
+
+def _ports_optical_center_um(obj: Any) -> tuple[float, float] | None:
+    """Return the optical center implied by port positions, when available."""
+
+    try:
+        ports = list(obj.ports)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    points: list[tuple[float, float]] = []
+    for port in ports:
+        try:
+            x = float(port.center[0])
+            y = float(port.center[1])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            points.append((x, y))
+    if len(points) < 2:
+        return None
+    return (
+        sum(point[0] for point in points) / float(len(points)),
+        sum(point[1] for point in points) / float(len(points)),
+    )
+
+
+def _active_crossing_component() -> Component | None:
+    try:
+        return gf.components.crossing()
     except Exception:
         try:
             from gdsfactory.gpdk import get_generic_pdk
 
             get_generic_pdk().activate()
-            component = gf.components.crossing()
+            return gf.components.crossing()
         except Exception:
             return None
+
+
+def _crossing_component_bbox_size_um() -> tuple[str, float, float] | None:
+    component = _active_crossing_component()
+    if component is None:
+        return None
     size = _bbox_size_um(component)
     if size is None:
         return None
     return str(component.name), float(size[0]), float(size[1])
+
+
+def _point_um_from_mapping(value: object) -> tuple[float, float] | None:
+    if not isinstance(value, (tuple, list)) or len(value) < 2:
+        return None
+    try:
+        x = float(value[0])
+        y = float(value[1])
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x) or not math.isfinite(y):
+        return None
+    return x, y
+
+
+def _segment_um_from_mapping(
+    value: object,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    if not isinstance(value, (tuple, list)) or len(value) < 2:
+        return None
+    start = _point_um_from_mapping(value[0])
+    end = _point_um_from_mapping(value[1])
+    if start is None or end is None:
+        return None
+    if math.hypot(end[0] - start[0], end[1] - start[1]) <= 1.0e-9:
+        return None
+    return start, end
+
+
+def _crossing_component_rotation_deg(crossing: Mapping[str, object]) -> float:
+    segment = _segment_um_from_mapping(crossing.get("segment_a_um"))
+    if segment is None:
+        return 0.0
+    (x0, y0), (x1, y1) = segment
+    angle = math.degrees(math.atan2(y1 - y0, x1 - x0))
+    return float(angle % 360.0)
+
+
+_SHARED_CROSSING_COMPONENT_POLICIES = {
+    "allowed_lidar_pure_cluster",
+    "allowed_lidar_pure_degraded_cluster",
+}
+
+
+def _shared_crossing_peer_indices(raw_crossing: Mapping[str, object]) -> set[int]:
+    indices: set[int] = set()
+    raw_peer_indices = raw_crossing.get("overlapping_crossing_indices")
+    if isinstance(raw_peer_indices, IterableABC) and not isinstance(
+        raw_peer_indices,
+        (str, bytes, bytearray),
+    ):
+        for raw_peer_index in raw_peer_indices:
+            try:
+                indices.add(int(cast(object, raw_peer_index)))
+            except (TypeError, ValueError):
+                continue
+    try:
+        indices.add(int(cast(object, raw_crossing.get("overlapping_crossing_index"))))
+    except (TypeError, ValueError):
+        pass
+    return indices
+
+
+def _shared_crossing_component_clusters(
+    raw_crossings: list[Mapping[str, object]],
+) -> dict[int, set[int]]:
+    shared_indices = {
+        index
+        for index, raw_crossing in enumerate(raw_crossings)
+        if str(raw_crossing.get("footprint_overlap_policy", "") or "")
+        in _SHARED_CROSSING_COMPONENT_POLICIES
+    }
+    if not shared_indices:
+        return {}
+
+    parent = {index: index for index in shared_indices}
+
+    def find(index: int) -> int:
+        root = parent[index]
+        while root != parent[root]:
+            root = parent[root]
+        while index != root:
+            next_index = parent[index]
+            parent[index] = root
+            index = next_index
+        return root
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            return
+        root = min(left_root, right_root)
+        other = max(left_root, right_root)
+        parent[other] = root
+
+    for index in shared_indices:
+        for peer_index in _shared_crossing_peer_indices(raw_crossings[index]):
+            if peer_index in shared_indices:
+                union(index, peer_index)
+
+    clusters_by_root: dict[int, set[int]] = {}
+    for index in shared_indices:
+        clusters_by_root.setdefault(find(index), set()).add(index)
+    return {
+        index: set(cluster)
+        for cluster in clusters_by_root.values()
+        for index in cluster
+    }
+
+
+def _crossing_footprint_polygon_metadata(
+    raw_crossing: Mapping[str, object],
+) -> list[list[float]] | None:
+    raw_polygon = raw_crossing.get("crossing_footprint_polygon_um")
+    if not isinstance(raw_polygon, IterableABC) or isinstance(
+        raw_polygon,
+        (str, bytes, bytearray),
+    ):
+        return None
+    polygon: list[list[float]] = []
+    for raw_point in raw_polygon:
+        if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
+            return None
+        try:
+            polygon.append([float(raw_point[0]), float(raw_point[1])])
+        except (TypeError, ValueError):
+            return None
+    return polygon if len(polygon) >= 3 else None
+
+
+def _place_realized_crossing_components(
+    routed_layout: Component,
+    crossing_plan_info: dict[str, object],
+) -> list[dict[str, object]]:
+    """Place active PDK crossing refs for legal realized route crossings."""
+
+    if not crossing_plan_info.get("enabled"):
+        crossing_plan_info["realized_crossing_components"] = []
+        crossing_plan_info["realized_crossing_component_count"] = 0
+        return []
+
+    component = _active_crossing_component()
+    if component is None:
+        crossing_plan_info["realized_crossing_components"] = []
+        crossing_plan_info["realized_crossing_component_count"] = 0
+        crossing_plan_info["realized_crossing_component_error"] = (
+            "crossing_component_unavailable"
+        )
+        return []
+
+    component_size = _bbox_size_um(component)
+    component_bbox_um = (
+        [float(component_size[0]), float(component_size[1])]
+        if component_size is not None
+        else None
+    )
+    component_name = str(component.name)
+    placements: list[dict[str, object]] = []
+    raw_crossings = crossing_plan_info.get("realized_intersections", ())
+    if not isinstance(raw_crossings, IterableABC) or isinstance(
+        raw_crossings,
+        (str, bytes, bytearray),
+    ):
+        raw_crossings = ()
+    raw_crossing_list = [
+        raw_crossing
+        for raw_crossing in raw_crossings
+        if isinstance(raw_crossing, Mapping)
+    ]
+    shared_clusters_by_index = _shared_crossing_component_clusters(
+        raw_crossing_list
+    )
+
+    for index, raw_crossing in enumerate(raw_crossing_list):
+        classification = str(raw_crossing.get("classification", "") or "")
+        if not classification.startswith("legal_"):
+            continue
+        cluster_indices = shared_clusters_by_index.get(index)
+        if cluster_indices:
+            representative_index = min(cluster_indices)
+            if index != representative_index:
+                continue
+        point_um = _point_um_from_mapping(raw_crossing.get("point_um"))
+        if point_um is None:
+            continue
+        rotation_deg = _crossing_component_rotation_deg(raw_crossing)
+        instance_name = (
+            f"crossing_{len(placements):04d}_"
+            f"{raw_crossing.get('net_id_a', 'na')}_"
+            f"{raw_crossing.get('net_id_b', 'nb')}"
+        )
+        try:
+            ref = routed_layout.add_ref(component, name=instance_name)
+        except TypeError:
+            ref = routed_layout.add_ref(component)
+        if abs(rotation_deg) > 1.0e-9:
+            ref.drotate(rotation_deg)
+        ref_center_um = _ports_optical_center_um(ref) or _bbox_center_um(ref)
+        if ref_center_um is None:
+            ref.dmove(point_um)
+        else:
+            ref.dmove(
+                (
+                    point_um[0] - ref_center_um[0],
+                    point_um[1] - ref_center_um[1],
+                )
+            )
+
+        placement: dict[str, object] = {
+            "component_name": component_name,
+            "instance_name": str(getattr(ref, "name", instance_name)),
+            "point_um": _rounded_point(point_um),
+            "center_um": _rounded_point(point_um),
+            "optical_center_um": _rounded_point(point_um),
+            "rotation_deg": round(float(rotation_deg), 6),
+            "source_crossing_index": int(index),
+            "classification": classification,
+            "net_id_a": raw_crossing.get("net_id_a"),
+            "net_id_b": raw_crossing.get("net_id_b"),
+            "net_name_a": raw_crossing.get("net_name_a"),
+            "net_name_b": raw_crossing.get("net_name_b"),
+        }
+        if cluster_indices:
+            placement["shared_crossing_indices"] = sorted(int(i) for i in cluster_indices)
+            shared_owner_names: set[str] = set()
+            shared_owner_ids: set[int] = set()
+            for shared_index in cluster_indices:
+                if shared_index < 0 or shared_index >= len(raw_crossing_list):
+                    continue
+                shared_crossing = raw_crossing_list[shared_index]
+                for key in ("net_name_a", "net_name_b"):
+                    value = shared_crossing.get(key)
+                    if isinstance(value, str) and value:
+                        shared_owner_names.add(value)
+                for key in ("net_id_a", "net_id_b"):
+                    try:
+                        shared_owner_ids.add(int(cast(object, shared_crossing.get(key))))
+                    except (TypeError, ValueError):
+                        continue
+            if shared_owner_names:
+                placement["shared_owner_net_names"] = sorted(shared_owner_names)
+            if shared_owner_ids:
+                placement["shared_owner_net_ids"] = sorted(shared_owner_ids)
+        footprint_polygon = _crossing_footprint_polygon_metadata(raw_crossing)
+        if footprint_polygon is not None:
+            placement["crossing_footprint_polygon_um"] = footprint_polygon
+        if component_bbox_um is not None:
+            placement["component_bbox_um"] = list(component_bbox_um)
+        placements.append(placement)
+
+    crossing_plan_info["realized_crossing_components"] = placements
+    crossing_plan_info["realized_crossing_component_count"] = len(placements)
+    crossing_plan_info.pop("realized_crossing_component_error", None)
+    try:
+        routed_layout.info["realized_crossing_components"] = placements
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return placements
+
+
+def _legal_crossing_overlap_polygons_for_verification(
+    crossing_plan_info: Mapping[str, object] | None,
+) -> dict[tuple[int, int], tuple[tuple[tuple[float, float], ...], ...]]:
+    if crossing_plan_info is None:
+        return {}
+    raw_crossings = crossing_plan_info.get("realized_intersections", ())
+    if not isinstance(raw_crossings, IterableABC) or isinstance(
+        raw_crossings,
+        (str, bytes, bytearray),
+    ):
+        return {}
+
+    polygons_by_pair: dict[tuple[int, int], list[tuple[tuple[float, float], ...]]] = {}
+    for raw_crossing in raw_crossings:
+        if not isinstance(raw_crossing, Mapping):
+            continue
+        classification = str(raw_crossing.get("classification", "") or "")
+        if not classification.startswith("legal_"):
+            continue
+        try:
+            net_id_a = int(cast(object, raw_crossing["net_id_a"]))
+            net_id_b = int(cast(object, raw_crossing["net_id_b"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        raw_polygon = raw_crossing.get("crossing_footprint_polygon_um", ())
+        if not isinstance(raw_polygon, IterableABC) or isinstance(
+            raw_polygon,
+            (str, bytes, bytearray),
+        ):
+            continue
+        points: list[tuple[float, float]] = []
+        for raw_point in raw_polygon:
+            if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
+                points = []
+                break
+            try:
+                point = (float(raw_point[0]), float(raw_point[1]))
+            except (TypeError, ValueError):
+                points = []
+                break
+            if not math.isfinite(point[0]) or not math.isfinite(point[1]):
+                points = []
+                break
+            points.append(point)
+        if len(points) >= 3:
+            pair = (net_id_a, net_id_b) if net_id_a <= net_id_b else (net_id_b, net_id_a)
+            polygons_by_pair.setdefault(pair, []).append(tuple(points))
+    return {pair: tuple(polygons) for pair, polygons in polygons_by_pair.items()}
+
+
+def _legal_crossing_component_footprints_for_verification(
+    crossing_plan_info: Mapping[str, object] | None,
+) -> tuple[dict[str, object], ...]:
+    if crossing_plan_info is None:
+        return ()
+    raw_components = crossing_plan_info.get("realized_crossing_components", ())
+    if isinstance(raw_components, IterableABC) and not isinstance(
+        raw_components,
+        (str, bytes, bytearray),
+    ):
+        components = [
+            dict(component)
+            for component in raw_components
+            if isinstance(component, Mapping)
+        ]
+        if components:
+            return tuple(components)
+
+    raw_crossings = crossing_plan_info.get("realized_intersections", ())
+    if not isinstance(raw_crossings, IterableABC) or isinstance(
+        raw_crossings,
+        (str, bytes, bytearray),
+    ):
+        return ()
+    footprints: list[dict[str, object]] = []
+    for raw_crossing in raw_crossings:
+        if not isinstance(raw_crossing, Mapping):
+            continue
+        classification = str(raw_crossing.get("classification", "") or "")
+        if not classification.startswith("legal_"):
+            continue
+        raw_polygon = raw_crossing.get("crossing_footprint_polygon_um", ())
+        if isinstance(raw_polygon, IterableABC) and not isinstance(
+            raw_polygon,
+            (str, bytes, bytearray),
+        ):
+            raw_points = list(raw_polygon)
+            if len(raw_points) >= 3:
+                footprint = dict(raw_crossing)
+                footprint["crossing_footprint_polygon_um"] = raw_points
+                footprints.append(footprint)
+    return tuple(footprints)
+
+
+def _routed_records_by_net_id(
+    records: Iterable[RoutedNetRecord],
+) -> dict[int, RoutedNetRecord]:
+    records_by_id: dict[int, RoutedNetRecord] = {}
+    for record in records:
+        if record.net_id is None:
+            continue
+        try:
+            records_by_id[int(record.net_id)] = record
+        except (TypeError, ValueError):
+            continue
+    return records_by_id
 
 
 def _resolve_crossing_half_size_cells(
@@ -863,6 +1931,28 @@ def _edge_key_to_info(edge_key: object) -> dict[str, object]:
     }
 
 
+def _effective_crossing_search_loss(
+    *,
+    enable_crossings: bool,
+    crossing_mode: str,
+    crossing_loss: float,
+) -> float:
+    """Return the search-only crossing penalty passed to Rust A*.
+
+    ``crossing_loss`` is the physical insertion-loss term reported to users.
+    Collision-discovered crossing modes also need a non-physical search cost so
+    A* tries a clean same-net route before probing route-route collisions.
+    """
+    physical_loss = float(crossing_loss)
+    if not enable_crossings:
+        return physical_loss
+    if physical_loss > 0.0:
+        return physical_loss
+    if str(crossing_mode).strip().lower() in {"collision", "lidar-pure"}:
+        return DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
+    return physical_loss
+
+
 def _build_crossing_plan_info(
     *,
     rust_backend: object,
@@ -874,6 +1964,7 @@ def _build_crossing_plan_info(
     node_ranks: dict[str, int] | None,
     edge_ranks: dict[str, dict[str, int]] | None,
     crossing_loss: float,
+    crossing_search_loss: float,
     crossing_half_size_cells: int,
     min_straight_cells_per_crossing: int,
     allow_only_expected_crossings: bool,
@@ -887,6 +1978,11 @@ def _build_crossing_plan_info(
         "events": [],
         "expected_crossings_by_net_id": {},
         "expected_crossings_by_net_name": {},
+        "crossing_loss": float(crossing_loss),
+        "crossing_search_loss": float(crossing_search_loss),
+        "crossing_half_size_cells": int(crossing_half_size_cells),
+        "min_straight_cells_per_crossing": int(min_straight_cells_per_crossing),
+        "allow_only_expected_crossings": bool(allow_only_expected_crossings),
     }
     if not enable_crossings:
         return info
@@ -913,7 +2009,7 @@ def _build_crossing_plan_info(
     router.set_crossing_config(
         rust_backend.CrossingConfig(
             enabled=True,
-            crossing_loss=float(crossing_loss),
+            crossing_loss=float(crossing_search_loss),
             crossing_half_size_cells=int(crossing_half_size_cells),
             min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
             allow_only_expected_pairs=bool(allow_only_expected_crossings),
@@ -1004,10 +2100,6 @@ def _build_crossing_plan_info(
     info["events"] = event_records
     info["expected_crossings_by_net_id"] = dict(sorted(crossing_counts_by_net_id.items()))
     info["expected_crossings_by_net_name"] = dict(sorted(crossing_counts_by_net_name.items()))
-    info["crossing_loss"] = float(crossing_loss)
-    info["crossing_half_size_cells"] = int(crossing_half_size_cells)
-    info["min_straight_cells_per_crossing"] = int(min_straight_cells_per_crossing)
-    info["allow_only_expected_crossings"] = bool(allow_only_expected_crossings)
     return info
 
 
@@ -1027,27 +2119,16 @@ def _segment_bend_units(route_obj: object) -> float:
     return bend_units
 
 
-def _augment_insertion_loss_report(
+def _write_insertion_loss_report(
     *,
     crossing_plan_info: dict[str, object],
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
-    native_crossing_events: Iterable[object],
-    propagation_loss_per_um: float = 0.0,
-    bend_loss_per_90deg: float = 0.0,
+    crossing_counts_by_net_id: Mapping[int, int],
+    propagation_loss_per_um: float,
+    bend_loss_per_90deg: float,
+    crossing_count_source: str,
 ) -> None:
-    if not crossing_plan_info.get("enabled"):
-        return
     crossing_loss = float(crossing_plan_info.get("crossing_loss", 0.0) or 0.0)
-    crossing_counts_by_net_id: Counter[int] = Counter()
-    for raw_event in native_crossing_events:
-        try:
-            net_id = int(raw_event["net_id"])
-            partner_net_id = int(raw_event["partner_net_id"])
-        except (TypeError, KeyError, ValueError):
-            continue
-        crossing_counts_by_net_id[net_id] += 1
-        crossing_counts_by_net_id[partner_net_id] += 1
-
     per_net: list[dict[str, object]] = []
     total_length_um = 0.0
     total_bend_units = 0.0
@@ -1084,6 +2165,7 @@ def _augment_insertion_loss_report(
         "propagation_loss_per_um": propagation_loss_per_um,
         "bend_loss_per_90deg": bend_loss_per_90deg,
         "crossing_loss": crossing_loss,
+        "crossing_count_source": crossing_count_source,
         "device_loss_included": False,
         "formula": (
             "length_um * propagation_loss_per_um + "
@@ -1099,6 +2181,76 @@ def _augment_insertion_loss_report(
         "total_insertion_loss": total_insertion_loss,
     }
     crossing_plan_info["insertion_loss_by_net"] = per_net
+
+
+def _augment_insertion_loss_report(
+    *,
+    crossing_plan_info: dict[str, object],
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord],
+    native_crossing_events: Iterable[object],
+    propagation_loss_per_um: float = 0.0,
+    bend_loss_per_90deg: float = 0.0,
+) -> None:
+    if not crossing_plan_info.get("enabled"):
+        return
+    crossing_counts_by_net_id: Counter[int] = Counter()
+    for raw_event in native_crossing_events:
+        try:
+            net_id = int(raw_event["net_id"])
+            partner_net_id = int(raw_event["partner_net_id"])
+        except (TypeError, KeyError, ValueError):
+            continue
+        crossing_counts_by_net_id[net_id] += 1
+        crossing_counts_by_net_id[partner_net_id] += 1
+
+    _write_insertion_loss_report(
+        crossing_plan_info=crossing_plan_info,
+        routed_records_by_net_id=routed_records_by_net_id,
+        crossing_counts_by_net_id=crossing_counts_by_net_id,
+        propagation_loss_per_um=propagation_loss_per_um,
+        bend_loss_per_90deg=bend_loss_per_90deg,
+        crossing_count_source="native_crossing_events",
+    )
+
+
+def _augment_insertion_loss_report_from_realized_intersections(
+    *,
+    crossing_plan_info: dict[str, object],
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord],
+    propagation_loss_per_um: float = 0.0,
+    bend_loss_per_90deg: float = 0.0,
+) -> None:
+    if not crossing_plan_info.get("enabled"):
+        return
+    crossing_counts_by_net_id: Counter[int] = Counter()
+    raw_intersections = crossing_plan_info.get("realized_intersections", ())
+    if not isinstance(raw_intersections, IterableABC) or isinstance(
+        raw_intersections,
+        (str, bytes, bytearray),
+    ):
+        raw_intersections = ()
+    for raw_intersection in raw_intersections:
+        if not isinstance(raw_intersection, Mapping):
+            continue
+        classification = str(raw_intersection.get("classification", "") or "")
+        if not classification.startswith("legal_"):
+            continue
+        try:
+            net_id_a = int(raw_intersection["net_id_a"])
+            net_id_b = int(raw_intersection["net_id_b"])
+        except (TypeError, KeyError, ValueError):
+            continue
+        crossing_counts_by_net_id[net_id_a] += 1
+        crossing_counts_by_net_id[net_id_b] += 1
+
+    _write_insertion_loss_report(
+        crossing_plan_info=crossing_plan_info,
+        routed_records_by_net_id=routed_records_by_net_id,
+        crossing_counts_by_net_id=crossing_counts_by_net_id,
+        propagation_loss_per_um=propagation_loss_per_um,
+        bend_loss_per_90deg=bend_loss_per_90deg,
+        crossing_count_source="realized_intersections",
+    )
 
 
 def _augment_crossing_plan_with_realized_overlaps(
@@ -1344,6 +2496,871 @@ def _apply_endpoint_corrections_to_debug_artifacts(
     )
 
 
+def _centerline_length_um(points: tuple[tuple[float, float], ...]) -> float:
+    total = 0.0
+    for start, end in zip(points, points[1:]):
+        total += math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
+    return total
+
+
+def _dedupe_centerline(
+    points: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    out: list[tuple[float, float]] = []
+    for point in points:
+        if not out or out[-1] != point:
+            out.append(point)
+    return tuple(out)
+
+
+def _closest_centerline_projection(
+    centerline: tuple[tuple[float, float], ...],
+    point: tuple[float, float],
+) -> tuple[int, float, tuple[float, float], float] | None:
+    best: tuple[int, float, tuple[float, float], float] | None = None
+    px, py = float(point[0]), float(point[1])
+    for index, (start, end) in enumerate(zip(centerline, centerline[1:])):
+        sx, sy = float(start[0]), float(start[1])
+        ex, ey = float(end[0]), float(end[1])
+        dx = ex - sx
+        dy = ey - sy
+        length_sq = dx * dx + dy * dy
+        if length_sq <= 1.0e-18:
+            continue
+        t = ((px - sx) * dx + (py - sy) * dy) / length_sq
+        t = max(0.0, min(1.0, t))
+        projected = (sx + t * dx, sy + t * dy)
+        dist_sq = (projected[0] - px) ** 2 + (projected[1] - py) ** 2
+        if best is None or dist_sq < best[3]:
+            best = (index, t, projected, dist_sq)
+    return best
+
+
+def _insert_centerline_cut_point(
+    centerline: tuple[tuple[float, float], ...],
+    point: tuple[float, float],
+) -> tuple[tuple[float, float], ...]:
+    if len(centerline) < 2:
+        return centerline
+    if any(_point_distance_um(existing, point) <= 1.0e-6 for existing in centerline):
+        return centerline
+    projection = _closest_centerline_projection(centerline, point)
+    if projection is None:
+        return centerline
+    segment_index, _, _, _ = projection
+    out = list(centerline[: segment_index + 1])
+    out.append((float(point[0]), float(point[1])))
+    out.extend(centerline[segment_index + 1 :])
+    return _dedupe_centerline(tuple(out))
+
+
+def _centerline_index_near_point(
+    centerline: tuple[tuple[float, float], ...],
+    point: tuple[float, float],
+) -> int | None:
+    best_index: int | None = None
+    best_dist = float("inf")
+    for index, existing in enumerate(centerline):
+        dist = _point_distance_um(existing, point)
+        if dist < best_dist:
+            best_dist = dist
+            best_index = index
+    return best_index if best_dist <= 1.0e-6 else None
+
+
+def _centerline_between_cut_points(
+    centerline: tuple[tuple[float, float], ...],
+    start_point: tuple[float, float],
+    end_point: tuple[float, float],
+) -> tuple[tuple[float, float], ...]:
+    line = _insert_centerline_cut_point(centerline, start_point)
+    line = _insert_centerline_cut_point(line, end_point)
+    start_index = _centerline_index_near_point(line, start_point)
+    end_index = _centerline_index_near_point(line, end_point)
+    if start_index is None or end_index is None:
+        return ()
+    if end_index < start_index:
+        start_index, end_index = end_index, start_index
+    return _dedupe_centerline(tuple(line[start_index : end_index + 1]))
+
+
+def _corrected_prefix_to_crossing(
+    corrected_centerline: tuple[tuple[float, float], ...],
+    crossing_point: tuple[float, float],
+) -> tuple[tuple[float, float], ...]:
+    if len(corrected_centerline) < 2:
+        return ()
+    projection = _closest_centerline_projection(corrected_centerline, crossing_point)
+    if projection is None:
+        return ()
+    segment_index, t, _, _ = projection
+    end_index = segment_index + (1 if t >= 1.0 - 1.0e-9 else 0)
+    prefix = list(corrected_centerline[: end_index + 1])
+    prefix.append((float(crossing_point[0]), float(crossing_point[1])))
+    return _dedupe_centerline(tuple(prefix))
+
+
+def _corrected_suffix_from_crossing(
+    corrected_centerline: tuple[tuple[float, float], ...],
+    crossing_point: tuple[float, float],
+) -> tuple[tuple[float, float], ...]:
+    if len(corrected_centerline) < 2:
+        return ()
+    projection = _closest_centerline_projection(corrected_centerline, crossing_point)
+    if projection is None:
+        return ()
+    segment_index, t, _, _ = projection
+    start_index = segment_index + (2 if t >= 1.0 - 1.0e-9 else 1)
+    suffix = [(float(crossing_point[0]), float(crossing_point[1]))]
+    suffix.extend(corrected_centerline[start_index:])
+    return _dedupe_centerline(tuple(suffix))
+
+
+def _segment_direction_sequence(
+    centerline: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    compressed = _compress_centerline(centerline)
+    directions: list[tuple[float, float]] = []
+    for start, end in zip(compressed, compressed[1:]):
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        if length <= 1.0e-9:
+            continue
+        directions.append((dx / length, dy / length))
+    return tuple(directions)
+
+
+def _same_segment_direction_sequence(
+    candidate: tuple[tuple[float, float], ...],
+    baseline: tuple[tuple[float, float], ...],
+) -> bool:
+    baseline_dirs = _segment_direction_sequence(baseline)
+    candidate_dirs = _segment_direction_sequence(candidate)
+    if len(candidate_dirs) != len(baseline_dirs):
+        return False
+    for candidate_dir, baseline_dir in zip(candidate_dirs, baseline_dirs):
+        cross = candidate_dir[0] * baseline_dir[1] - candidate_dir[1] * baseline_dir[0]
+        dot = candidate_dir[0] * baseline_dir[0] + candidate_dir[1] * baseline_dir[1]
+        if abs(cross) > 1.0e-6 or dot <= 0.0:
+            return False
+    return True
+
+
+def _centerline_lengths_and_dirs(
+    centerline: tuple[tuple[float, float], ...],
+) -> tuple[list[float], list[tuple[float, float]]]:
+    lengths: list[float] = []
+    dirs: list[tuple[float, float]] = []
+    for start, end in zip(centerline, centerline[1:]):
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        if length <= 1.0e-9:
+            continue
+        lengths.append(length)
+        dirs.append((dx / length, dy / length))
+    return lengths, dirs
+
+
+def _is_axis_or_diagonal_direction(direction: tuple[float, float]) -> bool:
+    scale = math.sqrt(0.5)
+    allowed = (
+        (1.0, 0.0),
+        (scale, scale),
+        (0.0, 1.0),
+        (-scale, scale),
+        (-1.0, 0.0),
+        (-scale, -scale),
+        (0.0, -1.0),
+        (scale, -scale),
+    )
+    return any(_same_direction(direction, allowed_dir) for allowed_dir in allowed)
+
+
+def _solve_terminal_length_adjustments(
+    lengths: list[float],
+    dirs: list[tuple[float, float]],
+    delta: tuple[float, float],
+    *,
+    adjustable_indices: tuple[int, ...] | None = None,
+    required_positive_indices: tuple[int, ...] = (),
+) -> list[float] | None:
+    if not lengths or len(lengths) != len(dirs):
+        return None
+    adjustable = (
+        tuple(range(len(dirs)))
+        if adjustable_indices is None
+        else tuple(index for index in adjustable_indices if 0 <= index < len(dirs))
+    )
+    if not adjustable:
+        return None
+    dx, dy = float(delta[0]), float(delta[1])
+    if math.hypot(dx, dy) <= 1.0e-9:
+        updated = list(lengths)
+        if all(updated[index] > 1.0e-6 for index in required_positive_indices):
+            return updated
+        return None
+
+    def has_required_positive(updated: list[float]) -> bool:
+        return all(updated[index] > 1.0e-6 for index in required_positive_indices)
+
+    candidates: list[tuple[float, list[float]]] = []
+    for index in adjustable:
+        direction = dirs[index]
+        cross = dx * direction[1] - dy * direction[0]
+        if abs(cross) > 1.0e-6:
+            continue
+        alpha = dx * direction[0] + dy * direction[1]
+        updated = list(lengths)
+        updated[index] += alpha
+        if updated[index] > 1.0e-6 and has_required_positive(updated):
+            candidates.append((abs(alpha), updated))
+
+    for left_pos, left in enumerate(adjustable):
+        for right in adjustable[left_pos + 1 :]:
+            d0 = dirs[left]
+            d1 = dirs[right]
+            det = d0[0] * d1[1] - d0[1] * d1[0]
+            if abs(det) <= 1.0e-9:
+                continue
+            alpha = (dx * d1[1] - dy * d1[0]) / det
+            beta = (d0[0] * dy - d0[1] * dx) / det
+            updated = list(lengths)
+            updated[left] += alpha
+            updated[right] += beta
+            if (
+                updated[left] > 1.0e-6
+                and updated[right] > 1.0e-6
+                and has_required_positive(updated)
+            ):
+                candidates.append((abs(alpha) + abs(beta), updated))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _centerline_from_start_dirs_lengths(
+    start: tuple[float, float],
+    dirs: list[tuple[float, float]],
+    lengths: list[float],
+) -> tuple[tuple[float, float], ...]:
+    points = [(float(start[0]), float(start[1]))]
+    x, y = points[0]
+    for direction, length in zip(dirs, lengths):
+        x += float(direction[0]) * float(length)
+        y += float(direction[1]) * float(length)
+        points.append((x, y))
+    return _dedupe_centerline(tuple(points))
+
+
+def _absorbed_terminal_centerline(
+    baseline_side: tuple[tuple[float, float], ...],
+    *,
+    desired_start: tuple[float, float] | None = None,
+    desired_end: tuple[float, float] | None = None,
+    extra_start_dir: tuple[float, float] | None = None,
+    extra_end_dir: tuple[float, float] | None = None,
+) -> tuple[tuple[float, float], ...]:
+    if len(baseline_side) < 2:
+        return baseline_side
+    if (desired_start is None) == (desired_end is None):
+        return ()
+
+    base_lengths, base_dirs = _centerline_lengths_and_dirs(baseline_side)
+    if not base_lengths:
+        return ()
+    base_adjustable_indices = tuple(
+        index
+        for index, direction in enumerate(base_dirs)
+        if _is_axis_or_diagonal_direction(direction)
+    )
+
+    def solve_with(
+        lengths: list[float],
+        dirs: list[tuple[float, float]],
+        start: tuple[float, float],
+        end: tuple[float, float],
+        *,
+        adjustable_indices: tuple[int, ...],
+        required_positive_indices: tuple[int, ...] = (),
+    ) -> tuple[tuple[float, float], ...]:
+        current_vector = (
+            sum(length * direction[0] for length, direction in zip(lengths, dirs)),
+            sum(length * direction[1] for length, direction in zip(lengths, dirs)),
+        )
+        desired_vector = (float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
+        adjusted_lengths = _solve_terminal_length_adjustments(
+            lengths,
+            dirs,
+            (
+                desired_vector[0] - current_vector[0],
+                desired_vector[1] - current_vector[1],
+            ),
+            adjustable_indices=adjustable_indices,
+            required_positive_indices=required_positive_indices,
+        )
+        if adjusted_lengths is None:
+            return ()
+        candidate = _centerline_from_start_dirs_lengths(start, dirs, adjusted_lengths)
+        if _point_distance_um(candidate[-1], end) > 1.0e-6:
+            return ()
+        return candidate
+
+    if desired_start is not None:
+        fixed_end = baseline_side[-1]
+        candidate = solve_with(
+            base_lengths,
+            base_dirs,
+            desired_start,
+            fixed_end,
+            adjustable_indices=base_adjustable_indices,
+        )
+        if candidate and _terminal_segment_matches_direction(
+            candidate,
+            extra_start_dir,
+            at_start=True,
+        ):
+            return candidate
+        if extra_start_dir is not None:
+            return solve_with(
+                [0.0] + base_lengths,
+                [extra_start_dir] + base_dirs,
+                desired_start,
+                fixed_end,
+                adjustable_indices=(
+                    0,
+                    *(index + 1 for index in base_adjustable_indices),
+                ),
+                required_positive_indices=(0,),
+            )
+        return ()
+
+    fixed_start = baseline_side[0]
+    assert desired_end is not None
+    candidate = solve_with(
+        base_lengths,
+        base_dirs,
+        fixed_start,
+        desired_end,
+        adjustable_indices=base_adjustable_indices,
+    )
+    if candidate and _terminal_segment_matches_direction(
+        candidate,
+        extra_end_dir,
+        at_start=False,
+    ):
+        return candidate
+    if extra_end_dir is not None:
+        return solve_with(
+            base_lengths + [0.0],
+            base_dirs + [extra_end_dir],
+            fixed_start,
+            desired_end,
+            adjustable_indices=(
+                *base_adjustable_indices,
+                len(base_lengths),
+            ),
+            required_positive_indices=(len(base_lengths),),
+        )
+    return ()
+
+
+def _unit_from_orientation_deg(
+    orientation_deg: float | None,
+    *,
+    as_target: bool,
+) -> tuple[float, float] | None:
+    if orientation_deg is None:
+        return None
+    angle_rad = math.radians(float(orientation_deg) + (180.0 if as_target else 0.0))
+    return (math.cos(angle_rad), math.sin(angle_rad))
+
+
+def _angle_index_to_unit(angle: int) -> tuple[float, float]:
+    scale = math.sqrt(0.5)
+    steps = (
+        (1.0, 0.0),
+        (scale, scale),
+        (0.0, 1.0),
+        (-scale, scale),
+        (-1.0, 0.0),
+        (-scale, -scale),
+        (0.0, -1.0),
+        (scale, -scale),
+    )
+    return steps[int(angle) % 8]
+
+
+def _route_endpoint_unit(
+    route_obj: object,
+    *,
+    target: bool,
+) -> tuple[float, float] | None:
+    states = getattr(route_obj, "states", None)
+    if not states:
+        return None
+    try:
+        state = states[-1] if target else states[0]
+        return _angle_index_to_unit(int(getattr(state, "angle")))
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return None
+
+
+def _same_direction(
+    candidate_dir: tuple[float, float],
+    expected_dir: tuple[float, float],
+) -> bool:
+    cross = candidate_dir[0] * expected_dir[1] - candidate_dir[1] * expected_dir[0]
+    dot = candidate_dir[0] * expected_dir[0] + candidate_dir[1] * expected_dir[1]
+    return abs(cross) <= 1.0e-6 and dot > 0.0
+
+
+def _terminal_segment_matches_direction(
+    centerline: tuple[tuple[float, float], ...],
+    expected_dir: tuple[float, float] | None,
+    *,
+    at_start: bool,
+) -> bool:
+    if expected_dir is None:
+        return True
+    points = _dedupe_centerline(centerline)
+    if len(points) < 2:
+        return False
+    start, end = (points[0], points[1]) if at_start else (points[-2], points[-1])
+    dx = float(end[0]) - float(start[0])
+    dy = float(end[1]) - float(start[1])
+    length = math.hypot(dx, dy)
+    if length <= 1.0e-9:
+        return False
+    return _same_direction((dx / length, dy / length), expected_dir)
+
+
+def _compatible_terminal_direction_sequence(
+    candidate: tuple[tuple[float, float], ...],
+    baseline: tuple[tuple[float, float], ...],
+    *,
+    expected_port_dir: tuple[float, float] | None,
+    allow_extra_at_start: bool,
+) -> bool:
+    baseline_dirs = _segment_direction_sequence(baseline)
+    candidate_dirs = _segment_direction_sequence(candidate)
+    if len(candidate_dirs) == len(baseline_dirs):
+        return _same_segment_direction_sequence(candidate, baseline)
+    if len(candidate_dirs) != len(baseline_dirs) + 1:
+        return False
+    if expected_port_dir is None:
+        return False
+    if allow_extra_at_start:
+        extra_dir = candidate_dirs[0]
+        remainder_dirs = candidate_dirs[1:]
+    else:
+        extra_dir = candidate_dirs[-1]
+        remainder_dirs = candidate_dirs[:-1]
+    if not _same_direction(extra_dir, expected_port_dir):
+        return False
+    for candidate_dir, baseline_dir in zip(remainder_dirs, baseline_dirs):
+        if not _same_direction(candidate_dir, baseline_dir):
+            return False
+    return True
+
+
+def _terminal_anchor_matches(
+    centerline: tuple[tuple[float, float], ...],
+    anchor: tuple[float, float] | None,
+    *,
+    at_start: bool,
+) -> bool:
+    if anchor is None:
+        return True
+    if not centerline:
+        return False
+    point = centerline[0] if at_start else centerline[-1]
+    return _point_distance_um(point, anchor) <= 1.0e-6
+
+
+def _spliced_crossing_endpoint_centerline(
+    *,
+    baseline: tuple[tuple[float, float], ...],
+    corrected_centerline: tuple[tuple[float, float], ...],
+    crossing_points: list[tuple[float, float]],
+    source_port_um: tuple[float, float] | None = None,
+    target_port_um: tuple[float, float] | None = None,
+    route_obj: object | None = None,
+    source_port_orientation_deg: float | None = None,
+    target_port_orientation_deg: float | None = None,
+) -> tuple[tuple[float, float], ...]:
+    if len(baseline) < 2 or not crossing_points:
+        return ()
+
+    ordered_crossings = sorted(
+        [(point, _closest_centerline_projection(baseline, point)) for point in crossing_points],
+        key=lambda item: float("inf") if item[1] is None else item[1][0] + item[1][1],
+    )
+    ordered_projections = [
+        projection for _, projection in ordered_crossings if projection is not None
+    ]
+    if not ordered_projections:
+        return ()
+
+    first_projection = ordered_projections[0]
+    last_projection = ordered_projections[-1]
+    first_segment_index = int(first_projection[0])
+    last_segment_index = int(last_projection[0])
+    if last_segment_index < first_segment_index:
+        first_segment_index, last_segment_index = last_segment_index, first_segment_index
+
+    def _guarded_cut(
+        projection: tuple[int, float, tuple[float, float], float],
+        *,
+        before: bool,
+    ) -> tuple[float, float]:
+        segment_index, _, point, _ = projection
+        start = baseline[int(segment_index)]
+        end = baseline[int(segment_index) + 1]
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        segment_length = math.hypot(dx, dy)
+        if segment_length <= 1.0e-9:
+            return start if before else end
+        ux = dx / segment_length
+        uy = dy / segment_length
+        distance_from_start = math.hypot(
+            float(point[0]) - float(start[0]),
+            float(point[1]) - float(start[1]),
+        )
+        distance_to_end = math.hypot(
+            float(end[0]) - float(point[0]),
+            float(end[1]) - float(point[1]),
+        )
+        available = distance_from_start if before else distance_to_end
+        if available <= 1.0e-9:
+            return start if before else end
+        guard_distance = min(available, max(4.0, 0.5 * available))
+        sign = -1.0 if before else 1.0
+        return (
+            float(point[0]) + sign * ux * guard_distance,
+            float(point[1]) + sign * uy * guard_distance,
+        )
+
+    first_cut = _guarded_cut(first_projection, before=True)
+    last_cut = _guarded_cut(last_projection, before=False)
+    middle = _centerline_between_cut_points(baseline, first_cut, last_cut)
+    if not middle:
+        return ()
+
+    if not corrected_centerline:
+        return middle
+
+    baseline_with_first_cut = _insert_centerline_cut_point(baseline, first_cut)
+    first_cut_index = _centerline_index_near_point(baseline_with_first_cut, first_cut)
+    baseline_with_last_cut = _insert_centerline_cut_point(baseline, last_cut)
+    last_cut_index = _centerline_index_near_point(baseline_with_last_cut, last_cut)
+    baseline_prefix = (
+        _dedupe_centerline(tuple(baseline_with_first_cut[: first_cut_index + 1]))
+        if first_cut_index is not None
+        else ()
+    )
+    baseline_suffix = (
+        _dedupe_centerline(tuple(baseline_with_last_cut[last_cut_index:]))
+        if last_cut_index is not None
+        else ()
+    )
+    source_dir = _route_endpoint_unit(
+        route_obj,
+        target=False,
+    ) or _unit_from_orientation_deg(
+        source_port_orientation_deg,
+        as_target=False,
+    )
+    target_dir = _route_endpoint_unit(
+        route_obj,
+        target=True,
+    ) or _unit_from_orientation_deg(
+        target_port_orientation_deg,
+        as_target=True,
+    )
+    prefix = _corrected_prefix_to_crossing(corrected_centerline, first_cut)
+    suffix = _corrected_suffix_from_crossing(corrected_centerline, last_cut)
+    if (
+        not prefix
+        or not _terminal_anchor_matches(
+            prefix,
+            source_port_um,
+            at_start=True,
+        )
+        or not _compatible_terminal_direction_sequence(
+            prefix,
+            baseline_prefix,
+            expected_port_dir=source_dir,
+            allow_extra_at_start=True,
+        )
+    ):
+        prefix = _absorbed_terminal_centerline(
+            baseline_prefix,
+            desired_start=source_port_um,
+            extra_start_dir=source_dir,
+        )
+        if not prefix:
+            prefix = baseline_prefix
+    if (
+        not suffix
+        or not _terminal_anchor_matches(
+            suffix,
+            target_port_um,
+            at_start=False,
+        )
+        or not _compatible_terminal_direction_sequence(
+            suffix,
+            baseline_suffix,
+            expected_port_dir=target_dir,
+            allow_extra_at_start=False,
+        )
+    ):
+        suffix = _absorbed_terminal_centerline(
+            baseline_suffix,
+            desired_end=target_port_um,
+            extra_end_dir=target_dir,
+        )
+        if not suffix:
+            suffix = baseline_suffix
+    pieces: list[tuple[float, float]] = []
+    for segment in (prefix, middle, suffix):
+        for point in segment:
+            if not pieces or pieces[-1] != point:
+                pieces.append(point)
+    return _dedupe_centerline(tuple(pieces))
+
+
+def _legal_crossing_points_by_net_id(
+    crossing_plan_info: Mapping[str, object] | None,
+) -> dict[int, list[tuple[float, float]]]:
+    if not isinstance(crossing_plan_info, Mapping) or not crossing_plan_info.get(
+        "enabled",
+    ):
+        return {}
+    raw_crossings = crossing_plan_info.get("realized_intersections", ())
+    if not isinstance(raw_crossings, IterableABC) or isinstance(
+        raw_crossings,
+        (str, bytes, bytearray),
+    ):
+        return {}
+
+    points_by_net_id: dict[int, list[tuple[float, float]]] = {}
+    for raw_crossing in raw_crossings:
+        if not isinstance(raw_crossing, Mapping):
+            continue
+        classification = str(raw_crossing.get("classification", "") or "")
+        if not classification.startswith("legal_"):
+            continue
+        point = _point_um_from_mapping(raw_crossing.get("point_um"))
+        if point is None:
+            continue
+        for key in ("net_id_a", "net_id_b"):
+            try:
+                net_id = int(raw_crossing.get(key))
+            except (TypeError, ValueError):
+                continue
+            points_by_net_id.setdefault(net_id, []).append(point)
+    return points_by_net_id
+
+
+def _primitive_centerline_for_record(
+    record: RoutedNetRecord,
+    *,
+    router: EndpointCorrectionRouter,
+) -> tuple[tuple[float, float], ...]:
+    route_primitive_centerline = getattr(router, "route_primitive_centerline", None)
+    if route_primitive_centerline is not None:
+        try:
+            centerline = _centerline_tuple(route_primitive_centerline(record.route_obj))
+        except Exception:
+            centerline = ()
+        if centerline:
+            return _dedupe_centerline(centerline)
+    if record.corrected_centerline_um:
+        return _dedupe_centerline(record.corrected_centerline_um)
+    return ()
+
+
+def _apply_crossing_aware_endpoint_correction_to_record(
+    record: RoutedNetRecord,
+    *,
+    router: EndpointCorrectionRouter,
+    crossing_points: list[tuple[float, float]],
+    realization_grid_spec: tuple[int, int, float, float, float] | None,
+    route_width_um: float,
+    allow_unchecked_bumps: bool,
+    log_failures: bool,
+) -> RoutedNetRecord:
+    """Apply terminal-only endpoint correction without moving route crossings."""
+
+    if not crossing_points:
+        uncorrected_record = replace(
+            record,
+            corrected_centerline_um=(),
+            endpoint_correction_error=None,
+        )
+        return apply_port_endpoint_corrections(
+            [uncorrected_record],
+            router=router,
+            realization_grid_spec=realization_grid_spec,
+            allow_unchecked_bumps=allow_unchecked_bumps,
+            log_failures=log_failures,
+        )[0]
+
+    baseline = _primitive_centerline_for_record(record, router=router)
+    if len(baseline) < 2:
+        message = format_port_endpoint_correction_error(
+            record,
+            "crossing-aware endpoint correction requires a primitive centerline",
+            realization_grid_spec=realization_grid_spec,
+        )
+        if log_failures:
+            print("ERROR: " + message)
+        return replace(record, endpoint_correction_error=message)
+
+    def _realization_accepts(centerline: tuple[tuple[float, float], ...]) -> bool:
+        realize = getattr(router, "realize_centerline_polygon_with_terminal_tangents", None)
+        if realize is None:
+            return True
+        try:
+            realize(
+                list(centerline),
+                float(route_width_um),
+                record.route_obj,
+                source_enabled=record.source_port_center_um is not None,
+                target_enabled=record.target_port_center_um is not None,
+            )
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    def _candidate(*, use_source: bool, use_target: bool) -> tuple[tuple[float, float], ...]:
+        if not use_source and not use_target:
+            corrected = baseline
+        else:
+            route_port_corrected_centerline = getattr(
+                router,
+                "route_port_corrected_centerline",
+                None,
+            )
+            if route_port_corrected_centerline is None:
+                return ()
+            try:
+                corrected = _centerline_tuple(
+                    route_port_corrected_centerline(
+                        record.route_obj,
+                        source_port_um=(
+                            record.source_port_center_um if use_source else None
+                        ),
+                        target_port_um=(
+                            record.target_port_center_um if use_target else None
+                        ),
+                        allow_unchecked_bumps=allow_unchecked_bumps,
+                    )
+                )
+            except Exception:
+                return ()
+        return _spliced_crossing_endpoint_centerline(
+            baseline=baseline,
+            corrected_centerline=_dedupe_centerline(corrected),
+            crossing_points=crossing_points,
+            source_port_um=record.source_port_center_um,
+            target_port_um=record.target_port_center_um,
+            route_obj=record.route_obj,
+            source_port_orientation_deg=record.source_port_orientation_deg,
+            target_port_orientation_deg=record.target_port_orientation_deg,
+        )
+
+    candidate_modes = (
+        (True, True),
+        (True, False),
+        (False, True),
+        (False, False),
+    )
+    centerline = ()
+    for use_source, use_target in candidate_modes:
+        candidate = _candidate(use_source=use_source, use_target=use_target)
+        if len(candidate) >= 2 and _realization_accepts(candidate):
+            centerline = candidate
+            break
+    if len(centerline) < 2:
+        message = format_port_endpoint_correction_error(
+            record,
+            "crossing-aware endpoint correction produced no realizable centerline",
+            realization_grid_spec=realization_grid_spec,
+        )
+        if log_failures:
+            print("ERROR: " + message)
+        return replace(record, endpoint_correction_error=message)
+
+    centerline_length = getattr(router, "centerline_length_um", None)
+    if centerline_length is not None:
+        try:
+            corrected_total_length_um = float(centerline_length(list(centerline)))
+        except Exception:
+            corrected_total_length_um = _centerline_length_um(centerline)
+    else:
+        corrected_total_length_um = _centerline_length_um(centerline)
+    return replace(
+        record,
+        total_length_um=corrected_total_length_um,
+        base_total_length_um=(
+            record.base_total_length_um
+            if record.base_total_length_um is not None
+            else float(record.total_length_um)
+        ),
+        corrected_centerline_um=centerline,
+        endpoint_correction_error=None,
+    )
+
+
+def _apply_crossing_aware_endpoint_corrections_to_debug_artifacts(
+    debug_artifacts: RustRouteDebugArtifacts,
+    crossing_plan_info: Mapping[str, object] | None,
+    *,
+    route_width_um: float,
+) -> RustRouteDebugArtifacts:
+    if debug_artifacts.realization_grid_spec is None:
+        raise RuntimeError("Missing realization grid spec from routing phase.")
+    router = _build_realization_router(
+        realization_grid_spec=debug_artifacts.realization_grid_spec,
+        allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
+        bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+    )
+    crossing_points_by_net_id = _legal_crossing_points_by_net_id(crossing_plan_info)
+    records: list[RoutedNetRecord] = []
+    for record in debug_artifacts.routed_net_records:
+        crossing_points = (
+            crossing_points_by_net_id.get(int(record.net_id), [])
+            if record.net_id is not None
+            else []
+        )
+        records.append(
+            _apply_crossing_aware_endpoint_correction_to_record(
+                record,
+                router=router,
+                crossing_points=crossing_points,
+                realization_grid_spec=debug_artifacts.realization_grid_spec,
+                route_width_um=route_width_um,
+                allow_unchecked_bumps=not debug_artifacts.realization_allow_45_degree_turns,
+                log_failures=not debug_artifacts.realization_allow_45_degree_turns,
+            )
+        )
+    return replace(
+        debug_artifacts,
+        routed_net_records=records,
+        routed_edge_lengths_um=routed_edge_lengths_from_records(records),
+        port_alignment_diagnostics=build_port_alignment_diagnostics(
+            records,
+            realization_grid_spec=debug_artifacts.realization_grid_spec,
+        ),
+    )
+
+
 def route_match_and_realize(
     unrouted_layout: Component,
     schematic: Schematic,
@@ -1439,7 +3456,9 @@ def route_match_and_realize(
         foreign_port_keepout_cells=foreign_port_keepout_cells,
         allow_only_expected_crossings=allow_only_expected_crossings,
         defer_realization=True,
-        enable_checked_endpoint_correction=enable_grid_endpoint_correction,
+        enable_checked_endpoint_correction=(
+            enable_grid_endpoint_correction and not enable_crossings
+        ),
     )
     pipeline_timings_s: dict[str, float] = {
         "route_nets": time.perf_counter() - t_route_nets_start,
@@ -1457,9 +3476,19 @@ def route_match_and_realize(
             f"(obstacle map + A* + repairs): {pipeline_timings_s['route_nets']:.4f} s"
         )
 
-    if enable_grid_endpoint_correction:
+    if enable_grid_endpoint_correction and not enable_crossings:
         t_endpoint_correction_start = time.perf_counter()
         debug_artifacts = _apply_endpoint_corrections_to_debug_artifacts(debug_artifacts)
+        pipeline_timings_s["route_endpoint_correction"] = (
+            time.perf_counter() - t_endpoint_correction_start
+        )
+    elif enable_grid_endpoint_correction and enable_crossings:
+        t_endpoint_correction_start = time.perf_counter()
+        debug_artifacts = _apply_crossing_aware_endpoint_corrections_to_debug_artifacts(
+            debug_artifacts,
+            debug_artifacts.crossing_plan_info,
+            route_width_um=route_width_um,
+        )
         pipeline_timings_s["route_endpoint_correction"] = (
             time.perf_counter() - t_endpoint_correction_start
         )
@@ -1663,6 +3692,39 @@ def route_match_and_realize(
 
     if debug_artifacts.realization_grid_spec is None:
         raise RuntimeError("Missing realization grid spec from routing phase.")
+
+    crossing_plan_info = debug_artifacts.crossing_plan_info
+    if isinstance(crossing_plan_info, dict):
+        final_records_by_net_id = _routed_records_by_net_id(records_for_realization)
+        if final_records_by_net_id:
+            illegal_realized_crossings = _verify_realized_route_intersections(
+                crossing_plan_info=crossing_plan_info,
+                routed_records_by_net_id=final_records_by_net_id,
+                realization_grid_spec=debug_artifacts.realization_grid_spec,
+            )
+            _augment_insertion_loss_report_from_realized_intersections(
+                crossing_plan_info=crossing_plan_info,
+                routed_records_by_net_id=final_records_by_net_id,
+            )
+            if illegal_realized_crossings:
+                _write_crossing_debug_artifacts(
+                    debug_path=Path(debug_dir) if debug_dir is not None else Path("build"),
+                    debug_prefix=debug_prefix,
+                    crossing_plan_info=crossing_plan_info,
+                )
+                preview = "; ".join(
+                    f"{item.get('net_name_a')} x {item.get('net_name_b')} "
+                    f"at {item.get('point_um')} ({item.get('reason')}, "
+                    f"margins={item.get('segment_a_margin_um')}/"
+                    f"{item.get('segment_b_margin_um')}, "
+                    f"required={item.get('required_margin_um')})"
+                    for item in illegal_realized_crossings[:5]
+                )
+                raise RuntimeError(
+                    "Illegal realized route crossing(s) after endpoint correction: "
+                    f"{len(illegal_realized_crossings)} found. {preview}"
+                )
+
     t_realization_start = time.perf_counter()
     realize_routed_net_records(
         routed_layout,
@@ -1672,7 +3734,16 @@ def route_match_and_realize(
         realization_grid_spec=debug_artifacts.realization_grid_spec,
         allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
         bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+        crossing_plan_info=crossing_plan_info,
+        enable_endpoint_correction=enable_grid_endpoint_correction,
     )
+    if isinstance(crossing_plan_info, dict):
+        _place_realized_crossing_components(routed_layout, crossing_plan_info)
+        _write_crossing_debug_artifacts(
+            debug_path=Path(debug_dir) if debug_dir is not None else None,
+            debug_prefix=debug_prefix,
+            crossing_plan_info=crossing_plan_info,
+        )
     t_realization_end = time.perf_counter()
     pipeline_timings_s["route_realization"] = t_realization_end - t_realization_start
     if debug_timing and verbose_route_diagnostics:
@@ -1987,8 +4058,9 @@ def route_nets_rust(
         verbose_route_diagnostics: If True, print per-net route progress and
             detailed A* timing buckets. Failures are always printed.
         foreign_port_keepout_cells: Additional global keepout distance in front
-            of each endpoint port. Nets connected to the same instance can open
-            that instance's keepout; unrelated nets cannot.
+            of each endpoint port. Active endpoint ports can open this region;
+            dense multi-port instances can also open same-instance fanout
+            keepouts, while unrelated nets cannot.
         defer_realization: If True, keep routed RouteResult objects but skip
             polygon realization. This is used for pre-realization transforms
             such as path-length matching/meander insertion.
@@ -2022,6 +4094,11 @@ def route_nets_rust(
     effective_allow_only_expected_crossings = bool(allow_only_expected_crossings)
     if crossing_mode == "lidar-pure":
         effective_allow_only_expected_crossings = False
+    crossing_search_loss = _effective_crossing_search_loss(
+        enable_crossings=bool(enable_crossings),
+        crossing_mode=crossing_mode,
+        crossing_loss=float(crossing_loss),
+    )
     if crossing_half_size_cells < 0:
         raise ValueError("crossing_half_size_cells must be non-negative")
     if min_straight_cells_per_crossing < 0:
@@ -2144,11 +4221,23 @@ def route_nets_rust(
     if allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
         effective_heuristic_mode = "diagonal_aware"
     astar_cfg.heuristic_mode = effective_heuristic_mode
-    if allow_45_degree_turns and hasattr(astar_cfg, "max_iterations"):
+    collision_crossing_mode = bool(enable_crossings) and crossing_mode in {
+        "collision",
+        "lidar-pure",
+    }
+    if (
+        allow_45_degree_turns
+        and not collision_crossing_mode
+        and hasattr(astar_cfg, "max_iterations")
+    ):
         astar_cfg.max_iterations = min(int(astar_cfg.max_iterations), 50_000)
-    if allow_45_degree_turns and hasattr(astar_cfg, "heuristic_weight"):
+    if collision_crossing_mode and hasattr(astar_cfg, "heuristic_weight"):
+        astar_cfg.heuristic_weight = 1.0
+    elif allow_45_degree_turns and hasattr(astar_cfg, "heuristic_weight"):
         astar_cfg.heuristic_weight = max(float(astar_cfg.heuristic_weight), 1.25)
-    if allow_45_degree_turns and hasattr(astar_cfg, "bend_weight"):
+    if collision_crossing_mode and hasattr(astar_cfg, "bend_weight"):
+        astar_cfg.bend_weight = float(astar_cfg.bend_weight)
+    elif allow_45_degree_turns and hasattr(astar_cfg, "bend_weight"):
         # LiDAR heavily penalizes bends relative to propagation. Matching that
         # scale keeps 45-degree A* from spending work on short zig-zag variants.
         astar_cfg.bend_weight = max(float(astar_cfg.bend_weight), 12.0)
@@ -2537,6 +4626,7 @@ def route_nets_rust(
 
     route_jobs: list[RouteJob] = []
     endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = {}
+    endpoint_port_specs_by_instance: dict[str, set[str]] = {}
     port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
@@ -2566,6 +4656,8 @@ def route_nets_rust(
             next_net_id += 1
             endpoint_ports_by_spec.setdefault(port1_spec, (inst1, port1, source_port))
             endpoint_ports_by_spec.setdefault(port2_spec, (inst2, port2, target_port))
+            endpoint_port_specs_by_instance.setdefault(inst1, set()).add(port1_spec)
+            endpoint_port_specs_by_instance.setdefault(inst2, set()).add(port2_spec)
     _record_pipeline_timing("route_job_build", t_route_job_build_start)
 
     t_crossing_context_start = _pipeline_timer_start()
@@ -2579,6 +4671,7 @@ def route_nets_rust(
         node_ranks=node_ranks,
         edge_ranks=edge_ranks,
         crossing_loss=float(crossing_loss),
+        crossing_search_loss=float(crossing_search_loss),
         crossing_half_size_cells=int(resolved_crossing_half_size_cells),
         min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
         allow_only_expected_crossings=effective_allow_only_expected_crossings,
@@ -2673,7 +4766,9 @@ def route_nets_rust(
         }
     _record_pipeline_timing("port_opening_batch", t_port_opening_batch_start)
 
+    foreign_port_keepout_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
+    foreign_port_keepout_nonstatic_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
     if foreign_port_keepout_cells > 0:
         t_foreign_keepout_start = _pipeline_timer_start()
         foreign_length_cells = int(foreign_port_keepout_cells)
@@ -2692,10 +4787,118 @@ def route_nets_rust(
             port_lane_half_width_cells=int(port_lane_half_width_cells),
         ):
             instance_name = str(port_spec).split(",", 1)[0]
-            foreign_port_keepout_cells_by_instance.setdefault(instance_name, set()).update(
-                (int(cell[0]), int(cell[1])) for cell in runway_cells
-            )
+            cells_for_spec = {(int(cell[0]), int(cell[1])) for cell in runway_cells}
+            foreign_port_keepout_cells_by_spec[str(port_spec)] = cells_for_spec
+            foreign_port_keepout_cells_by_instance.setdefault(instance_name, set()).update(cells_for_spec)
+            nonstatic_cells_for_spec = cells_for_spec - _cells_in_raw_static_geometry(cells_for_spec)
+            foreign_port_keepout_nonstatic_cells_by_instance.setdefault(
+                instance_name,
+                set(),
+            ).update(nonstatic_cells_for_spec)
         _record_pipeline_timing("foreign_port_keepout_batch", t_foreign_keepout_start)
+
+    dense_port_lateral_windows: dict[str, tuple[float, float, float, float, float]] = {}
+    dense_port_lateral_owner_groups: dict[
+        str,
+        tuple[float, float, tuple[tuple[str, float], ...]],
+    ] = {}
+    for instance_name, port_specs in endpoint_port_specs_by_instance.items():
+        if len(port_specs) <= 2:
+            continue
+        groups: dict[int, list[tuple[str, float]]] = {}
+        for port_spec in port_specs:
+            _inst, _port_name, port = endpoint_ports_by_spec[port_spec]
+            angle = _orientation_to_angle(getattr(port, "orientation", None), flip=False)
+            step_x, step_y = _angle_to_step(angle)
+            lateral_x, lateral_y = -step_y, step_x
+            center = _port_center_um(port)
+            if center is None or (lateral_x == 0 and lateral_y == 0):
+                continue
+            lateral_position = float(center[0]) * lateral_x + float(center[1]) * lateral_y
+            groups.setdefault(angle, []).append((port_spec, lateral_position))
+        for angle, group in groups.items():
+            if len(group) <= 1:
+                continue
+            step_x, step_y = _angle_to_step(angle)
+            lateral_x, lateral_y = -step_y, step_x
+            ordered = sorted(group, key=lambda item: item[1])
+            owner_group = tuple(ordered)
+            for owned_port_spec, _lateral_position in ordered:
+                dense_port_lateral_owner_groups[owned_port_spec] = (
+                    float(lateral_x),
+                    float(lateral_y),
+                    owner_group,
+                )
+            for index, (port_spec, lateral_position) in enumerate(ordered):
+                previous_position = ordered[index - 1][1] if index > 0 else None
+                next_position = ordered[index + 1][1] if index + 1 < len(ordered) else None
+                if previous_position is None and next_position is None:
+                    continue
+                if previous_position is None:
+                    gap = abs(next_position - lateral_position)
+                    lower = lateral_position - gap * 0.5
+                else:
+                    lower = (previous_position + lateral_position) * 0.5
+                if next_position is None:
+                    gap = abs(lateral_position - previous_position)
+                    upper = lateral_position + gap * 0.5
+                else:
+                    upper = (lateral_position + next_position) * 0.5
+                lane_margin_um = 0.0
+                dense_port_lateral_windows[port_spec] = (
+                    float(lateral_x),
+                    float(lateral_y),
+                    float(lower),
+                    float(upper),
+                    lane_margin_um,
+                )
+
+    def _filter_dense_port_opening(
+        port_spec: str,
+        cells: set[tuple[int, int]],
+    ) -> set[tuple[int, int]]:
+        owner_group = dense_port_lateral_owner_groups.get(port_spec)
+        if owner_group is not None and cells:
+            lateral_x, lateral_y, owners = owner_group
+            grid_size = float(grid.grid_size_um)
+            filtered: set[tuple[int, int]] = set()
+            for cell_x, cell_y in cells:
+                center_x = origin_x_um + (float(cell_x) + 0.5) * grid_size
+                center_y = origin_y_um + (float(cell_y) + 0.5) * grid_size
+                lateral_position = center_x * lateral_x + center_y * lateral_y
+                nearest_spec = min(
+                    owners,
+                    key=lambda item: (abs(lateral_position - item[1]), item[0]),
+                )[0]
+                if nearest_spec == port_spec:
+                    filtered.add((cell_x, cell_y))
+            return filtered
+
+        window = dense_port_lateral_windows.get(port_spec)
+        if window is None or not cells:
+            return set(cells)
+        lateral_x, lateral_y, lower, upper, lane_margin_um = window
+        grid_size = float(grid.grid_size_um)
+        lower -= lane_margin_um
+        upper += lane_margin_um
+        eps = max(1.0e-9, grid_size * 1.0e-9)
+        filtered: set[tuple[int, int]] = set()
+        for cell_x, cell_y in cells:
+            center_x = origin_x_um + (float(cell_x) + 0.5) * grid_size
+            center_y = origin_y_um + (float(cell_y) + 0.5) * grid_size
+            lateral_position = center_x * lateral_x + center_y * lateral_y
+            if lower - eps <= lateral_position <= upper + eps:
+                filtered.add((cell_x, cell_y))
+        return filtered
+
+    def _opened_cells_for_spec(
+        cells_by_spec: Mapping[str, set[tuple[int, int]]],
+        port_spec: str,
+    ) -> set[tuple[int, int]]:
+        return _filter_dense_port_opening(
+            port_spec,
+            set(cells_by_spec.get(port_spec, set())),
+        )
 
     def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
         return port_to_grid_state(
@@ -2748,6 +4951,95 @@ def route_nets_rust(
                     lateral_y * lane_index,
                 )
             lane_index += 1
+
+    def _dense_source_fanout_route_order(jobs: list[RouteJob]) -> list[RouteJob]:
+        """Route consecutive dense source fanouts with inversion-aware extremes."""
+
+        def should_reorder_source(instance_name: str) -> bool:
+            if len(endpoint_port_specs_by_instance.get(instance_name, set())) <= 2:
+                return False
+            if "multiport" not in instance_name.lower():
+                return False
+            component_name = _schematic_instance_component_name(schematic, instance_name)
+            return component_name is not None and "mmi" in component_name.lower()
+
+        def order_single_run(run: list[RouteJob]) -> list[RouteJob]:
+            if len(run) <= 1:
+                return list(run)
+            order_override = os.environ.get("PHOTONIC_ROUTER_DENSE_FANOUT_ORDER", "")
+            if order_override in ("", "original"):
+                return list(run)
+            if order_override in ("inversion-aware-extremes", "legacy"):
+                pass
+            elif order_override not in (
+                "target-ascending",
+                "target-descending",
+                "second-target-lane-first",
+            ):
+                return list(run)
+            if order_override == "target-ascending":
+                return sorted(
+                    run,
+                    key=lambda route_job: (
+                        float(route_job.target_port.center[1]),
+                        int(route_job.route_index),
+                    ),
+                )
+            if order_override == "target-descending":
+                return sorted(
+                    run,
+                    key=lambda route_job: (
+                        -float(route_job.target_port.center[1]),
+                        int(route_job.route_index),
+                    ),
+                )
+            if order_override == "second-target-lane-first":
+                by_target_lane = sorted(
+                    run,
+                    key=lambda route_job: (
+                        float(route_job.target_port.center[1]),
+                        int(route_job.route_index),
+                    ),
+                )
+                first_job = by_target_lane[min(1, len(by_target_lane) - 1)]
+                return [first_job, *(route_job for route_job in run if route_job != first_job)]
+            target_lanes = [float(route_job.target_port.center[1]) for route_job in run]
+            first_lane = float(run[0].target_port.center[1])
+            first_lane_rank = sorted(target_lanes).index(first_lane)
+            if first_lane_rank >= len(run) // 2:
+                median_target_lane = sorted(target_lanes)[len(target_lanes) // 2]
+                return sorted(
+                    run,
+                    key=lambda route_job: (
+                        -abs(float(route_job.target_port.center[1]) - median_target_lane),
+                        float(route_job.target_port.center[1]),
+                        int(route_job.route_index),
+                    ),
+                )
+            return [run[0], run[-1], *run[1:-1]]
+
+        ordered_jobs: list[RouteJob] = []
+        index = 0
+        while index < len(jobs):
+            job = jobs[index]
+            if not should_reorder_source(job.inst1):
+                ordered_jobs.append(job)
+                index += 1
+                continue
+
+            run_end = index + 1
+            while (
+                run_end < len(jobs)
+                and jobs[run_end].inst1 == job.inst1
+                and should_reorder_source(jobs[run_end].inst1)
+            ):
+                run_end += 1
+
+            ordered_jobs.extend(order_single_run(jobs[index:run_end]))
+            index = run_end
+        return ordered_jobs
+
+    route_jobs = _dense_source_fanout_route_order(route_jobs)
 
     port_runway_static_cells: set[tuple[int, int]] = set()
     for cells in port_runway_cells_by_spec.values():
@@ -2821,6 +5113,24 @@ def route_nets_rust(
                 f"  Debug stop-after-route active: routing {len(route_jobs)} "
                 f"of {full_route_count} full-context routes"
             )
+    debug_execution_limit_raw = os.environ.get("PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT")
+    if debug_execution_limit_raw:
+        try:
+            debug_execution_limit = int(debug_execution_limit_raw)
+        except ValueError as exc:
+            raise ValueError(
+                "PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT must be an integer"
+            ) from exc
+        if debug_execution_limit < 1:
+            raise ValueError("PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT must be >= 1")
+        original_route_job_count = len(route_jobs)
+        route_jobs = route_jobs[:debug_execution_limit]
+        if verbose_route_diagnostics or debug_route_indices is not None:
+            print(
+                "  Debug execution limit active: routing "
+                f"{len(route_jobs)} of {original_route_job_count} selected "
+                "routes in actual execution order"
+            )
 
     repair_config = ripup_reroute_config or RipupRerouteConfig()
     route_jobs_by_id = {job.net_id: job for job in route_jobs}
@@ -2839,14 +5149,18 @@ def route_nets_rust(
     simple_route_count = 0
     repair_count = 0
     route_attempt_records = []
+    native_repair_trace_records: list[dict[str, object]] = []
     route_timing_buckets: dict[str, RouteTimingBucket] = {
         name: RouteTimingBucket()
         for name in (
             "normal_route",
             "probe_route",
             "preemptive_crossing_ripup",
+            "guided_collision_crossing",
+            "localized_crossing_keepout",
             "repair_failed_net",
             "reroute_victims",
+            "lidar_pure_probe_commit",
             "endpoint_correction",
         )
     }
@@ -2943,21 +5257,25 @@ def route_nets_rust(
         port2_spec = f"{job.inst2},{job.port2}"
         source_anchor_cell = (int(source_state.x), int(source_state.y))
         target_anchor_cell = (int(target_state.x), int(target_state.y))
-        instance_keepout_open_cells = set(
-            foreign_port_keepout_cells_by_instance.get(job.inst1, set())
+        endpoint_foreign_keepout_open_cells = set(
+            _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port1_spec)
         )
-        instance_keepout_open_cells.update(
-            foreign_port_keepout_cells_by_instance.get(job.inst2, set())
+        endpoint_foreign_keepout_open_cells.update(
+            _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port2_spec)
         )
-        opened_candidate_cells = set(port_access_candidate_cells_by_spec.get(port1_spec, set()))
-        opened_candidate_cells.update(port_access_candidate_cells_by_spec.get(port2_spec, set()))
-        opened_candidate_cells.update(instance_keepout_open_cells)
+        opened_candidate_cells = set(
+            _opened_cells_for_spec(port_access_candidate_cells_by_spec, port1_spec)
+        )
+        opened_candidate_cells.update(
+            _opened_cells_for_spec(port_access_candidate_cells_by_spec, port2_spec)
+        )
+        opened_candidate_cells.update(endpoint_foreign_keepout_open_cells)
         opened_candidate_cells.update(original_anchor_cells)
         opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
 
-        opened_cells_set = set(port_access_cells_by_spec.get(port1_spec, set()))
-        opened_cells_set.update(port_access_cells_by_spec.get(port2_spec, set()))
-        opened_cells_set.update(instance_keepout_open_cells)
+        opened_cells_set = set(_opened_cells_for_spec(port_access_cells_by_spec, port1_spec))
+        opened_cells_set.update(_opened_cells_for_spec(port_access_cells_by_spec, port2_spec))
+        opened_cells_set.update(endpoint_foreign_keepout_open_cells)
         opened_cells_set.update(original_anchor_cells)
         opened_cells_set.update({source_anchor_cell, target_anchor_cell})
         return (
@@ -3347,12 +5665,13 @@ def route_nets_rust(
         )
         route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
         route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
-        foreign_keepout_open_cells = set(
-            foreign_port_keepout_cells_by_instance.get(job.inst1, set())
+        current_endpoint_foreign_keepout_cells = set(
+            _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port1_spec)
         )
-        foreign_keepout_open_cells.update(
-            foreign_port_keepout_cells_by_instance.get(job.inst2, set())
+        current_endpoint_foreign_keepout_cells.update(
+            _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port2_spec)
         )
+        foreign_keepout_open_cells = current_endpoint_foreign_keepout_cells & opened_cells_set
         route_segments: list[str] = []
         if route_obj is not None:
             for segment in cast(list[object], getattr(route_obj, "segments", []) or []):
@@ -3425,6 +5744,24 @@ def route_nets_rust(
         corrected_centerline_um: tuple[tuple[float, float], ...] = (),
         corrected_total_length_um: float | None = None,
     ) -> None:
+        if (
+            not corrected_centerline_um
+            and not enable_checked_endpoint_correction
+            and hasattr(router, "route_primitive_centerline")
+        ):
+            try:
+                corrected_centerline_um = _centerline_tuple(
+                    router.route_primitive_centerline(route_obj)
+                )
+            except Exception:
+                corrected_centerline_um = ()
+            if corrected_centerline_um and hasattr(router, "centerline_length_um"):
+                try:
+                    corrected_total_length_um = float(
+                        router.centerline_length_um(list(corrected_centerline_um))
+                    )
+                except Exception:
+                    corrected_total_length_um = None
         route_bookkeeping.record_route(
             job,
             route_obj,
@@ -3531,6 +5868,20 @@ def route_nets_rust(
         opened_cells_set = set(opened_cells)
         opened_static_overlap = opened_cells_set & static_blocked_cells_before_port_reservations
         opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
+        current_attempts = [
+            ("current", record)
+            for record in route_attempt_records
+            if getattr(record, "net_id", None) == job.net_id
+        ]
+        recent_attempts = [("recent", record) for record in route_attempt_records[-12:]]
+        root_cause_line = _format_illegal_crossing_root_causes_line(
+            [error_text]
+            + [
+                str(attempt.error)
+                for _, attempt in (current_attempts[-8:] + recent_attempts)
+                if getattr(attempt, "error", None)
+            ]
+        )
         fail_lines = [
             f"net_name={job.net_name}",
             f"source_spec={port1_spec}",
@@ -3562,12 +5913,9 @@ def route_nets_rust(
             f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
             f"error={error_text}",
         ]
-        current_attempts = [
-            ("current", record)
-            for record in route_attempt_records
-            if getattr(record, "net_id", None) == job.net_id
-        ]
-        recent_attempts = [("recent", record) for record in route_attempt_records[-12:]]
+        if root_cause_line is not None:
+            fail_lines.append(root_cause_line)
+        fail_lines.extend(_format_native_repair_trace_lines(native_repair_trace_records))
         for label, attempt in (current_attempts[-8:] + recent_attempts):
             as_dict = attempt.as_dict()
             diagnostics = as_dict.get("diagnostics")
@@ -3667,7 +6015,15 @@ def route_nets_rust(
                 "`maturin develop --release`; Python repair fallback has been removed."
             )
         batch_jobs: list[
-            tuple[int, Any, Any, list[tuple[int, int]], list[tuple[int, int]]]
+            tuple[
+                int,
+                Any,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
         ] = []
         batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
         batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
@@ -3699,6 +6055,8 @@ def route_nets_rust(
                     target_state,
                     opened_cells,
                     clearance_exempt_cells,
+                    _port_center_um(job.source_port),
+                    _port_center_um(job.target_port),
                 )
             )
             batch_opened_cells_by_id[int(job.net_id)] = opened_cells
@@ -3720,6 +6078,13 @@ def route_nets_rust(
         _record_pipeline_timing("native_route_batch", batch_start)
         t_batch_result_processing_start = _pipeline_timer_start()
         batch_result = dict(raw_batch_result)
+        native_repair_trace_records = [
+            dict(record)
+            for record in cast(
+                Iterable[Mapping[str, object]],
+                batch_result.get("repair_trace", []),
+            )
+        ]
         _record_native_batch_timings(batch_result)
         raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
         per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
@@ -3763,15 +6128,19 @@ def route_nets_rust(
                     job,
                     route_obj,
                     suffix=f"_attempt{attempt_index}_{bucket_name}",
-                )
+            )
             if collect_timing:
+                bucket = route_timing_buckets.setdefault(
+                    bucket_name,
+                    RouteTimingBucket(),
+                )
                 if route_obj is not None and not failed:
-                    route_timing_buckets[bucket_name].record_route(
+                    bucket.record_route(
                         per_attempt_elapsed_s,
                         route_obj,
                     )
                 else:
-                    route_timing_buckets[bucket_name].record_elapsed(
+                    bucket.record_elapsed(
                         per_attempt_elapsed_s,
                         failed=failed,
                     )
@@ -3877,7 +6246,15 @@ def route_nets_rust(
                 "`maturin develop --release`; Python sequential routing fallback has been removed."
             )
         batch_jobs: list[
-            tuple[int, Any, Any, list[tuple[int, int]], list[tuple[int, int]]]
+            tuple[
+                int,
+                Any,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
         ] = []
         batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
         batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
@@ -3909,6 +6286,8 @@ def route_nets_rust(
                     target_state,
                     opened_cells,
                     clearance_exempt_cells,
+                    _port_center_um(job.source_port),
+                    _port_center_um(job.target_port),
                 )
             )
             batch_opened_cells_by_id[int(job.net_id)] = opened_cells
@@ -4034,7 +6413,14 @@ def route_nets_rust(
     if collect_timing:
         astar_elapsed_s = time.perf_counter() - t_astar_start
 
-    if enable_checked_endpoint_correction:
+    def _apply_checked_endpoint_corrections_for_net_ids(
+        net_ids: Iterable[int],
+        *,
+        record_pipeline_timing: bool = True,
+        print_warnings: bool = False,
+    ) -> list[int]:
+        if not enable_checked_endpoint_correction:
+            return []
         if not hasattr(router, "apply_checked_endpoint_corrections_and_commit"):
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
@@ -4051,8 +6437,9 @@ def route_nets_rust(
                 tuple[float, float] | None,
             ]
         ] = []
+        requested_net_ids = [int(net_id) for net_id in net_ids]
         t_endpoint_correction_pack_start = _pipeline_timer_start()
-        for net_id in list(route_bookkeeping.route_order):
+        for net_id in requested_net_ids:
             record = route_bookkeeping.records_by_id.get(net_id)
             job = route_jobs_by_id.get(net_id)
             if record is None or job is None:
@@ -4075,10 +6462,13 @@ def route_nets_rust(
                     target_port,
                 )
             )
-        _record_pipeline_timing(
-            "endpoint_correction_pack",
-            t_endpoint_correction_pack_start,
-        )
+        if record_pipeline_timing:
+            _record_pipeline_timing(
+                "endpoint_correction_pack",
+                t_endpoint_correction_pack_start,
+            )
+        if not correction_jobs:
+            return []
 
         correction_start = _timing_start()
         raw_corrections = router.apply_checked_endpoint_corrections_and_commit(
@@ -4091,9 +6481,11 @@ def route_nets_rust(
         correction_elapsed_s = (
             time.perf_counter() - correction_start if collect_timing else 0.0
         )
-        _record_pipeline_timing("endpoint_correction_native", correction_start)
+        if record_pipeline_timing:
+            _record_pipeline_timing("endpoint_correction_native", correction_start)
         t_endpoint_correction_processing_start = _pipeline_timer_start()
         correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
+        failed_net_ids: list[int] = []
         for raw_correction in cast(Iterable[Any], raw_corrections):
             correction = dict(raw_correction)
             net_id = int(correction["net_id"])
@@ -4112,9 +6504,12 @@ def route_nets_rust(
                     "Checked grid-to-port endpoint correction skipped for net "
                     f"{job.net_name!r}: {error}"
                 )
-                print("WARNING: " + message)
+                if print_warnings:
+                    print("WARNING: " + message)
+                failed_net_ids.append(net_id)
                 route_bookkeeping.records_by_id[net_id] = replace(
                     record,
+                    corrected_centerline_um=(),
                     endpoint_correction_error=message,
                 )
                 continue
@@ -4129,9 +6524,12 @@ def route_nets_rust(
                     "Checked grid-to-port endpoint correction skipped for net "
                     f"{job.net_name!r}: endpoint correction returned an invalid centerline"
                 )
-                print("WARNING: " + message)
+                if print_warnings:
+                    print("WARNING: " + message)
+                failed_net_ids.append(net_id)
                 route_bookkeeping.records_by_id[net_id] = replace(
                     record,
+                    corrected_centerline_um=(),
                     endpoint_correction_error=message,
                 )
                 continue
@@ -4151,9 +6549,21 @@ def route_nets_rust(
                 corrected_centerline_um=centerline,
                 endpoint_correction_error=None,
             )
-        _record_pipeline_timing(
-            "endpoint_correction_processing",
-            t_endpoint_correction_processing_start,
+        if record_pipeline_timing:
+            _record_pipeline_timing(
+                "endpoint_correction_processing",
+                t_endpoint_correction_processing_start,
+            )
+        return failed_net_ids
+
+    if enable_checked_endpoint_correction:
+        _apply_checked_endpoint_corrections_for_net_ids(
+            list(route_bookkeeping.route_order),
+            print_warnings=(
+                collect_attempt_diagnostics
+                or diagnostics_enabled
+                or verbose_route_diagnostics
+            ),
         )
 
     t_record_assembly_start = _pipeline_timer_start()
@@ -4186,8 +6596,11 @@ def route_nets_rust(
             "normal_route",
             "probe_route",
             "preemptive_crossing_ripup",
+            "guided_collision_crossing",
+            "localized_crossing_keepout",
             "repair_failed_net",
             "reroute_victims",
+            "lidar_pure_probe_commit",
             "endpoint_correction",
         ):
             bucket = route_timing_buckets[bucket_name]
@@ -4243,7 +6656,875 @@ def route_nets_rust(
         float(origin_x_um),
         float(origin_y_um),
     )
-    if not defer_realization:
+
+    def _grid_cell_from_raw_point(raw_point: object) -> tuple[int, int] | None:
+        if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
+            return None
+        try:
+            point_x = float(raw_point[0])
+            point_y = float(raw_point[1])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(point_x) or not math.isfinite(point_y):
+            return None
+        return (
+            int(math.floor((point_x - float(origin_x_um)) / float(grid.grid_size_um))),
+            int(math.floor((point_y - float(origin_y_um)) / float(grid.grid_size_um))),
+        )
+
+    def _illegal_crossing_grid_cell(item: Mapping[str, object]) -> tuple[int, int] | None:
+        raw_cell = item.get("grid_cell")
+        if isinstance(raw_cell, (tuple, list)) and len(raw_cell) == 2:
+            try:
+                return (int(raw_cell[0]), int(raw_cell[1]))
+            except (TypeError, ValueError):
+                return None
+        return _grid_cell_from_raw_point(item.get("point_um"))
+
+    def _illegal_crossing_keepout_radius(item: Mapping[str, object]) -> int:
+        reason = str(item.get("reason", "") or "")
+        if reason == "not_perpendicular":
+            return max(1, int(resolved_crossing_half_size_cells) + 1)
+        if reason == "collinear_route_overlap":
+            return 1
+        blockers = item.get("crossing_footprint_blockers")
+        if isinstance(blockers, IterableABC) and not isinstance(
+            blockers,
+            (str, bytes, bytearray),
+        ):
+            if any(isinstance(blocker, Mapping) for blocker in blockers):
+                return max(1, int(resolved_crossing_half_size_cells) + 1)
+        if reason in {
+            "crossing_footprint_contains_route_geometry",
+            "crossing_footprint_overlap",
+        }:
+            return max(1, int(resolved_crossing_half_size_cells) + 1)
+        return max(1, min(4, int(resolved_crossing_half_size_cells) + 1))
+
+    def _add_keepout_square(
+        keepout_cells: set[tuple[int, int]],
+        *,
+        center: tuple[int, int],
+        radius: int,
+    ) -> None:
+        for y in range(center[1] - radius, center[1] + radius + 1):
+            for x in range(center[0] - radius, center[0] + radius + 1):
+                if 0 <= x < int(grid.width) and 0 <= y < int(grid.height):
+                    keepout_cells.add((x, y))
+
+    def _add_segment_keepout_cells(
+        keepout_cells: set[tuple[int, int]],
+        *,
+        start_cell: tuple[int, int],
+        end_cell: tuple[int, int],
+        radius: int,
+    ) -> None:
+        dx = int(end_cell[0]) - int(start_cell[0])
+        dy = int(end_cell[1]) - int(start_cell[1])
+        steps = max(abs(dx), abs(dy), 1)
+        for step in range(steps + 1):
+            t = float(step) / float(steps)
+            cell = (
+                int(round(float(start_cell[0]) + float(dx) * t)),
+                int(round(float(start_cell[1]) + float(dy) * t)),
+            )
+            _add_keepout_square(keepout_cells, center=cell, radius=radius)
+
+    def _final_crossing_repair_keepout_cells(
+        illegal_crossings: Iterable[Mapping[str, object]],
+    ) -> set[tuple[int, int]]:
+        keepout_cells: set[tuple[int, int]] = set()
+        for item in illegal_crossings:
+            radius = _illegal_crossing_keepout_radius(item)
+            reason = str(item.get("reason", "") or "")
+            if reason == "collinear_route_overlap":
+                start_cell = _grid_cell_from_raw_point(item.get("overlap_start_um"))
+                end_cell = _grid_cell_from_raw_point(item.get("overlap_end_um"))
+                if start_cell is not None and end_cell is not None:
+                    _add_segment_keepout_cells(
+                        keepout_cells,
+                        start_cell=start_cell,
+                        end_cell=end_cell,
+                        radius=radius,
+                    )
+                    continue
+            center = _illegal_crossing_grid_cell(item)
+            if center is not None:
+                _add_keepout_square(keepout_cells, center=center, radius=radius)
+            if reason == "crossing_footprint_overlap":
+                peer = item.get("overlapping_crossing")
+                if isinstance(peer, Mapping):
+                    peer_center = _grid_cell_from_raw_point(peer.get("point_um"))
+                    if peer_center is not None:
+                        _add_keepout_square(
+                            keepout_cells,
+                            center=peer_center,
+                            radius=radius,
+                        )
+        return keepout_cells
+
+    def _final_crossing_repair_net_ids(
+        illegal_crossings: Iterable[Mapping[str, object]],
+    ) -> list[int]:
+        net_ids: set[int] = set()
+
+        def _add_footprint_blocker_net_ids(item: Mapping[str, object]) -> None:
+            blockers = item.get("crossing_footprint_blockers")
+            if not isinstance(blockers, IterableABC) or isinstance(
+                blockers,
+                (str, bytes, bytearray),
+            ):
+                return
+            for blocker in blockers:
+                if not isinstance(blocker, Mapping):
+                    continue
+                try:
+                    blocker_net_id = int(cast(object, blocker.get("net_id")))
+                except (TypeError, ValueError):
+                    continue
+                if blocker_net_id in route_jobs_by_id:
+                    net_ids.add(blocker_net_id)
+
+        for item in illegal_crossings:
+            item_pair_ids: list[int] = []
+            for key in ("net_id_a", "net_id_b"):
+                try:
+                    net_id = int(cast(object, item.get(key)))
+                except (TypeError, ValueError):
+                    continue
+                if net_id in route_jobs_by_id:
+                    item_pair_ids.append(net_id)
+            reason = str(item.get("reason", "") or "")
+            if reason == "not_perpendicular":
+                net_ids.update(item_pair_ids)
+                _add_footprint_blocker_net_ids(item)
+                continue
+            if reason in {
+                "crossing_footprint_contains_bend",
+                "insufficient_straight_margin",
+            }:
+                if item_pair_ids:
+                    net_ids.add(max(item_pair_ids))
+                _add_footprint_blocker_net_ids(item)
+                continue
+            if reason == "collinear_route_overlap":
+                net_ids.update(item_pair_ids)
+                continue
+            if reason == "crossing_footprint_overlap":
+                peer_pair_ids: set[int] = set()
+                peer = item.get("overlapping_crossing")
+                if isinstance(peer, Mapping):
+                    for key in ("net_id_a", "net_id_b"):
+                        try:
+                            peer_net_id = int(cast(object, peer.get(key)))
+                        except (TypeError, ValueError):
+                            continue
+                        if peer_net_id in route_jobs_by_id:
+                            peer_pair_ids.add(peer_net_id)
+                net_ids.update(item_pair_ids)
+                net_ids.update(peer_pair_ids)
+                continue
+            if reason == "crossing_footprint_contains_route_geometry":
+                before_blocker_net_ids = set(net_ids)
+                _add_footprint_blocker_net_ids(item)
+                if net_ids == before_blocker_net_ids:
+                    net_ids.update(item_pair_ids)
+                continue
+            net_ids.update(item_pair_ids)
+        return [net_id for net_id in route_order if net_id in net_ids]
+
+    def _final_crossing_repair_batches(
+        illegal_crossings: list[dict[str, object]],
+        *,
+        max_net_ids: int,
+    ) -> list[list[dict[str, object]]]:
+        if not illegal_crossings or max_net_ids <= 0:
+            return []
+        components: list[tuple[list[dict[str, object]], set[int]]] = []
+        for item in illegal_crossings:
+            item_net_ids = set(_final_crossing_repair_net_ids([item]))
+            if not item_net_ids:
+                components.append(([item], set()))
+                continue
+            matching_indices = [
+                index
+                for index, (_items, component_net_ids) in enumerate(components)
+                if component_net_ids.intersection(item_net_ids)
+            ]
+            if not matching_indices:
+                components.append(([item], set(item_net_ids)))
+                continue
+            target_index = matching_indices[0]
+            target_items, target_net_ids = components[target_index]
+            target_items.append(item)
+            target_net_ids.update(item_net_ids)
+            for merge_index in reversed(matching_indices[1:]):
+                merge_items, merge_net_ids = components.pop(merge_index)
+                target_items.extend(merge_items)
+                target_net_ids.update(merge_net_ids)
+
+        capped_batches: list[list[dict[str, object]]] = []
+        oversized: list[dict[str, object]] = []
+        for component_items, _component_net_ids in components:
+            component_repair_ids = _final_crossing_repair_net_ids(component_items)
+            if component_repair_ids and len(component_repair_ids) <= max_net_ids:
+                capped_batches.append(component_items)
+            else:
+                oversized.extend(component_items)
+
+        if oversized:
+            current_batch: list[dict[str, object]] = []
+            current_net_ids: set[int] = set()
+            for item in oversized:
+                item_net_ids = set(_final_crossing_repair_net_ids([item]))
+                if (
+                    current_batch
+                    and item_net_ids
+                    and len(current_net_ids.union(item_net_ids)) > max_net_ids
+                ):
+                    capped_batches.append(current_batch)
+                    current_batch = []
+                    current_net_ids = set()
+                current_batch.append(item)
+                current_net_ids.update(item_net_ids)
+            if current_batch:
+                capped_batches.append(current_batch)
+
+        route_index = {int(net_id): index for index, net_id in enumerate(route_order)}
+
+        def _batch_sort_key(batch: list[dict[str, object]]) -> tuple[int, int, int]:
+            repair_ids = _final_crossing_repair_net_ids(batch)
+            first_route_index = min(
+                (route_index.get(int(net_id), len(route_index)) for net_id in repair_ids),
+                default=len(route_index),
+            )
+            return (first_route_index, -len(batch), len(repair_ids))
+
+        capped_batches.sort(key=_batch_sort_key)
+        return capped_batches
+
+    def _repair_final_illegal_crossings(
+        illegal_crossings: list[dict[str, object]],
+    ) -> bool:
+        max_repair_net_ids = 12
+        attempts = cast(
+            list[dict[str, object]],
+            crossing_plan_info.setdefault("final_crossing_repair_attempts", []),
+        )
+        priority_order = (
+            "collinear_route_overlap",
+            "crossing_footprint_contains_route_geometry",
+            "crossing_footprint_contains_bend",
+            "insufficient_straight_margin",
+            "not_perpendicular",
+            "crossing_footprint_overlap",
+        )
+        selected_reason = next(
+            (
+                reason
+                for reason in priority_order
+                if any(str(item.get("reason", "") or "") == reason for item in illegal_crossings)
+            ),
+            None,
+        )
+        selected_illegal_crossings = [
+            item
+            for item in illegal_crossings
+            if selected_reason is None
+            or str(item.get("reason", "") or "") == selected_reason
+        ]
+        total_selected_issue_count = len(selected_illegal_crossings)
+        if selected_reason in {
+            "crossing_footprint_contains_bend",
+            "insufficient_straight_margin",
+            "not_perpendicular",
+        }:
+            repair_batches = _final_crossing_repair_batches(
+                selected_illegal_crossings,
+                max_net_ids=min(4, max_repair_net_ids),
+            )
+            if repair_batches:
+                selected_illegal_crossings = repair_batches[0]
+        if (
+            not selected_illegal_crossings
+            or not crossing_plan_info.get("enabled")
+            or not repair_config.enabled
+            or not hasattr(router, "add_static_cells")
+            or not hasattr(router, "ripup_route")
+            or not hasattr(router, "route_many_with_repair_and_commit")
+        ):
+            return False
+        repair_net_ids = _final_crossing_repair_net_ids(selected_illegal_crossings)
+        if selected_reason == "not_perpendicular" and repair_net_ids:
+            priority: list[int] = []
+            for item in selected_illegal_crossings:
+                for key in ("net_id_b", "net_id_a"):
+                    try:
+                        net_id = int(cast(object, item.get(key)))
+                    except (TypeError, ValueError):
+                        continue
+                    if net_id in route_jobs_by_id and net_id not in priority:
+                        priority.append(net_id)
+                blockers = item.get("crossing_footprint_blockers")
+                if not isinstance(blockers, IterableABC) or isinstance(
+                    blockers,
+                    (str, bytes, bytearray),
+                ):
+                    continue
+                for blocker in blockers:
+                    if not isinstance(blocker, Mapping):
+                        continue
+                    try:
+                        blocker_net_id = int(cast(object, blocker.get("net_id")))
+                    except (TypeError, ValueError):
+                        continue
+                    if blocker_net_id in route_jobs_by_id and blocker_net_id not in priority:
+                        priority.append(blocker_net_id)
+            repair_net_ids = [
+                net_id
+                for net_id in priority
+                if net_id in repair_net_ids
+            ] + [
+                net_id
+                for net_id in repair_net_ids
+                if net_id not in priority
+            ]
+        attempt: dict[str, object] = {
+            "selected_reason": selected_reason,
+            "illegal_reason_counts": dict(
+                Counter(str(item.get("reason", "") or "unknown") for item in illegal_crossings)
+            ),
+            "selected_reason_counts": dict(
+                Counter(
+                    str(item.get("reason", "") or "unknown")
+                    for item in selected_illegal_crossings
+                )
+            ),
+            "repair_net_ids": [int(net_id) for net_id in repair_net_ids],
+        }
+        if total_selected_issue_count != len(selected_illegal_crossings):
+            attempt["batched_issue_count"] = len(selected_illegal_crossings)
+            attempt["total_selected_issue_count"] = total_selected_issue_count
+        if not repair_net_ids or len(repair_net_ids) > max_repair_net_ids:
+            attempt["status"] = "skipped"
+            attempt["reason"] = "no_repairable_nets_or_too_many"
+            attempts.append(attempt)
+            return False
+        keepout_cells = _final_crossing_repair_keepout_cells(selected_illegal_crossings)
+        attempt["keepout_cell_count"] = len(keepout_cells)
+        if not keepout_cells:
+            attempt["status"] = "skipped"
+            attempt["reason"] = "no_keepout_cells"
+            attempts.append(attempt)
+            return False
+
+        router.add_static_cells(sorted(keepout_cells))
+        for net_id in repair_net_ids:
+            router.ripup_route(int(net_id))
+            route_bookkeeping.clear_route(int(net_id))
+
+        repair_jobs: list[
+            tuple[
+                int,
+                Any,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
+        ] = []
+        opened_by_id: dict[int, list[tuple[int, int]]] = {}
+        for net_id in repair_net_ids:
+            job = route_jobs_by_id[net_id]
+            source_state, target_state, _, _, opened_cells = _state_openings_for_job(job)
+            clearance_exempt_cells = _clearance_exempt_cells_for_job(job)
+            repair_jobs.append(
+                (
+                    int(job.net_id),
+                    source_state,
+                    target_state,
+                    opened_cells,
+                    clearance_exempt_cells,
+                    _port_center_um(job.source_port),
+                    _port_center_um(job.target_port),
+                )
+            )
+            opened_by_id[int(job.net_id)] = opened_cells
+
+        raw_repair_result = router.route_many_with_repair_and_commit(
+            repair_jobs,
+            block_radius_cells,
+            commit_radius_cells,
+            core_commit_radius_cells,
+            int(repair_config.max_rounds),
+            int(repair_config.max_victims_per_failure),
+            float(repair_config.history_weight),
+            int(repair_config.history_increment),
+        )
+        repair_result = dict(raw_repair_result)
+        attempt["router_status"] = str(repair_result.get("status", ""))
+        attempt["routed_net_ids"] = [
+            int(dict(raw_entry)["net_id"])
+            for raw_entry in cast(Iterable[Any], repair_result.get("routes", []))
+        ]
+        if str(repair_result.get("status", "")) != "routed":
+            attempt["status"] = "failed"
+            attempts.append(attempt)
+            return False
+
+        repaired_records: list[RoutedNetRecord] = []
+        for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
+            entry = dict(raw_entry)
+            net_id = int(entry["net_id"])
+            job = route_jobs_by_id[net_id]
+            route_obj = entry["route"]
+            _record_route(job, route_obj, opened_by_id[net_id])
+            repaired_records.append(route_bookkeeping.records_by_id[net_id])
+
+        if enable_checked_endpoint_correction and repaired_records:
+            _apply_checked_endpoint_corrections_for_net_ids(
+                [int(record.net_id) for record in repaired_records if record.net_id is not None],
+                record_pipeline_timing=False,
+            )
+        attempt["status"] = "routed"
+        attempts.append(attempt)
+        return True
+
+    def _net_id_by_name() -> dict[str, int]:
+        return {
+            record.net_name: int(net_id)
+            for net_id, record in route_bookkeeping.records_by_id.items()
+        }
+
+    def _grid_rect_from_um_bbox(
+        raw_bbox: object,
+    ) -> tuple[int, int, int, int] | None:
+        if not isinstance(raw_bbox, (tuple, list)) or len(raw_bbox) != 4:
+            return None
+        try:
+            min_x_um = float(raw_bbox[0])
+            min_y_um = float(raw_bbox[1])
+            max_x_um = float(raw_bbox[2])
+            max_y_um = float(raw_bbox[3])
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(v) for v in (min_x_um, min_y_um, max_x_um, max_y_um)):
+            return None
+        if max_x_um < min_x_um:
+            min_x_um, max_x_um = max_x_um, min_x_um
+        if max_y_um < min_y_um:
+            min_y_um, max_y_um = max_y_um, min_y_um
+        grid_size = float(grid.grid_size_um)
+        return (
+            int(math.floor((min_x_um - float(origin_x_um)) / grid_size)),
+            int(math.ceil((max_x_um - float(origin_x_um)) / grid_size)),
+            int(math.floor((min_y_um - float(origin_y_um)) / grid_size)),
+            int(math.ceil((max_y_um - float(origin_y_um)) / grid_size)),
+        )
+
+    def _add_keepout_rect(
+        keepout_cells: set[tuple[int, int]],
+        *,
+        rect: tuple[int, int, int, int],
+        radius: int,
+    ) -> None:
+        min_x, max_x, min_y, max_y = rect
+        if min_x > max_x:
+            min_x, max_x = max_x, min_x
+        if min_y > max_y:
+            min_y, max_y = max_y, min_y
+        for y in range(min_y - radius, max_y + radius + 1):
+            if y < 0 or y >= int(grid.height):
+                continue
+            for x in range(min_x - radius, max_x + radius + 1):
+                if 0 <= x < int(grid.width):
+                    keepout_cells.add((x, y))
+
+    def _cells_from_um_bbox(
+        raw_bbox: object,
+        *,
+        radius: int,
+    ) -> set[tuple[int, int]]:
+        rect = _grid_rect_from_um_bbox(raw_bbox)
+        if rect is None:
+            return set()
+        cells: set[tuple[int, int]] = set()
+        _add_keepout_rect(cells, rect=rect, radius=radius)
+        return cells
+
+    def _grid_rect_from_grid_bbox_text(text: str, name: str) -> tuple[int, int, int, int] | None:
+        match = re.search(rf"{re.escape(name)}=\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)", text)
+        if match is None:
+            return None
+        try:
+            min_x = int(match.group(1))
+            max_x = int(match.group(2))
+            min_y = int(match.group(3))
+            max_y = int(match.group(4))
+        except (TypeError, ValueError):
+            return None
+        return min_x, max_x, min_y, max_y
+
+    def _polygon_bbox_um(raw_polygon: object) -> tuple[float, float, float, float] | None:
+        if not isinstance(raw_polygon, IterableABC) or isinstance(
+            raw_polygon,
+            (str, bytes, bytearray),
+        ):
+            return None
+        points: list[tuple[float, float]] = []
+        for raw_point in raw_polygon:
+            if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
+                return None
+            try:
+                point = (float(raw_point[0]), float(raw_point[1]))
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(point[0]) or not math.isfinite(point[1]):
+                return None
+            points.append(point)
+        if not points:
+            return None
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _photonic_issue_keepout_cells(
+        issue: PhotonicVerificationIssue,
+    ) -> set[tuple[int, int]]:
+        radius = max(1, int(core_commit_radius_cells) + 1)
+        if issue.code == "endpoint_correction_error":
+            cells: set[tuple[int, int]] = set()
+            for bbox_name in ("static_bbox", "core_bbox"):
+                rect = _grid_rect_from_grid_bbox_text(issue.message, bbox_name)
+                if rect is None:
+                    continue
+                _add_keepout_rect(cells, rect=rect, radius=radius)
+                if cells:
+                    return cells
+            return cells
+        details = issue.details or {}
+        if issue.code == "cross_net_waveguide_overlap":
+            return _cells_from_um_bbox(
+                details.get("overlap_bbox_um"),
+                radius=radius,
+            )
+        if issue.code == "waveguide_obstacle_overlap":
+            return _cells_from_um_bbox(
+                details.get("overlap_bbox_um"),
+                radius=radius,
+            )
+        if issue.code == "crossing_component_route_overlap":
+            crossing = details.get("crossing")
+            if isinstance(crossing, Mapping):
+                polygon_bbox = _polygon_bbox_um(
+                    crossing.get("crossing_footprint_polygon_um")
+                )
+                if polygon_bbox is not None:
+                    return _cells_from_um_bbox(polygon_bbox, radius=radius)
+            return _cells_from_um_bbox(
+                details.get("overlap_bbox_um"),
+                radius=radius,
+            )
+        return set()
+
+    def _photonic_issue_net_ids(
+        issue: PhotonicVerificationIssue,
+    ) -> set[int]:
+        by_name = _net_id_by_name()
+        net_ids: set[int] = set()
+        if issue.net_name and issue.net_name in by_name:
+            net_ids.add(by_name[issue.net_name])
+        details = issue.details or {}
+        other_net_name = details.get("other_net_name")
+        if isinstance(other_net_name, str) and other_net_name in by_name:
+            net_ids.add(by_name[other_net_name])
+        return net_ids
+
+    photonic_probe_index = 0
+
+    def _make_photonic_verification_probe_layout(
+        records: Iterable[RoutedNetRecord],
+    ) -> Component:
+        nonlocal photonic_probe_index
+        photonic_probe_index += 1
+        probe_layout = unrouted_layout.copy()
+        probe_layout.name = f"photonic_repair_probe_{time.time_ns()}_{photonic_probe_index}"
+        realize_routed_net_records(
+            probe_layout,
+            list(records),
+            route_width_um=route_width_um,
+            route_layer=route_layer,
+            realization_grid_spec=realization_grid_spec,
+            allow_45_degree_turns=allow_45_degree_turns,
+            bend_radius_cells=bend_radius_cells,
+            crossing_plan_info=crossing_plan_info,
+            enable_endpoint_correction=enable_checked_endpoint_correction,
+        )
+        if crossing_plan_info.get("enabled"):
+            _place_realized_crossing_components(probe_layout, crossing_plan_info)
+        return probe_layout
+
+    def _refresh_photonic_verification() -> PhotonicVerificationResult:
+        records = route_bookkeeping.ordered_records()
+        probe_layout = _make_photonic_verification_probe_layout(records)
+        return verify_photonic_routing(
+            probe_layout,
+            schematic,
+            routed_net_records=records,
+            unrouted_layout=unrouted_layout,
+            route_width_um=route_width_um,
+            route_layer=route_layer,
+            obstacle_layers=_default_obstacle_layers(
+                route_layer,
+                include_heater_obstacles=include_heater_obstacles,
+            ),
+            realization_grid_spec=realization_grid_spec,
+            allow_45_degree_turns=allow_45_degree_turns,
+            bend_radius_cells=bend_radius_cells,
+            legal_overlap_polygons_by_net_id_pair_um=(
+                _legal_crossing_overlap_polygons_for_verification(crossing_plan_info)
+            ),
+            crossing_component_footprints_um=(
+                _legal_crossing_component_footprints_for_verification(crossing_plan_info)
+            ),
+            check_route_coverage=debug_stop_after_route_index is None,
+            check_endpoint_connectivity=enable_checked_endpoint_correction,
+        )
+
+    def _repair_final_photonic_issues(
+        issues: tuple[PhotonicVerificationIssue, ...],
+    ) -> bool:
+        attempts = cast(
+            list[dict[str, object]],
+            crossing_plan_info.setdefault("final_photonic_repair_attempts", []),
+        )
+        priority_groups: tuple[tuple[str, set[str]], ...] = (
+            (
+                "endpoint_connection",
+                {
+                    "endpoint_correction_error",
+                    "missing_corrected_centerline",
+                    "source_port_not_connected",
+                    "target_port_not_connected",
+                    "source_endpoint_mismatch",
+                    "target_endpoint_mismatch",
+                },
+            ),
+            ("cross_net_waveguide_overlap", {"cross_net_waveguide_overlap"}),
+            ("waveguide_obstacle_overlap", {"waveguide_obstacle_overlap"}),
+            ("crossing_component_route_overlap", {"crossing_component_route_overlap"}),
+        )
+        selected_group = next(
+            (
+                name
+                for name, codes in priority_groups
+                if any(issue.code in codes for issue in issues)
+            ),
+            None,
+        )
+        if selected_group is None:
+            return False
+        selected_codes = dict(priority_groups)[selected_group]
+        selected_issues = [issue for issue in issues if issue.code in selected_codes]
+        if selected_group == "crossing_component_route_overlap":
+            selected_issues = selected_issues[:1]
+        if (
+            not selected_issues
+            or not repair_config.enabled
+            or not hasattr(router, "add_static_cells")
+            or not hasattr(router, "ripup_route")
+            or not hasattr(router, "route_many_with_repair_and_commit")
+        ):
+            return False
+
+        repair_net_ids_set: set[int] = set()
+        keepout_cells: set[tuple[int, int]] = set()
+        for issue in selected_issues:
+            repair_net_ids_set.update(_photonic_issue_net_ids(issue))
+            keepout_cells.update(_photonic_issue_keepout_cells(issue))
+        repair_net_ids = [net_id for net_id in route_order if net_id in repair_net_ids_set]
+        attempt: dict[str, object] = {
+            "selected_group": selected_group,
+            "issue_counts": dict(Counter(issue.code for issue in issues)),
+            "selected_issue_counts": dict(Counter(issue.code for issue in selected_issues)),
+            "repair_net_ids": [int(net_id) for net_id in repair_net_ids],
+            "keepout_cell_count": len(keepout_cells),
+        }
+        if not repair_net_ids or len(repair_net_ids) > 12:
+            attempt["status"] = "skipped"
+            attempt["reason"] = "no_repairable_nets_or_too_many"
+            attempts.append(attempt)
+            return False
+        if not keepout_cells:
+            attempt["status"] = "skipped"
+            attempt["reason"] = "no_keepout_cells"
+            attempts.append(attempt)
+            return False
+
+        router.add_static_cells(sorted(keepout_cells))
+        for net_id in repair_net_ids:
+            router.ripup_route(int(net_id))
+            route_bookkeeping.clear_route(int(net_id))
+
+        repair_jobs: list[
+            tuple[
+                int,
+                Any,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
+        ] = []
+        opened_by_id: dict[int, list[tuple[int, int]]] = {}
+        for net_id in repair_net_ids:
+            job = route_jobs_by_id[net_id]
+            source_state, target_state, _, _, opened_cells = _state_openings_for_job(job)
+            clearance_exempt_cells = _clearance_exempt_cells_for_job(job)
+            repair_jobs.append(
+                (
+                    int(job.net_id),
+                    source_state,
+                    target_state,
+                    opened_cells,
+                    clearance_exempt_cells,
+                    _port_center_um(job.source_port),
+                    _port_center_um(job.target_port),
+                )
+            )
+            opened_by_id[int(job.net_id)] = opened_cells
+
+        raw_repair_result = router.route_many_with_repair_and_commit(
+            repair_jobs,
+            block_radius_cells,
+            commit_radius_cells,
+            core_commit_radius_cells,
+            int(repair_config.max_rounds),
+            int(repair_config.max_victims_per_failure),
+            float(repair_config.history_weight),
+            int(repair_config.history_increment),
+        )
+        repair_result = dict(raw_repair_result)
+        attempt["router_status"] = str(repair_result.get("status", ""))
+        attempt["routed_net_ids"] = [
+            int(dict(raw_entry)["net_id"])
+            for raw_entry in cast(Iterable[Any], repair_result.get("routes", []))
+        ]
+        if str(repair_result.get("status", "")) != "routed":
+            attempt["status"] = "failed"
+            attempts.append(attempt)
+            return False
+
+        repaired_net_ids: list[int] = []
+        for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
+            entry = dict(raw_entry)
+            net_id = int(entry["net_id"])
+            job = route_jobs_by_id[net_id]
+            route_obj = entry["route"]
+            _record_route(job, route_obj, opened_by_id[net_id])
+            repaired_net_ids.append(net_id)
+        if enable_checked_endpoint_correction and repaired_net_ids:
+            failed_corrections = _apply_checked_endpoint_corrections_for_net_ids(
+                repaired_net_ids,
+                record_pipeline_timing=False,
+            )
+            attempt["endpoint_correction_failed_net_ids"] = [
+                int(net_id) for net_id in failed_corrections
+            ]
+        attempt["status"] = "routed"
+        attempts.append(attempt)
+        return True
+
+    def _photonic_repair_failure_preview(
+        verification: PhotonicVerificationResult,
+    ) -> str:
+        lines: list[str] = []
+        for issue in verification.issues[:5]:
+            details = issue.details or {}
+            suffix_parts: list[str] = []
+            if "overlap_area_um2" in details:
+                suffix_parts.append(f"area={details['overlap_area_um2']}")
+            if "overlap_bbox_um" in details:
+                suffix_parts.append(f"bbox={details['overlap_bbox_um']}")
+            suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
+            lines.append(
+                f"{issue.code} {issue.net_name or '<unknown>'}: "
+                f"{issue.message}{suffix}"
+            )
+        if len(verification.issues) > 5:
+            lines.append(f"... {len(verification.issues) - 5} more")
+        return "; ".join(lines)
+
+    def _refresh_realized_crossing_verification() -> list[dict[str, object]]:
+        _augment_crossing_plan_with_realized_overlaps(
+            router=router,
+            crossing_plan_info=crossing_plan_info,
+            routed_records_by_net_id=route_bookkeeping.records_by_id,
+        )
+        if hasattr(router, "crossing_events"):
+            try:
+                native_crossing_events = list(cast(Iterable[Any], router.crossing_events()))
+            except Exception:
+                native_crossing_events = []
+            crossing_plan_info["native_crossing_events"] = native_crossing_events
+            crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
+            _augment_insertion_loss_report(
+                crossing_plan_info=crossing_plan_info,
+                routed_records_by_net_id=route_bookkeeping.records_by_id,
+                native_crossing_events=native_crossing_events,
+            )
+        illegal = _verify_realized_route_intersections(
+            crossing_plan_info=crossing_plan_info,
+            routed_records_by_net_id=route_bookkeeping.records_by_id,
+            realization_grid_spec=realization_grid_spec,
+        )
+        _augment_insertion_loss_report_from_realized_intersections(
+            crossing_plan_info=crossing_plan_info,
+            routed_records_by_net_id=route_bookkeeping.records_by_id,
+        )
+        return illegal
+
+    final_crossing_repair_round_limit = 12
+    illegal_realized_crossings = _refresh_realized_crossing_verification()
+    for _final_repair_round in range(final_crossing_repair_round_limit):
+        if not illegal_realized_crossings:
+            break
+        if not _repair_final_illegal_crossings(illegal_realized_crossings):
+            break
+        routed_net_records = route_bookkeeping.ordered_records()
+        illegal_realized_crossings = _refresh_realized_crossing_verification()
+    if not illegal_realized_crossings:
+        final_photonic_verification = _refresh_photonic_verification()
+        for _final_photonic_repair_round in range(8):
+            if final_photonic_verification.success:
+                break
+            if not _repair_final_photonic_issues(final_photonic_verification.issues):
+                break
+            illegal_realized_crossings = _refresh_realized_crossing_verification()
+            for _nested_crossing_repair_round in range(final_crossing_repair_round_limit):
+                if not illegal_realized_crossings:
+                    break
+                if not _repair_final_illegal_crossings(illegal_realized_crossings):
+                    break
+                illegal_realized_crossings = _refresh_realized_crossing_verification()
+            routed_net_records = route_bookkeeping.ordered_records()
+            if illegal_realized_crossings:
+                break
+            final_photonic_verification = _refresh_photonic_verification()
+        if not illegal_realized_crossings and not final_photonic_verification.success:
+            _write_crossing_debug_artifacts(
+                debug_path=debug_path if debug_path is not None else Path("build"),
+                debug_prefix=debug_prefix,
+                crossing_plan_info=crossing_plan_info,
+            )
+            raise RuntimeError(
+                "Final photonic geometry repair failed before realization: "
+                f"{final_photonic_verification.error_count} error(s). "
+                f"{_photonic_repair_failure_preview(final_photonic_verification)}"
+            )
+    if not illegal_realized_crossings and not defer_realization:
         t_direct_realization_start = _pipeline_timer_start()
         realize_routed_net_records(
             routed_layout,
@@ -4253,33 +7534,16 @@ def route_nets_rust(
             realization_grid_spec=realization_grid_spec,
             allow_45_degree_turns=allow_45_degree_turns,
             bend_radius_cells=bend_radius_cells,
+            crossing_plan_info=crossing_plan_info,
+            enable_endpoint_correction=enable_checked_endpoint_correction,
         )
         _record_pipeline_timing("direct_realization", t_direct_realization_start)
-
-    _augment_crossing_plan_with_realized_overlaps(
-        router=router,
-        crossing_plan_info=crossing_plan_info,
-        routed_records_by_net_id=route_bookkeeping.records_by_id,
-    )
-    if hasattr(router, "crossing_events"):
-        try:
-            native_crossing_events = list(cast(Iterable[Any], router.crossing_events()))
-        except Exception:
-            native_crossing_events = []
-        crossing_plan_info["native_crossing_events"] = native_crossing_events
-        crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
-        _augment_insertion_loss_report(
-            crossing_plan_info=crossing_plan_info,
-            routed_records_by_net_id=route_bookkeeping.records_by_id,
-            native_crossing_events=native_crossing_events,
-        )
-    illegal_realized_crossings = _verify_realized_route_intersections(
-        crossing_plan_info=crossing_plan_info,
-        routed_records_by_net_id=route_bookkeeping.records_by_id,
-        realization_grid_spec=realization_grid_spec,
-    )
+        _place_realized_crossing_components(routed_layout, crossing_plan_info)
+    elif crossing_plan_info.get("enabled"):
+        crossing_plan_info.setdefault("realized_crossing_components", [])
+        crossing_plan_info.setdefault("realized_crossing_component_count", 0)
     _write_crossing_debug_artifacts(
-        debug_path=debug_path,
+        debug_path=debug_path if debug_path is not None else Path("build"),
         debug_prefix=debug_prefix,
         crossing_plan_info=crossing_plan_info,
     )
@@ -4289,7 +7553,12 @@ def route_nets_rust(
             f"at {item.get('point_um')} ({item.get('reason')}, "
             f"margins={item.get('segment_a_margin_um')}/"
             f"{item.get('segment_b_margin_um')}, "
-            f"required={item.get('required_margin_um')})"
+            f"required={item.get('required_margin_um')}, "
+            f"grid={item.get('grid_cell')}, "
+            f"route_endpoint_dists={item.get('route_endpoint_distance_a_um')}/"
+            f"{item.get('route_endpoint_distance_b_um')}, "
+            f"port_endpoint_dists={item.get('port_endpoint_distance_a_um')}/"
+            f"{item.get('port_endpoint_distance_b_um')})"
             for item in illegal_realized_crossings[:5]
         )
         raise RuntimeError(

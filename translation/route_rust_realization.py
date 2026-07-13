@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterable
+import math
+from collections.abc import Iterable, Mapping
 from typing import Protocol
 
 from gdsfactory.component import Component
+import klayout.db as kdb
 
 from translation.route_rust_types import (
     DEFAULT_MEANDER_MAX_HEIGHT_UM,
@@ -109,6 +111,8 @@ def realize_routed_net_records(
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool = True,
     bend_radius_cells: int = 4,
+    crossing_plan_info: Mapping[str, object] | None = None,
+    enable_endpoint_correction: bool = True,
 ) -> None:
     """Phase B: realize routed records into polygons on the target layout."""
     if route_width_um <= 0:
@@ -136,13 +140,23 @@ def realize_routed_net_records(
     )
     astar_cfg = rust_backend.AStarConfig(max_iterations=1)
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+    dbu = _component_dbu(routed_layout)
+    crossing_clip_regions_by_net_id = _crossing_clip_regions_by_net_id(
+        crossing_plan_info,
+        dbu=dbu,
+    )
 
     for record in routed_net_records:
+        clip_region = (
+            crossing_clip_regions_by_net_id.get(int(record.net_id))
+            if record.net_id is not None
+            else None
+        )
         corrected_centerline = _physical_port_centerline(
             router,
             record,
             realization_grid_spec=realization_grid_spec,
-            enable_endpoint_correction=True,
+            enable_endpoint_correction=enable_endpoint_correction,
             allow_unchecked_bumps=not allow_45_degree_turns,
         )
         if record.meander_auto_plan is not None:
@@ -239,7 +253,12 @@ def realize_routed_net_records(
                     opened_cells=[],
                     planning_mode=str(plan["planning_mode"]),
                 )
-            routed_layout.add_polygon(polygon, layer=route_layer)
+            _add_route_polygon(
+                routed_layout,
+                polygon,
+                route_layer=route_layer,
+                clip_region=clip_region,
+            )
             continue
         if corrected_centerline:
             try:
@@ -258,7 +277,128 @@ def realize_routed_net_records(
                         realization_grid_spec=realization_grid_spec,
                     )
                 ) from exc
-            routed_layout.add_polygon(polygon, layer=route_layer)
+            _add_route_polygon(
+                routed_layout,
+                polygon,
+                route_layer=route_layer,
+                clip_region=clip_region,
+            )
             continue
         polygon = router.realize_route_polygon(record.route_obj, float(route_width_um))
+        _add_route_polygon(
+            routed_layout,
+            polygon,
+            route_layer=route_layer,
+            clip_region=clip_region,
+        )
+
+
+def _add_route_polygon(
+    routed_layout: Component,
+    polygon: object,
+    *,
+    route_layer: tuple[int, int],
+    clip_region: kdb.Region | None = None,
+) -> None:
+    if clip_region is None or clip_region.is_empty():
         routed_layout.add_polygon(polygon, layer=route_layer)
+        return
+
+    temp = Component()
+    temp.add_polygon(polygon, layer=route_layer)
+    route_region = _component_layer_region(temp, route_layer)
+    if route_region.is_empty():
+        return
+    clipped = route_region - clip_region
+    for clipped_polygon in clipped.each():
+        routed_layout.add_polygon(clipped_polygon, layer=route_layer)
+
+
+def _crossing_clip_regions_by_net_id(
+    crossing_plan_info: Mapping[str, object] | None,
+    *,
+    dbu: float,
+) -> dict[int, kdb.Region]:
+    if not isinstance(crossing_plan_info, Mapping) or not crossing_plan_info.get(
+        "enabled",
+    ):
+        return {}
+    raw_crossings = crossing_plan_info.get("realized_intersections", ())
+    if not isinstance(raw_crossings, Iterable) or isinstance(
+        raw_crossings,
+        (str, bytes, bytearray),
+    ):
+        return {}
+
+    regions_by_net_id: dict[int, kdb.Region] = {}
+    for raw_crossing in raw_crossings:
+        if not isinstance(raw_crossing, Mapping):
+            continue
+        classification = str(raw_crossing.get("classification", "") or "")
+        if not classification.startswith("legal_"):
+            continue
+        footprint = _polygon_region_um(
+            raw_crossing.get("crossing_footprint_polygon_um"),
+            dbu=dbu,
+        )
+        if footprint.is_empty():
+            continue
+        for key in ("net_id_a", "net_id_b"):
+            net_id = _as_int_or_none(raw_crossing.get(key))
+            if net_id is None:
+                continue
+            regions_by_net_id.setdefault(net_id, kdb.Region())
+            regions_by_net_id[net_id] += footprint
+    return regions_by_net_id
+
+
+def _polygon_region_um(raw_polygon: object, *, dbu: float) -> kdb.Region:
+    region = kdb.Region()
+    if not isinstance(raw_polygon, Iterable) or isinstance(
+        raw_polygon,
+        (str, bytes, bytearray),
+    ):
+        return region
+
+    points: list[kdb.Point] = []
+    for raw_point in raw_polygon:
+        if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
+            return kdb.Region()
+        try:
+            x = float(raw_point[0])
+            y = float(raw_point[1])
+        except (TypeError, ValueError):
+            return kdb.Region()
+        if not math.isfinite(x) or not math.isfinite(y):
+            return kdb.Region()
+        points.append(kdb.Point(_um_to_dbu(x, dbu), _um_to_dbu(y, dbu)))
+    if len(points) < 3:
+        return region
+    region.insert(kdb.Polygon(points))
+    return region
+
+
+def _component_layer_region(component: Component, layer: tuple[int, int]) -> kdb.Region:
+    region = kdb.Region()
+    for polygon in component.get_polygons(merge=False, by="tuple").get(layer, []):
+        region.insert(polygon)
+    return region
+
+
+def _component_dbu(component: Component) -> float:
+    kcl = getattr(component, "kcl", None)
+    dbu = getattr(kcl, "dbu", None)
+    if dbu is None:
+        return 0.001
+    return float(dbu)
+
+
+def _um_to_dbu(value_um: float, dbu: float) -> int:
+    return int(round(float(value_um) / float(dbu)))
+
+
+def _as_int_or_none(value: object) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

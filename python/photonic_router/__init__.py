@@ -1,5 +1,41 @@
 """Python preprocessing utilities for the Rust photonic router."""
 
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import sys
+
+
+_DLL_DIRECTORY_HANDLES: list[object] = []
+
+
+def _register_windows_rust_dll_directories() -> None:
+    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
+        return
+
+    package_dir = Path(__file__).resolve().parent
+    home = Path.home()
+    gnullvm_toolchain = home / ".rustup" / "toolchains" / "stable-x86_64-pc-windows-gnullvm"
+    candidate_dirs = (
+        package_dir,
+        Path(sys.base_prefix),
+        Path(sys.executable).resolve().parent,
+        gnullvm_toolchain / "bin",
+        gnullvm_toolchain / "lib" / "rustlib" / "x86_64-pc-windows-gnullvm" / "bin",
+        Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "downlevel",
+    )
+    for directory in candidate_dirs:
+        if not directory.is_dir():
+            continue
+        try:
+            _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(directory)))
+        except OSError:
+            continue
+
+
+_register_windows_rust_dll_directories()
+
 from photonic_router.benchmark_extractor import ExtractedBenchmark, Port, extract_benchmark
 from photonic_router.static_obstacle_builder import (
     GridSpec,

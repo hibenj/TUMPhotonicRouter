@@ -13,7 +13,8 @@ For multi-agent collaboration, role boundaries, handoff rules, and validation
 expectations, read `.agent/WORKFLOW.md`. If acting as a lead agent that
 delegates to subagents, also read `.agent/ORCHESTRATOR.md`.
 For commits and repository state checkpoints, read `.agent/GIT_WORKFLOW.md` and
-keep `.agent/REPOSITORY_STATE.md` current at least every 10 commits.
+keep `.agent/REPOSITORY_STATE.md` current before every agent stop, pause, or
+handoff.
 
 Use this operating sequence for non-trivial work:
 

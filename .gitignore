@@ -3,9 +3,11 @@
 target/
 build/
 python/photonic_router/_rust*.so
+python/photonic_router/*.dll
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mplconfig/
 .mypy_cache/
 .ruff_cache/
 .tox/

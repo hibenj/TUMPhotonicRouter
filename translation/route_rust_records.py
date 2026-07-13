@@ -347,6 +347,7 @@ class RouteBookkeeping:
             target=edge_key.target,
             route_obj=route_obj,
             total_length_um=total_length_um,
+            net_id=int(job.net_id),
             opened_cells=tuple(opened_cells),
             source_port_center_um=_port_center_um(job.source_port),
             target_port_center_um=_port_center_um(job.target_port),

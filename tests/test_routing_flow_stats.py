@@ -1,3 +1,5 @@
+import json
+
 from routing_flow import (
     RipupRerouteConfig,
     RoutingFlowStats,
@@ -7,6 +9,7 @@ from routing_flow import (
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     _build_arg_parser,
     _format_debug_route_indices,
+    _verification_status_metadata,
     load_benchmark,
     _parse_debug_svg_selector,
     run_routing_flow,
@@ -28,7 +31,12 @@ from translation.electrical import (
 )
 from translation.layout_from_schematic import layout_from_schematic
 from translation.photonic_verification import verify_photonic_routing
-from translation.route_rust import route_match_and_realize
+from translation.route_rust import (
+    DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+    _build_crossing_plan_info,
+    _effective_crossing_search_loss,
+    route_match_and_realize,
+)
 from translation.route_rust_types import (
     DEFAULT_BEND_RADIUS_UM,
     DEFAULT_MEANDER_MAX_HEIGHT_UM,
@@ -87,6 +95,79 @@ def test_electrical_width_defaults_are_centralized():
     assert config.common_bus_bondpad_length_um == DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM
     assert config.pad_pitch_um == DEFAULT_PAD_PITCH_UM
     assert SCRIPT_ELECTRICAL_WIRE_WIDTH_UM == DEFAULT_WIRE_WIDTH_UM
+
+
+def test_lidar_pure_uses_search_only_crossing_penalty_by_default():
+    assert _effective_crossing_search_loss(
+        enable_crossings=True,
+        crossing_mode="lidar-pure",
+        crossing_loss=0.0,
+    ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
+    assert _effective_crossing_search_loss(
+        enable_crossings=True,
+        crossing_mode="collision",
+        crossing_loss=0.0,
+    ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
+    assert _effective_crossing_search_loss(
+        enable_crossings=True,
+        crossing_mode="window",
+        crossing_loss=0.0,
+    ) == pytest.approx(0.0)
+    assert _effective_crossing_search_loss(
+        enable_crossings=True,
+        crossing_mode="lidar-pure",
+        crossing_loss=0.07,
+    ) == pytest.approx(0.07)
+
+
+def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
+    captured: dict[str, object] = {}
+
+    class FakeCrossingConfig:
+        def __init__(self, **kwargs: object) -> None:
+            captured["config"] = dict(kwargs)
+
+    class FakeCrossingConstraint:
+        pass
+
+    class FakeRouter:
+        def set_crossing_constraints(self, constraints: object) -> None:
+            captured["constraints"] = constraints
+
+        def set_crossing_config(self, config: object) -> None:
+            captured["set_config"] = config
+
+        def crossing_expected_count(self, _net_id: object) -> int:
+            return 0
+
+    fake_backend = SimpleNamespace(
+        CrossingConfig=FakeCrossingConfig,
+        CrossingConstraint=FakeCrossingConstraint,
+    )
+
+    info = _build_crossing_plan_info(
+        rust_backend=fake_backend,
+        router=FakeRouter(),
+        schematic=SimpleNamespace(),
+        route_jobs=[],
+        enable_crossings=True,
+        node_depths=None,
+        node_ranks=None,
+        edge_ranks=None,
+        crossing_loss=0.0,
+        crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+        crossing_half_size_cells=3,
+        min_straight_cells_per_crossing=2,
+        allow_only_expected_crossings=False,
+    )
+
+    assert captured["config"]["crossing_loss"] == pytest.approx(
+        DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
+    )
+    assert info["crossing_loss"] == pytest.approx(0.0)
+    assert info["crossing_search_loss"] == pytest.approx(
+        DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
+    )
     assert SCRIPT_ELECTRICAL_BUS_WIDTH_UM == DEFAULT_BUS_WIDTH_UM
     assert SCRIPT_ELECTRICAL_PAD_PITCH_UM == DEFAULT_PAD_PITCH_UM
 
@@ -501,6 +582,339 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
     assert captured.get("ripup_reroute_config") is ripup_config
     assert captured.get("collect_route_stats") is False
     assert captured.get("bend_radius_um") == 3.0
+
+
+def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_path):
+    def fake_load_benchmark(_benchmark_name: str):
+        return SimpleNamespace(
+            netlist=SimpleNamespace(instances={"a": object()}, routes={"n0": object()}),
+            placements={},
+        )
+
+    def fake_layout_from_schematic(_schematic: object):
+        return SimpleNamespace(
+            name="unrouted_layout",
+            bbox=(0.0, 0.0, 10.0, 10.0),
+        )
+
+    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+        return {"node_types": None, "internal_delays_um": None}
+
+    def fake_route_match_and_realize(
+        _layout: object,
+        _schematic: object,
+        **_kwargs: object,
+    ):
+        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
+        routed_layout.write_gds = lambda *_args, **_kwargs: None
+        return SimpleNamespace(
+            routed_layout=routed_layout,
+            debug_artifacts=SimpleNamespace(
+                realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
+                static_blocked_cells=set(),
+                route_search_summary=RouteSearchSummary(route_count=1),
+                route_attempt_records=[],
+                crossing_plan_info={
+                    "enabled": True,
+                    "crossing_device": {
+                        "component_name": "crossing",
+                        "component_bbox_um": [10.0, 10.0],
+                    },
+                    "realized_intersections": [
+                        {
+                            "classification": "legal_unexpected_crossing",
+                            "point_um": [2.0, 3.0],
+                            "net_id_a": 1,
+                            "net_id_b": 2,
+                            "net_name_a": "n0",
+                            "net_name_b": "n1",
+                        }
+                    ],
+                    "realized_crossing_components": [
+                        {
+                            "component_name": "crossing",
+                            "instance_name": "crossing_0000_1_2",
+                            "point_um": [2.0, 3.0],
+                            "center_um": [2.0, 3.0],
+                            "component_bbox_um": [10.0, 10.0],
+                            "rotation_deg": 0.0,
+                            "net_id_a": 1,
+                            "net_id_b": 2,
+                            "net_name_a": "n0",
+                            "net_name_b": "n1",
+                        }
+                    ],
+                    "realized_crossing_component_count": 1,
+                    "insertion_loss_by_net": [
+                        {
+                            "net_id": 1,
+                            "net_name": "n0",
+                            "length_um": 100.0,
+                            "propagation_loss": 0.12,
+                            "bend_loss": 0.02,
+                            "crossing_loss": 0.03,
+                            "insertion_loss": 0.17,
+                        }
+                    ],
+                },
+            ),
+            path_length_analysis_info=None,
+            meander_requirements_info=None,
+            meander_insertion_report_info=None,
+        )
+
+    import routing_flow
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
+    monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
+    monkeypatch.setattr(routing_flow, "load_benchmark_metadata", fake_load_metadata)
+    monkeypatch.setattr(routing_flow, "route_match_and_realize", fake_route_match_and_realize)
+
+    routed = run_routing_flow(
+        "FAKE",
+        debug_timing=False,
+        show_klayout=False,
+        enable_crossings=True,
+    )
+
+    report_path = tmp_path / "build" / "verification" / "fake_crossing_verification.json"
+    assert report_path.exists()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert routed.info["crossing_verification"]["path"] == str(
+        Path("build") / "verification" / "fake_crossing_verification.json"
+    )
+    assert payload["success"] is True
+    assert payload["status"] == "complete"
+    assert payload["partial"] is False
+    assert payload["metrics"]["route_coverage_check_enabled"] is True
+    assert payload["metrics"]["legal_crossing_count"] == 1
+    assert payload["metrics"]["matched_crossing_component_count"] == 1
+    assert payload["metrics"]["realized_crossing_component_count"] == 1
+    assert payload["issues"] == []
+    assert payload["route_costs"][0]["total_physical_insertion_loss"] == pytest.approx(
+        0.17
+    )
+
+
+def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_path):
+    captured: dict[str, object] = {"write_gds_called": False}
+
+    def fake_load_benchmark(_benchmark_name: str):
+        return SimpleNamespace(
+            netlist=SimpleNamespace(instances={"a": object()}, routes={"n0": object()}),
+            placements={},
+        )
+
+    def fake_layout_from_schematic(_schematic: object):
+        return SimpleNamespace(
+            name="unrouted_layout",
+            bbox=(0.0, 0.0, 10.0, 10.0),
+        )
+
+    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+        return {"node_types": None, "internal_delays_um": None}
+
+    def fake_route_match_and_realize(
+        _layout: object,
+        _schematic: object,
+        **_kwargs: object,
+    ):
+        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
+
+        def fake_write_gds(*_args: object, **_kwargs: object) -> None:
+            captured["write_gds_called"] = True
+
+        routed_layout.write_gds = fake_write_gds
+        return SimpleNamespace(
+            routed_layout=routed_layout,
+            debug_artifacts=SimpleNamespace(
+                realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
+                static_blocked_cells=set(),
+                route_search_summary=RouteSearchSummary(route_count=1),
+                route_attempt_records=[],
+                routed_net_records=[],
+                crossing_plan_info={
+                    "enabled": True,
+                    "crossing_device": {
+                        "component_name": "crossing",
+                        "component_bbox_um": [10.0, 10.0],
+                    },
+                    "realized_intersections": [
+                        {
+                            "classification": "legal_unexpected_crossing",
+                            "point_um": [2.0, 3.0],
+                            "segment_a_um": [[0.0, 3.0], [10.0, 3.0]],
+                            "segment_b_um": [[2.0, 0.0], [6.0, 10.0]],
+                            "perpendicular": False,
+                            "degraded_reason": "not_perpendicular",
+                            "net_id_a": 1,
+                            "net_id_b": 2,
+                            "net_name_a": "n0",
+                            "net_name_b": "n1",
+                        }
+                    ],
+                    "realized_crossing_components": [
+                        {
+                            "component_name": "crossing",
+                            "point_um": [2.0, 3.0],
+                            "component_bbox_um": [10.0, 10.0],
+                            "rotation_deg": 0.0,
+                        }
+                    ],
+                },
+            ),
+            path_length_analysis_info=None,
+            meander_requirements_info=None,
+            meander_insertion_report_info=None,
+        )
+
+    import routing_flow
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
+    monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
+    monkeypatch.setattr(routing_flow, "load_benchmark_metadata", fake_load_metadata)
+    monkeypatch.setattr(routing_flow, "route_match_and_realize", fake_route_match_and_realize)
+
+    with pytest.raises(RuntimeError, match="Crossing verification failed"):
+        run_routing_flow(
+            "FAKE",
+            debug_timing=False,
+            show_klayout=False,
+            enable_crossings=True,
+        )
+
+    report_path = tmp_path / "build" / "verification" / "fake_crossing_verification.json"
+    assert report_path.exists()
+    assert captured["write_gds_called"] is False
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["success"] is False
+    assert payload["issues"][0]["details"]["reason"] == "not_perpendicular"
+
+
+def test_verification_status_metadata_marks_debug_stop_partial():
+    metadata = _verification_status_metadata(
+        debug_stop_after_route_index=68,
+        expected_route_count=111,
+        routed_record_count=68,
+        route_coverage_check_enabled=False,
+    )
+
+    assert metadata == {
+        "status": "partial_debug_stop",
+        "partial": True,
+        "debug_stop_after_route_index": 68,
+        "expected_route_count": 111,
+        "routed_record_count": 68,
+        "missing_route_count": 43,
+        "route_coverage_check_enabled": False,
+    }
+
+
+def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_path):
+    captured: dict[str, object] = {"write_gds_called": False}
+
+    def fake_load_benchmark(_benchmark_name: str):
+        return SimpleNamespace(
+            netlist=SimpleNamespace(instances={"a": object()}, routes={"n0": object()}),
+            placements={},
+        )
+
+    def fake_layout_from_schematic(_schematic: object):
+        return SimpleNamespace(
+            name="unrouted_layout",
+            bbox=(0.0, 0.0, 10.0, 10.0),
+        )
+
+    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+        return {"node_types": None, "internal_delays_um": None}
+
+    def fake_route_match_and_realize(
+        _layout: object,
+        _schematic: object,
+        **_kwargs: object,
+    ):
+        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
+
+        def fake_write_gds(*_args: object, **_kwargs: object) -> None:
+            captured["write_gds_called"] = True
+
+        routed_layout.write_gds = fake_write_gds
+        return SimpleNamespace(
+            routed_layout=routed_layout,
+            debug_artifacts=SimpleNamespace(
+                realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
+                realization_allow_45_degree_turns=True,
+                realization_bend_radius_cells=4,
+                routed_net_records=[object()],
+                static_blocked_cells=set(),
+                route_search_summary=RouteSearchSummary(route_count=1),
+                route_attempt_records=[],
+                crossing_plan_info={"enabled": False},
+            ),
+            path_length_analysis_info=None,
+            meander_requirements_info=None,
+            meander_insertion_report_info=None,
+            pipeline_timings_s={},
+        )
+
+    issue = SimpleNamespace(
+        code="cross_net_waveguide_overlap",
+        message="Waveguide for n0 overlaps waveguide for n1.",
+        severity="error",
+        net_name="n0",
+        details={"overlap_area_um2": 3.0, "overlap_bbox_um": (1.0, 2.0, 3.0, 4.0)},
+    )
+    verification = SimpleNamespace(
+        success=False,
+        error_count=1,
+        warning_count=0,
+        issues=(issue,),
+        metrics={"cross_net_waveguide_overlap_count": 1},
+    )
+    verification.as_dict = lambda: {
+        "success": False,
+        "error_count": 1,
+        "warning_count": 0,
+        "metrics": dict(verification.metrics),
+        "issues": [
+            {
+                "code": issue.code,
+                "message": issue.message,
+                "severity": issue.severity,
+                "net_name": issue.net_name,
+                "details": dict(issue.details),
+            }
+        ],
+    }
+
+    import routing_flow
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
+    monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
+    monkeypatch.setattr(routing_flow, "load_benchmark_metadata", fake_load_metadata)
+    monkeypatch.setattr(routing_flow, "route_match_and_realize", fake_route_match_and_realize)
+    monkeypatch.setattr(
+        routing_flow,
+        "verify_photonic_routing",
+        lambda *_args, **_kwargs: verification,
+    )
+
+    with pytest.raises(RuntimeError, match="Photonic geometry verification failed"):
+        run_routing_flow(
+            "FAKE",
+            debug_timing=False,
+            show_klayout=False,
+        )
+
+    report_path = tmp_path / "build" / "verification" / "fake_photonic_verification.json"
+    assert report_path.exists()
+    assert captured["write_gds_called"] is False
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["success"] is False
+    assert payload["issues"][0]["code"] == "cross_net_waveguide_overlap"
 
 
 def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatch):

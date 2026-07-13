@@ -208,6 +208,7 @@ class RoutedNetRecord:
     target: PortRef
     route_obj: object
     total_length_um: float
+    net_id: int | None = None
     meander_auto_plan: dict[str, object] | None = None
     opened_cells: tuple[tuple[int, int], ...] = ()
     source_port_center_um: tuple[float, float] | None = None

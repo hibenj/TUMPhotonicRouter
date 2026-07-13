@@ -51,8 +51,8 @@ def test_rust_batch_repair_rips_and_reroutes_dynamic_blocker():
     rust_backend, router = _build_lane_repair_router()
     state = rust_backend.State
     jobs = [
-        (1, state(2, 10, 0), state(47, 10, 0), [], []),
-        (2, state(5, 10, 0), state(44, 10, 0), [], []),
+        (1, state(2, 10, 0), state(47, 10, 0), [], [], None, None),
+        (2, state(5, 10, 0), state(44, 10, 0), [], [], None, None),
     ]
 
     result = router.route_many_with_repair_and_commit(
@@ -87,6 +87,37 @@ def test_rust_batch_repair_rips_and_reroutes_dynamic_blocker():
     assert attempts[3]["ripup_ids"] == [1]
     assert attempts[4]["net_id"] == 1
     assert attempts[4]["failed"] is False
+
+    repair_trace = result["repair_trace"]
+    assert any(
+        event["event"] == "repair_mode_start"
+        and event["route_order"] == "current_first"
+        and event["ripup_ids"] == [1]
+        and event["victim_order"] == [1]
+        for event in repair_trace
+    )
+    assert any(
+        event["event"] == "current_route"
+        and event["route_order"] == "current_first"
+        and event["action"] == "normal_route"
+        and event["net_id"] == 2
+        and event["success"] is True
+        for event in repair_trace
+    )
+    assert any(
+        event["event"] == "victim_reroute"
+        and event["route_order"] == "current_first"
+        and event["action"] == "normal_route"
+        and event["net_id"] == 1
+        and event["success"] is True
+        for event in repair_trace
+    )
+    assert any(
+        event["event"] == "repair_mode_result"
+        and event["route_order"] == "current_first"
+        and event["success"] is True
+        for event in repair_trace
+    )
 
     routes_by_net = {entry["net_id"]: entry["route"] for entry in result["routes"]}
     assert set(routes_by_net) == {1, 2}

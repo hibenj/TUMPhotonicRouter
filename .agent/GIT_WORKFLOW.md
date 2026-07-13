@@ -63,7 +63,7 @@ unless the whole dirty tree is intentionally part of the same commit.
 
 ## Repository State Summaries
 
-At least once every 10 commits, and also before a major handoff, update:
+Before every agent stop, pause, or handoff, update:
 
     .agent/REPOSITORY_STATE.md
 

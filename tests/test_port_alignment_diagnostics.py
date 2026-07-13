@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -6,6 +7,10 @@ import pytest
 
 from photonic_router.path_length_graph import PortRef
 from photonic_router.static_obstacle_builder import _load_rust_backend
+from translation.route_rust import (
+    _absorbed_terminal_centerline,
+    _apply_crossing_aware_endpoint_correction_to_record,
+)
 from translation.route_rust_records import (
     apply_port_endpoint_corrections,
     build_port_alignment_diagnostics,
@@ -490,3 +495,352 @@ def test_checked_case4_bump_with_45_enabled_uses_clear_mirrored_side():
     assert result["committed_bump"] is True
     assert result["candidate_index"] == 1
     assert "bottom" in result["candidate_label"]
+
+
+def _checked_no_bump_diagonal_test_router_and_route(rust_backend):
+    grid = rust_backend.GridSpec(32, 32, 1.0, 0.0, 0.0)
+    primitive = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=1,
+        allow_45_degree_turns=True,
+    )
+    astar = rust_backend.AStarConfig(max_iterations=10_000)
+    router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
+    route = router.route_single_net_and_commit(
+        7,
+        rust_backend.State(1, 1, 1),
+        rust_backend.State(9, 9, 1),
+        0,
+        [],
+        0,
+        [],
+        0,
+    )
+    return router, route
+
+
+class _FakeEndpointRouter:
+    def route_primitive_centerline(self, route: object) -> list[tuple[float, float]]:
+        return [(1.0, 0.0), (4.0, 0.0), (5.0, 0.0), (6.0, 0.0), (10.0, 0.0)]
+
+    def route_port_corrected_centerline(
+        self,
+        route: object,
+        **kwargs: object,
+    ) -> list[tuple[float, float]]:
+        return [(0.0, 1.0), (2.0, 1.0), (4.0, 1.0), (6.0, 1.0), (9.0, 1.0), (11.0, 1.0)]
+
+    def centerline_length_um(self, centerline: list[tuple[float, float]]) -> float:
+        return _centerline_length_um(tuple(centerline))
+
+
+class _FakeStraightEndpointRouter(_FakeEndpointRouter):
+    def route_port_corrected_centerline(
+        self,
+        route: object,
+        **kwargs: object,
+    ) -> list[tuple[float, float]]:
+        return [(0.0, 0.0), (4.0, 0.0), (5.0, 0.0), (6.0, 0.0), (11.0, 0.0)]
+
+
+class _FakePortStubEndpointRouter(_FakeEndpointRouter):
+    def route_primitive_centerline(self, route: object) -> list[tuple[float, float]]:
+        return [(0.0, 1.0), (0.0, 4.0), (0.0, 5.0), (0.0, 6.0), (0.0, 10.0)]
+
+    def route_port_corrected_centerline(
+        self,
+        route: object,
+        **kwargs: object,
+    ) -> list[tuple[float, float]]:
+        return [(1.0, 1.0), (0.0, 1.0), (0.0, 4.0), (0.0, 5.0), (0.0, 6.0), (0.0, 11.0)]
+
+
+class _FakeSplitEndpointRouter(_FakeEndpointRouter):
+    def route_primitive_centerline(self, route: object) -> list[tuple[float, float]]:
+        return [(1.0, 0.0), (9.0, 0.0), (20.0, 0.0)]
+
+    def route_port_corrected_centerline(
+        self,
+        route: object,
+        **kwargs: object,
+    ) -> list[tuple[float, float]]:
+        return [(0.0, 1.0), (9.0, 1.0), (21.0, 1.0)]
+
+
+class _FakeUnanchoredEndpointRouter(_FakeSplitEndpointRouter):
+    def route_port_corrected_centerline(
+        self,
+        route: object,
+        **kwargs: object,
+    ) -> list[tuple[float, float]]:
+        return [(1.0, 0.0), (9.0, 0.0), (20.0, 0.0)]
+
+
+def _simple_record() -> RoutedNetRecord:
+    return RoutedNetRecord(
+        net_name="n_crossed",
+        source=PortRef("src", "o1"),
+        target=PortRef("dst", "o1"),
+        route_obj=object(),
+        total_length_um=9.0,
+        net_id=7,
+        source_port_center_um=(0.0, 0.0),
+        target_port_center_um=(11.0, 0.0),
+    )
+
+
+def _split_record() -> RoutedNetRecord:
+    return RoutedNetRecord(
+        net_name="n_split",
+        source=PortRef("src", "o1"),
+        target=PortRef("dst", "o1"),
+        route_obj=object(),
+        total_length_um=19.0,
+        net_id=9,
+        source_port_center_um=(0.0, 0.0),
+        target_port_center_um=(21.0, 0.0),
+    )
+
+
+def _port_stub_record() -> RoutedNetRecord:
+    return RoutedNetRecord(
+        net_name="n_stub",
+        source=PortRef("src", "o1"),
+        target=PortRef("dst", "o1"),
+        route_obj=object(),
+        total_length_um=9.0,
+        net_id=8,
+        source_port_center_um=(1.0, 1.0),
+        target_port_center_um=(0.0, 11.0),
+        source_port_orientation_deg=180.0,
+        target_port_orientation_deg=90.0,
+    )
+
+
+def test_crossing_aware_endpoint_correction_rejects_inserted_mid_access_geometry():
+    updated = _apply_crossing_aware_endpoint_correction_to_record(
+        _simple_record(),
+        router=_FakeEndpointRouter(),
+        crossing_points=[(4.5, 0.0), (5.5, 0.0)],
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        route_width_um=0.5,
+        allow_unchecked_bumps=True,
+        log_failures=True,
+    )
+
+    assert updated.endpoint_correction_error is None
+    assert updated.corrected_centerline_um == (
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (5.0, 0.0),
+        (6.0, 0.0),
+        (11.0, 0.0),
+    )
+    assert updated.base_total_length_um == 9.0
+
+
+def test_crossing_aware_endpoint_correction_absorbs_both_split_terminal_sides():
+    updated = _apply_crossing_aware_endpoint_correction_to_record(
+        _split_record(),
+        router=_FakeSplitEndpointRouter(),
+        crossing_points=[(7.0, 0.0), (12.0, 0.0)],
+        realization_grid_spec=(24, 4, 1.0, 0.0, 0.0),
+        route_width_um=0.5,
+        allow_unchecked_bumps=True,
+        log_failures=True,
+    )
+
+    assert updated.endpoint_correction_error is None
+    assert updated.corrected_centerline_um == (
+        (0.0, 0.0),
+        (3.0, 0.0),
+        (9.0, 0.0),
+        (16.0, 0.0),
+        (21.0, 0.0),
+    )
+
+
+def test_crossing_aware_endpoint_correction_rejects_unanchored_source_prefix():
+    updated = _apply_crossing_aware_endpoint_correction_to_record(
+        _split_record(),
+        router=_FakeUnanchoredEndpointRouter(),
+        crossing_points=[(7.0, 0.0), (12.0, 0.0)],
+        realization_grid_spec=(24, 4, 1.0, 0.0, 0.0),
+        route_width_um=0.5,
+        allow_unchecked_bumps=True,
+        log_failures=True,
+    )
+
+    assert updated.endpoint_correction_error is None
+    assert updated.corrected_centerline_um == (
+        (0.0, 0.0),
+        (3.0, 0.0),
+        (9.0, 0.0),
+        (16.0, 0.0),
+        (21.0, 0.0),
+    )
+
+
+def test_crossing_aware_endpoint_correction_keeps_required_port_straight():
+    corrected = _absorbed_terminal_centerline(
+        ((1.0, 0.0), (2.0, -1.0), (4.0, -1.0)),
+        desired_start=(0.0, 0.0),
+        extra_start_dir=(1.0, 0.0),
+    )
+
+    assert corrected == (
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (2.0, -1.0),
+        (4.0, -1.0),
+    )
+
+
+def test_crossing_aware_endpoint_correction_does_not_modify_bend_samples():
+    baseline = (
+        (1.0, 0.5),
+        (1.6, 0.4),
+        (1.6, -1.6),
+        (4.6, 1.4),
+    )
+    corrected = _absorbed_terminal_centerline(
+        baseline,
+        desired_start=(0.0, 0.0),
+        extra_start_dir=(1.0, 0.0),
+    )
+
+    assert corrected
+    assert corrected[0] == (0.0, 0.0)
+    assert corrected[-1] == pytest.approx(baseline[-1])
+    assert corrected[1][1] == pytest.approx(0.0)
+    original_bend_sample_length = math.hypot(
+        baseline[1][0] - baseline[0][0],
+        baseline[1][1] - baseline[0][1],
+    )
+    corrected_bend_sample_length = math.hypot(
+        corrected[2][0] - corrected[1][0],
+        corrected[2][1] - corrected[1][1],
+    )
+    assert corrected_bend_sample_length == pytest.approx(
+        original_bend_sample_length
+    )
+
+
+def test_crossing_aware_endpoint_correction_allows_oriented_port_stub():
+    updated = _apply_crossing_aware_endpoint_correction_to_record(
+        _port_stub_record(),
+        router=_FakePortStubEndpointRouter(),
+        crossing_points=[(0.0, 4.5), (0.0, 5.5)],
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        route_width_um=0.5,
+        allow_unchecked_bumps=True,
+        log_failures=True,
+    )
+
+    assert updated.endpoint_correction_error is None
+    assert updated.corrected_centerline_um == (
+        (1.0, 1.0),
+        (0.0, 1.0),
+        (0.0, 4.0),
+        (0.0, 5.0),
+        (0.0, 6.0),
+        (0.0, 11.0),
+    )
+
+
+def test_crossing_aware_endpoint_correction_lengthens_existing_terminal_straights():
+    updated = _apply_crossing_aware_endpoint_correction_to_record(
+        _simple_record(),
+        router=_FakeStraightEndpointRouter(),
+        crossing_points=[(4.5, 0.0), (5.5, 0.0)],
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        route_width_um=0.5,
+        allow_unchecked_bumps=True,
+        log_failures=True,
+    )
+
+    assert updated.endpoint_correction_error is None
+    assert updated.corrected_centerline_um == (
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (5.0, 0.0),
+        (6.0, 0.0),
+        (11.0, 0.0),
+    )
+    assert updated.base_total_length_um == 9.0
+
+
+def test_crossing_free_endpoint_correction_uses_normal_corrected_centerline():
+    record = replace(
+        _simple_record(),
+        corrected_centerline_um=((1.0, 0.0), (4.0, 0.0), (10.0, 0.0)),
+    )
+    updated = _apply_crossing_aware_endpoint_correction_to_record(
+        record,
+        router=_FakeEndpointRouter(),
+        crossing_points=[],
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        route_width_um=0.5,
+        allow_unchecked_bumps=True,
+        log_failures=True,
+    )
+
+    assert updated.corrected_centerline_um == (
+        (0.0, 1.0),
+        (2.0, 1.0),
+        (4.0, 1.0),
+        (6.0, 1.0),
+        (9.0, 1.0),
+        (11.0, 1.0),
+    )
+
+
+def test_checked_no_bump_endpoint_correction_allows_active_endpoint_static_contact():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_no_bump_diagonal_test_router_and_route(rust_backend)
+    router.add_static_cells([(10, 10)])
+
+    result = router.route_port_corrected_centerline_checked_and_commit(
+        7,
+        route,
+        0.5,
+        0,
+        0,
+        [],
+        [],
+        source_port_um=(1.2, 1.2),
+        target_port_um=(10.0, 10.0),
+        allow_unchecked_fallback=False,
+    )
+
+    assert result["committed_bump"] is False
+    assert result["candidate_index"] is None
+    centerline = tuple((float(x), float(y)) for x, y in result["centerline"])
+    assert centerline[0] == pytest.approx((1.2, 1.2))
+    assert centerline[-1] == pytest.approx((10.0, 10.0))
+
+
+def test_checked_no_bump_endpoint_correction_rejects_middle_static_contact():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_no_bump_diagonal_test_router_and_route(rust_backend)
+    router.add_static_cells([(5, 5)])
+
+    with pytest.raises(RuntimeError, match="static_overlap"):
+        router.route_port_corrected_centerline_checked_and_commit(
+            7,
+            route,
+            0.5,
+            0,
+            0,
+            [],
+            [],
+            source_port_um=(1.2, 1.2),
+            target_port_um=(10.0, 10.0),
+            allow_unchecked_fallback=False,
+        )

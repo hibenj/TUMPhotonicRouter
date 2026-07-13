@@ -1377,6 +1377,7 @@ def _planned_record(
         target=record.target,
         route_obj=record.route_obj,
         total_length_um=record.total_length_um,
+        net_id=record.net_id,
         meander_auto_plan={
             "requested_extra_length_um": requested,
             "min_bend_radius_um": None,
