@@ -3017,3 +3017,13 @@ Route-35 `n_34` / `n_31` reject trace:
   `C:/Users/benja/Documents/Repositorys/TUMPhotonicRouter`. A commit/push first
   needs either the safe-directory config to be added by an approved command or
   the user to run the equivalent local Git configuration.
+- User added the safe-directory config. Created and pushed checkpoint commit
+  `56e8a1d` on branch `crossings/verification-foundation`:
+  `routing: checkpoint crossing verification foundation`.
+- Validation before that checkpoint: `cargo +stable-x86_64-pc-windows-gnullvm
+  check` passed with `rust-lld` and project `.venv` Python configured.
+- The checkpoint intentionally excludes local build artifacts; `.gitignore` now
+  ignores `python/photonic_router/*.dll`.
+- Next recommended action remains the primitive/centerline model refactor:
+  define explicit optical/crossable primitive segments and stop using
+  footprint-compressed waypoints as crossing-search truth.
