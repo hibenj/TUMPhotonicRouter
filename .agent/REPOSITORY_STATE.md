@@ -4103,3 +4103,60 @@ Pre-`n_93` dense owner lookup speed checkpoint:
   - This is a major behavior-preserving speedup: the same stable pre-`n_93`
     checkpoint improves from `177.380 s` to `53.655 s` while preserving the
     same search counters and green verification.
+
+Pre-`n_93` A* core follow-up speed checkpoint:
+
+- Date: 2026-07-14
+- Scope:
+  - Try the next A* core speedups while preserving the same stop-before-`n_93`
+    boundary.
+  - Kept changes are behavior-preserving hot-path reductions in `src/astar.rs`.
+- Code changes retained:
+  - Non-rect primitive footprints now precompute horizontal cell runs in
+    `FootprintCollisionProfile`; dense-grid footprint checks use prefix-backed
+    horizontal run checks instead of per-cell checks for those profiles.
+  - Crossing A* sparse state storage now packs unordered `lidar-pure` keys into
+    `u64` for `best_costs` and `closed` maps, falling back to the full
+    `CrossingAStarKey` hash path for ordered crossing modes or oversized keys.
+- Code changes not retained:
+  - A direct dense array for full crossing keys was judged too memory-heavy for
+    the current key dimensions (`state`, straight-run, pending-runout, and
+    possible ordered crossing progress).
+  - A direct indexed/decrease-key crossing heap needs a separate stable slot id
+    for full crossing keys; it was not combined with this safe patch.
+  - A cell-to-segment crossing index was not kept because dynamic core cells are
+    footprint cells, not guaranteed exact centerline segment cells, so a naive
+    index could miss diagonal/halo contacts.
+- Validation run:
+  - Command: `run_routing_flow('multiportmmi_8x8', enable_crossings=True,
+    crossing_mode='lidar-pure', debug_stop_after_route_index=93,
+    debug_svgs=False, debug_timing=True, collect_attempt_diagnostics=True)`.
+  - Result: `RUN_RESULT_OK`.
+  - Wall time: `46.701 s`; total routing-flow time: `46.6967 s`.
+  - Optical routing stage: `41.2889 s`; net routing phase: `37.1975 s`;
+    native route batch: `26.0875 s`.
+  - Attempts: `93`; failures: `0`; repairs: `0`; simple routes: `24/93`.
+  - A* counters remain unchanged from the previous checkpoints: expanded
+    `1790336`, generated `10742016`, heap pushes `2601761`, heap pops
+    `2072106`, footprint checks `10327519`, rect checks `1865346`,
+    full-grid fallbacks `0`.
+  - Crossing verification: status `partial_debug_stop`, routed records `93`,
+    errors `0`.
+  - Photonic verification: status `partial_debug_stop`, routed records `93`,
+    errors `0`.
+- Additional validation:
+  - `cargo +stable-x86_64-pc-windows-gnullvm check` passed with
+    `RUSTFLAGS='-C linker=rust-lld'`.
+  - Release extension rebuilt with
+    `cargo +stable-x86_64-pc-windows-gnullvm rustc --release --features
+    pyo3/extension-module --lib --crate-type cdylib`, then copied to
+    `python/photonic_router/_rust.pyd`.
+  - `cargo +stable-x86_64-pc-windows-gnullvm test --release --lib crossing
+    --no-run` passed.
+  - `cargo fmt` could not be run because `cargo-fmt.exe` is not installed for
+    `stable-x86_64-pc-windows-gnullvm`; obvious long-line formatting was
+    cleaned manually and `cargo check` was rerun afterward.
+- Current assessment:
+  - This is another verified hot-path speedup over commit `cf23b2f`: the
+    stop-before-`n_93` checkpoint improves from `53.655 s` to `46.701 s`
+    without changing route search counters or verifier status.

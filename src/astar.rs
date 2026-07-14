@@ -332,7 +332,7 @@ struct Jps4Eligibility {
     reason: &'static str,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct FootprintCollisionProfile {
     is_full_rect: bool,
     min_dx: i32,
@@ -340,6 +340,7 @@ struct FootprintCollisionProfile {
     min_dy: i32,
     max_dy: i32,
     cell_count: usize,
+    horizontal_runs: Vec<(i32, i32, i32)>,
 }
 
 impl FootprintCollisionProfile {
@@ -354,6 +355,7 @@ impl FootprintCollisionProfile {
                 min_dy: 0,
                 max_dy: -1,
                 cell_count,
+                horizontal_runs: Vec::new(),
             };
         }
 
@@ -381,6 +383,7 @@ impl FootprintCollisionProfile {
                 min_dy: 0,
                 max_dy: -1,
                 cell_count,
+                horizontal_runs: footprint_horizontal_runs(footprint),
             };
         };
 
@@ -393,6 +396,7 @@ impl FootprintCollisionProfile {
                 min_dy: 0,
                 max_dy: -1,
                 cell_count,
+                horizontal_runs: footprint_horizontal_runs(footprint),
             };
         }
 
@@ -409,6 +413,7 @@ impl FootprintCollisionProfile {
                         min_dy: 0,
                         max_dy: -1,
                         cell_count,
+                        horizontal_runs: footprint_horizontal_runs(footprint),
                     };
                 }
                 idx += 1;
@@ -422,8 +427,35 @@ impl FootprintCollisionProfile {
             min_dy,
             max_dy,
             cell_count,
+            horizontal_runs: Vec::new(),
         }
     }
+}
+
+fn footprint_horizontal_runs(footprint: &[(i32, i32)]) -> Vec<(i32, i32, i32)> {
+    if footprint.is_empty() {
+        return Vec::new();
+    }
+    let mut cells = footprint.to_vec();
+    cells.sort_unstable_by(|(a_x, a_y), (b_x, b_y)| a_y.cmp(b_y).then(a_x.cmp(b_x)));
+    cells.dedup();
+
+    let mut runs = Vec::new();
+    let mut current_y = cells[0].1;
+    let mut start_x = cells[0].0;
+    let mut end_x = cells[0].0;
+    for &(x, y) in cells.iter().skip(1) {
+        if y == current_y && x == end_x + 1 {
+            end_x = x;
+            continue;
+        }
+        runs.push((current_y, start_x, end_x));
+        current_y = y;
+        start_x = x;
+        end_x = x;
+    }
+    runs.push((current_y, start_x, end_x));
+    runs
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1040,8 +1072,27 @@ impl DenseRoutingGrid {
                 self.rect_free(rect_min_x, rect_max_x, rect_min_y, rect_max_y)
             }
         } else {
-            let tested_cells = footprint.len();
-            stats.primitive_footprint_cells_tested += tested_cells;
+            stats.primitive_footprint_cells_tested += profile.cell_count;
+            if !profile.horizontal_runs.is_empty() {
+                for &(dy, min_dx, max_dx) in &profile.horizontal_runs {
+                    let y = match origin_y.checked_add(dy) {
+                        Some(y) => y,
+                        None => return false,
+                    };
+                    let min_x = match origin_x.checked_add(min_dx) {
+                        Some(x) => x,
+                        None => return false,
+                    };
+                    let max_x = match origin_x.checked_add(max_dx) {
+                        Some(x) => x,
+                        None => return false,
+                    };
+                    if !self.horizontal_segment_free(y, min_x, max_x) {
+                        return false;
+                    }
+                }
+                return true;
+            }
             for (dx, dy) in footprint.iter().copied() {
                 let x = match origin_x.checked_add(dx) {
                     Some(x) => x,
@@ -3443,6 +3494,104 @@ struct CrossingAStarKey {
     pending_after_crossing_angle: u8,
 }
 
+struct SparseCrossingStateStorage {
+    bounds: RoutingBounds,
+    use_packed_keys: bool,
+    best_costs_by_packed_key: FxHashMap<u64, f64>,
+    closed_by_packed_key: FxHashSet<u64>,
+    best_costs_by_key: FxHashMap<CrossingAStarKey, f64>,
+    closed_by_key: FxHashSet<CrossingAStarKey>,
+}
+
+impl SparseCrossingStateStorage {
+    fn new(
+        bounds: RoutingBounds,
+        crossing: &CrossingSearchConfig,
+        capped_required_margin: i32,
+    ) -> Self {
+        let width = bounds.max_x.saturating_sub(bounds.min_x);
+        let height = bounds.max_y.saturating_sub(bounds.min_y);
+        let use_packed_keys = !crossing.require_all_partners
+            && width < (1 << 20)
+            && height < (1 << 20)
+            && capped_required_margin <= u8::MAX as i32;
+        Self {
+            bounds,
+            use_packed_keys,
+            best_costs_by_packed_key: FxHashMap::default(),
+            closed_by_packed_key: FxHashSet::default(),
+            best_costs_by_key: FxHashMap::default(),
+            closed_by_key: FxHashSet::default(),
+        }
+    }
+
+    fn best_cost(&self, key: CrossingAStarKey) -> Option<f64> {
+        if let Some(packed) = self.pack_key(key) {
+            self.best_costs_by_packed_key.get(&packed).copied()
+        } else {
+            self.best_costs_by_key.get(&key).copied()
+        }
+    }
+
+    fn set_best_cost(&mut self, key: CrossingAStarKey, cost: f64) {
+        if let Some(packed) = self.pack_key(key) {
+            self.best_costs_by_packed_key.insert(packed, cost);
+        } else {
+            self.best_costs_by_key.insert(key, cost);
+        }
+    }
+
+    fn contains_closed(&self, key: CrossingAStarKey) -> bool {
+        if let Some(packed) = self.pack_key(key) {
+            self.closed_by_packed_key.contains(&packed)
+        } else {
+            self.closed_by_key.contains(&key)
+        }
+    }
+
+    fn insert_closed(&mut self, key: CrossingAStarKey) -> bool {
+        if let Some(packed) = self.pack_key(key) {
+            self.closed_by_packed_key.insert(packed)
+        } else {
+            self.closed_by_key.insert(key)
+        }
+    }
+
+    fn pack_key(&self, key: CrossingAStarKey) -> Option<u64> {
+        if !self.use_packed_keys
+            || key.crossed_mask != 0
+            || key.next_partner_index != 0
+            || key.state.angle >= 8
+            || key.straight_run_cells < 0
+            || key.pending_after_crossing_cells < 0
+            || key.straight_run_cells > u8::MAX as i32
+            || key.pending_after_crossing_cells > u8::MAX as i32
+        {
+            return None;
+        }
+        let local_x = u64::try_from(key.state.x.checked_sub(self.bounds.min_x)?).ok()?;
+        let local_y = u64::try_from(key.state.y.checked_sub(self.bounds.min_y)?).ok()?;
+        if local_x >= (1 << 20) || local_y >= (1 << 20) {
+            return None;
+        }
+        let pending_angle = if key.pending_after_crossing_cells == 0 {
+            0
+        } else if key.pending_after_crossing_angle < 8 {
+            key.pending_after_crossing_angle
+        } else {
+            return None;
+        };
+        Some(
+            local_x
+                | (local_y << 20)
+                | (u64::from(key.state.angle) << 40)
+                | ((key.straight_run_cells as u64) << 43)
+                | ((key.pending_after_crossing_cells as u64) << 51)
+                | (u64::from(pending_angle) << 59),
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 struct CrossingAStarNode {
     key: CrossingAStarKey,
@@ -3802,9 +3951,9 @@ fn route_single_net_with_bounds_crossing(
         primitive_id: 0,
         g_score: 0.0,
     });
-    let mut best_costs = FxHashMap::default();
-    best_costs.insert(source_key, 0.0);
-    let mut closed = FxHashSet::default();
+    let mut state_storage =
+        SparseCrossingStateStorage::new(bounds, crossing, capped_required_margin);
+    state_storage.set_best_cost(source_key, 0.0);
     let mut open_set = BinaryHeap::new();
     let mut counter = 0u32;
     let generation = next_search_generation(&mut counter)?;
@@ -3856,12 +4005,12 @@ fn route_single_net_with_bounds_crossing(
         let node = nodes.get(entry.idx)?;
         let key = node.key;
         let node_g_score = node.g_score;
-        if entry.g_score > best_costs.get(&key).copied().unwrap_or(f64::INFINITY) + 1.0e-9 {
+        if entry.g_score > state_storage.best_cost(key).unwrap_or(f64::INFINITY) + 1.0e-9 {
             stats.skipped_duplicate_heap_entries += 1;
             stats.stale_generation_heap_entries += 1;
             continue;
         }
-        if !closed.insert(key) {
+        if !state_storage.insert_closed(key) {
             stats.skipped_duplicate_heap_entries += 1;
             stats.closed_heap_entries += 1;
             continue;
@@ -4026,7 +4175,7 @@ fn route_single_net_with_bounds_crossing(
                 pending_after_crossing_cells: crossing_outcome.pending_after_crossing_cells,
                 pending_after_crossing_angle: crossing_outcome.pending_after_crossing_angle,
             };
-            if closed.contains(&next_key) {
+            if state_storage.contains_closed(next_key) {
                 stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                 continue;
             }
@@ -4060,7 +4209,7 @@ fn route_single_net_with_bounds_crossing(
                 + congestion_cost
                 + f64::from(crossing_outcome.crossing_count) * crossing.crossing_loss;
             let tentative_g = node_g_score + step_cost;
-            if tentative_g >= best_costs.get(&next_key).copied().unwrap_or(f64::INFINITY) {
+            if tentative_g >= state_storage.best_cost(next_key).unwrap_or(f64::INFINITY) {
                 stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                 continue;
             }
@@ -4072,7 +4221,7 @@ fn route_single_net_with_bounds_crossing(
                 primitive_id: primitive.id,
                 g_score: tentative_g,
             });
-            best_costs.insert(next_key, tentative_g);
+            state_storage.set_best_cost(next_key, tentative_g);
             let generation = next_search_generation(&mut counter)?;
             open_set.push(OpenEntry {
                 f_score: tentative_g
