@@ -25,6 +25,7 @@ use crate::simple_routes::{
 static CROSSING_CANDIDATE_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
 const NO_PENDING_CROSSING_ANGLE: u8 = 255;
 const SEARCH_TIMEOUT_CHECK_INTERVAL: usize = 4096;
+const NO_DYNAMIC_OWNER: NetId = NetId::MAX;
 
 /// Router search state: grid position plus 45-degree heading index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -149,6 +150,17 @@ impl RoutingBounds {
     #[inline]
     fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.min_x && x <= self.max_x && y >= self.min_y && y <= self.max_y
+    }
+
+    #[inline]
+    fn expanded_and_clamped(&self, margin: i32, width: i32, height: i32) -> Self {
+        let margin = margin.max(0);
+        Self {
+            min_x: self.min_x.saturating_sub(margin).max(0),
+            max_x: self.max_x.saturating_add(margin).min(width.saturating_sub(1)),
+            min_y: self.min_y.saturating_sub(margin).max(0),
+            max_y: self.max_y.saturating_add(margin).min(height.saturating_sub(1)),
+        }
     }
 }
 
@@ -571,6 +583,72 @@ struct DenseRoutingGrid {
     history_prefix: Option<Vec<u64>>,
     blocked_count: usize,
     build_time_us: u128,
+}
+
+struct DenseDynamicCoreOwnerGrid {
+    bounds: RoutingBounds,
+    width_usize: usize,
+    owners: Vec<NetId>,
+}
+
+impl DenseDynamicCoreOwnerGrid {
+    fn from_obstacle_map(obstacle_map: &ObstacleMap, bounds: RoutingBounds) -> Option<Self> {
+        let width = bounds.max_x.checked_sub(bounds.min_x)?.checked_add(1)?;
+        let height = bounds.max_y.checked_sub(bounds.min_y)?.checked_add(1)?;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let width_usize = usize::try_from(width).ok()?;
+        let height_usize = usize::try_from(height).ok()?;
+        let cell_count = width_usize.checked_mul(height_usize)?;
+        let mut owners = vec![NO_DYNAMIC_OWNER; cell_count];
+
+        for (net_id, cells) in obstacle_map.net_core_route_entries() {
+            if net_id == NO_DYNAMIC_OWNER {
+                continue;
+            }
+            for &key in cells {
+                let (x, y) = unpack_xy(key);
+                if !bounds.contains(x, y) {
+                    continue;
+                }
+                let Some(idx) = Self::idx_of_bounds(bounds, width_usize, x, y) else {
+                    continue;
+                };
+                if owners[idx] == NO_DYNAMIC_OWNER {
+                    owners[idx] = net_id;
+                }
+            }
+        }
+
+        Some(Self {
+            bounds,
+            width_usize,
+            owners,
+        })
+    }
+
+    #[inline]
+    fn owner_at(&self, x: i32, y: i32) -> Option<NetId> {
+        let idx = Self::idx_of_bounds(self.bounds, self.width_usize, x, y)?;
+        let owner = self.owners[idx];
+        (owner != NO_DYNAMIC_OWNER).then_some(owner)
+    }
+
+    #[inline]
+    fn idx_of_bounds(
+        bounds: RoutingBounds,
+        width_usize: usize,
+        x: i32,
+        y: i32,
+    ) -> Option<usize> {
+        if !bounds.contains(x, y) {
+            return None;
+        }
+        let local_x = usize::try_from(x.checked_sub(bounds.min_x)?).ok()?;
+        let local_y = usize::try_from(y.checked_sub(bounds.min_y)?).ok()?;
+        local_y.checked_mul(width_usize)?.checked_add(local_x)
+    }
 }
 
 fn intersect_bounds_rect(bounds: RoutingBounds, rect: GridRect) -> Option<GridRect> {
@@ -3413,6 +3491,7 @@ struct RelativeEffectiveCollisionWitness {
 struct PrimitiveCrossingMetadata {
     segments: Vec<RelativePrimitivePathSegment>,
     witnesses: Vec<RelativeEffectiveCollisionWitness>,
+    has_extra_witnesses: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3518,9 +3597,11 @@ fn primitive_crossing_metadata(primitive: &Primitive) -> PrimitiveCrossingMetada
     }
 
     let witnesses = effective_collision_witness_offsets(primitive, &segments);
+    let has_extra_witnesses = witnesses.len() > primitive.footprint.len();
     PrimitiveCrossingMetadata {
         segments,
         witnesses,
+        has_extra_witnesses,
     }
 }
 
@@ -3537,6 +3618,16 @@ fn translate_primitive_path_segment(
         length: segment.length,
         starts_after_kink: segment.starts_after_kink,
     }
+}
+
+fn max_crossing_witness_offset(metadata: &[Vec<PrimitiveCrossingMetadata>]) -> i32 {
+    metadata
+        .iter()
+        .flat_map(|bucket| bucket.iter())
+        .flat_map(|primitive| primitive.witnesses.iter())
+        .map(|witness| witness.offset.0.abs().max(witness.offset.1.abs()))
+        .max()
+        .unwrap_or(0)
 }
 
 fn crossing_partner_path_segments(crossing: &CrossingSearchConfig) -> Vec<Vec<PartnerPathSegment>> {
@@ -3660,6 +3751,13 @@ fn route_single_net_with_bounds_crossing(
                 .collect()
         })
         .collect();
+    let crossing_lookup_bounds = bounds.expanded_and_clamped(
+        max_crossing_witness_offset(&primitive_crossing_metadata),
+        obstacle_map.width(),
+        obstacle_map.height(),
+    );
+    let dynamic_core_owners =
+        DenseDynamicCoreOwnerGrid::from_obstacle_map(obstacle_map, crossing_lookup_bounds)?;
     let reservation_margin = crossing.crossing_half_size_cells;
     let required_margin = crossing_required_margin_cells(
         crossing.crossing_half_size_cells,
@@ -3871,22 +3969,37 @@ fn route_single_net_with_bounds_crossing(
                 continue;
             }
 
-            let Some(crossing_outcome) = crossing_move_outcome_with_segments(
-                obstacle_map,
-                crossing,
-                key,
-                state,
-                primitive,
-                primitive_class_is_straight(primitive_class),
-                required_margin,
-                capped_required_margin,
-                reservation_margin,
-                port_open_cells,
-                &partner_index_by_id,
-                &partner_segments,
-                primitive_crossing,
-                stats,
-            ) else {
+            let crossing_outcome = if footprint_free
+                && !config.ignore_dynamic_obstacles
+                && !primitive_crossing.has_extra_witnesses
+            {
+                Some(crossing_no_contact_outcome(
+                    key,
+                    state,
+                    primitive,
+                    primitive_class_is_straight(primitive_class),
+                    capped_required_margin,
+                ))
+            } else {
+                crossing_move_outcome_with_segments(
+                    obstacle_map,
+                    crossing,
+                    key,
+                    state,
+                    primitive,
+                    primitive_class_is_straight(primitive_class),
+                    required_margin,
+                    capped_required_margin,
+                    reservation_margin,
+                    port_open_cells,
+                    &partner_index_by_id,
+                    &partner_segments,
+                    &dynamic_core_owners,
+                    primitive_crossing,
+                    stats,
+                )
+            };
+            let Some(crossing_outcome) = crossing_outcome else {
                 if !footprint_free {
                     stats.footprint_rejects += 1;
                     stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
@@ -4170,6 +4283,20 @@ fn crossing_move_outcome(
 ) -> Option<CrossingMoveOutcome> {
     let partner_segments = crossing_partner_path_segments(crossing);
     let primitive_crossing = primitive_crossing_metadata(primitive);
+    let lookup_bounds = RoutingBounds {
+        min_x: 0,
+        max_x: obstacle_map.width().saturating_sub(1),
+        min_y: 0,
+        max_y: obstacle_map.height().saturating_sub(1),
+    };
+    let dynamic_core_owners = DenseDynamicCoreOwnerGrid::from_obstacle_map(
+        obstacle_map,
+        lookup_bounds.expanded_and_clamped(
+            max_crossing_witness_offset(&[vec![primitive_crossing.clone()]]),
+            obstacle_map.width(),
+            obstacle_map.height(),
+        ),
+    )?;
     crossing_move_outcome_with_segments(
         obstacle_map,
         crossing,
@@ -4183,9 +4310,40 @@ fn crossing_move_outcome(
         port_open_cells,
         partner_index_by_id,
         &partner_segments,
+        &dynamic_core_owners,
         &primitive_crossing,
         stats,
     )
+}
+
+fn crossing_no_contact_outcome(
+    current_key: CrossingAStarKey,
+    state: State,
+    primitive: &Primitive,
+    is_straight: bool,
+    capped_required_margin: i32,
+) -> CrossingMoveOutcome {
+    let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
+    let mut straight_run = if is_straight && primitive.end_angle == state.angle {
+        current_key
+            .straight_run_cells
+            .saturating_add(primitive_steps)
+            .min(capped_required_margin)
+    } else {
+        0
+    };
+    if !is_straight {
+        straight_run = primitive_terminal_straight_run_cells(primitive, primitive.end_angle)
+            .min(capped_required_margin);
+    }
+    CrossingMoveOutcome {
+        crossed_mask: current_key.crossed_mask,
+        next_partner_index: current_key.next_partner_index,
+        straight_run_cells: straight_run,
+        pending_after_crossing_cells: 0,
+        pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+        crossing_count: 0,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4202,6 +4360,7 @@ fn crossing_move_outcome_with_segments(
     port_open_cells: Option<&FxHashSet<CellKey>>,
     partner_index_by_id: &FxHashMap<NetId, usize>,
     partner_segments: &[Vec<PartnerPathSegment>],
+    dynamic_core_owners: &DenseDynamicCoreOwnerGrid,
     primitive_crossing: &PrimitiveCrossingMetadata,
     stats: &mut RouteSearchStats,
 ) -> Option<CrossingMoveOutcome> {
@@ -4282,7 +4441,7 @@ fn crossing_move_outcome_with_segments(
             stats.crossing_reject_unmatched_footprint += 1;
             return None;
         }
-        let Some(owner) = obstacle_map.dynamic_core_owner_at(cell.0, cell.1) else {
+        let Some(owner) = dynamic_core_owners.owner_at(cell.0, cell.1) else {
             continue;
         };
         if owner == crossing.net_id {
@@ -4306,12 +4465,8 @@ fn crossing_move_outcome_with_segments(
         );
     }
     if primitive_steps > 0 {
-        let mut partner_indices = contacted_partners
-            .iter()
-            .map(|contact| contact.partner_idx)
-            .collect::<Vec<_>>();
-        partner_indices.sort_unstable();
-        for partner_idx in partner_indices {
+        for contact in &contacted_partners {
+            let partner_idx = contact.partner_idx;
             let partner = &crossing.partners[partner_idx];
             let bit = 1u64 << partner_idx;
             let intersection_count_before = route_intersections.len();
@@ -4443,13 +4598,8 @@ fn crossing_move_outcome_with_segments(
                     }
                     continue;
                 }
-                let witnesses = contacted_partners
-                    .iter()
-                    .find(|contact| contact.partner_idx == partner_idx)
-                    .map(|contact| contact.witnesses.as_slice())
-                    .unwrap_or(&[]);
                 let reject = classify_unresolved_crossing_contact(
-                    witnesses,
+                    contact.witnesses.as_slice(),
                     primitive_segments,
                     state,
                     partner,
@@ -4463,8 +4613,20 @@ fn crossing_move_outcome_with_segments(
                             CrossingContactReject::Unmatched => "reject_contact_unmatched",
                             CrossingContactReject::Footprint => "reject_contact_footprint",
                         },
-                        f64::from(witnesses.first().map(|w| w.cell.0).unwrap_or(state.x)),
-                        f64::from(witnesses.first().map(|w| w.cell.1).unwrap_or(state.y)),
+                        f64::from(
+                            contact
+                                .witnesses
+                                .first()
+                                .map(|witness| witness.cell.0)
+                                .unwrap_or(state.x),
+                        ),
+                        f64::from(
+                            contact
+                                .witnesses
+                                .first()
+                                .map(|witness| witness.cell.1)
+                                .unwrap_or(state.y),
+                        ),
                         255,
                         255,
                         required_margin,
@@ -4678,17 +4840,16 @@ fn push_contacted_partner_witness(
     partner_idx: usize,
     witness: EffectiveCollisionWitness,
 ) {
-    if let Some(contact) = contacted_partners
-        .iter_mut()
-        .find(|contact| contact.partner_idx == partner_idx)
-    {
-        contact.witnesses.push(witness);
-        return;
+    match contacted_partners.binary_search_by_key(&partner_idx, |contact| contact.partner_idx) {
+        Ok(idx) => contacted_partners[idx].witnesses.push(witness),
+        Err(idx) => contacted_partners.insert(
+            idx,
+            ContactedPartner {
+                partner_idx,
+                witnesses: vec![witness],
+            },
+        ),
     }
-    contacted_partners.push(ContactedPartner {
-        partner_idx,
-        witnesses: vec![witness],
-    });
 }
 
 fn classify_unresolved_crossing_contact(

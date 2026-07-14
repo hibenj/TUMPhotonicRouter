@@ -4049,3 +4049,57 @@ Pre-`n_93` crossing metadata precompute checkpoint:
     The stop-before-`n_93` checkpoint improves from `194.604 s` to
     `177.380 s` while preserving the same expansion/generation counters and
     green verification reports.
+
+Pre-`n_93` dense owner lookup speed checkpoint:
+
+- Date: 2026-07-14
+- Scope:
+  - Continue bounded speed work without routing past the stable pre-`n_93`
+    checkpoint.
+  - Replace per-witness calls to `ObstacleMap::dynamic_core_owner_at` inside
+    crossing-aware A* with a dense per-search dynamic-core owner grid built
+    once from committed core-route entries.
+  - Add a fast no-contact outcome for footprint-free primitives whose crossing
+    witnesses do not include extra diagonal halo cells.
+  - Keep contacted crossing partners in a sorted small vector, avoiding a
+    per-move allocation/sort while preserving the previous ascending partner
+    processing order.
+- Code changes:
+  - `src/obstacle_map.rs`: expose `net_core_route_entries()` so A* can build
+    the dense core-owner lookup without scanning every committed route per
+    witness cell.
+  - `src/astar.rs`: add `DenseDynamicCoreOwnerGrid`, expanded lookup bounds
+    for primitive witness halos, no-contact crossing outcome, and sorted
+    contacted-partner accumulation.
+- Validation run:
+  - Command: `run_routing_flow('multiportmmi_8x8', enable_crossings=True,
+    crossing_mode='lidar-pure', debug_stop_after_route_index=93,
+    debug_svgs=False, debug_timing=True, collect_attempt_diagnostics=True)`.
+  - Result: `RUN_RESULT_OK`.
+  - Wall time: `53.655 s`; total routing-flow time: `53.6508 s`.
+  - Optical routing stage: `48.6180 s`; net routing phase: `45.3160 s`;
+    native route batch: `35.2584 s`.
+  - Attempts: `93`; failures: `0`; repairs: `0`; simple routes: `24/93`.
+  - A* counters remain unchanged from the previous checkpoints: expanded
+    `1790336`, generated `10742016`, heap pushes `2601761`, heap pops
+    `2072106`, footprint checks `10327519`, rect checks `1865346`,
+    full-grid fallbacks `0`.
+  - Crossing verification: status `partial_debug_stop`, routed records `93`,
+    errors `0`.
+  - Photonic verification: status `partial_debug_stop`, routed records `93`,
+    errors `0`.
+  - GDS artifact: `build/routed_multiportmmi_8x8.gds`, timestamp updated by
+    this run, size remains `308160` bytes.
+- Additional validation:
+  - `cargo +stable-x86_64-pc-windows-gnullvm check` passed with
+    `RUSTFLAGS='-C linker=rust-lld'`.
+  - Release extension rebuilt with
+    `cargo +stable-x86_64-pc-windows-gnullvm rustc --release --features
+    pyo3/extension-module --lib --crate-type cdylib`, then copied to
+    `python/photonic_router/_rust.pyd`.
+  - `cargo +stable-x86_64-pc-windows-gnullvm test --release --lib crossing
+    --no-run` passed.
+- Current assessment:
+  - This is a major behavior-preserving speedup: the same stable pre-`n_93`
+    checkpoint improves from `177.380 s` to `53.655 s` while preserving the
+    same search counters and green verification.

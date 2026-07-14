@@ -586,6 +586,13 @@ impl ObstacleMap {
             .map(|(&net_id, cells)| (net_id, cells.as_slice()))
     }
 
+    /// Return committed core route cells grouped by net id.
+    pub fn net_core_route_entries(&self) -> impl Iterator<Item = (NetId, &[CellKey])> + '_ {
+        self.net_core_routes
+            .iter()
+            .map(|(&net_id, cells)| (net_id, cells.as_slice()))
+    }
+
     /// Return the committed dynamic-route owner of a cell, if any.
     pub fn dynamic_owner_at(&self, x: i32, y: i32) -> Option<NetId> {
         if !self.in_bounds(x, y) {
