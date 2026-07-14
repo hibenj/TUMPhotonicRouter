@@ -4229,7 +4229,14 @@ def route_nets_rust(
     ):
         astar_cfg.max_iterations = min(int(astar_cfg.max_iterations), 50_000)
     if collision_crossing_mode and hasattr(astar_cfg, "heuristic_weight"):
-        astar_cfg.heuristic_weight = 1.0
+        collision_heuristic_weight = os.environ.get(
+            "PHOTONIC_ROUTER_COLLISION_HEURISTIC_WEIGHT"
+        )
+        astar_cfg.heuristic_weight = (
+            float(collision_heuristic_weight)
+            if collision_heuristic_weight
+            else 1.0
+        )
     elif allow_45_degree_turns and hasattr(astar_cfg, "heuristic_weight"):
         astar_cfg.heuristic_weight = max(float(astar_cfg.heuristic_weight), 1.25)
     if collision_crossing_mode and hasattr(astar_cfg, "bend_weight"):

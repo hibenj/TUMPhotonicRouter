@@ -213,6 +213,65 @@ Current Windows checkout note:
   run took 21.457 s and candidate checks for this collision-crossing attempt
   dropped from 39769 to 7349. Trace file:
   `build\debug_n35_bend_dynamic_reject_partner33_release.txt`.
+- Post-commit artifact check: `multiportmmi_8x8` was routed one step farther
+  with `debug_stop_after_route_index=37`, so the generated GDS now includes
+  route `n_36`. Command used the direct-release `_rust.pyd` installed from
+  `target\release\photonic_router.dll`. Result: `RUN_RESULT_OK`,
+  `RUN_WALL_S=23.474`, net-routing phase 20.7516 s, attempts=37,
+  failures=0, simple=14/37, repairs=0. Generated GDS:
+  `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-14 20:44:57 local,
+  size 154290 bytes. Verification: crossing report `success=True`,
+  `error_count=0`, `crossing_count=7`; photonic report `success=True`,
+  `error_count=0`, `routed_record_count=37`, `missing_route_count=74`,
+  `status=partial_debug_stop`.
+- Follow-up artifact check: `multiportmmi_8x8` was routed with
+  `debug_stop_after_route_index=39`, so the generated GDS now includes `n_37`
+  and `n_38`. Result: `RUN_RESULT_OK`, `RUN_WALL_S=22.093`, net-routing phase
+  19.5163 s, attempts=39, failures=0, simple=15/39, repairs=0. Generated GDS:
+  `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-14 20:47:59 local,
+  size 156828 bytes. Verification: crossing report `success=True`,
+  `error_count=0`, `crossing_count=7`; photonic report `success=True`,
+  `error_count=0`, `routed_record_count=39`, `missing_route_count=72`,
+  `status=partial_debug_stop`. Net mapping check: `n_37` is
+  `mmi0_multiport_0_1,o4 -> mmi0_ps_array_1_heater_6,o1`; `n_38` is
+  `mmi0_multiport_0_1,o3 -> mmi0_ps_array_1_heater_7,o1`, so they are a
+  same-element local pair/cluster. `n_36` immediately before them is from
+  `mmi0_multiport_0_0,o7`.
+- Follow-up artifact check: `multiportmmi_8x8` was routed with
+  `debug_stop_after_route_index=47`, adding the next eight routes `n_39`
+  through `n_46`. Result: `RUN_RESULT_OK`, `RUN_WALL_S=23.854`,
+  net-routing phase 20.7087 s, attempts=47, failures=0, simple=15/47,
+  repairs=0. Generated GDS: `build\routed_multiportmmi_8x8.gds`, timestamp
+  2026-07-14 20:53:25 local, size 167764 bytes. Verification: crossing report
+  `success=True`, `error_count=0`, `crossing_count=7`; photonic report
+  `success=True`, `error_count=0`, `routed_record_count=47`,
+  `missing_route_count=64`, `status=partial_debug_stop`. Net mapping:
+  `n_39`-`n_42` route from `mmi0_ps_array_1_heater_0..3,o2` into
+  `mmi0_multiport_1_0,o1..o4`; `n_43`-`n_46` route from
+  `mmi0_ps_array_1_heater_4..7,o2` into `mmi0_multiport_1_1,o1..o4`.
+- Follow-up artifact check: `multiportmmi_8x8` was routed with
+  `debug_stop_after_route_index=51`, adding `n_47` through `n_50`.
+  Result: `RUN_RESULT_OK`, `RUN_WALL_S=31.45`, net-routing phase 27.5813 s,
+  attempts=51, failures=0, simple=15/51, repairs=0. Generated GDS:
+  `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-14 20:55:40 local,
+  size 174054 bytes. Verification: crossing report `success=True`,
+  `error_count=0`, `crossing_count=7`; photonic report `success=True`,
+  `error_count=0`, `routed_record_count=51`, `missing_route_count=60`,
+  `status=partial_debug_stop`. Net mapping: `n_47`-`n_50` all leave
+  `mmi0_multiport_1_0` from ports `o8`, `o7`, `o6`, and `o5`, respectively,
+  into `mmi0_ps_array_2_heater_0`, `_1`, `_2`, and `_7`; this is a same-element
+  local fanout/cluster.
+- Follow-up artifact check: `multiportmmi_8x8` was routed with
+  `debug_stop_after_route_index=52`, adding `n_51`. Result: `RUN_RESULT_OK`,
+  `RUN_WALL_S=40.86`, net-routing phase 37.2022 s, attempts=52,
+  failures=0, simple=15/52, repairs=0. Generated GDS:
+  `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-14 20:58:04 local,
+  size 178292 bytes. Verification: crossing report `success=True`,
+  `error_count=0`, `crossing_count=8`; photonic report `success=True`,
+  `error_count=0`, `routed_record_count=52`, `missing_route_count=59`,
+  `status=partial_debug_stop`. Net mapping: `n_51` is
+  `mmi0_multiport_1_1,o8 -> mmi0_ps_array_2_heater_4,o1`. This route added
+  one legal crossing compared with the stop-after-51 run.
 
 ## Current Audit Findings
 
@@ -3661,3 +3720,292 @@ Dense source port-runway WIP:
   - `src/py_router.rs`
   - `translation/route_rust.py`
   - `.agent/REPOSITORY_STATE.md`
+
+Incremental LiDAR crossing checkpoint after commit `35e30fe`:
+
+- Date: 2026-07-14
+- Branch: `crossings/verification-foundation`
+- Stable code checkpoint: commit `35e30fe` (`routing: stabilize lidar crossing runout state`).
+- Current code dirty state: no code files dirty; only this repository-state log
+  is modified.
+- Artifact: `build/routed_multiportmmi_8x8.gds` is currently updated through
+  stop-after-route-53 / named net `n_52`.
+- Latest incremental run:
+  - Command: `run_routing_flow('multiportmmi_8x8', enable_crossings=True,
+    crossing_mode='lidar-pure', debug_stop_after_route_index=53,
+    debug_svgs=False, debug_timing=True, collect_attempt_diagnostics=True)`.
+  - Result: `RUN_RESULT_OK`.
+  - Wall time: `44.048 s`; total routing-flow time: `44.0453 s`.
+  - Optical routing stage: `41.0525 s`; net routing phase: `40.2592 s`;
+    native route batch: `36.1391 s`.
+  - Attempts: `53`; failures: `0`; repairs: `0`; simple routes: `15/53`.
+  - A* counters: expanded `454779`, generated `2728674`, heap pushes
+    `745352`, heap pops `511017`, footprint checks `2601412`, rect checks
+    `470375`, full-grid fallbacks `0`.
+  - Crossing verification: success `True`, errors `0`, warnings `0`,
+    crossings `9`, status `partial_debug_stop`.
+  - Photonic verification: success `True`, errors `0`, warnings `0`,
+    routed records `53`, missing routes `58`, status `partial_debug_stop`.
+  - Newly included net: route index `53`, named `n_52`, links
+    `mmi0_multiport_1_1,o7 -> mmi0_ps_array_2_heater_5,o1`.
+  - GDS timestamp: `2026-07-14 21:01:08`; size `183088` bytes.
+
+Incremental LiDAR crossing checkpoint:
+
+- Date: 2026-07-14
+- Artifact: `build/routed_multiportmmi_8x8.gds` is currently updated through
+  stop-after-route-55 / named net `n_54`.
+- Latest incremental run:
+  - Command: `run_routing_flow('multiportmmi_8x8', enable_crossings=True,
+    crossing_mode='lidar-pure', debug_stop_after_route_index=55,
+    debug_svgs=False, debug_timing=True, collect_attempt_diagnostics=True)`.
+  - Result: `RUN_RESULT_OK`.
+  - Wall time: `82.444 s`; total routing-flow time: `82.4414 s`.
+  - Optical routing stage: `78.9731 s`; net routing phase: `77.9117 s`;
+    native route batch: `72.7136 s`.
+  - Attempts: `55`; failures: `0`; repairs: `0`; simple routes: `15/55`.
+  - A* counters: expanded `762144`, generated `4572864`, heap pushes
+    `1136629`, heap pops `871794`, footprint checks `4377728`, rect checks
+    `796673`, full-grid fallbacks `0`.
+  - Crossing verification: success `True`, errors `0`, warnings `0`,
+    crossings `14`, status `partial_debug_stop`.
+  - Photonic verification: success `True`, errors `0`, warnings `0`,
+    routed records `55`, missing routes `56`, status `partial_debug_stop`.
+  - Newly included nets:
+    - Route index `54`, named `n_53`, links
+      `mmi0_multiport_1_1,o6 -> mmi0_ps_array_2_heater_6,o1`.
+    - Route index `55`, named `n_54`, links
+      `mmi0_multiport_1_1,o5 -> mmi0_ps_array_2_heater_3,o1`.
+  - GDS timestamp: `2026-07-14 21:06:05`; size `206256` bytes.
+  - Observation: compared with stop-after-route-53, these two routes add five
+    crossings and roughly double the search runtime. Verifiers remain green.
+
+Incremental LiDAR crossing checkpoint:
+
+- Date: 2026-07-14
+- Artifact: `build/routed_multiportmmi_8x8.gds` is currently updated through
+  stop-after-route-65 / named net `n_64`.
+- Latest incremental run:
+  - Command: `run_routing_flow('multiportmmi_8x8', enable_crossings=True,
+    crossing_mode='lidar-pure', debug_stop_after_route_index=65,
+    debug_svgs=False, debug_timing=True, collect_attempt_diagnostics=True)`.
+  - Result: `RUN_RESULT_OK`.
+  - Wall time: `82.230 s`; total routing-flow time: `82.2268 s`.
+  - Optical routing stage: `78.5506 s`; net routing phase: `76.8579 s`;
+    native route batch: `71.2529 s`.
+  - Attempts: `65`; failures: `0`; repairs: `0`; simple routes: `15/65`.
+  - A* counters: expanded `774227`, generated `4645362`, heap pushes
+    `1177755`, heap pops `884098`, footprint checks `4437606`, rect checks
+    `805222`, full-grid fallbacks `0`.
+  - Crossing verification: success `True`, errors `0`, warnings `0`,
+    crossings `14`, status `partial_debug_stop`.
+  - Photonic verification: success `True`, errors `0`, warnings `0`,
+    routed records `65`, missing routes `46`, status `partial_debug_stop`.
+  - Newly included nets:
+    - Route index `56`, named `n_55`, links
+      `mmi0_ps_array_2_heater_0,o2 -> mmi0_multiport_2_0,o1`.
+    - Route index `57`, named `n_56`, links
+      `mmi0_ps_array_2_heater_1,o2 -> mmi0_multiport_2_0,o2`.
+    - Route index `58`, named `n_57`, links
+      `mmi0_ps_array_2_heater_2,o2 -> mmi0_multiport_2_0,o3`.
+    - Route index `59`, named `n_58`, links
+      `mmi0_ps_array_2_heater_3,o2 -> mmi0_multiport_2_0,o4`.
+    - Route index `60`, named `n_59`, links
+      `mmi0_ps_array_2_heater_4,o2 -> mmi0_multiport_2_1,o1`.
+    - Route index `61`, named `n_60`, links
+      `mmi0_ps_array_2_heater_5,o2 -> mmi0_multiport_2_1,o2`.
+    - Route index `62`, named `n_61`, links
+      `mmi0_ps_array_2_heater_6,o2 -> mmi0_multiport_2_1,o3`.
+    - Route index `63`, named `n_62`, links
+      `mmi0_ps_array_2_heater_7,o2 -> mmi0_multiport_2_1,o4`.
+    - Route index `64`, named `n_63`, links
+      `mmi0_multiport_2_0,o8 -> mol_array_1_mzi_0,o1`.
+    - Route index `65`, named `n_64`, links
+      `mmi0_multiport_2_0,o7 -> mol_array_1_mzi_1,o1`.
+  - GDS timestamp: `2026-07-14 21:09:56`; size `220354` bytes.
+  - Observation: compared with stop-after-route-55, these ten routes add no
+    new crossings and keep both verifiers green.
+
+Incremental LiDAR crossing checkpoint:
+
+- Date: 2026-07-14
+- Artifact: `build/routed_multiportmmi_8x8.gds` is currently updated through
+  stop-after-route-87 / named net `n_86`.
+- Latest incremental run:
+  - Command: `run_routing_flow('multiportmmi_8x8', enable_crossings=True,
+    crossing_mode='lidar-pure', debug_stop_after_route_index=87,
+    debug_svgs=False, debug_timing=True, collect_attempt_diagnostics=True)`.
+  - Result: `RUN_RESULT_OK`.
+  - Wall time: `196.797 s`; total routing-flow time: `196.7932 s`.
+  - Optical routing stage: `191.9627 s`; net routing phase: `189.3288 s`;
+    native route batch: `180.6092 s`.
+  - Attempts: `87`; failures: `0`; repairs: `0`; simple routes: `24/87`.
+  - A* counters: expanded `1554707`, generated `9328242`, heap pushes
+    `2239767`, heap pops `1799481`, footprint checks `8940184`, rect checks
+    `1619125`, full-grid fallbacks `0`.
+  - Crossing verification: success `True`, errors `0`, warnings `0`,
+    crossings `24`, status `partial_debug_stop`.
+  - Photonic verification: success `True`, errors `0`, warnings `0`,
+    routed records `87`, missing routes `24`, status `partial_debug_stop`.
+  - Newly included net range: route indices `66..87`, named `n_65..n_86`.
+    This covers the remaining `mmi0_multiport_2_*` routes into `mol_array_1`,
+    all `mol_array_1_mzi_* -> mmi1_ps_array_0_heater_*` routes, and the first
+    `mmi1_ps_array_0_heater_* -> mmi1_multiport_0_*` routes.
+  - GDS timestamp: `2026-07-14 21:14:37`; size `287782` bytes.
+  - Observation: compared with stop-after-route-65, this adds ten crossings
+    and keeps both verifiers green, but the search runtime rises sharply to
+    roughly 197 seconds.
+
+Full benchmark attempt / long-route finding:
+
+- Date: 2026-07-14
+- User requested a full `multiportmmi_8x8` run after the passing
+  stop-after-route-87 checkpoint.
+- First full run was interrupted and then manually stopped because it produced
+  no progress output for several minutes. Background Python worker processes
+  were terminated.
+- A second controlled full run was launched with
+  `PHOTONIC_ROUTER_NATIVE_PROGRESS=1` to identify the long route without
+  waiting indefinitely.
+- Observed progress:
+  - Routes `1..93` progressed without repair-loop evidence.
+  - Expensive single-route examples:
+    - route `36` elapsed about `10.43 s`.
+    - route `51` elapsed about `6.36 s`.
+    - route `52` elapsed about `10.43 s`.
+    - route `55` elapsed about `30.41 s`.
+    - route `68` elapsed about `35.64 s`.
+    - route `69` elapsed about `37.21 s`.
+    - route `70` elapsed about `20.52 s`.
+    - route `92` elapsed about `10.27 s`.
+    - route `93` elapsed about `22.35 s`.
+  - The first clear long-running route after the passing checkpoint is route
+    index `94`, named `n_93`, links
+    `mmi1_multiport_0_1,o4 -> mmi1_ps_array_1_heater_3,o1`; it was still
+    running after more than `90 s` and was manually stopped.
+  - Current assessment:
+  - This was not confirmed as an infinite ripup loop. The native progress trace
+    shows route-by-route forward progress up to route `94`.
+  - The code has per-repair limits (`max_rounds`, `max_victims`) and caps for
+    adaptive/learned repair sets, but it lacks a global wall-time/attempt
+    cutoff and has no automatic partial progress report while a route attempt
+    is still running.
+  - Next useful debug target is stop-after-route-94 or a route-index-94 trace,
+    focused on why `n_93` causes such a large A* search.
+
+Pre-`n_93` GDS checkpoint:
+
+- Date: 2026-07-14
+- Artifact: `build/routed_multiportmmi_8x8.gds` is currently updated through
+  stop-after-route-93 / named net `n_92`, i.e. directly before the long-running
+  route index `94` / named net `n_93`.
+- Latest run:
+  - Command: `run_routing_flow('multiportmmi_8x8', enable_crossings=True,
+    crossing_mode='lidar-pure', debug_stop_after_route_index=93,
+    debug_svgs=False, debug_timing=True, collect_attempt_diagnostics=True)`.
+  - Result: `RUN_RESULT_OK`.
+  - Wall time: `240.497 s`; total routing-flow time: `240.4933 s`.
+  - Optical routing stage: `235.2706 s`; net routing phase: `231.9568 s`;
+    native route batch: `222.0481 s`.
+  - Attempts: `93`; failures: `0`; repairs: `0`; simple routes: `24/93`.
+  - A* counters: expanded `1790336`, generated `10742016`, heap pushes
+    `2601761`, heap pops `2072106`, footprint checks `10327519`, rect checks
+    `1865346`, full-grid fallbacks `0`.
+  - Crossing verification: success `True`, errors `0`, warnings `0`,
+    crossings `27`, status `partial_debug_stop`.
+  - Photonic verification: success `True`, errors `0`, warnings `0`,
+    routed records `93`, missing routes `18`, status `partial_debug_stop`.
+  - GDS timestamp: `2026-07-14 21:42:51`; size `308160` bytes.
+  - No Python processes remained after the run.
+
+A* safety timeout / profiling hook:
+
+- Date: 2026-07-14
+- Code changes:
+  - `src/astar.rs`: added `AStarConfig.max_search_time_ms` with default `0`
+    (disabled). The normal dense A* loop, crossing-aware A* loop, and JPS4
+    loop now periodically check this wall-time budget and return failure when
+    exceeded.
+  - `src/astar.rs`: timeout diagnostics are emitted as `astar_timeout ...`
+    lines with label, configured timeout, iterations, open set size, expanded
+    states, generated neighbors, heap counts, footprint checks, rect checks,
+    and crossing reject counters.
+  - `src/py_router.rs`: exposed `AStarConfig.max_search_time_ms` to Python and
+    added environment overrides:
+    - `PHOTONIC_ROUTER_ASTAR_TIMEOUT_MS=<integer>`
+    - `PHOTONIC_ROUTER_ASTAR_TIMEOUT_S=<number>`
+- Validation:
+  - `cargo +stable-x86_64-pc-windows-gnullvm check` passed with
+    `RUSTFLAGS='-C linker=rust-lld'`.
+  - Release extension rebuilt via
+    `cargo +stable-x86_64-pc-windows-gnullvm rustc --release --features
+    pyo3/extension-module --lib --crate-type cdylib`, then copied to
+    `python/photonic_router/_rust.pyd`.
+  - Python smoke test confirmed `photonic_router._rust.AStarConfig()` exposes
+    `max_search_time_ms` and it can be set.
+  - Timeout smoke test with `PHOTONIC_ROUTER_ASTAR_TIMEOUT_MS=1` and
+    `PHOTONIC_ROUTER_NATIVE_PROGRESS=1` intentionally failed early at route
+    index `8` / `n_7` and emitted `astar_timeout label=dense_astar ...`
+    diagnostics. This confirms the abort/report path; it is not a functional
+    routing-quality test because the timeout was deliberately too small.
+- Artifact note:
+  - The existing `build/routed_multiportmmi_8x8.gds` remains the clean
+    stop-after-route-93 / pre-`n_93` artifact from `2026-07-14 21:42:51`.
+
+Pre-`n_93` speedup checkpoint:
+
+- Date: 2026-07-14
+- Scope:
+  - Keep the accepted LiDAR routing behavior unchanged while reducing the
+    time spent inside the crossing-aware A* hot path.
+  - Do not adopt the crossing-aware simple-route fast-path experiment: it
+    improved some local route times but changed later topology and made the
+    stop-after-route-93 run slower overall.
+- Code changes retained:
+  - `src/astar.rs`: precompute partner centerline segments once per
+    crossing-aware search and use bounding-box prefilters before exact segment
+    intersection tests.
+  - `src/astar.rs`: replace the per-neighbor `FxHashSet` allocation in
+    `effective_collision_witnesses` with linear dedup over the tiny local
+    witness vector, also deduping diagonal halo cells.
+  - `src/astar.rs` / `src/py_router.rs`: keep the disabled-by-default A*
+    wall-time timeout hook and diagnostics for future long-route triage.
+  - `translation/route_rust.py`: added an optional
+    `PHOTONIC_ROUTER_COLLISION_HEURISTIC_WEIGHT` override for experiments;
+    default collision-mode heuristic weight remains `1.0`.
+- Final validation run:
+  - Command: `run_routing_flow('multiportmmi_8x8', enable_crossings=True,
+    crossing_mode='lidar-pure', debug_stop_after_route_index=93,
+    debug_svgs=False, debug_timing=True, collect_attempt_diagnostics=True)`.
+  - Result: `RUN_RESULT_OK`.
+  - Wall time: `194.604 s`; total routing-flow time: `194.5998 s`.
+  - Optical routing stage: `188.8584 s`; net routing phase: `185.0969 s`;
+    native route batch: `173.3508 s`.
+  - Attempts: `93`; failures: `0`; repairs: `0`; simple routes: `24/93`.
+  - A* counters are unchanged from the earlier pre-`n_93` checkpoint:
+    expanded `1790336`, generated `10742016`, heap pushes `2601761`, heap
+    pops `2072106`, footprint checks `10327519`, rect checks `1865346`,
+    full-grid fallbacks `0`.
+  - Crossing verification: status `partial_debug_stop`, errors `0`.
+  - Photonic verification: status `partial_debug_stop`, errors `0`.
+  - GDS artifact: `build/routed_multiportmmi_8x8.gds`, timestamp
+    `2026-07-14 22:58:57`, size `308160` bytes.
+  - Representative route-time improvements versus the old progress trace:
+    - route `55`: about `30.41 s` -> `23.22 s`.
+    - route `68`: about `35.64 s` -> `27.32 s`.
+    - route `69`: about `37.21 s` -> `28.58 s`.
+    - route `70`: about `20.52 s` -> `15.96 s`.
+    - route `92`: about `10.27 s` -> `7.85 s`.
+    - route `93`: about `22.35 s` -> `17.26 s`.
+- Additional validation:
+  - `cargo +stable-x86_64-pc-windows-gnullvm check` passed with
+    `RUSTFLAGS='-C linker=rust-lld'`.
+  - `cargo +stable-x86_64-pc-windows-gnullvm test --release --lib crossing
+    --no-run` passed, confirming the crossing-unit-test binary compiles.
+  - Attempting to execute the filtered Rust test binary still hits the known
+    local Windows `STATUS_DLL_NOT_FOUND` runtime issue, so only compile
+    validation was used for this pass.
+- Current assessment:
+  - This is a real hot-path speedup, not a search-behavior shortcut: state
+    expansion counts and selected-route summary counts remain unchanged, while
+    the wall time to the stable pre-`n_93` checkpoint drops by roughly 19%.

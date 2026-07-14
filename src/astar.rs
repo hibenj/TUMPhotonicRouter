@@ -24,6 +24,7 @@ use crate::simple_routes::{
 
 static CROSSING_CANDIDATE_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
 const NO_PENDING_CROSSING_ANGLE: u8 = 255;
+const SEARCH_TIMEOUT_CHECK_INTERVAL: usize = 4096;
 
 /// Router search state: grid position plus 45-degree heading index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -74,6 +75,7 @@ pub struct AStarConfig {
     pub heuristic_weight: f64,
     pub heap_tie_breaker: HeapTieBreaker,
     pub require_terminal_straights: bool,
+    pub max_search_time_ms: u64,
 }
 
 impl Default for AStarConfig {
@@ -107,6 +109,7 @@ impl Default for AStarConfig {
             heuristic_weight: 1.0,
             heap_tie_breaker: HeapTieBreaker::SmallerG,
             require_terminal_straights: false,
+            max_search_time_ms: 0,
         }
     }
 }
@@ -261,6 +264,44 @@ pub struct RouteSearchStats {
     pub jps4_used: bool,
     pub jps4_fallbacks: usize,
     pub jps4_fallback_reason: String,
+}
+
+fn search_timed_out(search_start: Option<&Instant>, config: &AStarConfig) -> bool {
+    let Some(search_start) = search_start else {
+        return false;
+    };
+    config.max_search_time_ms > 0
+        && search_start.elapsed().as_millis() >= u128::from(config.max_search_time_ms)
+}
+
+fn should_check_timeout(iterations: usize, config: &AStarConfig) -> bool {
+    config.max_search_time_ms > 0 && iterations % SEARCH_TIMEOUT_CHECK_INTERVAL == 0
+}
+
+fn trace_search_timeout(
+    label: &str,
+    config: &AStarConfig,
+    stats: &RouteSearchStats,
+    iterations: usize,
+    open_len: usize,
+) {
+    eprintln!(
+        "astar_timeout label={} max_search_time_ms={} iterations={} open_len={} expanded={} generated={} heap_pops={} heap_pushes={} footprint_checks={} rect_checks={} crossing_checks={} crossing_accepted={} crossing_reject_margin={} crossing_reject_pending_straight={}",
+        label,
+        config.max_search_time_ms,
+        iterations,
+        open_len,
+        stats.expanded_states,
+        stats.generated_neighbors,
+        stats.heap_pops,
+        stats.heap_pushes,
+        stats.primitive_footprint_checks,
+        stats.primitive_footprint_rect_checks,
+        stats.crossing_candidate_checks,
+        stats.crossing_accepted,
+        stats.crossing_reject_margin,
+        stats.crossing_reject_pending_straight,
+    );
 }
 
 fn with_route_search_total_time(
@@ -2168,10 +2209,17 @@ fn route_single_net_jps4(
 
     let mut reached_idx = None;
     let mut iterations = 0usize;
+    let search_timeout_start = (config.max_search_time_ms > 0).then(Instant::now);
     while let Some(entry) = open_set.pop() {
         stats.heap_pops += 1;
         iterations += 1;
         if iterations > config.max_iterations {
+            return None;
+        }
+        if should_check_timeout(iterations, config)
+            && search_timed_out(search_timeout_start.as_ref(), config)
+        {
+            trace_search_timeout("jps4", config, &stats, iterations, open_set.len());
             return None;
         }
         if closed.get(entry.idx) {
@@ -3047,6 +3095,7 @@ fn route_single_net_with_bounds_dynamic_expansion(
     } else {
         None
     };
+    let search_timeout_start = (config.max_search_time_ms > 0).then(Instant::now);
     loop {
         let entry = if collect_detailed_timing {
             let heap_start = Instant::now();
@@ -3065,6 +3114,15 @@ fn route_single_net_with_bounds_dynamic_expansion(
             if let Some(search_loop_start) = search_loop_start.as_ref() {
                 stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
             }
+            return None;
+        }
+        if should_check_timeout(iterations, config)
+            && search_timed_out(search_timeout_start.as_ref(), config)
+        {
+            if let Some(search_loop_start) = search_loop_start.as_ref() {
+                stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
+            }
+            trace_search_timeout("dense_astar", config, &stats, iterations, open_set.len());
             return None;
         }
 
@@ -3336,6 +3394,18 @@ struct PrimitivePathSegment {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct PartnerPathSegment {
+    start: (i32, i32),
+    end: (i32, i32),
+    angle: u8,
+    length: f64,
+    min_x: i32,
+    max_x: i32,
+    min_y: i32,
+    max_y: i32,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct CrossingRouteIntersection {
     distance_from_primitive_start: f64,
     distance_before_on_segment: f64,
@@ -3420,6 +3490,49 @@ fn primitive_path_segments(state: State, primitive: &Primitive) -> Vec<Primitive
     }
 
     segments
+}
+
+fn crossing_partner_path_segments(crossing: &CrossingSearchConfig) -> Vec<Vec<PartnerPathSegment>> {
+    crossing
+        .partners
+        .iter()
+        .map(|partner| {
+            partner
+                .waypoints
+                .windows(2)
+                .filter_map(|segment| {
+                    let start = segment[0];
+                    let end = segment[1];
+                    let angle = direction_angle_between_grid_cells(start, end)?;
+                    Some(PartnerPathSegment {
+                        start,
+                        end,
+                        angle,
+                        length: grid_segment_step_count(start, end),
+                        min_x: start.0.min(end.0),
+                        max_x: start.0.max(end.0),
+                        min_y: start.1.min(end.1),
+                        max_y: start.1.max(end.1),
+                    })
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[inline]
+fn route_partner_segment_bboxes_overlap(
+    route_segment: &PrimitivePathSegment,
+    partner_segment: &PartnerPathSegment,
+) -> bool {
+    let route_min_x = route_segment.start.0.min(route_segment.end.0);
+    let route_max_x = route_segment.start.0.max(route_segment.end.0);
+    let route_min_y = route_segment.start.1.min(route_segment.end.1);
+    let route_max_y = route_segment.start.1.max(route_segment.end.1);
+    route_min_x <= partner_segment.max_x
+        && route_max_x >= partner_segment.min_x
+        && route_min_y <= partner_segment.max_y
+        && route_max_y >= partner_segment.min_y
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3510,6 +3623,7 @@ fn route_single_net_with_bounds_crossing(
         .enumerate()
         .map(|(idx, partner)| (partner.net_id, idx))
         .collect();
+    let partner_segments = crossing_partner_path_segments(crossing);
     let target_tolerance = config.target_tolerance_cells.max(0);
     let accepted_target_angles = target_angle_acceptance(target, config);
     let use_monotonic_pruning = false;
@@ -3563,6 +3677,7 @@ fn route_single_net_with_bounds_crossing(
         None
     };
     let mut iterations = 0usize;
+    let search_timeout_start = (config.max_search_time_ms > 0).then(Instant::now);
 
     while let Some(entry) = open_set.pop() {
         stats.heap_pops += 1;
@@ -3572,6 +3687,16 @@ fn route_single_net_with_bounds_crossing(
             if let Some(search_loop_start) = search_loop_start.as_ref() {
                 stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
             }
+            return None;
+        }
+        if should_check_timeout(iterations, config)
+            && search_timed_out(search_timeout_start.as_ref(), config)
+        {
+            trace_crossing_search_exhausted(crossing, bounds, stats, &nodes, open_set.len());
+            if let Some(search_loop_start) = search_loop_start.as_ref() {
+                stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
+            }
+            trace_search_timeout("crossing_astar", config, stats, iterations, open_set.len());
             return None;
         }
         let node = nodes.get(entry.idx)?;
@@ -3688,7 +3813,7 @@ fn route_single_net_with_bounds_crossing(
                 continue;
             }
 
-            let Some(crossing_outcome) = crossing_move_outcome(
+            let Some(crossing_outcome) = crossing_move_outcome_with_segments(
                 obstacle_map,
                 crossing,
                 key,
@@ -3700,6 +3825,7 @@ fn route_single_net_with_bounds_crossing(
                 reservation_margin,
                 port_open_cells,
                 &partner_index_by_id,
+                &partner_segments,
                 stats,
             ) else {
                 if !footprint_free {
@@ -3968,6 +4094,8 @@ fn trace_crossing_level1_intersection(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn crossing_move_outcome(
     obstacle_map: &ObstacleMap,
     crossing: &CrossingSearchConfig,
@@ -3980,6 +4108,40 @@ fn crossing_move_outcome(
     reservation_margin: i32,
     port_open_cells: Option<&FxHashSet<CellKey>>,
     partner_index_by_id: &FxHashMap<NetId, usize>,
+    stats: &mut RouteSearchStats,
+) -> Option<CrossingMoveOutcome> {
+    let partner_segments = crossing_partner_path_segments(crossing);
+    crossing_move_outcome_with_segments(
+        obstacle_map,
+        crossing,
+        current_key,
+        state,
+        primitive,
+        is_straight,
+        required_margin,
+        capped_required_margin,
+        reservation_margin,
+        port_open_cells,
+        partner_index_by_id,
+        &partner_segments,
+        stats,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn crossing_move_outcome_with_segments(
+    obstacle_map: &ObstacleMap,
+    crossing: &CrossingSearchConfig,
+    current_key: CrossingAStarKey,
+    state: State,
+    primitive: &Primitive,
+    is_straight: bool,
+    required_margin: i32,
+    capped_required_margin: i32,
+    reservation_margin: i32,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    partner_index_by_id: &FxHashMap<NetId, usize>,
+    partner_segments: &[Vec<PartnerPathSegment>],
     stats: &mut RouteSearchStats,
 ) -> Option<CrossingMoveOutcome> {
     let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
@@ -4085,17 +4247,19 @@ fn crossing_move_outcome(
             let bit = 1u64 << partner_idx;
             let intersection_count_before = route_intersections.len();
             for (route_segment_idx, route_segment) in primitive_segments.iter().enumerate() {
-                for partner_segment in partner.waypoints.windows(2) {
-                    let Some(partner_angle) =
-                        direction_angle_between_grid_cells(partner_segment[0], partner_segment[1])
-                    else {
+                for partner_segment in partner_segments
+                    .get(partner_idx)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                {
+                    if !route_partner_segment_bboxes_overlap(route_segment, partner_segment) {
                         continue;
-                    };
+                    }
                     let Some((x, y, t, u)) = grid_segment_intersection_with_params(
                         route_segment.start,
                         route_segment.end,
-                        partner_segment[0],
-                        partner_segment[1],
+                        partner_segment.start,
+                        partner_segment.end,
                     ) else {
                         continue;
                     };
@@ -4113,7 +4277,7 @@ fn crossing_move_outcome(
                         stats.crossing_reject_wrong_order += 1;
                         return None;
                     }
-                    if !grid_axes_are_perpendicular(route_segment.angle, partner_angle) {
+                    if !grid_axes_are_perpendicular(route_segment.angle, partner_segment.angle) {
                         trace_crossing_candidate(
                             crossing,
                             partner.net_id,
@@ -4121,7 +4285,7 @@ fn crossing_move_outcome(
                             x,
                             y,
                             route_segment.angle,
-                            partner_angle,
+                            partner_segment.angle,
                             required_margin,
                             0.0,
                             distance_from_primitive_start,
@@ -4130,9 +4294,8 @@ fn crossing_move_outcome(
                         stats.crossing_reject_not_perpendicular += 1;
                         return None;
                     }
-                    let partner_len =
-                        grid_segment_step_count(partner_segment[0], partner_segment[1]);
-                    let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
+                    let partner_margin =
+                        (u * partner_segment.length).min((1.0 - u) * partner_segment.length);
                     if partner_margin + 1.0e-9 < f64::from(required_margin) {
                         trace_crossing_candidate(
                             crossing,
@@ -4141,7 +4304,7 @@ fn crossing_move_outcome(
                             x,
                             y,
                             route_segment.angle,
-                            partner_angle,
+                            partner_segment.angle,
                             required_margin,
                             partner_margin,
                             distance_from_primitive_start,
@@ -4165,7 +4328,7 @@ fn crossing_move_outcome(
                             x,
                             y,
                             route_segment.angle,
-                            partner_angle,
+                            partner_segment.angle,
                             required_margin,
                             partner_margin,
                             distance_from_primitive_start,
@@ -4192,7 +4355,7 @@ fn crossing_move_outcome(
                             x,
                             y,
                             route_angle: route_segment.angle,
-                            partner_angle,
+                            partner_angle: partner_segment.angle,
                             segment_is_terminal: route_segment_idx + 1 == primitive_segments.len(),
                             partner_idx,
                             bit,
@@ -4395,15 +4558,9 @@ fn effective_collision_witnesses(
     route_segments: &[PrimitivePathSegment],
 ) -> Vec<EffectiveCollisionWitness> {
     let mut witnesses = Vec::new();
-    let mut seen = FxHashSet::default();
     for (dx, dy) in primitive.footprint.iter().copied() {
         let cell = (state.x + dx, state.y + dy);
-        if seen.insert(pack_xy(cell.0, cell.1)) {
-            witnesses.push(EffectiveCollisionWitness {
-                cell,
-                route_segment_idx: None,
-            });
-        }
+        push_unique_effective_witness(&mut witnesses, cell, None);
     }
 
     for (segment_idx, route_segment) in route_segments.iter().enumerate() {
@@ -4422,15 +4579,26 @@ fn effective_collision_witnesses(
             );
             let end = (start.0 + dx, start.1 + dy);
             for cell in compact_diagonal_halo_cells(start, end, dx, dy) {
-                witnesses.push(EffectiveCollisionWitness {
-                    cell,
-                    route_segment_idx: Some(segment_idx),
-                });
+                push_unique_effective_witness(&mut witnesses, cell, Some(segment_idx));
             }
         }
     }
 
     witnesses
+}
+
+fn push_unique_effective_witness(
+    witnesses: &mut Vec<EffectiveCollisionWitness>,
+    cell: (i32, i32),
+    route_segment_idx: Option<usize>,
+) {
+    if witnesses.iter().any(|witness| witness.cell == cell) {
+        return;
+    }
+    witnesses.push(EffectiveCollisionWitness {
+        cell,
+        route_segment_idx,
+    });
 }
 
 fn classify_unresolved_crossing_contact(

@@ -222,6 +222,8 @@ pub struct PyAStarConfig {
     pub heuristic_weight: f64,
     #[pyo3(get, set)]
     pub heap_tie_breaker: String,
+    #[pyo3(get, set)]
+    pub max_search_time_ms: u64,
 }
 #[pymethods]
 impl PyAStarConfig {
@@ -277,6 +279,7 @@ impl PyAStarConfig {
             heuristic_mode,
             heuristic_weight,
             heap_tie_breaker: "smaller_g".to_string(),
+            max_search_time_ms: 0,
         }
     }
 }
@@ -2067,6 +2070,7 @@ fn astar_config_from_py(
     let primitive_ordering = parse_primitive_ordering(&astar_cfg.primitive_ordering)?;
     let heuristic_mode = parse_heuristic_mode(&astar_cfg.heuristic_mode)?;
     let heap_tie_breaker = parse_heap_tie_breaker(&astar_cfg.heap_tie_breaker)?;
+    let max_search_time_ms = astar_timeout_ms_from_env()?.unwrap_or(astar_cfg.max_search_time_ms);
     if !astar_cfg.proactive_congestion_weight.is_finite()
         || astar_cfg.proactive_congestion_weight < 0.0
     {
@@ -2109,7 +2113,29 @@ fn astar_config_from_py(
         heuristic_weight: astar_cfg.heuristic_weight,
         heap_tie_breaker,
         require_terminal_straights: false,
+        max_search_time_ms,
     })
+}
+
+fn astar_timeout_ms_from_env() -> PyResult<Option<u64>> {
+    if let Ok(value) = std::env::var("PHOTONIC_ROUTER_ASTAR_TIMEOUT_MS") {
+        let parsed = value.trim().parse::<u64>().map_err(|_| {
+            PyValueError::new_err("PHOTONIC_ROUTER_ASTAR_TIMEOUT_MS must be an integer")
+        })?;
+        return Ok(Some(parsed));
+    }
+    if let Ok(value) = std::env::var("PHOTONIC_ROUTER_ASTAR_TIMEOUT_S") {
+        let parsed = value.trim().parse::<f64>().map_err(|_| {
+            PyValueError::new_err("PHOTONIC_ROUTER_ASTAR_TIMEOUT_S must be a number")
+        })?;
+        if !parsed.is_finite() || parsed < 0.0 {
+            return Err(PyValueError::new_err(
+                "PHOTONIC_ROUTER_ASTAR_TIMEOUT_S must be finite and non-negative",
+            ));
+        }
+        return Ok(Some((parsed * 1000.0).ceil() as u64));
+    }
+    Ok(None)
 }
 
 fn parse_meander_side(side: &str) -> PyResult<MeanderSide> {
