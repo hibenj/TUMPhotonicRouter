@@ -3394,6 +3394,28 @@ struct PrimitivePathSegment {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct RelativePrimitivePathSegment {
+    start: (i32, i32),
+    end: (i32, i32),
+    angle: u8,
+    distance_before_segment: f64,
+    length: f64,
+    starts_after_kink: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RelativeEffectiveCollisionWitness {
+    offset: (i32, i32),
+    route_segment_idx: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+struct PrimitiveCrossingMetadata {
+    segments: Vec<RelativePrimitivePathSegment>,
+    witnesses: Vec<RelativeEffectiveCollisionWitness>,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct PartnerPathSegment {
     start: (i32, i32),
     end: (i32, i32),
@@ -3432,7 +3454,13 @@ struct EffectiveCollisionWitness {
     route_segment_idx: Option<usize>,
 }
 
-fn primitive_path_segments(state: State, primitive: &Primitive) -> Vec<PrimitivePathSegment> {
+#[derive(Clone, Debug)]
+struct ContactedPartner {
+    partner_idx: usize,
+    witnesses: Vec<EffectiveCollisionWitness>,
+}
+
+fn primitive_crossing_metadata(primitive: &Primitive) -> PrimitiveCrossingMetadata {
     let mut segments = Vec::new();
     let mut path_distance = 0.0;
     let mut current_start: Option<(i32, i32)> = None;
@@ -3442,8 +3470,8 @@ fn primitive_path_segments(state: State, primitive: &Primitive) -> Vec<Primitive
     let mut segment_starts_after_kink = false;
 
     for pair in primitive.footprint.windows(2) {
-        let start = (state.x + pair[0].0, state.y + pair[0].1);
-        let end = (state.x + pair[1].0, state.y + pair[1].1);
+        let start = pair[0];
+        let end = pair[1];
         if start == end {
             continue;
         }
@@ -3459,7 +3487,7 @@ fn primitive_path_segments(state: State, primitive: &Primitive) -> Vec<Primitive
         if let (Some(seg_start), Some(seg_end), Some(seg_angle)) =
             (current_start, current_end, current_angle)
         {
-            segments.push(PrimitivePathSegment {
+            segments.push(RelativePrimitivePathSegment {
                 start: seg_start,
                 end: seg_end,
                 angle: seg_angle,
@@ -3479,7 +3507,7 @@ fn primitive_path_segments(state: State, primitive: &Primitive) -> Vec<Primitive
     if let (Some(seg_start), Some(seg_end), Some(seg_angle)) =
         (current_start, current_end, current_angle)
     {
-        segments.push(PrimitivePathSegment {
+        segments.push(RelativePrimitivePathSegment {
             start: seg_start,
             end: seg_end,
             angle: seg_angle,
@@ -3489,7 +3517,26 @@ fn primitive_path_segments(state: State, primitive: &Primitive) -> Vec<Primitive
         });
     }
 
-    segments
+    let witnesses = effective_collision_witness_offsets(primitive, &segments);
+    PrimitiveCrossingMetadata {
+        segments,
+        witnesses,
+    }
+}
+
+#[inline]
+fn translate_primitive_path_segment(
+    state: State,
+    segment: RelativePrimitivePathSegment,
+) -> PrimitivePathSegment {
+    PrimitivePathSegment {
+        start: (state.x + segment.start.0, state.y + segment.start.1),
+        end: (state.x + segment.end.0, state.y + segment.end.1),
+        angle: segment.angle,
+        distance_before_segment: segment.distance_before_segment,
+        length: segment.length,
+        starts_after_kink: segment.starts_after_kink,
+    }
 }
 
 fn crossing_partner_path_segments(crossing: &CrossingSearchConfig) -> Vec<Vec<PartnerPathSegment>> {
@@ -3601,6 +3648,15 @@ fn route_single_net_with_bounds_crossing(
             bucket
                 .iter()
                 .map(|primitive| FootprintCollisionProfile::from_footprint(&primitive.footprint))
+                .collect()
+        })
+        .collect();
+    let primitive_crossing_metadata: Vec<Vec<PrimitiveCrossingMetadata>> = primitive_buckets
+        .iter()
+        .map(|bucket| {
+            bucket
+                .iter()
+                .map(primitive_crossing_metadata)
                 .collect()
         })
         .collect();
@@ -3739,6 +3795,7 @@ fn route_single_net_with_bounds_crossing(
         let primitive_bucket = primitive_buckets[angle];
         let primitive_metadata = &primitive_search_metadata[angle];
         let footprint_profiles = &primitive_footprint_profiles[angle];
+        let crossing_metadata = &primitive_crossing_metadata[angle];
         let (primitive_order, primitive_order_len) = primitive_iteration_order(
             primitive_bucket,
             primitive_metadata,
@@ -3752,6 +3809,7 @@ fn route_single_net_with_bounds_crossing(
             let metadata = primitive_metadata[primitive_idx];
             let primitive_class = metadata.transition_class;
             let profile = &footprint_profiles[primitive_idx];
+            let primitive_crossing = &crossing_metadata[primitive_idx];
             stats.generated_neighbors += 1;
             stats.primitive_generated_by_class[primitive_class] += 1;
             if key.pending_after_crossing_cells > 0 {
@@ -3826,6 +3884,7 @@ fn route_single_net_with_bounds_crossing(
                 port_open_cells,
                 &partner_index_by_id,
                 &partner_segments,
+                primitive_crossing,
                 stats,
             ) else {
                 if !footprint_free {
@@ -4094,7 +4153,6 @@ fn trace_crossing_level1_intersection(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 fn crossing_move_outcome(
     obstacle_map: &ObstacleMap,
@@ -4111,6 +4169,7 @@ fn crossing_move_outcome(
     stats: &mut RouteSearchStats,
 ) -> Option<CrossingMoveOutcome> {
     let partner_segments = crossing_partner_path_segments(crossing);
+    let primitive_crossing = primitive_crossing_metadata(primitive);
     crossing_move_outcome_with_segments(
         obstacle_map,
         crossing,
@@ -4124,6 +4183,7 @@ fn crossing_move_outcome(
         port_open_cells,
         partner_index_by_id,
         &partner_segments,
+        &primitive_crossing,
         stats,
     )
 }
@@ -4142,6 +4202,7 @@ fn crossing_move_outcome_with_segments(
     port_open_cells: Option<&FxHashSet<CellKey>>,
     partner_index_by_id: &FxHashMap<NetId, usize>,
     partner_segments: &[Vec<PartnerPathSegment>],
+    primitive_crossing: &PrimitiveCrossingMetadata,
     stats: &mut RouteSearchStats,
 ) -> Option<CrossingMoveOutcome> {
     let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
@@ -4202,25 +4263,26 @@ fn crossing_move_outcome_with_segments(
     let track_crossed_partners = crossing.require_all_partners;
     let mut crossing_count = 0u32;
     let mut route_intersections = Vec::new();
-    let primitive_segments = primitive_path_segments(state, primitive);
-    let effective_witnesses =
-        effective_collision_witnesses(state, primitive, &primitive_segments);
-    let mut contacted_partners: FxHashMap<usize, Vec<EffectiveCollisionWitness>> =
-        FxHashMap::default();
-    for witness in &effective_witnesses {
-        if !obstacle_map.in_bounds(witness.cell.0, witness.cell.1) {
+    let primitive_segments = &primitive_crossing.segments;
+    let mut contacted_partners: Vec<ContactedPartner> = Vec::new();
+    for witness in &primitive_crossing.witnesses {
+        let cell = (
+            state.x + witness.offset.0,
+            state.y + witness.offset.1,
+        );
+        if !obstacle_map.in_bounds(cell.0, cell.1) {
             stats.crossing_reject_unmatched_footprint += 1;
             return None;
         }
-        if obstacle_map.is_static_blocked(witness.cell.0, witness.cell.1)
+        if obstacle_map.is_static_blocked(cell.0, cell.1)
             && !port_open_cells.is_some_and(|open| {
-                open.contains(&pack_xy(witness.cell.0, witness.cell.1))
+                open.contains(&pack_xy(cell.0, cell.1))
             })
         {
             stats.crossing_reject_unmatched_footprint += 1;
             return None;
         }
-        let Some(owner) = obstacle_map.dynamic_core_owner_at(witness.cell.0, witness.cell.1) else {
+        let Some(owner) = obstacle_map.dynamic_core_owner_at(cell.0, cell.1) else {
             continue;
         };
         if owner == crossing.net_id {
@@ -4234,25 +4296,35 @@ fn crossing_move_outcome_with_segments(
             stats.crossing_reject_unexpected_owner += 1;
             return None;
         };
-        contacted_partners
-            .entry(partner_idx)
-            .or_default()
-            .push(*witness);
+        push_contacted_partner_witness(
+            &mut contacted_partners,
+            partner_idx,
+            EffectiveCollisionWitness {
+                cell,
+                route_segment_idx: witness.route_segment_idx,
+            },
+        );
     }
     if primitive_steps > 0 {
-        let mut partner_indices = contacted_partners.keys().copied().collect::<Vec<_>>();
+        let mut partner_indices = contacted_partners
+            .iter()
+            .map(|contact| contact.partner_idx)
+            .collect::<Vec<_>>();
         partner_indices.sort_unstable();
         for partner_idx in partner_indices {
             let partner = &crossing.partners[partner_idx];
             let bit = 1u64 << partner_idx;
             let intersection_count_before = route_intersections.len();
-            for (route_segment_idx, route_segment) in primitive_segments.iter().enumerate() {
+            for (route_segment_idx, relative_route_segment) in primitive_segments.iter().enumerate()
+            {
+                let route_segment =
+                    translate_primitive_path_segment(state, *relative_route_segment);
                 for partner_segment in partner_segments
                     .get(partner_idx)
                     .map(Vec::as_slice)
                     .unwrap_or(&[])
                 {
-                    if !route_partner_segment_bboxes_overlap(route_segment, partner_segment) {
+                    if !route_partner_segment_bboxes_overlap(&route_segment, partner_segment) {
                         continue;
                     }
                     let Some((x, y, t, u)) = grid_segment_intersection_with_params(
@@ -4372,12 +4444,14 @@ fn crossing_move_outcome_with_segments(
                     continue;
                 }
                 let witnesses = contacted_partners
-                    .get(&partner_idx)
-                    .map(Vec::as_slice)
+                    .iter()
+                    .find(|contact| contact.partner_idx == partner_idx)
+                    .map(|contact| contact.witnesses.as_slice())
                     .unwrap_or(&[]);
                 let reject = classify_unresolved_crossing_contact(
                     witnesses,
-                    &primitive_segments,
+                    primitive_segments,
+                    state,
                     partner,
                 );
                 if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_LEVEL1").is_some() {
@@ -4552,15 +4626,13 @@ fn crossing_move_outcome_with_segments(
     })
 }
 
-fn effective_collision_witnesses(
-    state: State,
+fn effective_collision_witness_offsets(
     primitive: &Primitive,
-    route_segments: &[PrimitivePathSegment],
-) -> Vec<EffectiveCollisionWitness> {
+    route_segments: &[RelativePrimitivePathSegment],
+) -> Vec<RelativeEffectiveCollisionWitness> {
     let mut witnesses = Vec::new();
     for (dx, dy) in primitive.footprint.iter().copied() {
-        let cell = (state.x + dx, state.y + dy);
-        push_unique_effective_witness(&mut witnesses, cell, None);
+        push_unique_relative_witness(&mut witnesses, (dx, dy), None);
     }
 
     for (segment_idx, route_segment) in route_segments.iter().enumerate() {
@@ -4579,7 +4651,7 @@ fn effective_collision_witnesses(
             );
             let end = (start.0 + dx, start.1 + dy);
             for cell in compact_diagonal_halo_cells(start, end, dx, dy) {
-                push_unique_effective_witness(&mut witnesses, cell, Some(segment_idx));
+                push_unique_relative_witness(&mut witnesses, cell, Some(segment_idx));
             }
         }
     }
@@ -4587,23 +4659,42 @@ fn effective_collision_witnesses(
     witnesses
 }
 
-fn push_unique_effective_witness(
-    witnesses: &mut Vec<EffectiveCollisionWitness>,
-    cell: (i32, i32),
+fn push_unique_relative_witness(
+    witnesses: &mut Vec<RelativeEffectiveCollisionWitness>,
+    offset: (i32, i32),
     route_segment_idx: Option<usize>,
 ) {
-    if witnesses.iter().any(|witness| witness.cell == cell) {
+    if witnesses.iter().any(|witness| witness.offset == offset) {
         return;
     }
-    witnesses.push(EffectiveCollisionWitness {
-        cell,
+    witnesses.push(RelativeEffectiveCollisionWitness {
+        offset,
         route_segment_idx,
+    });
+}
+
+fn push_contacted_partner_witness(
+    contacted_partners: &mut Vec<ContactedPartner>,
+    partner_idx: usize,
+    witness: EffectiveCollisionWitness,
+) {
+    if let Some(contact) = contacted_partners
+        .iter_mut()
+        .find(|contact| contact.partner_idx == partner_idx)
+    {
+        contact.witnesses.push(witness);
+        return;
+    }
+    contacted_partners.push(ContactedPartner {
+        partner_idx,
+        witnesses: vec![witness],
     });
 }
 
 fn classify_unresolved_crossing_contact(
     witnesses: &[EffectiveCollisionWitness],
-    route_segments: &[PrimitivePathSegment],
+    route_segments: &[RelativePrimitivePathSegment],
+    state: State,
     partner: &CrossingSearchPartner,
 ) -> CrossingContactReject {
     let mut saw_partner_segment = false;
@@ -4619,9 +4710,10 @@ fn classify_unresolved_crossing_contact(
             let Some(route_segment_idx) = witness.route_segment_idx else {
                 continue;
             };
-            let Some(route_segment) = route_segments.get(route_segment_idx) else {
+            let Some(relative_route_segment) = route_segments.get(route_segment_idx) else {
                 continue;
             };
+            let route_segment = translate_primitive_path_segment(state, *relative_route_segment);
             let Some(partner_angle) =
                 direction_angle_between_grid_cells(partner_segment[0], partner_segment[1])
             else {

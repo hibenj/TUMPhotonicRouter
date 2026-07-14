@@ -4009,3 +4009,43 @@ Pre-`n_93` speedup checkpoint:
   - This is a real hot-path speedup, not a search-behavior shortcut: state
     expansion counts and selected-route summary counts remain unchanged, while
     the wall time to the stable pre-`n_93` checkpoint drops by roughly 19%.
+
+Pre-`n_93` crossing metadata precompute checkpoint:
+
+- Date: 2026-07-14
+- Scope:
+  - Continue optimizing the crossing-aware A* hot path without changing the
+    accepted search behavior.
+  - Precompute each primitive's crossing path segments and effective collision
+    witness offsets once per angle bucket instead of rebuilding those vectors
+    for every neighbor expansion.
+  - Replace the tiny per-neighbor contacted-partner `FxHashMap` with a small
+    linear vector because a primitive normally contacts only one or a few
+    partners.
+- Validation run:
+  - Command: `run_routing_flow('multiportmmi_8x8', enable_crossings=True,
+    crossing_mode='lidar-pure', debug_stop_after_route_index=93,
+    debug_svgs=False, debug_timing=True, collect_attempt_diagnostics=True)`.
+  - Result: `RUN_RESULT_OK`.
+  - Wall time: `177.380 s`; total routing-flow time: `177.3761 s`.
+  - Optical routing stage: `172.2764 s`; net routing phase: `168.8751 s`;
+    native route batch: `158.7731 s`.
+  - Attempts: `93`; failures: `0`; repairs: `0`; simple routes: `24/93`.
+  - A* counters remain unchanged from the previous checkpoint: expanded
+    `1790336`, generated `10742016`, heap pushes `2601761`, heap pops
+    `2072106`, footprint checks `10327519`, rect checks `1865346`,
+    full-grid fallbacks `0`.
+  - Crossing verification: status `partial_debug_stop`, errors `0`.
+  - Photonic verification: status `partial_debug_stop`, errors `0`.
+  - GDS artifact: `build/routed_multiportmmi_8x8.gds`, timestamp
+    `2026-07-14 23:17:49`, size `308160` bytes.
+- Additional validation:
+  - `cargo +stable-x86_64-pc-windows-gnullvm check` passed with
+    `RUSTFLAGS='-C linker=rust-lld'`.
+  - `cargo +stable-x86_64-pc-windows-gnullvm test --release --lib crossing
+    --no-run` passed.
+- Current assessment:
+  - This is a second behavior-preserving speedup over commit `8459e23`.
+    The stop-before-`n_93` checkpoint improves from `194.604 s` to
+    `177.380 s` while preserving the same expansion/generation counters and
+    green verification reports.
