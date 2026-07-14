@@ -1389,6 +1389,54 @@ Report checks:
       `matched_crossing_component_count=1`, `illegal_crossing_count=0`.
     - photonic report: `issue_count=0`.
 
+Follow-up, 2026-07-14: Promoted post-A* realized crossing rejection to a
+hard blocker.
+
+User clarification:
+
+    - If A* finds and accepts a crossing route, but the later realized/Python-
+      side crossing validation says one of those crossings is illegal, this
+      must not silently trigger the normal fallback route process or become an
+      ordinary repair signal.
+    - That case means the router's search model and realized verification
+      model disagree. It should stop with an explicit error.
+
+Fix:
+
+    - Changed collision-crossing helper return types in `src/py_router.rs`
+      from `Option<(RouteResult, Vec<CrossingEvent>)>` to
+      `Result<Option<(RouteResult, Vec<CrossingEvent>)>, String>`.
+    - Normal "no collision-crossing route found" remains `Ok(None)`.
+    - If crossing events satisfy the requested partner constraints but
+      `crossing_violations_for_route_with_ports` reports realized violations,
+      the helper now returns a hard error:
+      `Realized crossing validation failed for A*-accepted crossing route...`.
+    - Updated single-route and native batch repair call sites to propagate that
+      error instead of falling through to detour/fallback routing.
+
+Validation:
+
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER='rust-lld'
+    $env:RUSTUP_TOOLCHAIN='stable-x86_64-pc-windows-gnullvm'
+    $env:PYO3_PYTHON=(Join-Path (Get-Location) '.venv\Scripts\python.exe')
+    C:\Users\benja\.cargo\bin\cargo.exe check --target x86_64-pc-windows-gnullvm
+    # passed
+
+    .\.venv\Scripts\python.exe -m maturin develop --release
+    # passed
+
+    .\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 35 --debug-svgs false --debug-timing false --attempt-diagnostics
+    # passed; clean through n_34
+
+    $env:PHOTONIC_ROUTER_TRACE_CROSSING_NET='36'
+    $env:PHOTONIC_ROUTER_TRACE_PARTNER_NET='35'
+    .\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 36 --debug-svgs false --debug-timing false --attempt-diagnostics
+    # failed intentionally with
+    # RuntimeError: Realized crossing validation failed for A*-accepted crossing route ...
+
+    cargo fmt was attempted but could not run because `rustfmt` is not
+    installed for the local Windows Rust toolchains.
+
 Follow-up, 2026-07-14: Established the low-level Layer-1 crossing invariant for
 the `n_31`/`n_32` cluster.
 

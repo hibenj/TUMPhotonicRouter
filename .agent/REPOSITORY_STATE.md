@@ -3279,3 +3279,36 @@ Diagonal halo Layer-1 checkpoint:
     It is acceptable for A* to fall into repair after it rejects illegal moves
     and cannot find a legal route; the next task is improving convergence, not
     accepting post-route illegal crossings.
+
+Hard-stop realized crossing validation checkpoint:
+
+- Date: 2026-07-14
+- Branch: `crossings/verification-foundation`
+- User decision: a realized/Python-side crossing validation failure after an
+  A*-accepted crossing candidate is not a normal routing failure and must not
+  trigger fallback detours or ordinary rip-up/repair. It is a blocker that
+  exposes an A*/realization model mismatch.
+- Code change: `src/py_router.rs` collision-crossing helpers now return
+  `Result<Option<...>, String>` instead of only `Option<...>`. A normal "no
+  collision-crossing route found" result remains `Ok(None)`. If crossing events
+  satisfy the partner constraints but `crossing_violations_for_route_with_ports`
+  reports violations, the helper returns a hard error such as:
+  `Realized crossing validation failed for A*-accepted crossing route on net ...`.
+- Validation performed:
+  - `cargo check --target x86_64-pc-windows-gnullvm` with `rust-lld`, project
+    `.venv` Python, and the stable GNU LLVM toolchain passed.
+  - `.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --debug-stop-after-route 35 --debug-svgs false
+    --debug-timing false --attempt-diagnostics` passed, preserving the clean
+    state through `n_34`.
+  - `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --debug-stop-after-route 36 --debug-svgs false
+    --debug-timing false --attempt-diagnostics` with
+    `PHOTONIC_ROUTER_TRACE_CROSSING_NET=36` and
+    `PHOTONIC_ROUTER_TRACE_PARTNER_NET=35` now fails intentionally instead of
+    committing or falling back to the long `n_35` detour. Trace showed the A*
+    candidate crossing route and the realized validation mismatch.
+- `cargo fmt` could not run because `rustfmt` is not installed for the local
+  Windows Rust toolchains (`stable-x86_64-pc-windows-msvc` and
+  `stable-x86_64-pc-windows-gnullvm`).

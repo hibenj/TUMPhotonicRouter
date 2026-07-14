@@ -3477,7 +3477,7 @@ impl PyPhotonicRouter {
         source_port_um: Option<(f64, f64)>,
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
-    ) -> Option<(RouteResult, Vec<CrossingEvent>)> {
+    ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
         self.try_route_with_collision_crossings_with_loss(
             net_id,
             source,
@@ -3509,7 +3509,7 @@ impl PyPhotonicRouter {
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
         crossing_loss_override: Option<f64>,
-    ) -> Option<(RouteResult, Vec<CrossingEvent>)> {
+    ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
         self.try_route_with_collision_crossings_using_primitives(
             &self.primitives,
             net_id,
@@ -3565,9 +3565,9 @@ impl PyPhotonicRouter {
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
         crossing_loss_override: Option<f64>,
-    ) -> Option<(RouteResult, Vec<CrossingEvent>)> {
+    ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
         if !self.crossing_context.is_enabled() || partner_ids.is_empty() {
-            return None;
+            return Ok(None);
         }
         let crossing_cfg = self.crossing_context.config();
         let crossing_partners: Vec<CrossingSearchPartner> =
@@ -3606,7 +3606,7 @@ impl PyPhotonicRouter {
                     .collect()
             };
         if crossing_partners.is_empty() {
-            return None;
+            return Ok(None);
         }
         let crossing_search = CrossingSearchConfig {
             net_id,
@@ -3645,7 +3645,7 @@ impl PyPhotonicRouter {
                 self.trace_committed_partner_centerline_compare(net_id, partner.net_id);
             }
         }
-        let result = route_single_net_with_collision_crossing_config(
+        let Some(result) = route_single_net_with_collision_crossing_config(
             &self.obstacle_map,
             primitives,
             source,
@@ -3655,7 +3655,9 @@ impl PyPhotonicRouter {
             block_radius_cells.max(0),
             dynamic_clearance_exempt_keys,
             &crossing_search,
-        )?;
+        ) else {
+            return Ok(None);
+        };
         if trace_crossing {
             eprintln!(
                 "collision-crossing result net={} expanded={} generated={} accepted={} candidates={} cost={} waypoints={:?}",
@@ -3721,9 +3723,15 @@ impl PyPhotonicRouter {
             );
         }
         if satisfies && realized_violations.is_empty() {
-            return Some((result, crossing_events));
+            return Ok(Some((result, crossing_events)));
         }
-        None
+        if !crossing_events.is_empty() && satisfies && !realized_violations.is_empty() {
+            return Err(Self::format_realized_crossing_violation_error(
+                net_id,
+                &realized_violations,
+            ));
+        }
+        Ok(None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3740,9 +3748,9 @@ impl PyPhotonicRouter {
         source_port_um: Option<(f64, f64)>,
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
-    ) -> Option<(RouteResult, Vec<CrossingEvent>)> {
+    ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
         if !self.crossing_context.is_enabled() || partner_ids.is_empty() {
-            return None;
+            return Ok(None);
         }
         let crossing_cfg = self.crossing_context.config();
         let crossing_partners: Vec<CrossingSearchPartner> = partner_ids
@@ -3757,7 +3765,7 @@ impl PyPhotonicRouter {
             })
             .collect();
         if crossing_partners.is_empty() {
-            return None;
+            return Ok(None);
         }
         let crossing_search = CrossingSearchConfig {
             net_id,
@@ -3803,7 +3811,7 @@ impl PyPhotonicRouter {
         let mut guided_keepout = FxHashSet::default();
         const MAX_GUIDED_CROSSING_VALIDATION_RETRIES: usize = 4;
         for retry_idx in 0..=MAX_GUIDED_CROSSING_VALIDATION_RETRIES {
-            let result = route_single_net_with_crossing_config(
+            let Some(result) = route_single_net_with_crossing_config(
                 &search_map,
                 &self.primitives,
                 source,
@@ -3813,7 +3821,9 @@ impl PyPhotonicRouter {
                 block_radius_cells.max(0),
                 dynamic_clearance_exempt_keys,
                 &crossing_search,
-            )?;
+            ) else {
+                return Ok(None);
+            };
             let crossing_events = self.realized_crossing_events_for_route(
                 net_id,
                 &result,
@@ -3858,7 +3868,17 @@ impl PyPhotonicRouter {
                 && covers_requested_partners
                 && realized_violations.is_empty()
             {
-                return Some((result, crossing_events));
+                return Ok(Some((result, crossing_events)));
+            }
+            if !crossing_events.is_empty()
+                && satisfies
+                && covers_requested_partners
+                && !realized_violations.is_empty()
+            {
+                return Err(Self::format_realized_crossing_violation_error(
+                    net_id,
+                    &realized_violations,
+                ));
             }
 
             if retry_idx == MAX_GUIDED_CROSSING_VALIDATION_RETRIES {
@@ -3886,7 +3906,30 @@ impl PyPhotonicRouter {
                 );
             }
         }
-        None
+        Ok(None)
+    }
+
+    fn format_realized_crossing_violation_error(
+        net_id: u64,
+        violations: &[InvalidCrossingIntersection],
+    ) -> String {
+        let details = violations
+            .iter()
+            .map(|violation| {
+                format!(
+                    "partner={} point=({:.3},{:.3}) reason={}",
+                    violation.partner_net_id,
+                    violation.point.0,
+                    violation.point.1,
+                    violation.reason
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "Realized crossing validation failed for A*-accepted crossing route on net {}: {}",
+            net_id, details
+        )
     }
 
     fn invalid_crossing_intersections_for_route(
@@ -4755,7 +4798,7 @@ impl PyPhotonicRouter {
                 source_port_um,
                 target_port_um,
                 Some(&validation_opened_cell_keys),
-            )
+            )?
         } else {
             self.try_route_through_expected_crossing_partner(
                 net_id,
@@ -5199,7 +5242,7 @@ impl PyPhotonicRouter {
                 source_port_um,
                 target_port_um,
                 Some(&validation_opened_cell_keys),
-            )
+            )?
         } else {
             self.try_route_through_expected_crossing_partner(
                 net_id,
@@ -7922,7 +7965,8 @@ impl PyPhotonicRouter {
                         job.source_port_um,
                         job.target_port_um,
                         Some(&job.opened_cell_keys),
-                    );
+                    )
+                    .map_err(PyRuntimeError::new_err)?;
                     timings.repair_failed_net_wall_us +=
                         native_batch_elapsed_us(guided_start);
                     if let Some((route, crossing_events)) = guided_result {
@@ -8759,7 +8803,8 @@ impl PyPhotonicRouter {
                                             victim_job.source_port_um,
                                             victim_job.target_port_um,
                                             Some(&victim_job.opened_cell_keys),
-                                        );
+                                        )
+                                        .map_err(PyRuntimeError::new_err)?;
                                     timings.reroute_victims_wall_us +=
                                         native_batch_elapsed_us(seeded_start);
                                     if let Some((route, crossing_events)) = seeded_result {
@@ -8855,7 +8900,8 @@ impl PyPhotonicRouter {
                                         victim_job.target_port_um,
                                         Some(&victim_job.opened_cell_keys),
                                         Some(0.0),
-                                    );
+                                    )
+                                    .map_err(PyRuntimeError::new_err)?;
                                     timings.reroute_victims_wall_us +=
                                         native_batch_elapsed_us(crossing_start);
                                     if let Some((route, crossing_events)) = crossing_result {
@@ -8977,7 +9023,8 @@ impl PyPhotonicRouter {
                                     victim_job.source_port_um,
                                     victim_job.target_port_um,
                                     Some(&victim_job.opened_cell_keys),
-                                );
+                                )
+                                .map_err(PyRuntimeError::new_err)?;
                                 timings.reroute_victims_wall_us +=
                                     native_batch_elapsed_us(guided_start);
                                 if let Some((route, crossing_events)) = guided_result {
@@ -13267,7 +13314,8 @@ mod tests {
             None,
             None,
             None,
-        );
+        )
+        .unwrap();
 
         assert!(
             result.is_none(),
