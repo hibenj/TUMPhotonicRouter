@@ -166,6 +166,26 @@ from the true route and partner centerline segments, including perpendicularity,
 margin, footprint clearance, and partner ownership. Bends inherit this rule for
 any diagonal arm in their primitive footprint.
 
+The target Layer-1 crossing-detection contract is owner-first and local. For
+each A* primitive move, build an effective collision footprint from the real
+primitive footprint plus compact diagonal halo cells for any diagonal primitive
+piece. Use that effective footprint only to discover collisions: static
+contacts reject the move immediately, and dynamic contacts produce a set of
+committed route owners that may need crossing checks. For each dynamic owner,
+resolve legality against the true candidate primitive centerline segment and
+the committed owner's true centerline segment; the collided cell or halo cell
+is only a witness that a local check is needed, not the crossing center. If no
+legal perpendicular crossing with sufficient footprint clearance and margin can
+be proven for every dynamic owner contact, reject only that A* move and
+continue search. Do not trigger rip-up from inside this per-move check.
+
+Avoid broad per-move scans over unrelated partner segments in the long-term
+crossing path. Broad scans may be acceptable as temporary diagnostics or
+fallback assertions, but the production crossing hot path should derive the
+small candidate owner set from the effective footprint collision query and then
+perform exact centerline legality checks only for those nearby owners. This is
+both simpler to reason about and important for speed.
+
 Endpoint correction and port snapping must not influence A* crossing
 decisions. Route search, crossing event registration, and native validation
 should use the primitive/grid routing model or its protected primitive-realized

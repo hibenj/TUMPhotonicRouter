@@ -3349,3 +3349,56 @@ Symmetric diagonal halo checkpoint:
     traced candidate has a direct grid centerline interaction with the committed
     `n_32` centerline, so the next fix should inspect direct crossing event
     extraction / margin consistency rather than endpoint correction.
+
+Pending-after crossing margin WIP:
+
+- Date: 2026-07-14
+- Branch: `crossings/verification-foundation`
+- Current uncommitted WIP in `src/astar.rs` changes crossing margin accounting
+  from Euclidean segment length to grid-step counts. This is intended to make
+  `pending_after_crossing_cells` mean actual straight grid cells, so a diagonal
+  bend arm of 3 cells satisfies pending margin 3 but not pending margin 4.
+- The WIP also keeps the largest missing after-crossing runout when multiple
+  crossings occur in one primitive and adds focused Rust fixtures, including a
+  direct `n_35` x `n_32` regression that expects the short after-crossing
+  segment to be carried as `pending_after_crossing_cells = 4`.
+- Validation:
+  - `cargo check` passed with
+    `RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnullvm`,
+    `CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=rust-lld`, and
+    `PYO3_PYTHON=.venv\Scripts\python.exe`.
+  - `cargo test --lib --no-run` passed with the same environment.
+  - Direct Rust test execution still exits with `STATUS_DLL_NOT_FOUND` in this
+    Windows runtime.
+  - `maturin develop --release --target x86_64-pc-windows-gnullvm` passed when
+    `RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnullvm` and `rust-lld` were
+    set explicitly.
+- Benchmark/diagnostic state:
+  - A stop-after-route-36 (`n_35`) run with the WIP became long-running and was
+    stopped.
+  - A stop-after-route-35 run also appeared slow and was interrupted by the
+    user before completion.
+  - A stop-after-route-33 run completed successfully, writing the requested
+    after-`n_32` GDS. The stable copy is
+    `build\routed_multiportmmi_8x8_after_n32_stop33.gds`.
+- Next investigation should proceed step-by-step from route 31 onward to find
+  exactly where the stricter grid-step pending-margin model starts expanding
+  too much search.
+
+Layer-1 crossing hot-path contract note:
+
+- Date: 2026-07-14
+- The intended production workflow was written into `.agent\WORKFLOW.md` and
+  the active ExecPlan:
+  `effective_footprint = primitive_footprint + compact diagonal halo cells`.
+  Static contacts in this effective footprint reject the A* move. Dynamic
+  contacts produce nearby committed owner ids, and crossing legality is then
+  checked against the true candidate primitive centerline and true committed
+  owner centerline. Halo cells are witnesses for collision discovery only; they
+  are not crossing centers and are not committed route geometry.
+- Current implementation difference to investigate before the next code slice:
+  `src/astar.rs` still mixes owner/cell overlap checks with broad geometric
+  scans over partner waypoints. That broad scan is likely a meaningful part of
+  the `n_32` cost (`5226` crossing candidate checks in the route-33 stats run)
+  and should be replaced or bounded by owner-first local candidate discovery
+  once fixtures pin behavior.

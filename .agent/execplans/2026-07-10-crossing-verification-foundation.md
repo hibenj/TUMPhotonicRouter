@@ -487,6 +487,20 @@ The first visible outcome is a repeatable harness that proves small crossing ben
   validated against the true route and partner centerline segments.
   Date/Author: 2026-07-14 / Codex
 
+- Decision: Make Layer-1 crossing detection owner-first and local.
+  Rationale: The clean hot-path contract is:
+  `effective_footprint = primitive_footprint + compact diagonal halo cells`.
+  Static contacts in that effective footprint reject the A* move. Dynamic
+  contacts produce only the nearby committed route owners that need crossing
+  checks. Crossing legality is then resolved from the true candidate primitive
+  centerline and true committed-owner centerline, not from the halo cell itself.
+  This differs from the current mixed model, which still performs broad
+  geometric/partner scans in addition to cell-owner collision checks. The
+  owner-first contract should preserve behavior while reducing unnecessary
+  per-move segment checks; broad scans should remain diagnostic/fallback only
+  until removed.
+  Date/Author: 2026-07-14 / Codex
+
 - Decision: Endpoint correction is post-routing and must not feed back into
   A* crossing legality.
   Rationale: Crossing search and native validation must reason about the
