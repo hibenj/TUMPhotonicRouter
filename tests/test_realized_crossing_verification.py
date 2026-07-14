@@ -191,9 +191,10 @@ def test_realized_crossing_verifier_rejects_expected_bend_crossing():
     assert {item["classification"] for item in illegal} == {"illegal_unexpected_crossing"}
 
 
-def test_realized_crossing_verifier_reports_search_margin_separately():
+def test_realized_crossing_verifier_reports_search_margin_without_min_straight():
     info = _plan_info()
     info["min_straight_cells_per_crossing"] = 10
+    info["bend_runout_cells_per_crossing"] = 3
     info["crossing_device"] = {"component_bbox_um": [8.0, 8.0]}
 
     illegal = _verify_realized_route_intersections(
@@ -213,7 +214,7 @@ def test_realized_crossing_verifier_reports_search_margin_separately():
     assert crossing["segment_b_margin_um"] == 4.0
     assert crossing["crossing_footprint_um"] == 8.0
     assert crossing["required_margin_um"] == 4.0
-    assert crossing["search_required_margin_um"] == 14.0
+    assert crossing["search_required_margin_um"] == 7.0
 
 
 def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():

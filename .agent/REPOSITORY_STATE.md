@@ -3118,3 +3118,25 @@ Endpoint-correction boundary correction after user review:
   correct invariant is that routing decisions are made against the same
   primitive/realized routing model, while endpoint correction is a final
   realization step only.
+
+Python crossing-margin consistency fix:
+
+- Date: 2026-07-14 09:41 +02:00
+- Branch: `crossings/verification-foundation`
+- Base commit before this change: `d56ebb0`
+- The Python crossing diagnostics/expected-event overlap checks were brought
+  back in line with the Rust A* hard crossing margin. They now use
+  `crossing_half_size_cells + bend_runout_cells_per_crossing` and no longer add
+  `min_straight_cells_per_crossing`.
+- This fixes stale report values such as
+  `required_straight_margin_cells_per_crossing = 7` for
+  `crossing_half=2`, `min_straight=2`, `bend_runout=3`; regenerated artifacts
+  now report `required_straight_margin_cells_per_crossing = 5`.
+- Validation:
+  - `.venv\Scripts\python.exe -m pytest tests/test_realized_crossing_verification.py -q`
+    passed: `21 passed`.
+  - `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --debug-stop-after-route 34 --debug-svgs 31-34
+    --debug-timing false --attempt-diagnostics` passed and regenerated
+    `build\crossings\multiportmmi_8x8_crossings.json` with
+    `required_straight_margin_cells_per_crossing = 5`, `realized_count = 2`.

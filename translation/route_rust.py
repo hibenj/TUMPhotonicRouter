@@ -767,9 +767,8 @@ def _verify_realized_route_intersections(
         crossing_plan_info=crossing_plan_info,
         grid_size_um=float(grid_size_um),
     )
-    search_required_margin_um = footprint_half_um + float(grid_size_um) * (
-        int(crossing_plan_info.get("min_straight_cells_per_crossing", 0) or 0)
-        + int(crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0)
+    search_required_margin_um = footprint_half_um + float(grid_size_um) * int(
+        crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0
     )
     required_margin_um = footprint_half_um
     allowed_pairs: set[frozenset[int]] = set()
@@ -2273,11 +2272,9 @@ def _augment_crossing_plan_with_realized_overlaps(
 
     actual_crossings: list[dict[str, object]] = []
     unrealized_expected: list[dict[str, object]] = []
-    required_crossing_margin_cells = (
-        int(crossing_plan_info.get("crossing_half_size_cells", 0) or 0)
-        + int(crossing_plan_info.get("min_straight_cells_per_crossing", 0) or 0)
-        + int(crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0)
-    )
+    required_crossing_margin_cells = int(
+        crossing_plan_info.get("crossing_half_size_cells", 0) or 0
+    ) + int(crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0)
     for raw_event in list(crossing_plan_info.get("events", [])):
         event = dict(cast(dict[str, object], raw_event))
         if not event.get("loaded"):
@@ -4681,11 +4678,9 @@ def route_nets_rust(
         allow_only_expected_crossings
     )
     crossing_plan_info["bend_runout_cells_per_crossing"] = int(bend_radius_cells)
-    crossing_plan_info["required_straight_margin_cells_per_crossing"] = (
-        int(resolved_crossing_half_size_cells)
-        + int(min_straight_cells_per_crossing)
-        + int(bend_radius_cells)
-    )
+    crossing_plan_info["required_straight_margin_cells_per_crossing"] = int(
+        resolved_crossing_half_size_cells
+    ) + int(bend_radius_cells)
     crossing_plan_info["crossing_device"] = crossing_device_info
     if bool(enable_crossings) and crossing_mode in {"collision", "lidar-pure"}:
         if not hasattr(router, "set_collision_crossing_routing"):
