@@ -2782,6 +2782,22 @@ fn primitive_initial_straight_run_distance(primitive: &Primitive, start_angle: u
     grid_segment_length((0, 0), (dir.0 * run_cells, dir.1 * run_cells))
 }
 
+fn primitive_terminal_straight_run_cells(primitive: &Primitive, end_angle: u8) -> i32 {
+    let Some(end) = primitive.footprint.last().copied() else {
+        return 0;
+    };
+    let dir = DIRECTIONS[(end_angle % 8) as usize];
+    let mut run_cells = 0i32;
+    for (idx, point) in primitive.footprint.iter().copied().enumerate().rev() {
+        let step = (primitive.footprint.len() - 1 - idx) as i32;
+        if point != (end.0 - dir.0 * step, end.1 - dir.1 * step) {
+            break;
+        }
+        run_cells = step;
+    }
+    run_cells
+}
+
 fn target_biased_primitive_score(
     primitive: &Primitive,
     metadata: PrimitiveSearchMetadata,
@@ -4017,7 +4033,8 @@ fn crossing_move_outcome(
     }
 
     if !is_straight {
-        straight_run = 0;
+        straight_run = primitive_terminal_straight_run_cells(primitive, primitive.end_angle)
+            .min(capped_required_margin);
     }
 
     Some(CrossingMoveOutcome {
@@ -7301,6 +7318,91 @@ mod tests {
 
         assert!(outcome.is_none());
         assert_eq!(stats.crossing_reject_pending_straight, 1);
+    }
+
+    #[test]
+    fn crossing_margin_counts_terminal_bend_arm_before_next_crossing() {
+        let map = ObstacleMap::new(16, 16);
+        let library = primitive_library_no45_bend2();
+        let bend = library
+            .get_primitives_for_angle(0)
+            .iter()
+            .find(|primitive| primitive.end_angle == 2)
+            .expect("east-to-north bend should exist");
+        let empty_crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: Vec::new(),
+            min_straight_cells: 0,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 2,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+        };
+        let mut stats = RouteSearchStats::default();
+        let bend_outcome = crossing_move_outcome(
+            &map,
+            &empty_crossing,
+            CrossingAStarKey {
+                state: State::new(4, 4, 0),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 0,
+                pending_after_crossing_cells: 0,
+            },
+            State::new(4, 4, 0),
+            bend,
+            false,
+            4,
+            4,
+            0,
+            &FxHashMap::default(),
+            &mut stats,
+        )
+        .expect("bend without crossing should remain legal");
+        assert_eq!(bend_outcome.straight_run_cells, 2);
+
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: vec![CrossingSearchPartner {
+                net_id: 2,
+                waypoints: vec![(2, 8), (10, 8)],
+            }],
+            min_straight_cells: 0,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 2,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> =
+            [(2, 0)].into_iter().collect();
+        let straight = library
+            .get_primitives_for_angle(2)
+            .iter()
+            .find(|primitive| primitive.end_angle == 2 && primitive.dx == 0 && primitive.dy == 4)
+            .expect("north long straight should exist");
+        let crossing_outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(6, 6, 2),
+                crossed_mask: bend_outcome.crossed_mask,
+                next_partner_index: bend_outcome.next_partner_index,
+                straight_run_cells: bend_outcome.straight_run_cells,
+                pending_after_crossing_cells: bend_outcome.pending_after_crossing_cells,
+            },
+            State::new(6, 6, 2),
+            straight,
+            true,
+            4,
+            4,
+            0,
+            &partner_index_by_id,
+            &mut stats,
+        )
+        .expect("terminal bend arm should satisfy pre-crossing runout");
+
+        assert_eq!(crossing_outcome.crossing_count, 1);
+        assert_eq!(stats.crossing_accepted, 1);
     }
 
     #[test]

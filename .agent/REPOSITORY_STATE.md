@@ -3140,3 +3140,36 @@ Python crossing-margin consistency fix:
     --debug-timing false --attempt-diagnostics` passed and regenerated
     `build\crossings\multiportmmi_8x8_crossings.json` with
     `required_straight_margin_cells_per_crossing = 5`, `realized_count = 2`.
+
+Bend-runout crossing model fix:
+
+- Date: 2026-07-14 10:12 +02:00
+- Branch: `crossings/verification-foundation`
+- Base commit before this change: `9975d34`
+- A* now carries the terminal arm of a bend into the next state's
+  `straight_run_cells`, so a route shaped like `bend arm -> straight ->
+  crossing` can satisfy pre-crossing runout with the bend arm included. This
+  matches the intended model that bend runout cells may be part of the bend
+  arm; only the bend kink/curved footprint must stay out of the crossing
+  footprint.
+- The Rust native realized-crossing checks now use only the realized crossing
+  footprint half-size for physical centerline validation. The full
+  `crossing_half + bend_runout` remains an A*/grid-search constraint, while
+  physical post-route validation no longer rejects crossings solely because the
+  extra search runout is carried by a bend arm.
+- Validation:
+  - `cargo check` with `stable-x86_64-pc-windows-gnullvm` and `rust-lld`
+    passed.
+  - `cargo test --no-run` passed, compiling the new Rust regression fixture
+    `crossing_margin_counts_terminal_bend_arm_before_next_crossing`. Actual
+    Rust test execution remains avoided in this Windows environment because
+    prior runs have exited with `STATUS_DLL_NOT_FOUND`.
+  - `.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `.venv\Scripts\python.exe -m pytest tests/test_realized_crossing_verification.py -q`
+    passed: `21 passed`.
+  - `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --debug-stop-after-route 34 --debug-svgs 31-34
+    --debug-timing false --attempt-diagnostics` passed. The regenerated JSON
+    reports `required_straight_margin_cells_per_crossing = 5`,
+    `realized_intersections = 2`, `illegal_realized = 0`, crossing
+    verification `error_count = 0`, and photonic verification `error_count = 0`.

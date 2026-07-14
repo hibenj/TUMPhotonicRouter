@@ -1758,6 +1758,10 @@ fn crossing_required_margin_cells(
     crossing_half_size_cells.max(0) + bend_runout_cells.max(0)
 }
 
+fn realized_crossing_margin_um(crossing_half_size_cells: i32, grid_size_um: f64) -> f64 {
+    grid_size_um * f64::from(crossing_half_size_cells.max(0))
+}
+
 fn crossing_events_for_partner(
     net_id: u64,
     partner_net_id: u64,
@@ -2869,12 +2873,8 @@ impl PyPhotonicRouter {
             return Vec::new();
         }
         let config = self.crossing_context.config();
-        let required_margin_um = self.grid.grid_size_um
-            * f64::from(crossing_required_margin_cells(
-                config.crossing_half_size_cells,
-                config.min_straight_cells_per_crossing,
-                self.primitive_cfg.bend_radius_cells,
-            ));
+        let required_margin_um =
+            realized_crossing_margin_um(config.crossing_half_size_cells, self.grid.grid_size_um);
         let mut events = Vec::new();
         let mut seen = FxHashSet::default();
         for route_segment in route_centerline.windows(2) {
@@ -4167,12 +4167,8 @@ impl PyPhotonicRouter {
             return Vec::new();
         }
         let config = self.crossing_context.config();
-        let required_margin = self.grid.grid_size_um
-            * f64::from(crossing_required_margin_cells(
-                config.crossing_half_size_cells,
-                config.min_straight_cells_per_crossing,
-                self.primitive_cfg.bend_radius_cells,
-            ));
+        let required_margin =
+            realized_crossing_margin_um(config.crossing_half_size_cells, self.grid.grid_size_um);
         if route_centerline.len() < 2 {
             return Vec::new();
         }
