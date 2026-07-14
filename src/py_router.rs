@@ -1482,6 +1482,10 @@ fn physical_segment_length(a: (f64, f64), b: (f64, f64)) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+fn rust_crossing_level2_validation_disabled() -> bool {
+    std::env::var_os("PHOTONIC_ROUTER_DISABLE_RUST_CROSSING_VALIDATION").is_some()
+}
+
 fn physical_point_near_centerline_endpoint(
     point: (f64, f64),
     centerline: &[(f64, f64)],
@@ -2826,6 +2830,156 @@ impl PyPhotonicRouter {
             .collect()
     }
 
+    fn lidar_pure_crossing_enabled(&self) -> bool {
+        self.crossing_context.is_enabled()
+            && self.use_collision_crossing_routing
+            && !self.crossing_context.config().allow_only_expected_pairs
+    }
+
+    fn lidar_route_window_partner_lookup_set(
+        &self,
+        net_id: u64,
+        source: State,
+        target: State,
+        extra_radius_cells: i32,
+    ) -> FxHashSet<u64> {
+        if !self.lidar_pure_crossing_enabled() {
+            return self.crossing_allowed_partner_set(net_id);
+        }
+        let extra = extra_radius_cells.max(0);
+        let min_x = source.x.min(target.x).saturating_sub(extra);
+        let max_x = source.x.max(target.x).saturating_add(extra);
+        let min_y = source.y.min(target.y).saturating_sub(extra);
+        let max_y = source.y.max(target.y).saturating_add(extra);
+        self.obstacle_map
+            .net_route_entries()
+            .filter_map(|(partner_id, cells)| {
+                if partner_id == net_id {
+                    return None;
+                }
+                cells.iter().any(|key| {
+                    let (x, y) = unpack_xy(*key);
+                    x >= min_x && x <= max_x && y >= min_y && y <= max_y
+                })
+                .then_some(partner_id)
+            })
+            .collect()
+    }
+
+    fn lidar_probe_partner_lookup_set(
+        &self,
+        net_id: u64,
+        probe_route: &RouteResult,
+        owner_lookup_radius_cells: i32,
+        final_routes: &FxHashMap<u64, RouteResult>,
+    ) -> FxHashSet<u64> {
+        self.dynamic_owners_for_native_route(probe_route, owner_lookup_radius_cells)
+            .into_iter()
+            .filter(|owner| *owner != net_id && final_routes.contains_key(owner))
+            .collect()
+    }
+
+    fn lidar_route_result_partner_lookup_set(
+        &self,
+        net_id: u64,
+        route: &RouteResult,
+        extra_radius_cells: i32,
+    ) -> FxHashSet<u64> {
+        if !self.lidar_pure_crossing_enabled() {
+            return self.crossing_allowed_partner_set(net_id);
+        }
+        let points: Vec<(i32, i32)> = if route.cells.is_empty() {
+            route.compressed_waypoints.clone()
+        } else {
+            route.cells.clone()
+        };
+        if points.is_empty() {
+            return FxHashSet::default();
+        }
+        let extra = extra_radius_cells.max(0);
+        let min_x = points
+            .iter()
+            .map(|(x, _)| *x)
+            .min()
+            .unwrap_or(0)
+            .saturating_sub(extra);
+        let max_x = points
+            .iter()
+            .map(|(x, _)| *x)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(extra);
+        let min_y = points
+            .iter()
+            .map(|(_, y)| *y)
+            .min()
+            .unwrap_or(0)
+            .saturating_sub(extra);
+        let max_y = points
+            .iter()
+            .map(|(_, y)| *y)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(extra);
+        self.obstacle_map
+            .net_route_entries()
+            .filter_map(|(partner_id, cells)| {
+                if partner_id == net_id {
+                    return None;
+                }
+                cells.iter().any(|key| {
+                    let (x, y) = unpack_xy(*key);
+                    x >= min_x && x <= max_x && y >= min_y && y <= max_y
+                })
+                .then_some(partner_id)
+            })
+            .collect()
+    }
+
+    fn crossing_partner_lookup_set_for_result(
+        &self,
+        net_id: u64,
+        route: &RouteResult,
+    ) -> FxHashSet<u64> {
+        if self.lidar_pure_crossing_enabled() {
+            let config = self.crossing_context.config();
+            let margin = crossing_required_margin_cells(
+                config.crossing_half_size_cells,
+                config.min_straight_cells_per_crossing,
+                self.primitive_cfg.bend_radius_cells,
+            );
+            return self.lidar_route_result_partner_lookup_set(
+                net_id,
+                route,
+                margin.saturating_mul(2).saturating_add(self.primitive_cfg.bend_radius_cells),
+            );
+        }
+        self.crossing_allowed_partner_set(net_id)
+    }
+
+    fn crossing_partner_lookup_set_for_route(
+        &self,
+        net_id: u64,
+        source: State,
+        target: State,
+    ) -> FxHashSet<u64> {
+        if self.lidar_pure_crossing_enabled() {
+            let config = self.crossing_context.config();
+            let margin = crossing_required_margin_cells(
+                config.crossing_half_size_cells,
+                config.min_straight_cells_per_crossing,
+                self.primitive_cfg.bend_radius_cells,
+            );
+            return self.lidar_route_window_partner_lookup_set(
+                net_id,
+                source,
+                target,
+                margin.saturating_mul(2).saturating_add(self.primitive_cfg.bend_radius_cells),
+            );
+        }
+        self.crossing_allowed_partner_set(net_id)
+    }
+
     fn crossing_events_for_route(
         &self,
         net_id: u64,
@@ -3441,10 +3595,13 @@ impl PyPhotonicRouter {
         net_id: u64,
         route: &RouteResult,
     ) -> Option<String> {
+        if rust_crossing_level2_validation_disabled() {
+            return None;
+        }
         if !self.crossing_context.is_enabled() {
             return None;
         }
-        let partner_ids = self.crossing_allowed_partner_set(net_id);
+        let partner_ids = self.crossing_partner_lookup_set_for_result(net_id, route);
         if partner_ids.is_empty() {
             return None;
         }
@@ -3617,6 +3774,11 @@ impl PyPhotonicRouter {
             crossing_loss: crossing_loss_override.unwrap_or(crossing_cfg.crossing_loss),
             require_all_partners: crossing_cfg.allow_only_expected_pairs,
         };
+        let search_partner_ids: FxHashSet<u64> = crossing_search
+            .partners
+            .iter()
+            .map(|partner| partner.net_id)
+            .collect();
         let mut crossing_search_cfg = search_cfg.clone();
         crossing_search_cfg.enable_simple_routes = false;
         crossing_search_cfg.enable_jps4 = false;
@@ -3698,18 +3860,28 @@ impl PyPhotonicRouter {
         } else {
             &crossed_partner_ids
         };
-        let satisfies = self.crossing_events_satisfy_partner_constraints(
-            net_id,
-            required_partner_ids,
-            &crossing_events,
-        );
-        let realized_violations = self.crossing_violations_for_route_with_ports(
-            net_id,
-            &result,
-            source_port_um,
-            target_port_um,
-            opened_cell_keys,
-        );
+        let skip_rust_level2_validation = rust_crossing_level2_validation_disabled();
+        let route_has_no_unresolved_grid_crossings = skip_rust_level2_validation
+            || self
+                .invalid_crossing_intersections_for_route(net_id, &result, &search_partner_ids)
+                .is_empty();
+        let satisfies = route_has_no_unresolved_grid_crossings
+            && self.crossing_events_satisfy_partner_constraints(
+                net_id,
+                required_partner_ids,
+                &crossing_events,
+            );
+        let realized_violations = if skip_rust_level2_validation {
+            Vec::new()
+        } else {
+            self.crossing_violations_for_route_with_ports(
+                net_id,
+                &result,
+                source_port_um,
+                target_port_um,
+                opened_cell_keys,
+            )
+        };
         if trace_crossing {
             eprintln!(
                 "collision-crossing validation net={} crossed={:?} satisfies={} realized_violations={:?}",
@@ -3831,8 +4003,9 @@ impl PyPhotonicRouter {
                 source_port_um,
                 target_port_um,
             );
-            let satisfies = self.crossing_events_satisfy_partner_constraints(
+            let satisfies = self.crossing_route_satisfies_partner_constraints(
                 net_id,
+                &result,
                 partner_ids,
                 &crossing_events,
             );
@@ -4407,6 +4580,9 @@ impl PyPhotonicRouter {
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
     ) -> Result<(), String> {
+        if rust_crossing_level2_validation_disabled() {
+            return Ok(());
+        }
         let violations = self.crossing_violations_for_route_with_ports(
             net_id,
             route,
@@ -4447,7 +4623,7 @@ impl PyPhotonicRouter {
         if !self.crossing_context.is_enabled() {
             return;
         }
-        let partner_ids = self.crossing_allowed_partner_set(net_id);
+        let partner_ids = self.crossing_partner_lookup_set_for_result(net_id, route);
         if partner_ids.is_empty() {
             return;
         }
@@ -4773,13 +4949,18 @@ impl PyPhotonicRouter {
             target_state,
         );
         let opened_search_ref = opened_search_owned.as_ref().unwrap_or(opened_ref);
-        let expected_crossing_partner_ids = self.crossing_allowed_partner_set(net_id);
+        let expected_crossing_partner_ids =
+            if self.crossing_context.config().allow_only_expected_pairs {
+                self.crossing_allowed_partner_set(net_id)
+            } else {
+                FxHashSet::default()
+            };
         let require_crossing_compliant_route = self.crossing_context.is_enabled()
             && !self.use_collision_crossing_routing
             && self.crossing_context.config().allow_only_expected_pairs
             && !expected_crossing_partner_ids.is_empty();
         let collision_partner_ids = if self.use_collision_crossing_routing {
-            self.crossing_allowed_partner_set(net_id)
+            self.crossing_partner_lookup_set_for_route(net_id, source_state, target_state)
         } else {
             FxHashSet::default()
         };
@@ -4799,7 +4980,7 @@ impl PyPhotonicRouter {
                 target_port_um,
                 Some(&validation_opened_cell_keys),
             )?
-        } else {
+        } else if self.crossing_context.config().allow_only_expected_pairs {
             self.try_route_through_expected_crossing_partner(
                 net_id,
                 source_state,
@@ -4809,6 +4990,8 @@ impl PyPhotonicRouter {
                 block_radius_cells,
                 dynamic_clearance_exempt_keys,
             )
+        } else {
+            None
         };
         if let Some((mut crossing_result, crossing_events)) = crossing_attempt {
             let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
@@ -5217,13 +5400,18 @@ impl PyPhotonicRouter {
             target_state,
         );
         let opened_search_ref = opened_search_owned.as_ref().unwrap_or(opened_ref);
-        let expected_crossing_partner_ids = self.crossing_allowed_partner_set(net_id);
+        let expected_crossing_partner_ids =
+            if self.crossing_context.config().allow_only_expected_pairs {
+                self.crossing_allowed_partner_set(net_id)
+            } else {
+                FxHashSet::default()
+            };
         let require_crossing_compliant_route = self.crossing_context.is_enabled()
             && !self.use_collision_crossing_routing
             && self.crossing_context.config().allow_only_expected_pairs
             && !expected_crossing_partner_ids.is_empty();
         let collision_partner_ids = if self.use_collision_crossing_routing {
-            self.crossing_allowed_partner_set(net_id)
+            self.crossing_partner_lookup_set_for_route(net_id, source_state, target_state)
         } else {
             FxHashSet::default()
         };
@@ -5243,7 +5431,7 @@ impl PyPhotonicRouter {
                 target_port_um,
                 Some(&validation_opened_cell_keys),
             )?
-        } else {
+        } else if self.crossing_context.config().allow_only_expected_pairs {
             self.try_route_through_expected_crossing_partner(
                 net_id,
                 source_state,
@@ -5253,6 +5441,8 @@ impl PyPhotonicRouter {
                 block_radius_cells,
                 dynamic_clearance_exempt_keys,
             )
+        } else {
+            None
         };
         if let Some((mut crossing_result, crossing_events)) = crossing_attempt {
             let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
@@ -7719,6 +7909,138 @@ impl PyPhotonicRouter {
                 }
             }
 
+            if self.lidar_pure_crossing_enabled() && self.use_collision_crossing_routing {
+                let source_state = State::new(job.source.x, job.source.y, job.source.angle);
+                let target_state = State::new(job.target.x, job.target.y, job.target.angle);
+                let mut local_partner_ids =
+                    self.crossing_partner_lookup_set_for_route(job.net_id, source_state, target_state);
+                local_partner_ids.retain(|partner_id| final_routes.contains_key(partner_id));
+                if !local_partner_ids.is_empty() {
+                    let mut local_partner_vec: Vec<u64> =
+                        local_partner_ids.iter().copied().collect();
+                    local_partner_vec.sort_unstable_by_key(|owner| {
+                        order_by_id.get(owner).copied().unwrap_or(usize::MAX)
+                    });
+                    let opened_search_owned = self.opened_cells_without_dynamic_overlap(
+                        &job.opened_cell_keys,
+                        source_state,
+                        target_state,
+                    );
+                    let opened_search_ref =
+                        opened_search_owned.as_ref().unwrap_or(&job.opened_cell_keys);
+                    let dynamic_clearance_exempt_keys = if block_radius_cells > 0
+                        && !job.clearance_exempt_cells.is_empty()
+                    {
+                        Some(&job.clearance_exempt_cell_keys)
+                    } else {
+                        None
+                    };
+                    let mut subset_cfg = self
+                        .astar_config(None, None, None)
+                        .map_err(PyRuntimeError::new_err)?;
+                    subset_cfg.require_terminal_straights = true;
+                    for partner_id in local_partner_vec {
+                        let mut subset_partner_ids = FxHashSet::default();
+                        subset_partner_ids.insert(partner_id);
+                        let subset_start = native_batch_timer(collect_native_timing);
+                        let subset_result = self
+                            .try_route_with_collision_crossings(
+                                job.net_id,
+                                source_state,
+                                target_state,
+                                opened_search_ref,
+                                &subset_cfg,
+                                block_radius_cells,
+                                dynamic_clearance_exempt_keys,
+                                &subset_partner_ids,
+                                job.source_port_um,
+                                job.target_port_um,
+                                Some(&job.opened_cell_keys),
+                            )
+                            .map_err(PyRuntimeError::new_err)?;
+                        let subset_elapsed_us = native_batch_elapsed_us(subset_start);
+                        timings.repair_failed_net_wall_us += subset_elapsed_us;
+                        let Some((route, crossing_events)) = subset_result else {
+                            continue;
+                        };
+                        let crossed_partner_ids =
+                            Self::crossing_partner_ids_from_events(&crossing_events);
+                        if crossed_partner_ids.is_empty() {
+                            continue;
+                        }
+                        let crossed_partner_vec: Vec<u64> =
+                            crossed_partner_ids.iter().copied().collect();
+                        match self.commit_native_route_with_clearance_allowing_core_overlap(
+                            job.net_id,
+                            &route,
+                            block_radius_cells,
+                            commit_radius_cells,
+                            &job.clearance_exempt_cells,
+                            core_radius_cells,
+                            job.source_port_um,
+                            job.target_port_um,
+                            Some(&job.opened_cell_keys),
+                            &crossed_partner_vec,
+                            true,
+                        ) {
+                            Ok(true) => {
+                                timings.add_route_result_stats_if(collect_native_timing, &route);
+                                if trace_native_repair {
+                                    eprintln!(
+                                        "native_repair_lidar_direct_crossing net={} crossed={:?}",
+                                        job.net_id, crossed_partner_vec
+                                    );
+                                }
+                                attempts.push(NativeRouteAttempt {
+                                    bucket_name: "lidar_direct_crossing",
+                                    net_id: job.net_id,
+                                    route: Some(route.clone()),
+                                    failed: false,
+                                    error: None,
+                                    repair_round: None,
+                                    candidate_blockers: Vec::new(),
+                                    ripup_ids: Vec::new(),
+                                });
+                                final_routes.insert(job.net_id, route);
+                                continue 'route_jobs;
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                if trace_native_repair {
+                                    eprintln!(
+                                        "native_repair_lidar_direct_crossing_commit_failed net={} partner={} error={}",
+                                        job.net_id, partner_id, error
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if self.lidar_pure_crossing_enabled() && self.use_collision_crossing_routing {
+                let error = "No legal LiDAR crossing route found; probe-based victim selection is disabled in crossing mode".to_string();
+                if trace_native_repair {
+                    eprintln!(
+                        "native_repair_lidar_no_probe_victim_selection net={} error={}",
+                        job.net_id, error
+                    );
+                }
+                attempts.push(NativeRouteAttempt {
+                    bucket_name: "lidar_crossing_no_probe",
+                    net_id: job.net_id,
+                    route: None,
+                    failed: true,
+                    error: Some(error.clone()),
+                    repair_round: None,
+                    candidate_blockers: Vec::new(),
+                    ripup_ids: Vec::new(),
+                });
+                failed_net_id = Some(job.net_id);
+                failed_error = Some(error);
+                break;
+            }
+
             let probe_start = native_batch_timer(collect_native_timing);
             let probe_result = self.route_single_net_ignore_dynamic_native(
                 job.source,
@@ -7777,11 +8099,20 @@ impl PyPhotonicRouter {
                     .or_insert(priority);
             };
             let crossing_repair_enabled = self.crossing_context.is_enabled();
-            let allowed_crossing_partners: FxHashSet<u64> = if crossing_repair_enabled {
+            let allowed_crossing_partners: FxHashSet<u64> = if crossing_repair_enabled
+                && self.crossing_context.config().allow_only_expected_pairs
+            {
                 self.crossing_allowed_partner_set(job.net_id)
                     .into_iter()
                     .filter(|partner_id| final_routes.contains_key(partner_id))
                     .collect()
+            } else if crossing_repair_enabled && self.lidar_pure_crossing_enabled() {
+                self.lidar_probe_partner_lookup_set(
+                    job.net_id,
+                    &probe_route,
+                    owner_lookup_radius_cells,
+                    &final_routes,
+                )
             } else {
                 FxHashSet::default()
             };
@@ -8874,7 +9205,11 @@ impl PyPhotonicRouter {
                                     }
                                 }
                                 let collision_partner_ids =
-                                    self.crossing_allowed_partner_set(victim_job.net_id);
+                                    self.crossing_partner_lookup_set_for_route(
+                                        victim_job.net_id,
+                                        victim_source_state,
+                                        victim_target_state,
+                                    );
                                 lidar_crossing_partners_available =
                                     !collision_partner_ids.is_empty();
                                 if guided_victim_route.is_none()

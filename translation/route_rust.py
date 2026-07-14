@@ -4657,6 +4657,93 @@ def route_nets_rust(
             endpoint_port_specs_by_instance.setdefault(inst2, set()).add(port2_spec)
     _record_pipeline_timing("route_job_build", t_route_job_build_start)
 
+    def _dense_source_port_runway_lengths(
+        jobs: list[RouteJob],
+    ) -> dict[str, int]:
+        """Reserve staggered source-port access in dense MMI fanout runs."""
+
+        def should_reserve_source_run(instance_name: str) -> bool:
+            if len(endpoint_port_specs_by_instance.get(instance_name, set())) <= 2:
+                return False
+            if "multiport" not in instance_name.lower():
+                return False
+            component_name = _schematic_instance_component_name(schematic, instance_name)
+            return component_name is not None and "mmi" in component_name.lower()
+
+        lengths_by_spec: dict[str, int] = {}
+        index = 0
+        while index < len(jobs):
+            job = jobs[index]
+            if not should_reserve_source_run(job.inst1):
+                index += 1
+                continue
+            run_end = index + 1
+            while (
+                run_end < len(jobs)
+                and jobs[run_end].inst1 == job.inst1
+                and should_reserve_source_run(jobs[run_end].inst1)
+            ):
+                run_end += 1
+
+            run = jobs[index:run_end]
+            by_angle: dict[int, list[RouteJob]] = {}
+            for run_job in run:
+                angle = _orientation_to_angle(
+                    getattr(run_job.source_port, "orientation", None),
+                    flip=False,
+                )
+                by_angle.setdefault(angle, []).append(run_job)
+
+            for angle, angle_jobs in by_angle.items():
+                if len(angle_jobs) <= 2:
+                    continue
+                step_x, step_y = _angle_to_step(angle)
+                lateral_x, lateral_y = -step_y, step_x
+
+                def lateral_position(run_job: RouteJob) -> float:
+                    center = _port_center_um(run_job.source_port)
+                    if center is None:
+                        return float(run_job.route_index)
+                    return float(center[0]) * lateral_x + float(center[1]) * lateral_y
+
+                ordered = sorted(
+                    angle_jobs,
+                    key=lambda run_job: (lateral_position(run_job), int(run_job.route_index)),
+                )
+                count = len(ordered)
+                for port_index, run_job in enumerate(ordered):
+                    port_spec = f"{run_job.inst1},{run_job.port1}"
+                    lengths_by_spec[port_spec] = 3 + 3 * (count - 1 - port_index)
+
+            index = run_end
+        return lengths_by_spec
+
+    dense_source_port_runway_length_by_spec = _dense_source_port_runway_lengths(route_jobs)
+    dense_source_cluster_specs_by_port_spec: dict[str, set[str]] = {}
+    index = 0
+    while index < len(route_jobs):
+        job = route_jobs[index]
+        if f"{job.inst1},{job.port1}" not in dense_source_port_runway_length_by_spec:
+            index += 1
+            continue
+        run_end = index + 1
+        while (
+            run_end < len(route_jobs)
+            and route_jobs[run_end].inst1 == job.inst1
+            and f"{route_jobs[run_end].inst1},{route_jobs[run_end].port1}"
+            in dense_source_port_runway_length_by_spec
+        ):
+            run_end += 1
+        cluster_specs = {
+            f"{run_job.inst1},{run_job.port1}"
+            for run_job in route_jobs[index:run_end]
+            if f"{run_job.inst1},{run_job.port1}" in dense_source_port_runway_length_by_spec
+        }
+        if len(cluster_specs) > 1:
+            for port_spec in cluster_specs:
+                dense_source_cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
+        index = run_end
+
     t_crossing_context_start = _pipeline_timer_start()
     crossing_plan_info = _build_crossing_plan_info(
         rust_backend=rust_backend,
@@ -4737,28 +4824,53 @@ def route_nets_rust(
 
     raw_static_cells_for_openings = sorted(raw_static_cells)
     t_port_opening_batch_start = _pipeline_timer_start()
-    for port_spec, cells, candidate_cells, runway_cells in router.build_route_port_openings(
-        port_opening_inputs,
-        raw_static_cells=raw_static_cells_for_openings,
-        raw_static_rects=raw_static_rects_for_openings,
-        route_clearance_um=float(route_clearance_um),
-        port_open_radius_um=float(port_open_radius_um),
-        bend_radius_cells=int(bend_radius_cells),
-        commit_radius_cells=int(commit_radius_cells),
-        port_entry_length_cells=int(port_entry_length_cells),
-        port_entry_half_width_cells=int(port_entry_half_width_cells),
-        port_lane_length_cells=int(port_lane_length_cells),
-        port_lane_half_width_cells=int(port_lane_half_width_cells),
-    ):
-        port_access_cells_by_spec[str(port_spec)] = {
-            (int(cell[0]), int(cell[1])) for cell in cells
-        }
-        port_access_candidate_cells_by_spec[str(port_spec)] = {
-            (int(cell[0]), int(cell[1])) for cell in candidate_cells
-        }
-        port_runway_cells_by_spec[str(port_spec)] = {
-            (int(cell[0]), int(cell[1])) for cell in runway_cells
-        }
+    default_runway_length_cells = int(bend_radius_cells) + 1
+    port_opening_groups: dict[
+        tuple[int, bool],
+        list[tuple[str, float, float, float | None, str | None, float | None, float | None]],
+    ] = {}
+    for item in port_opening_inputs:
+        port_spec = str(item[0])
+        custom_runway_length = dense_source_port_runway_length_by_spec.get(port_spec)
+        if custom_runway_length is None:
+            group_key = (default_runway_length_cells, False)
+        else:
+            group_key = (max(1, int(custom_runway_length)), True)
+        port_opening_groups.setdefault(group_key, []).append(item)
+
+    for (runway_length_cells, custom_dense_runway), grouped_inputs in port_opening_groups.items():
+        grouped_port_entry_length_cells = (
+            min(int(port_entry_length_cells), int(runway_length_cells))
+            if custom_dense_runway
+            else int(port_entry_length_cells)
+        )
+        grouped_port_lane_length_cells = (
+            int(runway_length_cells)
+            if custom_dense_runway
+            else int(port_lane_length_cells)
+        )
+        for port_spec, cells, candidate_cells, runway_cells in router.build_route_port_openings(
+            grouped_inputs,
+            raw_static_cells=raw_static_cells_for_openings,
+            raw_static_rects=raw_static_rects_for_openings,
+            route_clearance_um=float(route_clearance_um),
+            port_open_radius_um=float(port_open_radius_um),
+            bend_radius_cells=max(0, int(runway_length_cells) - 1),
+            commit_radius_cells=int(commit_radius_cells),
+            port_entry_length_cells=grouped_port_entry_length_cells,
+            port_entry_half_width_cells=int(port_entry_half_width_cells),
+            port_lane_length_cells=grouped_port_lane_length_cells,
+            port_lane_half_width_cells=int(port_lane_half_width_cells),
+        ):
+            port_access_cells_by_spec[str(port_spec)] = {
+                (int(cell[0]), int(cell[1])) for cell in cells
+            }
+            port_access_candidate_cells_by_spec[str(port_spec)] = {
+                (int(cell[0]), int(cell[1])) for cell in candidate_cells
+            }
+            port_runway_cells_by_spec[str(port_spec)] = {
+                (int(cell[0]), int(cell[1])) for cell in runway_cells
+            }
     _record_pipeline_timing("port_opening_batch", t_port_opening_batch_start)
 
     foreign_port_keepout_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
@@ -4768,18 +4880,20 @@ def route_nets_rust(
         t_foreign_keepout_start = _pipeline_timer_start()
         foreign_length_cells = int(foreign_port_keepout_cells)
         foreign_half_width_cells = int(foreign_port_keepout_cells)
-        for port_spec, _cells, _candidate_cells, runway_cells in router.build_route_port_openings(
-            port_opening_inputs,
-            raw_static_cells=raw_static_cells_for_openings,
-            raw_static_rects=raw_static_rects_for_openings,
-            route_clearance_um=float(route_clearance_um),
-            port_open_radius_um=float(port_open_radius_um),
-            bend_radius_cells=max(0, foreign_length_cells - 1),
-            commit_radius_cells=foreign_half_width_cells,
-            port_entry_length_cells=int(port_entry_length_cells),
-            port_entry_half_width_cells=int(port_entry_half_width_cells),
-            port_lane_length_cells=int(port_lane_length_cells),
-            port_lane_half_width_cells=int(port_lane_half_width_cells),
+        for port_spec, _cells, _candidate_cells, runway_cells in (
+            router.build_route_port_openings(
+                port_opening_inputs,
+                raw_static_cells=raw_static_cells_for_openings,
+                raw_static_rects=raw_static_rects_for_openings,
+                route_clearance_um=float(route_clearance_um),
+                port_open_radius_um=float(port_open_radius_um),
+                bend_radius_cells=max(0, foreign_length_cells - 1),
+                commit_radius_cells=foreign_half_width_cells,
+                port_entry_length_cells=int(port_entry_length_cells),
+                port_entry_half_width_cells=int(port_entry_half_width_cells),
+                port_lane_length_cells=int(port_lane_length_cells),
+                port_lane_half_width_cells=int(port_lane_half_width_cells),
+            )
         ):
             instance_name = str(port_spec).split(",", 1)[0]
             cells_for_spec = {(int(cell[0]), int(cell[1])) for cell in runway_cells}
@@ -4893,6 +5007,22 @@ def route_nets_rust(
         return _filter_dense_port_opening(
             port_spec,
             set(cells_by_spec.get(port_spec, set())),
+        )
+
+    normal_port_runway_cells: set[tuple[int, int]] = set()
+    for cells in port_runway_cells_by_spec.values():
+        normal_port_runway_cells.update(cells)
+
+    def _foreign_keepout_open_cells_for_spec(port_spec: str) -> set[tuple[int, int]]:
+        cluster_specs = dense_source_cluster_specs_by_port_spec.get(port_spec)
+        if cluster_specs:
+            cells: set[tuple[int, int]] = set()
+            for cluster_port_spec in cluster_specs:
+                cells.update(foreign_port_keepout_cells_by_spec.get(cluster_port_spec, set()))
+            return cells - normal_port_runway_cells
+        return (
+            _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port_spec)
+            - normal_port_runway_cells
         )
 
     def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
@@ -5253,10 +5383,10 @@ def route_nets_rust(
         source_anchor_cell = (int(source_state.x), int(source_state.y))
         target_anchor_cell = (int(target_state.x), int(target_state.y))
         endpoint_foreign_keepout_open_cells = set(
-            _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port1_spec)
+            _foreign_keepout_open_cells_for_spec(port1_spec)
         )
         endpoint_foreign_keepout_open_cells.update(
-            _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port2_spec)
+            _foreign_keepout_open_cells_for_spec(port2_spec)
         )
         opened_candidate_cells = set(
             _opened_cells_for_spec(port_access_candidate_cells_by_spec, port1_spec)
@@ -5661,10 +5791,10 @@ def route_nets_rust(
         route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
         route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
         current_endpoint_foreign_keepout_cells = set(
-            _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port1_spec)
+            _foreign_keepout_open_cells_for_spec(port1_spec)
         )
         current_endpoint_foreign_keepout_cells.update(
-            _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port2_spec)
+            _foreign_keepout_open_cells_for_spec(port2_spec)
         )
         foreign_keepout_open_cells = current_endpoint_foreign_keepout_cells & opened_cells_set
         route_segments: list[str] = []
@@ -5693,6 +5823,14 @@ def route_nets_rust(
             f"source_access_rule={port_access_rule_by_spec.get(port1_spec)}",
             f"target_access_rule={port_access_rule_by_spec.get(port2_spec)}",
             f"foreign_port_keepout_cells={int(foreign_port_keepout_cells)}",
+            "source_dense_port_runway_cells="
+            f"{dense_source_port_runway_length_by_spec.get(port1_spec)}",
+            "target_dense_port_runway_cells="
+            f"{dense_source_port_runway_length_by_spec.get(port2_spec)}",
+            "source_dense_source_cluster_size="
+            f"{len(dense_source_cluster_specs_by_port_spec.get(port1_spec, set()))}",
+            "target_dense_source_cluster_size="
+            f"{len(dense_source_cluster_specs_by_port_spec.get(port2_spec, set()))}",
             f"foreign_port_keepout_static_count={len(foreign_port_keepout_static_cells)}",
             f"foreign_port_keepout_open_count={len(foreign_keepout_open_cells)}",
             f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
