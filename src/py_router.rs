@@ -38,7 +38,6 @@ use crate::geometry_realization::{
     realize_route_polygon_with_endpoint_correction as realize_route_polygon_with_endpoint_correction_rs,
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     route_to_grid_path as route_to_grid_path_rs,
-    route_to_grid_locked_port_centerline as route_to_grid_locked_port_centerline_rs,
     route_to_port_corrected_centerline_with_options as route_to_port_corrected_centerline_with_options_rs,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
     splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
@@ -2861,10 +2860,8 @@ impl PyPhotonicRouter {
         if partner_ids.is_empty() || !self.crossing_context.is_enabled() {
             return Vec::new();
         }
-        let route_centerline = self
-            .endpoint_corrected_centerline_for_route(route, source_port_um, target_port_um)
-            .map(Ok)
-            .unwrap_or_else(|| self.realized_centerline_for_route(route));
+        let route_centerline =
+            self.routing_centerline_for_route(route, source_port_um, target_port_um);
         let Ok(route_centerline) = route_centerline else {
             return self.crossing_events_for_route(net_id, route, partner_ids);
         };
@@ -3996,22 +3993,10 @@ impl PyPhotonicRouter {
     fn route_dynamic_center_cells(
         &self,
         route: &RouteResult,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
+        _source_port_um: Option<(f64, f64)>,
+        _target_port_um: Option<(f64, f64)>,
     ) -> Vec<(i32, i32)> {
-        let centerline = self
-            .endpoint_corrected_centerline_for_route(route, source_port_um, target_port_um)
-            .map(Ok)
-            .unwrap_or_else(|| self.realized_centerline_for_route(route));
-        if let Ok(centerline) = centerline {
-            let static_grid = static_grid_from_py_grid(&self.grid);
-            if let Ok(cells) = centerline_core_cells(&centerline, self.grid.grid_size_um, &static_grid) {
-                if !cells.is_empty() {
-                    return unique_cells(cells);
-                }
-            }
-        }
-        route.cells.clone()
+        self.route_obstacle_center_cells(route)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4081,35 +4066,13 @@ impl PyPhotonicRouter {
         }
     }
 
-    fn endpoint_corrected_centerline_for_route(
+    fn routing_centerline_for_route(
         &self,
         route: &RouteResult,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-    ) -> Option<Vec<(f64, f64)>> {
-        if source_port_um.is_none() && target_port_um.is_none() {
-            return None;
-        }
-        let grid = self.geometry_grid().ok()?;
-        let centerline = if self.crossing_context.is_enabled() {
-            route_to_grid_locked_port_centerline_rs(
-                route,
-                &self.primitives,
-                &grid,
-                source_port_um,
-                target_port_um,
-            )
-        } else {
-            route_to_port_corrected_centerline_with_options_rs(
-                route,
-                &self.primitives,
-                &grid,
-                source_port_um,
-                target_port_um,
-                !self.primitive_cfg.allow_45_degree_turns,
-            )
-        };
-        centerline.ok().map(compress_physical_centerline)
+        _source_port_um: Option<(f64, f64)>,
+        _target_port_um: Option<(f64, f64)>,
+    ) -> Result<Vec<(f64, f64)>, String> {
+        self.realized_centerline_for_route(route)
     }
 
     fn remember_committed_route_centerlines_with_ports(
@@ -4119,10 +4082,7 @@ impl PyPhotonicRouter {
         source_port_um: Option<(f64, f64)>,
         target_port_um: Option<(f64, f64)>,
     ) -> Result<(), String> {
-        let centerline = self
-            .endpoint_corrected_centerline_for_route(route, source_port_um, target_port_um)
-            .map(Ok)
-            .unwrap_or_else(|| self.realized_centerline_for_route(route))?;
+        let centerline = self.routing_centerline_for_route(route, source_port_um, target_port_um)?;
         let grid_path = self.route_obstacle_center_cells(route);
         let grid_waypoints = compress_grid_waypoints_rs(&grid_path);
         self.committed_center_routes
@@ -4153,10 +4113,8 @@ impl PyPhotonicRouter {
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
     ) -> Vec<InvalidCrossingIntersection> {
-        let route_centerline = self
-            .endpoint_corrected_centerline_for_route(route, source_port_um, target_port_um)
-            .map(Ok)
-            .unwrap_or_else(|| self.realized_centerline_for_route(route));
+        let route_centerline =
+            self.routing_centerline_for_route(route, source_port_um, target_port_um);
         let Ok(route_centerline) = route_centerline else {
             return Vec::new();
         };

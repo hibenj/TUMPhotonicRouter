@@ -3083,3 +3083,38 @@ Focused `n_34` / `n_31` trace after rebuilding the current clean source:
   `insufficient_straight_margin`.
 - The temporary per-partner diagnostic hook was removed before committing; it
   was only used to derive the numbers above.
+
+Endpoint-correction boundary correction after user review:
+
+- User clarified the intended invariant: endpoint correction is not part of the
+  routing/search model. It must not influence A* crossing search, dynamic
+  blocker commitment, victim/ripup decisions, native crossing event extraction,
+  or internal crossing validation. It belongs after routing is complete, where
+  Python can splice the terminal port-correction geometry into the final GDS
+  realization.
+- Updated `src/py_router.rs` accordingly:
+  - `route_dynamic_center_cells` now commits dynamic/blocker cells from the
+    primitive/grid obstacle center cells instead of endpoint-corrected physical
+    centerlines.
+  - `routing_centerline_for_route` now returns the primitive realized centerline
+    for all internal routing validation/commit users.
+  - `realized_crossing_events_for_route`,
+    `remember_committed_route_centerlines_with_ports`, and
+    `crossing_violations_for_route_with_ports` therefore no longer see
+    endpoint-corrected routes during routing.
+- The post-routing endpoint-correction API remains available through
+  `route_port_corrected_centerline` and is still called from Python realization
+  after route records exist.
+- Validation for this boundary fix:
+  - `cargo +stable-x86_64-pc-windows-gnullvm check` passed with `rust-lld` and
+    project `.venv` Python configured.
+  - `.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --debug-stop-after-route 34 --debug-svgs false
+    --debug-timing false --attempt-diagnostics` passed in about `14.8 s`.
+    The resulting partial verification JSON reports `status=partial_debug_stop`
+    with `error_count=0` and no listed crossing or photonic violations.
+- Important: the goal is no longer to force the pre-commit GDS topology. The
+  correct invariant is that routing decisions are made against the same
+  primitive/realized routing model, while endpoint correction is a final
+  realization step only.
