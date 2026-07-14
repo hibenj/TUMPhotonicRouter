@@ -1437,6 +1437,59 @@ Validation:
     cargo fmt was attempted but could not run because `rustfmt` is not
     installed for the local Windows Rust toolchains.
 
+Follow-up, 2026-07-14: Added symmetric diagonal halo collision detection.
+
+User clarification:
+
+    - A one-cell diagonal cannot only reserve/detect the previously implemented
+      single adjacent lane. It needs a compact adjacent lane on both sides.
+    - The purpose is Layer-1 collision detection only. If A* detects such a
+      collision, the normal crossing legality logic still decides whether the
+      move is legal, illegal, or should be rejected as non-perpendicular.
+
+Fix:
+
+    - Updated `compact_diagonal_halo_cells` in `src/astar.rs` to return both
+      compact adjacent lanes for each diagonal unit step.
+    - Added regression
+      `crossing_move_rejects_parallel_diagonal_on_mirrored_halo_side`.
+      The test commits one diagonal, attempts to place a parallel one-cell-
+      offset diagonal on the previously unprotected side, and expects A* to
+      reject it as `crossing_reject_not_perpendicular` instead of treating it
+      as free space.
+
+Validation:
+
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER='rust-lld'
+    $env:RUSTUP_TOOLCHAIN='stable-x86_64-pc-windows-gnullvm'
+    $env:PYO3_PYTHON=(Join-Path (Get-Location) '.venv\Scripts\python.exe')
+    C:\Users\benja\.cargo\bin\cargo.exe check --target x86_64-pc-windows-gnullvm
+    # passed
+
+    C:\Users\benja\.cargo\bin\cargo.exe test --target x86_64-pc-windows-gnullvm --no-run crossing_move_rejects_parallel_diagonal_on_mirrored_halo_side
+    # passed compile/no-run
+
+    .\.venv\Scripts\python.exe -m maturin develop --release
+    # passed
+
+    .\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 35 --debug-svgs false --debug-timing false --attempt-diagnostics
+    # passed; clean through n_34
+
+    $env:PHOTONIC_ROUTER_TRACE_CROSSING_NET='36'
+    $env:PHOTONIC_ROUTER_TRACE_PARTNER_NET='33'
+    .\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 36 --debug-svgs false --debug-timing false --attempt-diagnostics
+    # still hard-fails as intended with realized crossing validation mismatch
+
+Remaining observation:
+
+    - The symmetric halo is correct and covered, but it does not by itself solve
+      the current `n_35` x `n_32` hard-fail.
+    - Reconstructing the traced candidate shows a direct grid centerline
+      interaction near `(738,143)` between the candidate `n_35` route and the
+      committed `n_32` centerline. The next implementation step should inspect
+      direct crossing event extraction and grid-vs-realized margin consistency,
+      not endpoint correction.
+
 Follow-up, 2026-07-14: Established the low-level Layer-1 crossing invariant for
 the `n_31`/`n_32` cluster.
 

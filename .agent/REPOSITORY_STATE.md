@@ -3312,3 +3312,40 @@ Hard-stop realized crossing validation checkpoint:
 - `cargo fmt` could not run because `rustfmt` is not installed for the local
   Windows Rust toolchains (`stable-x86_64-pc-windows-msvc` and
   `stable-x86_64-pc-windows-gnullvm`).
+
+Symmetric diagonal halo checkpoint:
+
+- Date: 2026-07-14
+- Branch: `crossings/verification-foundation`
+- User clarification: one-cell diagonal route pieces need a compact halo on
+  both sides of the diagonal, not only the previously implemented red-lane side.
+  The halo is only for Layer-1 collision recognition. It does not by itself
+  make a crossing legal; after detection A* must still evaluate normal crossing
+  legality.
+- Code change: `src/astar.rs::compact_diagonal_halo_cells` now returns both
+  adjacent compact lanes for each diagonal unit step:
+  `(start.x + dx, start.y)`, `(end.x + dx, end.y)`, `(start.x, start.y + dy)`,
+  and `(end.x, end.y + dy)`.
+- Regression: added
+  `crossing_move_rejects_parallel_diagonal_on_mirrored_halo_side`, covering a
+  parallel one-cell-offset diagonal contact on the mirrored side that the
+  previous one-sided halo missed. The expected behavior is rejection as a
+  non-perpendicular crossing candidate, not acceptance as free space.
+- Validation performed:
+  - `cargo check --target x86_64-pc-windows-gnullvm` passed.
+  - `cargo test --target x86_64-pc-windows-gnullvm --no-run
+    crossing_move_rejects_parallel_diagonal_on_mirrored_halo_side` passed,
+    compiling the regression without executing the Windows test binary.
+  - `.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --debug-stop-after-route 35 --debug-svgs false
+    --debug-timing false --attempt-diagnostics` passed, preserving the clean
+    state through `n_34`.
+  - `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --debug-stop-after-route 36 --debug-svgs false
+    --debug-timing false --attempt-diagnostics` still hard-fails as intended
+    with a realized crossing validation mismatch. Follow-up analysis showed the
+    remaining `n_35` x `n_32` case is not solved by symmetric halo alone: the
+    traced candidate has a direct grid centerline interaction with the committed
+    `n_32` centerline, so the next fix should inspect direct crossing event
+    extraction / margin consistency rather than endpoint correction.

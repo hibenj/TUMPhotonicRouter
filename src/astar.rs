@@ -4268,11 +4268,13 @@ fn compact_diagonal_halo_cells(
     start: (i32, i32),
     end: (i32, i32),
     dx: i32,
-    _dy: i32,
+    dy: i32,
 ) -> Vec<(i32, i32)> {
-    let mut cells = Vec::with_capacity(2);
+    let mut cells = Vec::with_capacity(4);
     push_unique_cell(&mut cells, (start.0 + dx, start.1));
     push_unique_cell(&mut cells, (end.0 + dx, end.1));
+    push_unique_cell(&mut cells, (start.0, start.1 + dy));
+    push_unique_cell(&mut cells, (end.0, end.1 + dy));
     cells
 }
 
@@ -7444,6 +7446,71 @@ mod tests {
         assert!(rejected.is_none());
         assert_eq!(rejected_stats.crossing_accepted, 0);
         assert_eq!(rejected_stats.crossing_reject_margin, 1);
+    }
+
+    #[test]
+    fn crossing_move_rejects_parallel_diagonal_on_mirrored_halo_side() {
+        let mut map = ObstacleMap::new(800, 300);
+        let partner_waypoints = vec![(740, 144), (738, 142)];
+        let partner_cells = rasterize_waypoints_for_test(&partner_waypoints);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            32,
+            &partner_cells,
+            &partner_cells,
+            &[],
+            &FxHashSet::default()
+        ));
+        let crossing = CrossingSearchConfig {
+            net_id: 33,
+            partners: vec![CrossingSearchPartner {
+                net_id: 32,
+                waypoints: partner_waypoints,
+            }],
+            min_straight_cells: 0,
+            crossing_half_size_cells: 0,
+            bend_runout_cells: 0,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = [(32, 0)].into_iter().collect();
+        let primitive = Primitive {
+            id: 0,
+            start_angle: 5,
+            end_angle: 5,
+            dx: -1,
+            dy: -1,
+            footprint: vec![(0, 0), (-1, -1)],
+            length_um: 2.0_f64.sqrt(),
+            bend_cost: 0.0,
+            geometry: PrimitiveGeometry::Straight {
+                length_um: 2.0_f64.sqrt(),
+            },
+        };
+
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(739, 144, 5),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 10,
+                pending_after_crossing_cells: 0,
+            },
+            State::new(739, 144, 5),
+            &primitive,
+            true,
+            0,
+            0,
+            0,
+            &partner_index_by_id,
+            &mut stats,
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(stats.crossing_accepted, 0);
+        assert_eq!(stats.crossing_reject_not_perpendicular, 1);
     }
 
     #[test]
