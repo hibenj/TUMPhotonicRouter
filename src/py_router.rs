@@ -3436,6 +3436,33 @@ impl PyPhotonicRouter {
                 || Self::crossing_events_cover_partners(crossing_events, partner_ids))
     }
 
+    fn invalid_grid_crossing_error_for_route(
+        &self,
+        net_id: u64,
+        route: &RouteResult,
+    ) -> Option<String> {
+        if !self.crossing_context.is_enabled() {
+            return None;
+        }
+        let partner_ids = self.crossing_allowed_partner_set(net_id);
+        if partner_ids.is_empty() {
+            return None;
+        }
+        let invalid = self.invalid_crossing_intersections_for_route(net_id, route, &partner_ids);
+        if invalid.is_empty() {
+            return None;
+        }
+        let violation = &invalid[0];
+        Some(format!(
+            "Illegal grid crossing: net {} intersects net {} at ({:.3}, {:.3}) ({})",
+            violation.net_id,
+            violation.partner_net_id,
+            violation.point.0,
+            violation.point.1,
+            violation.reason
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn try_route_with_collision_crossings(
         &self,
@@ -4367,7 +4394,13 @@ impl PyPhotonicRouter {
         self.invalidate_meander_base_prefix();
     }
 
-    fn register_geometric_crossing_events_for_route(&mut self, net_id: u64, route: &RouteResult) {
+    fn register_geometric_crossing_events_for_route(
+        &mut self,
+        net_id: u64,
+        route: &RouteResult,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) {
         if !self.crossing_context.is_enabled() {
             return;
         }
@@ -4375,7 +4408,16 @@ impl PyPhotonicRouter {
         if partner_ids.is_empty() {
             return;
         }
-        let crossing_events = self.crossing_events_for_route(net_id, route, &partner_ids);
+        let mut crossing_events = self.realized_crossing_events_for_route(
+            net_id,
+            route,
+            &partner_ids,
+            source_port_um,
+            target_port_um,
+        );
+        if crossing_events.is_empty() {
+            crossing_events = self.crossing_events_for_route(net_id, route, &partner_ids);
+        }
         if crossing_events.is_empty() {
             return;
         }
@@ -4871,7 +4913,12 @@ impl PyPhotonicRouter {
                 }
                 if committed {
                     self.remove_crossing_events_for_net(net_id);
-                    self.register_geometric_crossing_events_for_route(net_id, &result);
+                    self.register_geometric_crossing_events_for_route(
+                        net_id,
+                        &result,
+                        source_port_um,
+                        target_port_um,
+                    );
                     if collect_timing {
                         result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
                         result.stats.simple_route_time_us += simple_route_time_us;
@@ -4955,6 +5002,9 @@ impl PyPhotonicRouter {
             result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
             result.stats.simple_route_time_us += simple_route_time_us;
         }
+        if let Some(error) = self.invalid_grid_crossing_error_for_route(net_id, &result) {
+            return Err(error);
+        }
         let commit_prepare_start = if collect_timing {
             Some(Instant::now())
         } else {
@@ -5027,7 +5077,12 @@ impl PyPhotonicRouter {
             return Err(error);
         }
         self.remove_crossing_events_for_net(net_id);
-        self.register_geometric_crossing_events_for_route(net_id, &result);
+        self.register_geometric_crossing_events_for_route(
+            net_id,
+            &result,
+            source_port_um,
+            target_port_um,
+        );
         if let Err(error) = self.remember_committed_route_centerlines_with_ports(
             net_id,
             &result,
@@ -5273,6 +5328,9 @@ impl PyPhotonicRouter {
         if collect_timing {
             result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
         }
+        if let Some(error) = self.invalid_grid_crossing_error_for_route(net_id, &result) {
+            return Err(error);
+        }
         let commit_prepare_start = if collect_timing {
             Some(Instant::now())
         } else {
@@ -5312,7 +5370,12 @@ impl PyPhotonicRouter {
             ));
         }
         self.remove_crossing_events_for_net(net_id);
-        self.register_geometric_crossing_events_for_route(net_id, &result);
+        self.register_geometric_crossing_events_for_route(
+            net_id,
+            &result,
+            source_port_um,
+            target_port_um,
+        );
         if let Err(error) = self.remember_committed_route_centerlines_with_ports(
             net_id,
             &result,
@@ -5858,7 +5921,12 @@ impl PyPhotonicRouter {
             );
         if committed {
             self.remove_crossing_events_for_net(net_id);
-            self.register_geometric_crossing_events_for_route(net_id, route);
+            self.register_geometric_crossing_events_for_route(
+                net_id,
+                route,
+                source_port_um,
+                target_port_um,
+            );
             if self
                 .remember_committed_route_centerlines_with_ports(
                     net_id,
@@ -5921,7 +5989,12 @@ impl PyPhotonicRouter {
         );
         if committed {
             self.remove_crossing_events_for_net(net_id);
-            self.register_geometric_crossing_events_for_route(net_id, route);
+            self.register_geometric_crossing_events_for_route(
+                net_id,
+                route,
+                source_port_um,
+                target_port_um,
+            );
             if self
                 .remember_committed_route_centerlines_with_ports(
                     net_id,
@@ -6128,7 +6201,12 @@ impl PyPhotonicRouter {
                 ));
             }
             self.remove_crossing_events_for_net(net_id);
-            self.register_geometric_crossing_events_for_route(net_id, route);
+            self.register_geometric_crossing_events_for_route(
+                net_id,
+                route,
+                source_port_um,
+                target_port_um,
+            );
             if self
                 .remember_committed_route_centerlines_with_ports(
                     net_id,
@@ -6281,7 +6359,12 @@ impl PyPhotonicRouter {
                 &commit_clearance_exempt_cell_vec,
             ) {
                 self.remove_crossing_events_for_net(net_id);
-                self.register_geometric_crossing_events_for_route(net_id, route);
+                self.register_geometric_crossing_events_for_route(
+                    net_id,
+                    route,
+                    source_port_um,
+                    target_port_um,
+                );
                 if self
                     .remember_committed_route_centerlines_with_ports(
                         net_id,
@@ -6346,6 +6429,7 @@ impl PyPhotonicRouter {
             rejection_details.join("; ")
         ))
     }
+
 }
 
 #[pymethods]

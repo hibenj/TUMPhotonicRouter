@@ -5,7 +5,7 @@ every agent stop, pause, or handoff. It does not replace the active ExecPlan.
 
 ## Current Snapshot
 
-- Date: 2026-07-12 20:03Z
+- Date: 2026-07-14 09:52Z
 - Branch: `crossings/verification-foundation`
 - Current clean-branch base: `731d0a9`
 - Active ExecPlan:
@@ -120,6 +120,41 @@ Current Windows checkout note:
   so it was rolled back. The next implementation should preserve previous
   crossing partners as ordered topology anchors with bounded retry/acceptance
   before enabling it in the main repair loop.
+- Historical experiment, removed before the clean checkpoint: temporary debug
+  switches were briefly used to inspect what the GDS would look like if Rust
+  native realized crossing validation ("layer 2") and Python final GDS blocking
+  were disabled. The resulting intentionally invalid inspection GDS was
+  `build\routed_multiportmmi_8x8_layer2_off_python_off_after_n32.gds`, and the
+  verifier still reported an illegal `n_31 x n_32` crossing. These switches are
+  no longer present in the stable worktree because they conflict with the
+  fail-closed routing invariant.
+- Follow-up code audit: the exact hypothesis that A* omits bend radius from the
+  crossing margin is not confirmed. `src/astar.rs` computes
+  `crossing_required_margin_cells = crossing_half_size_cells + bend_runout_cells`,
+  and `src/py_router.rs` passes `bend_runout_cells = primitive_cfg.bend_radius_cells`
+  into the crossing search. The remaining layer-1 gap appears narrower: A*
+  checks centerline margin and external occupancy, but does not reject a crossing
+  when the current primitive's own bend footprint falls inside the crossing
+  footprint. That matches the debug GDS/report reason
+  `crossing_footprint_contains_bend`.
+- A focused inspection SVG for that intentionally invalid after-`n_32`
+  crossing was written to
+  `build\routes\multiportmmi_8x8_illegal_n31_n32_after_n32_cells.svg`. It
+  overlays the 2um grid, the 8um crossing footprint, and the 10um search margin
+  around the reported `n_31 x n_32` crossing center.
+- Crossing recognition fix: normal fallback routes now run the existing
+  grid-segment crossing legality check before commit. This catches
+  diagonal/offset segment intersections that do not share a dynamic obstacle
+  cell and rejects them as `Illegal grid crossing` instead of relying on later
+  realized validation. With the fix rebuilt, `multiportmmi_8x8
+  --debug-stop-after-route 33 --crossing-mode lidar-pure` passes with normal
+  validators enabled; crossing verification and photonic verification both
+  report `success=True`, `error_count=0`.
+- The same slice also updates native crossing-event registration to derive
+  events from realized centerlines first, falling back to grid waypoints only
+  when needed. The after-`n_32` run now reports
+  `native_crossing_event_count=1` for the `n_31 x n_32` diagonal/offset
+  crossing at `[1421.5, 685.125]`, with no illegal realized crossings.
 
 ## Current Audit Findings
 
@@ -3173,3 +3208,74 @@ Bend-runout crossing model fix:
     reports `required_straight_margin_cells_per_crossing = 5`,
     `realized_intersections = 2`, `illegal_realized = 0`, crossing
     verification `error_count = 0`, and photonic verification `error_count = 0`.
+
+Diagonal halo Layer-1 checkpoint:
+
+- Date: 2026-07-14
+- Branch: `crossings/verification-foundation`
+- Active user clarification: for diagonal primitive pieces, the temporary A*
+  collision halo should be a compact second diagonal lane next to the true
+  diagonal cells, matching the user's red/green sketch. It should not be a
+  broad four-sided neighborhood.
+- Current WIP in `src/astar.rs` changes `compact_diagonal_halo_cells` to
+  produce only the fixed adjacent lane cells for each diagonal unit step:
+  `start + (dx, 0)` and `end + (dx, 0)`. This is meant only for collision
+  recognition; true crossing validation still uses the real centerline
+  intersection and perpendicular/margin checks.
+- Temporary debug bypasses were removed before this checkpoint:
+  - no `PHOTONIC_ROUTER_DEBUG_ALLOW_INVALID_GDS` path remains in
+    `routing_flow.py` or `translation/route_rust.py`;
+  - no `PHOTONIC_ROUTER_DISABLE_REALIZED_CROSSING_VALIDATION*` path remains in
+    `src/py_router.rs`;
+  - the temporary `diagonal-halo` trace prints were removed from
+    `src/astar.rs`.
+- Standing invariant recorded in `.agent/WORKFLOW.md` and the active ExecPlan:
+  A* must make the primary legality decision for router-discovered crossings.
+  If A* accepts a crossing and Rust/Python verification later rejects it as
+  illegal, that is a blocking model mismatch, not a normal repair signal.
+  Rip-up/reroute is intended only after legal A* search cannot find a path.
+- Endpoint correction is explicitly post-routing. It must not influence A*
+  crossing search, dynamic blocker commitment, victim/rip-up decisions, native
+  crossing event extraction, or internal crossing validation.
+- Validation performed after this edit:
+  - `cargo check --target x86_64-pc-windows-gnullvm` with `rust-lld`, project
+    `.venv` Python, and the stable GNU LLVM toolchain passed.
+  - After removing debug bypasses/traces, `cargo check --target
+    x86_64-pc-windows-gnullvm` passed again.
+  - `cargo test --target x86_64-pc-windows-gnullvm --no-run
+    crossing_move_detects_offset_diagonal_halo_contact` passed, compiling the
+    Rust regression fixture without executing the Windows test binary.
+  - `.venv\Scripts\python.exe -m maturin develop --release` passed after the
+    cleanup.
+  - `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --debug-stop-after-route 33 --debug-svgs false
+    --debug-timing false --attempt-diagnostics` passed without trace/bypass
+    environment variables. Reports:
+    crossing verification `success=True`, `status=partial_debug_stop`,
+    `error_count=0`, `legal_crossing_count=1`,
+    `matched_crossing_component_count=1`; photonic verification `success=True`,
+    `error_count=0`.
+- Follow-up verification after rebuilding with `maturin develop --release`:
+  - `multiportmmi_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 33 --debug-svgs false --debug-timing false
+    --attempt-diagnostics` was run with
+    `PHOTONIC_ROUTER_TRACE_CROSSING_NET=33` and
+    `PHOTONIC_ROUTER_TRACE_PARTNER_NET=32`.
+  - The new diagonal halo does fire for the `n_32`/`n_31` offset diagonal
+    contacts. Example trace:
+    `diagonal-halo reject-margin net=33 partner=32 x=724.500 y=170.500
+    route_margin=0.500 partner_margin=12.021 required_margin=5`.
+  - This verifies that the compact red-lane halo detects the offset diagonal
+    collision and rejects the immediate illegal crossing move at Layer 1.
+  - Remaining behavior is still not converged: the first collision-crossing A*
+    attempt does not find an alternate legal branch before repair; the run
+    still reaches `native_repair_probe net=33 ... candidate_blockers=[32]`.
+- A focused Rust regression
+  `crossing_move_detects_offset_diagonal_halo_contact` was added and compiles,
+  but direct Rust test execution still fails in this Windows environment with
+  `STATUS_DLL_NOT_FOUND`, matching earlier test-run limitations.
+- Still pending:
+  - Continue route discovery/repair convergence from this invariant boundary.
+    It is acceptable for A* to fall into repair after it rejects illegal moves
+    and cannot find a legal route; the next task is improving convergence, not
+    accepting post-route illegal crossings.

@@ -3296,6 +3296,13 @@ struct CrossingRouteIntersection {
     bit: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiagonalHaloReject {
+    Margin,
+    NotPerpendicular,
+    Unmatched,
+}
+
 fn primitive_path_segments(state: State, primitive: &Primitive) -> Vec<PrimitivePathSegment> {
     let mut segments = Vec::new();
     let mut path_distance = 0.0;
@@ -3904,6 +3911,54 @@ fn crossing_move_outcome(
                         });
                     }
                 }
+                let halo_crossings = diagonal_halo_crossings_for_route_segment(
+                    obstacle_map,
+                    crossing.net_id,
+                    route_segment,
+                    partner,
+                    partner_idx,
+                    bit,
+                    current_key.straight_run_cells,
+                    required_margin,
+                );
+                let halo_crossings = match halo_crossings {
+                    Ok(intersections) => intersections,
+                    Err(DiagonalHaloReject::Margin) => {
+                        stats.crossing_reject_margin += 1;
+                        return None;
+                    }
+                    Err(DiagonalHaloReject::NotPerpendicular) => {
+                        stats.crossing_reject_not_perpendicular += 1;
+                        return None;
+                    }
+                    Err(DiagonalHaloReject::Unmatched) => {
+                        stats.crossing_reject_unmatched_centerline += 1;
+                        return None;
+                    }
+                };
+                for halo in halo_crossings {
+                    stats.crossing_candidate_checks += 1;
+                    if !crossing_reservation_window_is_clear(
+                        obstacle_map,
+                        crossing.net_id,
+                        partner.net_id,
+                        halo.x,
+                        halo.y,
+                        reservation_margin,
+                    ) {
+                        stats.crossing_reject_unmatched_footprint += 1;
+                        return None;
+                    }
+                    if !route_intersections.iter().any(
+                        |existing: &CrossingRouteIntersection| {
+                            existing.partner_idx == partner_idx
+                                && (existing.x - halo.x).abs() <= 1.0e-9
+                                && (existing.y - halo.y).abs() <= 1.0e-9
+                        },
+                    ) {
+                        route_intersections.push(halo);
+                    }
+                }
             }
         }
         route_intersections.sort_by(|a, b| {
@@ -4101,6 +4156,130 @@ fn crossing_overlap_cell_with_partner_on_primitive(
         }
     }
     None
+}
+
+fn diagonal_halo_crossings_for_route_segment(
+    obstacle_map: &ObstacleMap,
+    _net_id: NetId,
+    route_segment: &PrimitivePathSegment,
+    partner: &CrossingSearchPartner,
+    partner_idx: usize,
+    bit: u64,
+    current_straight_run_cells: i32,
+    required_margin: i32,
+) -> Result<Vec<CrossingRouteIntersection>, DiagonalHaloReject> {
+    let dx = (route_segment.end.0 - route_segment.start.0).signum();
+    let dy = (route_segment.end.1 - route_segment.start.1).signum();
+    let steps = (route_segment.end.0 - route_segment.start.0)
+        .abs()
+        .max((route_segment.end.1 - route_segment.start.1).abs());
+    if steps <= 0 || dx == 0 || dy == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut intersections = Vec::new();
+    for step in 0..steps {
+        let start = (
+            route_segment.start.0 + dx * step,
+            route_segment.start.1 + dy * step,
+        );
+        let end = (start.0 + dx, start.1 + dy);
+        let halo_cells = compact_diagonal_halo_cells(start, end, dx, dy);
+
+        let intersection_count_before = intersections.len();
+        let mut saw_partner_segment = false;
+        let mut saw_non_perpendicular = false;
+        let mut saw_margin_failure = false;
+        let mut saw_halo_contact = false;
+        for halo_cell in halo_cells {
+            if obstacle_map.dynamic_core_owner_at(halo_cell.0, halo_cell.1) != Some(partner.net_id)
+            {
+                continue;
+            }
+            saw_halo_contact = true;
+            for partner_segment in partner.waypoints.windows(2) {
+                if grid_point_on_segment_with_param(halo_cell, partner_segment[0], partner_segment[1])
+                    .is_none()
+                {
+                    continue;
+                }
+                saw_partner_segment = true;
+                let Some(partner_angle) =
+                    direction_angle_between_grid_cells(partner_segment[0], partner_segment[1])
+                else {
+                    continue;
+                };
+                if !grid_axes_are_perpendicular(route_segment.angle, partner_angle) {
+                    saw_non_perpendicular = true;
+                    continue;
+                }
+                let Some((x, y, t, u)) = grid_segment_intersection_with_params(
+                    start,
+                    end,
+                    partner_segment[0],
+                    partner_segment[1],
+                ) else {
+                    continue;
+                };
+                let distance_on_segment = f64::from(step) + t;
+                let route_margin = if route_segment.starts_after_kink {
+                    distance_on_segment
+                } else {
+                    f64::from(current_straight_run_cells) + distance_on_segment
+                };
+                let partner_len = grid_segment_length(partner_segment[0], partner_segment[1]);
+                let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
+                if route_margin + 1.0e-9 < f64::from(required_margin)
+                    || partner_margin + 1.0e-9 < f64::from(required_margin)
+                {
+                    saw_margin_failure = true;
+                    continue;
+                }
+                intersections.push(CrossingRouteIntersection {
+                    distance_from_primitive_start: route_segment.distance_before_segment
+                        + distance_on_segment,
+                    distance_before_on_segment: route_margin,
+                    distance_after_on_segment: route_segment.length - distance_on_segment,
+                    x,
+                    y,
+                    partner_idx,
+                    bit,
+                });
+            }
+        }
+
+        if saw_halo_contact && intersections.len() == intersection_count_before {
+            if saw_margin_failure {
+                return Err(DiagonalHaloReject::Margin);
+            }
+            if saw_non_perpendicular {
+                return Err(DiagonalHaloReject::NotPerpendicular);
+            }
+            if saw_partner_segment {
+                return Err(DiagonalHaloReject::Unmatched);
+            }
+        }
+    }
+
+    Ok(intersections)
+}
+
+fn compact_diagonal_halo_cells(
+    start: (i32, i32),
+    end: (i32, i32),
+    dx: i32,
+    _dy: i32,
+) -> Vec<(i32, i32)> {
+    let mut cells = Vec::with_capacity(2);
+    push_unique_cell(&mut cells, (start.0 + dx, start.1));
+    push_unique_cell(&mut cells, (end.0 + dx, end.1));
+    cells
+}
+
+fn push_unique_cell(cells: &mut Vec<(i32, i32)>, cell: (i32, i32)) {
+    if !cells.contains(&cell) {
+        cells.push(cell);
+    }
 }
 
 fn crossing_reservation_window_is_clear(
@@ -7176,6 +7355,95 @@ mod tests {
         assert_eq!(outcome.crossing_count, 1);
         assert_eq!(stats.crossing_accepted, 1);
         assert_eq!(stats.crossing_reject_unmatched_owner, 0);
+    }
+
+    #[test]
+    fn crossing_move_detects_offset_diagonal_halo_contact() {
+        let mut map = ObstacleMap::new(800, 300);
+        let partner_waypoints = vec![(716, 162), (753, 199)];
+        let partner_cells = rasterize_waypoints_for_test(&partner_waypoints);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            32,
+            &partner_cells,
+            &partner_cells,
+            &[],
+            &FxHashSet::default()
+        ));
+        let crossing = CrossingSearchConfig {
+            net_id: 33,
+            partners: vec![CrossingSearchPartner {
+                net_id: 32,
+                waypoints: partner_waypoints,
+            }],
+            min_straight_cells: 0,
+            crossing_half_size_cells: 0,
+            bend_runout_cells: 0,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> =
+            [(32, 0)].into_iter().collect();
+        let primitive = Primitive {
+            id: 0,
+            start_angle: 7,
+            end_angle: 7,
+            dx: 1,
+            dy: -1,
+            footprint: vec![(0, 0), (1, -1)],
+            length_um: 2.0_f64.sqrt(),
+            bend_cost: 0.0,
+            geometry: PrimitiveGeometry::Straight {
+                length_um: 2.0_f64.sqrt(),
+            },
+        };
+
+        let mut accepted_stats = RouteSearchStats::default();
+        let accepted = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(717, 164, 7),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 10,
+                pending_after_crossing_cells: 0,
+            },
+            State::new(717, 164, 7),
+            &primitive,
+            true,
+            1,
+            1,
+            0,
+            &partner_index_by_id,
+            &mut accepted_stats,
+        )
+        .expect("offset diagonal halo contact should be recognized as a crossing");
+        assert_eq!(accepted.crossing_count, 1);
+        assert_eq!(accepted_stats.crossing_accepted, 1);
+
+        let mut rejected_stats = RouteSearchStats::default();
+        let rejected = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(717, 164, 7),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 10,
+                pending_after_crossing_cells: 0,
+            },
+            State::new(717, 164, 7),
+            &primitive,
+            true,
+            5,
+            5,
+            0,
+            &partner_index_by_id,
+            &mut rejected_stats,
+        );
+        assert!(rejected.is_none());
+        assert_eq!(rejected_stats.crossing_accepted, 0);
+        assert_eq!(rejected_stats.crossing_reject_margin, 1);
     }
 
     #[test]

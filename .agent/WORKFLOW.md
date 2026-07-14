@@ -148,6 +148,32 @@ crossing order. Post-route realized crossing validation is still required, but
 it is a safety net for discretization/realization gaps, not the primary place
 to discover avoidable illegal moves.
 
+If a route search with crossings enabled reaches a committed candidate that A*
+accepted as legal and the Rust or Python realized verifier later rejects that
+same crossing as illegal, treat it as a model mismatch and a blocking bug. Do
+not paper over the mismatch with final-repair fallbacks or validation-disable
+flags. The expected flow is: A* explores primitive moves, detects any potential
+crossing against committed partner geometry, checks crossing legality in the
+grid/search model, assigns the move no successor when it is illegal, and keeps
+searching other branches. Rip-up/reroute is allowed only after the legal search
+cannot find a route, at which point the probe route and victim set must be
+backed by geometry.
+
+For one-cell-wide diagonal segments, A* collision detection must use a compact
+temporary halo lane so offset diagonal crossings are seen before commit. The
+halo is a search-time detection aid only: crossing legality is still evaluated
+from the true route and partner centerline segments, including perpendicularity,
+margin, footprint clearance, and partner ownership. Bends inherit this rule for
+any diagonal arm in their primitive footprint.
+
+Endpoint correction and port snapping must not influence A* crossing
+decisions. Route search, crossing event registration, and native validation
+should use the primitive/grid routing model or its protected primitive-realized
+centerline. Endpoint correction is a post-routing realization step: for crossed
+nets it may only modify the source-to-first-crossing and last-crossing-to-target
+terminal regions, and for crossing-free nets it may use the normal correction
+path.
+
 Use judgment about scope. Small localized edits may converge with a focused
 test or syntax check. Behavior-changing router work, crossing realization,
 Python/Rust boundary changes, and performance-sensitive A* changes should
