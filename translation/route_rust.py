@@ -88,6 +88,7 @@ _load_rust_backend = _sob._load_rust_backend
 
 DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING = 2
 DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM = 50.0
+COLLISION_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_LOSS_UM"
 
 _ILLEGAL_REALIZED_CROSSING_RE = re.compile(
     r"Illegal realized crossing:\s*net\s+"
@@ -2190,6 +2191,14 @@ def _effective_crossing_search_loss(
     if physical_loss > 0.0:
         return physical_loss
     if str(crossing_mode).strip().lower() in {"collision", "lidar-pure"}:
+        override = os.environ.get(COLLISION_CROSSING_SEARCH_LOSS_ENV)
+        if override is not None:
+            override_value = float(override)
+            if not math.isfinite(override_value) or override_value < 0.0:
+                raise ValueError(
+                    f"{COLLISION_CROSSING_SEARCH_LOSS_ENV} must be finite and non-negative"
+                )
+            return override_value
         return DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
     return physical_loss
 

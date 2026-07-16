@@ -1,8 +1,4 @@
-﻿"""LiDAR multiport MMI 8x8 benchmark.
-
-This benchmark mirrors the LiDAR ``multiportmmi_8x8`` netlist and placement
-YAML so both routers can be run against the same topology.
-"""
+"""LiDAR multiport MMI 16x16 benchmark."""
 
 from __future__ import annotations
 
@@ -12,16 +8,16 @@ from gdsfactory.schematic import Schematic
 
 from benchmarks.multiportmmi_yaml import build_schematic_from_lidar_yaml
 
-BENCHMARK_YAML = Path(__file__).with_name("data") / "multiportmmi_8x8.yml"
+BENCHMARK_YAML = Path(__file__).with_name("data") / "multiportmmi_16x16.yml"
 
-N = 8
+N = 16
 
 NODE_TYPES: dict[str, str] = {}
 INTERNAL_DELAYS_UM: dict[str, float] = {}
 
 
 def build_schematic() -> Schematic:
-    """Build the LiDAR multiport MMI 8x8 benchmark schematic."""
+    """Build the LiDAR multiport MMI 16x16 benchmark schematic."""
     return build_schematic_from_lidar_yaml(
         BENCHMARK_YAML,
         node_types=NODE_TYPES,

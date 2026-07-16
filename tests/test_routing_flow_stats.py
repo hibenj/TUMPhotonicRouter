@@ -32,6 +32,7 @@ from translation.electrical import (
 from translation.layout_from_schematic import layout_from_schematic
 from translation.photonic_verification import verify_photonic_routing
 from translation.route_rust import (
+    COLLISION_CROSSING_SEARCH_LOSS_ENV,
     DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
     _build_crossing_plan_info,
     _effective_crossing_search_loss,
@@ -108,6 +109,26 @@ def test_lidar_pure_uses_search_only_crossing_penalty_by_default():
         crossing_mode="collision",
         crossing_loss=0.0,
     ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
+    assert _effective_crossing_search_loss(
+        enable_crossings=True,
+        crossing_mode="window",
+        crossing_loss=0.0,
+    ) == pytest.approx(0.0)
+    assert _effective_crossing_search_loss(
+        enable_crossings=True,
+        crossing_mode="lidar-pure",
+        crossing_loss=0.07,
+    ) == pytest.approx(0.07)
+
+
+def test_collision_crossing_search_penalty_can_be_overridden(monkeypatch):
+    monkeypatch.setenv(COLLISION_CROSSING_SEARCH_LOSS_ENV, "30")
+
+    assert _effective_crossing_search_loss(
+        enable_crossings=True,
+        crossing_mode="lidar-pure",
+        crossing_loss=0.0,
+    ) == pytest.approx(30.0)
     assert _effective_crossing_search_loss(
         enable_crossings=True,
         crossing_mode="window",
@@ -1287,3 +1308,23 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
     assert stats_dict["electrical_pad_assignments"] == 3
     assert stats_dict["electrical_detailed_routes"] == 2
     assert stats_dict["electrical_failed_detailed_routes"] == 0
+
+
+@pytest.mark.parametrize(
+    ("benchmark_name", "expected_instances", "expected_nets"),
+    [
+        ("multiportmmi_8x8", 82, 111),
+        ("multiportmmi_16x16", 162, 223),
+        ("multiportmmi_32x32", 318, 447),
+    ],
+)
+def test_lidar_multiportmmi_yaml_benchmarks_load(
+    benchmark_name,
+    expected_instances,
+    expected_nets,
+):
+    schematic = load_benchmark(benchmark_name)
+
+    assert len(schematic.netlist.instances) == expected_instances
+    assert len(schematic.placements) == expected_instances
+    assert len(schematic.netlist.routes) == expected_nets

@@ -8124,3 +8124,159 @@ Simple-first / collision-kernel ordering fix:
     `multiportmmi_8x8` artifact from this validation.
   - `build\routed_benes_8x8.gds` is the latest full green `benes_8x8`
     artifact from this validation.
+
+LiDAR multiport MMI benchmark import:
+
+- Date: 2026-07-16 local
+- Source:
+  - Cloned `https://github.com/hibenj/LiDAR` read-only into
+    `build\_external\LiDAR` and inspected
+    `src\picroute\benchmarks\multiportmmi_8x8`,
+    `multiportmmi_16x16`, and `multiportmmi_32x32`.
+- 8x8 comparison:
+  - Existing local `benchmarks\data\multiportmmi_8x8.yml` is not byte-identical
+    to the current upstream file because the local file is an older/sanitized
+    YAML form while current upstream contains `!!python/tuple` tags in
+    settings.
+  - Semantic comparison passed: same instance keys, placement keys, net keys,
+    component names, net endpoints, and exact placement values.
+- Added:
+  - `benchmarks\data\multiportmmi_16x16.yml` from upstream LiDAR.
+  - `benchmarks\data\multiportmmi_32x32.yml` from upstream LiDAR.
+  - `benchmarks\multiportmmi_yaml.py` shared loader using `yaml.FullLoader`
+    for upstream tuple-tag settings.
+  - `benchmarks\multiportmmi_16x16.py` and
+    `benchmarks\multiportmmi_32x32.py`.
+  - Refactored `benchmarks\multiportmmi_8x8.py` to use the shared loader.
+- Validation:
+  - Built unrouted layouts and wrote:
+    `build\unrouted_multiportmmi_16x16.gds` and
+    `build\unrouted_multiportmmi_32x32.gds`.
+  - Counts:
+    - `multiportmmi_8x8`: 82 instances / 111 nets.
+    - `multiportmmi_16x16`: 162 instances / 223 nets.
+    - `multiportmmi_32x32`: 318 instances / 447 nets.
+  - `.\.venv\Scripts\python.exe -X utf8 -m pytest tests\test_routing_flow_stats.py::test_lidar_multiportmmi_yaml_benchmarks_load -q`
+    passed with `3 passed`.
+- Display:
+  - `klayout.exe` was not found in PATH or common Windows installation
+    locations.
+  - Started both generated GDS files through Windows file association with
+    `Start-Process`; if `.gds` is associated with KLayout on the workstation,
+    they should be open there.
+
+LiDAR multiportmmi_16x16 incremental routing:
+
+- Date: 2026-07-16 local
+- Configuration:
+  - `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`
+  - `routing_flow.py multiportmmi_16x16 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6 --debug-svgs none --debug-timing true`
+- Incremental stop results:
+  - Stop after route 20: success, `20/223`, failures `0`, repairs `0`,
+    crossings `0`.
+  - Stop after route 48: success, `48/223`, failures `0`, repairs `0`.
+  - Stop after route 64: success, `64/223`, failures `0`, repairs `0`,
+    crossings `0`.
+  - Stop after route 73: success, `73/223`, failures `0`, repairs `0`,
+    matched crossings `4`, illegal crossings `0`.
+  - Stop after route 74: success, `74/223`, photonic verification success,
+    crossing verification success, matched crossings `8`, illegal crossings
+    `0`.
+  - Stop after route 79: success, `79/223`, photonic verification success,
+    crossing verification success, matched crossings `11`, illegal crossings
+    `0`, total `64.2440 s`. The slow route is route index `75` / `n_74`,
+    taking `40.2980 s` alone with `7,710,134` expanded states.
+  - Stop after route 79 with
+    `PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_LOSS_UM=30`: success,
+    `79/223`, photonic verification success, crossing verification success,
+    matched crossings `11`, illegal crossings `0`, total `68.0938 s`. Lowering
+    the search-only crossing penalty from `50` to `30` did not improve this
+    checkpoint; route index `75` / `n_74` still dominates at `44.3756 s`.
+  - Stop after route 79 with
+    `PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_LOSS_UM=0`: success,
+    `79/223`, photonic verification success, crossing verification success,
+    matched crossings `11`, illegal crossings `0`, total `57.9060 s`.
+    Route index `75` / `n_74` still dominates at `39.9961 s` and still chooses
+    the same three crossing partners (`n_69`, `n_72`, `n_71`) instead of the
+    visually expected five-crossing corridor through `n_73`, `n_72`, `n_71`,
+    `n_70`, `n_69`.
+  - Trace evidence for `n_74`:
+    - Internal IDs: `n_69..n_74` are `70..75`.
+    - Candidate/level-1 trace shows individual accepted crossing candidates
+      for all five relevant partners (`n_73`, `n_72`, `n_71`, `n_70`, `n_69`).
+    - The selected final route still reconstructs only crossings with
+      `n_69`, `n_72`, and `n_71`; this points away from crossing cost and
+      toward A* state/search/legality around the full green corridor.
+    - Added temporary env-guarded A* branch tracing in `src\astar.rs`.
+      With marker `partner=74` (`n_73`) at `grid_y=441`
+      (`y ~= 1645.125 um`) and target X bins `1126,1131,1136,1141`
+      (`x ~= 2233.5,2243.5,2253.5,2263.5 um`), the trace produced
+      `crossing-branch-target-mask-complete` 60 times. This proves at least
+      one single descendant branch after the desired `n_73` crossing reaches
+      all four later X bins; the remaining question is why that branch is not
+      the final selected route.
+- Current artifact pointer:
+  - `build\routed_multiportmmi_16x16.gds` is the latest stop-after-79 partial
+    route artifact.
+
+LiDAR multiportmmi_16x16 pending-straight model fix:
+
+- Date: 2026-07-16 local
+- Change under test:
+  - `src\astar.rs` now lets `pending_after_crossing_cells` be consumed across
+    multiple same-direction straight primitives instead of requiring the first
+    primitive after a crossing to cover the full remaining straight margin.
+  - Bends before the pending straight is satisfied remain rejected.
+  - Pending local crossing reservations are kept pending until the accumulated
+    straight run completes, then promoted to active reservations.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `.\.venv\Scripts\python.exe -X utf8 -m pytest tests\test_routing_flow_stats.py::test_lidar_pure_uses_search_only_crossing_penalty_by_default tests\test_routing_flow_stats.py::test_collision_crossing_search_penalty_can_be_overridden -q`
+    passed with `2 passed`.
+  - Stop after route 79 with the standard 16x16 WIP config
+    (`PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`,
+    `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+    `--routing-window-scale 0.35`, `--foreign-port-keepout-cells 6`,
+    `--debug-svgs none`, `--debug-timing true`) passed.
+  - Stop after route 99 with the same config passed.
+- Result:
+  - Total stop-after-79 runtime improved from about `64.2440 s` to
+    `33.8282 s`.
+  - `route[75]` / `n_74` improved from about `40.2980 s` to `7.5243 s`.
+  - `n_74` now has five legal native crossings in the verification JSON:
+    `n_73`, `n_72`, `n_71`, `n_70`, and `n_69`.
+  - No failures or repairs occurred in this stop-after-79 run.
+  - Stop-after-99 runtime: `35.8727 s` total, route search `21.2986 s`,
+    `99/223` routes, failures `0`, repairs `0`, simple routes `67/99`.
+    Slowest new route after the previous checkpoint was route index `98` /
+    `n_97` at `0.8547 s`.
+  - Stop-after-111 runtime: `39.6584 s` total, route search `23.3446 s`,
+    `111/223` routes, failures `0`, repairs `0`, simple routes `73/111`.
+    Slowest new route after the previous checkpoint was route index `101` /
+    `n_100` at `0.4101 s`.
+  - Re-ran stop-after-111 after removing the abandoned debug timing guard:
+    runtime `39.4737 s` total, `111/223` routes, failures `0`, repairs `0`,
+    simple routes `73/111`. Current artifact:
+    `build\routed_multiportmmi_16x16.gds`.
+
+Checkpoint validation before commit:
+
+- Date: 2026-07-16 local
+- `multiportmmi_8x8` full run:
+  - Config: `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`,
+    `--crossings true --crossing-mode lidar-pure
+    --fanout-access-mode static-stubs --routing-window-scale 0.35
+    --foreign-port-keepout-cells 6 --debug-svgs none --debug-timing true`.
+  - Result: `111/111`, failures `0`, repairs `0`, simple routes `57/111`,
+    total `22.8006 s`.
+- `benes_8x8` full run:
+  - Same config.
+  - Result: `48/48`, failures `0`, repairs `0`, simple routes `38/48`,
+    total `22.4224 s`.
+- Cleanup before commit:
+  - Removed temporary `n_74` branch-tracing instrumentation from
+    `src\astar.rs`; the pending-straight model change remains.
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed after cleanup.
+  - `.\.venv\Scripts\python.exe -X utf8 -m pytest tests\test_routing_flow_stats.py::test_lidar_multiportmmi_yaml_benchmarks_load tests\test_routing_flow_stats.py::test_lidar_pure_uses_search_only_crossing_penalty_by_default tests\test_routing_flow_stats.py::test_collision_crossing_search_penalty_can_be_overridden -q`
+    passed with `5 passed`.
