@@ -41,6 +41,7 @@ def _physical_port_centerline(
     realization_grid_spec: tuple[int, int, float, float, float] | None = None,
     enable_endpoint_correction: bool = True,
     allow_unchecked_bumps: bool = True,
+    route_has_crossing: bool = False,
 ) -> list[tuple[float, float]]:
     corrected_centerline = [
         (float(p[0]), float(p[1]))
@@ -56,6 +57,8 @@ def _physical_port_centerline(
     if source_port_um is None and target_port_um is None:
         return []
     if record.endpoint_correction_error is not None:
+        return []
+    if route_has_crossing:
         return []
 
     try:
@@ -102,6 +105,36 @@ def _physical_port_centerline(
     return centerline
 
 
+def _crossing_net_ids(
+    crossing_plan_info: Mapping[str, object] | None,
+) -> set[int]:
+    if not isinstance(crossing_plan_info, Mapping) or not crossing_plan_info.get(
+        "enabled",
+    ):
+        return set()
+    net_ids: set[int] = set()
+    for collection_name, key_pairs in (
+        ("realized_intersections", (("net_id_a", "net_id_b"),)),
+        ("native_crossing_events", (("net_id", "partner_net_id"),)),
+    ):
+        raw_collection = crossing_plan_info.get(collection_name, ())
+        if not isinstance(raw_collection, Iterable) or isinstance(
+            raw_collection,
+            (str, bytes, bytearray),
+        ):
+            continue
+        for raw_item in raw_collection:
+            if not isinstance(raw_item, Mapping):
+                continue
+            for key_pair in key_pairs:
+                for key in key_pair:
+                    try:
+                        net_ids.add(int(raw_item.get(key)))
+                    except (TypeError, ValueError):
+                        continue
+    return net_ids
+
+
 def realize_routed_net_records(
     routed_layout: Component,
     routed_net_records: list[RoutedNetRecord],
@@ -145,6 +178,7 @@ def realize_routed_net_records(
         crossing_plan_info,
         dbu=dbu,
     )
+    crossing_net_ids = _crossing_net_ids(crossing_plan_info)
 
     for record in routed_net_records:
         clip_region = (
@@ -157,7 +191,10 @@ def realize_routed_net_records(
             record,
             realization_grid_spec=realization_grid_spec,
             enable_endpoint_correction=enable_endpoint_correction,
-            allow_unchecked_bumps=not allow_45_degree_turns,
+            allow_unchecked_bumps=True,
+            route_has_crossing=(
+                record.net_id is not None and int(record.net_id) in crossing_net_ids
+            ),
         )
         if record.meander_auto_plan is not None:
             plan = record.meander_auto_plan

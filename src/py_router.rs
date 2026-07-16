@@ -11,7 +11,7 @@ use crate::astar::{
     route_single_net_with_config, route_single_net_with_crossing_config,
     route_single_net_with_dynamic_expansion_config, try_simple_route_with_dynamic_expansion_config,
     AStarConfig, CrossingSearchConfig, CrossingSearchPartner, HeapTieBreaker, HeuristicMode,
-    PrimitiveOrdering, RouteResult, RouteSearchStats, State,
+    PrimitiveOrdering, RouteResult, RouteSearchStats, State, TerminalBumpAxis, TerminalBumpGuard,
 };
 use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
 use crate::geometry_realization::{
@@ -19,6 +19,7 @@ use crate::geometry_realization::{
     cells_in_grid_rect as cells_in_grid_rect_rs, centerline_length_um as centerline_length_um_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
     compress_grid_waypoints as compress_grid_waypoints_rs,
+    full_straight_offset_bump_candidates_for_centerline as full_straight_offset_bump_candidates_for_centerline_rs,
     full_straight_offset_bump_candidates as full_straight_offset_bump_candidates_rs,
     generate_waveguide_polygon as generate_waveguide_polygon_rs,
     grid_path_to_centerline as grid_path_to_centerline_rs,
@@ -1082,6 +1083,41 @@ fn route_port_runway_cells(
     cells
 }
 
+fn route_port_endpoint_bump_candidate_cells(
+    grid: &StaticGridSpec,
+    x_um: f64,
+    y_um: f64,
+    orientation: Option<f64>,
+    bend_radius_cells: i32,
+) -> FxHashSet<CellKey> {
+    let angle = route_orientation_to_angle(orientation);
+    let (sx, sy) = route_angle_to_step(angle);
+    let (base_x, base_y) = route_port_state_cell(grid, x_um, y_um, orientation);
+    let reach = bend_radius_cells.max(1);
+    let side_steps = [(-sy, sx), (sy, -sx)];
+    let mut cells = FxHashSet::default();
+
+    for forward in -2..=0 {
+        let nx = base_x + sx * forward;
+        let ny = base_y + sy * forward;
+        if route_in_bounds(nx, ny, grid) {
+            cells.insert(pack_xy(nx, ny));
+        }
+    }
+    for (px, py) in side_steps {
+        for lateral in 1..=reach {
+            for forward in -2..=reach {
+                let nx = base_x + sx * forward + px * lateral;
+                let ny = base_y + sy * forward + py * lateral;
+                if route_in_bounds(nx, ny, grid) {
+                    cells.insert(pack_xy(nx, ny));
+                }
+            }
+        }
+    }
+    cells
+}
+
 fn route_cell_in_raw_static(
     key: CellKey,
     raw_static_keys: &FxHashSet<CellKey>,
@@ -1318,32 +1354,6 @@ fn centerline_core_cells(
         .into_iter()
         .map(unpack_xy)
         .collect())
-}
-
-fn endpoint_contact_open_keys(
-    corrected_core_cells: &[(i32, i32)],
-    grid: &GeometryGridSpec,
-    source_port_um: Option<(f64, f64)>,
-    target_port_um: Option<(f64, f64)>,
-    width_um: f64,
-) -> FxHashSet<CellKey> {
-    let mut open_keys = FxHashSet::default();
-    let radius_um = (grid.grid_size_um * 0.75).max(width_um.max(0.0) + grid.grid_size_um * 0.25);
-    let radius_sq = radius_um * radius_um;
-    for port in [source_port_um, target_port_um].into_iter().flatten() {
-        if !port.0.is_finite() || !port.1.is_finite() {
-            continue;
-        }
-        for &(x, y) in corrected_core_cells {
-            let center = grid.cell_center(x, y);
-            let dx = center.0 - port.0;
-            let dy = center.1 - port.1;
-            if dx * dx + dy * dy <= radius_sq {
-                open_keys.insert(pack_xy(x, y));
-            }
-        }
-    }
-    open_keys
 }
 
 fn compact_bump_portion(centerline: &[(f64, f64)], placement_is_start: bool) -> &[(f64, f64)] {
@@ -2755,6 +2765,49 @@ impl PyPhotonicRouter {
             && self.crossing_context.expected_crossing_count(net_id) > 0
     }
 
+    fn terminal_bump_guard_for_target(
+        &self,
+        target: State,
+        target_port_um: Option<(f64, f64)>,
+    ) -> Option<TerminalBumpGuard> {
+        let target_port_um = target_port_um?;
+        let grid_size = self.grid.grid_size_um;
+        if !grid_size.is_finite() || grid_size <= 0.0 {
+            return None;
+        }
+        let port_grid_x = (target_port_um.0 - self.grid.origin_x_um) / grid_size;
+        let port_grid_y = (target_port_um.1 - self.grid.origin_y_um) / grid_size;
+        if !port_grid_x.is_finite() || !port_grid_y.is_finite() {
+            return None;
+        }
+
+        let target_center_x = f64::from(target.x) + 0.5;
+        let target_center_y = f64::from(target.y) + 0.5;
+        let required_bump_cells = 4 * self.primitive_cfg.bend_radius_cells.max(0);
+        if required_bump_cells <= 0 {
+            return None;
+        }
+
+        let eps = 1.0e-6;
+        match target.angle % 8 {
+            // Horizontal approach: only vertical grid snap offset requires a terminal bump.
+            0 | 4 if (port_grid_y - target_center_y).abs() > eps => Some(TerminalBumpGuard {
+                axis: TerminalBumpAxis::Horizontal,
+                target_axis_coord: f64::from(target.y),
+                target_along_coord: f64::from(target.x),
+                required_bump_cells,
+            }),
+            // Vertical approach: only horizontal grid snap offset requires a terminal bump.
+            2 | 6 if (port_grid_x - target_center_x).abs() > eps => Some(TerminalBumpGuard {
+                axis: TerminalBumpAxis::Vertical,
+                target_axis_coord: f64::from(target.x),
+                target_along_coord: f64::from(target.y),
+                required_bump_cells,
+            }),
+            _ => None,
+        }
+    }
+
     fn add_crossing_spacing_history_for_route(&mut self, net_id: u64, route: &RouteResult) {
         if !self.net_has_crossing_requirements(net_id) {
             return;
@@ -3251,6 +3304,7 @@ impl PyPhotonicRouter {
         &self,
         net_id: u64,
         events: &[CrossingEvent],
+        opened_cell_keys: Option<&FxHashSet<CellKey>>,
     ) -> CrossingReservationBlockers {
         let mut blockers = CrossingReservationBlockers::default();
         for event in events {
@@ -3260,7 +3314,10 @@ impl PyPhotonicRouter {
                     blockers.has_static_blocker = true;
                     continue;
                 }
-                if self.obstacle_map.is_static_blocked(x, y) {
+                let is_opened_static = opened_cell_keys
+                    .map(|opened| opened.contains(key))
+                    .unwrap_or(false);
+                if self.obstacle_map.is_static_blocked(x, y) && !is_opened_static {
                     blockers.has_static_blocker = true;
                 }
                 for owner in self.obstacle_map.dynamic_owners_for_cells(&[(x, y)]) {
@@ -3589,6 +3646,7 @@ impl PyPhotonicRouter {
         route: &RouteResult,
         partner_ids: &FxHashSet<u64>,
         crossing_events: &[CrossingEvent],
+        opened_cell_keys: Option<&FxHashSet<CellKey>>,
     ) -> bool {
         self.invalid_crossing_intersections_for_route(net_id, route, partner_ids)
             .is_empty()
@@ -3596,6 +3654,7 @@ impl PyPhotonicRouter {
                 net_id,
                 partner_ids,
                 crossing_events,
+                opened_cell_keys,
             )
     }
 
@@ -3604,11 +3663,13 @@ impl PyPhotonicRouter {
         net_id: u64,
         partner_ids: &FxHashSet<u64>,
         crossing_events: &[CrossingEvent],
+        opened_cell_keys: Option<&FxHashSet<CellKey>>,
     ) -> bool {
         if partner_ids.is_empty() {
             return true;
         }
-        let reservation_blockers = self.crossing_reservation_blockers(net_id, crossing_events);
+        let reservation_blockers =
+            self.crossing_reservation_blockers(net_id, crossing_events, opened_cell_keys);
         !crossing_events.is_empty()
             && Self::crossing_events_have_disjoint_reservations(crossing_events)
             && reservation_blockers.is_clear()
@@ -3799,6 +3860,7 @@ impl PyPhotonicRouter {
             bend_runout_cells: self.primitive_cfg.bend_radius_cells,
             crossing_loss: crossing_loss_override.unwrap_or(crossing_cfg.crossing_loss),
             require_all_partners: crossing_cfg.allow_only_expected_pairs,
+            terminal_bump_guard: self.terminal_bump_guard_for_target(target, target_port_um),
         };
         let search_partner_ids: FxHashSet<u64> = crossing_search
             .partners
@@ -3839,6 +3901,7 @@ impl PyPhotonicRouter {
             source,
             target,
             Some(opened_ref),
+            opened_cell_keys,
             &crossing_search_cfg,
             block_radius_cells.max(0),
             dynamic_clearance_exempt_keys,
@@ -3896,6 +3959,7 @@ impl PyPhotonicRouter {
                 net_id,
                 required_partner_ids,
                 &crossing_events,
+                opened_cell_keys,
             );
         let realized_violations = if skip_rust_level2_validation {
             Vec::new()
@@ -3973,6 +4037,7 @@ impl PyPhotonicRouter {
             bend_runout_cells: self.primitive_cfg.bend_radius_cells,
             crossing_loss: crossing_cfg.crossing_loss,
             require_all_partners: true,
+            terminal_bump_guard: None,
         };
         let mut crossing_search_cfg = search_cfg.clone();
         crossing_search_cfg.require_terminal_straights = false;
@@ -4034,6 +4099,7 @@ impl PyPhotonicRouter {
                 &result,
                 partner_ids,
                 &crossing_events,
+                opened_cell_keys,
             );
             let realized_violations = self.crossing_violations_for_route_with_ports(
                 net_id,
@@ -4797,6 +4863,7 @@ impl PyPhotonicRouter {
             bend_runout_cells: self.primitive_cfg.bend_radius_cells,
             crossing_loss: crossing_cfg.crossing_loss,
             require_all_partners: require_all_expected_partners,
+            terminal_bump_guard: None,
         };
         let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
             .ok()
@@ -4860,6 +4927,7 @@ impl PyPhotonicRouter {
                     &result,
                     &partner_ids,
                     &crossing_events,
+                    Some(opened_ref),
                 ) {
                     return Some((result, crossing_events));
                 }
@@ -4899,6 +4967,7 @@ impl PyPhotonicRouter {
             &result,
             &partner_ids,
             &crossing_events,
+            Some(opened_ref),
         ) {
             return Some((result, crossing_events));
         }
@@ -6334,6 +6403,7 @@ impl PyPhotonicRouter {
         source_port_um: Option<(f64, f64)>,
         target_port_um: Option<(f64, f64)>,
         allow_unchecked_fallback: bool,
+        commit_to_router: bool,
     ) -> Result<NativeEndpointCorrection, String> {
         let grid = GeometryGridSpec::new(
             self.grid.grid_size_um,
@@ -6375,13 +6445,20 @@ impl PyPhotonicRouter {
                     candidate_label: None,
                 });
             }
-            let local_endpoint_open_keys = endpoint_contact_open_keys(
-                &corrected_core_cells,
+            let old_core_cells = match route_to_primitive_centerline_rs(
+                route,
+                &self.primitives,
                 &grid,
-                source_port_um,
-                target_port_um,
-                width_um,
-            );
+            ) {
+                Ok(old_centerline) => {
+                    centerline_core_cells(&old_centerline, width_um, &static_grid)
+                        .unwrap_or_else(|_| {
+                            route_core_cells(&route.cells, core_radius_cells, width, height)
+                        })
+                }
+                Err(_) => route_core_cells(&route.cells, core_radius_cells, width, height),
+            };
+            let old_core_keys = pack_cells(&old_core_cells);
             let out_of_bounds: Vec<(i32, i32)> = corrected_core_cells
                 .iter()
                 .copied()
@@ -6395,7 +6472,7 @@ impl PyPhotonicRouter {
                     self.obstacle_map.in_bounds(x, y)
                         && self.obstacle_map.is_static_blocked(x, y)
                         && !opened_keys.contains(&key)
-                        && !local_endpoint_open_keys.contains(&key)
+                        && !old_core_keys.contains(&key)
                 })
                 .collect();
             if !out_of_bounds.is_empty() || !static_blockers.is_empty() {
@@ -6429,9 +6506,19 @@ impl PyPhotonicRouter {
             }
             let corrected_blocked_cells =
                 inflate_route_cells(&corrected_core_cells, core_radius_cells, width, height);
-            if !self
-                .obstacle_map
-                .commit_route_with_clearance_and_allowed_core_overlap_cells(
+            let commit_ok = if commit_to_router {
+                self.obstacle_map
+                    .commit_route_with_clearance_and_allowed_core_overlap_cells(
+                        net_id,
+                        &corrected_core_cells,
+                        &corrected_blocked_cells,
+                        clearance_exempt_cells,
+                        &allowed_overlap_nets,
+                        Some(&allowed_overlap_core_keys),
+                    )
+            } else {
+                let mut check_map = self.obstacle_map.clone();
+                check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
                     net_id,
                     &corrected_core_cells,
                     &corrected_blocked_cells,
@@ -6439,7 +6526,8 @@ impl PyPhotonicRouter {
                     &allowed_overlap_nets,
                     Some(&allowed_overlap_core_keys),
                 )
-            {
+            };
+            if !commit_ok {
                 let commit_dynamic_blockers = cells_with_other_dynamic_owner(
                     &self.obstacle_map,
                     &corrected_core_cells,
@@ -6459,38 +6547,40 @@ impl PyPhotonicRouter {
                     format_bbox(&corrected_core_cells),
                 ));
             }
-            self.remove_crossing_events_for_net(net_id);
-            self.register_geometric_crossing_events_for_route(
-                net_id,
-                route,
-                source_port_um,
-                target_port_um,
-            );
-            if self
-                .remember_committed_route_centerlines_with_ports(
+            if commit_to_router {
+                self.remove_crossing_events_for_net(net_id);
+                self.register_geometric_crossing_events_for_route(
                     net_id,
                     route,
                     source_port_um,
                     target_port_um,
-                )
-                .is_err()
-            {
-                self.rollback_committed_route(net_id);
-                return Err("Failed to record endpoint-corrected route centerline".to_string());
+                );
+                if self
+                    .remember_committed_route_centerlines_with_ports(
+                        net_id,
+                        route,
+                        source_port_um,
+                        target_port_um,
+                    )
+                    .is_err()
+                {
+                    self.rollback_committed_route(net_id);
+                    return Err("Failed to record endpoint-corrected route centerline".to_string());
+                }
+                self.remember_committed_route_opened_cells(net_id, Some(&opened_keys));
+                self.add_crossing_spacing_history_for_route(net_id, route);
+                if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
+                    net_id,
+                    route,
+                    source_port_um,
+                    target_port_um,
+                    Some(&opened_keys),
+                ) {
+                    self.rollback_committed_route(net_id);
+                    return Err(error);
+                }
+                self.invalidate_meander_base_prefix();
             }
-            self.remember_committed_route_opened_cells(net_id, Some(&opened_keys));
-            self.add_crossing_spacing_history_for_route(net_id, route);
-            if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
-                net_id,
-                route,
-                source_port_um,
-                target_port_um,
-                Some(&opened_keys),
-            ) {
-                self.rollback_committed_route(net_id);
-                return Err(error);
-            }
-            self.invalidate_meander_base_prefix();
             return Ok(NativeEndpointCorrection {
                 centerline,
                 committed_bump: false,
@@ -6513,6 +6603,16 @@ impl PyPhotonicRouter {
         );
         let commit_clearance_exempt_keys = pack_cells(&commit_clearance_exempt_cell_vec);
         let mut rejection_details = Vec::new();
+        let endpoint_bump_trace_net_id = net_id.to_string();
+        let trace_endpoint_bumps = std::env::var("PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS")
+            .ok()
+            .map(|raw| {
+                raw.split(',').any(|item| {
+                    let item = item.trim();
+                    item == "*" || item == endpoint_bump_trace_net_id
+                })
+            })
+            .unwrap_or(false);
 
         for (candidate_index, candidate) in candidates.into_iter().enumerate() {
             let candidate_label = candidate.label;
@@ -6522,15 +6622,23 @@ impl PyPhotonicRouter {
                 centerline_core_cells(bump_centerline, width_um, &static_grid)
                     .map_err(|err| err.to_string())?;
             if candidate_core_cells.is_empty() {
-                rejection_details.push(format!(
+                let detail = format!(
                     "#{candidate_index} {candidate_label}: empty core footprint"
-                ));
+                );
+                if trace_endpoint_bumps {
+                    println!(
+                        "endpoint_bump_trace net_id={net_id} candidate={candidate_index} label={candidate_label} status=reject {detail}"
+                    );
+                }
+                rejection_details.push(detail);
                 continue;
             }
-            // A case-4 bump is an endpoint adapter, so its compact footprint is
-            // the local static opening for that port. Dynamic ownership is
-            // still checked below against other committed nets.
-            let local_endpoint_open_keys = pack_cells(&candidate_core_cells);
+            let candidate_blocked_cells =
+                inflate_route_cells(&candidate_core_cells, core_radius_cells, width, height);
+            // A case-4 bump candidate is accepted or rejected by its actual
+            // waveguide core footprint. The inflated cells are only the
+            // reservation committed after the core is known to be legal; using
+            // them as hard blockers rejects visually legal local bumps.
             let out_of_bounds: Vec<(i32, i32)> = candidate_core_cells
                 .iter()
                 .copied()
@@ -6544,7 +6652,6 @@ impl PyPhotonicRouter {
                     self.obstacle_map.in_bounds(x, y)
                         && self.obstacle_map.is_static_blocked(x, y)
                         && !opened_keys.contains(&key)
-                        && !local_endpoint_open_keys.contains(&key)
                 })
                 .collect();
             let dynamic_blockers = cells_with_other_dynamic_owner(
@@ -6587,17 +6694,23 @@ impl PyPhotonicRouter {
                         format_cell_sample(&dynamic_blockers, 8)
                     ));
                 }
-                rejection_details.push(format!(
-                    "#{candidate_index} {candidate_label}: {} core_cells={} core_bbox={}",
+                let detail = format!(
+                    "#{candidate_index} {candidate_label}: {} core_cells={} core_bbox={} blocked_cells={} blocked_bbox={}",
                     reasons.join(", "),
                     candidate_core_cells.len(),
-                    format_bbox(&candidate_core_cells)
-                ));
+                    format_bbox(&candidate_core_cells),
+                    candidate_blocked_cells.len(),
+                    format_bbox(&candidate_blocked_cells)
+                );
+                if trace_endpoint_bumps {
+                    println!(
+                        "endpoint_bump_trace net_id={net_id} candidate={candidate_index} label={candidate_label} status=reject {detail}"
+                    );
+                }
+                rejection_details.push(detail);
                 continue;
             }
 
-            let candidate_blocked_cells =
-                inflate_route_cells(&candidate_core_cells, core_radius_cells, width, height);
             let merged_core_cells = unique_cells(
                 old_core_cells
                     .iter()
@@ -6611,49 +6724,71 @@ impl PyPhotonicRouter {
                     .chain(candidate_blocked_cells.iter().copied()),
             );
 
-            if self.obstacle_map.commit_route_with_clearance_overlap(
+            let commit_ok = if commit_to_router {
+                self.obstacle_map.commit_route_with_clearance_overlap(
+                    net_id,
+                    &merged_core_cells,
+                    &merged_blocked_cells,
+                    &commit_clearance_exempt_cell_vec,
+                )
+            } else {
+                let mut check_map = self.obstacle_map.clone();
+                check_map.commit_route_with_clearance_overlap(
                 net_id,
                 &merged_core_cells,
                 &merged_blocked_cells,
                 &commit_clearance_exempt_cell_vec,
-            ) {
-                self.remove_crossing_events_for_net(net_id);
-                self.register_geometric_crossing_events_for_route(
-                    net_id,
-                    route,
-                    source_port_um,
-                    target_port_um,
-                );
-                if self
-                    .remember_committed_route_centerlines_with_ports(
+                )
+            };
+            if commit_ok {
+                if trace_endpoint_bumps {
+                    println!(
+                        "endpoint_bump_trace net_id={net_id} candidate={candidate_index} label={candidate_label} status=accept core_cells={} core_bbox={} blocked_cells={} blocked_bbox={}",
+                        candidate_core_cells.len(),
+                        format_bbox(&candidate_core_cells),
+                        candidate_blocked_cells.len(),
+                        format_bbox(&candidate_blocked_cells)
+                    );
+                }
+                if commit_to_router {
+                    self.remove_crossing_events_for_net(net_id);
+                    self.register_geometric_crossing_events_for_route(
                         net_id,
                         route,
                         source_port_um,
                         target_port_um,
-                    )
-                    .is_err()
-                {
-                    self.rollback_committed_route(net_id);
-                    return Err(
-                        "Failed to record endpoint-corrected bump route centerline".to_string()
                     );
+                    if self
+                        .remember_committed_route_centerlines_with_ports(
+                            net_id,
+                            route,
+                            source_port_um,
+                            target_port_um,
+                        )
+                        .is_err()
+                    {
+                        self.rollback_committed_route(net_id);
+                        return Err(
+                            "Failed to record endpoint-corrected bump route centerline".to_string()
+                        );
+                    }
+                    self.remember_committed_route_opened_cells(net_id, Some(&opened_keys));
+                    self.add_crossing_spacing_history_for_route(net_id, route);
+                    if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
+                        net_id,
+                        route,
+                        source_port_um,
+                        target_port_um,
+                        Some(&opened_keys),
+                    ) {
+                        self.rollback_committed_route(net_id);
+                        return Err(error);
+                    }
+                    self.invalidate_meander_base_prefix();
                 }
-                self.remember_committed_route_opened_cells(net_id, Some(&opened_keys));
-                self.add_crossing_spacing_history_for_route(net_id, route);
-                if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
-                    net_id,
-                    route,
-                    source_port_um,
-                    target_port_um,
-                    Some(&opened_keys),
-                ) {
-                    self.rollback_committed_route(net_id);
-                    return Err(error);
-                }
-                self.invalidate_meander_base_prefix();
                 return Ok(NativeEndpointCorrection {
                     centerline,
-                    committed_bump: true,
+                    committed_bump: commit_to_router,
                     candidate_index: Some(candidate_index),
                     candidate_label: Some(candidate_label),
                 });
@@ -6671,7 +6806,7 @@ impl PyPhotonicRouter {
                 .collect();
             let commit_owners =
                 sorted_other_owners_for_cells(&self.obstacle_map, &commit_dynamic_blockers, net_id);
-            rejection_details.push(format!(
+            let detail = format!(
                 "#{candidate_index} {candidate_label}: commit_rejected dynamic_overlap={} owners={commit_owners:?} dynamic_bbox={} dynamic_sample={} out_of_bounds={} out_of_bounds_bbox={} core_cells={} core_bbox={}",
                 commit_dynamic_blockers.len(),
                 format_bbox(&commit_dynamic_blockers),
@@ -6680,13 +6815,278 @@ impl PyPhotonicRouter {
                 format_bbox(&commit_out_of_bounds),
                 candidate_core_cells.len(),
                 format_bbox(&candidate_core_cells)
-            ));
+            );
+            if trace_endpoint_bumps {
+                println!(
+                    "endpoint_bump_trace net_id={net_id} candidate={candidate_index} label={candidate_label} status=reject {detail}"
+                );
+            }
+            rejection_details.push(detail);
         }
 
         Err(format!(
             "No collision-free port endpoint case-4 bump placement found; candidates: {}",
             rejection_details.join("; ")
         ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn route_port_corrected_centerline_checked_native(
+        &mut self,
+        net_id: u64,
+        route: &RouteResult,
+        width_um: f64,
+        core_radius_cells: i32,
+        opened_cells: &[(i32, i32)],
+        clearance_exempt_cells: &[(i32, i32)],
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+        allow_unchecked_fallback: bool,
+    ) -> Result<NativeEndpointCorrection, String> {
+        self.route_port_corrected_centerline_checked_and_commit_native(
+            net_id,
+            route,
+            width_um,
+            core_radius_cells,
+            opened_cells,
+            clearance_exempt_cells,
+            source_port_um,
+            target_port_um,
+            allow_unchecked_fallback,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn centerline_port_corrected_checked_native(
+        &mut self,
+        net_id: u64,
+        centerline: &[(f64, f64)],
+        width_um: f64,
+        core_radius_cells: i32,
+        opened_cells: &[(i32, i32)],
+        clearance_exempt_cells: &[(i32, i32)],
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) -> Result<NativeEndpointCorrection, String> {
+        let static_grid = static_grid_from_py_grid(&self.grid);
+        let width = self.grid.width as i32;
+        let height = self.grid.height as i32;
+        let opened_keys = pack_cells(opened_cells);
+        let clearance_exempt_keys = pack_cells(clearance_exempt_cells);
+        let candidates = full_straight_offset_bump_candidates_for_centerline_rs(
+            centerline,
+            &self.primitives,
+            source_port_um,
+            target_port_um,
+        )
+        .map_err(|err| err.to_string())?;
+
+        if candidates.is_empty() {
+            return Err("No port endpoint case-4 bump candidates found for centerline segment".to_string());
+        }
+
+        let endpoint_bump_trace_net_id = net_id.to_string();
+        let trace_endpoint_bumps = std::env::var("PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS")
+            .ok()
+            .map(|raw| {
+                raw.split(',').any(|item| {
+                    let item = item.trim();
+                    item == "*" || item == endpoint_bump_trace_net_id
+                })
+            })
+            .unwrap_or(false);
+
+        let mut rejection_details = Vec::new();
+        let mut first_accepted: Option<NativeEndpointCorrection> = None;
+        for (candidate_index, candidate) in candidates.into_iter().enumerate() {
+            let candidate_label = candidate.label;
+            let candidate_centerline = candidate.centerline;
+            let bump_centerline =
+                compact_bump_portion(&candidate_centerline, candidate.placement_is_start);
+            let candidate_core_cells =
+                centerline_core_cells(bump_centerline, width_um, &static_grid)
+                    .map_err(|err| err.to_string())?;
+            if candidate_core_cells.is_empty() {
+                let detail = format!(
+                    "#{candidate_index} {candidate_label}: empty core footprint"
+                );
+                if trace_endpoint_bumps {
+                    println!(
+                        "endpoint_bump_trace net_id={net_id} candidate={candidate_index} label={candidate_label} status=reject {detail}"
+                    );
+                }
+                rejection_details.push(detail);
+                continue;
+            }
+            let candidate_blocked_cells =
+                inflate_route_cells(&candidate_core_cells, core_radius_cells, width, height);
+            let out_of_bounds: Vec<(i32, i32)> = candidate_core_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
+                .collect();
+            let static_blockers: Vec<(i32, i32)> = candidate_core_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| {
+                    let key = pack_xy(x, y);
+                    self.obstacle_map.in_bounds(x, y)
+                        && self.obstacle_map.is_static_blocked(x, y)
+                        && !opened_keys.contains(&key)
+                })
+                .collect();
+            let dynamic_blockers = cells_with_other_dynamic_owner(
+                &self.obstacle_map,
+                &candidate_core_cells,
+                &clearance_exempt_keys,
+                net_id,
+            );
+            if !out_of_bounds.is_empty()
+                || !static_blockers.is_empty()
+                || !dynamic_blockers.is_empty()
+            {
+                let mut reasons = Vec::new();
+                if !out_of_bounds.is_empty() {
+                    reasons.push(format!(
+                        "out_of_bounds={} bbox={} sample={}",
+                        out_of_bounds.len(),
+                        format_bbox(&out_of_bounds),
+                        format_cell_sample(&out_of_bounds, 8)
+                    ));
+                }
+                if !static_blockers.is_empty() {
+                    reasons.push(format!(
+                        "static_overlap={} bbox={} sample={}",
+                        static_blockers.len(),
+                        format_bbox(&static_blockers),
+                        format_cell_sample(&static_blockers, 8)
+                    ));
+                }
+                if !dynamic_blockers.is_empty() {
+                    let owners = sorted_other_owners_for_cells(
+                        &self.obstacle_map,
+                        &dynamic_blockers,
+                        net_id,
+                    );
+                    reasons.push(format!(
+                        "dynamic_overlap={} owners={owners:?} bbox={} sample={}",
+                        dynamic_blockers.len(),
+                        format_bbox(&dynamic_blockers),
+                        format_cell_sample(&dynamic_blockers, 8)
+                    ));
+                }
+                let detail = format!(
+                    "#{candidate_index} {candidate_label}: {} core_cells={} core_bbox={} blocked_cells={} blocked_bbox={}",
+                    reasons.join(", "),
+                    candidate_core_cells.len(),
+                    format_bbox(&candidate_core_cells),
+                    candidate_blocked_cells.len(),
+                    format_bbox(&candidate_blocked_cells)
+                );
+                if trace_endpoint_bumps {
+                    println!(
+                        "endpoint_bump_trace net_id={net_id} candidate={candidate_index} label={candidate_label} status=reject {detail}"
+                    );
+                }
+                rejection_details.push(detail);
+                continue;
+            }
+
+            let mut check_map = self.obstacle_map.clone();
+            let commit_ok = check_map.commit_route_with_clearance_overlap(
+                net_id,
+                &candidate_core_cells,
+                &candidate_blocked_cells,
+                clearance_exempt_cells,
+            );
+            if commit_ok {
+                if trace_endpoint_bumps {
+                    println!(
+                        "endpoint_bump_trace net_id={net_id} candidate={candidate_index} label={candidate_label} status=accept core_cells={} core_bbox={} blocked_cells={} blocked_bbox={}",
+                        candidate_core_cells.len(),
+                        format_bbox(&candidate_core_cells),
+                        candidate_blocked_cells.len(),
+                        format_bbox(&candidate_blocked_cells)
+                    );
+                }
+                if first_accepted.is_none() {
+                    first_accepted = Some(NativeEndpointCorrection {
+                        centerline: candidate_centerline,
+                        committed_bump: false,
+                        candidate_index: Some(candidate_index),
+                        candidate_label: Some(candidate_label),
+                    });
+                }
+                continue;
+            }
+
+            let commit_dynamic_blockers = cells_with_other_dynamic_owner(
+                &self.obstacle_map,
+                &candidate_core_cells,
+                &clearance_exempt_keys,
+                net_id,
+            );
+            let commit_out_of_bounds: Vec<(i32, i32)> = candidate_blocked_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
+                .collect();
+            let commit_owners =
+                sorted_other_owners_for_cells(&self.obstacle_map, &commit_dynamic_blockers, net_id);
+            let detail = format!(
+                "#{candidate_index} {candidate_label}: commit_rejected dynamic_overlap={} owners={commit_owners:?} dynamic_bbox={} dynamic_sample={} out_of_bounds={} out_of_bounds_bbox={} core_cells={} core_bbox={}",
+                commit_dynamic_blockers.len(),
+                format_bbox(&commit_dynamic_blockers),
+                format_cell_sample(&commit_dynamic_blockers, 8),
+                commit_out_of_bounds.len(),
+                format_bbox(&commit_out_of_bounds),
+                candidate_core_cells.len(),
+                format_bbox(&candidate_core_cells)
+            );
+            if trace_endpoint_bumps {
+                println!(
+                    "endpoint_bump_trace net_id={net_id} candidate={candidate_index} label={candidate_label} status=reject {detail}"
+                );
+            }
+            rejection_details.push(detail);
+        }
+
+        if let Some(correction) = first_accepted {
+            return Ok(correction);
+        }
+
+        Err(format!(
+            "No collision-free port endpoint case-4 bump placement found for centerline segment; candidates: {}",
+            rejection_details.join("; ")
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn route_port_corrected_centerline_checked_and_commit_compat_native(
+        &mut self,
+        net_id: u64,
+        route: &RouteResult,
+        width_um: f64,
+        core_radius_cells: i32,
+        opened_cells: &[(i32, i32)],
+        clearance_exempt_cells: &[(i32, i32)],
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+        allow_unchecked_fallback: bool,
+    ) -> Result<NativeEndpointCorrection, String> {
+        self.route_port_corrected_centerline_checked_and_commit_native(
+            net_id,
+            route,
+            width_um,
+            core_radius_cells,
+            opened_cells,
+            clearance_exempt_cells,
+            source_port_um,
+            target_port_um,
+            allow_unchecked_fallback,
+            true,
+        )
     }
 
 }
@@ -7381,6 +7781,13 @@ impl PyPhotonicRouter {
 
                     let mut candidate_and_runway = candidate_cells.clone();
                     candidate_and_runway.extend(runway_cells.iter().copied());
+                    candidate_and_runway.extend(route_port_endpoint_bump_candidate_cells(
+                        &grid,
+                        x_um,
+                        y_um,
+                        orientation,
+                        bend_radius_cells,
+                    ));
 
                     let effective_cells: FxHashSet<CellKey> = if route_clearance_um <= 0.0 {
                         candidate_cells
@@ -8158,6 +8565,7 @@ impl PyPhotonicRouter {
                     &probe_route,
                     &allowed_crossing_partners,
                     &probe_crossing_events,
+                    Some(&job.opened_cell_keys),
                 );
             let probe_realized_crossing_violations = if crossing_repair_enabled {
                 self.crossing_violations_for_route_with_ports(
@@ -8216,7 +8624,11 @@ impl PyPhotonicRouter {
                     add_candidate_blocker(partner_id, 1);
                 }
                 let reservation_blockers =
-                    self.crossing_reservation_blockers(job.net_id, &probe_crossing_events);
+                    self.crossing_reservation_blockers(
+                        job.net_id,
+                        &probe_crossing_events,
+                        Some(&job.opened_cell_keys),
+                    );
                 for owner in reservation_blockers.dynamic_blockers {
                     add_candidate_blocker(owner, 0);
                 }
@@ -10686,7 +11098,7 @@ impl PyPhotonicRouter {
         let opened_cell_vec = opened_cells.unwrap_or_default();
         let clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or_default();
         let correction = self
-            .route_port_corrected_centerline_checked_and_commit_native(
+            .route_port_corrected_centerline_checked_and_commit_compat_native(
                 net_id,
                 &r,
                 width_um,
@@ -10696,6 +11108,83 @@ impl PyPhotonicRouter {
                 source_port_um,
                 target_port_um,
                 allow_unchecked_fallback,
+            )
+            .map_err(PyRuntimeError::new_err)?;
+        let d = PyDict::new_bound(py);
+        d.set_item("centerline", correction.centerline)?;
+        d.set_item("committed_bump", correction.committed_bump)?;
+        d.set_item("candidate_index", correction.candidate_index)?;
+        d.set_item("candidate_label", correction.candidate_label)?;
+        Ok(d.into())
+    }
+
+    #[pyo3(signature=(net_id,route,width_um,clearance_radius_cells,core_radius_cells,opened_cells=None,clearance_exempt_cells=None,source_port_um=None,target_port_um=None,allow_unchecked_fallback=true))]
+    fn route_port_corrected_centerline_checked(
+        &mut self,
+        py: Python<'_>,
+        net_id: u64,
+        route: &PyRouteResult,
+        width_um: f64,
+        clearance_radius_cells: i32,
+        core_radius_cells: i32,
+        opened_cells: Option<Vec<(i32, i32)>>,
+        clearance_exempt_cells: Option<Vec<(i32, i32)>>,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+        allow_unchecked_fallback: bool,
+    ) -> PyResult<Py<PyDict>> {
+        let _ = clearance_radius_cells;
+        let r = to_route_result(route);
+        let opened_cell_vec = opened_cells.unwrap_or_default();
+        let clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or_default();
+        let correction = self
+            .route_port_corrected_centerline_checked_native(
+                net_id,
+                &r,
+                width_um,
+                core_radius_cells,
+                &opened_cell_vec,
+                &clearance_exempt_cell_vec,
+                source_port_um,
+                target_port_um,
+                allow_unchecked_fallback,
+            )
+            .map_err(PyRuntimeError::new_err)?;
+        let d = PyDict::new_bound(py);
+        d.set_item("centerline", correction.centerline)?;
+        d.set_item("committed_bump", correction.committed_bump)?;
+        d.set_item("candidate_index", correction.candidate_index)?;
+        d.set_item("candidate_label", correction.candidate_label)?;
+        Ok(d.into())
+    }
+
+    #[pyo3(signature=(net_id,centerline,width_um,clearance_radius_cells,core_radius_cells,opened_cells=None,clearance_exempt_cells=None,source_port_um=None,target_port_um=None))]
+    fn centerline_port_corrected_checked(
+        &mut self,
+        py: Python<'_>,
+        net_id: u64,
+        centerline: Vec<(f64, f64)>,
+        width_um: f64,
+        clearance_radius_cells: i32,
+        core_radius_cells: i32,
+        opened_cells: Option<Vec<(i32, i32)>>,
+        clearance_exempt_cells: Option<Vec<(i32, i32)>>,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) -> PyResult<Py<PyDict>> {
+        let _ = clearance_radius_cells;
+        let opened_cell_vec = opened_cells.unwrap_or_default();
+        let clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or_default();
+        let correction = self
+            .centerline_port_corrected_checked_native(
+                net_id,
+                &centerline,
+                width_um,
+                core_radius_cells,
+                &opened_cell_vec,
+                &clearance_exempt_cell_vec,
+                source_port_um,
+                target_port_um,
             )
             .map_err(PyRuntimeError::new_err)?;
         let d = PyDict::new_bound(py);
@@ -10739,7 +11228,75 @@ impl PyPhotonicRouter {
             let route_ref = route_obj.bind(py).borrow();
             let route = to_route_result(&route_ref);
             drop(route_ref);
-            match self.route_port_corrected_centerline_checked_and_commit_native(
+            match self.route_port_corrected_centerline_checked_and_commit_compat_native(
+                net_id,
+                &route,
+                width_um,
+                core_radius_cells,
+                &opened_cells,
+                &clearance_exempt_cells,
+                source_port_um,
+                target_port_um,
+                allow_unchecked_fallback,
+            ) {
+                Ok(correction) => {
+                    let total_length_um = centerline_length_um_rs(&correction.centerline)
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                    entry.set_item("error", py.None())?;
+                    entry.set_item("centerline", correction.centerline)?;
+                    entry.set_item("total_length_um", total_length_um)?;
+                    entry.set_item("committed_bump", correction.committed_bump)?;
+                    entry.set_item("candidate_index", correction.candidate_index)?;
+                    entry.set_item("candidate_label", correction.candidate_label)?;
+                }
+                Err(error) => {
+                    entry.set_item("error", error)?;
+                    entry.set_item("centerline", py.None())?;
+                    entry.set_item("total_length_um", py.None())?;
+                    entry.set_item("committed_bump", false)?;
+                    entry.set_item("candidate_index", py.None())?;
+                    entry.set_item("candidate_label", py.None())?;
+                }
+            }
+            entries.append(entry)?;
+        }
+        Ok(entries.into())
+    }
+
+    #[pyo3(signature=(jobs,width_um,clearance_radius_cells,core_radius_cells,allow_unchecked_fallback=true))]
+    fn apply_checked_endpoint_corrections(
+        &mut self,
+        py: Python<'_>,
+        jobs: Vec<(
+            u64,
+            Py<PyRouteResult>,
+            Vec<(i32, i32)>,
+            Vec<(i32, i32)>,
+            Option<(f64, f64)>,
+            Option<(f64, f64)>,
+        )>,
+        width_um: f64,
+        clearance_radius_cells: i32,
+        core_radius_cells: i32,
+        allow_unchecked_fallback: bool,
+    ) -> PyResult<PyObject> {
+        let _ = clearance_radius_cells;
+        let entries = PyList::empty_bound(py);
+        for (
+            net_id,
+            route_obj,
+            opened_cells,
+            clearance_exempt_cells,
+            source_port_um,
+            target_port_um,
+        ) in jobs
+        {
+            let entry = PyDict::new_bound(py);
+            entry.set_item("net_id", net_id)?;
+            let route_ref = route_obj.bind(py).borrow();
+            let route = to_route_result(&route_ref);
+            drop(route_ref);
+            match self.route_port_corrected_centerline_checked_native(
                 net_id,
                 &route,
                 width_um,
@@ -14029,7 +14586,8 @@ mod tests {
             3,
             &route,
             &partner_ids,
-            &events
+            &events,
+            None,
         ));
         assert_eq!(
             PyPhotonicRouter::crossing_partners_with_overlapping_reservations(&events).len(),
@@ -14105,7 +14663,8 @@ mod tests {
             3,
             &route,
             &partner_ids,
-            &events
+            &events,
+            None,
         ));
 
         router.obstacle_map.add_static_cells(&[(10, 13)]);
@@ -14113,20 +14672,30 @@ mod tests {
             3,
             &route,
             &partner_ids,
-            &events
+            &events,
+            None,
+        ));
+        let opened_static = [pack_xy(10, 13)].into_iter().collect();
+        assert!(router.crossing_route_satisfies_partner_constraints(
+            3,
+            &route,
+            &partner_ids,
+            &events,
+            Some(&opened_static),
         ));
         let static_cleanup = [pack_xy(10, 13)].into_iter().collect();
         router.obstacle_map.remove_static_keys(&static_cleanup);
 
         assert!(router.obstacle_map.commit_route(4, &[(10, 13)]));
-        let blockers = router.crossing_reservation_blockers(3, &events);
+        let blockers = router.crossing_reservation_blockers(3, &events, None);
         assert!(!blockers.is_clear());
         assert!(blockers.dynamic_blockers.contains(&4));
         assert!(!router.crossing_route_satisfies_partner_constraints(
             3,
             &route,
             &partner_ids,
-            &events
+            &events,
+            Some(&opened_static),
         ));
     }
 

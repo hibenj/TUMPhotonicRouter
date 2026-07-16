@@ -1,0 +1,5 @@
+[target.x86_64-pc-windows-gnullvm]
+linker = "C:\\Users\\benja\\.rustup\\toolchains\\stable-x86_64-pc-windows-gnullvm\\lib\\rustlib\\x86_64-pc-windows-gnullvm\\bin\\rust-lld.exe"
+
+[env]
+PYO3_PYTHON = { value = ".venv/Scripts/python.exe", relative = true }

@@ -214,6 +214,60 @@ def test_photonic_verifier_ignores_cross_net_overlap_inside_port_window():
     assert issues == []
 
 
+def test_photonic_verifier_accepts_stubbed_centerline_port_connections(monkeypatch):
+    monkeypatch.setattr(
+        photonic_verification_module,
+        "_realized_record_region",
+        lambda *args, **kwargs: _box_region(-500, -500, 20_500, 5_500),
+    )
+
+    result = verify_photonic_routing(
+        Component(),
+        _schematic_with_one_net(),
+        routed_net_records=[
+            _routed_record(
+                centerline=((0.0, 0.0), (4.0, 0.0), (8.0, 4.0), (20.0, 5.0)),
+                source_port_center_um=(0.0, 0.0),
+                target_port_center_um=(20.0, 5.0),
+            )
+        ],
+        route_width_um=1.0,
+        realization_grid_spec=(40, 20, 1.0, -5.0, -5.0),
+        check_endpoint_connectivity=True,
+    )
+
+    assert result.success is True
+
+
+def test_photonic_verifier_reports_unconnected_port_with_crossings_enabled(monkeypatch):
+    monkeypatch.setattr(
+        photonic_verification_module,
+        "_realized_record_region",
+        lambda *args, **kwargs: _box_region(-500, -500, 20_500, 5_500),
+    )
+
+    result = verify_photonic_routing(
+        Component(),
+        _schematic_with_one_net(),
+        routed_net_records=[
+            _routed_record(
+                centerline=((0.0, 0.0), (4.0, 0.0), (8.0, 4.0), (20.0, 5.0)),
+                source_port_center_um=(0.0, 0.0),
+                target_port_center_um=(30.0, 5.0),
+            )
+        ],
+        route_width_um=1.0,
+        realization_grid_spec=(40, 20, 1.0, -5.0, -5.0),
+        legal_overlap_polygons_by_net_id_pair_um={(1, 2): ()},
+        check_endpoint_connectivity=True,
+    )
+
+    issue_codes = {issue.code for issue in result.issues}
+    assert result.success is False
+    assert "target_port_not_connected" in issue_codes
+    assert "target_endpoint_mismatch" in issue_codes
+
+
 def test_photonic_verifier_reports_waveguide_obstacle_overlap():
     obstacle_layout = Component()
     obstacle_layout.add_polygon(

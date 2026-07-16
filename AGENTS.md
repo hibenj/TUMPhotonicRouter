@@ -70,6 +70,20 @@ maturin develop  # Builds Rust → python/photonic_router/_rust.so
 cargo build      # Alternative: build only Rust
 ```
 
+On this Windows workspace, the repo pins Rust to
+`stable-x86_64-pc-windows-gnullvm` via `rust-toolchain.toml` because MSVC
+`link.exe` is not installed. Use the project virtualenv and the repo-local
+Cargo config:
+
+```powershell
+C:\Users\benja\.cargo\bin\cargo.exe check
+.\.venv\Scripts\python.exe -m maturin develop --release
+```
+
+If Rust builds start failing with `link.exe not found`,
+`x86_64-w64-mingw32-clang not found`, or `no Python 3.x interpreter found`, read
+`docs/WINDOWS_RUST_TOOLCHAIN.md` before changing toolchains.
+
 **Import Pattern** (critical):
 ```python
 import photonic_router._rust as rust_backend  # Bindings from maturin

@@ -44,6 +44,7 @@ The first visible outcome is a repeatable harness that proves small crossing ben
 - [x] (2026-07-14 12:20Z) Established the current low-level crossing invariant for the `multiportmmi_8x8` `n_31`/`n_32` cluster: A* Layer 1 now detects offset one-cell diagonal collisions with a compact diagonal halo, evaluates them as crossing candidates, and rejects illegal moves before repair.
 - [x] (2026-07-14 12:20Z) Removed temporary validation-bypass experiments from the checkpoint. The standing policy is that Python/Rust realized verification must not be disabled to write invalid GDS during normal routing work.
 - [ ] Continue from the clean invariant boundary: when Layer 1 rejects illegal crossing moves and cannot find a legal route, repair/rip-up is the intended next phase. Future work should improve legal route discovery or repair convergence, not reintroduce post-route illegality acceptance.
+- [x] (2026-07-16 07:40Z) Reached the first full green `multiportmmi_8x8` crossing-mode milestone with 90-degree static stubs: 111/111 routed records, 0 route failures, 0 repairs, crossing verification success with 35/35 legal matched crossing components, and photonic verification success with 0 issues.
 
 ## Surprises & Discoveries
 

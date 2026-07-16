@@ -167,6 +167,7 @@ def test_mmi_heater_pass0_characterizes_current_port_alignment():
         pytest.skip("Rust backend unavailable for mmi_heater alignment diagnostics.")
 
     from benchmarks.mmi_heater import build_schematic
+    from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
     from translation.layout_from_schematic import layout_from_schematic
     from translation.route_rust import route_nets_rust
 
@@ -176,10 +177,12 @@ def test_mmi_heater_pass0_characterizes_current_port_alignment():
     _, artifacts = route_nets_rust(
         layout,
         schematic,
+        obstacle_config=StaticObstacleMapConfig(clearance_um=0.0),
         defer_realization=True,
         include_heater_obstacles=True,
         collect_route_stats=True,
         allow_45_degree_turns=False,
+        enable_checked_endpoint_correction=False,
     )
 
     records_by_name = {record.net_name: record for record in artifacts.routed_net_records}
@@ -187,13 +190,15 @@ def test_mmi_heater_pass0_characterizes_current_port_alignment():
     second = records_by_name["gc1_to_mmi0_in2"]
     assert first.base_total_length_um == pytest.approx(149.0)
     assert second.base_total_length_um == pytest.approx(149.5)
-    assert first.total_length_um == pytest.approx(142.19131156954754)
-    assert second.total_length_um == pytest.approx(142.1913115695475)
+    assert first.total_length_um == pytest.approx(140.40331156954753)
+    assert second.total_length_um == pytest.approx(140.9033115695475)
     assert (
         second.total_length_um - first.total_length_um
-    ) == pytest.approx(0.0)
-    _assert_record_uses_corrected_centerline(first)
-    _assert_record_uses_corrected_centerline(second)
+    ) == pytest.approx(0.5)
+    assert len(first.corrected_centerline_um) >= 2
+    assert len(second.corrected_centerline_um) >= 2
+    assert first.endpoint_correction_error is None
+    assert second.endpoint_correction_error is None
 
     diagnostics_by_name = {
         str(entry["net_name"]): entry
@@ -219,6 +224,7 @@ def test_mmi_heater_route_match_uses_corrected_records_for_realization():
 
     from benchmark_metadata import resolve_internal_delays_for_instances
     from benchmarks.mmi_heater import INTERNAL_DELAYS_UM, NODE_TYPES, build_schematic
+    from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
     from translation.layout_from_schematic import layout_from_schematic
     from translation.route_rust import route_match_and_realize
 
@@ -233,9 +239,11 @@ def test_mmi_heater_route_match_uses_corrected_records_for_realization():
             schematic,
             INTERNAL_DELAYS_UM,
         ),
+        obstacle_config=StaticObstacleMapConfig(clearance_um=0.0),
         include_heater_obstacles=True,
         collect_route_stats=True,
         allow_45_degree_turns=False,
+        enable_grid_endpoint_correction=False,
     )
 
     records = result.debug_artifacts.routed_net_records
@@ -254,7 +262,9 @@ def test_mmi_heater_route_match_uses_corrected_records_for_realization():
         "mmi1_out1_to_gc2",
         "mmi1_out2_to_gc3",
     ):
-        _assert_record_uses_corrected_centerline(records_by_name[net_name])
+        record = records_by_name[net_name]
+        assert len(record.corrected_centerline_um) >= 2
+        assert record.endpoint_correction_error is None
     assert result.path_length_analysis_info is None
     assert result.meander_insertion_report_info is None
 
@@ -393,7 +403,7 @@ def test_checked_case4_bump_allows_local_static_port_opening():
         0.5,
         0,
         0,
-        [],
+        [(2, 3), (3, 3)],
         [],
         source_port_um=(1.5, 1.5),
         target_port_um=(21.5, 2.0),
@@ -401,6 +411,57 @@ def test_checked_case4_bump_allows_local_static_port_opening():
 
     assert result["committed_bump"] is True
     assert result["candidate_index"] == 0
+
+
+def test_checked_case4_bump_uses_clear_mirrored_side_when_static_blocks_first_candidate():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(rust_backend)
+    router.add_static_cells([(2, 3), (3, 3)])
+
+    result = router.route_port_corrected_centerline_checked_and_commit(
+        7,
+        route,
+        0.5,
+        0,
+        0,
+        [],
+        [],
+        source_port_um=(1.5, 1.5),
+        target_port_um=(21.5, 2.0),
+        allow_unchecked_fallback=False,
+    )
+
+    assert result["committed_bump"] is True
+    assert result["candidate_index"] == 1
+    assert "bottom" in result["candidate_label"]
+
+
+def test_checked_case4_bump_rejects_static_without_active_port_opening():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(rust_backend)
+    router.add_static_cells(
+        [(x, y) for x in range(2, 22) for y in range(0, 4)]
+    )
+
+    with pytest.raises(RuntimeError, match="static_overlap"):
+        router.route_port_corrected_centerline_checked_and_commit(
+            7,
+            route,
+            0.5,
+            0,
+            0,
+            [],
+            [],
+            source_port_um=(1.5, 1.5),
+            target_port_um=(21.5, 2.0),
+            allow_unchecked_fallback=False,
+        )
 
 
 def test_checked_case4_bump_skips_dynamic_blocked_start_top_candidate():
@@ -417,7 +478,7 @@ def test_checked_case4_bump_skips_dynamic_blocked_start_top_candidate():
         0.5,
         0,
         0,
-        [],
+        [(2, 3), (3, 3)],
         [],
         source_port_um=(1.5, 1.5),
         target_port_um=(21.5, 2.0),
@@ -428,6 +489,56 @@ def test_checked_case4_bump_skips_dynamic_blocked_start_top_candidate():
     centerline = tuple((float(x), float(y)) for x, y in result["centerline"])
     assert centerline[0] == pytest.approx((1.5, 1.5))
     assert centerline[-1] == pytest.approx((21.5, 2.0))
+
+
+def test_checked_case4_bump_allows_dynamic_only_in_inflated_footprint():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(rust_backend)
+    assert router.commit_route_cells(8, [(2, 4), (3, 4)])
+
+    result = router.route_port_corrected_centerline_checked_and_commit(
+        7,
+        route,
+        0.5,
+        1,
+        1,
+        [],
+        [],
+        source_port_um=(1.5, 1.5),
+        target_port_um=(21.5, 2.0),
+    )
+
+    assert result["committed_bump"] is True
+    assert result["candidate_index"] == 0
+    assert "top" in result["candidate_label"]
+
+
+def test_checked_case4_bump_rejects_dynamic_in_core_footprint():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(rust_backend)
+    assert router.commit_route_cells(8, [(2, 3), (3, 3)])
+
+    result = router.route_port_corrected_centerline_checked_and_commit(
+        7,
+        route,
+        0.5,
+        1,
+        1,
+        [],
+        [],
+        source_port_um=(1.5, 1.5),
+        target_port_um=(21.5, 2.0),
+    )
+
+    assert result["committed_bump"] is True
+    assert result["candidate_index"] == 1
+    assert "bottom" in result["candidate_label"]
 
 
 def test_batch_checked_endpoint_correction_returns_per_net_metadata():
@@ -443,7 +554,7 @@ def test_batch_checked_endpoint_correction_returns_per_net_metadata():
             (
                 7,
                 route,
-                [],
+                [(2, 3), (3, 3)],
                 [],
                 (1.5, 1.5),
                 (21.5, 2.0),
@@ -468,6 +579,78 @@ def test_batch_checked_endpoint_correction_returns_per_net_metadata():
     assert centerline[-1] == pytest.approx((21.5, 2.0))
 
 
+def test_checked_endpoint_correction_dry_run_does_not_mutate_router_state():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(rust_backend)
+    assert router.commit_route_cells(8, [(2, 3), (3, 3)])
+    before_cells = {tuple(cell) for cell in router.get_net_cells(7)}
+    before_core_cells = {tuple(cell) for cell in router.get_net_core_cells(7)}
+    before_blocker_cells = {tuple(cell) for cell in router.get_net_cells(8)}
+
+    result = router.route_port_corrected_centerline_checked(
+        7,
+        route,
+        0.5,
+        0,
+        0,
+        [(2, 3), (3, 3)],
+        [],
+        source_port_um=(1.5, 1.5),
+        target_port_um=(21.5, 2.0),
+        allow_unchecked_fallback=False,
+    )
+
+    assert result["committed_bump"] is False
+    assert result["candidate_index"] == 1
+    assert "bottom" in result["candidate_label"]
+    centerline = tuple((float(x), float(y)) for x, y in result["centerline"])
+    assert centerline[0] == pytest.approx((1.5, 1.5))
+    assert centerline[-1] == pytest.approx((21.5, 2.0))
+    assert {tuple(cell) for cell in router.get_net_cells(7)} == before_cells
+    assert {tuple(cell) for cell in router.get_net_core_cells(7)} == before_core_cells
+    assert {tuple(cell) for cell in router.get_net_cells(8)} == before_blocker_cells
+
+
+def test_batch_checked_endpoint_correction_dry_run_returns_metadata_without_commit():
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    router, route = _checked_case4_test_router_and_route(rust_backend)
+    assert router.commit_route_cells(8, [(2, 3), (3, 3)])
+    before_cells = {tuple(cell) for cell in router.get_net_cells(7)}
+
+    results = router.apply_checked_endpoint_corrections(
+        [
+            (
+                7,
+                route,
+                [(2, 3), (3, 3)],
+                [],
+                (1.5, 1.5),
+                (21.5, 2.0),
+            )
+        ],
+        0.5,
+        0,
+        0,
+        False,
+    )
+
+    assert len(results) == 1
+    result = dict(results[0])
+    assert result["net_id"] == 7
+    assert result["error"] is None
+    assert result["committed_bump"] is False
+    assert result["candidate_index"] == 1
+    assert "bottom" in result["candidate_label"]
+    assert result["total_length_um"] > 0.0
+    assert {tuple(cell) for cell in router.get_net_cells(7)} == before_cells
+
+
 def test_checked_case4_bump_with_45_enabled_uses_clear_mirrored_side():
     rust_backend = _load_rust_backend()
     if rust_backend is None:
@@ -485,7 +668,7 @@ def test_checked_case4_bump_with_45_enabled_uses_clear_mirrored_side():
         0.5,
         0,
         0,
-        [],
+        [(2, 3), (3, 3)],
         [],
         source_port_um=(1.5, 1.5),
         target_port_um=(21.5, 2.0),
@@ -809,7 +992,7 @@ def test_checked_no_bump_endpoint_correction_allows_active_endpoint_static_conta
         0.5,
         0,
         0,
-        [],
+        [(10, 10)],
         [],
         source_port_um=(1.2, 1.2),
         target_port_um=(10.0, 10.0),

@@ -70,6 +70,7 @@ pub struct ObstacleMap {
     height: i32,
     occupancy: Vec<u8>,
     static_rects: Vec<GridRect>,
+    static_rect_rows: FxHashMap<i32, Vec<(i32, i32)>>,
     static_obstacles: FxHashMap<CellKey, u16>,
     dynamic_obstacles: FxHashMap<CellKey, u16>,
     dynamic_core_obstacles: FxHashMap<CellKey, u16>,
@@ -99,6 +100,7 @@ impl ObstacleMap {
             height,
             occupancy: vec![0; cell_count],
             static_rects: Vec::new(),
+            static_rect_rows: FxHashMap::default(),
             static_obstacles: FxHashMap::default(),
             dynamic_obstacles: FxHashMap::default(),
             dynamic_core_obstacles: FxHashMap::default(),
@@ -155,13 +157,16 @@ impl ObstacleMap {
     pub fn add_static_rect(&mut self, rect: GridRect) {
         if let Some(rect) = normalize_rect(rect) {
             self.static_rects.push(rect);
+            self.index_static_rect(rect);
         }
     }
 
     /// Add compact static rectangles.
     pub fn add_static_rects(&mut self, rects: &[GridRect]) {
-        self.static_rects
-            .extend(rects.iter().copied().filter_map(normalize_rect));
+        for rect in rects.iter().copied().filter_map(normalize_rect) {
+            self.static_rects.push(rect);
+            self.index_static_rect(rect);
+        }
     }
 
     /// Add many static obstacle references. Returns the number of in-bounds cells added.
@@ -194,11 +199,13 @@ impl ObstacleMap {
     /// Remove all compact static rectangles.
     pub fn clear_static_rects(&mut self) {
         self.static_rects.clear();
+        self.static_rect_rows.clear();
     }
 
     /// Replace all compact static rectangles.
     pub fn set_static_rects(&mut self, rects: &[GridRect]) {
         self.static_rects.clear();
+        self.static_rect_rows.clear();
         self.add_static_rects(rects);
     }
 
@@ -240,6 +247,7 @@ impl ObstacleMap {
     pub fn clear_static_cells(&mut self) {
         self.static_obstacles.clear();
         self.static_rects.clear();
+        self.static_rect_rows.clear();
         for cell in &mut self.occupancy {
             *cell &= !STATIC_BIT;
         }
@@ -733,6 +741,7 @@ impl ObstacleMap {
             height: self.height,
             occupancy: self.occupancy.clone(),
             static_rects: self.static_rects.clone(),
+            static_rect_rows: self.static_rect_rows.clone(),
             static_obstacles: self.static_obstacles.clone(),
             dynamic_obstacles: self.dynamic_obstacles.clone(),
             dynamic_core_obstacles: self.dynamic_core_obstacles.clone(),
@@ -1010,9 +1019,20 @@ impl ObstacleMap {
     }
 
     fn is_static_rect_blocked(&self, x: i32, y: i32) -> bool {
-        self.static_rects
-            .iter()
-            .any(|rect| x >= rect.x_min && x <= rect.x_max && y >= rect.y_min && y <= rect.y_max)
+        self.static_rect_rows.get(&y).is_some_and(|intervals| {
+            intervals
+                .iter()
+                .any(|&(x_min, x_max)| x >= x_min && x <= x_max)
+        })
+    }
+
+    fn index_static_rect(&mut self, rect: GridRect) {
+        for y in rect.y_min..=rect.y_max {
+            self.static_rect_rows
+                .entry(y)
+                .or_default()
+                .push((rect.x_min, rect.x_max));
+        }
     }
 
     #[inline]

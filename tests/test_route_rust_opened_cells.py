@@ -886,6 +886,96 @@ def test_route_nets_rust_foreign_port_keepout_opens_for_same_instance(monkeypatc
     assert int(_diagnostic_value(diag_text, "foreign_port_keepout_open_count")) > 0
 
 
+def test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor(
+    monkeypatch,
+    tmp_path,
+):
+    blocked_cells: set[tuple[int, int]] = set()
+
+    def fake_build_static_obstacle_map(_component, config=None):
+        _ = config
+        return _DummyObstacleData(
+            blocked_cells=blocked_cells,
+            raw_blocked_cells=blocked_cells,
+            width=45,
+            height=20,
+        )
+
+    def fake_get_port_from_instance(_layout, inst, port):
+        ports = {
+            ("mmi0_multiport", "o1"): SimpleNamespace(center=(2.5, 6.5), orientation=0.0),
+            ("mmi0_multiport", "o2"): SimpleNamespace(center=(2.5, 8.5), orientation=0.0),
+            ("mmi0_multiport", "o3"): SimpleNamespace(center=(2.5, 10.5), orientation=0.0),
+            ("right0", "o1"): SimpleNamespace(center=(35.5, 3.5), orientation=180.0),
+            ("right1", "o1"): SimpleNamespace(center=(35.5, 8.5), orientation=180.0),
+            ("right2", "o1"): SimpleNamespace(center=(35.5, 13.5), orientation=180.0),
+        }
+        return ports[(inst, port)]
+
+    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
+    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+
+    schematic = _DummySchematic(
+        netlist=_DummyNetlist(
+            routes={
+                "spread_0": _DummyBundle(links={"mmi0_multiport,o1": "right0,o1"}),
+                "spread_1": _DummyBundle(links={"mmi0_multiport,o2": "right1,o1"}),
+                "spread_2": _DummyBundle(links={"mmi0_multiport,o3": "right2,o1"}),
+            },
+            instances={
+                "mmi0_multiport": SimpleNamespace(component="mmi_3x3"),
+            },
+        )
+    )
+
+    _routed_layout, debug_artifacts = route_rust.route_nets_rust(
+        _make_dummy_layout(),
+        schematic,  # type: ignore[arg-type]
+        obstacle_config=StaticObstacleMapConfig(
+            obstacle_mode="rasterized_polygons",
+            grid_size_um=1.0,
+            security_margin_um=0.0,
+            clearance_um=0.0,
+            port_open_radius_um=0.0,
+            die_bbox=(0.0, 0.0, 45.0, 20.0),
+        ),
+        debug_dir=tmp_path,
+        debug_prefix="static_stub_fanout",
+        debug_stop_after_route_index=1,
+        route_width_um=0.5,
+        allow_45_degree_turns=True,
+        bend_radius_um=1.0,
+        foreign_port_keepout_cells=0,
+        fanout_access_mode="static-stubs",
+        max_iterations=20_000,
+        defer_realization=True,
+    )
+
+    diag_path = tmp_path / "routes" / "static_stub_fanout_spread_0_diagnostics.txt"
+    diag_text = diag_path.read_text(encoding="utf-8")
+    assert "status=ok" in diag_text
+    assert "fanout_access_mode=static-stubs" in diag_text
+    assert "source_fanout_anchor=True" in diag_text
+    assert "source_dense_port_runway_cells=9" in diag_text
+    assert int(_diagnostic_value(diag_text, "fanout_anchor_port_count")) == 3
+    assert int(_diagnostic_value(diag_text, "fanout_stub_static_cell_count")) > 0
+
+    crossing_info = debug_artifacts.crossing_plan_info
+    assert crossing_info["fanout_access_mode"] == "static-stubs"
+    assert crossing_info["fanout_anchor_port_count"] == 3
+    assert crossing_info["fanout_anchor_net_ids"] == [1, 2, 3]
+    assert len(crossing_info["fanout_stub_centerlines_um"]) == 3
+    first_stub = crossing_info["fanout_stub_centerlines_um"][0]
+    assert first_stub["port_spec"] == "mmi0_multiport,o1"
+    assert len(first_stub["centerline_um"]) > 1
+
+    record = debug_artifacts.routed_net_records[0]
+    assert record.corrected_centerline_um
+    assert record.corrected_centerline_um[0] == pytest.approx((2.5, 6.5))
+    assert record.corrected_centerline_um[-1] == pytest.approx((35.5, 3.5))
+    assert len(record.corrected_centerline_um) > 2
+
+
 def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
     monkeypatch,
     tmp_path,

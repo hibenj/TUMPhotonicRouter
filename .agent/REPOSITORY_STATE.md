@@ -5,8 +5,9 @@ every agent stop, pause, or handoff. It does not replace the active ExecPlan.
 
 ## Current Snapshot
 
-- Date: 2026-07-14 09:52Z
+- Date: 2026-07-16 07:24Z
 - Branch: `crossings/verification-foundation`
+- Current HEAD: `6b0c5cc`
 - Current clean-branch base: `731d0a9`
 - Active ExecPlan:
   `.agent/execplans/2026-07-10-crossing-verification-foundation.md`
@@ -25,6 +26,167 @@ verification and router-discovered crossing work. It should stay reviewable and
 should not receive wholesale merges from the experimental branch.
 
 At creation, this worktree was clean at `731d0a9`.
+
+Terminal bump distance A* guard checkpoint:
+
+- Date: 2026-07-16 09:24 local
+- Scope:
+  - Implemented the previously diagnosed terminal-bump distance condition in
+    Rust A* crossing search. If a crossing lies on the final target axis and
+    the target port is off the target grid center on the perpendicular axis,
+    A* now rejects crossing positions that leave less than the endpoint bump
+    length between the crossing footprint and the target.
+  - The activation is axis-specific: horizontal target approaches only inspect
+    target-y grid snap offset, and vertical target approaches only inspect
+    target-x grid snap offset.
+  - `n_33`-style exact-fit cases remain legal because equality is accepted.
+- Code note:
+  - Added `TerminalBumpGuard` / `TerminalBumpAxis` to `src/astar.rs`.
+  - `src/py_router.rs` builds the guard from `target_port_um` and the A*
+    target state only for the normal collision-crossing search path.
+  - Added focused Rust tests for too-close rejection and exact-distance
+    acceptance.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - `C:\Users\benja\.cargo\bin\cargo.exe test crossing_terminal_bump_guard`
+    passed after adding the Codex runtime Python directory to `PATH` for the
+    PyO3 test executable.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - Full run passed routing with:
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`,
+    `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=1`,
+    `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35
+    --foreign-port-keepout-cells 6 --debug-svgs false --debug-timing true`.
+    Result: 111/111 routes, 0 route failures, 0 repairs, 35/35 legal crossing
+    components, no waveguide/static/crossing overlap issues.
+- Remaining issue:
+  - Photonic port verification still reports only `n_108` target connection
+    errors at `gc_array_out_gc_5,o1`: target port not touched and corrected
+    endpoint distance `2.649um` vs tolerance `2.0um`.
+  - Current GDS artifact:
+    `build\routed_multiportmmi_8x8.gds`.
+- Follow-up:
+  - The terminal-bump guard activation was widened from exact target-axis
+    equality to a near-axis zone. It now applies when the crossing is within
+    `required_bump_cells / 2` cells of the target axis, inclusive. With the
+    current 3-cell bend radius this means `<= 6` cells triggers the check.
+  - Added a focused Rust regression proving that exactly 6 cells still rejects
+    a crossing when the remaining along-axis distance is too short.
+  - Validation passed:
+    `cargo test crossing_terminal_bump_guard -- --nocapture`,
+    `cargo check`, and `.\.venv\Scripts\python.exe -m maturin develop
+    --release`.
+  - Full `multiportmmi_8x8` was rerun after this inclusive-axis-margin change
+    with 90-degree static stubs. Result: success. Timing summary total
+    `33.6606 s`, net routing phase `24.1806 s`, 111/111 routed records,
+    0 route failures, 0 repairs.
+  - Crossing verification: success, 0 issues, 35/35 legal crossings, 35/35
+    crossing components matched.
+  - Photonic verification: success, 0 issues, 0 cross-net waveguide overlaps,
+    0 crossing component overlaps, 0 waveguide/static obstacle overlaps.
+  - Fresh GDS:
+    `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-16 09:40:55 local,
+    size 486974 bytes.
+
+Static-stub 90-degree bend stop-after-`n_31` artifact:
+
+- Date: 2026-07-15
+- Scope:
+  - User asked to show the GDS after the `n_31` run with static stubs, then
+    pointed out that port runways may not have been adapted to the shifted
+    virtual ports caused by 90-degree stubs.
+  - No commit was made.
+- Code note:
+  - Added a focused WIP adjustment so dense-port lane filtering uses fanout
+    anchor centers/angles when a port has a static-stub anchor, and no longer
+    bypasses dense filtering for anchored ports.
+  - Syntax check passed:
+    `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`.
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`,
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`, with
+    `PHOTONIC_ROUTER_FANOUT_STUB_FORWARD_CELLS` unset.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 32 --debug-svgs
+    32 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`
+- Result:
+  - Success; route `[32/32] n_31` completed with length `249.966um`,
+    cost `253.966`, expanded states `3827`.
+  - Generated GDS:
+    `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-15 11:47:20 local,
+    size 167010 bytes.
+  - Diagnostics:
+    `build\routes\multiportmmi_8x8_n_31_diagnostics.txt` reports
+    `status=ok`, `fanout_stub_bend_degrees=90`,
+    `source_state=(712,149,0)`, `target_state=(767,243,0)`,
+    and `source_dense_port_runway_cells=18`.
+- Current assessment:
+  - The artifact is available for visual inspection.
+  - The runway/opening issue is not fully closed: the n_31 diagnostic still
+    reports large opened-cell sets (`opened_cells_count=656`), so a follow-up
+    should separate same-cluster foreign-keepout openings from true normal
+    protected runway openings and verify that only the intended virtual-anchor
+    runway is opened for each anchored net.
+- Follow-up inspection:
+  - User clarified that `n_31` may bend early as long as it does not violate
+    `n_32`'s protected port/runway cells.
+  - Added WIP diagnostics for current/sibling port-runway overlaps in
+    `translation/route_rust.py`.
+  - Re-ran stop-after-`n_31` with 90-degree static stubs. Diagnostics confirm
+    `route_overlap_sibling_port_runway_count=0`, while
+    `route_overlap_current_port_runway_count=10`; therefore the current
+    `n_31` shape does not violate sibling runway cells.
+  - Fresh normal route SVG:
+    `build\routes\multiportmmi_8x8_n_31.svg`.
+  - Added a small focused inspection SVG:
+    `build\routes\multiportmmi_8x8_n31_with_n32_stub_focus.svg`, showing the
+    `n_31` committed route, the `n_32` virtual stub anchor/runway, and the
+    direct illegal crossing candidate region.
+
+Current static fanout-stub WIP:
+
+- Date: 2026-07-15
+- Dirty files: `routing_flow.py`, `translation/route_rust.py`,
+  `tests/test_route_rust_opened_cells.py`, and this repository-state file.
+- Implemented an opt-in `fanout_access_mode="static-stubs"` path for dense
+  multiport source clusters. In this mode the old stepwise dense source runway
+  is disabled, source fanout access stubs are reserved as static cells, and A*
+  routes from virtual anchor ports. These stubs are not dynamic nets and must
+  never enter rip-up/victim sets.
+- The static-stub generator now builds a physical port-tangent centerline from
+  the real port to the virtual anchor. For source-anchored records, the A*
+  body is endpoint-corrected only on the non-stub target side before splicing
+  in the static stub, so normal realization no longer needs a diagnostic
+  verifier bypass for the stop-before-`n_32` artifact.
+- Debug metadata now records `fanout_stub_centerlines_um` in
+  `crossing_plan_info`; the first focused regression asserts that static stub
+  mode emits this metadata and routes from a virtual source anchor.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py routing_flow.py`
+    passed.
+  - `.\.venv\Scripts\python.exe -m pytest -q tests\test_route_rust_opened_cells.py`
+    passed: 18 tests.
+  - Normal CLI stop-before-`n_32` command passed:
+    `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 32 --debug-svgs false --attempt-diagnostics --debug-timing true --fanout-access-mode static-stubs`.
+    It wrote `build\routed_multiportmmi_8x8.gds` at 2026-07-15 09:07 local,
+    with 32 routed records, 0 crossing-verification errors, and 0 photonic
+    errors. The metadata reports 36 total static fanout stubs and six stubs for
+    `mmi0_multiport_0_0,o7..o12`, covering the `n_31..n_36` source cluster.
+  - Diagnostic-only inspection artifact also exists at
+    `build\routed_multiportmmi_8x8_static_stubs_before_n32_DIAGNOSTIC.gds`,
+    but the normal-path GDS above is now the relevant artifact.
+- Remaining blocker:
+  - Stop-after-`n_32` still fails in static-stub mode at route index 33 / net
+    `n_32` with `No legal LiDAR crossing route found; probe-based victim
+    selection is disabled in crossing mode`. The realization/stub geometry
+    bug is fixed for the current boundary, but the next work item is search
+    behavior with `n_31` as a static-stubbed committed route.
 
 Current Windows checkout note:
 
@@ -4160,3 +4322,2798 @@ Pre-`n_93` A* core follow-up speed checkpoint:
   - This is another verified hot-path speedup over commit `cf23b2f`: the
     stop-before-`n_93` checkpoint improves from `53.655 s` to `46.701 s`
     without changing route search counters or verifier status.
+
+Static fanout stub WIP checkpoint:
+
+- Date: 2026-07-15
+- Scope:
+  - Working on experimental `fanout_access_mode=static-stubs` for dense
+    multi-port access. User explicitly said not to commit this WIP.
+  - Current focus is the first cluster stub around `n_31`; `n_31` appears as
+    internal `net_id=32` / route 32 in the stop-after-32 artifact.
+- Current artifact:
+  - Command run:
+    `python routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --debug-stop-after-route 32 --debug-svgs false
+    --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`.
+  - Result: completed and wrote `build/routed_multiportmmi_8x8.gds`.
+  - Crossing report insertion-loss summary lists `net_count=32` and
+    `net_id=32`, `net_name=n_31`.
+  - Latest WIP iteration aligns the special `mmi0_multiport_0_0,o12` static
+    stub by cell centers: 45-degree bend, diagonal alignment segment to the
+    next valid grid-y center, second 45-degree bend, then final straight to the
+    next valid grid-x center. The current artifact reports this stub with
+    anchor cell `{718,156}`, and `fanout_anchor_net_ids` includes `32`.
+  - Subsequent WIP iteration generalizes this to horizontal dense MMI source
+    clusters by splitting each cluster into lower and upper halves and spacing
+    each half outward with `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS`
+    defaulting to `3` cell-center distance. For `mmi0_multiport_0_0`, the
+    stop-after-32 artifact reports lower anchors `{718,161}`, `{718,158}`,
+    `{719,155}` and upper anchors `{718,176}`, `{718,179}`, `{719,182}`.
+  - Stop-after-route-33 attempt fails on `n_32` from source anchor
+    `(718,158,0)` to target `(767,93,0)` with
+    `No legal LiDAR crossing route found; probe-based victim selection is
+    disabled in crossing mode`. No GDS was produced for route 33.
+  - Diagnostic freshness fix: `routing_flow.py` now enables `debug_dir` for
+    `--attempt-diagnostics` even when `--debug-svgs false`, while passing an
+    empty route SVG selection so text diagnostics are refreshed without
+    exporting SVGs. `translation/route_rust.py` now creates per-route
+    diagnostic text paths when `collect_attempt_diagnostics` is active.
+  - Re-running stop-after-route-33 now refreshes
+    `build/routes/multiportmmi_8x8_n_32_diagnostics.txt`; it correctly reports
+    `source_fanout_anchor=True`, `source_state=(718,158,0)`, and
+    `target_state=(767,93,0)`. It also reports opened dynamic overlap
+    count `8`, bbox `(719,730,155,162)`, and no route cells because A* found no
+    legal route. No route SVGs were generated in this no-SVG diagnostics mode.
+  - Additional visualization generated:
+    `build/routes/multiportmmi_8x8_n32_stub_blockers.svg`. It overlays the
+    current source stubs, the committed `n_31` route, the `n_32` source anchor,
+    the dynamic-overlap bbox `(719,730,155,162)`, and the static/port-reservation
+    overlap bbox `(760,767,91,96)`.
+  - User rejected the synthetic overlay as insufficient for this question.
+    Generated the real router route SVG with
+    `--debug-stop-after-route 32 --debug-svgs 32`, producing
+    `build/routes/multiportmmi_8x8_n_31.svg`. The fresh diagnostics show
+    `n_31`, `source_fanout_anchor=True`, `source_state=(719,155,0)`, and
+    `route_dynamic_overlap_count=0`.
+- Validation:
+  - `python -m py_compile translation/route_rust.py routing_flow.py` passed.
+  - `python -m pytest -q
+    tests/test_route_rust_opened_cells.py::test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor`
+    passed.
+- Current assessment:
+  - The static-stub worktree is intentionally dirty and still experimental.
+    Do not commit without user approval.
+
+Static-stub virtual-anchor opening fix checkpoint:
+
+- Date: 2026-07-15
+- Scope:
+  - Continued the `fanout_access_mode=static-stubs` WIP after the user noted
+    that `n_32` should be able to start by routing upward from its virtual
+    source anchor; `n_31` blocks the lower side, not the upper side.
+  - No commit was made; user previously requested not to commit this WIP.
+- Finding:
+  - Added diagnostic-only first-primitive classification to
+    `translation/route_rust.py` so failed routes report source primitive
+    footprints and their raw-static, router-static, dynamic, opened, and
+    opened-search cell overlaps.
+  - Before the fix, stop-after-route-33 with static stubs failed on `n_32`.
+    Rust crossing trace showed collision-crossing A* for net id `33`
+    (`n_32`) expanded only the source node, generated 6 primitives, accepted
+    none, and checked zero crossing candidates.
+  - The refreshed diagnostics showed `turn45_left` from source
+    `(718,158,0)` was not blocked by `n_31`, but was blocked by router-static
+    cells `(719,158)`, `(720,158)`, `(721,158)` on the initial east arm.
+  - Root cause: `_filter_dense_port_opening()` was still applying original
+    dense-port lateral ownership to static-stub virtual anchors. The stubs had
+    already spread the ports, so this filter removed `n_32`'s own virtual-anchor
+    runway cells from the opened set.
+- Code changes retained:
+  - For `port_spec in fanout_anchor_by_port_spec`, `_filter_dense_port_opening`
+    now returns the generated opening cells unchanged.
+  - The diagnostic first-move table remains in place for now; it is useful
+    during this WIP and should be cleaned or gated more tightly before a final
+    commit if the user wants less debug output.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py
+    routing_flow.py` passed.
+  - Stop-after-route-33 with no SVGs completed:
+    `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 33 --debug-svgs
+    false --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`.
+    Result: success, 33 attempts, 0 failures, 0 repairs; total wall time
+    `19.2573 s`; net routing phase `16.2585 s`.
+  - Visual artifact pass completed:
+    `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 33 --debug-svgs
+    32,33 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`.
+    Result: success; wrote `build/routed_multiportmmi_8x8.gds`,
+    `build/routes/multiportmmi_8x8_n_31.svg`, and
+    `build/routes/multiportmmi_8x8_n_32.svg`.
+  - Fresh `build/routes/multiportmmi_8x8_n_32_diagnostics.txt` reports
+    `status=ok`, `source_state=(718,158,0)`, `route_cells_count=94`, and
+    `first_move_turn45_left` with `static_blockers=[]`, `dynamic_blockers=[]`,
+    and all first-bend footprint cells included in `opened_search`.
+- Current assessment:
+  - The user's intuition was correct: the upward first bend should not have
+    been blocked. The remaining WIP question is route quality after the fix:
+    `n_32` now routes successfully, but its current route starts with a short
+    east move followed by a loop-like bend sequence; inspect the fresh GDS/SVG
+    before deciding whether to tune stub spacing or primitive cost/order next.
+
+Static-stub protected virtual-port runway checkpoint:
+
+- Date: 2026-07-15
+- Scope:
+  - User clarified that virtual fanout anchors should still have protected
+    port openings/runways after the stubs, analogous to the previous staggered
+    dense-port logic: the lowest anchor in a cluster gets the longest protected
+    runway, and higher anchors get progressively shorter runways.
+  - No commit was made.
+- Code changes retained:
+  - `_dense_source_port_runway_lengths()` now has a `static-stubs` path.
+  - It groups fanout anchors by `(instance, physical_angle)`, orders them by
+    the spread anchor cell's lateral coordinate, and assigns protected runway
+    lengths:
+    `minimum_cells + spacing_cells * (count - 1 - port_index)`.
+  - `minimum_cells` is `max(3, bend_radius_cells)`.
+  - `spacing_cells` defaults to
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS` or, if unset,
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS`, then `3`.
+  - The active net still opens its own protected runway; unrelated nets see the
+    runway cells as static blockers.
+  - The focused static-stub test was updated to assert the new protected runway
+    behavior (`source_dense_port_runway_cells=9` in the 3-port toy fixture).
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py
+    routing_flow.py` passed.
+  - `.\.venv\Scripts\python.exe -m pytest -q
+    tests\test_route_rust_opened_cells.py::test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor`
+    passed.
+  - Real stop-after-route-33 visual run completed:
+    `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 33 --debug-svgs
+    32,33 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`.
+    Result: success, 33 attempts, 0 failures, 0 repairs; total wall time
+    `27.1296 s`; net routing phase `23.6526 s`.
+  - Fresh diagnostics:
+    - `build/routes/multiportmmi_8x8_n_31_diagnostics.txt` reports
+      `source_dense_port_runway_cells=18` for source `(719,155,0)`.
+    - `build/routes/multiportmmi_8x8_n_32_diagnostics.txt` reports
+      `source_dense_port_runway_cells=15` for source `(718,158,0)`.
+    - Both report `status=ok`.
+  - Fresh visual artifacts:
+    - `build/routed_multiportmmi_8x8.gds`
+    - `build/routes/multiportmmi_8x8_n_31.svg`
+    - `build/routes/multiportmmi_8x8_n_32.svg`
+- Current assessment:
+  - Protected runways after stubs are active. Immediate bends can be blocked at
+    the protected-lane edge, while straight movement along the lane is opened
+    for the active net. This is expected with protected lane semantics.
+  - Next likely step is visual inspection of the fresh GDS/SVG and then
+    deciding whether to tune runway length/spacing or continue to `n_33`/`n_34`.
+
+Static-stub 6-cell spacing experiment:
+
+- Date: 2026-07-15
+- Scope:
+  - User asked to rerun with larger stub spacing, 6 cells.
+  - No code default was changed; the run used environment overrides:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6` and
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=6`.
+- Command:
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 33 --debug-svgs
+    32,33 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`
+- Result:
+  - The run failed after routing `n_31` and `n_32`, during final realized
+    crossing verification.
+  - Error:
+    `Illegal realized route crossing(s) after endpoint correction: 1 found.
+    n_31 x n_32 at [1415.5, 669.8] (not_perpendicular, margins=9.783021/11.325,
+    required=4.0, grid=[717, 153])`.
+  - Partial route SVGs were produced:
+    `build/routes/multiportmmi_8x8_n_31.svg` and
+    `build/routes/multiportmmi_8x8_n_32.svg`.
+  - `build/routed_multiportmmi_8x8.gds` is stale from the previous successful
+    run because the 6-cell run failed before writing a new GDS.
+- Diagnostics:
+  - `build/routes/multiportmmi_8x8_n_31_diagnostics.txt` reports
+    `source_dense_port_runway_cells=33`, `status=ok`.
+  - `build/routes/multiportmmi_8x8_n_32_diagnostics.txt` reports
+    `source_dense_port_runway_cells=27`, `status=ok`.
+- Current assessment:
+  - Larger spacing successfully increases the virtual protected lanes, but it
+    changes the local `n_31`/`n_32` route geometry enough to trigger a realized
+    non-perpendicular crossing. Do not treat the GDS as the 6-cell result.
+
+Static-stub full-obstacle reservation fix:
+
+- Date: 2026-07-15
+- Scope:
+  - User observed in the 6-cell SVG that A* routed behind/through a static stub
+    because the obstacle map did not include the whole stub body.
+  - No commit was made.
+- Finding:
+  - The WIP static-stub implementation only stored two `stub_center_cells` per
+    anchor: the original port grid cell and the virtual anchor cell.
+  - `fanout_stub_static_cells` was therefore inflated from endpoints only, so
+    the middle of each realized stub was invisible to the obstacle map.
+- Code changes retained:
+  - Added `_centerline_grid_cells()` in `translation/route_rust.py`, which
+    samples each realized stub centerline segment onto grid cells at
+    `grid_size / 4` spacing and keeps in-bounds cells in path order.
+  - Static fanout anchors now set `stub_center_cells` from the full sampled
+    realized stub centerline instead of endpoint-only cells.
+  - `fanout_stub_static_cells` continues to be produced by inflating these
+    sampled center cells by `commit_radius_cells`, so the router now sees the
+    full stub as static geometry.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py
+    routing_flow.py` passed.
+  - `.\.venv\Scripts\python.exe -m pytest -q
+    tests\test_route_rust_opened_cells.py::test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor`
+    passed.
+  - Re-ran the 6-cell spacing experiment with
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6` and
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=6`:
+    `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 33 --debug-svgs
+    32,33 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`.
+    Result: success; 33 attempts, 0 failures, 0 repairs; total time
+    `21.4793 s`; net routing phase `18.3179 s`.
+  - Verification JSONs report `error_count=0`; crossing verification reports
+    `illegal_crossing_count=0`, `status=partial_debug_stop`,
+    `routed_record_count=33`.
+  - Fresh diagnostics:
+    - `n_31`: `fanout_stub_center_cell_count=850`,
+      `fanout_stub_static_cell_count=850`, `source_dense_port_runway_cells=33`,
+      `status=ok`.
+    - `n_32`: `fanout_stub_center_cell_count=850`,
+      `fanout_stub_static_cell_count=850`, `source_dense_port_runway_cells=27`,
+      `status=ok`.
+  - Fresh artifacts:
+    - `build/routed_multiportmmi_8x8.gds`
+    - `build/routes/multiportmmi_8x8_n_31.svg`
+    - `build/routes/multiportmmi_8x8_n_32.svg`
+    - `build/verification/multiportmmi_8x8_crossing_verification.json`
+    - `build/verification/multiportmmi_8x8_photonic_verification.json`
+- Current assessment:
+  - The user's obstruction diagnosis was correct. The stub body is now included
+    in the obstacle map, and the same 6-cell stop-after-route-33 run now passes
+    instead of producing the previous non-perpendicular crossing failure.
+
+Static-stub 6-cell stop-after-`n_31` artifact:
+
+- Date: 2026-07-15
+- Scope:
+  - User asked to see the route with one fewer routed net: stop after `n_31`
+    only, before `n_32`.
+  - No commit was made.
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=6`.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 32 --debug-svgs
+    32 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`
+- Result:
+  - Success; 32 attempts, 0 failures, 0 repairs.
+  - Route `[32/32] n_31` completed with length `248.569um`, cost `252.569`,
+    expanded states `2314`.
+  - Total wall time `17.9009 s`; net routing phase `14.9869 s`.
+- Diagnostics:
+  - `build/routes/multiportmmi_8x8_n_31_diagnostics.txt` reports
+    `status=ok`, `fanout_stub_center_cell_count=850`,
+    `fanout_stub_static_cell_count=850`, and
+    `source_dense_port_runway_cells=33`.
+  - Crossing verification reports `error_count=0`,
+    `illegal_crossing_count=0`, `routed_record_count=32`, and
+    `status=partial_debug_stop`.
+- Fresh artifacts:
+  - `build/routed_multiportmmi_8x8.gds`
+  - `build/routes/multiportmmi_8x8_n_31.svg`
+  - `build/routes/multiportmmi_8x8_n_31_diagnostics.txt`
+  - `build/verification/multiportmmi_8x8_crossing_verification.json`
+
+Static-stub 6-cell spacing with 3-cell protected runway through `n_32`:
+
+- Date: 2026-07-15
+- Scope:
+  - User asked to route one step further, through `n_32`, with the same
+    settings: physical stub spacing 6 cells and protected runway spacing
+    3 cells.
+  - No commit was made.
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 33 --debug-svgs
+    32,33 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`
+- Result:
+  - Success; 33 attempts, 0 failures, 0 repairs.
+  - `n_31`: length `234.510um`, cost `238.510`, expanded `3289`.
+  - `n_32`: length `171.480um`, cost `175.480`, expanded `3024`.
+  - Total wall time `19.7369 s`; net routing phase `16.8752 s`.
+- Diagnostics:
+  - `n_31`: `status=ok`, `source_state=(725,149,0)`,
+    `source_dense_port_runway_cells=18`.
+  - `n_32`: `status=ok`, `source_state=(721,155,0)`,
+    `source_dense_port_runway_cells=15`.
+  - Both diagnostics report `fanout_stub_center_cell_count=850` and
+    `fanout_stub_static_cell_count=850`.
+  - Crossing verification reports `error_count=0`,
+    `illegal_crossing_count=0`, `routed_record_count=33`, and
+    `status=partial_debug_stop`.
+- Fresh artifacts:
+  - `build/routed_multiportmmi_8x8.gds`
+  - `build/routes/multiportmmi_8x8_n_31.svg`
+  - `build/routes/multiportmmi_8x8_n_32.svg`
+  - `build/routes/multiportmmi_8x8_n_31_diagnostics.txt`
+  - `build/routes/multiportmmi_8x8_n_32_diagnostics.txt`
+  - `build/verification/multiportmmi_8x8_crossing_verification.json`
+
+Static-stub 6-cell spacing with 3-cell protected runway through `n_33`:
+
+- Date: 2026-07-15
+- Scope:
+  - User asked to route one more step, through `n_33`, with physical stub
+    spacing 6 cells and protected runway spacing 3 cells.
+  - No commit was made.
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 34 --debug-svgs
+    32,33,34 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`
+- Result:
+  - Success; 34 attempts, 0 failures, 0 repairs.
+  - `n_31`: length `234.510um`, cost `238.510`, expanded `3289`.
+  - `n_32`: length `171.480um`, cost `175.480`, expanded `3024`.
+  - `n_33`: length `122.853um`, cost `176.853`, expanded `6029`.
+  - Total wall time `21.9381 s`; net routing phase `18.9299 s`.
+- Diagnostics:
+  - `n_31`: `source_state=(725,149,0)`,
+    `source_dense_port_runway_cells=18`.
+  - `n_32`: `source_state=(721,155,0)`,
+    `source_dense_port_runway_cells=15`.
+  - `n_33`: `source_state=(718,161,0)`,
+    `source_dense_port_runway_cells=12`.
+  - All three diagnostics report `status=ok`,
+    `fanout_stub_center_cell_count=850`, and
+    `fanout_stub_static_cell_count=850`.
+  - Crossing verification reports `error_count=0`,
+    `illegal_crossing_count=0`, `routed_record_count=34`, and
+    `status=partial_debug_stop`.
+- Fresh artifacts:
+  - `build/routed_multiportmmi_8x8.gds`
+  - `build/routes/multiportmmi_8x8_n_31.svg`
+  - `build/routes/multiportmmi_8x8_n_32.svg`
+  - `build/routes/multiportmmi_8x8_n_33.svg`
+  - `build/verification/multiportmmi_8x8_crossing_verification.json`
+
+Static-stub 6-cell spacing with 3-cell protected runway through `n_34`:
+
+- Date: 2026-07-15
+- Scope:
+  - User asked to route one more step, through `n_34`, with physical stub
+    spacing 6 cells and protected runway spacing 3 cells.
+  - No commit was made.
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 35 --debug-svgs
+    32,33,34,35 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`
+- Result:
+  - Success; 35 attempts, 0 failures, 0 repairs.
+  - `n_31`: length `234.510um`, cost `238.510`, expanded `3289`.
+  - `n_32`: length `171.480um`, cost `175.480`, expanded `3024`.
+  - `n_33`: length `122.853um`, cost `176.853`, expanded `6029`.
+  - `n_34`: length `162.426um`, cost `224.426`, expanded `35761`.
+  - Total wall time `29.9102 s`; net routing phase `26.5511 s`.
+- Diagnostics:
+  - `n_31`: `source_state=(725,149,0)`,
+    `source_dense_port_runway_cells=18`.
+  - `n_32`: `source_state=(721,155,0)`,
+    `source_dense_port_runway_cells=15`.
+  - `n_33`: `source_state=(718,161,0)`,
+    `source_dense_port_runway_cells=12`.
+  - `n_34`: `source_state=(718,176,0)`,
+    `source_dense_port_runway_cells=9`.
+  - All four diagnostics report `status=ok`,
+    `fanout_stub_center_cell_count=850`, and
+    `fanout_stub_static_cell_count=850`.
+  - Crossing verification reports `error_count=0`,
+    `illegal_crossing_count=0`, `routed_record_count=35`, and
+    `status=partial_debug_stop`.
+- Fresh artifacts:
+  - `build/routed_multiportmmi_8x8.gds`
+  - `build/routes/multiportmmi_8x8_n_31.svg`
+  - `build/routes/multiportmmi_8x8_n_32.svg`
+  - `build/routes/multiportmmi_8x8_n_33.svg`
+  - `build/routes/multiportmmi_8x8_n_34.svg`
+  - `build/verification/multiportmmi_8x8_crossing_verification.json`
+
+Static-stub 6-cell spacing with 3-cell protected runway attempted through `n_35`:
+
+- Date: 2026-07-15
+- Scope:
+  - User asked whether `n_35` also routes, with physical stub spacing 6 cells
+    and protected runway spacing 3 cells.
+  - No commit was made.
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 36 --debug-svgs
+    32,33,34,35,36 --attempt-diagnostics --debug-timing true
+    --fanout-access-mode static-stubs`
+- Result:
+  - `n_35` itself found an A* route:
+    length `416.392um`, cost `628.392`, expanded `70738`.
+  - The run failed afterward during final realized crossing verification.
+  - Error:
+    `Illegal realized route crossing(s) after endpoint correction: 1 found.
+    n_31 x n_32 at [1429.5, 661.125]
+    (crossing_footprint_contains_bend, margins=2.839719/6.0,
+    required=4.0, grid=[724, 149])`.
+  - Therefore: `n_35` can route geometrically, but the stop-after-`n_35`
+    artifact is not valid yet.
+- Diagnostics:
+  - `n_35` diagnostics report `status=ok`,
+    `source_state=(721,182,0)`, `source_dense_port_runway_cells=6`,
+    `route_dynamic_overlap_count=4`.
+  - The verifier failure concerns the already routed `n_31 x n_32`
+    realized crossing after endpoint correction, not a direct no-route failure
+    on `n_35`.
+  - Focused analysis of the illegal crossing report:
+    `build/crossings/multiportmmi_8x8_crossings.txt` and JSON show the same
+    `n_31 x n_32` crossing at `[1429.5, 661.125]`, grid `[724,149]`.
+    The crossing is perpendicular. `n_32` has `6.0um` straight margin, but
+    `n_31` has only `2.839719um` before its previous bend, while the actual
+    crossing footprint requires `4.0um`. The issue is therefore inside the
+    crossing footprint, not in the optional search/runout margin.
+  - The failed `n_35` run also changed the source-side shape of `n_31`:
+    diagnostics now show `n_31` bending after only three source cells
+    (`straight ... (727,149)->(728,149); turn45:(728,149)->(734,152)`),
+    despite `source_dense_port_runway_cells=18`. This suggests the current
+    protected runway is only opened/reserved in the obstacle map and is not
+    enforced as a hard launch-straight constraint for the active net.
+  - Follow-up analysis showed the problematic `[1429.5, 661.125]` point is
+    actually inside the static fanout stub for `mmi0_multiport_0_0,o12`
+    (`n_31` source), not the later A* body. The stub centerline ends at
+    `[1431.5, 661.125]`; its final horizontal segment starts at
+    `[1426.660281, 661.125]`, so the crossing point has only `2.839719um`
+    margin back to the stub bend.
+  - `n_32` diagnostics show the same grid cell `(724,149)` in its
+    `opened_cells`. Because Rust treats opened static cells as passable, this
+    can hide the `n_31` static stub from the level-1 A* collision/crossing
+    check. The likely model fix is to make fanout stub static cells
+    non-openable for other nets: subtract `fanout_stub_static_cells` from
+    per-route opened cells/candidate opened cells, then add back only the
+    current route's own source/target anchor cells.
+  - Expected consequence of that fix: the current `n_35` candidate should fail
+    earlier in A* when it tries to pass through/too close to the static stub.
+    That is preferable to a late Python-verifier failure; A* should then keep
+    searching for another legal branch, and only fail/repair if none exists.
+  - Implemented the model fix in `translation/route_rust.py`: per-route
+    `opened_cells` and `opened_candidate_cells` now subtract foreign
+    `fanout_stub_static_cells`, while keeping the current route's own source
+    and target fanout stub static cells open so the route can leave its own
+    virtual anchor.
+  - Validation after the fix:
+    - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+      passed.
+    - Stop-after-`n_32` with static stubs, physical spacing 6 cells, protected
+      spacing 3 cells passed. In
+      `build/routes/multiportmmi_8x8_n_32_diagnostics.txt`, `(724,149)` is no
+      longer in `opened_cells`; `n_32` routes differently instead of passing
+      through the `n_31` static-stub bend area.
+    - Stop-after-`n_35` no longer reaches the late Python realized-verifier
+      error. It fails earlier in A* as expected:
+      `No legal LiDAR crossing route found; probe-based victim selection is
+      disabled in crossing mode`. The current failure log is
+      `build/routes/multiportmmi_8x8_n_35_FAILED.txt`; the first failed
+      candidate is `Illegal grid crossing: net 36 intersects net 35 at
+      (741.500, 170.500) (insufficient_straight_margin)`.
+  - Current interpretation:
+    - The static-stub opening bug is fixed enough for the previous invalid
+      `n_31 x n_32` Python-only failure to disappear.
+    - The next blocker is real A* search/legality behavior for `n_35` after
+      `n_31..n_34` are routed, not silent acceptance of an invalid GDS.
+  - User requested the GDS state before routing `n_35`. Re-ran stop-after
+    route 35 with static stubs, physical spacing 6 cells, protected spacing
+    3 cells. Success; `build/routed_multiportmmi_8x8.gds` was written at
+    2026-07-15 11:31:58 local and contains routes through `n_34`.
+  - Re-ran stop-after route 36 with native crossing tracing enabled for
+    `PHOTONIC_ROUTER_TRACE_CROSSING_NET=36` (`n_35`). Trace summary:
+    - First collision-crossing search for `n_35` used partners
+      `[33, 35, 34, 32]`, i.e. `n_32`, `n_34`, `n_33`, `n_31` by net id/name.
+      It exhausted the search with `expanded=90864`, `generated=545184`,
+      `candidates=7205`, `accepted=317`, and no complete route.
+      Reject counters: `reject_non_straight=35175`,
+      `reject_not_perpendicular=4532`, `reject_margin=3004`,
+      `reject_unmatched_centerline=453`, `reject_unmatched_footprint=9085`,
+      `reject_pending_straight=347`.
+    - A later restricted search with only partner `[35]` (`n_34`) exhausted
+      with `expanded=43543`, `generated=261258`, `candidates=2235`,
+      `accepted=0`; dominant rejects were `non_straight=15528`,
+      `not_perpendicular=1299`, `margin=1107`,
+      `unexpected_owner=1395`, `unmatched_footprint=4104`.
+    - Representative accepted local events existed, e.g. with `n_31`
+      (`partner=32`) around grid `(755,184..188)` and with `n_34`
+      (`partner=35`) around grid `(760,179)`, but no accepted sequence reached
+      the target under the current partner/order constraints.
+- Artifacts:
+  - Fresh partial SVGs were generated:
+    `build/routes/multiportmmi_8x8_n_31.svg`,
+    `build/routes/multiportmmi_8x8_n_32.svg`,
+    `build/routes/multiportmmi_8x8_n_33.svg`,
+    `build/routes/multiportmmi_8x8_n_34.svg`,
+    `build/routes/multiportmmi_8x8_n_35.svg`.
+  - `build/routed_multiportmmi_8x8.gds` is stale from the previous valid
+    stop-after-`n_34` run because the stop-after-`n_35` run failed before
+    writing a new GDS.
+
+Static-stub 6-cell spacing with 3-cell protected runway artifact:
+
+- Date: 2026-07-15
+- Scope:
+  - User clarified that physical stub lane spacing should be 6 cells, but
+    protected runway spacing should remain 3 cells. For a 6-port cluster, this
+    makes the lowest lane protected runway `3 + 3 * 5 = 18` cells, not 33.
+  - No commit was made.
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 32 --debug-svgs
+    32 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs`
+- Result:
+  - Success; 32 attempts, 0 failures, 0 repairs.
+  - Route `[32/32] n_31` completed with length `234.510um`, cost `238.510`,
+    expanded states `3289`.
+  - Total wall time `15.7208 s`; net routing phase `13.0790 s`.
+- Diagnostics:
+  - `build/routes/multiportmmi_8x8_n_31_diagnostics.txt` reports
+    `status=ok`, `fanout_stub_center_cell_count=850`,
+    `fanout_stub_static_cell_count=850`,
+    `source_dense_port_runway_cells=18`, and `source_state=(725,149,0)`.
+  - Crossing verification reports `error_count=0`,
+    `illegal_crossing_count=0`, `routed_record_count=32`, and
+    `status=partial_debug_stop`.
+- Fresh artifacts:
+  - `build/routed_multiportmmi_8x8.gds`
+  - `build/routes/multiportmmi_8x8_n_31.svg`
+  - `build/routes/multiportmmi_8x8_n_31_diagnostics.txt`
+  - `build/verification/multiportmmi_8x8_crossing_verification.json`
+
+90-degree static-stub lane-offset correction:
+
+- Date: 2026-07-15
+- Scope:
+  - User clarified that 90-degree fanout stubs need split x offset:
+    within each upper/lower half-cluster, inner lanes take more forward
+    offset before the first bend and outer lanes take the complementary
+    offset after the second bend. This differs from 45-degree stubs, where
+    the spacing is handled by y-offsets between diagonal breakout stubs.
+  - Implemented separate `initial_forward_cells` and
+    `extra_final_forward_cells` for static two-bend stubs. For a 3-lane
+    half-cluster and 6-cell physical lane spacing, the inner-to-outer
+    initial/final split is now `12/0`, `6/6`, `0/12` cells.
+  - Also fixed final x snapping so extra forward distance snaps to a valid
+    grid-center instead of using raw port x coordinates.
+  - No commit was made.
+- Validation:
+  - Syntax check passed:
+    `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`.
+  - Stop-after-route 32 with 90-degree static stubs succeeded:
+    `n_31` routed from source anchor `(724,149,0)`, verification
+    `error_count=0`.
+  - Stub anchors for `mmi0_multiport_0_0,o12..o7` now all end at x cell
+    `724`, with pre-bend x offsets visible in the generated centerlines:
+    lower group `o10/o11/o12` uses `12/6/0` cells before the first bend;
+    upper group `o9/o8/o7` uses `12/6/0` cells before the first bend.
+  - Stop-after-route 33 with `--routing-window-scale 0.35` succeeded:
+    `n_31` and `n_32` both routed, crossing and photonic verification JSONs
+    report `status=partial_debug_stop` and `error_count=0`.
+- Fresh artifacts:
+  - `build/routed_multiportmmi_8x8.gds` written at 2026-07-15 12:26 local.
+  - `build/routes/multiportmmi_8x8_n_31.svg`
+  - `build/routes/multiportmmi_8x8_n_32.svg`
+  - `build/routes/multiportmmi_8x8_n_31_diagnostics.txt`
+  - `build/routes/multiportmmi_8x8_n_32_diagnostics.txt`
+
+90-degree static-stub validation through n_34:
+
+- Date: 2026-07-15
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`,
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 35 --debug-svgs
+    32,33,34,35 --attempt-diagnostics --debug-timing false --fanout-access-mode
+    static-stubs --routing-window-scale 0.35`
+- Result:
+  - Success through route `[35/35] n_34`.
+  - `n_31`: length `240.024um`, cost `244.024`, expanded `3092`.
+  - `n_32`: length `232.711um`, cost `290.711`, expanded `11175`.
+  - `n_33`: length `170.368um`, cost `228.368`, expanded `28045`.
+  - `n_34`: length `154.426um`, cost `214.426`, expanded `27966`.
+  - Crossing verification and photonic verification both report
+    `status=partial_debug_stop`, `error_count=0`, `routed_record_count=35`.
+  - Diagnostics for `n_33` and `n_34` report `source_fanout_anchor=True` and
+    `route_overlap_sibling_port_runway_count=0`.
+- Fresh artifacts:
+  - `build/routed_multiportmmi_8x8.gds` written at 2026-07-15 12:29 local.
+  - `build/routes/multiportmmi_8x8_n_31.svg`
+  - `build/routes/multiportmmi_8x8_n_32.svg`
+  - `build/routes/multiportmmi_8x8_n_33.svg`
+  - `build/routes/multiportmmi_8x8_n_34.svg`
+
+Foreign-port keepout comparison for n_34:
+
+- Date: 2026-07-15
+- User hypothesis:
+  - `n_34` takes the upper route and does not place the crossing directly
+    before the heater. The suspected cause was a footprint blockage from
+    static cells or foreign keepout cells.
+  - Previous diagnostics confirmed `foreign_port_keepout_cells=6`.
+- Command:
+  - Same 90-degree static-stub stop-after-`n_34` run as above, but with
+    `--foreign-port-keepout-cells 8`.
+- Result:
+  - Success through route `[35/35] n_34`.
+  - Route metrics were unchanged from the keepout-6 run:
+    `n_31` length `240.024um`, `n_32` length `232.711um`,
+    `n_33` length `170.368um`, `n_34` length `154.426um`.
+  - `build/routes/multiportmmi_8x8_n_34_diagnostics.txt` reports
+    `foreign_port_keepout_cells=8`, `status=ok`, and the same route segment
+    sequence observed for keepout 6.
+  - Crossing and photonic verification both report
+    `status=partial_debug_stop`, `error_count=0`, `routed_record_count=35`.
+- Interpretation:
+  - Raising foreign keepout from 6 to 8 did not move the `n_34` crossing
+    candidate or change the selected path. The missing crossing directly
+    before the heater is therefore not explained by the 6-cell foreign
+    keepout being too small in this comparison.
+  - Current `build/routed_multiportmmi_8x8.gds` is from the keepout-8
+    comparison run.
+
+n_34 x n_31 crossing candidate near heater:
+
+- Date: 2026-07-15
+- User question:
+  - Why does `n_34` not place the crossing with `n_31` directly before the
+    heater, around physical `(x=1491, y=750)`?
+- Trace run:
+  - Reverted comparison parameter to `--foreign-port-keepout-cells 6`.
+  - Enabled native tracing for `n_34` (`net_id=35`) against `n_31`
+    (`partner_net_id=32`) with
+    `PHOTONIC_ROUTER_TRACE_CROSSING=1`,
+    `PHOTONIC_ROUTER_TRACE_CROSSING_NET=35`,
+    `PHOTONIC_ROUTER_TRACE_PARTNER_NET=32`,
+    `PHOTONIC_ROUTER_TRACE_CROSSING_CANDIDATES=1`,
+    `PHOTONIC_ROUTER_TRACE_CROSSING_LEVEL1=1`.
+- Result:
+  - The desired physical location maps to approximately grid `(755,193/194)`.
+  - A* does inspect candidates at `grid=(755,193)` against `n_31`.
+  - Perpendicular candidates at `(755,193)` are rejected with
+    `reason=reservation_footprint`, e.g. `route_angle=0`,
+    `partner_angle=2`, `partner_margin=23`, `required_margin=5`.
+  - Local static obstacle inspection of the SVG grid found static blocked
+    cells inside the crossing reservation window around that candidate:
+    `(756..758, 191..196)`.
+  - `n_34` diagnostics show the target port opens static cells only at
+    bbox `(760,767,191,196)`, while the candidate crossing footprint at
+    `(755,193)` with half-size 2 spans roughly `x=753..757`, so it overlaps
+    static cells that are not opened for the route.
+  - The router therefore accepts a later legal crossing with `n_31` around
+    `grid=(755,208)`, physical approximately `(1491.5,779.125)`.
+- Interpretation:
+  - The near-heater crossing is checked; it is not skipped.
+  - It is rejected by the crossing reservation footprint due to static
+    blocked cells near the heater/target access region, not by the
+    6-cell foreign keepout experiment.
+
+n_34 x n_31 near-heater footprint opening fix:
+
+- Date: 2026-07-15
+- User follow-up:
+  - The crossing itself appears to fit near the heater; if any blocking is
+    caused by pad/port static cells, those cells should be opened for the route
+    that owns that target access.
+- Code finding:
+  - In `src/astar.rs`, `reservation_margin` is only
+    `crossing.crossing_half_size_cells`. The reservation-footprint check is
+    therefore the crossing footprint itself, not the extended
+    `crossing_half + bend_runout` search margin.
+  - The bug was that `crossing_reservation_window_is_clear()` checked static
+    blockers directly and did not honor `port_open_cells`, unlike normal
+    primitive collision checking.
+- Change:
+  - Passed `port_open_cells` into `crossing_reservation_window_is_clear()`.
+  - Static cells inside the reservation footprint are now allowed only when
+    they are explicitly in the route's opened-cell set; unrelated static cells
+    remain blocking, and unrelated dynamic owners remain blocking.
+  - Extended the focused Rust unit test so an opened static footprint cell is
+    accepted while unopened static cells are still rejected.
+- Validation:
+  - `cargo +stable-x86_64-pc-windows-gnullvm test
+    crossing_reservation_window_rejects_static_and_unrelated_dynamic_cells`
+    passed after adding the Codex runtime Python directory to `PATH`.
+  - `maturin develop --release` had already been rebuilt after the patch.
+  - A traced stop-after-`n_34` run showed the desired candidate at roughly
+    grid `(755,193)`, physical `(1491.5,749.125)`, is now accepted as
+    `accept_with_pending` instead of rejected as `reservation_footprint`.
+- Current status:
+  - The original too-tight footprint/opened-pad-cell issue is fixed.
+  - The same stop-after-`n_34` run can still fail afterward because the
+    accepted short route only covers the `n_31` crossing partner and the
+    collision-crossing validation reports `satisfies=false`; subsequent
+    restricted searches against remaining partners exhaust. The next blocker
+    is partner/sequence satisfaction, not pad static cells blocking the
+    near-heater crossing footprint.
+
+n_34 near-heater `satisfies=false` root cause refined:
+
+- Date: 2026-07-15
+- Trace:
+  - Re-ran stop-after-`n_34` with `PHOTONIC_ROUTER_TRACE_CROSSING=1` and
+    `PHOTONIC_ROUTER_TRACE_CROSSING_NET=35`.
+  - The first collision-crossing search used partners `[34, 33, 32]` and
+    returned waypoints `[(724,176),(733,176),(750,193),(767,193)]`.
+  - The realized event list contained the desired near-heater event only:
+    partner `32` at physical `(1491.5,749.125)`, route angle `0`, partner
+    angle `2`.
+  - Even a restricted search with only partner `[32]` returned the same event
+    but still printed `satisfies=false` with `realized_violations=[]`.
+- Conclusion:
+  - The legal crossing attempt is not being rejected because another expected
+    partner is missing.
+  - It is being rejected by the post-A* reservation blocker check:
+    `crossing_events_satisfy_partner_constraints()` calls
+    `crossing_reservation_blockers(net_id, crossing_events)`.
+  - `crossing_reservation_blockers()` checks `event.reservation_keys` against
+    `self.obstacle_map.is_static_blocked(x,y)` but has no `opened_cells`
+    argument. This reproduces the same opened-pad/static-cell mismatch that
+    was just fixed in the A* reservation-window check.
+- Next model fix:
+  - Thread the route's validation/opened-cell set into the post-A* reservation
+    blocker check and ignore static blockers there only when the reservation
+    key is explicitly opened for the current route. Keep unrelated dynamic
+    blockers unchanged.
+
+n_34 near-heater post-A* reservation fix implemented:
+
+- Date: 2026-07-15
+- Change:
+  - `src/py_router.rs` now threads optional `opened_cell_keys` through
+    `crossing_route_satisfies_partner_constraints()`,
+    `crossing_events_satisfy_partner_constraints()`, and
+    `crossing_reservation_blockers()`.
+  - `crossing_reservation_blockers()` still treats out-of-bounds/static cells
+    as blockers, but ignores a static blocker when the reservation key is
+    explicitly opened for the active route. Unrelated dynamic blockers remain
+    strict.
+  - The existing reservation-blocker unit test now asserts both sides:
+    unopened static reservation cells reject the event, opened static
+    reservation cells are accepted, and unrelated dynamic owners still reject.
+- Validation:
+  - `cargo +stable-x86_64-pc-windows-gnullvm check` passed with
+    `CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=rust-lld`.
+  - `maturin develop --release` passed and reinstalled the updated Rust
+    extension into the project `.venv`.
+  - `cargo +stable-x86_64-pc-windows-gnullvm test
+    crossing_events_reject_static_and_unrelated_dynamic_reservation_blockers`
+    passed after adding the Codex runtime Python directory to `PATH`.
+  - Re-ran `multiportmmi_8x8` stop-after route 35 (`n_34`) with
+    `fanout_access_mode=static-stubs`, 90-degree stubs, lane spacing 6,
+    protected runway spacing 3, routing-window scale 0.35, and foreign keepout
+    6. The run passed and wrote `build\routed_multiportmmi_8x8.gds`.
+- Trace result:
+  - The collision-crossing route for internal net `35` / user net `n_34`
+    returned waypoints `[(724,176),(733,176),(750,193),(767,193)]`.
+  - The realized event is the intended near-heater `n_34 x n_31` crossing at
+    physical `(1491.5,749.125)`.
+  - The validation line changed from `satisfies=false` to `satisfies=true`
+    with `realized_violations=[]`.
+  - `build/routes/multiportmmi_8x8_n_34_diagnostics.txt` now reports
+    `status=ok`, `route_static_blocked_overlap_count=8`, and
+    `route_overlap_effective_opened_static_count=8`, confirming the only
+    static overlaps are the intended opened target-access cells.
+
+Static-stub x-offset reduced:
+
+- Date: 2026-07-15
+- Change:
+  - User requested reducing the static-stub x offset from 6 cells to 2 cells.
+  - Added `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS`, defaulting to `2`.
+    This controls only the x-direction pre/post bend stagger for two-bend
+    static fanout stubs. It does not change
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS`, which can remain at 6 cells
+    for y-lane spacing.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Stop-after route 32 (`n_31`) passed with static stubs, 90-degree bends,
+    y-lane spacing 6, protected runway spacing 3, and default x-offset 2.
+    `n_31` source anchor moved to `(716,149,0)` and
+    `fanout_stub_center_cell_count` dropped from 858 to 666.
+  - Stop-after route 35 (`n_34`) also passed with the same settings and wrote
+    a fresh `build\routed_multiportmmi_8x8.gds`. `n_34` source anchor is now
+    `(716,176,0)`, route length `116.083um`, cost `168.083`, expanded states
+    `19026`, and diagnostics report `status=ok`.
+
+Static-stub x-offset 2 through n_35:
+
+- Date: 2026-07-15
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`,
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`, with
+    `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS` unset so the new default
+    `2` is active.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 36 --debug-svgs
+    36 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6`
+- Result:
+  - Success through route `[36/36] n_35`.
+  - `n_35`: source state `(716,182,0)`, target `(767,43,0)`,
+    length `390.191um`, cost `598.191`, expanded states `106944`.
+  - Total wall time `35.3992 s`; net routing phase `31.7952 s`;
+    native route batch `23.7225 s`; route search A* loop `27.6821 s`.
+  - Crossing and photonic verification both report `success=True`,
+    `status=partial_debug_stop`, `error_count=0`, and `routed_record_count=36`.
+  - Fresh artifacts:
+    `build\routed_multiportmmi_8x8.gds`,
+    `build\routes\multiportmmi_8x8_n_35.svg`,
+    `build\routes\multiportmmi_8x8_n_35_diagnostics.txt`.
+- Note:
+  - The route is valid but still expensive. The `n_35` search alone expanded
+    106,944 states, so follow-up speed work should focus on this collision
+    crossing search path if the geometry is acceptable.
+
+Static-stub x-offset 2 through n_36:
+
+- Date: 2026-07-15
+- Command:
+  - Same settings as the `n_35` run, but `--debug-stop-after-route 37` and
+    `--debug-svgs 37`.
+- Result:
+  - Success through route `[37/37] n_36`.
+  - `n_36`: source state `(716,188,0)`, target `(767,293,0)`,
+    length `261.622um`, cost `265.622`, expanded states `15768`.
+  - Total wall time `35.5187 s`; net routing phase `32.0614 s`;
+    native route batch `24.1492 s`; route search A* loop `27.9940 s`.
+  - Crossing and photonic verification both report `success=True`,
+    `status=partial_debug_stop`, `error_count=0`, and `routed_record_count=37`.
+  - Fresh artifacts:
+    `build\routed_multiportmmi_8x8.gds`,
+    `build\routes\multiportmmi_8x8_n_36.svg`,
+    `build\routes\multiportmmi_8x8_n_36_diagnostics.txt`.
+- Speed assessment:
+  - The new static-stub/opened-cell correctness code is not the visible
+    runtime bottleneck in this slice. Python-side setup is small:
+    obstacle map `0.4255s`, port opening batch `0.0787s`,
+    state-opening precompute `0.0143s`, endpoint correction `0.0020s`,
+    realization `0.0187s`.
+  - The dominant cost is still A* search: 234,451 expanded states and
+    1,406,706 generated neighbors through the stop point, with the Rust
+    native route batch at `24.1492s`.
+  - `n_36` itself is moderate compared with `n_35` (`15,768` expansions vs.
+    `106,944`). The previous `n_35` search remains the speed hotspot.
+  - The current slowest-route timing report is not reliable at per-route
+    granularity because the batched elapsed time is repeated across early
+    route records; rely on aggregate counters and per-net expanded-state
+    counts until that timing instrumentation is cleaned up.
+
+Static-stub y-spacing 10 experiment through n_33:
+
+- Date: 2026-07-15
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=10`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`,
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`, with
+    `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS` unset so default x-offset
+    `2` remains active.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --debug-stop-after-route 34 --debug-svgs
+    32,33,34 --attempt-diagnostics --debug-timing true --fanout-access-mode
+    static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6`
+- Result:
+  - Success through route `[34/34] n_33`.
+  - `n_31`: source state `(716,141,0)`, length `257.966um`, cost `261.966`,
+    expanded states `3951`.
+  - `n_32`: source state `(716,151,0)`, length `191.622um`, cost `247.622`,
+    expanded states `10062`.
+  - `n_33`: source state `(716,161,0)`, length `116.912um`, cost `168.912`,
+    expanded states `5112`.
+  - The first three lower-cluster stub anchors are now spaced by exactly
+    10 grid cells in y: `141`, `151`, `161`.
+  - Crossing and photonic verification both report `success=True`,
+    `status=partial_debug_stop`, `error_count=0`, and `routed_record_count=34`.
+  - Total wall time `23.6175 s`; net routing phase `20.6679 s`; native route
+    batch `8.2951 s`; batch result processing `9.0388 s`.
+  - Fresh artifacts:
+    `build\routed_multiportmmi_8x8.gds`,
+    `build\routes\multiportmmi_8x8_n_31.svg`,
+    `build\routes\multiportmmi_8x8_n_32.svg`,
+    `build\routes\multiportmmi_8x8_n_33.svg`.
+
+Static-stub y-spacing 12 experiment through n_33:
+
+- Date: 2026-07-15
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=12`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`,
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`, with x-offset default `2`.
+  - Same stop-after-`n_33` command as the 10-cell experiment.
+- Result:
+  - Success through route `[34/34] n_33`.
+  - `n_31`: source state `(716,137,0)`, length `263.622um`, cost `267.622`,
+    expanded states `4029`.
+  - `n_32`: source state `(716,149,0)`, length `187.622um`, cost `243.622`,
+    expanded states `11027`.
+  - `n_33`: source state `(716,161,0)`, length `116.912um`, cost `168.912`,
+    expanded states `6638`.
+  - The first three lower-cluster stub anchors are now spaced by exactly
+    12 grid cells in y: `137`, `149`, `161`.
+  - Crossing and photonic verification both report `success=True`,
+    `status=partial_debug_stop`, `error_count=0`, and `routed_record_count=34`.
+  - Total wall time `25.1977 s`; net routing phase `22.0078 s`; native route
+    batch `8.7327 s`; batch result processing `9.7887 s`.
+  - Compared to y-spacing 10, this is still valid but slightly more expensive
+    through `n_33`: expanded states `92,436` total vs. `89,867`, and total
+    wall time `25.20s` vs. `23.62s`.
+
+Static-stub y-spacing 14 experiment through n_33:
+
+- Date: 2026-07-15
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=14`,
+    `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS=3`,
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`, with x-offset default `2`.
+  - Same stop-after-`n_33` command as the 10/12-cell experiments.
+- Result:
+  - Success through route `[34/34] n_33`.
+  - `n_31`: source state `(716,133,0)`, length `271.622um`, cost `275.622`,
+    expanded states `4340`.
+  - `n_32`: source state `(716,147,0)`, length `183.622um`, cost `239.622`,
+    expanded states `13377`.
+  - `n_33`: source state `(716,161,0)`, length `116.912um`, cost `168.912`,
+    expanded states `8859`.
+  - The first three lower-cluster stub anchors are spaced by exactly 14 grid
+    cells in y: `133`, `147`, `161`.
+  - Crossing and photonic verification both report `success=True`,
+    `status=partial_debug_stop`, `error_count=0`, and `routed_record_count=34`.
+  - Total wall time `25.4054 s`; net routing phase `22.2760 s`; native route
+    batch `9.1496 s`; batch result processing `9.6626 s`.
+  - Compared to y-spacing 10 and 12, this remains valid but is the most
+    expensive of the three through `n_33`: total expanded states `97,318`.
+
+Static-stub protected runway half-group logic:
+
+- Date: 2026-07-15
+- Change:
+  - For `fanout_access_mode=static-stubs`, dense source protected runway
+    lengths are now computed per half-cluster instead of across the full
+    6-port source cluster.
+  - For a 3-port lower half with base protected runway spacing 3 cells, the
+    outer-to-inner runways are now `3`, `6`, `9` cells. For the upper half,
+    the inner-to-outer runways are `9`, `6`, `3` cells.
+  - `legacy-runway` behavior is unchanged.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Re-ran the y-spacing 14 stop-after-`n_33` experiment with static stubs,
+    90-degree bends, protected runway spacing 3, and x-offset default 2.
+  - Success through route `[34/34] n_33`; crossing and photonic verification
+    both report `success=True`, `status=partial_debug_stop`, `error_count=0`,
+    and `routed_record_count=34`.
+  - Diagnostics confirm the new lower-half runway lengths:
+    `n_31 source_dense_port_runway_cells=3`,
+    `n_32 source_dense_port_runway_cells=6`,
+    `n_33 source_dense_port_runway_cells=9`, with source states
+    `(716,133,0)`, `(716,147,0)`, `(716,161,0)`.
+  - Runtime for that validation: total wall `28.6430 s`, net routing
+    `25.2230 s`, native route batch `10.6920 s`, total expanded states
+    `98,462`.
+
+`n_32` early crossing rejection around `(1435um, 643um)`:
+
+- Date: 2026-07-15
+- Context:
+  - User expected `n_32` to cross `n_31` earlier, around physical
+    `(1435, 643)`, rather than detouring to the later crossing at
+    `(1446.5, 654.125)`.
+  - Current debug configuration used y-spacing 14, static stubs, 90-degree
+    stubs, protected runway spacing 3, x-offset default 2, and
+    `--debug-stop-after-route 33`.
+- Finding:
+  - A* does evaluate the expected crossing at grid `(727,140)`.
+  - It rejects the perpendicular candidate with `reason=reservation_footprint`.
+  - Temporary trace showed the exact blocker is static cell `(725,138)` inside
+    the crossing footprint.
+  - The dynamic diagonal partner is not the blocker; the crossing partner is
+    `n_31`/net id 32 and is considered as the crossing partner.
+  - `build/routes/multiportmmi_8x8_n_32_diagnostics.txt` lists `(725,138)` in
+    the final `opened_cells`, but the collision-crossing A* receives a filtered
+    opened set of 990 cells where `(725,138)` is absent. The diagnostics list
+    contains 998 cells.
+  - Code path: `try_route_with_collision_crossings_using_primitives()` calls
+    `route_single_net_with_collision_crossing_config(..., Some(opened_ref), ...)`.
+    In this route, `opened_ref` is the dynamic-overlap-filtered opened-cell set,
+    not the full `job.opened_cell_keys`.
+- Interpretation:
+  - This is an opened-cell handoff mismatch in the crossing A* path. Movement
+    can still use a filtered set to avoid blindly opening dynamic geometry, but
+    crossing-reservation static keepout checks need the appropriate static
+    opening cells; otherwise a valid same-cluster/port-opening crossing can be
+    rejected as if a foreign static keepout blocks it.
+- Validation hygiene:
+  - Temporary trace prints were removed.
+  - `cargo check` passed with `PYO3_PYTHON` set to the project venv.
+
+Opened-cell split fix for collision crossing A*:
+
+- Date: 2026-07-15
+- Change:
+  - `route_single_net_with_collision_crossing_config()` now accepts a separate
+    `reservation_open_cells` set.
+  - Normal movement still uses the existing, potentially dynamic-overlap
+    filtered opened-cell set.
+  - Crossing reservation footprint checks use the full reservation opening set
+    passed from `PyPhotonicRouter`, so static port/keepout openings are not
+    accidentally removed just because they overlap the dynamic partner route.
+  - Legacy `route_single_net_with_crossing_config()` passes the same opened set
+    for both movement and reservation, preserving old behavior.
+- Validation:
+  - `cargo check` passed with `RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnullvm`,
+    `CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=rust-lld`, and
+    `PYO3_PYTHON` set to the project venv.
+  - `maturin develop --release` passed.
+  - Re-ran `multiportmmi_8x8` with y-spacing 14, static 90-degree stubs,
+    protected runway spacing 3, x-offset default 2, stop-after-route 33,
+    no trace output, and `--foreign-port-keepout-cells 6`; command exited 0.
+  - The `n_32` route now crosses `n_31` at the early expected position:
+    crossing event `(1434.5, 642.125)` with route/partner angles `(7, 1)`.
+    The earlier trace showed A* accepting grid `(727,140)` with pending
+    straight continuation.
+  - Crossing validation and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+  - Focused Rust tests passed:
+    `collision_crossing_search_accepts_expected_dynamic_core_collision` and
+    `crossing_reservation_window_rejects_static_and_unrelated_dynamic_cells`.
+
+Static-stub y-spacing default reduced to 8 cells:
+
+- Date: 2026-07-15
+- Change:
+  - `translation/route_rust.py` now uses
+    `default_lane_spacing_cells = 8` for `fanout_access_mode=static-stubs`.
+  - The environment variable `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS` still
+    overrides this default.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, no
+    `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS` override, protected runway
+    spacing 3, x-offset default 2, stop-after-route 33, and
+    `--foreign-port-keepout-cells 6`; command exited 0 and wrote the updated
+    GDS.
+  - Diagnostics show the lower-cluster spacing changed to 8 grid cells:
+    `n_31 source_state=(716,145,0)` and
+    `n_32 source_state=(716,153,0)`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Static-stub y-spacing default adjusted to 9 cells:
+
+- Date: 2026-07-15
+- Change:
+  - `translation/route_rust.py` now uses
+    `default_lane_spacing_cells = 9` for `fanout_access_mode=static-stubs`.
+  - `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS` still overrides this default.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, no lane-spacing
+    override, protected runway spacing 3, x-offset default 2,
+    stop-after-route 33, and `--foreign-port-keepout-cells 6`; command exited
+    0 and wrote the updated GDS.
+  - Diagnostics show 9-grid-cell spacing:
+    `n_31 source_state=(716,143,0)` and
+    `n_32 source_state=(716,152,0)`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Static-stub y-spacing default adjusted to 10 cells:
+
+- Date: 2026-07-15
+- Change:
+  - `translation/route_rust.py` now uses
+    `default_lane_spacing_cells = 10` for `fanout_access_mode=static-stubs`.
+  - `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS` still overrides this default.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, no lane-spacing
+    override, protected runway spacing 3, x-offset default 2,
+    stop-after-route 33, and `--foreign-port-keepout-cells 6`; command exited
+    0 and wrote the updated GDS.
+  - Diagnostics show 10-grid-cell spacing:
+    `n_31 source_state=(716,141,0)` and
+    `n_32 source_state=(716,151,0)`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Static-stub y-spacing default adjusted to 11 cells:
+
+- Date: 2026-07-15
+- Change:
+  - `translation/route_rust.py` now uses
+    `default_lane_spacing_cells = 11` for `fanout_access_mode=static-stubs`.
+  - `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS` still overrides this default.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, no lane-spacing
+    override, protected runway spacing 3, x-offset default 2,
+    stop-after-route 33, and `--foreign-port-keepout-cells 6`; command exited
+    0 and wrote the updated GDS.
+  - Diagnostics show 11-grid-cell spacing:
+    `n_31 source_state=(716,139,0)` and
+    `n_32 source_state=(716,150,0)`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Current routing SVGs for static-stub spacing 11:
+
+- Date: 2026-07-15
+- Command:
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, no lane-spacing
+    override, protected runway spacing 3, x-offset default 2,
+    stop-after-route 33, route SVG selector `32-33`, and
+    `--foreign-port-keepout-cells 6`.
+- Result:
+  - Command exited 0.
+  - Generated current route SVGs:
+    `build/routes/multiportmmi_8x8_n_31.svg` and
+    `build/routes/multiportmmi_8x8_n_32.svg`.
+  - Crossing and photonic verification JSON were written for the same run.
+
+Static-stub spacing 11 run through n_36:
+
+- Date: 2026-07-15
+- Command:
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, no lane-spacing
+    override, protected runway spacing 3, x-offset default 2,
+    stop-after-route 37, no route SVGs, and `--foreign-port-keepout-cells 6`.
+- Result:
+  - Command exited 0 and wrote the updated GDS.
+  - Routes through `n_36` are present and `status=ok`.
+  - Source states:
+    `n_31=(716,139,0)`, `n_32=(716,150,0)`,
+    `n_33=(716,161,0)`, `n_34=(716,176,0)`,
+    `n_35=(716,187,0)`, `n_36=(716,198,0)`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Static-stub x-offset default reduced to 1 cell:
+
+- Date: 2026-07-15
+- Change:
+  - `translation/route_rust.py` now uses
+    `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS` default `1` instead of `2`.
+  - The environment variable still overrides this default.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, lane spacing
+    default 11, no x-offset override, protected runway spacing 3,
+    stop-after-route 37, and `--foreign-port-keepout-cells 6`; command exited
+    0 and wrote the updated GDS.
+  - Routes through `n_36` are present and `status=ok`.
+  - Source states moved left to x `714`:
+    `n_31=(714,139,0)`, `n_32=(714,150,0)`,
+    `n_33=(714,161,0)`, `n_34=(714,176,0)`,
+    `n_35=(714,187,0)`, `n_36=(714,198,0)`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Static-stub spacing 11 / x-offset 1 run through n_46:
+
+- Date: 2026-07-15
+- Command:
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, lane spacing
+    default 11, x-offset default 1, protected runway spacing 3,
+    stop-after-route 47, no route SVGs, and `--foreign-port-keepout-cells 6`.
+- Result:
+  - Command exited 0 and wrote the updated GDS.
+  - Ten additional routes `n_37` through `n_46` are present and each
+    diagnostic file reports `status=ok`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Static-stub eligibility made schematic/net-derived:
+
+- Date: 2026-07-15
+- Change:
+  - Removed the static-stub and dense-source-fanout eligibility dependency on
+    instance/component names such as `multiport` or `mmi`.
+  - Eligibility is now derived from the route jobs extracted from the schematic
+    nets: a source instance/angle group with more than two source ports is
+    treated as a dense source fanout group.
+  - Static-stub construction, protected-runway assignment, and optional dense
+    fanout route ordering use this same source-fanout grouping.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, lane spacing
+    default 11, x-offset default 1, protected runway spacing 3,
+    stop-after-route 47, and `--foreign-port-keepout-cells 6`; command exited
+    0 and wrote the updated GDS.
+  - The current benchmark still produces the same 36 fanout anchors across the
+    same eight source fanout instances, now selected by schematic/net grouping
+    rather than names.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Names-free static-stub run through n_50:
+
+- Date: 2026-07-15
+- Command:
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, lane spacing
+    default 11, x-offset default 1, protected runway spacing 3,
+    stop-after-route 51, no route SVGs, and `--foreign-port-keepout-cells 6`.
+- Result:
+  - Command exited 0 and wrote the updated GDS.
+  - Four additional routes `n_47` through `n_50` are present and each
+    diagnostic file reports `status=ok`.
+  - Source states:
+    `n_47=(990,100,0)`, `n_48=(990,111,0)`,
+    `n_49=(990,126,0)`, `n_50=(990,137,0)`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Names-free static-stub run through n_54:
+
+- Date: 2026-07-15
+- Command:
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, lane spacing
+    default 11, x-offset default 1, protected runway spacing 3,
+    stop-after-route 55, no route SVGs, and `--foreign-port-keepout-cells 6`.
+- Result:
+  - Command exited 0 and wrote the updated GDS.
+  - Four additional routes `n_51` through `n_54` are present and each
+    diagnostic file reports `status=ok`.
+  - Source states:
+    `n_51=(990,300,0)`, `n_52=(990,311,0)`,
+    `n_53=(990,326,0)`, `n_54=(990,337,0)`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Names-free static-stub run through n_66:
+
+- Date: 2026-07-15
+- Command:
+  - Re-ran `multiportmmi_8x8` with static 90-degree stubs, lane spacing
+    default 11, x-offset default 1, protected runway spacing 3,
+    stop-after-route 67, no route SVGs, and `--foreign-port-keepout-cells 6`.
+- Timing:
+  - Wall-clock runtime: `00:02:22.2228215` (`142.223` seconds).
+- Result:
+  - Command exited 0 and wrote the updated GDS.
+  - Twelve additional routes `n_55` through `n_66` are present and each
+    diagnostic file reports `status=ok`.
+  - Source states:
+    `n_55=(1146,43,0)`, `n_56=(1146,93,0)`,
+    `n_57=(1146,143,0)`, `n_58=(1146,193,0)`,
+    `n_59=(1146,243,0)`, `n_60=(1146,293,0)`,
+    `n_61=(1146,343,0)`, `n_62=(1146,393,0)`,
+    `n_63=(1266,100,0)`, `n_64=(1266,111,0)`,
+    `n_65=(1266,126,0)`, `n_66=(1266,137,0)`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Names-free static-stub run through n_66 without route diagnostics:
+
+- Date: 2026-07-15
+- Command:
+  - Re-ran the same `multiportmmi_8x8` partial stop through route 67 with
+    static 90-degree stubs, lane spacing default 11, x-offset default 1,
+    protected runway spacing 3, no route SVGs, no `--attempt-diagnostics`, and
+    `--foreign-port-keepout-cells 6`.
+- Timing:
+  - Wall-clock runtime: `00:02:07.2771918` (`127.277` seconds).
+  - This is about 15 seconds faster than the diagnostics run, so the dominant
+    cost is not the per-route diagnostics dump alone.
+- Result:
+  - Command exited 0 and wrote the updated GDS.
+  - Verification metadata confirms this was a partial debug stop:
+    `debug_stop_after_route_index=67`, `routed_record_count=67`,
+    `expected_route_count=111`.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`.
+
+Native progress timing analysis through n_66:
+
+- Date: 2026-07-15
+- Observation:
+  - Re-ran the partial stop through route 67 with
+    `PHOTONIC_ROUTER_NATIVE_PROGRESS=1`.
+  - Wall-clock runtime: `00:02:11.0700396` (`131.070` seconds).
+  - Native per-route elapsed sum from the trace: `111.397` seconds.
+  - The slowdown is not uniformly caused by static stubs or diagnostics.
+    A short stop through route 10 completed in `6.869` seconds and early native
+    route times were mostly milliseconds.
+  - The long runtime is dominated by a few later route searches:
+    internal `net_id=55` / visible `n_54` took `41.639155` seconds,
+    internal `net_id=36` / visible `n_35` took `21.526369` seconds,
+    internal `net_id=52` / visible `n_51` took `11.226987` seconds,
+    internal `net_id=51` / visible `n_50` took `8.839992` seconds,
+    internal `net_id=67` / visible `n_66` took `4.231827` seconds.
+  - A same-stop `legacy-runway` A/B run in the current code took
+    `140.894` seconds, close to the static-stub run. This points to a current
+    A*/crossing search behavior or route-order/search-space regression rather
+    than static-stub geometry alone.
+  - The debug timing report's "slowest route" list divides the total batch time
+    across attempts and is not reliable per-net timing. Native progress tracing
+    gives the useful per-route attribution.
+
+Slow-route root-cause analysis:
+
+- Date: 2026-07-15
+- Findings:
+  - The timing runs report `repairs=0` and `failures=0` through the route-67
+    partial stop, so the current slowdown is not caused by ripup/reroute loops.
+  - A `--foreign-port-keepout-cells 0` A/B run through the same partial stop was
+    not faster (`151.831` seconds), so the slowdown is not simply the count of
+    foreign keepout cells.
+  - The slow routes are normal crossing-aware A* searches. The route diagnostics
+    show large endpoint/opened-cell regions for the slowest routes, e.g.
+    `n_35` has `opened_cells_count=902` and `n_54` has
+    `opened_cells_count=653`.
+  - In `src/astar.rs`, crossing-aware A* takes the fast
+    `crossing_no_contact_outcome` path only when the primitive footprint is
+    free and the primitive has no extra crossing witnesses.
+  - The symmetric diagonal halo work makes diagonal/bend primitives have
+    `has_extra_witnesses=true`, so those moves enter the heavier
+    `crossing_move_outcome_with_segments` path even when there may be no actual
+    dynamic owner contact.
+  - Inside that path, every effective witness calls
+    `ObstacleMap::is_static_blocked`. That function checks the dense static bit
+    and then calls `is_static_rect_blocked`, which linearly scans
+    `static_rects`.
+  - Because compact static rectangles are set on the router for bounding-box
+    obstacles, this linear static-rect scan is now in the high-frequency
+    crossing witness hot path. This is the most plausible current performance
+    regression: correctness-preserving obstacle rectangles plus diagonal halo
+    witnesses combine to make ordinary A* moves much more expensive.
+- Likely fix direction:
+  - Keep the halo/crossing behavior, but remove the linear static-rectangle scan
+    from the A* crossing hot path. Options include a dense/static indexed view
+    for crossing witness checks, a row/interval index for static rectangles, or
+    passing an A*-window-local static grid into the crossing witness check.
+
+Static-rectangle row index speedup:
+
+- Date: 2026-07-15
+- Change:
+  - Added a row-indexed static-rectangle interval cache to `ObstacleMap`.
+  - `is_static_rect_blocked(x, y)` now checks only intervals on row `y`
+    instead of linearly scanning every compact static rectangle.
+  - The index is maintained by `add_static_rect`, `add_static_rects`,
+    `set_static_rects`, `clear_static_rects`, `clear_static_cells`, and
+    `clone_with_expanded_dynamic_obstacles`.
+- Rationale:
+  - The crossing-aware A* witness path calls `is_static_blocked` very often.
+  - After diagonal halo witnesses were added, many more diagonal/bend moves
+    enter the crossing witness path. With compact static rectangles, the old
+    linear static-rect scan dominated runtime while preserving identical search
+    counters.
+- Validation:
+  - `cargo check` passed.
+  - `cargo test obstacle_map --lib` passed after adding the bundled Python
+    runtime directory to `PATH` for the PyO3 test binary.
+  - Rebuilt the extension with `maturin develop --release`.
+  - Re-ran `multiportmmi_8x8` through `debug_stop_after_route_index=67` with
+    static 90-degree stubs, lane spacing default 11, x-offset default 1,
+    protected runway spacing 3, no SVGs, and `--foreign-port-keepout-cells 6`.
+  - Timing with `--debug-timing true`: wall-clock `26.701` seconds,
+    `native_route_batch=5.3071s`, `astar_loop=5.3577s`, `repairs=0`,
+    `failures=0`.
+  - Timing without debug timing: wall-clock `26.223` seconds.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`, `routed_record_count=67`,
+    `debug_stop_after_route_index=67`.
+
+Static-stub run through n_67 after row-index speedup:
+
+- Date: 2026-07-15
+- Command:
+  - Re-ran `multiportmmi_8x8` through `debug_stop_after_route_index=68`
+    with static 90-degree stubs, lane spacing default 11, x-offset default 1,
+    protected runway spacing 3, no SVGs, no attempt diagnostics, and
+    `--foreign-port-keepout-cells 6`.
+- Timing:
+  - Wall-clock runtime: `00:00:24.3990872` (`24.399` seconds).
+- Result:
+  - Command exited 0 and wrote the updated GDS.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`, `routed_record_count=68`,
+    `debug_stop_after_route_index=68`.
+
+Static-stub run through n_68 after row-index speedup:
+
+- Date: 2026-07-15
+- Command:
+  - Re-ran `multiportmmi_8x8` through `debug_stop_after_route_index=69`
+    with static 90-degree stubs, lane spacing default 11, x-offset default 1,
+    protected runway spacing 3, no SVGs, no attempt diagnostics, and
+    `--foreign-port-keepout-cells 6`.
+- Timing:
+  - Wall-clock runtime: `00:00:24.8759268` (`24.876` seconds).
+- Result:
+  - Command exited 0 and wrote the updated GDS.
+  - Crossing and photonic verification JSON both report
+    `success=True`, `error_count=0`, `routed_record_count=69`,
+    `debug_stop_after_route_index=69`.
+
+Static-stub run through attempted n_69 after row-index speedup:
+
+- Date: 2026-07-15
+- Command:
+  - Tried `multiportmmi_8x8` through `debug_stop_after_route_index=70`
+    with static 90-degree stubs, lane spacing default 11, x-offset default 1,
+    protected runway spacing 3, no SVGs, and `--foreign-port-keepout-cells 6`.
+- Result:
+  - The run failed in final photonic geometry repair before realization.
+  - Reproduced with `--attempt-diagnostics`.
+  - The grid/A* route for `n_69` reports `status=ok`.
+  - Failure:
+    `cross_net_waveguide_overlap n_66: Waveguide for n_66 overlaps waveguide for n_69`
+    with `area=24.008843000000002` and
+    `bbox=(2559.25, 865.818, 2559.65, 927.307)`.
+  - `n_69` route:
+    source `mmi0_multiport_2_1,o6`, target `mol_array_1_mzi_4,o1`,
+    source state `(1266,326,0)`, target state `(1313,243,0)`,
+    `route_cells_count=125`.
+  - `n_66` route:
+    source `mmi0_multiport_2_0,o5`, target `mol_array_1_mzi_6,o1`,
+    source state `(1266,137,0)`, target state `(1313,343,0)`,
+    `route_cells_count=213`.
+  - Diagnosis:
+    this is not a routing failure or ripup loop. The A* grid route is accepted,
+    but realized photonic geometry finds a cross-net overlap between adjacent or
+    near-parallel realized segments of `n_66` and `n_69`. The latest successful
+    GDS remains the stop-through-`n_68` state.
+  - Debug SVGs generated for visual inspection:
+    `build/routes/multiportmmi_8x8_n_66.svg` and
+    `build/routes/multiportmmi_8x8_n_69.svg`.
+  - Follow-up analysis:
+    the overlap bbox is a long, narrow vertical strip around
+    `x=2559.25..2559.65`, `y=865.818..927.307`, which maps to the
+    `n_66` vertical realized centerline area. Since the grid routes show
+    `n_66` around grid `x=1288` and `n_69` around grid `x=1289`, adjacent
+    2-um cells with a 0.5-um route width should not overlap by themselves.
+    The next diagnostic should dump or reproduce the failed photonic probe
+    layout/centerlines and compare primitive centerline, endpoint-corrected
+    centerline, and final polygon near that bbox.
+
+Photonic probe failure dump for n_69 overlap:
+
+- Date: 2026-07-15
+- Added a debug-only dump on final photonic verification failure in
+  `translation/route_rust.py`.
+- Re-ran the stop-after-route-70 case. Runtime was `29.146` seconds and the
+  expected failure reproduced.
+- Generated:
+  - `build/photonic_probe_failures/multiportmmi_8x8_photonic_probe_failure.gds`
+  - `build/photonic_probe_failures/multiportmmi_8x8_photonic_probe_failure.json`
+  - `build/photonic_probe_failures/multiportmmi_8x8_photonic_probe_failure_centerlines.json`
+  - `build/photonic_probe_failures/multiportmmi_8x8_photonic_probe_failure_centerlines.svg`
+  - `build/photonic_probe_failures/multiportmmi_8x8_photonic_probe_failure.txt`
+  - Root-cause evidence from the centerline dump:
+    - `n_66` primitive centerline has the long vertical segment at `x=2557.5`.
+    - `n_66` endpoint-corrected centerline moves that same vertical segment to
+      `x=2559.4`.
+    - `n_69` endpoint-corrected centerline has a vertical segment at `x=2559.5`
+      from `y=925.125` to `y=868.0`, with bends above and below.
+    - Therefore the overlap is caused by endpoint correction shifting the
+      existing `n_66` vertical run into the later `n_69` realized route, not by
+      adjacent untouched grid cells being intrinsically too close.
+
+Static-stub endpoint correction fix:
+
+- Date: 2026-07-15
+- Changed `_fanout_stubbed_centerline()` in `translation/route_rust.py` so
+  static-stub/fanout records splice the precomputed stub onto the primitive
+  A* centerline instead of running `route_port_corrected_centerline()` across
+  the whole routed path.
+- Rationale:
+  in crossing-enabled/static-stub mode, the stub is the endpoint correction for
+  the dense source side. Applying full-route endpoint correction to the A*
+  portion can move interior geometry after routing, which violates the routing
+  model and caused `n_66` to shift into `n_69`.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Re-ran `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree
+    stubs, stop-after-route 70, SVGs for route indices 67 and 70,
+    `--routing-window-scale 0.35`, `--foreign-port-keepout-cells 6`.
+  - Runtime: `30.646` seconds.
+  - Result: command exited 0 and wrote GDS.
+  - `build/verification/multiportmmi_8x8_photonic_verification.json` reports
+    `success=True`, `error_count=0`, `cross_net_waveguide_overlap_count=0`,
+    `routed_record_count=70`, `debug_stop_after_route_index=70`.
+  - Updated route SVGs:
+    `build/routes/multiportmmi_8x8_n_66.svg`,
+    `build/routes/multiportmmi_8x8_n_69.svg`.
+
+Static-stub endpoint correction follow-up through n_70:
+
+- Date: 2026-07-15
+- Re-ran `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+  stop-after-route 71, SVG for route index 71, `--routing-window-scale 0.35`,
+  and `--foreign-port-keepout-cells 6`.
+- Runtime: `30.580` seconds.
+- Route 71 is visible net `n_70`
+  (`mmi0_multiport_2_1,o5 -> mol_array_1_mzi_7,o1`).
+- Result:
+  - Command exited 0 and wrote GDS.
+  - `n_70` routed with A* length `157.966um`, cost `161.966`,
+    expanded states `2574`.
+  - `build/verification/multiportmmi_8x8_photonic_verification.json` reports
+    `success=True`, `error_count=0`, `cross_net_waveguide_overlap_count=0`,
+    `routed_record_count=71`, `debug_stop_after_route_index=71`.
+  - SVG generated:
+    `build/routes/multiportmmi_8x8_n_70.svg`.
+
+Static-stub endpoint correction follow-up through n_86:
+
+- Date: 2026-07-15
+- Re-ran `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+  stop-after-route 87, no route SVG generation, `--routing-window-scale 0.35`,
+  and `--foreign-port-keepout-cells 6`.
+- Runtime: `30.110` seconds.
+- Result:
+  - Command exited 0 and wrote GDS.
+  - `build/verification/multiportmmi_8x8_photonic_verification.json` reports
+    `success=True`, `error_count=0`, `cross_net_waveguide_overlap_count=0`,
+    `waveguide_obstacle_overlap_count=0`, `routed_record_count=87`,
+    `debug_stop_after_route_index=87`.
+  - This covers 16 additional routes after the previous stop-through-`n_70`
+    state. No route SVGs were requested for this speed-oriented run.
+
+Static-stub endpoint correction follow-up through n_92:
+
+- Date: 2026-07-15
+- Re-ran `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+  stop-after-route 93, no route SVG generation, `--routing-window-scale 0.35`,
+  and `--foreign-port-keepout-cells 6`.
+- Runtime: `33.932` seconds.
+- Result:
+  - Command exited 0 and wrote GDS.
+  - `build/verification/multiportmmi_8x8_photonic_verification.json` reports
+    `success=True`, `error_count=0`, `cross_net_waveguide_overlap_count=0`,
+    `waveguide_obstacle_overlap_count=0`, `routed_record_count=93`,
+    `debug_stop_after_route_index=93`.
+  - This covers 6 additional routes after the stop-through-`n_86` state and
+    reaches the previously critical n_93 boundary without photonic errors.
+
+Static-stub endpoint correction follow-up through n_94:
+
+- Date: 2026-07-15
+- Re-ran `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+  stop-after-route 95, no route SVG generation, `--routing-window-scale 0.35`,
+  and `--foreign-port-keepout-cells 6`.
+- Runtime: `39.980` seconds.
+- Result:
+  - Command exited 0 and wrote GDS.
+  - `build/verification/multiportmmi_8x8_photonic_verification.json` reports
+    `success=True`, `error_count=0`, `cross_net_waveguide_overlap_count=0`,
+    `waveguide_obstacle_overlap_count=0`, `routed_record_count=95`,
+    `debug_stop_after_route_index=95`.
+  - This covers 2 additional routes after the stop-through-`n_92` state.
+
+Full multiportmmi_8x8 benchmark after static-stub endpoint correction fix:
+
+- Date: 2026-07-15
+- Re-ran the full `multiportmmi_8x8` benchmark with crossings/lidar-pure,
+  static 90-degree stubs, no debug stop, no route SVG generation,
+  `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 6`.
+- Runtime: `56.637` seconds.
+- Result:
+  - Command exited 0 and wrote
+    `build/routed_multiportmmi_8x8.gds`.
+  - `build/verification/multiportmmi_8x8_photonic_verification.json` reports
+    `success=True`, `error_count=0`, `warning_count=0`,
+    `routed_record_count=111`, `unique_routed_record_count=111`,
+    `missing_route_count=0`, `partial=False`, `status=complete`,
+    `cross_net_waveguide_overlap_count=0`,
+    `waveguide_obstacle_overlap_count=0`,
+    `crossing_component_route_overlap_count=0`,
+    `crossing_component_overlap_count=0`.
+  - The full benchmark now routes and verifies cleanly with the current WIP
+    changes.
+
+Full multiportmmi_8x8 timing profile:
+
+- Date: 2026-07-15
+- Re-ran the full benchmark with the same static-stub/crossing configuration
+  and `--debug-timing true`.
+- Wall-clock around command: `73.061` seconds.
+- Internal timing summary: `59.598` seconds.
+- Key timing buckets:
+  - Translation: `0.0116s`.
+  - Optical routing stage: `51.5633s`.
+  - `route_nets`: `41.7138s`.
+  - Route endpoint correction: `0.0073s`.
+  - Route realization: `0.0442s`.
+  - Stage overhead/reporting in `routing_flow.py`: `9.7979s`.
+- `route_nets` split currently accounts explicitly for only part of the time:
+  - Obstacle map: `0.3027s`.
+  - Route job/build/opening/static handoff/state prep combined: about `0.125s`.
+  - Native route batch: `22.2321s`.
+  - Batch result processing + records + debug artifact assembly: about `0.023s`.
+  - A* loop summary: `22.3024s`, `111` attempts, `0` failures,
+    `27/111` simple routes, `0` repairs.
+  - A* counters: `2,821,524` expanded, `16,929,144` generated,
+    `16,445,776` footprint checks, `2,946,404` rect checks.
+  - About `19s` of `route_nets` remains un-attributed by the current split;
+    given the code path, this is most likely final photonic probe
+    realization/verification and repair-check bookkeeping inside
+    `route_nets_rust`, not A* itself.
+- Current biggest targets:
+  1. Instrument and optimize final photonic probe verification inside
+     `route_nets_rust` (`~19s` currently hidden in `route_nets other`).
+  2. Reduce `routing_flow.py` post-route verification/reporting overhead
+     (`~9.8s`).
+  3. Then optimize actual A* search loop/native batch (`~22.3s`).
+
+Full multiportmmi_8x8 final-check timing attribution:
+
+- Date: 2026-07-15
+- Added finer timing buckets around final realized crossing verification and
+  final photonic probe verification in `translation/route_rust.py`, and printed
+  those buckets from `routing_flow.py`.
+- Re-ran the full benchmark with crossings/lidar-pure, static 90-degree stubs,
+  no debug stop, no route SVG generation, `--routing-window-scale 0.35`,
+  `--foreign-port-keepout-cells 6`, and `--debug-timing true`.
+- Log: `build/multiportmmi_8x8_full_timing_final_checks.txt`.
+- Wall-clock around command: `74.879` seconds.
+- Internal timing summary: `61.023` seconds.
+- Result:
+  - Command exited 0.
+  - `build/verification/multiportmmi_8x8_photonic_verification.json` remains
+    clean: `success=True`, `error_count=0`, `warning_count=0`,
+    `routed_record_count=111`, `missing_route_count=0`, `status=complete`.
+- Key attribution:
+  - Native route batch / A* batch: `23.280s`.
+  - A* search loop: `22.737s` timed in Rust, `2,821,524` states expanded,
+    `16,929,144` generated, `16,445,776` footprint checks.
+  - Realized crossing refresh total: `10.462s`, dominated by
+    `realized_crossing_verify_intersections=10.455s`.
+  - Final photonic probe refresh total: `7.950s`, dominated by
+    `photonic_probe_verify=7.913s`.
+  - Final verification block inside `route_nets_rust`: `18.412s`.
+  - Obstacle map: `0.283s`.
+  - Endpoint correction: `0.005s`.
+  - Route realization: `0.040s`.
+  - `routing_flow.py` stage overhead/reporting: `10.530s`.
+- Interpretation:
+  - The largest remaining cost is split between real route search
+    (`~23s`) and duplicate/final verification work (`~18s` inside
+    `route_nets_rust` plus `~10.5s` after returning to `routing_flow.py`).
+  - `routing_flow.py` still performs its own crossing report generation and
+    full `verify_photonic_routing(...)` after `route_nets_rust` has already
+    done final verification; this is likely the next low-risk speed target
+    before changing A* behavior.
+
+Verification authority documentation:
+
+- Date: 2026-07-15
+- Added code comments documenting the intended verification ownership:
+  - `translation/route_rust.py`: internal photonic probe verification is
+    diagnostic/mismatch debugging support, not the intended always-on
+    production source of truth.
+  - `routing_flow.py`: the Python `verify_photonic_routing(...)` pass on the
+    realized routed layout is the normal final geometry gate before accepting
+    the GDS.
+- No behavior change was made in this documentation-only step.
+- Validation: `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+  translation\route_rust.py` passed.
+
+Internal photonic probe verification default-off speed fix:
+
+- Date: 2026-07-15
+- Implemented `enable_internal_photonic_probe_verification: bool = False` in
+  `translation/route_rust.py`.
+- Behavior:
+  - Internal realized crossing verification remains enabled because the router
+    owns crossing event legality and can repair/reroute those events before
+    final realization.
+  - The expensive internal full photonic probe verification is now skipped by
+    default. It can still be enabled explicitly for mismatch/debug work.
+  - The Python `verify_photonic_routing(...)` call in `routing_flow.py` remains
+    the normal final GDS/layout-level gate.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\route_rust.py` passed.
+  - Full `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 6` passed.
+  - `build/verification/multiportmmi_8x8_photonic_verification.json` reports
+    `success=True`, `error_count=0`, `warning_count=0`,
+    `routed_record_count=111`, `missing_route_count=0`, `status=complete`.
+- Timing with `--debug-timing true`:
+  - Wall-clock around command: `57.377` seconds.
+  - Internal timing summary: `53.332` seconds.
+  - `photonic_probe_*` buckets are absent from the split, confirming that the
+    internal full photonic probe was skipped.
+  - `route_nets` dropped to `33.991s`.
+  - Native route batch / A*: `22.306s`.
+  - Realized crossing refresh remains `11.030s`.
+  - `routing_flow.py` stage overhead/reporting remains `10.749s`.
+- Timing without `--debug-timing`:
+  - Wall-clock around command: `55.744` seconds.
+- Next speed targets:
+  1. Reduce `realized_crossing_verify_intersections` (`~11s`) without changing
+     crossing legality.
+  2. Split and reduce `routing_flow.py` stage overhead/reporting (`~10.7s`),
+     which includes the final external reports/verifications.
+  3. Then return to the A* search loop (`~22s`) for algorithmic speedups.
+
+Native crossing-event fast path for realized crossing metadata:
+
+- Date: 2026-07-15
+- Implemented a fast default path for realized crossing metadata in
+  `translation/route_rust.py`.
+- Behavior:
+  - The normal flow now trusts A*-accepted native crossing events as the source
+    for `realized_intersections`, crossing component placement, insertion-loss
+    counts, and legal-overlap polygons for the external Python verifier.
+  - The expensive full Python segment-sweep verifier
+    `_verify_realized_route_intersections(...)` remains available behind
+    `enable_internal_photonic_probe_verification=True`.
+  - Internal realized-crossing verification no longer triggers normal ripup or
+    route failure in the default flow; default correctness is enforced by A*
+    move legality plus the final external Python geometry verification.
+  - Added Bounding-Box prefiltering to the old full segment-sweep verifier so
+    the debug path is also cheaper when explicitly enabled.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\route_rust.py` passed.
+  - Full `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 6` passed.
+  - Photonic verification reports `success=True`, `error_count=0`,
+    `warning_count=0`, `routed_record_count=111`, `missing_route_count=0`,
+    `status=complete`.
+  - Crossing verification reports `success=True`, `error_count=0`,
+    `warning_count=0`, with `35` crossings and `35` crossing components.
+- Timing with `--debug-timing true`:
+  - Wall-clock around command: `31.376` seconds.
+  - Internal timing summary: `27.514` seconds.
+  - `route_nets`: `20.037s`.
+  - Native route batch / A*: `19.430s`.
+  - `realized_crossing_verify_intersections`: `0.001s`.
+  - `realized_crossing_refresh_total`: `0.003s`.
+  - `final_verification_block`: `0.003s`.
+- Timing without `--debug-timing`:
+  - Wall-clock around command: `31.746` seconds.
+- Net speedup from the previous default-off probe state:
+  - `realized_crossing_verify_intersections` dropped from about `11s` to
+    around `1ms`.
+  - Full benchmark wall-clock dropped from about `55.7s` to about `31.7s`.
+
+No-crossing endpoint correction restored under crossing mode:
+
+- Date: 2026-07-15
+- Reverted the fragile broad crossing-aware endpoint-correction experiment that
+  mixed static stubs, already-corrected centerlines, and crossing-net terminal
+  edits.
+- Current boundary:
+  - Nets with no realized crossings now use the normal
+    `apply_port_endpoint_corrections(...)` path even when crossing mode is
+    enabled.
+  - Nets with realized crossings remain on the existing split/splice path; the
+    middle between first and last crossing is not meant to be moved.
+  - Global endpoint-connectivity verification remains disabled for crossing
+    mode until the explicit crossing-net split correction is implemented.
+- Added a conservative safety guard for no-crossing endpoint correction:
+  - If the corrected no-crossing centerline would enter an expanded foreign
+    crossing-component footprint, the correction is rejected and the original
+    route record is kept.
+  - This prevents cases like `n_87` being endpoint-corrected into an unrelated
+    crossing component.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\route_rust.py translation\route_rust_realization.py` passed.
+  - Full `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 6` passed.
+  - Photonic verification reports `success=True`, `error_count=0`,
+    `warning_count=0`, `routed_record_count=111`, `missing_route_count=0`,
+    `status=complete`.
+  - Crossing verification reports `success=True`, `error_count=0`,
+    `warning_count=0`.
+  - `build/routed_multiportmmi_8x8.gds` was written successfully.
+- Timing:
+  - Wall-clock around command: `31.300` seconds.
+  - Internal timing summary: `27.666` seconds.
+  - `route_nets`: `20.263s`.
+  - Native route batch / A*: `19.362s`.
+  - Endpoint-correction phase: `0.232s`.
+
+Static fanout stubs preserved during endpoint correction:
+
+- Date: 2026-07-15
+- Fixed a regression from the no-crossing endpoint-correction restoration:
+  static fanout-stub nets were being treated as ordinary no-crossing routes,
+  so their existing stubbed `corrected_centerline_um` could be replaced by a
+  normal route endpoint correction.
+- Current behavior:
+  - If a routed record belongs to `fanout_anchor_net_ids` and already has a
+    `corrected_centerline_um`, endpoint correction skips that record entirely.
+  - This preserves the static stub geometry and avoids re-validating/correcting
+    the route against the original physical port as if the stub did not exist.
+  - Non-stub no-crossing nets still use normal endpoint correction, protected
+    by the foreign crossing-footprint guard.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\route_rust.py translation\route_rust_realization.py` passed.
+  - Full `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 6` passed.
+  - Photonic verification reports `success=True`, `error_count=0`,
+    `warning_count=0`, `routed_record_count=111`, `missing_route_count=0`,
+    `status=complete`.
+  - Crossing verification reports `success=True`, `error_count=0`,
+    `warning_count=0`.
+  - `build/routed_multiportmmi_8x8.gds` was written successfully at
+    `2026-07-15 17:52:30`, size `446344` bytes.
+- Timing:
+  - Wall-clock around command: `32.094` seconds.
+  - Internal timing summary: `28.411` seconds.
+  - `route_nets`: `20.804s`.
+  - Native route batch / A*: `19.935s`.
+  - Endpoint-correction phase: `0.189s`.
+
+Endpoint offset-bump correction enabled with 45-degree primitives:
+
+- Date: 2026-07-15
+- Diagnosis:
+  - The Rust endpoint corrector already had the compact four-bend offset-bump
+    case for routes where straight extension and shared-axis shifting do not
+    solve the port offset.
+  - The high-level Python routing flow disabled that case whenever
+    `allow_45_degree_turns=True` by passing
+    `allow_unchecked_bumps=not allow_45_degree_turns`.
+  - This is why some no-crossing endpoint-correction cases did not insert the
+    expected bump even though the Rust implementation supported it.
+- Change:
+  - High-level endpoint-correction calls now pass `allow_unchecked_bumps=True`
+    independent of 45-degree primitive support.
+  - The lower-level Rust API still supports explicitly passing
+    `allow_unchecked_bumps=False` for tests/debugging.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\route_rust.py translation\route_rust_realization.py` passed.
+  - Full `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 6` passed.
+  - Photonic verification reports `success=True`, `error_count=0`,
+    `warning_count=0`, `routed_record_count=111`, `missing_route_count=0`,
+    `status=complete`.
+  - Crossing verification reports `success=True`, `error_count=0`,
+    `warning_count=0`.
+  - `build/routed_multiportmmi_8x8.gds` was written successfully at
+    `2026-07-15 18:02:39`, size `449448` bytes.
+- Timing:
+  - Wall-clock around command: `33.702` seconds.
+  - Internal timing summary: `29.526` seconds.
+  - `route_nets`: `21.540s`.
+  - Native route batch / A*: `20.675s`.
+  - Endpoint-correction phase: `0.205s`.
+
+Checked endpoint bump correction restored for crossing-mode no-crossing nets:
+
+- Date: 2026-07-15
+- Diagnosis:
+  - The Rust router already exposes obstacle-aware endpoint correction via the
+    checked-and-commit APIs. Those APIs evaluate top/bottom bump candidates
+    against static and dynamic occupancy before committing geometry.
+  - The Python post-routing endpoint-correction pass still used the unchecked
+    geometry helper for no-crossing records in crossing mode, so an offset bump
+    could be inserted without seeing nearby route/static obstacles.
+- Change:
+  - Checked endpoint correction is now enabled in crossing mode too.
+  - Static fanout-stub nets are skipped when they already carry their generated
+    stubbed centerline.
+  - Nets with accepted crossing events are skipped here; their crossing-aware
+    endpoint correction remains limited to the port-to-first-crossing and
+    last-crossing-to-port regions.
+  - No-crossing, non-stub nets in crossing mode now use the native checked
+    endpoint-correction path. If no obstacle-safe correction candidate exists,
+    the original route is preserved in crossing mode instead of replacing it
+    with an unchecked bump or poisoning the route record.
+  - Offset-bump candidates remain enabled for 45-degree-capable runs, but now
+    go through the obstacle-aware checked path for this no-crossing/non-stub
+    crossing-mode case.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\route_rust.py translation\route_rust_realization.py` passed
+    before the full benchmark rerun.
+  - Full `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 6` passed.
+  - Photonic verification reports `success=True`, `error_count=0`,
+    `warning_count=0`, `routed_record_count=111`, `missing_route_count=0`,
+    `status=complete`.
+  - Crossing verification reports `success=True`, `error_count=0`,
+    `warning_count=0`.
+  - `build/routed_multiportmmi_8x8.gds` was written successfully at
+    `2026-07-15 18:07:17`, size `449618` bytes.
+- Timing:
+  - Wall-clock around command: `31.817` seconds.
+  - Internal timing summary: `28.220` seconds.
+  - `route_nets`: `20.693s`.
+  - Native route batch / A*: `20.009s`.
+  - Endpoint correction: `0.086s`, `calls=74`, `failures=0`.
+
+Stub-routed nets now allow endport-only endpoint correction:
+
+- Date: 2026-07-15
+- Diagnosis:
+  - Static fanout-stub routes were previously skipped entirely during the
+    crossing-aware endpoint-correction pass once they had a stubbed
+    `corrected_centerline_um`.
+  - That preserved the generated stub, but it also prevented the route from
+    correcting the far end port. This was too strict for routes that start at a
+    static stub and may still have crossings on the routed segment.
+- Change:
+  - The routing metadata now records whether a fanout anchor belongs to the
+    source side or target side of a net.
+  - Crossing-aware endpoint correction can now freeze only the stubbed side and
+    correct the opposite terminal.
+  - For stubbed routes, the existing `stub + route` centerline is used as the
+    splice baseline so the static stub is preserved.
+  - For the current source-stub use case, only the last-crossing-to-end-port
+    side is allowed to move; the start stub is not modified.
+  - If a no-crossing stub route needs endpoint correction, the route-only
+    correction is merged back into the existing stubbed centerline instead of
+    dropping the stub.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\route_rust.py translation\route_rust_realization.py` passed.
+  - Full `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 6` passed.
+  - Photonic verification reports `success=True`, `error_count=0`,
+    `warning_count=0`, `routed_record_count=111`, `missing_route_count=0`,
+    `status=complete`.
+  - Crossing verification reports `success=True`, `error_count=0`,
+    `warning_count=0`.
+  - `build/routed_multiportmmi_8x8.gds` was written successfully at
+    `2026-07-15 18:15:42`, size `450188` bytes.
+- Timing:
+  - Wall-clock around command: `31.473` seconds.
+  - Internal timing summary: `27.640` seconds.
+  - `route_nets`: `20.161s`.
+  - Native route batch / A*: `19.441s`.
+  - Endpoint correction: `0.084s`, `calls=74`, `failures=0`.
+
+Final photonic verification now checks port connectivity in crossing mode:
+
+- Date: 2026-07-15
+- Diagnosis:
+  - The final `verify_photonic_routing` pass already supported endpoint
+    connectivity checks, but `routing_flow.py` disabled them whenever crossings
+    were enabled.
+  - Enabling the check immediately exposed several target endpoint distances
+    slightly above the old default `2.0um` contact radius. These were all below
+    one diagonal grid-cell radius for the current `2.0um` grid.
+- Change:
+  - Final photonic verification now always runs endpoint connectivity checks,
+    including crossing-enabled runs.
+  - The default port contact radius is now at least one grid-cell diagonal:
+    `sqrt(2) * grid_size_um`. This matches the router's grid quantization while
+    still catching larger unconnected-port gaps.
+  - Added focused photonic-verification tests:
+    - stub-like corrected centerlines are accepted when they touch both real
+      ports;
+    - missing target-port contact is reported even when crossing metadata is
+      present.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\photonic_verification.py tests\test_photonic_verification.py`
+    passed.
+  - `.\.venv\Scripts\python.exe -m pytest tests\test_photonic_verification.py
+    -q` passed: `16 passed`.
+  - Full `multiportmmi_8x8` with crossings/lidar-pure, static 90-degree stubs,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 6` passed
+    with endpoint connectivity enabled.
+  - Photonic verification reports `success=True`, `error_count=0`,
+    `warning_count=0`, `routed_record_count=111`, `missing_route_count=0`,
+    `status=complete`.
+  - Crossing verification reports `success=True`, `error_count=0`,
+    `warning_count=0`.
+  - `build/routed_multiportmmi_8x8.gds` was written successfully at
+    `2026-07-15 18:26:23`, size `450188` bytes.
+- Timing:
+  - Wall-clock around command: `34.985` seconds.
+  - Internal timing summary: `30.755` seconds.
+  - `route_nets`: `22.387s`.
+  - Native route batch / A*: `21.595s`.
+  - Endpoint correction: `0.090s`, `calls=74`, `failures=0`.
+
+Correction: port-contact tolerance must stay strict; checked bumps need active port openings:
+
+- Date: 2026-07-15
+- Diagnosis:
+  - The previous diagonal-grid-cell contact radius masked a real missing-port
+    connection near heater/pad geometry. That run is not considered a valid
+    correctness checkpoint.
+  - Static pad geometry may be crossed by endpoint/bump correction only through
+    the route's active port opening cells. A local bump footprint must not open
+    arbitrary static cells by itself.
+  - Static fanout-stub routes must be endpoint-corrected in the real router
+    that owns the static obstacle map, dynamic route map, and opened-port cells.
+    The later realization-only router is intentionally obstacle-free and cannot
+    validate bump legality.
+- Change:
+  - `translation/photonic_verification.py` default port-contact tolerance is
+    restored to `max(route_width_um, grid_size_um)`.
+  - `src/py_router.rs` checked endpoint correction now treats static overlap as
+    legal only when the cell is in `opened_cells`; it no longer auto-opens the
+    bump/core footprint.
+  - `translation/route_rust.py` now applies a checked fanout-stub endpoint
+    correction pass in the live router. The static stub side is frozen and the
+    opposite terminal is corrected/merged back into the stubbed centerline.
+  - The later crossing-aware debug-artifact correction no longer overwrites
+    already-corrected static fanout-stub records with unchecked obstacle-free
+    geometry.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\route_rust.py translation\route_rust_realization.py
+    translation\photonic_verification.py tests\test_port_alignment_diagnostics.py
+    tests\test_photonic_verification.py` passed.
+  - Python-side focused verification passed:
+    `.\.venv\Scripts\python.exe -m pytest
+    tests\test_port_alignment_diagnostics.py::test_crossing_free_endpoint_correction_uses_normal_corrected_centerline
+    tests\test_photonic_verification.py -q` => `17 passed`.
+  - Full Rust-backed validation is currently blocked in this shell because the
+    Windows toolchain cannot link the PyO3 extension:
+    MSVC target fails with missing `link.exe`; explicit
+    `stable-x86_64-pc-windows-gnullvm` fails with missing
+    `x86_64-w64-mingw32-clang`, and direct `gcc-ld` execution is denied by
+    Windows (`os error 5`).
+
+Windows Rust/PyO3 build path stabilized:
+
+- Date: 2026-07-15
+- Diagnosis:
+  - Intermittent Rust build failures came from inconsistent Windows toolchain
+    selection. The default host was `stable-x86_64-pc-windows-msvc`, but Visual
+    Studio C++ Build Tools / `link.exe` are not installed in this workspace.
+  - Switching only the target to `x86_64-pc-windows-gnullvm` was not enough:
+    build scripts still used the MSVC host unless the repo selected the gnullvm
+    toolchain.
+  - The gnullvm default external linker name
+    `x86_64-w64-mingw32-clang` is also not present. The installed gnullvm
+    toolchain does include `rust-lld.exe`, which works when Cargo points at it
+    directly.
+- Change:
+  - Added `rust-toolchain.toml` selecting
+    `stable-x86_64-pc-windows-gnullvm`.
+  - Added `.cargo/config.toml` selecting the bundled gnullvm `rust-lld.exe`
+    linker and setting `PYO3_PYTHON` to the project virtualenv Python.
+  - Added `docs/WINDOWS_RUST_TOOLCHAIN.md` with the failure modes and expected
+    commands.
+  - Updated `AGENTS.md` to point future agents at the documented Windows build
+    path.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` now passes from the repo root
+    without manual environment variables. Current warning:
+    `endpoint_contact_open_keys` is unused.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` now rebuilds and
+    reinstalls `photonic_router._rust` successfully without manual environment
+    variables.
+  - `.\.venv\Scripts\python.exe -c "import photonic_router._rust as r; ..."`
+    confirms the extension imports from
+    `python\photonic_router\_rust.pyd` and exposes `PyPhotonicRouter`.
+  - `tests/test_rust_backend_import.py` now executes against the rebuilt
+    extension; 8 tests pass and 2 crossing behavior tests fail with
+    `No crossing-compliant route found`. Those failures are current router
+    behavior regressions, not build/toolchain failures.
+
+Crossing binding harness aligned with collision-local A*:
+
+- Date: 2026-07-15
+- Diagnosis:
+  - The `No crossing-compliant route found` failures were not produced by the
+    final photonic/GDS verifier and did not indicate clean crossings being
+    rejected for uncorrected ports.
+  - They came from legacy direct Rust-binding tests that enabled the old
+    expected-partner crossing path. That path requires an explicitly expected
+    partner crossing and returns before the normal local-collision A* behavior
+    or final endpoint connectivity verification is relevant.
+- Change:
+  - Replaced the old expected-partner crossing route fixtures in
+    `tests/test_rust_backend_import.py` with collision-local fixtures using
+    `set_collision_crossing_routing(True)` and
+    `CrossingConfig(..., allow_only_expected_pairs=False)`.
+  - The new fixtures verify that A* accepts a legal local dynamic crossing,
+    reserves and releases the crossing footprint, and rejects an illegal local
+    crossing move with a normal `No route found` outcome rather than the legacy
+    expected-partner error.
+  - Existing photonic-verification tests remain responsible for reporting
+    unconnected/non-port-corrected ports.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m pytest tests\test_rust_backend_import.py
+    -q` passed: `10 passed`.
+  - `.\.venv\Scripts\python.exe -m pytest tests\test_photonic_verification.py
+    -q` passed: `16 passed`.
+
+Strict full-run attempt stops before final port verification:
+
+- Date: 2026-07-15
+- Command:
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --fanout-access-mode static-stubs
+    --routing-window-scale 0.35 --foreign-port-keepout-cells 6 --debug-svgs
+    false --attempt-diagnostics --debug-timing true`
+  - Run required `PYTHONUTF8=1` in this PowerShell session to avoid CP1252
+    console failures on Unicode status symbols.
+- Result:
+  - The run does not reach final photonic/port verification.
+  - Routing stops at route `[69/111] n_68`
+    (`mmi0_multiport_2_1,o7 -> mol_array_1_mzi_3,o1`) with
+    `No legal LiDAR crossing route found; probe-based victim selection is
+    disabled in crossing mode`.
+- Diagnostics:
+  - `build\routes\multiportmmi_8x8_n_68_FAILED.txt`
+  - `build\routes\multiportmmi_8x8_n_68_diagnostics.txt`
+  - The normal route attempt reports
+    `Illegal grid crossing: net 69 intersects net 66 at (1301.500, 285.500)
+    (insufficient_straight_margin)`.
+  - The source side is a static fanout anchor; diagnostics report
+    `source_fanout_anchor=True`, `source_dense_source_cluster_size=4`, and
+    `source_dense_port_runway_cells=6`.
+  - Opened cells have no static overlap in the effective diagnostic
+    (`opened_static_overlap_count=0`), but a small sibling runway dynamic
+    overlap is present:
+    `sibling_port_runway_dynamic_overlap_count=3`,
+    bbox `(1281,1283,300,300)`.
+- Current assessment:
+  - The expected port-connectivity errors are not observable yet because the
+    current WIP fails earlier in route search. The next task should inspect the
+    `n_68`/net-66 crossing candidate and decide whether A* should find a legal
+    alternate crossing/route or whether this is a legitimate route-order/ripup
+    blocker.
+
+Endpoint correction dry-run boundary:
+
+- Date: 2026-07-15
+- Reason:
+  - Endpoint/port correction may need the router obstacle map for static,
+    dynamic, and opened-port collision checks, especially for bump candidates.
+  - It must not mutate the live A* router state before all routing and repair
+    decisions have completed. Otherwise a post-route geometry adapter can
+    influence later A* searches, which violates the current model boundary.
+- Change:
+  - Added non-committing Rust/PyO3 correction APIs:
+    `route_port_corrected_centerline_checked(...)` and
+    `apply_checked_endpoint_corrections(...)`.
+  - Kept the previous explicit commit APIs for tests/debug compatibility:
+    `route_port_corrected_centerline_checked_and_commit(...)` and
+    `apply_checked_endpoint_corrections_and_commit(...)`.
+  - The dry-run path performs the same candidate generation and obstacle-map
+    commit legality check on a cloned obstacle map, then returns the corrected
+    centerline and metadata without registering route cells, crossing events,
+    opened cells, spacing history, or committed centerlines on the live router.
+  - The normal Python flow now calls the dry-run batch API for both regular
+    endpoint correction and fanout-stub endpoint correction. The realized route
+    records are updated, but the router's live A* obstacle state is not changed
+    by correction.
+  - Removed the now-unused local endpoint-contact static-opening helper. Static
+    pad openings must come from the active route opened-cell set instead of an
+    implicit local carve-out.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed with no warnings.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed after
+    the final warning cleanup and rebuilt `photonic_router._rust`.
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py
+    translation\route_rust.py translation\route_rust_realization.py
+    translation\photonic_verification.py` passed.
+  - `.\.venv\Scripts\python.exe -m pytest tests\test_rust_backend_import.py
+    -q` passed: `10 passed`.
+  - Focused endpoint-correction tests passed:
+    `tests\test_port_alignment_diagnostics.py::test_checked_endpoint_correction_dry_run_does_not_mutate_router_state`,
+    `::test_batch_checked_endpoint_correction_dry_run_returns_metadata_without_commit`,
+    `::test_batch_checked_endpoint_correction_returns_per_net_metadata`,
+    `::test_checked_case4_bump_allows_local_static_port_opening`,
+    `::test_checked_case4_bump_uses_clear_mirrored_side_when_static_blocks_first_candidate`,
+    `::test_checked_case4_bump_rejects_static_without_active_port_opening`
+    => `6 passed`.
+  - Full `tests\test_port_alignment_diagnostics.py -q` currently has two
+    broader `mmi_heater` failures:
+    `test_mmi_heater_pass0_characterizes_current_port_alignment` and
+    `test_mmi_heater_route_match_uses_corrected_records_for_realization`.
+    Both fail inside the initial native A* batch at
+    `gc1_to_mmi0_in2` before endpoint correction is reached, with
+    `No repair route found; candidate_blockers=[1]`. Treat this as a separate
+    routing/repair issue, not evidence that dry-run correction mutates A* state.
+
+mmi_heater failure-context artifact:
+
+- Date: 2026-07-15
+- User requested a GDS for the failing `mmi_heater` state while skipping
+  downstream verification.
+- Generated `build\routed_mmi_heater_failed_context_before_route2.gds` by
+  routing only through `debug_stop_after_route_index=1` with
+  `include_heater_obstacles=True`, `allow_45_degree_turns=False`, and
+  `enable_checked_endpoint_correction=False`.
+- This GDS contains the unrouted layout plus the first successful route
+  `gc0_to_mmi0_in1`. The next route, `gc1_to_mmi0_in2`, has no committed
+  geometry because A* does not return a legal path.
+- Also generated failure/debug context under:
+  - `build\routes\mmi_heater_failed_context_gc1_to_mmi0_in2_FAILED.txt`
+  - `build\routes\mmi_heater_failed_context_gc1_to_mmi0_in2_diagnostics.txt`
+  - `build\routes\mmi_heater_failed_context_gc0_to_mmi0_in1.svg`
+  - `build\static_obstacles\mmi_heater_failed_context_obstacles.svg`
+
+mmi_heater port-alignment fixture clearance removed:
+
+- Date: 2026-07-15
+- Diagnosis:
+  - The two broader `mmi_heater` tests were failing because the fixture used
+    the default obstacle clearance. That gives committed waveguides a dynamic
+    search/commit keepout around the centerline.
+  - In this old port-alignment diagnostic fixture, route 1's dynamic keepout
+    overlaps the route-2 target access/runway region, so route 2 cannot find
+    the simple orthogonal route. This was a clearance/spacing test artifact,
+    not a failure of the multiport crossing flow.
+- Change:
+  - The two `mmi_heater` tests in
+    `tests\test_port_alignment_diagnostics.py` now pass
+    `StaticObstacleMapConfig(clearance_um=0.0)`.
+  - The first test also disables checked endpoint correction explicitly; it now
+    characterizes the clearance-free grid/primitive port-alignment state rather
+    than asserting port-snapped endpoint correction.
+  - The route-match test disables `enable_grid_endpoint_correction` and asserts
+    that routed records remain present with corrected primitive centerlines,
+    without requiring exact endpoint snapping.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m pytest
+    tests\test_port_alignment_diagnostics.py::test_mmi_heater_pass0_characterizes_current_port_alignment
+    tests\test_port_alignment_diagnostics.py::test_mmi_heater_route_match_uses_corrected_records_for_realization
+    -q` passed: `2 passed`.
+  - Focused checked endpoint-correction dry-run tests still pass: `6 passed`.
+  - Full `tests\test_port_alignment_diagnostics.py -q` passed:
+    `25 passed`.
+
+multiportmmi_8x8 segmented endpoint inspect GDS:
+
+- Date: 2026-07-15
+- User requested a GDS even though the current photonic endpoint verification
+  still fails, so the geometry can be inspected visually.
+- Added a debug-only environment gate in `routing_flow.py`:
+  `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=1`.
+  Standard behavior still raises before GDS write when photonic verification
+  fails; the env var only allows an explicit inspect GDS.
+- Generated:
+  - `build\routed_multiportmmi_8x8.gds`
+  - log: `build\multiportmmi_8x8_segmented_endpoint_90_inspect_gds.txt`
+- Command used:
+  - `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`
+  - `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=1`
+  - `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6 --debug-svgs false --debug-timing true`
+- Result:
+  - GDS write succeeded.
+  - Runtime: `31.5697 s`.
+  - A* routed all `111` nets with `failures=0`, `repairs=0`.
+  - Crossing metadata: `35` native events, `35` realized intersections,
+    `0` illegal realized crossings.
+  - Photonic verification still fails with `14` endpoint errors:
+    `7 target_port_not_connected` and `7 target_endpoint_mismatch`.
+  - This is the desired inspect state for the current endpoint-correction bug:
+    crossings are no longer silently shifted by full-route endpoint correction,
+    and the remaining failures expose missing target-side terminal correction.
+
+No-crossing endpoint bump collision diagnosis:
+
+- Date: 2026-07-15
+- User showed an early benchmark endpoint bump colliding with the already
+  routed net above it and asked why the obstacle check can still miss this.
+- Findings:
+  - The Rust checked endpoint-correction path does have access to the live
+    router obstacle map during `route_nets_rust()`.
+  - In the overall crossing-enabled benchmark, a net can have no crossings
+    itself while `enable_crossings=True` globally. For checked endpoint
+    failures, `_apply_checked_endpoint_corrections_for_net_ids()` only records
+    `endpoint_correction_error` when `not enable_crossings`; those failed
+    no-crossing nets therefore remain eligible for a later correction pass.
+  - After `route_nets_rust(..., defer_realization=True)`,
+    `route_match_and_realize()` calls
+    `_apply_crossing_aware_endpoint_corrections_to_debug_artifacts()` for
+    crossing-enabled runs. For records with no crossing points, this falls back
+    to `apply_port_endpoint_corrections(...)` on a fresh realization router
+    built by `_build_realization_router()`. That router has no committed
+    dynamic obstacles and currently uses `allow_unchecked_bumps=True`, so it
+    can insert the colliding bump into the GDS even though the live checked
+    router would reject it.
+- Important boundary:
+  - The next fix should not change A* behavior. It should prevent the later
+    debug/realization endpoint-correction pass from retrying unchecked bumps
+    after the live checked pass rejected them.
+
+Empty-obstacle-map endpoint correction pass removed:
+
+- Date: 2026-07-15
+- User clarified that endpoint correction must be the same independent of the
+  global crossing flag and must decide per net whether crossings are present.
+- Change:
+  - In `translation/route_rust.py`, `route_match_and_realize()` no longer runs
+    `_apply_endpoint_corrections_to_debug_artifacts()` or
+    `_apply_crossing_aware_endpoint_corrections_to_debug_artifacts()` after
+    `route_nets_rust(..., defer_realization=True)`.
+  - That later pass used a fresh realization-only `PyPhotonicRouter` with an
+    empty dynamic obstacle map. It could therefore insert unchecked endpoint
+    bumps into the GDS even when the live checked router would reject them.
+  - The post-routing step now only refreshes port-alignment diagnostics from
+    the records returned by the live routing phase. It does not mutate route
+    geometry.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - `.\.venv\Scripts\python.exe -m pytest
+    tests\test_port_alignment_diagnostics.py -k "case4_bump or
+    batch_checked_endpoint_correction" -q` passed:
+    `8 passed, 18 deselected`.
+  - Re-ran `multiportmmi_8x8` with static stubs and
+    `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=1`.
+    Generated `build\routed_multiportmmi_8x8.gds`, log
+    `build\multiportmmi_8x8_no_empty_map_endpoint_correction.txt`.
+  - Runtime: `29.5286 s`; route search: `111` attempts, `0` failures,
+    `0` repairs; endpoint correction: `84` calls, `5` failures.
+  - Photonic verification now fails closed with `54` endpoint-related issues:
+    `6 missing_corrected_centerline`, `22 target_port_not_connected`, and
+    `26 target_endpoint_mismatch`. This is expected after removing the unsafe
+    empty-map retry; rejected live endpoint corrections now remain uncorrected
+    instead of being patched by an unchecked bump in the GDS.
+
+n_5 delta-bump placement investigation:
+
+- Date: 2026-07-15
+- User identified the visible early benchmark bump as likely `n_5` and asked
+  why a start-side downward bump is not selected while an end-side top bump
+  appears.
+- Diagnosis:
+  - `n_5` is not a full-straight case-4 bump candidate. Its route has
+    horizontal and 45-degree segments, so it uses the delta endpoint-correction
+    path in `geometry_realization.rs`.
+  - The delta correction path generated one corrected centerline, and target
+    delta bumps always used the last viable carrier run. That biases target
+    endpoint correction toward an end-side bump even when an earlier run could
+    absorb the same target delta by shifting the suffix.
+  - Port coordinates for `n_5`:
+    source `fanout_yb_1_1,o2` at `(205.5, 850.625)`, target
+    `fanout_yb_2_3,o1` at `(355.5, 950.0)`.
+- Change:
+  - In `src/geometry_realization.rs`, `insert_target_delta_bump()` now selects
+    the first viable carrier run instead of the last viable run, allowing
+    target endpoint deltas to be absorbed earlier in the route when geometry
+    permits.
+  - Removed the now-unused `last_viable_delta_bump_run()` helper.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `.\.venv\Scripts\python.exe -m pytest
+    tests\test_port_alignment_diagnostics.py -k "case4_bump or
+    batch_checked_endpoint_correction" -q` passed:
+    `8 passed, 18 deselected`.
+  - Generated stop-after-14 inspect GDS:
+    `build\routed_multiportmmi_8x8.gds`, log
+    `build\multiportmmi_8x8_n5_delta_bump_first_run.txt`.
+
+n_5 full-straight bump candidate blocker semantics:
+
+- Date: 2026-07-15
+- User clarified that the relevant `n_5` state is a horizontal route before
+  endpoint correction, with four case-4 candidates checked in order:
+  `start/top`, `start/bottom`, `end/top`, `end/bottom`.
+- Diagnosis:
+  - `full_straight_offset_bump_candidates()` does generate candidates in that
+    order for a horizontal route with a Y port offset.
+  - A previous bump-collision fix changed the candidate blocker precheck from
+    `candidate_core_cells` to inflated `candidate_blocked_cells`. That made
+    the candidate decision use the reserved keepout area as a hard obstacle.
+    It can reject a visually legal `start/bottom` bump even though the actual
+    waveguide core has clearance.
+  - `ObstacleMap::commit_route_with_clearance_overlap()` already encodes the
+    intended contract: core cells must not overlap existing dynamic obstacles;
+    blocked cells are the reservation committed after the core is legal.
+- Change:
+  - In `src/py_router.rs`, the case-4 bump candidate `out_of_bounds`,
+    `static_blockers`, and `dynamic_blockers` checks now use
+    `candidate_core_cells`.
+  - The inflated `candidate_blocked_cells` are still used for the reservation
+    committed after a legal core candidate is selected.
+  - Updated the focused test so dynamic cells only in the inflated keepout no
+    longer reject `start/top`, and added a separate test preserving rejection
+    when dynamic cells overlap the actual core footprint.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `.\.venv\Scripts\python.exe -m pytest
+    tests\test_port_alignment_diagnostics.py -k "case4_bump or
+    batch_checked_endpoint_correction" -q` passed:
+    `9 passed, 18 deselected`.
+  - Generated stop-after-14 inspect GDS:
+    `build\routed_multiportmmi_8x8.gds`, log
+    `build\multiportmmi_8x8_n5_core_bump_check.txt`.
+  - Verification for that stop-after run now reports only the five expected
+    `missing_corrected_centerline` errors for `n_0`, `n_2`, `n_7`, `n_9`,
+    and `n_13`; `n_5` is no longer an endpoint correction error.
+
+n_5 start/bottom endpoint-bump opening fix:
+
+- Date: 2026-07-15
+- Scope:
+  - User reported that the existing GDS still showed the `n_5` correction as
+    `end/top`; expected candidate order is `start/top`, `start/bottom`,
+    `end/top`, `end/bottom`, and visually `start/bottom` should fit.
+  - No commit was made.
+- Diagnosis:
+  - Added env-gated trace via `PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS`.
+  - Trace showed `n_5 start/top` correctly rejected because it overlaps
+    dynamic owner `[6]`.
+  - `n_5 start/bottom` was incorrectly rejected by one static cell
+    `(112,243)`.
+  - Python-side opening trace showed the snapped endpoint-correction state was
+    `source_state=(113,243,0)`, so `(112,243)` is not a side-bend cell; it is a
+    local backward axis cell at the active source port pad.
+- Change:
+  - `translation/route_rust.py` now adds local endpoint-bump candidate opening
+    cells from the actual snapped source/target states used for endpoint
+    correction, including the small backward-on-axis pad cells and side-bend
+    cells. These cells are added only to the candidate opening set used by
+    endpoint correction, not to the normal effective A* routing opening.
+  - `src/py_router.rs` keeps the same env-gated candidate trace and mirrors the
+    local port-bump candidate opening geometry in `build_route_port_openings`
+    for consistency.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m pytest
+    tests\test_port_alignment_diagnostics.py -k "case4_bump" -q` passed:
+    `7 passed, 20 deselected`.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - Stop-after-14 run with `PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS=5` now
+    reports:
+    `endpoint_bump_trace net_id=5 candidate=1 label=start/bottom status=accept`.
+  - Updated GDS:
+    `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-15 21:41 local,
+    size 149662 bytes.
+
+Full `multiportmmi_8x8` run after n_5 endpoint-bump fix:
+
+- Date: 2026-07-15
+- Command:
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`,
+    `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=1`,
+    `PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS` unset.
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --fanout-access-mode static-stubs
+    --routing-window-scale 0.35 --foreign-port-keepout-cells 6
+    --debug-svgs false --debug-timing true`
+- Result:
+  - Full routing completed all `111` nets.
+  - Routing failures: `0`; repairs: `0`; simple routes: `27/111`.
+  - Endpoint correction: `84` calls, `0` failures.
+  - Total runtime: `29.2723 s`; optical routing stage `21.3188 s`; native
+    routing batch `20.5052 s`.
+  - GDS written despite verification failure:
+    `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-15 21:44 local,
+    size 467092 bytes.
+  - Logs:
+    `build\multiportmmi_8x8_full_after_n5_bump_fix.txt`.
+  - Verification JSON:
+    `build\verification\multiportmmi_8x8_photonic_verification.json`.
+- Photonic verification status:
+  - `49` issues on `27` nets.
+  - Error code distribution:
+    `target_endpoint_mismatch=26`, `target_port_not_connected=22`,
+    `missing_corrected_centerline=1`.
+  - Affected nets:
+    `n_31..n_35`, `n_50..n_54`, `n_65..n_69`, `n_88..n_93`,
+    `n_105..n_110`.
+  - `n_93` has the single `missing_corrected_centerline` plus
+    `target_port_not_connected`.
+- Current assessment:
+  - The full router path is now stable enough to complete the benchmark, and
+    the remaining class is port connectivity/snapping, mostly target-side.
+  - Several target endpoint mismatches are exactly `2.368 um` at a `2.0 um`
+    tolerance, suggesting a systematic endpoint-correction/stub-segment
+    handoff issue rather than random A* failure.
+
+Crossing-net endpoint-correction analysis:
+
+- Date: 2026-07-15
+- User hypothesis:
+  - Crossing nets, both with and without static stubs, do not have their
+    `last crossing -> port` segment corrected.
+- Finding:
+  - Confirmed from code and artifacts.
+  - The normal checked endpoint-correction pass in `translation/route_rust.py`
+    explicitly skips all crossing nets:
+    `if enable_crossings and int(net_id) in crossing_net_ids: continue`.
+  - The checked fanout-stub endpoint-correction pass also explicitly skips
+    fanout-stub nets that have crossings, with a comment saying the
+    crossing-aware pass should splice only `source->first-crossing` or
+    `last-crossing->target`.
+  - The current main routing path only calls those two checked native passes.
+    The older `_apply_crossing_aware_endpoint_correction_to_record()` helpers
+    remain in the file and in tests, but are not called by the active main
+    route flow after the unsafe empty-map debug-artifact correction path was
+    removed.
+- Artifact evidence:
+  - `build\verification\multiportmmi_8x8_photonic_verification.json` has `49`
+    issues on `27` nets.
+  - `build\verification\multiportmmi_8x8_crossing_verification.json` lists the
+    exact same `27` nets as crossing participants.
+  - Therefore all remaining port-connection failures are crossing-net
+    failures, and no non-crossing net is currently in this failure class.
+- Implication:
+  - The next fix should implement a checked, active crossing-aware endpoint
+    correction path in the main route flow. It should split each crossing net
+    into mutable terminal segments (`source->first crossing` and/or
+    `last crossing->target`) while freezing the middle segment and preserving
+    static-stub endpoints as already corrected.
+
+Crossing-aware endpoint correction WIP:
+
+- Date: 2026-07-15
+- Implemented an active main-flow crossing-aware endpoint-correction pass that
+  uses native crossing events to populate `crossing_plan_info` and then calls
+  `_apply_crossing_aware_endpoint_correction_to_record()` for crossing nets.
+- Validation checks:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+  - `C:\Users\benja\.cargo\bin\cargo.exe check`
+  - `.\.venv\Scripts\python.exe -m pytest
+    tests\test_port_alignment_diagnostics.py -k "crossing_aware_endpoint_correction or case4_bump" -q`
+  - Result: all passed (`14 passed, 13 deselected` for pytest).
+- Full `multiportmmi_8x8` run with
+  `PHOTONIC_ROUTER_TRACE_ENDPOINT_CORRECTION_NETS=n_31` completed and reduced
+  photonic verification issues from `49` to `14`.
+  - Remaining issues: `target_port_not_connected=7`,
+    `target_endpoint_mismatch=7`.
+  - Affected nets: `n_33`, `n_34`, `n_51`, `n_52`, `n_53`, `n_54`, `n_108`.
+  - `n_31` trace showed an accepted crossing-aware correction:
+    `mode=(False,True)`, target endpoint matched.
+  - GDS: `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-15 22:04
+    local, size 457830 bytes.
+- Important finding:
+  - The current crossing-aware helper still calls
+    `router.route_port_corrected_centerline()` on the original full route.
+  - For a `last crossing -> target` correction, the relevant local endpoint is
+    the start of the terminal subroute at the last crossing, but the existing
+    code does not pass that terminal subroute into the native checked bump
+    candidate path.
+  - In particular, the native `full_straight_offset_bump_candidates()` requires
+    both `source_port_um` and `target_port_um`. When the Python helper corrects
+    only target-side geometry with `source_port_um=None`, no start/end bump
+    candidates are generated for that local crossing-to-target segment.
+  - Therefore the current code does not really check the "start" bump of the
+    `last crossing -> target` segment. The next implementation should construct
+    terminal subroutes or an equivalent checked subroute-correction path so the
+    segment-local start/end bump candidates are tested with the correct
+    port-opening cells.
+
+Crossing terminal-segment bump candidate check:
+
+- Date: 2026-07-15
+- Implemented a checked terminal-segment endpoint-correction path:
+  - `src/geometry_realization.rs` now exposes
+    `full_straight_offset_bump_candidates_for_centerline()`, allowing the
+    existing compact case-4 bump geometry to be generated from a sliced
+    centerline segment rather than only from a full `RouteResult`.
+  - `src/py_router.rs` now exposes
+    `PyPhotonicRouter.centerline_port_corrected_checked(...)`, which checks all
+    generated segment-local bump candidates against static/dynamic obstacles
+    using the same opened-cell and clearance-exemption logic as checked
+    endpoint correction. Unlike the full-route checker, this local checker logs
+    every candidate before selecting the first legal one.
+  - `translation/route_rust.py` now splits crossing nets into
+    `source -> first crossing`, frozen middle, and `last crossing -> target`
+    terminal segments and tries the checked terminal-segment path before
+    falling back to the old full-route correction.
+  - The crossing cut guard was reduced from "up to half the remaining segment"
+    to a fixed `4.0 um` guard so the terminal segment is not over-trimmed before
+    bump insertion.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+  - `C:\Users\benja\.cargo\bin\cargo.exe check`
+  - `.\.venv\Scripts\python.exe -m maturin develop --release`
+  - `.\.venv\Scripts\python.exe -m pytest
+    tests\test_port_alignment_diagnostics.py -k "crossing_aware_endpoint_correction or case4_bump" -q`
+  - `cargo fmt --check` could not run because `rustfmt` is not installed for
+    `stable-x86_64-pc-windows-gnullvm`.
+- Trace evidence:
+  - Run:
+    `PHOTONIC_ROUTER_TRACE_ENDPOINT_CORRECTION_NETS=n_33`
+    `PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS=34`
+    `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode
+    lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35
+    --foreign-port-keepout-cells 6 --debug-svgs false --debug-timing true`
+  - Log:
+    `build\multiportmmi_8x8_crossing_terminal_segment_trace_n33_guard4.txt`
+  - For `n_33`/net id `34`, the local `last crossing -> target` segment now
+    checks all four compact bump candidates:
+    `start/top`, `start/bottom`, `end/top`, `end/bottom`.
+  - All four currently reject with `static_overlap`, so the next issue is not
+    candidate visibility anymore; it is that the opened port/pad cells supplied
+    to the segment-local checker are still insufficient for this heater-pad
+    access case.
+- Current full-run state after this change:
+  - Full routing still completes.
+  - Photonic verification still reports `14` issues on
+    `n_33`, `n_34`, `n_51`, `n_52`, `n_53`, `n_54`, and `n_108`.
+  - Latest GDS:
+    `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-15 22:21 local,
+    size 457702 bytes.
+
+Focused fix for `n_33` local terminal bump pad opening:
+
+- Date: 2026-07-15
+- Problem:
+  - For `n_33`, the local `last crossing -> target` segment had enough
+    physical length for the compact case-4 bump:
+    - last crossing `x=1487.5 um`
+    - crossing footprint half-width `4.0 um`
+    - local segment start at footprint edge `x=1491.5 um`
+    - target port `x=1517.7 um`
+    - available distance from footprint edge to port: `26.2 um`
+    - compact 4-bend bump length: `4 * 3 cells * 2 um = 24 um`
+  - The segment-local bump candidates were nevertheless rejected by
+    `static_overlap` against heater pad/access cells.
+- Finding:
+  - The global Rust port-opening template was not the right place to widen
+    this; broadening it changed unrelated route-port-opening behavior.
+  - The actual missing opening was in the per-job Python endpoint-correction
+    candidate opening set used for checked endpoint bumps.
+- Fix:
+  - Kept the global Rust `route_port_endpoint_bump_candidate_cells()` template
+    at its existing narrow extent.
+  - Widened only Python's `_endpoint_bump_candidate_open_cells_for_state()` in
+    `translation/route_rust.py` to cover the compact local bump envelope:
+    `4 * bend_radius_cells` along the port axis and `2 * bend_radius_cells`
+    laterally, excluding `forward=0` so the opening remains a local access
+    allowance rather than a generic port-cell opening.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+  - `C:\Users\benja\.cargo\bin\cargo.exe check`
+  - `.\.venv\Scripts\python.exe -m maturin develop --release`
+  - Focused tests:
+    `.\.venv\Scripts\python.exe -m pytest
+    tests\test_route_rust_opened_cells.py::test_rust_port_opening_batch_is_directional_not_behind_port
+    tests\test_route_rust_opened_cells.py::test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor
+    tests\test_port_alignment_diagnostics.py -k "crossing_aware_endpoint_correction or case4_bump" -q`
+    passed: `14 passed, 15 deselected`.
+  - Trace run:
+    `build\multiportmmi_8x8_n33_python_bump_opening_only_trace.txt`
+    shows all four local `n_33`/net id `34` candidates accepted:
+    `start/top`, `start/bottom`, `end/top`, `end/bottom`.
+  - `n_33` is no longer in photonic verification failures. Remaining issue
+    nets after this run:
+    `n_34`, `n_51`, `n_52`, `n_53`, `n_54`, `n_108`.
+  - Latest GDS:
+    `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-15 22:40 local,
+    size 458194 bytes.
+
+Debug artifact after `n_36`:
+
+- Date: 2026-07-16
+- Command:
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --fanout-access-mode static-stubs
+    --routing-window-scale 0.35 --foreign-port-keepout-cells 6
+    --debug-stop-after-route 37 --debug-svgs true --debug-timing true`
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`,
+    `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=1`.
+- Result:
+  - Stop route index `37` corresponds to `n_36` in this benchmark sequence.
+  - Route SVG after `n_36` was written to
+    `build\routes\multiportmmi_8x8_n_36.svg`.
+  - Full log:
+    `build\multiportmmi_8x8_stop_after_n36_svg_run.txt`.
+
+Full GDS regenerated with known port issues:
+
+- Date: 2026-07-16
+- Command:
+  - `.\.venv\Scripts\python.exe routing_flow.py multiportmmi_8x8 --crossings
+    true --crossing-mode lidar-pure --fanout-access-mode static-stubs
+    --routing-window-scale 0.35 --foreign-port-keepout-cells 6
+    --debug-svgs false --debug-timing true`
+  - Environment:
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`,
+    `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=1`.
+- Result:
+  - Full GDS written despite known photonic verification failures:
+    `build\routed_multiportmmi_8x8.gds`, timestamp 2026-07-16 08:24 local,
+    size 458194 bytes.
+  - Photonic verification still reports `12` issues:
+    `target_port_not_connected=6`, `target_endpoint_mismatch=6`.
+  - Remaining issue nets:
+    `n_34`, `n_51`, `n_52`, `n_53`, `n_54`, `n_108`.
+  - Log:
+    `build\multiportmmi_8x8_full_gds_with_known_port_issues.txt`.
+
+Terminal bump distance-check diagnostic:
+
+- Date: 2026-07-16
+- Scope:
+  - User asked to implement only the condition for activating the terminal
+    distance check when the target port is not aligned with the snapped target
+    grid coordinate, and to report which nets it hits.
+  - No routing behavior was changed; this is diagnostic metadata only.
+- Change:
+  - `translation/route_rust.py` now records
+    `terminal_bump_target_x_offset_nets`,
+    `terminal_bump_target_y_offset_nets`, and
+    `terminal_bump_distance_checks` in
+    `build\crossings\multiportmmi_8x8_crossings.json`.
+  - The activation is axis-specific: horizontal target approaches only use
+    `target_y != target_grid_y`; vertical target approaches only use
+    `target_x != target_grid_x`. The earlier broad target-x diagnostic was
+    removed.
+  - In the current horizontal-target benchmark slice this yields
+    `target_x_count=0`, `target_y_count=111`, and 7 crossing-on-target-axis
+    distance checks:
+    `n_33`, `n_34`, `n_51`, `n_52`, `n_53`, `n_54`, and `n_108`.
+  - The raw checks are now separated from failures via
+    `terminal_bump_distance_failures`; only checks with `satisfies=false`
+    appear in the failure list.
+- Result:
+  - `n_33` has exactly enough room: available `24.0um`, required `24.0um`,
+    `satisfies=true`, and is therefore not reported as a failure.
+  - Remaining failing port nets have insufficient room:
+    `n_34`, `n_51`, `n_52`, `n_53`, `n_54`, and `n_108` each report
+    available `20.0um`, required `24.0um`, `satisfies=false`.
+  - This matches the current photonic verification failures:
+    `target_port_not_connected=6`, `target_endpoint_mismatch=6` on those six
+    nets.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - Full `multiportmmi_8x8` run completed all 111 routes with 0 failures and
+    0 repairs; latest validation runtime `37.0742 s`, native route batch
+    `26.2514 s`.
+  - GDS was written with known verification failures:
+    `build\routed_multiportmmi_8x8.gds`.

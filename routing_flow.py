@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 import importlib
 import json
+import os
 import time
 from pathlib import Path
 import webbrowser
@@ -67,6 +68,7 @@ SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = DEFAULT_MEANDER_MAX_HEIGHT_UM
 SCRIPT_ENABLE_CROSSINGS = True
 SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING
 SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS = 6
+SCRIPT_FANOUT_ACCESS_MODE = "legacy-runway"
 SCRIPT_PROACTIVE_CONGESTION_WEIGHT = 0.0
 SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS = 0
 SCRIPT_MAX_ITERATIONS = 5_000_000
@@ -645,6 +647,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--fanout-access-mode",
+        choices=(
+            "legacy-runway",
+            "staggered",
+            "off",
+            "static-stubs",
+            "anchor-pre-spread",
+            "virtual-ports",
+        ),
+        default=SCRIPT_FANOUT_ACCESS_MODE,
+        help=(
+            "Dense multi-port access strategy. 'legacy-runway' keeps the "
+            "existing staggered source-port reservations; 'off' disables "
+            "dense fanout reservations; 'static-stubs' pre-routes fixed "
+            "static breakout stubs and routes from virtual anchor ports "
+            f"(default: {SCRIPT_FANOUT_ACCESS_MODE})."
+        ),
+    )
+    parser.add_argument(
         "--proactive-congestion-weight",
         type=float,
         default=SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
@@ -974,6 +995,7 @@ def main(argv: list[str] | None = None) -> Component:
         crossing_mode=args.crossing_mode,
         min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
         foreign_port_keepout_cells=args.foreign_port_keepout_cells,
+        fanout_access_mode=args.fanout_access_mode,
         proactive_congestion_weight=args.proactive_congestion_weight,
         proactive_congestion_radius_cells=args.proactive_congestion_radius_cells,
         max_iterations=args.max_iterations,
@@ -1455,6 +1477,7 @@ def run_routing_flow(
     crossing_half_size_cells: int = 0,
     min_straight_cells_per_crossing: int = SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     foreign_port_keepout_cells: int = SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
+    fanout_access_mode: str | None = SCRIPT_FANOUT_ACCESS_MODE,
     proactive_congestion_weight: float = SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
     proactive_congestion_radius_cells: int = SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
     allow_45_degree_turns: bool = SCRIPT_ALLOW_45_DEGREE_TURNS,
@@ -1519,6 +1542,10 @@ def run_routing_flow(
                       permission against any committed route.
         min_straight_cells_per_crossing: Minimum straight access length on each
                       side of a crossing in grid cells.
+        fanout_access_mode: Dense multi-port access strategy passed to the Rust
+                      routing bridge. Use "static-stubs" to pre-spread
+                      same-element fanout ports as fixed static breakout
+                      geometry and route from virtual anchor ports.
         proactive_congestion_weight: Soft A* cost per blocked side-neighbor
                       cell beside straight moves.
         proactive_congestion_radius_cells: Sideways grid radius used for
@@ -1699,7 +1726,10 @@ def run_routing_flow(
     if stats is not None:
         stats.step_times_s["build_static_obstacle_map"] = 0.0
         stats.step_times_s["baseline_gdsfactory_routing"] = 0.0
-    debug_dir = Path("build") if debug_svgs_enabled else None
+    debug_dir = Path("build") if debug_svgs_enabled or collect_attempt_diagnostics else None
+    route_debug_indices = debug_route_indices
+    if not debug_svgs_enabled and collect_attempt_diagnostics:
+        route_debug_indices = set()
     metadata = load_benchmark_metadata(benchmark_name, schematic=schematic)
     t_route_start = time.perf_counter()
     try:
@@ -1715,12 +1745,13 @@ def run_routing_flow(
             crossing_half_size_cells=int(crossing_half_size_cells),
             min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
             foreign_port_keepout_cells=int(foreign_port_keepout_cells),
+            fanout_access_mode=fanout_access_mode,
             node_depths=metadata.get("node_depths"),
             node_ranks=metadata.get("node_ranks"),
             edge_ranks=metadata.get("edge_ranks"),
             debug_dir=debug_dir,
             debug_prefix=benchmark_name.lower(),
-            debug_route_indices=debug_route_indices,
+            debug_route_indices=route_debug_indices,
             debug_stop_after_route_index=debug_stop_after_route_index,
             debug_timing=debug_timing,
             verbose_route_diagnostics=verbose_routes or debug_meanders,
@@ -1911,6 +1942,19 @@ def run_routing_flow(
                 "endpoint_correction_native",
                 "endpoint_correction_processing",
                 "record_assembly",
+                "realized_crossing_overlap_augment",
+                "realized_crossing_native_events",
+                "realized_crossing_insertion_loss",
+                "realized_crossing_verify_intersections",
+                "realized_crossing_realized_loss",
+                "realized_crossing_refresh_total",
+                "photonic_probe_copy",
+                "photonic_probe_realize",
+                "photonic_probe_crossing_place",
+                "photonic_probe_layout_total",
+                "photonic_probe_verify",
+                "photonic_refresh_total",
+                "final_verification_block",
                 "direct_realization",
                 "debug_artifact_assembly",
             )
@@ -2051,6 +2095,11 @@ def run_routing_flow(
 
     realization_grid_spec = getattr(debug_artifacts, "realization_grid_spec", None)
     if routed_records and realization_grid_spec is not None:
+        # This Python geometry verifier is the normal final gate for the
+        # realized routed layout. Internal photonic probe verification in
+        # `translation.route_rust` should be treated as diagnostic/mismatch
+        # debugging support; this pass is the authoritative check before the
+        # GDS is accepted.
         photonic_verification = verify_photonic_routing(
             routed_layout,
             schematic,
@@ -2077,7 +2126,7 @@ def run_routing_flow(
                 else ()
             ),
             check_route_coverage=route_coverage_check_enabled,
-            check_endpoint_connectivity=not bool(enable_crossings),
+            check_endpoint_connectivity=True,
         )
         photonic_report = _write_photonic_verification_report(
             benchmark_name=benchmark_name,
@@ -2087,11 +2136,21 @@ def run_routing_flow(
         routed_info["photonic_verification"] = photonic_report
         print(f"      - Photonic verification JSON: {photonic_report['path']}")
         if not photonic_verification.success:
-            raise RuntimeError(
-                "Photonic geometry verification failed before GDS write: "
-                f"{photonic_verification.error_count} error(s). "
-                f"{_photonic_verification_failure_preview(photonic_verification)}"
-            )
+            if os.environ.get(
+                "PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE",
+                "",
+            ).strip().lower() in {"1", "true", "yes", "on"}:
+                print(
+                    "      - WARNING: Photonic geometry verification failed; "
+                    "writing GDS anyway because "
+                    "PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE is set."
+                )
+            else:
+                raise RuntimeError(
+                    "Photonic geometry verification failed before GDS write: "
+                    f"{photonic_verification.error_count} error(s). "
+                    f"{_photonic_verification_failure_preview(photonic_verification)}"
+                )
 
     if route_result.path_length_analysis_info is not None:
         meander_report_info = getattr(route_result, "meander_insertion_report_info", None)

@@ -106,96 +106,107 @@ def test_router_crossing_context_stores_expected_pairs():
     assert router.crossing_has_expected_pair(3, 1) is False
 
 
-def test_crossing_enabled_route_uses_expected_partner_intersection():
+def _collision_crossing_router(*, crossing_half_size_cells: int = 0):
     backend = _load_rust_backend()
     assert backend is not None
 
-    primitive = backend.PrimitiveLibraryConfig()
-    primitive.grid4_unit_grid = True
+    primitive = backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        straight_short_cells=1,
+        straight_long_cells=4,
+        bend_radius_cells=1,
+        allow_45_degree_turns=False,
+    )
     router = backend.PyPhotonicRouter(
-        backend.GridSpec(32, 32, 1.0, 0.0, 0.0),
+        backend.GridSpec(20, 14, 1.0, 0.0, 0.0),
         primitive,
-        backend.AStarConfig(max_iterations=10_000),
+        backend.AStarConfig(
+            max_iterations=10_000,
+            require_target_angle=False,
+            use_routing_window=False,
+            heuristic_mode="distance",
+        ),
     )
-
-    router.route_single_net_and_commit(
-        1,
-        backend.State(10, 5, 2),
-        backend.State(10, 24, 2),
-        block_radius_cells=0,
-    )
-    router.set_crossing_constraints(
-        [backend.CrossingConstraint(2, 1, level=0, source_depth=0, target_depth=1)]
-    )
+    router.set_collision_crossing_routing(True)
     router.set_crossing_config(
         backend.CrossingConfig(
             enabled=True,
-            crossing_half_size_cells=0,
-            min_straight_cells_per_crossing=2,
+            crossing_loss=3.0,
+            crossing_half_size_cells=crossing_half_size_cells,
+            min_straight_cells_per_crossing=1,
+            allow_only_expected_pairs=False,
         )
+    )
+    return backend, router
+
+
+def test_collision_crossing_route_uses_local_dynamic_intersection():
+    backend, router = _collision_crossing_router()
+
+    router.route_single_net_and_commit(
+        1,
+        backend.State(8, 2, 2),
+        backend.State(8, 10, 2),
+        block_radius_cells=0,
+    )
+    router.add_static_cells(
+        [(x, 5) for x in range(3, 14)]
+        + [(x, 7) for x in range(3, 14)]
     )
 
     route = router.route_single_net_and_commit(
         2,
-        backend.State(3, 12, 0),
-        backend.State(24, 12, 0),
+        backend.State(2, 6, 0),
+        backend.State(14, 6, 0),
         block_radius_cells=0,
     )
 
     net1_core = {tuple(cell) for cell in router.get_net_core_cells(1)}
     net2_core = {tuple(cell) for cell in router.get_net_core_cells(2)}
-    assert net1_core & net2_core
-    assert {int(cell[1]) for cell in route.cells} == {12}
+    assert net1_core & net2_core == {(8, 6)}
+    assert route.compressed_waypoints == [(2, 6), (14, 6)]
+    events = router.crossing_events()
+    assert len(events) == 1
+    assert events[0]["net_id"] == 2
+    assert events[0]["partner_net_id"] == 1
+    assert tuple(events[0]["point"]) == (8.5, 6.5)
+    assert tuple(events[0]["route_segment"]) == ((2, 6), (14, 6))
+    assert tuple(events[0]["partner_segment"]) == ((8, 2), (8, 10))
 
 
-def test_crossing_enabled_route_reserves_crossing_footprint():
-    backend = _load_rust_backend()
-    assert backend is not None
-
-    primitive = backend.PrimitiveLibraryConfig()
-    primitive.grid4_unit_grid = True
-    router = backend.PyPhotonicRouter(
-        backend.GridSpec(32, 32, 1.0, 0.0, 0.0),
-        primitive,
-        backend.AStarConfig(max_iterations=10_000),
-    )
+def test_collision_crossing_route_reserves_crossing_footprint():
+    backend, router = _collision_crossing_router(crossing_half_size_cells=2)
 
     router.route_single_net_and_commit(
         1,
-        backend.State(10, 5, 2),
-        backend.State(10, 24, 2),
+        backend.State(8, 1, 2),
+        backend.State(8, 11, 2),
         block_radius_cells=0,
     )
-    router.set_crossing_constraints(
-        [backend.CrossingConstraint(2, 1, level=0, source_depth=0, target_depth=1)]
-    )
-    router.set_crossing_config(
-        backend.CrossingConfig(
-            enabled=True,
-            crossing_half_size_cells=2,
-            min_straight_cells_per_crossing=2,
-        )
+    router.add_static_cells(
+        [(x, 3) for x in range(3, 14)]
+        + [(x, 9) for x in range(3, 14)]
     )
 
     route = router.route_single_net_and_commit(
         2,
-        backend.State(3, 12, 0),
-        backend.State(24, 12, 0),
+        backend.State(2, 6, 0),
+        backend.State(14, 6, 0),
         block_radius_cells=0,
     )
 
     static_cells = {tuple(cell) for cell in router.raw_static_obstacle_cells()}
     expected_reserved = {
         (x, y)
-        for x in range(8, 13)
-        for y in range(10, 15)
+        for x in range(6, 11)
+        for y in range(4, 9)
     }
     assert expected_reserved <= static_cells
     events = router.crossing_events()
     assert len(events) == 1
     assert events[0]["net_id"] == 2
     assert events[0]["partner_net_id"] == 1
-    assert tuple(events[0]["point"]) == (10.0, 12.0)
+    assert tuple(events[0]["point"]) == (8.5, 6.5)
     assert expected_reserved <= {tuple(cell) for cell in events[0]["reservation_cells"]}
     svg = router.export_debug_svg(route)
     assert 'id="crossing-events"' in svg
@@ -212,45 +223,25 @@ def test_crossing_enabled_route_reserves_crossing_footprint():
     assert expected_reserved.isdisjoint(static_cells_after_ripup)
 
 
-def test_crossing_enabled_route_fails_without_valid_crossing_geometry():
-    backend = _load_rust_backend()
-    assert backend is not None
-
-    primitive = backend.PrimitiveLibraryConfig(
-        grid_size_um=1.0,
-        straight_short_cells=1,
-        straight_long_cells=4,
-        bend_radius_cells=1,
-        allow_45_degree_turns=True,
-    )
-    router = backend.PyPhotonicRouter(
-        backend.GridSpec(32, 32, 1.0, 0.0, 0.0),
-        primitive,
-        backend.AStarConfig(max_iterations=10_000),
-    )
+def test_collision_crossing_route_rejects_invalid_local_crossing_move():
+    backend, router = _collision_crossing_router()
 
     router.route_single_net_and_commit(
         1,
-        backend.State(10, 12, 0),
-        backend.State(12, 12, 0),
+        backend.State(8, 6, 2),
+        backend.State(8, 7, 2),
         block_radius_cells=0,
     )
-    router.set_crossing_constraints(
-        [backend.CrossingConstraint(2, 1, level=0, source_depth=0, target_depth=1)]
-    )
-    router.set_crossing_config(
-        backend.CrossingConfig(
-            enabled=True,
-            crossing_half_size_cells=0,
-                min_straight_cells_per_crossing=4,
-        )
+    router.add_static_cells(
+        [(x, 5) for x in range(3, 14)]
+        + [(x, 7) for x in range(3, 14)]
     )
 
-    with pytest.raises(RuntimeError, match="No crossing-compliant route found"):
+    with pytest.raises(RuntimeError, match="No route found"):
         router.route_single_net_and_commit(
             2,
-            backend.State(11, 3, 2),
-            backend.State(11, 24, 2),
+            backend.State(2, 6, 0),
+            backend.State(14, 6, 0),
             block_radius_cells=0,
         )
 

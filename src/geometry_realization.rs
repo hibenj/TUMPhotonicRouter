@@ -1288,6 +1288,78 @@ pub fn full_straight_offset_bump_candidates(
     Ok(candidates)
 }
 
+pub fn full_straight_offset_bump_candidates_for_centerline(
+    centerline: &[(f64, f64)],
+    primitives: &PrimitiveLibrary,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+) -> Result<Vec<OffsetBumpCandidate>, GeometryError> {
+    let (Some(source), Some(target)) = (source_port_um, target_port_um) else {
+        return Ok(Vec::new());
+    };
+    if !is_finite_point(source) || !is_finite_point(target) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+
+    let start = centerline[0];
+    let end = centerline[centerline.len() - 1];
+    let start_angle = if is_full_horizontal_centerline(centerline) {
+        if end.0 >= start.0 {
+            0u8
+        } else {
+            4u8
+        }
+    } else if is_full_vertical_centerline(centerline) {
+        if end.1 >= start.1 {
+            2u8
+        } else {
+            6u8
+        }
+    } else {
+        return Ok(Vec::new());
+    };
+
+    let offset_candidates = if matches!(start_angle, 0 | 4) && (source.1 - target.1).abs() > EPS {
+        [(2u8, "top"), (6u8, "bottom")]
+    } else if matches!(start_angle, 2 | 6) && (source.0 - target.0).abs() > EPS {
+        [(0u8, "right"), (4u8, "left")]
+    } else {
+        return Ok(Vec::new());
+    };
+
+    let radius_um = infer_90_bend_radius_um(primitives)?;
+    let route_dir = angle_to_unit_vector(start_angle);
+    let mut candidates = Vec::new();
+    for placement in [OffsetBumpPlacement::Start, OffsetBumpPlacement::End] {
+        let placement_label = match placement {
+            OffsetBumpPlacement::Start => "start",
+            OffsetBumpPlacement::End => "end",
+        };
+        for (offset_angle, side_label) in offset_candidates {
+            if let Ok(centerline) = build_compact_four_bend_offset_bump(
+                source,
+                target,
+                start_angle,
+                offset_angle,
+                radius_um,
+                placement,
+            ) {
+                validate_bump_endpoint_tangents(&centerline, route_dir)?;
+                candidates.push(OffsetBumpCandidate {
+                    label: format!("{placement_label}/{side_label}"),
+                    centerline,
+                    placement_is_start: matches!(placement, OffsetBumpPlacement::Start),
+                });
+            }
+        }
+    }
+
+    Ok(candidates)
+}
+
 fn try_apply_shared_axis_port_shift(
     centerline: &mut [(f64, f64)],
     source_port_um: Option<(f64, f64)>,
@@ -2606,7 +2678,7 @@ fn insert_target_delta_bump(
     carrier_kind: AxisAlignedRunKind,
     delta: f64,
 ) -> Result<(), GeometryError> {
-    let Some(run) = last_viable_delta_bump_run(
+    let Some(run) = first_viable_delta_bump_run(
         centerline,
         straight_runs,
         primitives,
@@ -2646,36 +2718,6 @@ fn first_viable_delta_bump_run(
     for run in straight_runs
         .iter()
         .copied()
-        .filter(|run| run.kind == carrier_kind)
-    {
-        if delta_bump_for_run(
-            centerline,
-            run,
-            primitives,
-            carrier_kind,
-            delta,
-            source_side,
-        )
-        .is_ok()
-        {
-            return Ok(Some(run));
-        }
-    }
-    Ok(None)
-}
-
-fn last_viable_delta_bump_run(
-    centerline: &[(f64, f64)],
-    straight_runs: &[AxisAlignedRun],
-    primitives: &PrimitiveLibrary,
-    carrier_kind: AxisAlignedRunKind,
-    delta: f64,
-    source_side: bool,
-) -> Result<Option<AxisAlignedRun>, GeometryError> {
-    for run in straight_runs
-        .iter()
-        .copied()
-        .rev()
         .filter(|run| run.kind == carrier_kind)
     {
         if delta_bump_for_run(

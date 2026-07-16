@@ -184,6 +184,20 @@ pub struct CrossingSearchPartner {
     pub waypoints: Vec<(i32, i32)>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum TerminalBumpAxis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TerminalBumpGuard {
+    pub axis: TerminalBumpAxis,
+    pub target_axis_coord: f64,
+    pub target_along_coord: f64,
+    pub required_bump_cells: i32,
+}
+
 #[derive(Clone, Debug)]
 pub struct CrossingSearchConfig {
     pub net_id: NetId,
@@ -193,6 +207,7 @@ pub struct CrossingSearchConfig {
     pub bend_runout_cells: i32,
     pub crossing_loss: f64,
     pub require_all_partners: bool,
+    pub terminal_bump_guard: Option<TerminalBumpGuard>,
 }
 
 fn crossing_required_margin_cells(
@@ -1643,7 +1658,6 @@ pub fn route_single_net_with_config(
     }
     anchor_open_cells.insert(pack_xy(source.x, source.y));
     anchor_open_cells.insert(pack_xy(target.x, target.y));
-
     let mut stats = RouteSearchStats::default();
     let route_search_total_start = if config.collect_detailed_timing {
         Some(Instant::now())
@@ -1908,6 +1922,7 @@ pub fn route_single_net_with_collision_crossing_config(
     source: State,
     target: State,
     port_open_cells: Option<&FxHashSet<CellKey>>,
+    reservation_open_cells: Option<&FxHashSet<CellKey>>,
     config: &AStarConfig,
     dynamic_expansion_radius_cells: i32,
     dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
@@ -1936,6 +1951,12 @@ pub fn route_single_net_with_collision_crossing_config(
     }
     anchor_open_cells.insert(pack_xy(source.x, source.y));
     anchor_open_cells.insert(pack_xy(target.x, target.y));
+    let mut reservation_anchor_open_cells = FxHashSet::default();
+    if let Some(reservation_open_cells) = reservation_open_cells.or(port_open_cells) {
+        reservation_anchor_open_cells.extend(reservation_open_cells.iter().copied());
+    }
+    reservation_anchor_open_cells.insert(pack_xy(source.x, source.y));
+    reservation_anchor_open_cells.insert(pack_xy(target.x, target.y));
 
     let mut stats = RouteSearchStats::default();
     let route_search_total_start = if config.collect_detailed_timing {
@@ -1957,6 +1978,7 @@ pub fn route_single_net_with_collision_crossing_config(
             source,
             target,
             Some(&anchor_open_cells),
+            Some(&reservation_anchor_open_cells),
             config,
             None,
             &mut stats,
@@ -1988,6 +2010,7 @@ pub fn route_single_net_with_collision_crossing_config(
             source,
             target,
             Some(&anchor_open_cells),
+            Some(&reservation_anchor_open_cells),
             config,
             Some(bounds),
             &mut stats,
@@ -2023,6 +2046,7 @@ pub fn route_single_net_with_collision_crossing_config(
             source,
             target,
             Some(&anchor_open_cells),
+            Some(&reservation_anchor_open_cells),
             config,
             None,
             &mut stats,
@@ -2092,6 +2116,7 @@ pub fn route_single_net_with_crossing_config(
             source,
             target,
             Some(&anchor_open_cells),
+            Some(&anchor_open_cells),
             config,
             None,
             &mut stats,
@@ -2122,6 +2147,7 @@ pub fn route_single_net_with_crossing_config(
             primitives,
             source,
             target,
+            Some(&anchor_open_cells),
             Some(&anchor_open_cells),
             config,
             Some(bounds),
@@ -2157,6 +2183,7 @@ pub fn route_single_net_with_crossing_config(
             primitives,
             source,
             target,
+            Some(&anchor_open_cells),
             Some(&anchor_open_cells),
             config,
             None,
@@ -3822,6 +3849,47 @@ fn route_partner_segment_bboxes_overlap(
         && route_max_y >= partner_segment.min_y
 }
 
+fn terminal_bump_guard_satisfied(
+    guard: Option<TerminalBumpGuard>,
+    crossing_half_size_cells: i32,
+    x: f64,
+    y: f64,
+    route_angle: u8,
+) -> bool {
+    let Some(guard) = guard else {
+        return true;
+    };
+    if guard.required_bump_cells <= 0 {
+        return true;
+    }
+    let eps = 1.0e-9;
+    let crossing_half = f64::from(crossing_half_size_cells.max(0));
+    let required = f64::from(guard.required_bump_cells.max(0));
+    let axis_margin = f64::from((guard.required_bump_cells / 2).max(0));
+    match guard.axis {
+        TerminalBumpAxis::Horizontal => {
+            if route_angle % 8 != 0 && route_angle % 8 != 4 {
+                return true;
+            }
+            if (y - guard.target_axis_coord).abs() > axis_margin + eps {
+                return true;
+            }
+            let available = (guard.target_along_coord - x).abs() - crossing_half;
+            available + eps >= required
+        }
+        TerminalBumpAxis::Vertical => {
+            if route_angle % 8 != 2 && route_angle % 8 != 6 {
+                return true;
+            }
+            if (x - guard.target_axis_coord).abs() > axis_margin + eps {
+                return true;
+            }
+            let available = (guard.target_along_coord - y).abs() - crossing_half;
+            available + eps >= required
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn route_single_net_with_bounds_crossing(
     obstacle_map: &ObstacleMap,
@@ -3829,6 +3897,7 @@ fn route_single_net_with_bounds_crossing(
     source: State,
     target: State,
     port_open_cells: Option<&FxHashSet<CellKey>>,
+    reservation_open_cells: Option<&FxHashSet<CellKey>>,
     config: &AStarConfig,
     routing_bounds: Option<RoutingBounds>,
     stats: &mut RouteSearchStats,
@@ -4140,7 +4209,7 @@ fn route_single_net_with_bounds_crossing(
                     required_margin,
                     capped_required_margin,
                     reservation_margin,
-                    port_open_cells,
+                    reservation_open_cells.or(port_open_cells),
                     &partner_index_by_id,
                     &partner_segments,
                     &dynamic_core_owners,
@@ -4693,6 +4762,7 @@ fn crossing_move_outcome_with_segments(
                         obstacle_map,
                         crossing.net_id,
                         partner.net_id,
+                        port_open_cells,
                         x,
                         y,
                         reservation_margin,
@@ -4711,6 +4781,29 @@ fn crossing_move_outcome_with_segments(
                             route_segment.length - distance_on_segment,
                         );
                         stats.crossing_reject_unmatched_footprint += 1;
+                        return None;
+                    }
+                    if !terminal_bump_guard_satisfied(
+                        crossing.terminal_bump_guard,
+                        crossing.crossing_half_size_cells,
+                        x,
+                        y,
+                        route_segment.angle,
+                    ) {
+                        trace_crossing_candidate(
+                            crossing,
+                            partner.net_id,
+                            "terminal_bump_distance",
+                            x,
+                            y,
+                            route_segment.angle,
+                            partner_segment.angle,
+                            required_margin,
+                            partner_margin,
+                            distance_from_primitive_start,
+                            route_segment.length - distance_on_segment,
+                        );
+                        stats.crossing_reject_margin += 1;
                         return None;
                     }
                     if !route_intersections.iter().any(
@@ -5067,6 +5160,7 @@ fn crossing_reservation_window_is_clear(
     obstacle_map: &ObstacleMap,
     net_id: NetId,
     partner_net_id: NetId,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
     center_x: f64,
     center_y: f64,
     half_size_cells: i32,
@@ -5080,7 +5174,13 @@ fn crossing_reservation_window_is_clear(
     let max_y = (center_y + f64::from(half_size_cells)).ceil() as i32;
     for x in min_x..=max_x {
         for y in min_y..=max_y {
-            if !obstacle_map.in_bounds(x, y) || obstacle_map.is_static_blocked(x, y) {
+            if !obstacle_map.in_bounds(x, y) {
+                return false;
+            }
+            let is_opened_static = port_open_cells
+                .map(|open| open.contains(&pack_xy(x, y)))
+                .unwrap_or(false);
+            if obstacle_map.is_static_blocked(x, y) && !is_opened_static {
                 return false;
             }
             for owner in obstacle_map.dynamic_owners_at(x, y) {
@@ -7790,12 +7890,14 @@ mod tests {
             bend_runout_cells: 0,
             crossing_loss: 3.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let route = route_single_net_with_collision_crossing_config(
             &map,
             &library,
             State::new(2, 6, 0),
             State::new(14, 6, 0),
+            None,
             None,
             &AStarConfig {
                 use_routing_window: false,
@@ -7905,6 +8007,7 @@ mod tests {
             bend_runout_cells: 0,
             crossing_loss: 0.0,
             require_all_partners: true,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> = crossing
             .partners
@@ -8003,6 +8106,7 @@ mod tests {
             bend_runout_cells: 0,
             crossing_loss: 0.0,
             require_all_partners: true,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> = crossing
             .partners
@@ -8088,6 +8192,7 @@ mod tests {
             bend_runout_cells: 0,
             crossing_loss: 0.0,
             require_all_partners: true,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> = crossing
             .partners
@@ -8160,6 +8265,7 @@ mod tests {
             bend_runout_cells: 0,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> =
             [(32, 0)].into_iter().collect();
@@ -8253,6 +8359,7 @@ mod tests {
             bend_runout_cells: 0,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> = [(32, 0)].into_iter().collect();
         let primitive = Primitive {
@@ -8317,6 +8424,7 @@ mod tests {
             bend_runout_cells: 0,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> = crossing
             .partners
@@ -8371,6 +8479,7 @@ mod tests {
             bend_runout_cells: 2,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let mut stats = RouteSearchStats::default();
         let outcome = crossing_move_outcome(
@@ -8417,6 +8526,7 @@ mod tests {
             bend_runout_cells: 3,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let mut stats = RouteSearchStats::default();
         let outcome = crossing_move_outcome(
@@ -8467,6 +8577,7 @@ mod tests {
             bend_runout_cells: 2,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let mut stats = RouteSearchStats::default();
 
@@ -8533,6 +8644,7 @@ mod tests {
             bend_runout_cells: 2,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
         let mut stats = RouteSearchStats::default();
@@ -8589,6 +8701,7 @@ mod tests {
             bend_runout_cells: 4,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
 
         let mut rejected_stats = RouteSearchStats::default();
@@ -8645,6 +8758,149 @@ mod tests {
         assert_eq!(accepted_stats.crossing_reject_pending_straight, 0);
     }
 
+    fn terminal_bump_guard_test_setup(
+        target_along_coord: f64,
+    ) -> (
+        ObstacleMap,
+        CrossingSearchConfig,
+        CrossingAStarKey,
+        Primitive,
+        FxHashMap<NetId, usize>,
+    ) {
+        let mut map = ObstacleMap::new(32, 16);
+        let partner = vec![(5, 0), (5, 8)];
+        let partner_cells = rasterize_waypoints_for_test(&partner);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            2,
+            &partner_cells,
+            &partner_cells,
+            &[],
+            &FxHashSet::default()
+        ));
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: vec![CrossingSearchPartner {
+                net_id: 2,
+                waypoints: partner,
+            }],
+            min_straight_cells: 0,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 0,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+            terminal_bump_guard: Some(TerminalBumpGuard {
+                axis: TerminalBumpAxis::Horizontal,
+                target_axis_coord: 4.0,
+                target_along_coord,
+                required_bump_cells: 12,
+            }),
+        };
+        let key = CrossingAStarKey {
+            state: State::new(0, 4, 0),
+            crossed_mask: 0,
+            next_partner_index: 0,
+            straight_run_cells: 12,
+            pending_after_crossing_cells: 0,
+            pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+        };
+        let primitive = Primitive {
+            id: 0,
+            start_angle: 0,
+            end_angle: 0,
+            dx: 8,
+            dy: 0,
+            footprint: (0..=8).map(|x| (x, 0)).collect(),
+            length_um: 8.0,
+            bend_cost: 0.0,
+            geometry: PrimitiveGeometry::Straight { length_um: 8.0 },
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = crossing
+            .partners
+            .iter()
+            .enumerate()
+            .map(|(idx, partner)| (partner.net_id, idx))
+            .collect();
+        (map, crossing, key, primitive, partner_index_by_id)
+    }
+
+    #[test]
+    fn crossing_terminal_bump_guard_rejects_too_close_target_axis_crossing() {
+        let (map, crossing, key, primitive, partner_index_by_id) =
+            terminal_bump_guard_test_setup(17.0);
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            key,
+            State::new(0, 4, 0),
+            &primitive,
+            true,
+            2,
+            2,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(stats.crossing_reject_margin, 1);
+    }
+
+    #[test]
+    fn crossing_terminal_bump_guard_rejects_at_exact_axis_margin() {
+        let (map, mut crossing, key, primitive, partner_index_by_id) =
+            terminal_bump_guard_test_setup(17.0);
+        crossing.terminal_bump_guard = crossing.terminal_bump_guard.map(|mut guard| {
+            guard.target_axis_coord = -2.0;
+            guard
+        });
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            key,
+            State::new(0, 4, 0),
+            &primitive,
+            true,
+            2,
+            2,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(stats.crossing_reject_margin, 1);
+    }
+
+    #[test]
+    fn crossing_terminal_bump_guard_accepts_exact_required_target_axis_distance() {
+        let (map, crossing, key, primitive, partner_index_by_id) =
+            terminal_bump_guard_test_setup(19.0);
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            key,
+            State::new(0, 4, 0),
+            &primitive,
+            true,
+            2,
+            2,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        )
+        .expect("available distance equals the required terminal bump distance");
+
+        assert_eq!(outcome.crossing_count, 1);
+        assert_eq!(stats.crossing_accepted, 1);
+        assert_eq!(stats.crossing_reject_margin, 0);
+    }
+
     #[test]
     fn crossing_pending_after_keeps_largest_missing_runout() {
         let mut map = ObstacleMap::new(32, 16);
@@ -8683,6 +8939,7 @@ mod tests {
             bend_runout_cells: 0,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> =
             [(2, 0), (3, 1)].into_iter().collect();
@@ -8749,6 +9006,7 @@ mod tests {
             bend_runout_cells: 2,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> = [(33, 0)].into_iter().collect();
         let primitive = Primitive {
@@ -8811,6 +9069,7 @@ mod tests {
             bend_runout_cells: 2,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let mut stats = RouteSearchStats::default();
         let bend_outcome = crossing_move_outcome(
@@ -8848,6 +9107,7 @@ mod tests {
             bend_runout_cells: 2,
             crossing_loss: 0.0,
             require_all_partners: false,
+            terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> =
             [(2, 0)].into_iter().collect();
@@ -8888,18 +9148,29 @@ mod tests {
         let mut map = ObstacleMap::new(32, 32);
         assert!(map.commit_route(1, &[(10, 12)]));
         assert!(crossing_reservation_window_is_clear(
-            &map, 3, 1, 10.0, 12.0, 1
+            &map, 3, 1, None, 10.0, 12.0, 1
         ));
 
         assert!(map.commit_route(4, &[(11, 12)]));
         assert!(!crossing_reservation_window_is_clear(
-            &map, 3, 1, 10.0, 12.0, 1
+            &map, 3, 1, None, 10.0, 12.0, 1
         ));
         assert!(map.ripup_route(4));
 
         map.add_static_cells(&[(11, 12)]);
         assert!(!crossing_reservation_window_is_clear(
-            &map, 3, 1, 10.0, 12.0, 1
+            &map, 3, 1, None, 10.0, 12.0, 1
+        ));
+
+        let opened_cells: FxHashSet<CellKey> = [pack_xy(11, 12)].into_iter().collect();
+        assert!(crossing_reservation_window_is_clear(
+            &map,
+            3,
+            1,
+            Some(&opened_cells),
+            10.0,
+            12.0,
+            1
         ));
     }
 
@@ -8950,3 +9221,4 @@ mod tests {
         assert!(result.is_none());
     }
 }
+
