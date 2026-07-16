@@ -439,7 +439,7 @@ impl PyCrossingConstraint {
 }
 
 #[pyclass(name = "State")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct PyState {
     #[pyo3(get, set)]
     pub x: i32,
@@ -461,6 +461,7 @@ impl PyState {
 }
 
 #[pyclass(name = "RouteResult")]
+#[derive(Default)]
 pub struct PyRouteResult {
     #[pyo3(get)]
     pub states: Vec<PyState>,
@@ -550,6 +551,34 @@ pub struct PyRouteResult {
     pub primitive_footprint_rect_checks: usize,
     #[pyo3(get)]
     pub primitive_footprint_rect_rejects: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_no_contact: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_contact_checks: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_static_rejects: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_no_owner_contacts: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_single_owner_contacts: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_multi_owner_contacts: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_witness_cells_scanned: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_partner_segment_checks: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_partner_segment_bbox_rejects: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_intersection_hits: usize,
+    #[pyo3(get)]
+    pub crossing_hotpath_total_time_us: u64,
+    #[pyo3(get)]
+    pub crossing_hotpath_owner_scan_time_us: u64,
+    #[pyo3(get)]
+    pub crossing_hotpath_segment_time_us: u64,
+    #[pyo3(get)]
+    pub crossing_hotpath_reservation_time_us: u64,
     #[pyo3(get)]
     pub crossing_candidate_checks: usize,
     #[pyo3(get)]
@@ -13531,6 +13560,43 @@ fn convert_result(
         primitive_footprint_cells_tested: r.stats.primitive_footprint_cells_tested,
         primitive_footprint_rect_checks: r.stats.primitive_footprint_rect_checks,
         primitive_footprint_rect_rejects: r.stats.primitive_footprint_rect_rejects,
+        crossing_hotpath_no_contact: r.stats.crossing_hotpath_no_contact,
+        crossing_hotpath_contact_checks: r.stats.crossing_hotpath_contact_checks,
+        crossing_hotpath_static_rejects: r.stats.crossing_hotpath_static_rejects,
+        crossing_hotpath_no_owner_contacts: r.stats.crossing_hotpath_no_owner_contacts,
+        crossing_hotpath_single_owner_contacts: r.stats.crossing_hotpath_single_owner_contacts,
+        crossing_hotpath_multi_owner_contacts: r.stats.crossing_hotpath_multi_owner_contacts,
+        crossing_hotpath_witness_cells_scanned: r.stats.crossing_hotpath_witness_cells_scanned,
+        crossing_hotpath_partner_segment_checks: r.stats.crossing_hotpath_partner_segment_checks,
+        crossing_hotpath_partner_segment_bbox_rejects: r
+            .stats
+            .crossing_hotpath_partner_segment_bbox_rejects,
+        crossing_hotpath_intersection_hits: r.stats.crossing_hotpath_intersection_hits,
+        crossing_hotpath_total_time_us: {
+            let clamped = r.stats.crossing_hotpath_total_time_us.min(u64::MAX as u128);
+            clamped as u64
+        },
+        crossing_hotpath_owner_scan_time_us: {
+            let clamped = r
+                .stats
+                .crossing_hotpath_owner_scan_time_us
+                .min(u64::MAX as u128);
+            clamped as u64
+        },
+        crossing_hotpath_segment_time_us: {
+            let clamped = r
+                .stats
+                .crossing_hotpath_segment_time_us
+                .min(u64::MAX as u128);
+            clamped as u64
+        },
+        crossing_hotpath_reservation_time_us: {
+            let clamped = r
+                .stats
+                .crossing_hotpath_reservation_time_us
+                .min(u64::MAX as u128);
+            clamped as u64
+        },
         crossing_candidate_checks: r.stats.crossing_candidate_checks,
         crossing_accepted: r.stats.crossing_accepted,
         crossing_reject_non_straight: r.stats.crossing_reject_non_straight,
@@ -13681,6 +13747,27 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             primitive_footprint_cells_tested: route.primitive_footprint_cells_tested,
             primitive_footprint_rect_checks: route.primitive_footprint_rect_checks,
             primitive_footprint_rect_rejects: route.primitive_footprint_rect_rejects,
+            crossing_hotpath_no_contact: route.crossing_hotpath_no_contact,
+            crossing_hotpath_contact_checks: route.crossing_hotpath_contact_checks,
+            crossing_hotpath_static_rejects: route.crossing_hotpath_static_rejects,
+            crossing_hotpath_no_owner_contacts: route.crossing_hotpath_no_owner_contacts,
+            crossing_hotpath_single_owner_contacts: route.crossing_hotpath_single_owner_contacts,
+            crossing_hotpath_multi_owner_contacts: route.crossing_hotpath_multi_owner_contacts,
+            crossing_hotpath_witness_cells_scanned: route.crossing_hotpath_witness_cells_scanned,
+            crossing_hotpath_partner_segment_checks: route.crossing_hotpath_partner_segment_checks,
+            crossing_hotpath_partner_segment_bbox_rejects: route
+                .crossing_hotpath_partner_segment_bbox_rejects,
+            crossing_hotpath_intersection_hits: route.crossing_hotpath_intersection_hits,
+            crossing_hotpath_total_time_us: u128::from(route.crossing_hotpath_total_time_us),
+            crossing_hotpath_owner_scan_time_us: u128::from(
+                route.crossing_hotpath_owner_scan_time_us,
+            ),
+            crossing_hotpath_segment_time_us: u128::from(
+                route.crossing_hotpath_segment_time_us,
+            ),
+            crossing_hotpath_reservation_time_us: u128::from(
+                route.crossing_hotpath_reservation_time_us,
+            ),
             crossing_candidate_checks: route.crossing_candidate_checks,
             crossing_accepted: route.crossing_accepted,
             crossing_reject_non_straight: route.crossing_reject_non_straight,
@@ -15103,6 +15190,7 @@ mod tests {
             jps4_used: false,
             jps4_fallbacks: 0,
             jps4_fallback_reason: String::new(),
+            ..PyRouteResult::default()
         };
         let err = router
             .realize_route_polygon_with_analytic_meander(
@@ -15226,6 +15314,7 @@ mod tests {
             jps4_used: false,
             jps4_fallbacks: 0,
             jps4_fallback_reason: String::new(),
+            ..PyRouteResult::default()
         };
 
         let ok_poly = router
@@ -15366,6 +15455,7 @@ mod tests {
             jps4_used: false,
             jps4_fallbacks: 0,
             jps4_fallback_reason: String::new(),
+            ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
             let obj = router
@@ -15498,6 +15588,7 @@ mod tests {
             jps4_used: false,
             jps4_fallbacks: 0,
             jps4_fallback_reason: String::new(),
+            ..PyRouteResult::default()
         };
         let err = router
             .realize_route_polygon_with_checked_analytic_meander_box(
@@ -15667,6 +15758,7 @@ mod tests {
             jps4_used: false,
             jps4_fallbacks: 0,
             jps4_fallback_reason: String::new(),
+            ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
             let obj = router
@@ -15807,6 +15899,7 @@ mod tests {
             jps4_used: false,
             jps4_fallbacks: 0,
             jps4_fallback_reason: String::new(),
+            ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
             let obj = router
@@ -15936,6 +16029,7 @@ mod tests {
             jps4_used: false,
             jps4_fallbacks: 0,
             jps4_fallback_reason: String::new(),
+            ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
             let err = router
@@ -16184,6 +16278,7 @@ mod tests {
             jps4_used: false,
             jps4_fallbacks: 0,
             jps4_fallback_reason: String::new(),
+            ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
             let none_obj = router
@@ -16359,6 +16454,7 @@ mod tests {
             jps4_used: false,
             jps4_fallbacks: 0,
             jps4_fallback_reason: String::new(),
+            ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
             let auto_obj = router

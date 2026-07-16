@@ -288,6 +288,20 @@ class RouteTimingBucket:
     footprint_cells_tested: int = 0
     footprint_rect_checks: int = 0
     footprint_rect_rejects: int = 0
+    crossing_hotpath_no_contact: int = 0
+    crossing_hotpath_contact_checks: int = 0
+    crossing_hotpath_static_rejects: int = 0
+    crossing_hotpath_no_owner_contacts: int = 0
+    crossing_hotpath_single_owner_contacts: int = 0
+    crossing_hotpath_multi_owner_contacts: int = 0
+    crossing_hotpath_witness_cells_scanned: int = 0
+    crossing_hotpath_partner_segment_checks: int = 0
+    crossing_hotpath_partner_segment_bbox_rejects: int = 0
+    crossing_hotpath_intersection_hits: int = 0
+    crossing_hotpath_total_time_us: int = 0
+    crossing_hotpath_owner_scan_time_us: int = 0
+    crossing_hotpath_segment_time_us: int = 0
+    crossing_hotpath_reservation_time_us: int = 0
     crossing_candidate_checks: int = 0
     crossing_accepted: int = 0
     crossing_reject_non_straight: int = 0
@@ -411,6 +425,48 @@ class RouteTimingBucket:
         self.footprint_rect_rejects += _get_route_int_stat(
             route_obj,
             "primitive_footprint_rect_rejects",
+        )
+        self.crossing_hotpath_no_contact += _get_route_int_stat(
+            route_obj, "crossing_hotpath_no_contact"
+        )
+        self.crossing_hotpath_contact_checks += _get_route_int_stat(
+            route_obj, "crossing_hotpath_contact_checks"
+        )
+        self.crossing_hotpath_static_rejects += _get_route_int_stat(
+            route_obj, "crossing_hotpath_static_rejects"
+        )
+        self.crossing_hotpath_no_owner_contacts += _get_route_int_stat(
+            route_obj, "crossing_hotpath_no_owner_contacts"
+        )
+        self.crossing_hotpath_single_owner_contacts += _get_route_int_stat(
+            route_obj, "crossing_hotpath_single_owner_contacts"
+        )
+        self.crossing_hotpath_multi_owner_contacts += _get_route_int_stat(
+            route_obj, "crossing_hotpath_multi_owner_contacts"
+        )
+        self.crossing_hotpath_witness_cells_scanned += _get_route_int_stat(
+            route_obj, "crossing_hotpath_witness_cells_scanned"
+        )
+        self.crossing_hotpath_partner_segment_checks += _get_route_int_stat(
+            route_obj, "crossing_hotpath_partner_segment_checks"
+        )
+        self.crossing_hotpath_partner_segment_bbox_rejects += _get_route_int_stat(
+            route_obj, "crossing_hotpath_partner_segment_bbox_rejects"
+        )
+        self.crossing_hotpath_intersection_hits += _get_route_int_stat(
+            route_obj, "crossing_hotpath_intersection_hits"
+        )
+        self.crossing_hotpath_total_time_us += _get_route_int_stat(
+            route_obj, "crossing_hotpath_total_time_us"
+        )
+        self.crossing_hotpath_owner_scan_time_us += _get_route_int_stat(
+            route_obj, "crossing_hotpath_owner_scan_time_us"
+        )
+        self.crossing_hotpath_segment_time_us += _get_route_int_stat(
+            route_obj, "crossing_hotpath_segment_time_us"
+        )
+        self.crossing_hotpath_reservation_time_us += _get_route_int_stat(
+            route_obj, "crossing_hotpath_reservation_time_us"
         )
         self.crossing_candidate_checks += _get_route_int_stat(
             route_obj, "crossing_candidate_checks"
@@ -563,6 +619,20 @@ class RouteAttemptRecord:
     )
     footprint_checks: int = 0
     footprint_rect_checks: int = 0
+    crossing_hotpath_no_contact: int = 0
+    crossing_hotpath_contact_checks: int = 0
+    crossing_hotpath_static_rejects: int = 0
+    crossing_hotpath_no_owner_contacts: int = 0
+    crossing_hotpath_single_owner_contacts: int = 0
+    crossing_hotpath_multi_owner_contacts: int = 0
+    crossing_hotpath_witness_cells_scanned: int = 0
+    crossing_hotpath_partner_segment_checks: int = 0
+    crossing_hotpath_partner_segment_bbox_rejects: int = 0
+    crossing_hotpath_intersection_hits: int = 0
+    crossing_hotpath_total_time_us: int = 0
+    crossing_hotpath_owner_scan_time_us: int = 0
+    crossing_hotpath_segment_time_us: int = 0
+    crossing_hotpath_reservation_time_us: int = 0
     crossing_candidate_checks: int = 0
     crossing_accepted: int = 0
     crossing_reject_non_straight: int = 0
@@ -648,6 +718,20 @@ class RouteAttemptRecord:
             "primitive_accepted_by_class": dict(self.primitive_accepted_by_class),
             "footprint_checks": self.footprint_checks,
             "footprint_rect_checks": self.footprint_rect_checks,
+            "crossing_hotpath_no_contact": self.crossing_hotpath_no_contact,
+            "crossing_hotpath_contact_checks": self.crossing_hotpath_contact_checks,
+            "crossing_hotpath_static_rejects": self.crossing_hotpath_static_rejects,
+            "crossing_hotpath_no_owner_contacts": self.crossing_hotpath_no_owner_contacts,
+            "crossing_hotpath_single_owner_contacts": self.crossing_hotpath_single_owner_contacts,
+            "crossing_hotpath_multi_owner_contacts": self.crossing_hotpath_multi_owner_contacts,
+            "crossing_hotpath_witness_cells_scanned": self.crossing_hotpath_witness_cells_scanned,
+            "crossing_hotpath_partner_segment_checks": self.crossing_hotpath_partner_segment_checks,
+            "crossing_hotpath_partner_segment_bbox_rejects": self.crossing_hotpath_partner_segment_bbox_rejects,
+            "crossing_hotpath_intersection_hits": self.crossing_hotpath_intersection_hits,
+            "crossing_hotpath_total_time_s": self.crossing_hotpath_total_time_us / 1_000_000.0,
+            "crossing_hotpath_owner_scan_time_s": self.crossing_hotpath_owner_scan_time_us / 1_000_000.0,
+            "crossing_hotpath_segment_time_s": self.crossing_hotpath_segment_time_us / 1_000_000.0,
+            "crossing_hotpath_reservation_time_s": self.crossing_hotpath_reservation_time_us / 1_000_000.0,
             "crossing_candidate_checks": self.crossing_candidate_checks,
             "crossing_accepted": self.crossing_accepted,
             "crossing_reject_non_straight": self.crossing_reject_non_straight,
@@ -800,6 +884,48 @@ def route_attempt_record_from_route(
             route_obj,
             "primitive_footprint_rect_checks",
         ),
+        crossing_hotpath_no_contact=_get_route_int_stat(
+            route_obj, "crossing_hotpath_no_contact"
+        ),
+        crossing_hotpath_contact_checks=_get_route_int_stat(
+            route_obj, "crossing_hotpath_contact_checks"
+        ),
+        crossing_hotpath_static_rejects=_get_route_int_stat(
+            route_obj, "crossing_hotpath_static_rejects"
+        ),
+        crossing_hotpath_no_owner_contacts=_get_route_int_stat(
+            route_obj, "crossing_hotpath_no_owner_contacts"
+        ),
+        crossing_hotpath_single_owner_contacts=_get_route_int_stat(
+            route_obj, "crossing_hotpath_single_owner_contacts"
+        ),
+        crossing_hotpath_multi_owner_contacts=_get_route_int_stat(
+            route_obj, "crossing_hotpath_multi_owner_contacts"
+        ),
+        crossing_hotpath_witness_cells_scanned=_get_route_int_stat(
+            route_obj, "crossing_hotpath_witness_cells_scanned"
+        ),
+        crossing_hotpath_partner_segment_checks=_get_route_int_stat(
+            route_obj, "crossing_hotpath_partner_segment_checks"
+        ),
+        crossing_hotpath_partner_segment_bbox_rejects=_get_route_int_stat(
+            route_obj, "crossing_hotpath_partner_segment_bbox_rejects"
+        ),
+        crossing_hotpath_intersection_hits=_get_route_int_stat(
+            route_obj, "crossing_hotpath_intersection_hits"
+        ),
+        crossing_hotpath_total_time_us=_get_route_int_stat(
+            route_obj, "crossing_hotpath_total_time_us"
+        ),
+        crossing_hotpath_owner_scan_time_us=_get_route_int_stat(
+            route_obj, "crossing_hotpath_owner_scan_time_us"
+        ),
+        crossing_hotpath_segment_time_us=_get_route_int_stat(
+            route_obj, "crossing_hotpath_segment_time_us"
+        ),
+        crossing_hotpath_reservation_time_us=_get_route_int_stat(
+            route_obj, "crossing_hotpath_reservation_time_us"
+        ),
         crossing_candidate_checks=_get_route_int_stat(
             route_obj, "crossing_candidate_checks"
         ),
@@ -938,6 +1064,20 @@ class RouteSearchSummary:
     footprint_rejects: int = 0
     footprint_rect_checks: int = 0
     footprint_rect_rejects: int = 0
+    crossing_hotpath_no_contact: int = 0
+    crossing_hotpath_contact_checks: int = 0
+    crossing_hotpath_static_rejects: int = 0
+    crossing_hotpath_no_owner_contacts: int = 0
+    crossing_hotpath_single_owner_contacts: int = 0
+    crossing_hotpath_multi_owner_contacts: int = 0
+    crossing_hotpath_witness_cells_scanned: int = 0
+    crossing_hotpath_partner_segment_checks: int = 0
+    crossing_hotpath_partner_segment_bbox_rejects: int = 0
+    crossing_hotpath_intersection_hits: int = 0
+    crossing_hotpath_total_time_us: int = 0
+    crossing_hotpath_owner_scan_time_us: int = 0
+    crossing_hotpath_segment_time_us: int = 0
+    crossing_hotpath_reservation_time_us: int = 0
     crossing_candidate_checks: int = 0
     crossing_accepted: int = 0
     crossing_reject_non_straight: int = 0
@@ -1047,6 +1187,48 @@ def summarize_route_search(
         footprint_rejects=sum(bucket.footprint_rejects for bucket in buckets),
         footprint_rect_checks=sum(bucket.footprint_rect_checks for bucket in buckets),
         footprint_rect_rejects=sum(bucket.footprint_rect_rejects for bucket in buckets),
+        crossing_hotpath_no_contact=sum(
+            bucket.crossing_hotpath_no_contact for bucket in buckets
+        ),
+        crossing_hotpath_contact_checks=sum(
+            bucket.crossing_hotpath_contact_checks for bucket in buckets
+        ),
+        crossing_hotpath_static_rejects=sum(
+            bucket.crossing_hotpath_static_rejects for bucket in buckets
+        ),
+        crossing_hotpath_no_owner_contacts=sum(
+            bucket.crossing_hotpath_no_owner_contacts for bucket in buckets
+        ),
+        crossing_hotpath_single_owner_contacts=sum(
+            bucket.crossing_hotpath_single_owner_contacts for bucket in buckets
+        ),
+        crossing_hotpath_multi_owner_contacts=sum(
+            bucket.crossing_hotpath_multi_owner_contacts for bucket in buckets
+        ),
+        crossing_hotpath_witness_cells_scanned=sum(
+            bucket.crossing_hotpath_witness_cells_scanned for bucket in buckets
+        ),
+        crossing_hotpath_partner_segment_checks=sum(
+            bucket.crossing_hotpath_partner_segment_checks for bucket in buckets
+        ),
+        crossing_hotpath_partner_segment_bbox_rejects=sum(
+            bucket.crossing_hotpath_partner_segment_bbox_rejects for bucket in buckets
+        ),
+        crossing_hotpath_intersection_hits=sum(
+            bucket.crossing_hotpath_intersection_hits for bucket in buckets
+        ),
+        crossing_hotpath_total_time_us=sum(
+            bucket.crossing_hotpath_total_time_us for bucket in buckets
+        ),
+        crossing_hotpath_owner_scan_time_us=sum(
+            bucket.crossing_hotpath_owner_scan_time_us for bucket in buckets
+        ),
+        crossing_hotpath_segment_time_us=sum(
+            bucket.crossing_hotpath_segment_time_us for bucket in buckets
+        ),
+        crossing_hotpath_reservation_time_us=sum(
+            bucket.crossing_hotpath_reservation_time_us for bucket in buckets
+        ),
         crossing_candidate_checks=sum(
             bucket.crossing_candidate_checks for bucket in buckets
         ),

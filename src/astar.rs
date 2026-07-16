@@ -260,6 +260,20 @@ pub struct RouteSearchStats {
     pub primitive_footprint_cells_tested: usize,
     pub primitive_footprint_rect_checks: usize,
     pub primitive_footprint_rect_rejects: usize,
+    pub crossing_hotpath_no_contact: usize,
+    pub crossing_hotpath_contact_checks: usize,
+    pub crossing_hotpath_static_rejects: usize,
+    pub crossing_hotpath_no_owner_contacts: usize,
+    pub crossing_hotpath_single_owner_contacts: usize,
+    pub crossing_hotpath_multi_owner_contacts: usize,
+    pub crossing_hotpath_witness_cells_scanned: usize,
+    pub crossing_hotpath_partner_segment_checks: usize,
+    pub crossing_hotpath_partner_segment_bbox_rejects: usize,
+    pub crossing_hotpath_intersection_hits: usize,
+    pub crossing_hotpath_total_time_us: u128,
+    pub crossing_hotpath_owner_scan_time_us: u128,
+    pub crossing_hotpath_segment_time_us: u128,
+    pub crossing_hotpath_reservation_time_us: u128,
     pub crossing_candidate_checks: usize,
     pub crossing_accepted: usize,
     pub crossing_reject_non_straight: usize,
@@ -1117,6 +1131,75 @@ impl DenseRoutingGrid {
                 return true;
             }
             for (dx, dy) in footprint.iter().copied() {
+                let x = match origin_x.checked_add(dx) {
+                    Some(x) => x,
+                    None => return false,
+                };
+                let y = match origin_y.checked_add(dy) {
+                    Some(y) => y,
+                    None => return false,
+                };
+                if self.is_blocked(x, y) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+
+    #[inline]
+    fn relative_offsets_free_with_profile(
+        &self,
+        origin_x: i32,
+        origin_y: i32,
+        offsets: &[(i32, i32)],
+        profile: &FootprintCollisionProfile,
+    ) -> bool {
+        if profile.is_full_rect {
+            let rect_min_x = match origin_x.checked_add(profile.min_dx) {
+                Some(x) => x,
+                None => return false,
+            };
+            let rect_max_x = match origin_x.checked_add(profile.max_dx) {
+                Some(x) => x,
+                None => return false,
+            };
+            let rect_min_y = match origin_y.checked_add(profile.min_dy) {
+                Some(y) => y,
+                None => return false,
+            };
+            let rect_max_y = match origin_y.checked_add(profile.max_dy) {
+                Some(y) => y,
+                None => return false,
+            };
+            if rect_min_y == rect_max_y {
+                self.horizontal_segment_free(rect_min_y, rect_min_x, rect_max_x)
+            } else if rect_min_x == rect_max_x {
+                self.vertical_segment_free(rect_min_x, rect_min_y, rect_max_y)
+            } else {
+                self.rect_free(rect_min_x, rect_max_x, rect_min_y, rect_max_y)
+            }
+        } else if !profile.horizontal_runs.is_empty() {
+            for &(dy, min_dx, max_dx) in &profile.horizontal_runs {
+                let y = match origin_y.checked_add(dy) {
+                    Some(y) => y,
+                    None => return false,
+                };
+                let min_x = match origin_x.checked_add(min_dx) {
+                    Some(x) => x,
+                    None => return false,
+                };
+                let max_x = match origin_x.checked_add(max_dx) {
+                    Some(x) => x,
+                    None => return false,
+                };
+                if !self.horizontal_segment_free(y, min_x, max_x) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            for (dx, dy) in offsets.iter().copied() {
                 let x = match origin_x.checked_add(dx) {
                     Some(x) => x,
                     None => return false,
@@ -3715,7 +3798,11 @@ struct RelativeEffectiveCollisionWitness {
 #[derive(Clone, Debug)]
 struct PrimitiveCrossingMetadata {
     segments: Vec<RelativePrimitivePathSegment>,
+    footprint_witnesses: Vec<RelativeEffectiveCollisionWitness>,
     witnesses: Vec<RelativeEffectiveCollisionWitness>,
+    extra_witnesses: Vec<RelativeEffectiveCollisionWitness>,
+    extra_witness_offsets: Vec<(i32, i32)>,
+    extra_witness_profile: FootprintCollisionProfile,
     has_extra_witnesses: bool,
 }
 
@@ -3821,11 +3908,34 @@ fn primitive_crossing_metadata(primitive: &Primitive) -> PrimitiveCrossingMetada
         });
     }
 
+    let footprint_witnesses: Vec<RelativeEffectiveCollisionWitness> = primitive
+        .footprint
+        .iter()
+        .copied()
+        .map(|offset| RelativeEffectiveCollisionWitness {
+            offset,
+            route_segment_idx: None,
+        })
+        .collect();
     let witnesses = effective_collision_witness_offsets(primitive, &segments);
-    let has_extra_witnesses = witnesses.len() > primitive.footprint.len();
+    let extra_witnesses: Vec<RelativeEffectiveCollisionWitness> = witnesses
+        .iter()
+        .copied()
+        .filter(|witness| !primitive.footprint.contains(&witness.offset))
+        .collect();
+    let extra_witness_offsets: Vec<(i32, i32)> = extra_witnesses
+        .iter()
+        .map(|witness| witness.offset)
+        .collect();
+    let extra_witness_profile = FootprintCollisionProfile::from_footprint(&extra_witness_offsets);
+    let has_extra_witnesses = !extra_witnesses.is_empty();
     PrimitiveCrossingMetadata {
         segments,
+        footprint_witnesses,
         witnesses,
+        extra_witnesses,
+        extra_witness_offsets,
+        extra_witness_profile,
         has_extra_witnesses,
     }
 }
@@ -4253,10 +4363,21 @@ fn route_single_net_with_bounds_crossing(
                 continue;
             }
 
+            let extra_halo_free = footprint_free
+                && !config.ignore_dynamic_obstacles
+                && primitive_crossing.has_extra_witnesses
+                && dense_grid.relative_offsets_free_with_profile(
+                    state.x,
+                    state.y,
+                    &primitive_crossing.extra_witness_offsets,
+                    &primitive_crossing.extra_witness_profile,
+                );
+
             let crossing_outcome = if footprint_free
                 && !config.ignore_dynamic_obstacles
-                && !primitive_crossing.has_extra_witnesses
+                && (!primitive_crossing.has_extra_witnesses || extra_halo_free)
             {
+                stats.crossing_hotpath_no_contact += 1;
                 Some(crossing_no_contact_outcome(
                     key,
                     state,
@@ -4280,6 +4401,9 @@ fn route_single_net_with_bounds_crossing(
                     &partner_segments,
                     &dynamic_core_owners,
                     primitive_crossing,
+                    footprint_free,
+                    !footprint_free,
+                    config.collect_detailed_timing,
                     stats,
                     Some(&crossing_search_start),
                 )
@@ -4681,6 +4805,9 @@ fn crossing_move_outcome(
         &partner_segments,
         &dynamic_core_owners,
         &primitive_crossing,
+        false,
+        false,
+        false,
         stats,
         None,
     )
@@ -4776,6 +4903,14 @@ fn record_pending_after_crossing_partner(
     );
 }
 
+fn record_crossing_hotpath_owner_count(stats: &mut RouteSearchStats, owner_count: usize) {
+    match owner_count {
+        0 => stats.crossing_hotpath_no_owner_contacts += 1,
+        1 => stats.crossing_hotpath_single_owner_contacts += 1,
+        _ => stats.crossing_hotpath_multi_owner_contacts += 1,
+    }
+}
+
 fn analysis_crossing_partner_counters_enabled() -> bool {
     std::env::var("PHOTONIC_ROUTER_ANALYSIS_CROSSING_PARTNER_COUNTERS")
         .ok()
@@ -4848,9 +4983,14 @@ fn crossing_move_outcome_with_segments(
     partner_segments: &[Vec<PartnerPathSegment>],
     dynamic_core_owners: &DenseDynamicCoreOwnerGrid,
     primitive_crossing: &PrimitiveCrossingMetadata,
+    scan_extra_witnesses_only: bool,
+    require_dynamic_owner_contact: bool,
+    collect_detailed_timing: bool,
     stats: &mut RouteSearchStats,
     search_start: Option<&Instant>,
 ) -> Option<CrossingMoveOutcome> {
+    let hotpath_total_start = collect_detailed_timing.then(Instant::now);
+    stats.crossing_hotpath_contact_checks += 1;
     let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
     let pending_before = f64::from(current_key.pending_after_crossing_cells);
     let initial_run_distance = primitive_initial_straight_run_distance(primitive, state.angle);
@@ -4923,10 +5063,20 @@ fn crossing_move_outcome_with_segments(
     let mut next_partner_index = current_key.next_partner_index;
     let track_crossed_partners = crossing.require_all_partners;
     let mut crossing_count = 0u32;
-    let mut route_intersections = Vec::new();
     let primitive_segments = &primitive_crossing.segments;
     let mut contacted_partners: Vec<ContactedPartner> = Vec::new();
-    for witness in &primitive_crossing.witnesses {
+    let mut first_dynamic_owner: Option<NetId> = None;
+    let mut dynamic_owner_count = 0usize;
+    let witness_scan = if scan_extra_witnesses_only {
+        primitive_crossing.extra_witnesses.as_slice()
+    } else if require_dynamic_owner_contact {
+        primitive_crossing.footprint_witnesses.as_slice()
+    } else {
+        primitive_crossing.witnesses.as_slice()
+    };
+    let owner_scan_start = collect_detailed_timing.then(Instant::now);
+    for witness in witness_scan {
+        stats.crossing_hotpath_witness_cells_scanned += 1;
         let cell = (
             state.x + witness.offset.0,
             state.y + witness.offset.1,
@@ -4940,6 +5090,7 @@ fn crossing_move_outcome_with_segments(
                 open.contains(&pack_xy(cell.0, cell.1))
             })
         {
+            stats.crossing_hotpath_static_rejects += 1;
             stats.crossing_reject_unmatched_footprint += 1;
             return None;
         }
@@ -4949,11 +5100,28 @@ fn crossing_move_outcome_with_segments(
         if owner == crossing.net_id {
             continue;
         }
+        match first_dynamic_owner {
+            None => {
+                first_dynamic_owner = Some(owner);
+                dynamic_owner_count = 1;
+            }
+            Some(first_owner) if first_owner == owner => {}
+            Some(_) => {
+                if !contacted_partners
+                    .iter()
+                    .any(|contact| crossing.partners[contact.partner_idx].net_id == owner)
+                {
+                    dynamic_owner_count += 1;
+                }
+            }
+        }
         if !is_straight {
+            record_crossing_hotpath_owner_count(stats, dynamic_owner_count);
             stats.crossing_reject_non_straight += 1;
             return None;
         }
         let Some(partner_idx) = partner_index_by_id.get(&owner).copied() else {
+            record_crossing_hotpath_owner_count(stats, dynamic_owner_count);
             stats.crossing_reject_unexpected_owner += 1;
             return None;
         };
@@ -4966,6 +5134,18 @@ fn crossing_move_outcome_with_segments(
             },
         );
     }
+    if let Some(owner_scan_start) = owner_scan_start {
+        stats.crossing_hotpath_owner_scan_time_us += owner_scan_start.elapsed().as_micros();
+    }
+    record_crossing_hotpath_owner_count(stats, dynamic_owner_count);
+    if require_dynamic_owner_contact && dynamic_owner_count == 0 {
+        if let Some(hotpath_total_start) = hotpath_total_start {
+            stats.crossing_hotpath_total_time_us += hotpath_total_start.elapsed().as_micros();
+        }
+        return None;
+    }
+    let mut route_intersections = Vec::new();
+    let segment_search_start = collect_detailed_timing.then(Instant::now);
     if primitive_steps > 0 {
         for contact in &contacted_partners {
             let partner_idx = contact.partner_idx;
@@ -4981,7 +5161,9 @@ fn crossing_move_outcome_with_segments(
                     .map(Vec::as_slice)
                     .unwrap_or(&[])
                 {
+                    stats.crossing_hotpath_partner_segment_checks += 1;
                     if !route_partner_segment_bboxes_overlap(&route_segment, partner_segment) {
+                        stats.crossing_hotpath_partner_segment_bbox_rejects += 1;
                         continue;
                     }
                     let Some((x, y, t, u)) = grid_segment_intersection_with_params(
@@ -4992,6 +5174,7 @@ fn crossing_move_outcome_with_segments(
                     ) else {
                         continue;
                     };
+                    stats.crossing_hotpath_intersection_hits += 1;
                     stats.crossing_candidate_checks += 1;
                     let distance_on_segment = t * route_segment.length;
                     let distance_from_primitive_start =
@@ -5199,7 +5382,11 @@ fn crossing_move_outcome_with_segments(
                 .unwrap_or(Ordering::Equal)
         });
     }
+    if let Some(segment_search_start) = segment_search_start {
+        stats.crossing_hotpath_segment_time_us += segment_search_start.elapsed().as_micros();
+    }
 
+    let reservation_start = collect_detailed_timing.then(Instant::now);
     for intersection in &route_intersections {
         if pending_before > 0.0
             && intersection.distance_from_primitive_start + 1.0e-9 < pending_before
@@ -5345,13 +5532,16 @@ fn crossing_move_outcome_with_segments(
         crossing_count += 1;
         stats.crossing_accepted += 1;
     }
+    if let Some(reservation_start) = reservation_start {
+        stats.crossing_hotpath_reservation_time_us += reservation_start.elapsed().as_micros();
+    }
 
     if !is_straight {
         straight_run = primitive_terminal_straight_run_cells(primitive, primitive.end_angle)
             .min(capped_required_margin);
     }
 
-    Some(CrossingMoveOutcome {
+    let outcome = Some(CrossingMoveOutcome {
         crossed_mask,
         next_partner_index,
         straight_run_cells: straight_run,
@@ -5369,7 +5559,11 @@ fn crossing_move_outcome_with_segments(
         crossing_count,
         active_reservation_keys,
         pending_reservation_keys,
-    })
+    });
+    if let Some(hotpath_total_start) = hotpath_total_start {
+        stats.crossing_hotpath_total_time_us += hotpath_total_start.elapsed().as_micros();
+    }
+    outcome
 }
 
 fn effective_collision_witness_offsets(

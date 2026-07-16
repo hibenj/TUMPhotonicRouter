@@ -7580,3 +7580,274 @@ Next speed plan: pure LiDAR owner-based hot path:
   - Defer topology-guided or expected-crossing waypoint heuristics until after
     this unguided hot-path cleanup, so any speedup is attributable to cheaper
     A* mechanics rather than stronger guidance.
+
+Pure LiDAR hot-path instrumentation:
+
+- Date: 2026-07-16 15:34 local
+- Scope:
+  - Added diagnostic counters to expose how often crossing-aware A* takes the
+    contact-free fast path versus the crossing contact path.
+  - Counters added:
+    `crossing_hotpath_no_contact`,
+    `crossing_hotpath_contact_checks`,
+    `crossing_hotpath_static_rejects`,
+    `crossing_hotpath_no_owner_contacts`,
+    `crossing_hotpath_single_owner_contacts`, and
+    `crossing_hotpath_multi_owner_contacts`.
+  - These counters are surfaced through PyO3, route attempt records, route
+    search summaries, and the CLI timing output.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust_types.py
+    routing_flow.py` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 11 --debug-svgs none --debug-timing true` passed.
+- Initial finding for the first slow net boundary:
+  - Stop-after-route-11 summary:
+    `no_contact=678014`, `contact_checks=1281289`,
+    `static_rejects=994`, `no_owner=1221637`,
+    `single_owner=58658`, `multi_owner=0`,
+    `candidate_checks=9421`, `accepted=4116`.
+  - Interpretation: the first slow unguided route is not dominated by true
+    multi-owner crossing complexity. Most contact-path work reaches the
+    crossing routine and then finds no dynamic core owner. The next safe
+    optimization should make no-owner blocked contacts reject earlier before
+    route/partner intersection work or per-move allocation.
+
+No-owner early reject trial:
+
+- Date: 2026-07-16 15:43 local
+- Change:
+  - Added an early return in the crossing contact path when the candidate
+    primitive footprint was blocked, but scanning the crossing witness cells
+    found no dynamic owner net.
+  - The early return is gated by the caller's `!footprint_free` state, so
+    contact-free extra-witness primitives remain allowed.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust_types.py
+    routing_flow.py` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - Stop-after-route-11 Benes check passed; crossing and photonic
+    verification were green for the 11 routed records.
+  - Full `benes_8x8` run passed: wall time `65.1111 s`, crossing
+    verification success for `48/48`, photonic verification success for
+    `48/48`.
+  - Full `multiportmmi_8x8` static-stub guardrail passed with
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`: wall time `36.8615 s`,
+    crossing verification success for `111/111`, photonic verification
+    success for `111/111`.
+- Finding:
+  - The stop-after-route-11 timing did not materially change. This means the
+    main cost is likely still the witness/owner scan and per-contact-path
+    overhead before the no-owner decision, not the later partner-segment logic.
+  - Next likely speed step: avoid per-contact-path heap allocation and scan
+    only the minimal dynamic-owner witness set before constructing
+    `ContactedPartner` / reservation / intersection vectors.
+
+Pure LiDAR hot-path detail analysis:
+
+- Date: 2026-07-16 16:05 local
+- Scope:
+  - Added detail counters/timers for the crossing-aware A* hot path:
+    witness cells scanned, partner segment checks, bbox rejects,
+    intersection hits, total hot-path time, owner-scan time, segment-search
+    time, and reservation time.
+  - Surfaced these through PyO3, Python route timing summaries, and the CLI
+    timing output.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust_types.py
+    routing_flow.py` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 11 --debug-svgs none --debug-timing true`
+    passed; total `4.1314 s`, route[11] `2.9775 s`.
+  - Same stop run without `--debug-timing` passed; total `3.8184 s`,
+    route[11] `2.8490 s`.
+- Finding:
+  - Route[11] (`n_s0_1_o0_to_s1_0_i1`) still dominates the stop run:
+    `expanded=328547`, `generated=1971282`.
+  - Hot-path summary for the non-debug-timing stop run:
+    `no_contact=678014`, `contact_checks=1281289`,
+    `static_rejects=994`, `no_owner=1221637`,
+    `single_owner=58658`, `multi_owner=0`,
+    `candidate_checks=9421`, `accepted=4116`.
+  - Detail timing:
+    `witness_cells=18831925`, `partner_segments=21186`,
+    `bbox_rejects=11114`, `intersections=9421`,
+    `total=1.2385 s`, `owner_scan=1.0889 s`,
+    `segments=0.0495 s`, `reservation=0.0074 s`.
+  - Interpretation: the expensive part is not the geometric segment
+    intersection loop. The primary cost is repeatedly scanning the crossing
+    witness/owner cells, and most scans find no dynamic owner. The clean next
+    optimization is to split primitive crossing witnesses into core footprint
+    cells and extra diagonal-halo cells, then scan only the necessary subset:
+    if the primitive footprint is already known free, only extra halo witnesses
+    can reveal an offset-diagonal dynamic collision. This should preserve
+    behavior while reducing the 18.8M owner-cell probes.
+
+Extra-halo-only owner scan optimization:
+
+- Date: 2026-07-16 16:42 local
+- Change:
+  - `PrimitiveCrossingMetadata` now stores both the full witness set and the
+    subset of extra diagonal-halo witnesses.
+  - When the dense primitive footprint check has already reported
+    `footprint_free=true`, crossing-aware A* scans only the extra halo
+    witnesses for dynamic owners. Blocked footprints still scan the full
+    witness set.
+  - This does not change committed route cells or crossing legality checks; it
+    only avoids re-reading footprint cells that the dense footprint check has
+    already proven free.
+  - Added `Default` derives / struct update defaults for Rust-side
+    `PyRouteResult` tests so diagnostic field additions do not break test
+    compilation.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `C:\Users\benja\.cargo\bin\cargo.exe test crossing_move --lib` compiled,
+    but test execution stopped with Windows `STATUS_DLL_NOT_FOUND`; this is a
+    local DLL runtime-path issue, not a Rust compile error.
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust_types.py
+    routing_flow.py` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 11 --debug-svgs none` passed:
+    total `3.2977 s`, route[11] `2.2425 s`,
+    `witness_cells=11279309`, `owner_scan=0.5897 s`,
+    `segments=0.0443 s`.
+  - Full `benes_8x8` passed:
+    total `58.5958 s`, crossing verification success for `48/48`,
+    photonic verification success for `48/48`.
+  - Full `multiportmmi_8x8` with static stubs and
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90` passed:
+    total `30.8698 s`, crossing verification success for `111/111`,
+    photonic verification success for `111/111`.
+- Result:
+  - Stop-after-route-11 improved from about `3.8184 s` total / route[11]
+    `2.8490 s` to `3.2977 s` total / route[11] `2.2425 s`.
+  - Full Benes improved from the previous guardrail `65.1111 s` to
+    `58.5958 s`.
+  - Full Multiport static-stub guardrail improved from `36.8615 s` to
+    `30.8698 s`.
+
+Footprint-only blocked-contact scan optimization:
+
+- Date: 2026-07-16 17:05 local
+- Change:
+  - Split primitive crossing witnesses further into explicit footprint
+    witnesses and extra diagonal-halo witnesses.
+  - Crossing-aware A* now uses:
+    - `footprint_free=true`: scan only extra halo witnesses;
+    - `footprint_free=false`: scan only footprint witnesses;
+    - fallback/test path: full witness set remains available.
+  - Rationale: halo exists only to detect offset diagonal contacts when the
+    real footprint did not collide. Once the real footprint is already blocked,
+    the collision is known and halo cells are redundant.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust_types.py
+    routing_flow.py` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 11 --debug-svgs none` passed:
+    total `3.0954 s`, route[11] `2.0113 s`,
+    `witness_cells=11215333`, `owner_scan=0.4224 s`.
+  - Full `benes_8x8` passed:
+    total `56.8744 s`, crossing verification success for `48/48`,
+    photonic verification success for `48/48`.
+  - Full `multiportmmi_8x8` with static stubs and
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90` passed:
+    total `30.3986 s`, crossing verification success for `111/111`,
+    photonic verification success for `111/111`.
+- Result:
+  - Stop-after-route-11 route[11] improved again from `2.2425 s` to
+    `2.0113 s`.
+  - Full Benes improved from `58.5958 s` to `56.8744 s`.
+  - Full Multiport static-stub guardrail improved from `30.8698 s` to
+    `30.3986 s`.
+
+Queued pure-LiDAR hot-path speed ideas:
+
+- Date: 2026-07-16 17:18 local
+- Constraint:
+  - Keep routing behavior and crossing functionality intact. Do not introduce
+    pruning that rejects multi-owner or multi-crossing cases unless a later
+    correctness analysis proves it is safe.
+- Priority 1: extra-halo presence fast path.
+  - Current issue: after `footprint_free=true`, A* still scans selected halo
+    witness cells one by one to discover that most moves have no dynamic owner.
+  - Proposed change: build a compact collision profile for
+    `extra_witnesses`. If the true footprint is free and the extra halo profile
+    is also free, take `crossing_no_contact_outcome` immediately. Only run the
+    detailed owner/static/crossing analysis when the halo presence check says
+    something is occupied.
+  - Expected benefit: accelerates the dominant no-contact path without changing
+    crossing legality.
+- Priority 2: owner scan without per-move heap allocations.
+  - Current issue: contact handling still uses per-move `Vec<ContactedPartner>`
+    and witness vectors.
+  - Proposed change: use a small stack/scratch structure or partner bitmask to
+    record contacted partners and first witnesses while keeping multi-owner
+    support. Build full witness vectors only for rare unresolved-contact
+    diagnostics/classification.
+- Priority 3: direct dense-owner indexing / owner mask.
+  - Current issue: `owner_at(x, y)` performs bounds/index conversion for each
+    witness cell.
+  - Proposed change: when scanning a prevalidated witness profile inside the
+    lookup bounds, use precomputed local offsets or direct dense-grid indices.
+    Longer-term, add an owner-presence/owner-mask helper that can answer
+    "empty / one owner / multiple owners" for a witness profile before detailed
+    per-cell analysis.
+- Priority 4: partner segment locality.
+  - Current issue: once an owner is found, the code still checks partner
+    segments with bbox filtering.
+  - Proposed change: index partner segments spatially or by route cell so the
+    local contact checks only inspect nearby candidate segments. Keep the same
+    perpendicular, margin, pending, reservation, and reporting logic.
+- Priority 5: reduce state expansion after hot-path cleanup.
+  - Even after owner-scan improvements, slow Benes routes still expand hundreds
+    of thousands of states. Only after the local move checks are cheap should
+    we evaluate search-ordering or admissible pruning/guidance changes.
+
+Extra-halo presence fast path:
+
+- Date: 2026-07-16 17:40 local
+- Change:
+  - Added a stats-free `DenseRoutingGrid::relative_offsets_free_with_profile`
+    helper for compact occupancy checks over arbitrary relative offsets.
+  - `PrimitiveCrossingMetadata` now precomputes an
+    `extra_witness_profile` and `extra_witness_offsets`.
+  - In crossing-aware A*, when the true primitive footprint is free and the
+    primitive has extra diagonal-halo witnesses, A* first checks whether the
+    extra halo profile is free. If it is free, the move takes
+    `crossing_no_contact_outcome` immediately and skips detailed owner/static
+    witness analysis.
+  - If the extra halo profile is blocked, detailed crossing analysis is
+    unchanged.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust_types.py
+    routing_flow.py` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 11 --debug-svgs none` passed:
+    total `2.1314 s`, route[11] `1.0632 s`,
+    `contact_checks=67964`, `witness_cells=367992`,
+    `owner_scan=0.0040 s`.
+  - Full `benes_8x8` passed:
+    total `29.3395 s`, crossing verification success for `48/48`,
+    photonic verification success for `48/48`.
+  - Full `multiportmmi_8x8` with static stubs and
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90` passed:
+    total `21.9246 s`, crossing verification success for `111/111`,
+    photonic verification success for `111/111`.
+- Result:
+  - Stop-after-route-11 route[11] improved from `2.0113 s` to `1.0632 s`.
+  - Stop-after-route-11 detailed contact checks dropped from about `1.28M`
+    before the halo fast path to `67,964`; witness cells dropped from about
+    `11.2M` to `367,992`.
+  - Full Benes improved from `56.8744 s` to `29.3395 s`.
+  - Full Multiport static-stub guardrail improved from `30.3986 s` to
+    `21.9246 s`.

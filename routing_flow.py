@@ -2013,6 +2013,28 @@ def run_routing_flow(
             f"full_grid_fallbacks={int(route_summary.full_grid_fallbacks)}"
         )
         print(
+            "          Crossing hot path: "
+            f"no_contact={int(getattr(route_summary, 'crossing_hotpath_no_contact', 0))}, "
+            f"contact_checks={int(getattr(route_summary, 'crossing_hotpath_contact_checks', 0))}, "
+            f"static_rejects={int(getattr(route_summary, 'crossing_hotpath_static_rejects', 0))}, "
+            f"no_owner={int(getattr(route_summary, 'crossing_hotpath_no_owner_contacts', 0))}, "
+            f"single_owner={int(getattr(route_summary, 'crossing_hotpath_single_owner_contacts', 0))}, "
+            f"multi_owner={int(getattr(route_summary, 'crossing_hotpath_multi_owner_contacts', 0))}, "
+            f"candidate_checks={int(route_summary.crossing_candidate_checks)}, "
+            f"accepted={int(route_summary.crossing_accepted)}"
+        )
+        print(
+            "          Crossing hot path detail: "
+            f"witness_cells={int(getattr(route_summary, 'crossing_hotpath_witness_cells_scanned', 0))}, "
+            f"partner_segments={int(getattr(route_summary, 'crossing_hotpath_partner_segment_checks', 0))}, "
+            f"bbox_rejects={int(getattr(route_summary, 'crossing_hotpath_partner_segment_bbox_rejects', 0))}, "
+            f"intersections={int(getattr(route_summary, 'crossing_hotpath_intersection_hits', 0))}, "
+            f"total={float(getattr(route_summary, 'crossing_hotpath_total_time_us', 0)) / 1_000_000.0:.4f}s, "
+            f"owner_scan={float(getattr(route_summary, 'crossing_hotpath_owner_scan_time_us', 0)) / 1_000_000.0:.4f}s, "
+            f"segments={float(getattr(route_summary, 'crossing_hotpath_segment_time_us', 0)) / 1_000_000.0:.4f}s, "
+            f"reservation={float(getattr(route_summary, 'crossing_hotpath_reservation_time_us', 0)) / 1_000_000.0:.4f}s"
+        )
+        print(
             "          A* timed ops: "
             f"dense_build={float(route_summary.dense_grid_build_time_us) / 1_000_000.0:.4f}s, "
             f"search_loop={float(route_summary.search_loop_time_us) / 1_000_000.0:.4f}s, "
