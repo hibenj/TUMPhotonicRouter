@@ -7954,3 +7954,37 @@ Dense-owner direct-index experiment:
     speed target should move away from this micro-optimization and instead
     examine the remaining segment-check/search-space costs, which dominate the
     measured route[11] time.
+
+Partner segment locality experiment:
+
+- Date: 2026-07-16 19:20 local
+- Experiment:
+  - Built a per-partner `cell -> segment ids` index for crossing partners.
+  - In `crossing_move_outcome_with_segments`, collected candidate partner
+    segment ids from the contacted Witness cells and scanned only those
+    segments when available, with a full-scan fallback if the index returned no
+    candidate.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 11 --debug-svgs none --debug-timing true`
+    passed.
+  - A no-debug-timing route-11 stop also passed.
+- Measurement:
+  - The experiment reduced `partner_segments` from the baseline `21195` to
+    `11071` and `bbox_rejects` from `11114` to `1026`.
+  - Despite that, `segments` time stayed about the same (`0.0496 s`) and
+    route[11] remained slower than the committed baseline (`1.1351 s` with
+    debug timing, `1.1241 s` in the no-debug check, versus baseline route[11]
+    around `0.9563 s`).
+- Result:
+  - Reverted the code experiment completely and rebuilt the release extension
+    back to the committed code.
+  - Conclusion: reducing partner segment scans with this cell index does not
+    address the dominant cost. The remaining route[11] time is mostly generic
+    A* state expansion and un-attributed search-loop work: roughly 328k
+    expanded states, 1.97M generated neighbors, 495k heap pushes, and 381k
+    heap pops for that route. The next useful work should instrument and then
+    reduce state expansion / heap and neighbor overhead, rather than adding
+    another crossing micro-index.

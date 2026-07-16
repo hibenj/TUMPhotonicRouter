@@ -1738,6 +1738,23 @@ Queued Hot-Path Speedups:
        spatially or by route cell so contact checks inspect only nearby
        segments.
 
+       Experiment tried and reverted 2026-07-16:
+
+       - Built a per-partner `cell -> segment ids` index and used contacted
+         Witness cells to narrow partner segment scans, with full-scan fallback
+         when the index returned no candidates.
+       - The route-11 Benes stop stayed behaviorally valid and the index
+         reduced segment checks (`partner_segments` from `21195` to `11071`;
+         `bbox_rejects` from `11114` to `1026`).
+       - Runtime did not improve: segment time stayed about `0.0496 s`, and
+         route[11] measured slower than the committed baseline (`1.1351 s`
+         with debug timing and `1.1241 s` in the no-debug check versus the
+         baseline around `0.9563 s`).
+       - The code experiment was reverted and the release extension was
+         rebuilt to the committed state. This suggests the dominant remaining
+         cost is not partner-segment filtering, but generic A* state expansion
+         and un-attributed search-loop overhead.
+
     5. Search-space reduction only after local checks are cheap.
 
        Slow Benes routes still expand hundreds of thousands of states. Once the
