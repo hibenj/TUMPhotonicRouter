@@ -1421,6 +1421,60 @@ Report checks:
       `matched_crossing_component_count=1`, `illegal_crossing_count=0`.
     - photonic report: `issue_count=0`.
 
+Follow-up, 2026-07-16: Define LiDAR-pure owner-based crossing A* target.
+
+User clarification:
+
+    - "Owner-based Crossing-A*" means the router may test crossings against
+      any committed dynamic route owner it actually touches during A* search.
+    - It does not mean a precomputed partner whitelist, and it does not mean a
+      source-target-window partner set decides which nets can be crossed.
+    - The owner net id is still required for geometry lookup, event recording,
+      statistics, and ripup/victim hints, but it must be discovered from the
+      collided obstacle cell at the move being evaluated.
+
+Target behavior:
+
+    - In `crossing_mode="lidar-pure"`, routing first tries the existing simple
+      route path.
+    - If the simple route fails, the next primary search is crossing-aware
+      obstacle A*, not ordinary no-crossing A* gated by a partner list.
+    - Each A* primitive move performs the local collision classification:
+      free footprint -> accept normally; static collision -> reject the move;
+      dynamic collision -> read the committed owner id from the obstacle map and
+      run the existing crossing legality checks against that owner's committed
+      centerline.
+    - A legal dynamic crossing accepts only that move with crossing cost and
+      pending-straight bookkeeping. An illegal crossing rejects only that move
+      and A* continues exploring other branches.
+    - If crossing-aware A* exhausts without a legal route, ripup is driven by
+      real failure signals such as the pending-straight/perpendicular reject
+      counters and dynamic owners encountered during the failed search.
+
+Implementation note:
+
+    - The current `partner_ids` plumbing conflates two roles: (1) whether to
+      start collision-crossing A*, and (2) the centerline database available for
+      legality checks.
+    - The next patch should separate those concepts. The start condition for
+      LiDAR-pure should be "simple route failed, therefore use crossing-aware
+      A*". The lookup database should cover all committed dynamic owners with
+      known centerlines, while the move-level owner cell decides the actual
+      crossing candidate.
+    - A direct experiment that replaced the lookup set with all committed
+      owners without splitting the trigger role made crossing A* activate too
+      broadly and stalled the 8x8/16x16 control runs. Do not repeat that shape
+      of patch; split the trigger and lookup responsibilities first.
+
+Control benchmarks after restoring stable source:
+
+    - `multiportmmi_8x8` with `--crossings true --crossing-mode lidar-pure
+      --fanout-access-mode static-stubs --routing-window-scale 0.35
+      --foreign-port-keepout-cells 6 --debug-svgs none --debug-timing true`
+      passed: `111/111`, failures `0`, repairs `0`.
+    - `benes_8x8` with the same routing flags passed: `48/48`, failures `0`,
+      repairs `0`.
+
 Follow-up, 2026-07-16: Stabilized simple-first routing order while preserving
 the useful no-crossing collision-kernel route candidate.
 

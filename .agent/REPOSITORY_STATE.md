@@ -8280,3 +8280,96 @@ Checkpoint validation before commit:
   - `C:\Users\benja\.cargo\bin\cargo.exe check` passed after cleanup.
   - `.\.venv\Scripts\python.exe -X utf8 -m pytest tests\test_routing_flow_stats.py::test_lidar_multiportmmi_yaml_benchmarks_load tests\test_routing_flow_stats.py::test_lidar_pure_uses_search_only_crossing_penalty_by_default tests\test_routing_flow_stats.py::test_collision_crossing_search_penalty_can_be_overridden -q`
     passed with `5 passed`.
+
+Post-commit multiportmmi_16x16 continuation:
+
+- Date: 2026-07-16 local
+- Attempted stop-after-129 first, but it ran unusually long and was manually
+  stopped before completion.
+- Re-ran a smaller step from the stable stop-after-111 checkpoint to
+  stop-after-115 with the same config.
+- Result: `115/223`, failures `0`, repairs `0`, simple routes `73/115`,
+  total `43.3453 s`.
+- No new route after 111 appears in the slowest-route list; the expensive
+  entries remain the earlier known routes (`n_74`, `n_73`, `n_71`, `n_72`,
+  `n_97`, etc.). Current artifact: `build\routed_multiportmmi_16x16.gds`.
+- Next four-route step to stop-after-119 with the same config also passed.
+  Result: `119/223`, failures `0`, repairs `0`, simple routes `76/119`,
+  total `42.1968 s`, route search `24.8818 s`.
+- No new slow route after 115 appeared in the top list. The same earlier
+  routes dominate: `n_74` (`7.8390 s`), `n_73` (`5.2920 s`), `n_72`
+  (`1.8943 s`), `n_71` (`1.8932 s`), and `n_97` (`0.8548 s`). Current
+  artifact remains `build\routed_multiportmmi_16x16.gds`.
+- Further 2-route stepping:
+  - Stop-after-121 passed: `121/223`, failures `0`, repairs `0`, simple
+    routes `77/121`, total `43.9743 s`.
+  - Stop-after-123 passed: `123/223`, failures `0`, repairs `0`, simple
+    routes `77/123`, total `43.7571 s`.
+  - Stop-after-124 did not finish in the quick diagnostic window and was
+    stopped. Since route 123 maps to `n_122`, the first suspicious route is
+    the next net, `n_123` (route index 124).
+  - `n_123` connects `mmi0_ps_array_2_heater_12,o2` at `(3371.0,
+    2050.0)`, orientation `0`, to `mmi0_multiport_2_0,o13` at `(3626.9,
+    1527.5)`, orientation `180`.
+  - The MMI target-side port state is not obviously closed: it is inside the
+    static blocked set but also inside the per-port open cells, as expected for
+    a port-access state. With the normal CLI config (`grid_size_um=2.0`,
+    `bend_radius_um=5.0`), normal MMI target port lanes use
+    `port_lane_length_cells = 8` (`16um`).
+  - Live trace for route index 124 / `n_123` showed the real slowdown starts in
+    collision-crossing search, not at immediate port access:
+    first `partners=[121, 123, 119, 122, 120]`, then a candidate with
+    `expanded=183361`, `generated=1100166`, `accepted=2321`, but
+    `events=[]`; after that, the router continued with repeated reduced
+    partner searches such as `[119]`, `[120]`, `[121]`, `[122]`. This points to
+    wasted collision-crossing probing / fallback sequencing rather than a
+    simple blocked target port.
+  - Temporary experiment: forcing the legacy LiDAR-pure partner lookup sets to
+    empty does disable this old partner-guided path, but it is not yet viable.
+    With empty partners, `multiportmmi_16x16 --debug-stop-after-route 124`
+    fails earlier at `n_70` with `No legal LiDAR crossing route found`. This
+    shows the current list-free A* path does not yet provide a complete local
+    owner-cell crossing flow. The correct next patch is to make LiDAR-pure A*
+    derive crossing partners from actual dynamic obstacle owners per move, then
+    remove/disable the old precomputed partner list for LiDAR-pure.
+  - After the experiment, `src/py_router.rs` was restored to no diff and the
+    Rust extension was rebuilt from source with `.\.venv\Scripts\python.exe -m
+    maturin develop --release` after `cargo check`.
+
+LiDAR-pure owner-lookup experiment and control benchmark check:
+
+- Date: 2026-07-16 local
+- Tried replacing the LiDAR-pure route/window partner lookup with all committed
+  dynamic owners so the crossing A* would use the actual collided owner as the
+  legality target instead of a preselected partner window.
+- Result: this is semantically closer to the desired owner-cell model, but the
+  current orchestration still uses a non-empty lookup set as the trigger to run
+  the collision-crossing A* before ordinary fallback. Supplying all committed
+  owners therefore made the crossing A* activate too broadly and caused
+  `multiportmmi_8x8` / `multiportmmi_16x16` control runs to stall early.
+- The source change was reverted manually; `src/py_router.rs` is back to no
+  diff. `cargo check` passed and the Rust extension was rebuilt with
+  `.\.venv\Scripts\python.exe -m maturin develop --release`.
+- Control benchmarks after restoring the stable mechanism:
+  - `multiportmmi_8x8 --crossings true --crossing-mode lidar-pure
+    --fanout-access-mode static-stubs --routing-window-scale 0.35
+    --foreign-port-keepout-cells 6 --debug-svgs none --debug-timing true`
+    passed: `111/111`, failures `0`, repairs `0`, simple `57/111`, net routing
+    phase `13.6475 s`, total `21.5565 s`.
+  - `benes_8x8` with the same flags passed: `48/48`, failures `0`, repairs
+    `0`, simple `38/48`, net routing phase `19.8881 s`, total `21.3904 s`.
+- Next implementation direction: split the LiDAR-pure concept into two separate
+  concepts in code:
+  1. a cheap boolean trigger for whether crossing-aware A* is worth trying, and
+  2. a centerline lookup database for owners touched by actual dynamic
+     obstacle cells.
+  The current single `partner_ids` parameter conflates those roles.
+- Clarified target semantics: "owner-based Crossing-A*" means LiDAR-pure A*
+  may check any committed dynamic route owner that its current move actually
+  collides with. It is not a partner whitelist. The owner is read from the
+  obstacle map at the collision cell and used only to fetch the committed
+  centerline, record crossing/ripup telemetry, and decide legality for that
+  move. The desired LiDAR-pure flow is simple route first; if simple fails, run
+  crossing-aware obstacle A* with all committed owners available as lookup data;
+  only if that A* cannot find a legal route should ripup use real failure
+  signals such as pending-straight/perpendicular reject counters.
