@@ -5,7 +5,7 @@ every agent stop, pause, or handoff. It does not replace the active ExecPlan.
 
 ## Current Snapshot
 
-- Date: 2026-07-16 12:43Z
+- Date: 2026-07-16 17:20Z
 - Branch: `crossings/verification-foundation`
 - Current HEAD: `6b0c5cc`
 - Current clean-branch base: `731d0a9`
@@ -26,6 +26,38 @@ verification and router-discovered crossing work. It should stay reviewable and
 should not receive wholesale merges from the experimental branch.
 
 At creation, this worktree was clean at `731d0a9`.
+
+Benes early simple-route bypass fix:
+
+- Date: 2026-07-16 19:17 local
+- Context:
+  - In `benes_8x8`, route 2 / `n_in_1_to_s0_0` was geometrically a simple
+    East -> diagonal -> East connection, but it was being committed through
+    crossing A* with `expanded=480` instead of the normal simple-route path.
+  - Route 1 already existed nearby, so the collision-crossing search was
+    entered before the ordinary simple-route precheck.
+- Change:
+  - In `src/py_router.rs`, an early collision-crossing result is now committed
+    only if it actually reserved at least one crossing partner.
+  - If the crossing search merely finds an ordinary non-crossing route, it
+    falls through to the normal path so the simple-route precheck can decide
+    and commit it.
+  - No A* geometry, primitive, obstacle, or crossing-legality logic was changed.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 2 --debug-svgs none --debug-timing true
+    --verbose-routes` passed with `simple=2/2`, `expanded_states=0`.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 8 --debug-svgs none --debug-timing true`
+    passed with `simple=8/8`, `expanded_states=0`, `repairs=0`.
+  - Full `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-svgs none --debug-timing true` passed:
+    total `19.9238 s`, routing stage `18.3512 s`, route search
+    `17.9020 s`, `48/48` routes, `38/48` simple, `0` failures,
+    `0` repairs. Slowest route was route[15] /
+    `n_s0_3_o0_to_s1_1_i1` at `3.4128 s`.
 
 Terminal bump distance A* guard checkpoint:
 
@@ -7988,3 +8020,107 @@ Partner segment locality experiment:
     heap pops for that route. The next useful work should instrument and then
     reduce state expansion / heap and neighbor overhead, rather than adding
     another crossing micro-index.
+
+Crossing-A* state-storage lookup experiment:
+
+- Date: 2026-07-16 local
+- Status:
+  - Code experiments were deliberately left uncommitted and then reverted after
+    measurements. Keep the notes, but do not treat this as active source WIP.
+- Hot path identified:
+  - In pure LiDAR crossing mode, `SparseCrossingStateStorage` usually takes
+    the packed `u64` key path because `require_all_partners=false` and normal
+    states have no crossed-mask/partner-order state.
+  - The most-used storage operations are:
+    `best_cost(key)` and `insert_closed(key)` for popped heap entries, then
+    `contains_closed(next_key)`, `best_cost(next_key)`, and `set_best_cost`
+    for generated/accepted neighbors.
+  - Before this experiment those operations used separate `best_cost` and
+    `closed` hash tables, causing repeated hash work over packed keys.
+- Experiment:
+  - Replaced the separate `best_cost` and `closed` maps/sets with one
+    `CrossingStateRecord { best_cost, closed }` map for packed keys and one
+    fallback map for full `CrossingAStarKey`.
+  - This keeps routing behavior and search ordering unchanged; only storage
+    lookup layout changes.
+- Measurements:
+  - `cargo check` passed.
+  - `maturin develop --release` passed.
+  - Benes route-11 stop with default lidar-pure/no-SVG passed:
+    `route[11]=0.9404 s`, `search_loop=0.9333 s`, total `1.9360 s`, with the
+    same search size as baseline (`expanded=328547`, `generated=1971282`).
+  - Full `benes_8x8` passed: total `27.3579 s`, crossing and photonic
+    verification success for `48/48`.
+  - Full `multiportmmi_8x8` static-stub guardrail passed: total `20.6029 s`,
+    crossing and photonic verification success for `111/111`.
+- Interpretation:
+  - Faster storage can help a single hot route without changing behavior.
+  - The combined map does not yet produce a clear full-benchmark win; the next
+    speed work should stay focused on `SparseCrossingStateStorage` and reduce
+    the cost/frequency of the hottest operations, especially repeated
+    `pack_key` plus HashMap get/entry work.
+  - Candidate next steps: pack once per key use site, add get-or-closed helpers
+    that avoid double lookups, or test a generation-stamped dense/slab storage
+    for packed crossing states.
+  - Follow-up attempt: combined `try_close_current` / neighbor `status`
+    helpers reduced explicit method calls but were slower in practice
+    (`route[11]` about `1.03 s`), likely because `HashMap::entry` and larger
+    record handling cost more than the avoided lookups.
+  - Follow-up attempt: moving the per-expanded-node
+    `pending_local_reservation_keys` clone into the rare pending-completion
+    branch did not improve route[11] (`about 1.06 s` in the spot check). The
+    clone is not the dominant hot path.
+  - Follow-up attempt: replacing the packed-key `FxHashMap` with a naive
+    identity-hasher `HashMap<u64, ...>` was rejected. The route-11 stop did not
+    finish after about 94 seconds and had to be stopped, likely due to poor
+    bucket distribution for the structured packed keys. Reverted that attempt.
+  - Follow-up attempt: replacing packed-key `FxHashMap` with a small custom
+    open-addressed `u64 -> CrossingStateRecord` flat map was also rejected.
+    It passed `cargo check`, but route[11] slowed to about `4.15 s` with the
+    same search size. Reverted that attempt.
+  - Final local decision for this pass: stop Storage micro-optimization and
+    leave `src/astar.rs` at the pre-experiment implementation. The higher-level
+    speed target remains reducing A* search size / route attempts, not swapping
+    hash table internals.
+
+Simple-first / collision-kernel ordering fix:
+
+- Date: 2026-07-16 local
+- User-facing issue:
+  - After making the Benes route-2 case simple again, the `multiportmmi_8x8`
+    cluster around visible `n_64`..`n_67` changed geometry. The visible
+    geometry shift was traced to internal `net=67` / visible `n_66`, not to
+    `n_64`.
+  - The old early collision-kernel commit path had selected a no-crossing
+    collision-kernel route for `n_66` before normal A* ran. After moving simple
+    route attempts earlier, normal A* could win even when the no-crossing
+    collision-kernel route was shorter.
+- Fix in `src/py_router.rs`:
+  - Defer the collision-crossing attempt until after the explicit simple-route
+    attempt. This preserves the intended ordering: simple first, then
+    collision-crossing kernel, then normal A*/repair.
+  - If the collision-kernel attempt contains real crossing events, keep using
+    the reservation-aware crossing commit path.
+  - If the collision-kernel attempt has no crossing events, treat it as an
+    ordinary fallback candidate and compare it against the normal A* result by
+    `total_cost`; commit the cheaper route through the normal route validation
+    path.
+  - Fixed the pending-straight repair flow so a failed repair attempt falls
+    through to the same net's normal failure handling instead of silently
+    continuing and leaving missing route records.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `.\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-svgs none --debug-timing true`
+    passed: `48/48` routed, `failures=0`, `repairs=0`, `simple=38/48`,
+    photonic verification success, crossing verification success with
+    `matched_crossing_component_count=16`, total `21.7302 s`.
+  - `$env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES='90'; .\.venv\Scripts\python.exe -X utf8 routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6 --debug-svgs none --debug-timing true`
+    passed: `111/111` routed, `failures=0`, `repairs=0`, `simple=57/111`,
+    photonic verification success, crossing verification success with
+    `matched_crossing_component_count=35`, total `24.1020 s`.
+- Current artifact pointers:
+  - `build\routed_multiportmmi_8x8.gds` is the latest full green
+    `multiportmmi_8x8` artifact from this validation.
+  - `build\routed_benes_8x8.gds` is the latest full green `benes_8x8`
+    artifact from this validation.

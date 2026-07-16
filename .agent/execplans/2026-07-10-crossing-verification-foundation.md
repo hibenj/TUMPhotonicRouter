@@ -1421,6 +1421,109 @@ Report checks:
       `matched_crossing_component_count=1`, `illegal_crossing_count=0`.
     - photonic report: `issue_count=0`.
 
+Follow-up, 2026-07-16: Stabilized simple-first routing order while preserving
+the useful no-crossing collision-kernel route candidate.
+
+Root cause:
+
+    - The route attempt order had become too blunt after moving simple routes
+      ahead of the collision-crossing kernel.
+    - Benes route 2 should be accepted by the explicit simple path, but
+      `multiportmmi_8x8` visible `n_66` previously benefited from a
+      collision-kernel route with no inserted crossings that was slightly
+      cheaper than the later normal A* route.
+    - The earlier code committed the collision-kernel attempt immediately,
+      which hid this ordering distinction. Simply deferring it without a
+      cost comparison changed the visible Multiport geometry.
+    - A separate pending-straight repair branch could restore state and
+      continue to the next job after a failed repair, producing missing route
+      records instead of a clear same-net failure.
+
+Fix:
+
+    - Keep the intended route order explicit:
+      simple route, then collision-crossing kernel, then normal A*/repair.
+    - If the collision-kernel attempt has real crossing events, commit it via
+      the existing reservation-aware crossing path.
+    - If it has no crossing events, keep it as an ordinary route candidate and
+      choose it only when its `total_cost` beats the normal A* result.
+    - Make failed pending-straight repair fall through to same-net failure
+      handling rather than silently skipping a route record.
+
+Validation:
+
+    C:\Users\benja\.cargo\bin\cargo.exe check
+    # passed
+
+    .\.venv\Scripts\python.exe -m maturin develop --release
+    # passed
+
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-svgs none --debug-timing true
+    # passed; 48/48 routed; failures=0; repairs=0; simple=38/48; total=21.7302 s
+
+    $env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES='90'
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6 --debug-svgs none --debug-timing true
+    # passed; 111/111 routed; failures=0; repairs=0; simple=57/111; total=24.1020 s
+
+Report checks:
+
+    - `multiportmmi_8x8` crossing verification: success, status complete,
+      `matched_crossing_component_count=35`, `illegal_crossing_count=0`.
+    - `multiportmmi_8x8` photonic verification: success, `routed_record_count=111`,
+      `missing_route_count=0`, `error_count=0`.
+    - `benes_8x8` crossing verification: success, status complete,
+      `matched_crossing_component_count=16`, `illegal_crossing_count=0`.
+    - `benes_8x8` photonic verification: success, `routed_record_count=48`,
+      `missing_route_count=0`, `error_count=0`.
+
+Follow-up, 2026-07-16: Crossing-A* state-storage speed direction.
+
+Current WIP:
+
+    - The source-code storage experiments from this pass were measured and
+      reverted. Keep this section as guidance for future speed work, not as an
+      active `src/astar.rs` WIP.
+
+Evidence:
+
+    - In pure LiDAR mode the Crossing-A* storage usually uses the packed `u64`
+      key path, not the full `CrossingAStarKey`, because
+      `require_all_partners=false` and normal states keep crossed-mask and
+      partner-order fields at zero/sentinel values.
+    - The most-used storage operations are `best_cost` and `insert_closed` for
+      popped heap entries, plus `contains_closed`, `best_cost`, and
+      `set_best_cost` for generated neighbors.
+    - Combining cost/closed storage kept route behavior unchanged and improved
+      the hot Benes route-11 stop locally:
+      `route[11]=0.9404 s`, same `expanded=328547` and `generated=1971282`.
+    - Full guardrails still passed but did not show a clear total benchmark
+      win: `benes_8x8` total `27.3579 s`, `multiportmmi_8x8` static-stub total
+      `20.6029 s`.
+
+Next speed focus:
+
+    - Continue at `SparseCrossingStateStorage`, not at crossing partner segment
+      indexing or heuristic-weight changes.
+    - Try reducing repeated `pack_key` and HashMap work in the hottest calls,
+      for example by packing once at each use site, adding helpers that combine
+      closed/best-cost checks, or testing a generation-stamped dense/slab
+      storage for packed crossing states.
+    - A first combined helper attempt (`try_close_current` plus neighbor
+      `status`) was measured and rejected because it was slower than the
+      simpler combined-record WIP. A lazy clone change for
+      `pending_local_reservation_keys` was also measured and rejected. Do not
+      resume from those variants unless a profiler later contradicts this.
+    - A naive identity-hasher `HashMap<u64, ...>` for packed keys was also
+      measured and rejected: the route-11 stop was still running after about
+      94 seconds. Keep `FxHashMap` unless a better hasher/indexing strategy is
+      proven.
+    - A custom open-addressed packed-key flat map was measured and rejected as
+      well: route[11] slowed to about `4.15 s`. The current `FxHashMap` is not
+      the obvious weak link by itself.
+    - For now, stop this micro-optimization line. Future speedups should first
+      come from reducing A* search size / unnecessary route attempts, not from
+      swapping the packed-key hash table implementation.
+
 Follow-up, 2026-07-16: Pure LiDAR A* hot-path speed analysis.
 
 Context:
