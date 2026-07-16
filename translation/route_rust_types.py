@@ -976,16 +976,11 @@ def summarize_route_search(
     astar_elapsed_s: float,
 ) -> RouteSearchSummary:
     """Aggregate route-search counters used by quiet benchmark reporting."""
-    route_bucket_names = (
-        "normal_route",
-        "probe_route",
-        "repair_failed_net",
-        "reroute_victims",
-    )
+    non_route_bucket_names = {"endpoint_correction"}
     buckets = [
         bucket
-        for bucket_name in route_bucket_names
-        if (bucket := route_timing_buckets.get(bucket_name)) is not None
+        for bucket_name, bucket in route_timing_buckets.items()
+        if bucket_name not in non_route_bucket_names
     ]
     def sum_bucket_counters(attr: str) -> dict[str, int]:
         counters = _empty_primitive_counter_dict()

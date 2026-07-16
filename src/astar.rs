@@ -24,6 +24,7 @@ use crate::simple_routes::{
 
 static CROSSING_CANDIDATE_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
 const NO_PENDING_CROSSING_ANGLE: u8 = 255;
+const NO_PENDING_CROSSING_PARTNER_INDEX: u8 = 255;
 const SEARCH_TIMEOUT_CHECK_INTERVAL: usize = 4096;
 const NO_DYNAMIC_OWNER: NetId = NetId::MAX;
 
@@ -272,6 +273,13 @@ pub struct RouteSearchStats {
     pub crossing_reject_unmatched_route_centerline: usize,
     pub crossing_reject_unmatched_route_footprint: usize,
     pub crossing_reject_pending_straight: usize,
+    // Analysis-only partner breakdowns. These are disabled in normal routing
+    // unless PHOTONIC_ROUTER_ANALYSIS_CROSSING_PARTNER_COUNTERS=1 is set.
+    pub crossing_perpendicular_reject_by_partner: FxHashMap<NetId, usize>,
+    pub crossing_after_margin_by_partner: FxHashMap<NetId, usize>,
+    // Active repair metric: counts the first partner whose accepted crossing
+    // cannot complete the required post-crossing straight.
+    pub crossing_pending_straight_by_partner: FxHashMap<NetId, usize>,
     pub dense_grid_build_failures: usize,
     pub max_window_area_cells: i64,
     pub dense_grid_cells: usize,
@@ -1928,22 +1936,49 @@ pub fn route_single_net_with_collision_crossing_config(
     dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
     crossing: &CrossingSearchConfig,
 ) -> Option<RouteResult> {
+    route_single_net_with_collision_crossing_config_with_stats(
+        obstacle_map,
+        primitives,
+        source,
+        target,
+        port_open_cells,
+        reservation_open_cells,
+        config,
+        dynamic_expansion_radius_cells,
+        dynamic_clearance_exempt_cells,
+        crossing,
+    )
+    .0
+}
+
+pub fn route_single_net_with_collision_crossing_config_with_stats(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    reservation_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    dynamic_expansion_radius_cells: i32,
+    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+    crossing: &CrossingSearchConfig,
+) -> (Option<RouteResult>, RouteSearchStats) {
     if crossing.partners.is_empty() || crossing.partners.len() > u64::BITS as usize {
-        return None;
+        return (None, RouteSearchStats::default());
     }
     if config.target_tolerance_cells < 0 {
-        return None;
+        return (None, RouteSearchStats::default());
     }
     if let Some(mask) = config.allowed_target_angles_mask {
         if mask == 0 {
-            return None;
+            return (None, RouteSearchStats::default());
         }
     }
     if target.angle > 7 {
-        return None;
+        return (None, RouteSearchStats::default());
     }
     if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
-        return None;
+        return (None, RouteSearchStats::default());
     }
     let mut anchor_open_cells = FxHashSet::default();
     if let Some(port_open_cells) = port_open_cells {
@@ -1972,7 +2007,7 @@ pub fn route_single_net_with_collision_crossing_config(
     }
 
     if !config.use_routing_window {
-        return route_single_net_with_bounds_crossing(
+        let result = route_single_net_with_bounds_crossing(
             obstacle_map,
             primitives,
             source,
@@ -1987,11 +2022,14 @@ pub fn route_single_net_with_collision_crossing_config(
             crossing,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        return (result, stats);
     }
 
     let mut last_bounds: Option<RoutingBounds> = None;
     for expansion_idx in 0..=config.routing_window_max_expansions {
-        let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
+        let Some(bounds) = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx) else {
+            return (None, stats);
+        };
         if last_bounds == Some(bounds) {
             continue;
         }
@@ -2018,10 +2056,13 @@ pub fn route_single_net_with_collision_crossing_config(
             dynamic_clearance_exempt_cells,
             crossing,
         ) {
-            return Some(with_route_search_total_time(
-                route,
-                route_search_total_start.as_ref(),
-            ));
+            return (
+                Some(with_route_search_total_time(
+                    route,
+                    route_search_total_start.as_ref(),
+                )),
+                stats,
+            );
         }
     }
 
@@ -2040,7 +2081,7 @@ pub fn route_single_net_with_collision_crossing_config(
         stats.last_window_max_y = full_bounds.max_y;
         stats.last_window_area_cells = window_area(full_bounds);
         stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        return route_single_net_with_bounds_crossing(
+        let result = route_single_net_with_bounds_crossing(
             obstacle_map,
             primitives,
             source,
@@ -2055,9 +2096,10 @@ pub fn route_single_net_with_collision_crossing_config(
             crossing,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        return (result, stats);
     }
 
-    None
+    (None, stats)
 }
 
 pub fn route_single_net_with_crossing_config(
@@ -3519,6 +3561,7 @@ struct CrossingAStarKey {
     straight_run_cells: i32,
     pending_after_crossing_cells: i32,
     pending_after_crossing_angle: u8,
+    pending_after_crossing_partner_index: u8,
 }
 
 struct SparseCrossingStateStorage {
@@ -3588,6 +3631,7 @@ impl SparseCrossingStateStorage {
         if !self.use_packed_keys
             || key.crossed_mask != 0
             || key.next_partner_index != 0
+            || key.pending_after_crossing_partner_index != NO_PENDING_CROSSING_PARTNER_INDEX
             || key.state.angle >= 8
             || key.straight_run_cells < 0
             || key.pending_after_crossing_cells < 0
@@ -3625,16 +3669,21 @@ struct CrossingAStarNode {
     parent_idx: Option<usize>,
     primitive_id: u16,
     g_score: f64,
+    active_local_reservation_keys: Vec<CellKey>,
+    pending_local_reservation_keys: Vec<CellKey>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct CrossingMoveOutcome {
     crossed_mask: u64,
     next_partner_index: u8,
     straight_run_cells: i32,
     pending_after_crossing_cells: i32,
     pending_after_crossing_angle: u8,
+    pending_after_crossing_partner_index: u8,
     crossing_count: u32,
+    active_reservation_keys: Vec<CellKey>,
+    pending_reservation_keys: Vec<CellKey>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3905,6 +3954,7 @@ fn route_single_net_with_bounds_crossing(
     dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
     crossing: &CrossingSearchConfig,
 ) -> Option<RouteResult> {
+    let crossing_search_start = Instant::now();
     let bounds = if let Some(bounds) = routing_bounds {
         if !bounds.contains(source.x, source.y) || !bounds.contains(target.x, target.y) {
             return None;
@@ -4013,12 +4063,15 @@ fn route_single_net_with_bounds_crossing(
         straight_run_cells: 0,
         pending_after_crossing_cells: 0,
         pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+        pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
     };
     nodes.push(CrossingAStarNode {
         key: source_key,
         parent_idx: None,
         primitive_id: 0,
         g_score: 0.0,
+        active_local_reservation_keys: Vec::new(),
+        pending_local_reservation_keys: Vec::new(),
     });
     let mut state_storage =
         SparseCrossingStateStorage::new(bounds, crossing, capped_required_margin);
@@ -4074,6 +4127,7 @@ fn route_single_net_with_bounds_crossing(
         let node = nodes.get(entry.idx)?;
         let key = node.key;
         let node_g_score = node.g_score;
+        let node_pending_local_reservation_keys = node.pending_local_reservation_keys.clone();
         if entry.g_score > state_storage.best_cost(key).unwrap_or(f64::INFINITY) + 1.0e-9 {
             stats.skipped_duplicate_heap_entries += 1;
             stats.stale_generation_heap_entries += 1;
@@ -4131,12 +4185,24 @@ fn route_single_net_with_bounds_crossing(
             if key.pending_after_crossing_cells > 0 {
                 if key.pending_after_crossing_angle != state.angle {
                     stats.crossing_reject_pending_straight += 1;
+                    record_pending_after_crossing_reject(
+                        stats,
+                        crossing,
+                        key.pending_after_crossing_partner_index,
+                        Some(&crossing_search_start),
+                    );
                     continue;
                 }
                 if primitive_initial_straight_run_distance(primitive, state.angle) + 1.0e-9
                     < f64::from(key.pending_after_crossing_cells)
                 {
                     stats.crossing_reject_pending_straight += 1;
+                    record_pending_after_crossing_reject(
+                        stats,
+                        crossing,
+                        key.pending_after_crossing_partner_index,
+                        Some(&crossing_search_start),
+                    );
                     continue;
                 }
             }
@@ -4215,6 +4281,7 @@ fn route_single_net_with_bounds_crossing(
                     &dynamic_core_owners,
                     primitive_crossing,
                     stats,
+                    Some(&crossing_search_start),
                 )
             };
             let Some(crossing_outcome) = crossing_outcome else {
@@ -4243,6 +4310,8 @@ fn route_single_net_with_bounds_crossing(
                 straight_run_cells: crossing_outcome.straight_run_cells,
                 pending_after_crossing_cells: crossing_outcome.pending_after_crossing_cells,
                 pending_after_crossing_angle: crossing_outcome.pending_after_crossing_angle,
+                pending_after_crossing_partner_index: crossing_outcome
+                    .pending_after_crossing_partner_index,
             };
             if state_storage.contains_closed(next_key) {
                 stats.primitive_closed_rejects_by_class[primitive_class] += 1;
@@ -4282,13 +4351,40 @@ fn route_single_net_with_bounds_crossing(
                 stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                 continue;
             }
+            if crossing_candidate_hits_active_local_crossing_reservation(
+                entry.idx,
+                state,
+                primitive_crossing,
+                &nodes,
+            ) {
+                stats.footprint_rejects += 1;
+                stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                continue;
+            }
 
+            let mut active_local_reservation_keys =
+                Vec::with_capacity(crossing_outcome.active_reservation_keys.len());
+            if key.pending_after_crossing_cells > 0
+                && crossing_outcome.pending_after_crossing_cells == 0
+            {
+                active_local_reservation_keys.extend(
+                    node_pending_local_reservation_keys
+                        .iter()
+                        .copied(),
+                );
+            }
+            extend_unique_keys(
+                &mut active_local_reservation_keys,
+                &crossing_outcome.active_reservation_keys,
+            );
             let node_idx = nodes.len();
             nodes.push(CrossingAStarNode {
                 key: next_key,
                 parent_idx: Some(entry.idx),
                 primitive_id: primitive.id,
                 g_score: tentative_g,
+                active_local_reservation_keys,
+                pending_local_reservation_keys: crossing_outcome.pending_reservation_keys,
             });
             state_storage.set_best_cost(next_key, tentative_g);
             let generation = next_search_generation(&mut counter)?;
@@ -4322,6 +4418,40 @@ fn route_single_net_with_bounds_crossing(
     None
 }
 
+fn crossing_candidate_hits_active_local_crossing_reservation(
+    current_idx: usize,
+    state: State,
+    primitive_crossing: &PrimitiveCrossingMetadata,
+    nodes: &[CrossingAStarNode],
+) -> bool {
+    let current_key = pack_xy(state.x, state.y);
+    let mut candidate_keys = FxHashSet::default();
+    for witness in &primitive_crossing.witnesses {
+        let key = pack_xy(state.x + witness.offset.0, state.y + witness.offset.1);
+        if key != current_key {
+            candidate_keys.insert(key);
+        }
+    }
+    if candidate_keys.is_empty() {
+        return false;
+    }
+
+    let mut idx = current_idx;
+    while let Some(node) = nodes.get(idx) {
+        for key in &node.active_local_reservation_keys {
+            if candidate_keys.contains(key) {
+                return true;
+            }
+        }
+        let Some(parent_idx) = node.parent_idx else {
+            break;
+        };
+        idx = parent_idx;
+    }
+
+    false
+}
+
 fn trace_crossing_search_exhausted(
     crossing: &CrossingSearchConfig,
     bounds: RoutingBounds,
@@ -4342,8 +4472,26 @@ fn trace_crossing_search_exhausted(
     let mut masks: Vec<_> = by_crossed_mask.into_iter().collect();
     masks.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     masks.truncate(8);
+    let mut after_margin_by_partner: Vec<_> = stats
+        .crossing_after_margin_by_partner
+        .iter()
+        .map(|(partner, count)| (*partner, *count))
+        .collect();
+    after_margin_by_partner.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    let mut perpendicular_reject_by_partner: Vec<_> = stats
+        .crossing_perpendicular_reject_by_partner
+        .iter()
+        .map(|(partner, count)| (*partner, *count))
+        .collect();
+    perpendicular_reject_by_partner.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    let mut pending_straight_by_partner: Vec<_> = stats
+        .crossing_pending_straight_by_partner
+        .iter()
+        .map(|(partner, count)| (*partner, *count))
+        .collect();
+    pending_straight_by_partner.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     eprintln!(
-        "crossing-search exhausted net={} partners={:?} bounds=({},{}..{}, {}) expanded={} generated={} heap={} open={} nodes={} candidates={} accepted={} reject_non_straight={} reject_not_perpendicular={} reject_margin={} reject_wrong_order={} reject_unexpected_owner={} reject_unmatched_owner={} reject_unmatched_centerline={} reject_unmatched_footprint={} reject_unmatched_route_centerline={} reject_unmatched_route_footprint={} reject_pending_straight={} by_next={:?} masks={:?}",
+        "crossing-search exhausted net={} partners={:?} bounds=({},{}..{}, {}) expanded={} generated={} heap={} open={} nodes={} candidates={} accepted={} reject_non_straight={} reject_not_perpendicular={} reject_margin={} reject_wrong_order={} reject_unexpected_owner={} reject_unmatched_owner={} reject_unmatched_centerline={} reject_unmatched_footprint={} reject_unmatched_route_centerline={} reject_unmatched_route_footprint={} reject_pending_straight={} perpendicular_reject_by_partner={:?} after_margin_by_partner={:?} pending_straight_by_partner={:?} by_next={:?} masks={:?}",
         crossing.net_id,
         crossing
             .partners
@@ -4372,6 +4520,9 @@ fn trace_crossing_search_exhausted(
         stats.crossing_reject_unmatched_route_centerline,
         stats.crossing_reject_unmatched_route_footprint,
         stats.crossing_reject_pending_straight,
+        perpendicular_reject_by_partner,
+        after_margin_by_partner,
+        pending_straight_by_partner,
         by_next_partner,
         masks,
     );
@@ -4531,6 +4682,7 @@ fn crossing_move_outcome(
         &dynamic_core_owners,
         &primitive_crossing,
         stats,
+        None,
     )
 }
 
@@ -4560,8 +4712,124 @@ fn crossing_no_contact_outcome(
         straight_run_cells: straight_run,
         pending_after_crossing_cells: 0,
         pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+        pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
         crossing_count: 0,
+        active_reservation_keys: Vec::new(),
+        pending_reservation_keys: Vec::new(),
     }
+}
+
+fn record_pending_after_crossing_reject(
+    stats: &mut RouteSearchStats,
+    crossing: &CrossingSearchConfig,
+    pending_partner_index: u8,
+    search_start: Option<&Instant>,
+) {
+    let Some(partner) = crossing.partners.get(usize::from(pending_partner_index)) else {
+        return;
+    };
+    record_perpendicular_crossing_reject(stats, crossing, partner.net_id, search_start);
+    record_pending_after_crossing_partner(stats, crossing, pending_partner_index, search_start);
+}
+
+fn record_pending_after_crossing_partner(
+    stats: &mut RouteSearchStats,
+    crossing: &CrossingSearchConfig,
+    pending_partner_index: u8,
+    search_start: Option<&Instant>,
+) {
+    let Some(partner) = crossing.partners.get(usize::from(pending_partner_index)) else {
+        return;
+    };
+    let count = stats
+        .crossing_pending_straight_by_partner
+        .entry(partner.net_id)
+        .and_modify(|count| *count += 1)
+        .or_insert(1);
+    let Some(search_start) = search_start else {
+        return;
+    };
+    let Some(threshold) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_PENDING_THRESHOLD")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    else {
+        return;
+    };
+    if *count != threshold {
+        return;
+    }
+    if let Ok(trace_net_id) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET") {
+        if trace_net_id
+            .parse::<u64>()
+            .is_ok_and(|net_id| net_id != crossing.net_id)
+        {
+            return;
+        }
+    }
+    eprintln!(
+        "crossing-pending-straight-threshold net={} partner={} threshold={} count={} elapsed_ms={}",
+        crossing.net_id,
+        partner.net_id,
+        threshold,
+        count,
+        search_start.elapsed().as_millis(),
+    );
+}
+
+fn analysis_crossing_partner_counters_enabled() -> bool {
+    std::env::var("PHOTONIC_ROUTER_ANALYSIS_CROSSING_PARTNER_COUNTERS")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "on" | "yes" | "enabled"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn record_perpendicular_crossing_reject(
+    stats: &mut RouteSearchStats,
+    crossing: &CrossingSearchConfig,
+    partner_net_id: NetId,
+    search_start: Option<&Instant>,
+) {
+    if !analysis_crossing_partner_counters_enabled() {
+        return;
+    }
+    let count = stats
+        .crossing_perpendicular_reject_by_partner
+        .entry(partner_net_id)
+        .and_modify(|count| *count += 1)
+        .or_insert(1);
+    let Some(search_start) = search_start else {
+        return;
+    };
+    let Some(threshold) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_PERP_REJECT_THRESHOLD")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    else {
+        return;
+    };
+    if *count != threshold {
+        return;
+    }
+    if let Ok(trace_net_id) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET") {
+        if trace_net_id
+            .parse::<u64>()
+            .is_ok_and(|net_id| net_id != crossing.net_id)
+        {
+            return;
+        }
+    }
+    eprintln!(
+        "crossing-perpendicular-reject-threshold net={} partner={} threshold={} count={} elapsed_ms={}",
+        crossing.net_id,
+        partner_net_id,
+        threshold,
+        count,
+        search_start.elapsed().as_millis(),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4581,6 +4849,7 @@ fn crossing_move_outcome_with_segments(
     dynamic_core_owners: &DenseDynamicCoreOwnerGrid,
     primitive_crossing: &PrimitiveCrossingMetadata,
     stats: &mut RouteSearchStats,
+    search_start: Option<&Instant>,
 ) -> Option<CrossingMoveOutcome> {
     let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
     let pending_before = f64::from(current_key.pending_after_crossing_cells);
@@ -4598,6 +4867,12 @@ fn crossing_move_outcome_with_segments(
                 None,
             );
             stats.crossing_reject_pending_straight += 1;
+            record_pending_after_crossing_reject(
+                stats,
+                crossing,
+                current_key.pending_after_crossing_partner_index,
+                search_start,
+            );
             return None;
         }
         if initial_run_distance + 1.0e-9 < pending_before {
@@ -4612,6 +4887,12 @@ fn crossing_move_outcome_with_segments(
                 None,
             );
             stats.crossing_reject_pending_straight += 1;
+            record_pending_after_crossing_reject(
+                stats,
+                crossing,
+                current_key.pending_after_crossing_partner_index,
+                search_start,
+            );
             return None;
         }
         trace_crossing_pending(
@@ -4635,6 +4916,9 @@ fn crossing_move_outcome_with_segments(
     };
     let mut pending_after = 0;
     let mut pending_after_angle = NO_PENDING_CROSSING_ANGLE;
+    let mut pending_after_partner_index = NO_PENDING_CROSSING_PARTNER_INDEX;
+    let mut active_reservation_keys = Vec::new();
+    let mut pending_reservation_keys = Vec::new();
     let mut crossed_mask = current_key.crossed_mask;
     let mut next_partner_index = current_key.next_partner_index;
     let track_crossed_partners = crossing.require_all_partners;
@@ -4742,6 +5026,12 @@ fn crossing_move_outcome_with_segments(
                     let partner_margin =
                         (u * partner_segment.length).min((1.0 - u) * partner_segment.length);
                     if partner_margin + 1.0e-9 < f64::from(required_margin) {
+                        record_perpendicular_crossing_reject(
+                            stats,
+                            crossing,
+                            partner.net_id,
+                            search_start,
+                        );
                         trace_crossing_candidate(
                             crossing,
                             partner.net_id,
@@ -4767,6 +5057,12 @@ fn crossing_move_outcome_with_segments(
                         y,
                         reservation_margin,
                     ) {
+                        record_perpendicular_crossing_reject(
+                            stats,
+                            crossing,
+                            partner.net_id,
+                            search_start,
+                        );
                         trace_crossing_candidate(
                             crossing,
                             partner.net_id,
@@ -4790,6 +5086,12 @@ fn crossing_move_outcome_with_segments(
                         y,
                         route_segment.angle,
                     ) {
+                        record_perpendicular_crossing_reject(
+                            stats,
+                            crossing,
+                            partner.net_id,
+                            search_start,
+                        );
                         trace_crossing_candidate(
                             crossing,
                             partner.net_id,
@@ -4902,6 +5204,14 @@ fn crossing_move_outcome_with_segments(
         if pending_before > 0.0
             && intersection.distance_from_primitive_start + 1.0e-9 < pending_before
         {
+            let partner = &crossing.partners[intersection.partner_idx];
+            record_perpendicular_crossing_reject(stats, crossing, partner.net_id, search_start);
+            record_pending_after_crossing_partner(
+                stats,
+                crossing,
+                current_key.pending_after_crossing_partner_index,
+                search_start,
+            );
             stats.crossing_reject_pending_straight += 1;
             return None;
         }
@@ -4913,6 +5223,7 @@ fn crossing_move_outcome_with_segments(
         }
         if intersection.distance_before_on_segment + 1.0e-9 < f64::from(required_margin) {
             let partner = &crossing.partners[intersection.partner_idx];
+            record_perpendicular_crossing_reject(stats, crossing, partner.net_id, search_start);
             trace_crossing_candidate(
                 crossing,
                 partner.net_id,
@@ -4932,9 +5243,22 @@ fn crossing_move_outcome_with_segments(
         let missing_after = (f64::from(required_margin) - intersection.distance_after_on_segment)
             .ceil()
             .max(0.0) as i32;
+        let reservation_keys = local_crossing_reservation_window_keys(
+            intersection.x,
+            intersection.y,
+            crossing.crossing_half_size_cells,
+            obstacle_map.width(),
+            obstacle_map.height(),
+        );
         if missing_after > 0 {
             if !intersection.segment_is_terminal {
                 let partner = &crossing.partners[intersection.partner_idx];
+                record_perpendicular_crossing_reject(
+                    stats,
+                    crossing,
+                    partner.net_id,
+                    search_start,
+                );
                 trace_crossing_candidate(
                     crossing,
                     partner.net_id,
@@ -4949,8 +5273,15 @@ fn crossing_move_outcome_with_segments(
                     intersection.distance_after_on_segment,
                 );
                 stats.crossing_reject_pending_straight += 1;
+                if analysis_crossing_partner_counters_enabled() {
+                    *stats
+                        .crossing_after_margin_by_partner
+                        .entry(partner.net_id)
+                        .or_insert(0) += 1;
+                }
                 return None;
             }
+            extend_unique_keys(&mut pending_reservation_keys, &reservation_keys);
             let partner = &crossing.partners[intersection.partner_idx];
             trace_crossing_pending(
                 crossing,
@@ -4980,6 +5311,8 @@ fn crossing_move_outcome_with_segments(
                     intersection.distance_after_on_segment,
                 );
             }
+        } else {
+            extend_unique_keys(&mut active_reservation_keys, &reservation_keys);
         }
         let partner = &crossing.partners[intersection.partner_idx];
         trace_crossing_level1_intersection(
@@ -5002,6 +5335,8 @@ fn crossing_move_outcome_with_segments(
         if missing_after > pending_after {
             pending_after = missing_after;
             pending_after_angle = intersection.route_angle;
+            pending_after_partner_index = u8::try_from(intersection.partner_idx)
+                .unwrap_or(NO_PENDING_CROSSING_PARTNER_INDEX);
         }
         if track_crossed_partners {
             crossed_mask |= intersection.bit;
@@ -5026,7 +5361,14 @@ fn crossing_move_outcome_with_segments(
         } else {
             NO_PENDING_CROSSING_ANGLE
         },
+        pending_after_crossing_partner_index: if pending_after > 0 {
+            pending_after_partner_index
+        } else {
+            NO_PENDING_CROSSING_PARTNER_INDEX
+        },
         crossing_count,
+        active_reservation_keys,
+        pending_reservation_keys,
     })
 }
 
@@ -5191,6 +5533,46 @@ fn crossing_reservation_window_is_clear(
         }
     }
     true
+}
+
+fn local_crossing_reservation_window_keys(
+    center_x: f64,
+    center_y: f64,
+    half_size_cells: i32,
+    width: i32,
+    height: i32,
+) -> Vec<CellKey> {
+    let mut keys = Vec::new();
+    if half_size_cells < 0 {
+        return keys;
+    }
+    let min_x = (center_x - f64::from(half_size_cells)).floor() as i32;
+    let max_x = (center_x + f64::from(half_size_cells)).ceil() as i32;
+    let min_y = (center_y - f64::from(half_size_cells)).floor() as i32;
+    let max_y = (center_y + f64::from(half_size_cells)).ceil() as i32;
+    for x in min_x..=max_x {
+        if x < 0 || x >= width {
+            continue;
+        }
+        for y in min_y..=max_y {
+            if y < 0 || y >= height {
+                continue;
+            }
+            let key = pack_xy(x, y);
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
+}
+
+fn extend_unique_keys(out: &mut Vec<CellKey>, keys: &[CellKey]) {
+    for key in keys {
+        if !out.contains(key) {
+            out.push(*key);
+        }
+    }
 }
 
 fn grid_point_on_segment_with_param(
@@ -8034,6 +8416,7 @@ mod tests {
             straight_run_cells: 12,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
         };
         let mut stats = RouteSearchStats::default();
         while key.state.x < 630 {
@@ -8065,6 +8448,7 @@ mod tests {
                 straight_run_cells: outcome.straight_run_cells,
                 pending_after_crossing_cells: outcome.pending_after_crossing_cells,
                 pending_after_crossing_angle: outcome.pending_after_crossing_angle,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             };
         }
         assert_eq!(key.next_partner_index, 3);
@@ -8133,6 +8517,7 @@ mod tests {
             straight_run_cells: 12,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
         };
         let mut stats = RouteSearchStats::default();
         while key.state.x < 520 {
@@ -8164,6 +8549,7 @@ mod tests {
                 straight_run_cells: outcome.straight_run_cells,
                 pending_after_crossing_cells: outcome.pending_after_crossing_cells,
                 pending_after_crossing_angle: outcome.pending_after_crossing_angle,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             };
         }
         assert_eq!(key.next_partner_index, 2);
@@ -8222,6 +8608,7 @@ mod tests {
                 straight_run_cells: 2,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(4, 6, 0),
             &primitive,
@@ -8294,6 +8681,7 @@ mod tests {
                 straight_run_cells: 10,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(717, 164, 7),
             &primitive,
@@ -8320,6 +8708,7 @@ mod tests {
                 straight_run_cells: 10,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(717, 164, 7),
             &primitive,
@@ -8387,6 +8776,7 @@ mod tests {
                 straight_run_cells: 10,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(739, 144, 5),
             &primitive,
@@ -8444,6 +8834,7 @@ mod tests {
                 straight_run_cells: 4,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(4, 4, 0),
             primitive,
@@ -8492,6 +8883,7 @@ mod tests {
                 straight_run_cells: 0,
                 pending_after_crossing_cells: 2,
                 pending_after_crossing_angle: 0,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(4, 4, 0),
             primitive,
@@ -8539,6 +8931,7 @@ mod tests {
                 straight_run_cells: 0,
                 pending_after_crossing_cells: 3,
                 pending_after_crossing_angle: 0,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(4, 4, 0),
             primitive,
@@ -8591,6 +8984,7 @@ mod tests {
                 straight_run_cells: 0,
                 pending_after_crossing_cells: 2,
                 pending_after_crossing_angle: 0,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(4, 4, 2),
             &primitive,
@@ -8659,6 +9053,7 @@ mod tests {
                 straight_run_cells: 10,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(4, 4, 0),
             &primitive,
@@ -8715,6 +9110,7 @@ mod tests {
                 straight_run_cells: 0,
                 pending_after_crossing_cells: 4,
                 pending_after_crossing_angle: 1,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(4, 4, 1),
             &primitive,
@@ -8741,6 +9137,7 @@ mod tests {
                 straight_run_cells: 0,
                 pending_after_crossing_cells: 3,
                 pending_after_crossing_angle: 1,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(4, 4, 1),
             &primitive,
@@ -8802,6 +9199,7 @@ mod tests {
             straight_run_cells: 12,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
         };
         let primitive = Primitive {
             id: 0,
@@ -8966,6 +9364,7 @@ mod tests {
                 straight_run_cells: 10,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(0, 4, 0),
             &primitive,
@@ -9034,6 +9433,7 @@ mod tests {
                 straight_run_cells: 12,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(750, 155, 5),
             &primitive,
@@ -9082,6 +9482,7 @@ mod tests {
                 straight_run_cells: 0,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(4, 4, 0),
             bend,
@@ -9126,6 +9527,7 @@ mod tests {
                 straight_run_cells: bend_outcome.straight_run_cells,
                 pending_after_crossing_cells: bend_outcome.pending_after_crossing_cells,
                 pending_after_crossing_angle: bend_outcome.pending_after_crossing_angle,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
             State::new(6, 6, 2),
             straight,

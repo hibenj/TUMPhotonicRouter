@@ -20,6 +20,14 @@ from pathlib import Path
 import webbrowser
 from typing import Any, cast
 
+if "MPLCONFIGDIR" not in os.environ:
+    _default_mpl_config_dir = Path(__file__).resolve().parent / "build" / "mpl"
+    try:
+        _default_mpl_config_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    os.environ["MPLCONFIGDIR"] = str(_default_mpl_config_dir)
+
 from benchmark_metadata import load_benchmark_metadata
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
@@ -343,6 +351,13 @@ def _route_attempt_int(record: dict[str, object], key: str) -> int:
     return 0
 
 
+def _route_attempt_duration_s(record: dict[str, object]) -> float:
+    route_search_s = _route_attempt_float(record, "route_search_total_time_s")
+    if route_search_s > 0.0:
+        return route_search_s
+    return _route_attempt_float(record, "elapsed_s")
+
+
 def _format_slowest_route_attempt_lines(
     records: list[dict[str, object]],
     *,
@@ -351,19 +366,19 @@ def _format_slowest_route_attempt_lines(
     timed_records = [
         record
         for record in records
-        if _route_attempt_float(record, "elapsed_s") > 0.0
+        if _route_attempt_duration_s(record) > 0.0
     ]
     if not timed_records:
         return []
 
     slowest = sorted(
         timed_records,
-        key=lambda record: _route_attempt_float(record, "elapsed_s"),
+        key=_route_attempt_duration_s,
         reverse=True,
     )[: max(1, int(limit))]
     lines: list[str] = []
     for record in slowest:
-        elapsed_s = _route_attempt_float(record, "elapsed_s")
+        elapsed_s = _route_attempt_duration_s(record)
         route_index = _route_attempt_int(record, "route_index")
         attempt_index = _route_attempt_int(record, "attempt_index")
         expanded_states = _route_attempt_int(record, "expanded_states")
@@ -411,7 +426,7 @@ def _format_slowest_route_net_lines(
 ) -> list[str]:
     grouped: dict[tuple[int, str], dict[str, object]] = {}
     for record in records:
-        elapsed_s = _route_attempt_float(record, "elapsed_s")
+        elapsed_s = _route_attempt_duration_s(record)
         if elapsed_s <= 0.0:
             continue
         route_index = _route_attempt_int(record, "route_index")

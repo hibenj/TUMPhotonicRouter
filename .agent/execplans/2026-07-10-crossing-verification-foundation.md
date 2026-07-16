@@ -520,6 +520,23 @@ The first visible outcome is a repeatable harness that proves small crossing ben
   and tests rather than writing a normal-looking GDS.
   Date/Author: 2026-07-14 / Codex
 
+- Decision: Track accepted crossing footprints as local A* reservations before
+  committing them globally.
+  Rationale: A crossing-aware A* candidate may legally continue straight
+  through the just-accepted crossing while `pending_after_crossing_cells` is
+  being consumed. However, once the after-margin is satisfied, the crossing
+  footprint must become a blocker for later moves in the same candidate path;
+  otherwise a loop can route back through a crossing footprint and hide a
+  self-crossing or illegal route-through-crossing condition from final
+  verification. The reservation is exactly the crossing device footprint, not
+  the bend runout or extra straight margin. If the after-margin is already
+  satisfied on the accepting primitive, activate the local reservation
+  immediately. If `pending_after_crossing_cells > 0`, carry the pending
+  footprint in the A* state and activate it only when that pending straight run
+  reaches zero. Existing committed crossing footprints should be a separate
+  global blocker/rip-up concern after the local-state rule is proven.
+  Date/Author: 2026-07-16 / Codex
+
 ## Outcomes & Retrospective
 
 The Planner / Technical Lead audit for the first milestone completed on
@@ -1403,6 +1420,283 @@ Report checks:
     - crossing report: `issue_count=0`, `legal_crossing_count=1`,
       `matched_crossing_component_count=1`, `illegal_crossing_count=0`.
     - photonic report: `issue_count=0`.
+
+Follow-up, 2026-07-16: Crossing partner counter cleanup.
+
+Decision:
+
+    - Only `crossing_pending_straight_by_partner` should be active in normal
+      routing because it is the targeted repair signal for the Benes route-13
+      pending-straight blocker.
+    - The broader partner breakdown counters are useful for diagnosis, but
+      should not run in normal A* searches.
+
+Change:
+
+    - Marked `crossing_perpendicular_reject_by_partner` and
+      `crossing_after_margin_by_partner` as analysis-only in `src/astar.rs`.
+    - Gated those two maps behind
+      `PHOTONIC_ROUTER_ANALYSIS_CROSSING_PARTNER_COUNTERS=1`.
+    - Left `crossing_pending_straight_by_partner` active, since
+      `src/py_router.rs` uses it for the pending-straight victim hint.
+
+Validation:
+
+    C:\Users\benja\.cargo\bin\cargo.exe check
+    # passed
+
+    .\.venv\Scripts\python.exe -m maturin develop --release
+    # passed
+
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 13 --debug-svgs none --debug-timing true
+    # passed; crossing and photonic verification success for 13 routed records
+
+Follow-up, 2026-07-16: Next speed plan for pure LiDAR owner-based A*.
+
+Current stable checkpoint:
+
+    - `multiportmmi_8x8` with 90-degree static stubs routes and verifies all
+      111 records.
+    - `benes_8x8` in pure LiDAR mode routes and verifies all 48 records.
+    - The remaining Benes runtime is mostly unguided A* expansion, not
+      verification, realization, endpoint correction, or SVG output.
+
+Planned hot-path cleanup:
+
+    - In pure LiDAR crossing mode, do not depend on a precomputed allowed
+      crossing partner list in the A* hot path.
+    - For each primitive move, first run the cheapest footprint collision
+      test.
+    - If there is no dynamic collision, accept/reject the normal move without
+      touching crossing partner machinery.
+    - If there is exactly one dynamic owner net in the collided cells, run only
+      the local crossing check for that owner: perpendicularity, crossing
+      footprint availability, margin/pending-straight, and local reservation.
+    - If a move hits multiple dynamic owners, reject it early for now; add a
+      measured special case later only if needed.
+    - Avoid per-move heap allocations such as fresh `Vec` or `HashMap`
+      construction in the inner A* loop; prefer small fixed buffers or reused
+      scratch state.
+    - Keep pending crossing state and local crossing footprint reservations
+      absent for normal moves and present only after a crossing is actually
+      accepted or pending runout completes.
+    - Keep `crossing_pending_straight_by_partner` active because it drives the
+      current targeted repair. Keep broader partner counters analysis-only via
+      `PHOTONIC_ROUTER_ANALYSIS_CROSSING_PARTNER_COUNTERS=1`.
+
+Out of scope for this cleanup:
+
+    - Do not yet add topology-guided crossing waypoints or expected-crossing
+      guidance. That is a later optimization after the unguided A* path is
+      cheap enough.
+
+Follow-up, 2026-07-16: Rechecked the documented `multiportmmi_8x8`
+static-stub guardrail after the Benes pending-straight ripup decider.
+
+Validation:
+
+    $env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES='90'
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6 --debug-svgs none
+    # routed_record_count=111 expected_route_count=111
+    # crossing verification success=True error_count=0
+    # photonic verification success=True error_count=0
+    # external wall time: 38.6471 s before Matplotlib cache cleanup; 38.3438 s after cleanup
+
+Cleanup:
+
+    - `routing_flow.py` now sets `MPLCONFIGDIR` to `build\mpl` before
+      importing gdsfactory when the user has not supplied one. This removes
+      the Windows warning/fallback to a temporary Matplotlib cache.
+
+Conclusion:
+
+    - The static-stub Multiport MMI guardrail remains green and fast.
+    - The full Benes `117 s` runtime should be treated as real repair/A* cost,
+      not SVG artifact cost, because that run used `--debug-svgs none` and
+      still reported `repairs=15`.
+
+Follow-up, 2026-07-16: Profiled the Benes speed issue and removed the broad
+preemptive ripup path from the default run.
+
+Findings:
+
+    - A no-SVG `benes_8x8` profile showed `external_elapsed_s=116.8704` and
+      `astar_time_s=114.9552`, so SVG/debug-artifact generation was not the
+      dominant cost.
+    - The profile showed `28` `preemptive_crossing_ripup` attempts. Those
+      attempts generated about `62.8M` neighbors and repeatedly rerouted route
+      12 fourteen times.
+    - The newly added pending-straight counters were not the main cost center;
+      they fire on crossing candidates, while the expensive runs are dominated
+      by millions of generated neighbors.
+    - The route-search summary had been hiding this because it only aggregated
+      older bucket names. The summary now aggregates all route buckets except
+      `endpoint_correction`.
+    - The slowest-route lists now sort by `route_search_total_time_s` when
+      available instead of the per-batch average `elapsed_s`.
+
+Code change:
+
+    - `PHOTONIC_ROUTER_PREEMPTIVE_CROSSING_RIPUP=1` is now required to enable
+      the broad experimental preemptive local crossing ripup.
+    - Default runs leave that path off and rely on the targeted
+      pending-straight victim decider.
+
+Validation:
+
+    C:\Users\benja\.cargo\bin\cargo.exe check
+    # passed
+
+    .\.venv\Scripts\python.exe -m maturin develop --release
+    # passed and installed rebuilt extension
+
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-svgs none
+    # elapsed_seconds=71.1702
+    # crossing verification success=True error_count=0 routed_record_count=48 expected_route_count=48
+    # photonic verification success=True error_count=0 routed_record_count=48 expected_route_count=48
+
+    $env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES='90'
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6 --debug-svgs none
+    # elapsed_seconds=39.5066
+    # crossing verification success=True error_count=0 routed_record_count=111 expected_route_count=111
+    # photonic verification success=True error_count=0 routed_record_count=111 expected_route_count=111
+
+Next:
+
+    - The remaining Benes cost is genuine crossing-aware A* work. Route 37,
+      15, 31, 27, 23, 19, and 39 still expand hundreds of thousands of states
+      each. The next speed work should reduce crossing-aware search-space size
+      or improve the heuristic/candidate filtering, not focus on SVG output.
+
+Guardrail command for dense multiport runs:
+
+    Use the static-stub fanout configuration when validating
+    `multiportmmi_8x8`. A plain `--crossings true --crossing-mode lidar-pure`
+    run is not equivalent to the current stable dense-MMI setup because it
+    leaves the pre-spread 90-degree fanout stubs disabled.
+
+    Required command shape:
+
+        $env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES='90'
+        .\.venv\Scripts\python.exe -X utf8 routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6 --debug-svgs none --debug-timing true
+
+    This is the guardrail that must stay green before adding the Benes
+    pending-straight ripup decider.
+
+Validation, 2026-07-16:
+
+    - The guardrail command above routed all `111/111` nets.
+    - `failures=0`, `repairs=0`.
+    - Crossing verification:
+      `success=True`, `error_count=0`, `routed_record_count=111`,
+      `expected_route_count=111`.
+    - Photonic verification:
+      `success=True`, `error_count=0`, `routed_record_count=111`,
+      `expected_route_count=111`.
+    - Runtime with debug timing enabled: `total=40.1742 s`,
+      `native_route_batch=29.8200 s`, `astar_loop=29.9163 s`.
+
+Benes route-13 pending-straight ripup decider:
+
+    Implemented the first guarded LiDAR-pure repair decider for the Benes
+    route-13 failure. The crossing-aware A* now exposes failure stats through
+    `route_single_net_with_collision_crossing_config_with_stats`, so the native
+    batch router can inspect `crossing_pending_straight_by_partner` even when
+    no legal crossing route is found.
+
+    In LiDAR-pure collision-crossing mode, if the cleaned
+    `pending_straight_by_partner` count reaches the default threshold `100`
+    (override: `PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD`), the batch
+    router uses that original crossing partner as a one-net victim set. It
+    rips the victim, routes the current net, then reroutes the victim. If the
+    attempt fails, the batch state is restored and the old failure path remains
+    in control.
+
+Validation:
+
+    $env:PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG='1'
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 13 --debug-svgs none --attempt-diagnostics --debug-timing true
+
+    - Trigger observed:
+      `native_repair_pending_straight_hint net=13 victim=12 count=1488 threshold=100`
+      followed by
+      `native_repair_pending_straight_start net=13 victim=12 count=1488`.
+    - Route 13 now completes through the partial stop.
+    - Native timing summary: `repairs=1`, `failures=1` (the initial failed
+      normal route attempt), `attempts=13`.
+    - Slow-route buckets show `pending_straight_ripup` on route `12` and route
+      `13`.
+    - Crossing verification:
+      `success=True`, `error_count=0`, `routed_record_count=13`,
+      `expected_route_count=48`.
+    - Photonic verification:
+      `success=True`, `error_count=0`, `routed_record_count=13`,
+      `expected_route_count=48`.
+    - `cargo check` passed.
+    - `cargo test --no-run` passed.
+
+Full Benes validation:
+
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-svgs none --debug-timing true
+
+    - Full benchmark completed and wrote `build\routed_benes_8x8.gds`.
+    - Routed all `48/48` nets.
+    - Timing: `total=117.0211 s`, `native_route_batch=114.8981 s`,
+      `astar_loop=114.9437 s`.
+    - Routing summary: `repairs=15`, `failures=1`, `simple=14/48`.
+    - The initial route-13 failure is repaired by the pending-straight decider;
+      later repair activity is now present and should be inspected/tuned for
+      speed and route quality before calling the benchmark final.
+    - Crossing verification:
+      `success=True`, `error_count=0`, `routed_record_count=48`,
+      `expected_route_count=48`.
+    - Photonic verification:
+      `success=True`, `error_count=0`, `routed_record_count=48`,
+      `expected_route_count=48`.
+
+Follow-up, 2026-07-16: Added local crossing-footprint reservations to the
+crossing A* search for the Benes route-13 self/footprint case.
+
+Problem:
+
+    - In `benes_8x8`, route 13 could enter a path that reused/ran through a
+      crossing footprint created earlier in the same candidate route.
+    - Plain self-centerline collision detection was not sufficient, because the
+      offending cells can be inside a crossing footprint rather than on the
+      route centerline itself.
+    - After the crossing-aware A* candidate was rejected, the normal simple/A*
+      fallback could still accept a crossing-bearing route without the local
+      crossing-footprint reservations.
+
+Fix:
+
+    - Crossing A* nodes now carry local crossing footprint reservations.
+    - A newly accepted crossing reserves only the crossing component footprint.
+      If post-crossing straight margin is still pending, the reservation becomes
+      active only after the pending straight run is satisfied.
+    - Crossing-mode fallback routes are not allowed to commit if they contain
+      crossing events with collision partners, because those crossings did not
+      pass through the crossing-aware A* reservation state.
+
+Validation:
+
+    C:\Users\benja\.cargo\bin\cargo.exe check
+    # passed
+
+    .\.venv\Scripts\python.exe -m maturin develop --release
+    # passed
+
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 13 --debug-svgs 12,13 --attempt-diagnostics --debug-timing true
+    # route 12 stays compact (`ok astar length=631.127um`);
+    # route 13 now fails cleanly with:
+    # `No legal LiDAR crossing route found; probe-based victim selection is disabled in crossing mode`
+    # instead of committing a crossing-component-overlap layout.
+
+Next:
+
+    - Implement/test the separate global crossing-footprint blocker case
+      ("Grund 2") so later routes cannot pass through already committed
+      crossing footprints.
 
 Follow-up, 2026-07-14: stabilized the `multiportmmi_8x8` `n_35`
 crossing-search slice.
