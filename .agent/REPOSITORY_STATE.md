@@ -7927,3 +7927,30 @@ Native repair/rip-up timing visibility:
   - Initial conclusion: for this Benes repair case, rip-up bookkeeping is not
     the speed problem; the cost is the extra A* search work for the current net
     and victim reroute.
+
+Dense-owner direct-index experiment:
+
+- Date: 2026-07-16 18:55 local
+- Experiment:
+  - Tried replacing per-witness `DenseDynamicCoreOwnerGrid::owner_at(x, y)`
+    calls with a per-state owner-grid origin plus relative index offsets.
+  - First safe variant still performed per-witness local bounds checks; second
+    variant relied on the existing expanded lookup-bounds invariant and used a
+    lighter `base_idx + dy * width + dx` access path.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed for both variants.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 11 --debug-svgs none --debug-timing true`
+    passed, but route[11] was slower (`1.1296 s` first variant, `1.0860 s`
+    second variant) than the committed allocation-light baseline
+    (`0.9563 s`).
+  - A no-debug-timing stop-after-route-11 check with the second variant also
+    looked worse (`route[11]=1.2418 s`).
+- Result:
+  - Reverted the experiment completely and rebuilt the release extension back
+    to the committed code.
+  - Conclusion: this direct-index variant is not worth keeping. The next
+    speed target should move away from this micro-optimization and instead
+    examine the remaining segment-check/search-space costs, which dominate the
+    measured route[11] time.

@@ -1716,6 +1716,21 @@ Queued Hot-Path Speedups:
        that answers empty / one owner / multiple owners before detailed
        analysis.
 
+       Experiment tried and reverted 2026-07-16:
+
+       - Tried a per-state owner-grid origin plus relative index offsets in
+         `crossing_move_outcome_with_segments`.
+       - A conservative variant and a lighter invariant-based variant both
+         compiled and routed the Benes route-11 stop, but neither improved the
+         benchmark. The lighter variant still measured slower than the
+         committed allocation-light baseline (`route[11]=1.0860 s` with
+         debug timing; `1.2418 s` in a no-debug-timing check versus the
+         baseline `0.9563 s`).
+       - The code experiment was reverted and the release extension was rebuilt
+         to the committed state. Do not reapply this direct-index shape without
+         a stronger profile showing owner indexing, rather than segment checks
+         or search-space expansion, is the limiter.
+
     4. Partner segment locality.
 
        Keep the same perpendicular, margin, pending, reservation, and reporting
