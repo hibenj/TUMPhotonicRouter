@@ -1744,6 +1744,32 @@ Queued Hot-Path Speedups:
        This should tell us whether to optimize rip-up data structures, victim
        selection, or the repeated A* searches.
 
+       First reporting slice implemented 2026-07-16:
+
+       - Added a `native repair profile` line to `routing_flow.py` debug timing
+         output using the already-collected native timing buckets.
+       - The line reports `ripup`, `repair_failed_net_wall`,
+         `reroute_victims_wall`, `repair_probe_victim_selection`,
+         `repair_state_reset`, `repair_total`, `native_search`, and
+         `dense_astar`.
+       - This is reporting only and does not change routing behavior.
+
+       Validation:
+
+           .\.venv\Scripts\python.exe -m py_compile routing_flow.py
+           # passed
+
+           .\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 13 --debug-svgs none --debug-timing true
+           # passed; total=12.9994 s
+           # native repair profile: ripup=0.0002 s, current=1.3658 s,
+           # victims=1.0358 s, selection=0.0000 s, reset=0.0000 s,
+           # repair_total=2.4018 s, native_search=3.5085 s,
+           # dense_astar=3.4826 s
+
+       Initial conclusion: in this route-13 Benes repair case, rip-up
+       bookkeeping itself is effectively free; the repair cost is dominated by
+       the extra A* searches for the current and victim routes.
+
 Follow-up, 2026-07-16: Crossing partner counter cleanup.
 
 Decision:

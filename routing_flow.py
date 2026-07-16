@@ -1983,6 +1983,36 @@ def run_routing_flow(
             if route_nets_other_s > 1.0e-4:
                 parts.append(f"other={route_nets_other_s:.4f}s")
             print("          route_nets split: " + ", ".join(parts))
+            native_repair_timing_names = (
+                "ripup",
+                "repair_failed_net_wall",
+                "reroute_victims_wall",
+                "repair_probe_victim_selection",
+                "repair_state_reset",
+            )
+            native_repair_timings = {
+                name: float(route_nets_subtimings.get(f"native_batch_{name}", 0.0))
+                for name in native_repair_timing_names
+            }
+            native_repair_total_s = sum(native_repair_timings.values())
+            if native_repair_total_s > 0.0:
+                native_search_s = float(
+                    route_nets_subtimings.get("native_batch_route_search_total", 0.0)
+                )
+                native_dense_astar_s = float(
+                    route_nets_subtimings.get("native_batch_dense_astar", 0.0)
+                )
+                print(
+                    "          native repair profile: "
+                    f"ripup={native_repair_timings['ripup']:.4f}s, "
+                    f"current={native_repair_timings['repair_failed_net_wall']:.4f}s, "
+                    f"victims={native_repair_timings['reroute_victims_wall']:.4f}s, "
+                    f"selection={native_repair_timings['repair_probe_victim_selection']:.4f}s, "
+                    f"reset={native_repair_timings['repair_state_reset']:.4f}s, "
+                    f"repair_total={native_repair_total_s:.4f}s, "
+                    f"native_search={native_search_s:.4f}s, "
+                    f"dense_astar={native_dense_astar_s:.4f}s"
+                )
         print(
             "          route search: "
             f"astar_loop={float(route_summary.astar_elapsed_s):.4f}s, "

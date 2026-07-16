@@ -7900,3 +7900,30 @@ Allocation-light contacted-partner collection:
   - Full Benes improved from `29.3395 s` to `27.0866 s`.
   - Full Multiport static-stub guardrail improved from `21.9246 s` to
     `20.1535 s`.
+
+Native repair/rip-up timing visibility:
+
+- Date: 2026-07-16 18:32 local
+- Change:
+  - Added a `native repair profile` line to `routing_flow.py` debug timing
+    output.
+  - The line reports the already-collected native timing buckets for `ripup`,
+    `repair_failed_net_wall`, `reroute_victims_wall`,
+    `repair_probe_victim_selection`, and `repair_state_reset`, plus native
+    search context.
+  - This is reporting only; it does not change A*, victim selection, rip-up,
+    repair, or route geometry.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile routing_flow.py` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 13 --debug-svgs none --debug-timing true`
+    passed in `12.9994 s`.
+- First measurement:
+  - Stop-after-route-13 reported `repairs=1`.
+  - `native repair profile`: `ripup=0.0002 s`, `current=1.3658 s`,
+    `victims=1.0358 s`, `selection=0.0000 s`, `reset=0.0000 s`,
+    `repair_total=2.4018 s`, `native_search=3.5085 s`,
+    `dense_astar=3.4826 s`.
+  - Initial conclusion: for this Benes repair case, rip-up bookkeeping is not
+    the speed problem; the cost is the extra A* search work for the current net
+    and victim reroute.
