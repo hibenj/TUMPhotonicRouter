@@ -3848,7 +3848,79 @@ struct EffectiveCollisionWitness {
 #[derive(Clone, Debug)]
 struct ContactedPartner {
     partner_idx: usize,
-    witnesses: Vec<EffectiveCollisionWitness>,
+    first_witness: EffectiveCollisionWitness,
+    extra_witnesses: Vec<EffectiveCollisionWitness>,
+}
+
+impl ContactedPartner {
+    fn new(partner_idx: usize, witness: EffectiveCollisionWitness) -> Self {
+        Self {
+            partner_idx,
+            first_witness: witness,
+            extra_witnesses: Vec::new(),
+        }
+    }
+
+    fn push_witness(&mut self, witness: EffectiveCollisionWitness) {
+        self.extra_witnesses.push(witness);
+    }
+}
+
+#[derive(Default)]
+struct ContactedPartners {
+    first: Option<ContactedPartner>,
+    extra: Vec<ContactedPartner>,
+}
+
+impl ContactedPartners {
+    fn len(&self) -> usize {
+        usize::from(self.first.is_some()) + self.extra.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &ContactedPartner> {
+        self.first.iter().chain(self.extra.iter())
+    }
+
+    fn push_witness(&mut self, partner_idx: usize, witness: EffectiveCollisionWitness) {
+        let Some(first) = self.first.as_mut() else {
+            self.first = Some(ContactedPartner::new(partner_idx, witness));
+            return;
+        };
+        if first.partner_idx == partner_idx {
+            first.push_witness(witness);
+            return;
+        }
+        if partner_idx < first.partner_idx {
+            let old_first =
+                std::mem::replace(first, ContactedPartner::new(partner_idx, witness));
+            Self::insert_extra_sorted(&mut self.extra, old_first);
+            return;
+        }
+        match self
+            .extra
+            .binary_search_by_key(&partner_idx, |contact| contact.partner_idx)
+        {
+            Ok(idx) => self.extra[idx].push_witness(witness),
+            Err(idx) => self
+                .extra
+                .insert(idx, ContactedPartner::new(partner_idx, witness)),
+        }
+    }
+
+    fn insert_extra_sorted(extra: &mut Vec<ContactedPartner>, contact: ContactedPartner) {
+        match extra.binary_search_by_key(&contact.partner_idx, |item| item.partner_idx) {
+            Ok(idx) => {
+                let ContactedPartner {
+                    first_witness,
+                    mut extra_witnesses,
+                    ..
+                } = contact;
+                extra[idx].push_witness(first_witness);
+                extra[idx].extra_witnesses.append(&mut extra_witnesses);
+            }
+            Err(idx) => extra.insert(idx, contact),
+        }
+    }
 }
 
 fn primitive_crossing_metadata(primitive: &Primitive) -> PrimitiveCrossingMetadata {
@@ -5064,9 +5136,7 @@ fn crossing_move_outcome_with_segments(
     let track_crossed_partners = crossing.require_all_partners;
     let mut crossing_count = 0u32;
     let primitive_segments = &primitive_crossing.segments;
-    let mut contacted_partners: Vec<ContactedPartner> = Vec::new();
-    let mut first_dynamic_owner: Option<NetId> = None;
-    let mut dynamic_owner_count = 0usize;
+    let mut contacted_partners = ContactedPartners::default();
     let witness_scan = if scan_extra_witnesses_only {
         primitive_crossing.extra_witnesses.as_slice()
     } else if require_dynamic_owner_contact {
@@ -5100,33 +5170,17 @@ fn crossing_move_outcome_with_segments(
         if owner == crossing.net_id {
             continue;
         }
-        match first_dynamic_owner {
-            None => {
-                first_dynamic_owner = Some(owner);
-                dynamic_owner_count = 1;
-            }
-            Some(first_owner) if first_owner == owner => {}
-            Some(_) => {
-                if !contacted_partners
-                    .iter()
-                    .any(|contact| crossing.partners[contact.partner_idx].net_id == owner)
-                {
-                    dynamic_owner_count += 1;
-                }
-            }
-        }
         if !is_straight {
-            record_crossing_hotpath_owner_count(stats, dynamic_owner_count);
+            record_crossing_hotpath_owner_count(stats, contacted_partners.len().max(1));
             stats.crossing_reject_non_straight += 1;
             return None;
         }
         let Some(partner_idx) = partner_index_by_id.get(&owner).copied() else {
-            record_crossing_hotpath_owner_count(stats, dynamic_owner_count);
+            record_crossing_hotpath_owner_count(stats, contacted_partners.len() + 1);
             stats.crossing_reject_unexpected_owner += 1;
             return None;
         };
-        push_contacted_partner_witness(
-            &mut contacted_partners,
+        contacted_partners.push_witness(
             partner_idx,
             EffectiveCollisionWitness {
                 cell,
@@ -5137,6 +5191,7 @@ fn crossing_move_outcome_with_segments(
     if let Some(owner_scan_start) = owner_scan_start {
         stats.crossing_hotpath_owner_scan_time_us += owner_scan_start.elapsed().as_micros();
     }
+    let dynamic_owner_count = contacted_partners.len();
     record_crossing_hotpath_owner_count(stats, dynamic_owner_count);
     if require_dynamic_owner_contact && dynamic_owner_count == 0 {
         if let Some(hotpath_total_start) = hotpath_total_start {
@@ -5147,7 +5202,7 @@ fn crossing_move_outcome_with_segments(
     let mut route_intersections = Vec::new();
     let segment_search_start = collect_detailed_timing.then(Instant::now);
     if primitive_steps > 0 {
-        for contact in &contacted_partners {
+        for contact in contacted_partners.iter() {
             let partner_idx = contact.partner_idx;
             let partner = &crossing.partners[partner_idx];
             let bit = 1u64 << partner_idx;
@@ -5325,12 +5380,8 @@ fn crossing_move_outcome_with_segments(
                     }
                     continue;
                 }
-                let reject = classify_unresolved_crossing_contact(
-                    contact.witnesses.as_slice(),
-                    primitive_segments,
-                    state,
-                    partner,
-                );
+                let reject =
+                    classify_unresolved_crossing_contact(contact, primitive_segments, state, partner);
                 if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_LEVEL1").is_some() {
                     trace_crossing_level1_intersection(
                         crossing,
@@ -5340,20 +5391,8 @@ fn crossing_move_outcome_with_segments(
                             CrossingContactReject::Unmatched => "reject_contact_unmatched",
                             CrossingContactReject::Footprint => "reject_contact_footprint",
                         },
-                        f64::from(
-                            contact
-                                .witnesses
-                                .first()
-                                .map(|witness| witness.cell.0)
-                                .unwrap_or(state.x),
-                        ),
-                        f64::from(
-                            contact
-                                .witnesses
-                                .first()
-                                .map(|witness| witness.cell.1)
-                                .unwrap_or(state.y),
-                        ),
+                        f64::from(contact.first_witness.cell.0),
+                        f64::from(contact.first_witness.cell.1),
                         255,
                         255,
                         required_margin,
@@ -5613,39 +5652,56 @@ fn push_unique_relative_witness(
     });
 }
 
-fn push_contacted_partner_witness(
-    contacted_partners: &mut Vec<ContactedPartner>,
-    partner_idx: usize,
-    witness: EffectiveCollisionWitness,
-) {
-    match contacted_partners.binary_search_by_key(&partner_idx, |contact| contact.partner_idx) {
-        Ok(idx) => contacted_partners[idx].witnesses.push(witness),
-        Err(idx) => contacted_partners.insert(
-            idx,
-            ContactedPartner {
-                partner_idx,
-                witnesses: vec![witness],
-            },
-        ),
-    }
-}
-
 fn classify_unresolved_crossing_contact(
-    witnesses: &[EffectiveCollisionWitness],
+    contact: &ContactedPartner,
     route_segments: &[RelativePrimitivePathSegment],
     state: State,
     partner: &CrossingSearchPartner,
 ) -> CrossingContactReject {
     let mut saw_partner_segment = false;
     let mut saw_non_perpendicular = false;
-    for witness in witnesses {
+    update_unresolved_crossing_contact_classification(
+        contact.first_witness,
+        route_segments,
+        state,
+        partner,
+        &mut saw_partner_segment,
+        &mut saw_non_perpendicular,
+    );
+    for witness in contact.extra_witnesses.iter().copied() {
+        update_unresolved_crossing_contact_classification(
+            witness,
+            route_segments,
+            state,
+            partner,
+            &mut saw_partner_segment,
+            &mut saw_non_perpendicular,
+        );
+    }
+    if saw_non_perpendicular {
+        CrossingContactReject::NotPerpendicular
+    } else if saw_partner_segment {
+        CrossingContactReject::Unmatched
+    } else {
+        CrossingContactReject::Footprint
+    }
+}
+
+fn update_unresolved_crossing_contact_classification(
+    witness: EffectiveCollisionWitness,
+    route_segments: &[RelativePrimitivePathSegment],
+    state: State,
+    partner: &CrossingSearchPartner,
+    saw_partner_segment: &mut bool,
+    saw_non_perpendicular: &mut bool,
+) {
         for partner_segment in partner.waypoints.windows(2) {
             if grid_point_on_segment_with_param(witness.cell, partner_segment[0], partner_segment[1])
                 .is_none()
             {
                 continue;
             }
-            saw_partner_segment = true;
+            *saw_partner_segment = true;
             let Some(route_segment_idx) = witness.route_segment_idx else {
                 continue;
             };
@@ -5659,17 +5715,9 @@ fn classify_unresolved_crossing_contact(
                 continue;
             };
             if !grid_axes_are_perpendicular(route_segment.angle, partner_angle) {
-                saw_non_perpendicular = true;
+                *saw_non_perpendicular = true;
             }
         }
-    }
-    if saw_non_perpendicular {
-        CrossingContactReject::NotPerpendicular
-    } else if saw_partner_segment {
-        CrossingContactReject::Unmatched
-    } else {
-        CrossingContactReject::Footprint
-    }
 }
 
 fn compact_diagonal_halo_cells(

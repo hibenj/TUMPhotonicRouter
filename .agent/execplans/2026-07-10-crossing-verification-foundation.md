@@ -1665,6 +1665,48 @@ Queued Hot-Path Speedups:
        records; build full witness vectors only for unresolved-contact
        classification or diagnostics.
 
+       Implemented 2026-07-16:
+
+       - Added `ContactedPartners`, which stores the first contacted partner
+         inline and only allocates an extra vector for true multi-owner
+         contacts.
+       - `ContactedPartner` now stores its first witness inline and only
+         allocates an extra witness vector when a partner has multiple
+         witnesses.
+       - Unresolved-contact classification still iterates over every witness,
+         so multi-owner and multi-crossing support is preserved.
+
+       Validation:
+
+           C:\Users\benja\.cargo\bin\cargo.exe check
+           # passed
+
+           .\.venv\Scripts\python.exe -m py_compile translation\route_rust_types.py routing_flow.py
+           # passed
+
+           .\.venv\Scripts\python.exe -m maturin develop --release
+           # passed
+
+           .\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-stop-after-route 11 --debug-svgs none
+           # passed; total=1.9278 s; route[11]=0.9563 s
+
+           .\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --debug-svgs none
+           # passed; total=27.0866 s
+           # crossing success=True errors=0 routes=48
+           # photonic success=True errors=0 routes=48
+
+           $env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES='90'
+           .\.venv\Scripts\python.exe -X utf8 routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 6 --debug-svgs none
+           # passed; total=20.1535 s
+           # crossing success=True errors=0 routes=111
+           # photonic success=True errors=0 routes=111
+
+       Result:
+
+       Stop-after-route-11 route[11] improved from 1.0632 s to 0.9563 s. Full
+       Benes improved from 29.3395 s to 27.0866 s, and Multiport static-stub
+       improved from 21.9246 s to 20.1535 s.
+
     3. Faster dense-owner access.
 
        `DenseDynamicCoreOwnerGrid::owner_at` currently performs bounds and
@@ -1686,6 +1728,21 @@ Queued Hot-Path Speedups:
        Slow Benes routes still expand hundreds of thousands of states. Once the
        local move/crossing hot path is lean, evaluate route ordering,
        heuristic/search-order changes, or admissible pruning separately.
+
+    6. Rip-up / repair performance audit.
+
+       Track this separately from the pure A* hot path. The code already has
+       native timing buckets for `ripup`, `repair_failed_net_wall`,
+       `reroute_victims_wall`, `repair_probe_victim_selection`, and
+       `repair_state_reset`, but current benchmark output does not clearly
+       answer whether rip-up bookkeeping itself is slow or whether repair is
+       expensive because it launches extra A* searches and victim reroutes.
+
+       Before changing repair behavior, add a lightweight per-repair summary:
+       trigger reason, victim set size, current-net reroute time, victim
+       reroute time, pure rip-up bookkeeping time, and convergence/failure.
+       This should tell us whether to optimize rip-up data structures, victim
+       selection, or the repeated A* searches.
 
 Follow-up, 2026-07-16: Crossing partner counter cleanup.
 

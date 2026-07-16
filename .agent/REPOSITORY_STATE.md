@@ -7810,6 +7810,21 @@ Queued pure-LiDAR hot-path speed ideas:
   - Even after owner-scan improvements, slow Benes routes still expand hundreds
     of thousands of states. Only after the local move checks are cheap should
     we evaluate search-ordering or admissible pruning/guidance changes.
+- Priority 6: rip-up / repair performance audit.
+  - Current question: determine whether rip-up bookkeeping itself is slow, or
+    whether repair appears slow because it triggers additional A* searches and
+    victim reroutes.
+  - Existing timing buckets already expose `ripup`, `repair_failed_net_wall`,
+    `reroute_victims_wall`, `repair_probe_victim_selection`, and
+    `repair_state_reset`, but the normal benchmark summaries do not yet make
+    the per-repair-cycle cost obvious.
+  - Proposed change: add a lightweight repair summary that reports repair
+    count, victim set sizes, trigger reason, current-net reroute time,
+    victim-reroute time, pure rip-up bookkeeping time, and whether the repair
+    converged. Use this before changing repair behavior or adding new rip-up
+    heuristics.
+  - Expected benefit: separates true rip-up overhead from repeated A* work, so
+    later speed work can target the correct layer.
 
 Extra-halo presence fast path:
 
@@ -7851,3 +7866,37 @@ Extra-halo presence fast path:
   - Full Benes improved from `56.8744 s` to `29.3395 s`.
   - Full Multiport static-stub guardrail improved from `30.3986 s` to
     `21.9246 s`.
+
+Allocation-light contacted-partner collection:
+
+- Date: 2026-07-16 18:08 local
+- Change:
+  - Replaced the hot-path `Vec<ContactedPartner>` first-contact allocation with
+    a `ContactedPartners` scratch structure that stores the first contacted
+    partner inline and allocates the extra partner vector only for true
+    multi-owner contacts.
+  - Replaced per-contact `vec![witness]` with an inline first witness plus an
+    optional extra witness vector.
+  - Unresolved-contact classification still sees every witness; multi-owner
+    and multi-crossing behavior remains supported.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust_types.py
+    routing_flow.py` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --debug-stop-after-route 11 --debug-svgs none` passed:
+    total `1.9278 s`, route[11] `0.9563 s`,
+    `owner_scan=0.0031 s`.
+  - Full `benes_8x8` passed:
+    total `27.0866 s`, crossing verification success for `48/48`,
+    photonic verification success for `48/48`.
+  - Full `multiportmmi_8x8` with static stubs and
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90` passed:
+    total `20.1535 s`, crossing verification success for `111/111`,
+    photonic verification success for `111/111`.
+- Result:
+  - Stop-after-route-11 route[11] improved from `1.0632 s` to `0.9563 s`.
+  - Full Benes improved from `29.3395 s` to `27.0866 s`.
+  - Full Multiport static-stub guardrail improved from `21.9246 s` to
+    `20.1535 s`.
