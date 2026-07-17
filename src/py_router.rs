@@ -719,6 +719,7 @@ pub struct PyPhotonicRouter {
     crossing_context: CrossingContext,
     committed_center_routes: FxHashMap<u64, Vec<(i32, i32)>>,
     committed_realized_center_routes: FxHashMap<u64, Vec<(f64, f64)>>,
+    committed_target_terminal_bump_guards: FxHashMap<u64, TerminalBumpGuard>,
     committed_opened_cell_keys: FxHashMap<u64, FxHashSet<CellKey>>,
     crossing_events: Vec<CrossingEvent>,
     use_collision_crossing_routing: bool,
@@ -4084,6 +4085,10 @@ impl PyPhotonicRouter {
                             .map(|waypoints| CrossingSearchPartner {
                                 net_id: partner_id,
                                 waypoints: waypoints.clone(),
+                                target_terminal_bump_guard: self
+                                    .committed_target_terminal_bump_guards
+                                    .get(&partner_id)
+                                    .copied(),
                             })
                     })
                     .collect()
@@ -4096,6 +4101,10 @@ impl PyPhotonicRouter {
                             .map(|waypoints| CrossingSearchPartner {
                                 net_id: *partner_id,
                                 waypoints: waypoints.clone(),
+                                target_terminal_bump_guard: self
+                                    .committed_target_terminal_bump_guards
+                                    .get(partner_id)
+                                    .copied(),
                             })
                     })
                     .collect()
@@ -4277,6 +4286,10 @@ impl PyPhotonicRouter {
                     .map(|waypoints| CrossingSearchPartner {
                         net_id: *partner_id,
                         waypoints: waypoints.clone(),
+                        target_terminal_bump_guard: self
+                            .committed_target_terminal_bump_guards
+                            .get(partner_id)
+                            .copied(),
                     })
             })
             .collect();
@@ -4291,7 +4304,7 @@ impl PyPhotonicRouter {
             bend_runout_cells: self.primitive_cfg.bend_radius_cells,
             crossing_loss: crossing_cfg.crossing_loss,
             require_all_partners: true,
-            terminal_bump_guard: None,
+            terminal_bump_guard: self.terminal_bump_guard_for_target(target, target_port_um),
         };
         let mut crossing_search_cfg = search_cfg.clone();
         crossing_search_cfg.require_terminal_straights = false;
@@ -4678,6 +4691,13 @@ impl PyPhotonicRouter {
             .insert(net_id, grid_waypoints);
         self.committed_realized_center_routes
             .insert(net_id, centerline);
+        if let Some(guard) = self.terminal_bump_guard_for_target(route.reached_target, target_port_um)
+        {
+            self.committed_target_terminal_bump_guards
+                .insert(net_id, guard);
+        } else {
+            self.committed_target_terminal_bump_guards.remove(&net_id);
+        }
         Ok(())
     }
 
@@ -4955,6 +4975,7 @@ impl PyPhotonicRouter {
         self.obstacle_map.ripup_route(net_id);
         self.committed_center_routes.remove(&net_id);
         self.committed_realized_center_routes.remove(&net_id);
+        self.committed_target_terminal_bump_guards.remove(&net_id);
         self.committed_opened_cell_keys.remove(&net_id);
         self.invalidate_meander_base_prefix();
     }
@@ -5064,6 +5085,7 @@ impl PyPhotonicRouter {
         net_id: u64,
         source: State,
         target: State,
+        target_port_um: Option<(f64, f64)>,
         opened_ref: &FxHashSet<CellKey>,
         search_cfg: &AStarConfig,
         block_radius_cells: i32,
@@ -5103,6 +5125,10 @@ impl PyPhotonicRouter {
                     .map(|waypoints| CrossingSearchPartner {
                         net_id: partner_id,
                         waypoints: waypoints.clone(),
+                        target_terminal_bump_guard: self
+                            .committed_target_terminal_bump_guards
+                            .get(&partner_id)
+                            .copied(),
                     })
             })
             .collect();
@@ -5117,7 +5143,7 @@ impl PyPhotonicRouter {
             bend_runout_cells: self.primitive_cfg.bend_radius_cells,
             crossing_loss: crossing_cfg.crossing_loss,
             require_all_partners: require_all_expected_partners,
-            terminal_bump_guard: None,
+            terminal_bump_guard: self.terminal_bump_guard_for_target(target, target_port_um),
         };
         let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
             .ok()
@@ -5336,6 +5362,7 @@ impl PyPhotonicRouter {
                 net_id,
                 source_state,
                 target_state,
+                target_port_um,
                 opened_search_ref,
                 &cfg,
                 block_radius_cells,
@@ -5842,6 +5869,7 @@ impl PyPhotonicRouter {
                 net_id,
                 source_state,
                 target_state,
+                target_port_um,
                 opened_search_ref,
                 &cfg,
                 block_radius_cells,
@@ -7569,6 +7597,7 @@ impl PyPhotonicRouter {
             crossing_context: CrossingContext::default(),
             committed_center_routes: FxHashMap::default(),
             committed_realized_center_routes: FxHashMap::default(),
+            committed_target_terminal_bump_guards: FxHashMap::default(),
             committed_opened_cell_keys: FxHashMap::default(),
             crossing_events: Vec::new(),
             use_collision_crossing_routing: false,
@@ -7688,6 +7717,7 @@ impl PyPhotonicRouter {
         self.static_cells.clear();
         self.committed_center_routes.clear();
         self.committed_realized_center_routes.clear();
+        self.committed_target_terminal_bump_guards.clear();
         self.committed_opened_cell_keys.clear();
         self.crossing_events.clear();
         self.long_straight_congestion_cells.clear();
@@ -7907,6 +7937,7 @@ impl PyPhotonicRouter {
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.committed_center_routes.clear();
         self.committed_realized_center_routes.clear();
+        self.committed_target_terminal_bump_guards.clear();
         self.committed_opened_cell_keys.clear();
         self.crossing_events.clear();
         profile.reset_s += reset_start.elapsed().as_secs_f64();
@@ -7999,6 +8030,7 @@ impl PyPhotonicRouter {
         self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
         self.committed_center_routes.clear();
         self.committed_realized_center_routes.clear();
+        self.committed_target_terminal_bump_guards.clear();
         self.committed_opened_cell_keys.clear();
         self.crossing_events.clear();
         self.static_cells = base_static_keys.clone();
@@ -8539,6 +8571,8 @@ impl PyPhotonicRouter {
                 let base_map = self.obstacle_map.clone();
                 let base_center_routes = self.committed_center_routes.clone();
                 let base_realized_center_routes = self.committed_realized_center_routes.clone();
+                let base_target_terminal_bump_guards =
+                    self.committed_target_terminal_bump_guards.clone();
                 let base_opened_cell_keys = self.committed_opened_cell_keys.clone();
                 let base_crossing_events = self.crossing_events.clone();
                 let base_routes = final_routes.clone();
@@ -8551,6 +8585,8 @@ impl PyPhotonicRouter {
                     self.obstacle_map = base_map.clone();
                     self.committed_center_routes = base_center_routes.clone();
                     self.committed_realized_center_routes = base_realized_center_routes.clone();
+                    self.committed_target_terminal_bump_guards =
+                        base_target_terminal_bump_guards.clone();
                     self.committed_opened_cell_keys = base_opened_cell_keys.clone();
                     self.crossing_events = base_crossing_events.clone();
                     final_routes = base_routes.clone();
@@ -8570,6 +8606,8 @@ impl PyPhotonicRouter {
                     self.obstacle_map.ripup_route(victim_id);
                     self.committed_center_routes.remove(&victim_id);
                     self.committed_realized_center_routes.remove(&victim_id);
+                    self.committed_target_terminal_bump_guards
+                        .remove(&victim_id);
                     self.committed_opened_cell_keys.remove(&victim_id);
                     final_routes.remove(&victim_id);
                     timings.ripup_us += native_batch_elapsed_us(ripup_start);
@@ -8712,6 +8750,7 @@ impl PyPhotonicRouter {
                 self.obstacle_map = base_map;
                 self.committed_center_routes = base_center_routes;
                 self.committed_realized_center_routes = base_realized_center_routes;
+                self.committed_target_terminal_bump_guards = base_target_terminal_bump_guards;
                 self.committed_opened_cell_keys = base_opened_cell_keys;
                 self.crossing_events = base_crossing_events;
                 final_routes = base_routes;
@@ -8776,6 +8815,8 @@ impl PyPhotonicRouter {
                             let base_center_routes = self.committed_center_routes.clone();
                             let base_realized_center_routes =
                                 self.committed_realized_center_routes.clone();
+                            let base_target_terminal_bump_guards =
+                                self.committed_target_terminal_bump_guards.clone();
                             let base_opened_cell_keys = self.committed_opened_cell_keys.clone();
                             let base_crossing_events = self.crossing_events.clone();
                             let base_routes = final_routes.clone();
@@ -8792,6 +8833,8 @@ impl PyPhotonicRouter {
                             self.obstacle_map.ripup_route(hint.victim_net_id);
                             self.committed_center_routes.remove(&hint.victim_net_id);
                             self.committed_realized_center_routes.remove(&hint.victim_net_id);
+                            self.committed_target_terminal_bump_guards
+                                .remove(&hint.victim_net_id);
                             self.committed_opened_cell_keys.remove(&hint.victim_net_id);
                             final_routes.remove(&hint.victim_net_id);
                             self.invalidate_meander_base_prefix();
@@ -8839,6 +8882,8 @@ impl PyPhotonicRouter {
                                     self.committed_center_routes = base_center_routes;
                                     self.committed_realized_center_routes =
                                         base_realized_center_routes;
+                                    self.committed_target_terminal_bump_guards =
+                                        base_target_terminal_bump_guards;
                                     self.committed_opened_cell_keys = base_opened_cell_keys;
                                     self.crossing_events = base_crossing_events;
                                     final_routes = base_routes;
@@ -8889,6 +8934,8 @@ impl PyPhotonicRouter {
                                     self.committed_center_routes = base_center_routes;
                                     self.committed_realized_center_routes =
                                         base_realized_center_routes;
+                                    self.committed_target_terminal_bump_guards =
+                                        base_target_terminal_bump_guards;
                                     self.committed_opened_cell_keys = base_opened_cell_keys;
                                     self.crossing_events = base_crossing_events;
                                     final_routes = base_routes;
@@ -9603,6 +9650,8 @@ impl PyPhotonicRouter {
             let round_base_map = self.obstacle_map.clone();
             let round_base_center_routes = self.committed_center_routes.clone();
             let round_base_realized_center_routes = self.committed_realized_center_routes.clone();
+            let round_base_target_terminal_bump_guards =
+                self.committed_target_terminal_bump_guards.clone();
             let round_base_opened_cell_keys = self.committed_opened_cell_keys.clone();
             let round_base_crossing_events = self.crossing_events.clone();
             let round_base_routes = final_routes.clone();
@@ -9671,6 +9720,8 @@ impl PyPhotonicRouter {
                     self.committed_center_routes = round_base_center_routes.clone();
                     self.committed_realized_center_routes =
                         round_base_realized_center_routes.clone();
+                    self.committed_target_terminal_bump_guards =
+                        round_base_target_terminal_bump_guards.clone();
                     self.committed_opened_cell_keys = round_base_opened_cell_keys.clone();
                     self.crossing_events = round_base_crossing_events.clone();
                     self.invalidate_meander_base_prefix();
@@ -9784,6 +9835,7 @@ impl PyPhotonicRouter {
                         self.obstacle_map.ripup_route(*old_id);
                         self.committed_center_routes.remove(old_id);
                         self.committed_realized_center_routes.remove(old_id);
+                        self.committed_target_terminal_bump_guards.remove(old_id);
                         self.committed_opened_cell_keys.remove(old_id);
                         timings.ripup_us += native_batch_elapsed_us(ripup_start);
                         final_routes.remove(old_id);
@@ -10986,6 +11038,8 @@ impl PyPhotonicRouter {
                 self.obstacle_map = round_base_map;
                 self.committed_center_routes = round_base_center_routes;
                 self.committed_realized_center_routes = round_base_realized_center_routes;
+                self.committed_target_terminal_bump_guards =
+                    round_base_target_terminal_bump_guards;
                 self.committed_opened_cell_keys = round_base_opened_cell_keys;
                 self.crossing_events = round_base_crossing_events;
                 self.invalidate_meander_base_prefix();
@@ -11282,6 +11336,7 @@ impl PyPhotonicRouter {
         if removed {
             self.committed_center_routes.remove(&net_id);
             self.committed_realized_center_routes.remove(&net_id);
+            self.committed_target_terminal_bump_guards.remove(&net_id);
             self.committed_opened_cell_keys.remove(&net_id);
             self.invalidate_meander_base_prefix();
         }
@@ -11293,6 +11348,7 @@ impl PyPhotonicRouter {
         self.obstacle_map.clear_dynamic();
         self.committed_center_routes.clear();
         self.committed_realized_center_routes.clear();
+        self.committed_target_terminal_bump_guards.clear();
         self.committed_opened_cell_keys.clear();
         self.crossing_events.clear();
         self.invalidate_meander_base_prefix();

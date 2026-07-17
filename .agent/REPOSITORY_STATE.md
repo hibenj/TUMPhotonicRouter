@@ -8941,3 +8941,515 @@ Multiport MMI 16x16 full-run checkpoint:
     `build/routed_multiportmmi_16x16.gds`,
     `build/verification/multiportmmi_16x16_photonic_verification.json`,
     `build/verification/multiportmmi_16x16_crossing_verification.json`.
+
+Benes 16x16 benchmark generation checkpoint:
+
+- Date: 2026-07-17 local
+- Local benchmark status:
+  - `benchmarks/benes_16x16.py` already exists.
+  - It is generated parametrically via `benchmarks/benes.py` /
+    `build_benes_schematic(16)`, not imported from a LiDAR YAML file.
+  - Generated unrouted artifact: `build/unrouted_benes_16x16.gds`.
+  - Schematic counts: `88` instances, `88` placements, `128` nets.
+- Note: the run emitted a Matplotlib cache warning because the default
+  `%LOCALAPPDATA%\matplotlib` path is not writable in this sandbox; use
+  `MPLCONFIGDIR=build\mpl` for future benchmark runs to avoid that overhead.
+
+Benes 16x16 initial routing checkpoint:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`, `--crossings true`,
+  `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+  `--foreign-port-keepout-cells 0`, `--debug-stop-after-route 20`.
+- `benes_16x16` stop-after-20 passed:
+  - `20/128` routed, failures `0`, repairs `0`, endpoint correction `20/20 ok`.
+  - photonic verification: `success=True`, `status=partial_debug_stop`,
+    error count `0`, warning count `0`.
+  - crossing verification: `success=True`, `status=partial_debug_stop`,
+    error count `0`, warning count `0`, crossing records `1`.
+  - total time `4.9875s`.
+  - optical routing stage `3.3666s`; net routing phase `3.3615s`;
+    native route batch `2.8032s`; A* route-search loop `2.8136s`.
+  - total expanded states `675379`; full-grid fallbacks `0`.
+  - slowest routes: route 19 / `n_s0_1_o0_to_s1_0_i1` (`1.1581s`,
+    expanded `275668`), route 18 / `n_s0_0_o1_to_s1_4_i0` (`1.1300s`,
+    expanded `273233`), route 20 / `n_s0_1_o1_to_s1_4_i1` (`0.4732s`,
+    expanded `119818`).
+  - Current artifacts:
+    `build/routed_benes_16x16.gds`,
+    `build/verification/benes_16x16_photonic_verification.json`,
+    `build/verification/benes_16x16_crossing_verification.json`.
+
+Benes 16x16 full-run failure boundary:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`, `--crossings true`,
+  `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+  `--foreign-port-keepout-cells 0`.
+- Full `benes_16x16` route search completed all `128/128` A* routes but failed
+  before GDS write during photonic verification / endpoint correction.
+  - First hard endpoint-correction failure:
+    route 29 / `n_s0_6_o0_to_s1_3_i0`
+    (`sw_s0_6.o3 -> sw_s1_3.o2`).
+  - Error:
+    `crossing-aware endpoint correction produced no realizable centerline`.
+  - Reported endpoints:
+    source port `(665.5, 220.625)`, target port `(1210.0, 880.625)`,
+    source route cell `(364, 169)`, target route cell `(634, 499)`,
+    source route center `(667.507, 221.027)`, target route center
+    `(1207.507, 881.027)`.
+  - Verification then reports missing corrected centerline and source/target
+    port connectivity failures for the same net. Two later target endpoint
+    connectivity errors also appear (`n_s5_0_o1_to_s6_1_i0` plus one more).
+  - A* route-search loop `158.5785s`; native route batch `158.4780s`;
+    optical routing phase `160.9784s`; endpoint correction `127/128 ok`,
+    `1` failure.
+  - Slowest A* routes: route 105 / `n_s5_4_o0_to_s6_0_i1` (`18.7173s`),
+    route 31 / `n_s0_7_o0_to_s1_3_i1` (`16.9807s`), route 29 /
+    `n_s0_6_o0_to_s1_3_i0` (`13.3425s`).
+- Stable pre-failure GDS generated with `--debug-stop-after-route 28`:
+  - `28/128` routed, failures `0`, repairs `0`, endpoint correction
+    `28/28 ok`.
+  - photonic verification: `success=True`, `status=partial_debug_stop`,
+    error count `0`, warning count `0`.
+  - crossing verification: `success=True`, `status=partial_debug_stop`,
+    error count `0`, warning count `0`, crossing records `15`.
+  - total time `22.3763s`; native route batch `19.6502s`; A* loop
+    `19.6648s`.
+  - Current pre-failure artifact: `build/routed_benes_16x16.gds`.
+
+Benes 16x16 endpoint-failure artifact:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=true`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`,
+  `--debug-stop-after-route 32`.
+- Purpose: generate a visible GDS containing the first failing endpoint
+  correction after routing four routes beyond the stable stop-after-28 point.
+- Result:
+  - `32/128` routed, route search succeeded, repairs `0`.
+  - endpoint correction `31/32 ok`, `1` failure.
+  - photonic verification: `success=False`, `status=partial_debug_stop`,
+    error count `4`, all on route 29 / `n_s0_6_o0_to_s1_3_i0`.
+  - errors: `endpoint_correction_error`, `missing_corrected_centerline`,
+    `source_port_not_connected`, `target_port_not_connected`.
+  - total time `54.6125s`; native route batch `51.5783s`; A* loop
+    `51.5955s`.
+  - Saved artifact:
+    `build/routed_benes_16x16_stop32_endpoint_failure.gds`.
+
+Terminal bump crossing guard refinement:
+
+- Date: 2026-07-17 local
+- Change in progress:
+  - In `src/astar.rs`, `terminal_bump_guard_satisfied` keeps the target-axis
+    activation range at `required_bump_cells / 2` (`2 * bend_radius_cells`).
+  - Within that active range, a crossing is now blocked when
+    `available <= 2 * bend_radius_cells` or when `available == 4 *
+    bend_radius_cells - 2 cells`, because the bump bends start/stop on the
+    endpoint cells rather than consuming a full extra cell at both ends.
+  - Intermediate available distances between these special cases are not
+    blanket-rejected by this guard.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed after the
+    `4 * bend_radius_cells - 2` adjustment.
+  - Focused `cargo test terminal_bump_guard --lib` compiled but could not run
+    the test binary on this Windows runtime because of `STATUS_DLL_NOT_FOUND`;
+    this should be retried with the proper DLL path/toolchain runtime before
+    treating the Rust unit tests as executed.
+
+Benes 16x16 rerun after terminal bump guard refinement:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`.
+- Result:
+  - Route search completed `128/128`; attempts `128`; failures `0`; repairs `0`.
+  - Endpoint correction still failed for `1` route, so the guard refinement did
+    not resolve the first Benes 16x16 endpoint failure.
+  - Photonic verification: `success=False`, `status=complete`, error count `6`,
+    missing routes `0`.
+  - First unchanged failure:
+    route 29 / `n_s0_6_o0_to_s1_3_i0`
+    (`sw_s0_6.o3 -> sw_s1_3.o2`), `crossing-aware endpoint correction produced
+    no realizable centerline`.
+  - Additional endpoint issue remains on `n_s5_0_o1_to_s6_1_i0`
+    (`target_port_not_connected`, `target_endpoint_mismatch`).
+  - A* route-search loop `157.2222s`; native route batch `157.1482s`;
+    endpoint correction `127/128 ok`, `1` failure.
+- Stop-after-32 artifact after the same guard refinement:
+  - Config additionally set
+    `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=true` and
+    `--debug-stop-after-route 32`.
+  - Result: `32/128`, `success=False`, `status=partial_debug_stop`, error count
+    `4`, all on route 29 / `n_s0_6_o0_to_s1_3_i0`.
+  - Saved artifact:
+    `build/routed_benes_16x16_stop32_after_terminal_bump_guard.gds`.
+
+Benes 16x16 stop-after-32 after bump-span-minus-2 guard (superseded):
+
+- Date: 2026-07-17 local
+- Code state:
+  - `src/astar.rs` terminal bump guard now blocks the exact special span
+    `4 * bend_radius_cells - 2 cells`, not the full `4 * bend_radius_cells`.
+  - Rust extension was rebuilt with
+    `.\.venv\Scripts\python.exe -m maturin develop --release` before running.
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=true`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`,
+  `--debug-stop-after-route 32`.
+- Result:
+  - `32/128` routed; attempts `32`; failures `0`; repairs `0`.
+  - route search: A* loop `50.3638s`, expanded `8308012`, generated
+    `49848072`.
+  - endpoint correction: `32` calls, `1` failure.
+  - photonic verification: `success=False`, `status=partial_debug_stop`,
+    error count `4`, missing route count `96` due to debug stop.
+  - total run time `53.3965s`; native route batch `50.3478s`.
+  - Saved artifacts:
+    `build/routed_benes_16x16.gds` and
+    `build/routed_benes_16x16_stop32_terminal_bump_span_minus2.gds`.
+  - Superseded by the later rounded-cell guard below; the `-2` assumption did
+    not match the desired "exactly 12 cells" blocker.
+
+Benes 16x16 route 29 endpoint-correction analysis:
+
+- Date: 2026-07-17 local
+- Trace config used:
+  `PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS=29`,
+  `PHOTONIC_ROUTER_TRACE_ENDPOINT_CORRECTION_NETS=29`, plus the normal
+  stop-after-32 Benes 16x16 config.
+- Finding:
+  - The source-to-first-crossing terminal segment is attempted and accepted:
+    `mode=checked_terminal_segment`, segment start `(667.507, 221.027)`,
+    segment end `(739.507, 435.027)`, source port `(665.5, 220.625)`,
+    candidate label `normal_segment`.
+  - The last-crossing-to-target terminal segment is attempted and rejected:
+    segment start `(1203.507, 905.027)`, segment end `(1207.507, 881.027)`,
+    target port `(1210.0, 880.625)`, error
+    `No port endpoint correction candidates found for centerline segment`.
+  - Because the suffix correction is empty, the splice candidate has
+    `prefix_checked=True`, `suffix_checked=False`; the merged candidate starts
+    at the source port but still ends at `(1207.507, 881.027)`, not the target
+    port, so `accepts=False`.
+  - The later whole-route fallback modes also fail realization/anchoring, so no
+    `corrected_centerline_um` is stored. The GDS therefore shows the uncorrected
+    route rather than the accepted source-prefix partial correction.
+- Likely implementation cause:
+  - `centerline_port_corrected_checked_native` first tries normal segment
+    correction, then falls back to
+    `full_straight_offset_bump_candidates_for_centerline`.
+  - That bump fallback returns candidates only for fully horizontal or fully
+    vertical centerline segments. The failing suffix is a mixed terminal
+    segment, so it produces no bump candidates.
+
+Benes 16x16 stop-after-32 after rounded-cell terminal bump guard:
+
+- Date: 2026-07-17 local
+- Code state:
+  - `src/astar.rs` terminal bump guard now computes `available` in grid-cell
+    units, rounds it to an integer cell count, and blocks when
+    `available_cells <= required_bump_cells / 2` or
+    `available_cells == required_bump_cells`.
+  - This replaces the previous floating-point exact-span check and is intended
+    to catch the exact 12-cell case as a grid rule.
+  - Added a focused Rust unit test for the rounded 12-cell case.
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - Rust extension rebuilt with
+    `.\.venv\Scripts\python.exe -m maturin develop --release`.
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=true`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`,
+  `--debug-stop-after-route 32`.
+- Result:
+  - `32/128` routed; attempts `32`; failures `0`; repairs `0`.
+  - route search: A* loop `49.3942s`, expanded `8308012`, generated
+    `49848072`.
+  - endpoint correction: `32` calls, `1` failure.
+  - photonic verification: `success=False`, `status=partial_debug_stop`,
+    error count `4`, missing route count `96` due to debug stop.
+  - total run time `52.4783s`; native route batch `49.3783s`.
+  - Saved artifacts:
+    `build/routed_benes_16x16.gds` and
+    `build/routed_benes_16x16_stop32_rounded_terminal_bump_guard.gds`.
+
+Terminal bump guard correction after axis-delta analysis:
+
+- Date: 2026-07-17 local
+- Finding:
+  - For the failing route 29 suffix, the previous "rounded available cells"
+    interpretation checked the wrong value. The relevant special case is the
+    axis deviation from the target axis: for a horizontal target approach,
+    `abs(crossing_y - target_y)`, not the along-route `available` distance.
+- Code state:
+  - `src/astar.rs` restored the previous along-route `available` blocker:
+    `available <= required_bump_cells / 2` or
+    `available == required_bump_cells` using floating tolerance.
+  - Added only the new axis-delta blocker:
+    if rounded axis delta equals `required_bump_cells`, reject the crossing.
+  - For horizontal targets this blocks the `y_delta == 12 cells` case; for
+    vertical targets it blocks the analogous `x_delta == 12 cells` case.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+
+Benes 16x16 stop-after-32 after axis-delta guard:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`,
+  `--debug-stop-after-route 32`.
+- Result:
+  - `32/128` routed; attempts `32`; failures `0`; repairs `0`.
+  - endpoint correction: `32` calls, `0` failures.
+  - photonic verification: `success=True`, `status=partial_debug_stop`,
+    error count `0`, warning count `0`.
+  - route search: A* loop `50.2346s`, expanded `8317764`, generated
+    `49906584`.
+  - total run time `53.2629s`; native route batch `50.2181s`.
+  - Saved artifacts:
+    `build/routed_benes_16x16.gds` and
+    `build/routed_benes_16x16_stop32_axis_delta_guard.gds`.
+
+Benes 16x16 full-run after axis-delta guard:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`.
+- Result:
+  - Route search completed all `128/128` routes; attempts `128`; failures `0`;
+    repairs `0`; missing route count `0`.
+  - Endpoint correction reported `128` calls and `0` endpoint-correction
+    failures in the routing phase.
+  - Photonic verification failed before GDS write with `2` errors, both on
+    route `n_s5_0_o1_to_s6_1_i0` (`sw_s5_0.o2 -> sw_s6_1.o2`):
+    `target_port_not_connected` and `target_endpoint_mismatch`.
+  - Target endpoint mismatch distance was `2.5252035561518587um`, tolerance
+    `2.0um`, target port center `(6210.0, 1320.625)`.
+  - Verification metrics otherwise clean:
+    `cross_net_waveguide_overlap_count=0`,
+    `waveguide_obstacle_overlap_count=0`,
+    `crossing_component_overlap_count=0`,
+    `crossing_component_route_overlap_count=0`.
+  - Route search: A* loop `159.1639s`, expanded `23873711`, generated
+    `143242266`.
+  - total optical routing stage `161.4462s`; native route batch `159.0901s`.
+  - No GDS was written for this full run because
+    `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE` was unset.
+
+Benes 16x16 full-run failure GDS artifact:
+
+- Date: 2026-07-17 local
+- Config:
+  Same as the full-run checkpoint above, but with
+  `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=true`.
+- Result:
+  - Route search again completed all `128/128` routes; failures `0`; repairs
+    `0`; endpoint correction calls `128`; endpoint correction failures `0`.
+  - Photonic verification failed with the same `2` issues on
+    `n_s5_0_o1_to_s6_1_i0`: `target_port_not_connected` and
+    `target_endpoint_mismatch` (`2.525um` from target, tolerance `2.0um`).
+  - GDS was written despite the verification failure.
+  - Saved artifacts:
+    `build/routed_benes_16x16.gds` and
+    `build/routed_benes_16x16_full_with_target_mismatch.gds`.
+  - Total run time `167.3197s`; native route batch `156.4770s`; A* loop
+    `156.5466s`.
+
+Partner terminal bump guard cleanup:
+
+- Date: 2026-07-17 local
+- User clarified the intended guard semantics:
+  - the currently routed net must be checked against its own target-port
+    terminal bump guard;
+  - the already committed partner net must additionally be checked against
+    the partner net's own target-port terminal bump guard.
+- Code state:
+  - `src/astar.rs` extends `CrossingSearchPartner` with
+    `target_terminal_bump_guard`.
+  - `crossing_move_outcome_with_segments` now applies the existing
+    `terminal_bump_guard_satisfied` logic twice: once for
+    `crossing.terminal_bump_guard` using the route segment angle, and once for
+    `partner.target_terminal_bump_guard` using the partner segment angle.
+  - `src/py_router.rs` stores committed target guards per net in
+    `committed_target_terminal_bump_guards` and carries that map through route
+    commit, rip-up, rollback, reset, and repair snapshots.
+  - Crossing partner construction now passes the partner's stored target guard
+    into A*.
+  - The expected-pairs crossing path also passes the active net's own
+    `target_port_um` into `terminal_bump_guard_for_target`, so both crossing
+    paths check the active net and partner net consistently.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed and
+    installed the rebuilt Python extension.
+
+Benes 16x16 full rerun after symmetric active/partner target guard:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`.
+- Result:
+  - Route search completed all `128/128` routes; attempts `128`; failures `0`;
+    repairs `0`; missing route count `0`.
+  - Endpoint correction reported `128` calls and `0` endpoint-correction
+    failures during routing.
+  - Photonic verification failed before GDS write with the same `2` issues on
+    route `n_s5_0_o1_to_s6_1_i0` (`sw_s5_0.o2 -> sw_s6_1.o2`):
+    `target_port_not_connected` and `target_endpoint_mismatch`.
+  - Target port center was `(6210.0, 1320.625)`; corrected endpoint distance
+    was `2.5252035561518587um` with `2.0um` tolerance.
+  - Verification metrics otherwise clean:
+    `cross_net_waveguide_overlap_count=0`,
+    `waveguide_obstacle_overlap_count=0`,
+    `crossing_component_overlap_count=0`,
+    `crossing_component_route_overlap_count=0`.
+  - Route search timing: A* loop `157.0263s`; native route batch `156.9564s`;
+    optical routing stage `159.3455s`.
+  - Slowest routes remained normal A* routes, led by
+    `route[105] n_s5_4_o0_to_s6_0_i1` at `18.5648s`,
+    `route[31] n_s0_7_o0_to_s1_3_i1` at `16.4046s`, and
+    `route[29] n_s0_6_o0_to_s1_3_i0` at `13.2724s`.
+  - Verification JSON artifacts:
+    `build/verification/benes_16x16_photonic_verification.json` and
+    `build/verification/benes_16x16_crossing_verification.json`.
+
+Terminal bump guard path audit:
+
+- Date: 2026-07-17 local
+- Finding:
+  - A* itself performs the terminal bump guard inside
+    `crossing_move_outcome_with_segments`.
+  - The modern collision/primitives crossing path and expected-pairs path now
+    pass the active net's own `terminal_bump_guard`.
+  - The legacy/guided `try_route_through_collision_partner_set` path still had
+    `terminal_bump_guard: None`, so it checked partner target guards but skipped
+    the active net's target-port guard.
+- Fix:
+  - `try_route_through_collision_partner_set` now passes
+    `self.terminal_bump_guard_for_target(target, target_port_um)`.
+  - All crossing A* entry points now provide:
+    active net vs. active target-port guard, and partner net vs. partner
+    target-port guard.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed and
+    installed the rebuilt Python extension.
+
+Benes 16x16 full rerun after all crossing entry points pass active guard:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`.
+- Result:
+  - Route search completed all `128/128` routes; attempts `128`; failures `0`;
+    repairs `0`; missing route count `0`.
+  - Endpoint correction reported `128` calls and `0` endpoint-correction
+    failures during routing.
+  - Photonic verification still failed before GDS write with the same `2`
+    issues on `n_s5_0_o1_to_s6_1_i0` (`sw_s5_0.o2 -> sw_s6_1.o2`):
+    `target_port_not_connected` and `target_endpoint_mismatch`.
+  - Target endpoint distance remains `2.5252035561518587um` with `2.0um`
+    tolerance.
+  - Verification metrics otherwise clean: no missing routes, no cross-net
+    waveguide overlaps, no obstacle overlaps, no crossing component overlaps.
+  - Route search timing: A* loop `155.7122s`; native route batch `155.6393s`;
+    optical routing stage `158.0615s`.
+  - Conclusion:
+    The previous missing active-guard entry point was fixed, but this benchmark
+    failure did not change. Next investigation should trace whether
+    `n_s5_0_o1_to_s6_1_i0` or its crossing partner actually receives a
+    terminal bump guard for the problematic target-port-side crossing, and if
+    yes whether endpoint correction still leaves the final segment outside the
+    port tolerance.
+
+Benes 16x16 trace for remaining port mismatch:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `PHOTONIC_ROUTER_TRACE_CROSSING_NET=98` then
+  `PHOTONIC_ROUTER_TRACE_CROSSING_NET=105`,
+  `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=true`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`.
+- Finding:
+  - Net `98` is `n_s5_0_o1_to_s6_1_i0`, the route reported by photonic
+    verification.
+  - Tracing net `98` showed it routes with no crossing events:
+    `accepted=0`, `candidates=0`, `events=[]`.
+  - The problematic crossing is inserted later by net `105`
+    (`n_s5_4_o0_to_s6_0_i1`) with net `98` as an already committed partner.
+  - Tracing net `105` showed it accepts the crossing with partner `98` at
+    `(6189.507, 1321.027)um`, grid cell `(3125, 719)`, route angle `2`,
+    partner angle `0`.
+  - Crossing verification reports that crossing as legal and expected, with
+    partner segment `n_s5_0_o1_to_s6_1_i0` horizontal from
+    `(6012.507, 1320.027)um` to `(6206.507, 1320.027)um`.
+  - The target port for net `98` is `(6210.0, 1320.625)um`.
+  - Derived grid coordinates with current grid origin/size:
+    target grid `(3135.7465, 719.299)`, crossing grid `(3125.5, 719.5)`.
+  - Current `terminal_bump_guard_satisfied` logic therefore evaluates
+    horizontal partner guard with axis delta about `0.5 cells` and available
+    distance about `6.5 cells` by its internal formula. The guard only rejects
+    `available <= 6 cells` or exactly `12 cells`, so this crossing is accepted.
+  - This explains why the symmetric partner guard exists but still does not
+    reject the failing case: the remaining bug is the guard's allowed
+    intermediate gap between the minimum axis-margin threshold and the actual
+    required bump/runout distance.
+  - Artifact:
+  - Final failed GDS was written and copied to
+    `build/routed_benes_16x16_trace_net105_failed.gds`.
+
+Terminal bump guard along-distance fix and Benes 16x16 success:
+
+- Date: 2026-07-17 local
+- Fix:
+  - Corrected the A* terminal bump guard's port-facing distance logic in
+    `src/astar.rs`.
+  - When a crossing faces a terminal port, the along-axis available distance
+    now blocks the crossing if it is shorter than the required terminal bump
+    length, and still blocks the exact required-distance special case.
+  - This applies equally to the active net guard and the partner net guard,
+    because both use `terminal_bump_guard_satisfied` inside A*.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed and
+    installed the rebuilt Python extension.
+  - Full `benes_16x16` run passed with config:
+    `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+    `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=true`,
+    `--crossings true`, `--crossing-mode lidar-pure`,
+    `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`.
+  - Route search completed all `128/128` routes; attempts `128`; failures `0`;
+    repairs `0`; endpoint-correction failures `0`.
+  - Photonic verification: `success=True`, `status=complete`, `errors=0`,
+    `warnings=0`; no missing routes, no waveguide obstacle overlaps, no
+    cross-net waveguide overlaps, no crossing component overlaps.
+  - Timing: optical routing stage `164.1580s`; native route batch
+    `161.5117s`; A* loop `161.5909s`; total run `173.1582s`.
+  - The previously failing crossing between net `105`
+    (`n_s5_4_o0_to_s6_0_i1`) and partner net `98`
+    (`n_s5_0_o1_to_s6_1_i0`) moved from `(6189.507, 1321.027)um` to
+    `(6171.507, 1321.027)um`, leaving sufficient distance to the target port.
+- Artifact:
+  - Successful GDS copied to
+    `build/routed_benes_16x16_terminal_guard_fixed.gds`.

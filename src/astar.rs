@@ -185,6 +185,7 @@ pub struct RouteResult {
 pub struct CrossingSearchPartner {
     pub net_id: NetId,
     pub waypoints: Vec<(i32, i32)>,
+    pub target_terminal_bump_guard: Option<TerminalBumpGuard>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4248,26 +4249,40 @@ fn terminal_bump_guard_satisfied(
     let crossing_half = f64::from(crossing_half_size_cells.max(0));
     let required = f64::from(guard.required_bump_cells.max(0));
     let axis_margin = f64::from((guard.required_bump_cells / 2).max(0));
+    let available_is_blocked = |available: f64| -> bool {
+        available + eps < required || (available - required).abs() <= eps
+    };
+    let axis_delta_is_blocked = |axis_delta: f64| -> bool {
+        (axis_delta.round() - required).abs() <= eps
+    };
     match guard.axis {
         TerminalBumpAxis::Horizontal => {
             if route_angle % 8 != 0 && route_angle % 8 != 4 {
                 return true;
             }
-            if (y - guard.target_axis_coord).abs() > axis_margin + eps {
+            let axis_delta = (y - guard.target_axis_coord).abs();
+            if axis_delta_is_blocked(axis_delta) {
+                return false;
+            }
+            if axis_delta > axis_margin + eps {
                 return true;
             }
             let available = (guard.target_along_coord - x).abs() - crossing_half;
-            available + eps >= required
+            !available_is_blocked(available)
         }
         TerminalBumpAxis::Vertical => {
             if route_angle % 8 != 2 && route_angle % 8 != 6 {
                 return true;
             }
-            if (x - guard.target_axis_coord).abs() > axis_margin + eps {
+            let axis_delta = (x - guard.target_axis_coord).abs();
+            if axis_delta_is_blocked(axis_delta) {
+                return false;
+            }
+            if axis_delta > axis_margin + eps {
                 return true;
             }
             let available = (guard.target_along_coord - y).abs() - crossing_half;
-            available + eps >= required
+            !available_is_blocked(available)
         }
     }
 }
@@ -5681,6 +5696,35 @@ fn crossing_move_outcome_with_segments(
                             crossing,
                             partner.net_id,
                             "terminal_bump_distance",
+                            x,
+                            y,
+                            route_segment.angle,
+                            partner_segment.angle,
+                            required_margin,
+                            partner_margin,
+                            distance_from_primitive_start,
+                            route_segment.length - distance_on_segment,
+                        );
+                        stats.crossing_reject_margin += 1;
+                        return None;
+                    }
+                    if !terminal_bump_guard_satisfied(
+                        partner.target_terminal_bump_guard,
+                        crossing.crossing_half_size_cells,
+                        x,
+                        y,
+                        partner_segment.angle,
+                    ) {
+                        record_perpendicular_crossing_reject(
+                            stats,
+                            crossing,
+                            partner.net_id,
+                            search_start,
+                        );
+                        trace_crossing_candidate(
+                            crossing,
+                            partner.net_id,
+                            "partner_terminal_bump_distance",
                             x,
                             y,
                             route_segment.angle,
@@ -8861,6 +8905,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 1,
                 waypoints: vec![(8, 2), (8, 10)],
+                target_terminal_bump_guard: None,
             }],
             min_straight_cells: 1,
             crossing_half_size_cells: 0,
@@ -8954,14 +8999,17 @@ mod tests {
             CrossingSearchPartner {
                 net_id: 14,
                 waypoints: vec![(364, 168), (444, 168), (553, 59), (634, 59)],
+                target_terminal_bump_guard: None,
             },
             CrossingSearchPartner {
                 net_id: 12,
                 waypoints: vec![(364, 278), (444, 278), (554, 168), (634, 168)],
+                target_terminal_bump_guard: None,
             },
             CrossingSearchPartner {
                 net_id: 10,
                 waypoints: vec![(364, 388), (414, 388), (627, 175), (634, 169)],
+                target_terminal_bump_guard: None,
             },
         ];
         let mut committed_partner_ids = FxHashSet::default();
@@ -9059,10 +9107,12 @@ mod tests {
             CrossingSearchPartner {
                 net_id: 12,
                 waypoints: vec![(364, 278), (444, 278), (554, 168), (634, 168)],
+                target_terminal_bump_guard: None,
             },
             CrossingSearchPartner {
                 net_id: 10,
                 waypoints: vec![(364, 388), (414, 388), (627, 175), (634, 169)],
+                target_terminal_bump_guard: None,
             },
         ];
         let mut committed_partner_ids = FxHashSet::default();
@@ -9167,6 +9217,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
                 waypoints: vec![(6, 5), (6, 7)],
+                target_terminal_bump_guard: None,
             }],
             min_straight_cells: 1,
             crossing_half_size_cells: 0,
@@ -9241,6 +9292,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 32,
                 waypoints: partner_waypoints,
+                target_terminal_bump_guard: None,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 0,
@@ -9337,6 +9389,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 32,
                 waypoints: partner_waypoints,
+                target_terminal_bump_guard: None,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 0,
@@ -9403,6 +9456,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
                 waypoints: vec![(5, 3), (7, 5)],
+                target_terminal_bump_guard: None,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 0,
@@ -9627,6 +9681,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
                 waypoints: partner_waypoints,
+                target_terminal_bump_guard: None,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 1,
@@ -9774,6 +9829,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
                 waypoints: partner,
+                target_terminal_bump_guard: None,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 2,
@@ -9819,7 +9875,7 @@ mod tests {
     #[test]
     fn crossing_terminal_bump_guard_rejects_too_close_target_axis_crossing() {
         let (map, crossing, key, primitive, partner_index_by_id) =
-            terminal_bump_guard_test_setup(17.0);
+            terminal_bump_guard_test_setup(13.0);
         let mut stats = RouteSearchStats::default();
         let outcome = crossing_move_outcome(
             &map,
@@ -9843,7 +9899,7 @@ mod tests {
     #[test]
     fn crossing_terminal_bump_guard_rejects_at_exact_axis_margin() {
         let (map, mut crossing, key, primitive, partner_index_by_id) =
-            terminal_bump_guard_test_setup(17.0);
+            terminal_bump_guard_test_setup(13.0);
         crossing.terminal_bump_guard = crossing.terminal_bump_guard.map(|mut guard| {
             guard.target_axis_coord = -2.0;
             guard
@@ -9869,7 +9925,31 @@ mod tests {
     }
 
     #[test]
-    fn crossing_terminal_bump_guard_accepts_exact_required_target_axis_distance() {
+    fn crossing_terminal_bump_guard_rejects_insufficient_available_distance() {
+        let (map, crossing, key, primitive, partner_index_by_id) =
+            terminal_bump_guard_test_setup(16.0);
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            key,
+            State::new(0, 4, 0),
+            &primitive,
+            true,
+            2,
+            2,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(stats.crossing_reject_margin, 1);
+    }
+
+    #[test]
+    fn crossing_terminal_bump_guard_rejects_exact_required_target_axis_distance() {
         let (map, crossing, key, primitive, partner_index_by_id) =
             terminal_bump_guard_test_setup(19.0);
         let mut stats = RouteSearchStats::default();
@@ -9886,12 +9966,95 @@ mod tests {
             None,
             &partner_index_by_id,
             &mut stats,
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(stats.crossing_reject_margin, 1);
+    }
+
+    #[test]
+    fn crossing_terminal_bump_guard_rejects_rounded_required_axis_delta() {
+        let (map, mut crossing, key, primitive, partner_index_by_id) =
+            terminal_bump_guard_test_setup(20.0);
+        crossing.terminal_bump_guard = crossing.terminal_bump_guard.map(|mut guard| {
+            guard.target_axis_coord = -8.0;
+            guard
+        });
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            key,
+            State::new(0, 4, 0),
+            &primitive,
+            true,
+            2,
+            2,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(stats.crossing_reject_margin, 1);
+    }
+
+    #[test]
+    fn crossing_terminal_bump_guard_accepts_more_than_required_target_axis_distance() {
+        let (map, crossing, key, primitive, partner_index_by_id) =
+            terminal_bump_guard_test_setup(20.0);
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            key,
+            State::new(0, 4, 0),
+            &primitive,
+            true,
+            2,
+            2,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut stats,
         )
-        .expect("available distance equals the required terminal bump distance");
+        .expect("available distance exceeds the full terminal bump distance");
 
         assert_eq!(outcome.crossing_count, 1);
         assert_eq!(stats.crossing_accepted, 1);
         assert_eq!(stats.crossing_reject_margin, 0);
+    }
+
+    #[test]
+    fn crossing_partner_terminal_bump_guard_rejects_partner_target_axis_distance() {
+        let (map, mut crossing, key, primitive, partner_index_by_id) =
+            terminal_bump_guard_test_setup(20.0);
+        crossing.terminal_bump_guard = None;
+        crossing.partners[0].target_terminal_bump_guard = Some(TerminalBumpGuard {
+            axis: TerminalBumpAxis::Vertical,
+            target_axis_coord: -7.0,
+            target_along_coord: 20.0,
+            required_bump_cells: 12,
+        });
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            key,
+            State::new(0, 4, 0),
+            &primitive,
+            true,
+            2,
+            2,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        );
+
+        assert!(outcome.is_none());
+        assert_eq!(stats.crossing_reject_margin, 1);
     }
 
     #[test]
@@ -9921,10 +10084,12 @@ mod tests {
                 CrossingSearchPartner {
                     net_id: 2,
                     waypoints: partner_a,
+                    target_terminal_bump_guard: None,
                 },
                 CrossingSearchPartner {
                     net_id: 3,
                     waypoints: partner_b,
+                    target_terminal_bump_guard: None,
                 },
             ],
             min_straight_cells: 0,
@@ -9994,6 +10159,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 33,
                 waypoints: partner_waypoints,
+                target_terminal_bump_guard: None,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 3,
@@ -10097,6 +10263,7 @@ mod tests {
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
                 waypoints: vec![(2, 8), (10, 8)],
+                target_terminal_bump_guard: None,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 2,
