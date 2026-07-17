@@ -67,6 +67,7 @@ pub struct AStarConfig {
     pub simple_route_min_leg_len_cells: i32,
     pub ignore_dynamic_obstacles: bool,
     pub history_weight: f64,
+    pub long_straight_congestion_weight: f64,
     pub proactive_congestion_weight: f64,
     pub proactive_congestion_radius_cells: i32,
     pub collect_detailed_timing: bool,
@@ -101,6 +102,7 @@ impl Default for AStarConfig {
             simple_route_min_leg_len_cells: 1,
             ignore_dynamic_obstacles: false,
             history_weight: 0.0,
+            long_straight_congestion_weight: 0.0,
             proactive_congestion_weight: 0.0,
             proactive_congestion_radius_cells: 0,
             collect_detailed_timing: false,
@@ -650,6 +652,8 @@ struct DenseRoutingGrid {
     blocked_prefix: Option<Vec<u32>>,
     history: Option<Vec<u32>>,
     history_prefix: Option<Vec<u64>>,
+    congestion: Option<Vec<u32>>,
+    congestion_prefix: Option<Vec<u64>>,
     blocked_count: usize,
     build_time_us: u128,
 }
@@ -741,6 +745,7 @@ impl DenseRoutingGrid {
         max_dense_obstacle_cells: usize,
         ignore_dynamic_obstacles: bool,
         build_history: bool,
+        build_congestion: bool,
     ) -> Option<Self> {
         Self::from_obstacle_map_with_dynamic_expansion(
             obstacle_map,
@@ -749,6 +754,7 @@ impl DenseRoutingGrid {
             max_dense_obstacle_cells,
             ignore_dynamic_obstacles,
             build_history,
+            build_congestion,
             0,
             None,
         )
@@ -761,6 +767,7 @@ impl DenseRoutingGrid {
         max_dense_obstacle_cells: usize,
         ignore_dynamic_obstacles: bool,
         build_history: bool,
+        build_congestion: bool,
         dynamic_expansion_radius_cells: i32,
         dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
     ) -> Option<Self> {
@@ -781,6 +788,11 @@ impl DenseRoutingGrid {
         let mut blocked_cells = vec![0u8; cell_count];
         let mut blocked_bits = DenseBitset::new(cell_count)?;
         let mut history = if build_history {
+            Some(vec![0u32; cell_count])
+        } else {
+            None
+        };
+        let mut congestion = if build_congestion {
             Some(vec![0u32; cell_count])
         } else {
             None
@@ -898,6 +910,15 @@ impl DenseRoutingGrid {
                 history[idx] = cost;
             }
         }
+        if let Some(congestion) = congestion.as_mut() {
+            for (key, cost) in obstacle_map.congestion_entries() {
+                let (x, y) = unpack_xy(key);
+                let Some(idx) = local_idx(x, y) else {
+                    continue;
+                };
+                congestion[idx] = cost;
+            }
+        }
 
         let stride = usize::try_from(width).ok()?.checked_add(1)?;
         let mut blocked_prefix =
@@ -912,9 +933,20 @@ impl DenseRoutingGrid {
         } else {
             None
         };
+        let mut congestion_prefix = if build_congestion {
+            Some(vec![
+                0u64;
+                stride.checked_mul(
+                    usize::try_from(height).ok()?.checked_add(1)?
+                )?
+            ])
+        } else {
+            None
+        };
         for local_y in 0..height {
             let mut row_sum = 0u32;
             let mut history_row_sum = 0u64;
+            let mut congestion_row_sum = 0u64;
             let y_base = usize::try_from(local_y).ok()?;
             let src_base = y_base.checked_mul(width_usize)?;
             let prefix_row = (y_base + 1).checked_mul(stride)?;
@@ -927,12 +959,21 @@ impl DenseRoutingGrid {
                     history_row_sum =
                         history_row_sum.saturating_add(u64::from(history[blocked_idx]));
                 }
+                if let Some(congestion) = congestion.as_ref() {
+                    congestion_row_sum =
+                        congestion_row_sum.saturating_add(u64::from(congestion[blocked_idx]));
+                }
                 let prefix_idx = prefix_row.checked_add(x_idx + 1)?;
                 let above = blocked_prefix[prefix_above + x_idx + 1];
                 blocked_prefix[prefix_idx] = above.saturating_add(row_sum);
                 if let Some(history_prefix) = history_prefix.as_mut() {
                     let history_above = history_prefix[prefix_above + x_idx + 1];
                     history_prefix[prefix_idx] = history_above.saturating_add(history_row_sum);
+                }
+                if let Some(congestion_prefix) = congestion_prefix.as_mut() {
+                    let congestion_above = congestion_prefix[prefix_above + x_idx + 1];
+                    congestion_prefix[prefix_idx] =
+                        congestion_above.saturating_add(congestion_row_sum);
                 }
             }
         }
@@ -945,6 +986,8 @@ impl DenseRoutingGrid {
             blocked_prefix: Some(blocked_prefix),
             history,
             history_prefix,
+            congestion,
+            congestion_prefix,
             blocked_count,
             build_time_us: start.elapsed().as_micros(),
         })
@@ -1059,6 +1102,38 @@ impl DenseRoutingGrid {
         }
 
         let prefix = self.history_prefix.as_ref()?;
+        let width_usize = usize::try_from(width).ok()?;
+        let stride = width_usize.checked_add(1)?;
+        let x1 = usize::try_from(local_min_x).ok()?;
+        let y1 = usize::try_from(local_min_y).ok()?;
+        let x2 = usize::try_from(local_max_x).ok()?;
+        let y2 = usize::try_from(local_max_y).ok()?;
+
+        let a = prefix[(y2 + 1).checked_mul(stride)? + (x2 + 1)];
+        let b = prefix[y1.checked_mul(stride)? + (x2 + 1)];
+        let c = prefix[(y2 + 1).checked_mul(stride)? + x1];
+        let d = prefix[y1.checked_mul(stride)? + x1];
+        Some(a.saturating_add(d).saturating_sub(b).saturating_sub(c))
+    }
+
+    #[inline]
+    fn congestion_cost_in_local_rect(
+        &self,
+        local_min_x: i32,
+        local_max_x: i32,
+        local_min_y: i32,
+        local_max_y: i32,
+    ) -> Option<u64> {
+        let width = self.width;
+        if local_min_x > local_max_x || local_min_y > local_max_y {
+            return None;
+        }
+        if local_min_x < 0 || local_min_y < 0 || local_max_x >= width || local_max_y >= self.height
+        {
+            return None;
+        }
+
+        let prefix = self.congestion_prefix.as_ref()?;
         let width_usize = usize::try_from(width).ok()?;
         let stride = width_usize.checked_add(1)?;
         let x1 = usize::try_from(local_min_x).ok()?;
@@ -1269,6 +1344,63 @@ impl DenseRoutingGrid {
                 return u64::MAX;
             };
             total = total.saturating_add(u64::from(history[idx]));
+        }
+        total
+    }
+
+    #[inline]
+    fn primitive_footprint_congestion_with_profile(
+        &self,
+        origin_x: i32,
+        origin_y: i32,
+        footprint: &[(i32, i32)],
+        profile: &FootprintCollisionProfile,
+    ) -> u64 {
+        if profile.is_full_rect {
+            let Some(rect_min_x) = origin_x.checked_add(profile.min_dx) else {
+                return u64::MAX;
+            };
+            let Some(rect_max_x) = origin_x.checked_add(profile.max_dx) else {
+                return u64::MAX;
+            };
+            let Some(rect_min_y) = origin_y.checked_add(profile.min_dy) else {
+                return u64::MAX;
+            };
+            let Some(rect_max_y) = origin_y.checked_add(profile.max_dy) else {
+                return u64::MAX;
+            };
+            let Some(local_min_x) = rect_min_x.checked_sub(self.bounds.min_x) else {
+                return u64::MAX;
+            };
+            let Some(local_max_x) = rect_max_x.checked_sub(self.bounds.min_x) else {
+                return u64::MAX;
+            };
+            let Some(local_min_y) = rect_min_y.checked_sub(self.bounds.min_y) else {
+                return u64::MAX;
+            };
+            let Some(local_max_y) = rect_max_y.checked_sub(self.bounds.min_y) else {
+                return u64::MAX;
+            };
+            return self
+                .congestion_cost_in_local_rect(local_min_x, local_max_x, local_min_y, local_max_y)
+                .unwrap_or(u64::MAX);
+        }
+
+        let mut total = 0u64;
+        let Some(congestion) = self.congestion.as_ref() else {
+            return 0;
+        };
+        for (dx, dy) in footprint.iter().copied() {
+            let Some(x) = origin_x.checked_add(dx) else {
+                return u64::MAX;
+            };
+            let Some(y) = origin_y.checked_add(dy) else {
+                return u64::MAX;
+            };
+            let Some(idx) = self.idx_of(x, y) else {
+                return u64::MAX;
+            };
+            total = total.saturating_add(u64::from(congestion[idx]));
         }
         total
     }
@@ -2046,7 +2178,9 @@ pub fn route_single_net_with_collision_crossing_config_with_stats(
     dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
     crossing: &CrossingSearchConfig,
 ) -> (Option<RouteResult>, RouteSearchStats) {
-    if crossing.partners.is_empty() || crossing.partners.len() > u64::BITS as usize {
+    if crossing.partners.is_empty()
+        || (crossing.require_all_partners && crossing.partners.len() >= u64::BITS as usize)
+    {
         return (None, RouteSearchStats::default());
     }
     if config.target_tolerance_cells < 0 {
@@ -2196,7 +2330,9 @@ pub fn route_single_net_with_crossing_config(
     dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
     crossing: &CrossingSearchConfig,
 ) -> Option<RouteResult> {
-    if crossing.partners.is_empty() || crossing.partners.len() > u64::BITS as usize {
+    if crossing.partners.is_empty()
+        || (crossing.require_all_partners && crossing.partners.len() >= u64::BITS as usize)
+    {
         return None;
     }
     if config.target_tolerance_cells < 0 {
@@ -2434,6 +2570,7 @@ fn route_single_net_jps4(
         port_open_cells,
         config.max_dense_obstacle_cells,
         config.ignore_dynamic_obstacles,
+        false,
         false,
     )?;
     stats.dense_grid_cells = dense_grid.blocked_count();
@@ -3300,6 +3437,7 @@ fn route_single_net_with_bounds_dynamic_expansion(
         config.max_dense_obstacle_cells,
         config.ignore_dynamic_obstacles,
         config.history_weight > 0.0,
+        config.long_straight_congestion_weight > 0.0,
         dynamic_expansion_radius_cells,
         dynamic_clearance_exempt_cells,
     ) {
@@ -3562,6 +3700,18 @@ fn route_single_net_with_bounds_dynamic_expansion(
             } else {
                 0.0
             };
+            let long_straight_congestion_cost =
+                if config.long_straight_congestion_weight > 0.0 {
+                    dense_grid.primitive_footprint_congestion_with_profile(
+                        state.x,
+                        state.y,
+                        &primitive.footprint,
+                        profile,
+                    ) as f64
+                        * config.long_straight_congestion_weight
+                } else {
+                    0.0
+                };
             let congestion_cost = if config.proactive_congestion_weight > 0.0
                 && config.proactive_congestion_radius_cells > 0
                 && primitive_class_is_straight(primitive_class)
@@ -3576,7 +3726,8 @@ fn route_single_net_with_bounds_dynamic_expansion(
             } else {
                 0.0
             };
-            let step_cost = base_step_cost + history_cost + congestion_cost;
+            let step_cost =
+                base_step_cost + history_cost + long_straight_congestion_cost + congestion_cost;
             let tentative_g = current_g + step_cost;
             if tentative_g >= storage.g_costs[next_idx] {
                 stats.primitive_cost_pruned_by_class[primitive_class] += 1;
@@ -4158,6 +4309,7 @@ fn route_single_net_with_bounds_crossing(
         config.max_dense_obstacle_cells,
         config.ignore_dynamic_obstacles,
         config.history_weight > 0.0,
+        config.long_straight_congestion_weight > 0.0,
         dynamic_expansion_radius_cells,
         dynamic_clearance_exempt_cells,
     ) {
@@ -4220,7 +4372,7 @@ fn route_single_net_with_bounds_crossing(
     } else {
         0
     };
-    let all_partner_count = crossing.partners.len() as u8;
+    let all_partner_count = u8::try_from(crossing.partners.len()).unwrap_or(u8::MAX);
     let partner_index_by_id: FxHashMap<NetId, usize> = crossing
         .partners
         .iter()
@@ -4372,6 +4524,17 @@ fn route_single_net_with_bounds_crossing(
             if key.pending_after_crossing_cells > 0 {
                 if key.pending_after_crossing_angle != state.angle {
                     stats.crossing_reject_pending_straight += 1;
+                    trace_crossing_corridor_transition(
+                        crossing,
+                        "reject_pending_angle",
+                        state,
+                        None,
+                        primitive.id,
+                        key.pending_after_crossing_cells,
+                        key.pending_after_crossing_cells,
+                        None,
+                        None,
+                    );
                     record_pending_after_crossing_reject(
                         stats,
                         crossing,
@@ -4386,6 +4549,17 @@ fn route_single_net_with_bounds_crossing(
                         && pending_initial_run > 0.0)
                 {
                     stats.crossing_reject_pending_straight += 1;
+                    trace_crossing_corridor_transition(
+                        crossing,
+                        "reject_pending_run",
+                        state,
+                        None,
+                        primitive.id,
+                        key.pending_after_crossing_cells,
+                        key.pending_after_crossing_cells,
+                        None,
+                        None,
+                    );
                     record_pending_after_crossing_reject(
                         stats,
                         crossing,
@@ -4436,6 +4610,17 @@ fn route_single_net_with_bounds_crossing(
             {
                 stats.footprint_rejects += 1;
                 stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                trace_crossing_corridor_transition(
+                    crossing,
+                    "reject_unopened_static",
+                    state,
+                    Some(next_state),
+                    primitive.id,
+                    key.pending_after_crossing_cells,
+                    key.pending_after_crossing_cells,
+                    None,
+                    None,
+                );
                 if profile.is_full_rect {
                     stats.primitive_footprint_rect_rejects += 1;
                 }
@@ -4495,11 +4680,33 @@ fn route_single_net_with_bounds_crossing(
                         stats.primitive_footprint_rect_rejects += 1;
                     }
                 }
+                trace_crossing_corridor_transition(
+                    crossing,
+                    "reject_crossing_outcome",
+                    state,
+                    Some(next_state),
+                    primitive.id,
+                    key.pending_after_crossing_cells,
+                    key.pending_after_crossing_cells,
+                    None,
+                    None,
+                );
                 continue;
             };
             if !footprint_free && crossing_outcome.crossing_count == 0 {
                 stats.footprint_rejects += 1;
                 stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                trace_crossing_corridor_transition(
+                    crossing,
+                    "reject_footprint_no_crossing",
+                    state,
+                    Some(next_state),
+                    primitive.id,
+                    key.pending_after_crossing_cells,
+                    crossing_outcome.pending_after_crossing_cells,
+                    None,
+                    None,
+                );
                 if profile.is_full_rect {
                     stats.primitive_footprint_rect_rejects += 1;
                 }
@@ -4531,6 +4738,18 @@ fn route_single_net_with_bounds_crossing(
             } else {
                 0.0
             };
+            let long_straight_congestion_cost =
+                if config.long_straight_congestion_weight > 0.0 {
+                    dense_grid.primitive_footprint_congestion_with_profile(
+                        state.x,
+                        state.y,
+                        &primitive.footprint,
+                        profile,
+                    ) as f64
+                        * config.long_straight_congestion_weight
+                } else {
+                    0.0
+                };
             let congestion_cost = if config.proactive_congestion_weight > 0.0
                 && config.proactive_congestion_radius_cells > 0
                 && primitive_class_is_straight(primitive_class)
@@ -4547,11 +4766,24 @@ fn route_single_net_with_bounds_crossing(
             };
             let step_cost = metadata.base_step_cost
                 + history_cost
+                + long_straight_congestion_cost
                 + congestion_cost
                 + f64::from(crossing_outcome.crossing_count) * crossing.crossing_loss;
             let tentative_g = node_g_score + step_cost;
-            if tentative_g >= state_storage.best_cost(next_key).unwrap_or(f64::INFINITY) {
+            let best_next_g = state_storage.best_cost(next_key);
+            if tentative_g >= best_next_g.unwrap_or(f64::INFINITY) {
                 stats.primitive_cost_pruned_by_class[primitive_class] += 1;
+                trace_crossing_corridor_transition(
+                    crossing,
+                    "reject_cost_pruned",
+                    state,
+                    Some(next_state),
+                    primitive.id,
+                    key.pending_after_crossing_cells,
+                    crossing_outcome.pending_after_crossing_cells,
+                    Some(tentative_g),
+                    best_next_g,
+                );
                 continue;
             }
             if crossing_candidate_hits_active_local_crossing_reservation(
@@ -4562,6 +4794,17 @@ fn route_single_net_with_bounds_crossing(
             ) {
                 stats.footprint_rejects += 1;
                 stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                trace_crossing_corridor_transition(
+                    crossing,
+                    "reject_active_local_reservation",
+                    state,
+                    Some(next_state),
+                    primitive.id,
+                    key.pending_after_crossing_cells,
+                    crossing_outcome.pending_after_crossing_cells,
+                    Some(tentative_g),
+                    best_next_g,
+                );
                 continue;
             }
 
@@ -4602,6 +4845,17 @@ fn route_single_net_with_bounds_crossing(
                 pending_local_reservation_keys,
             });
             state_storage.set_best_cost(next_key, tentative_g);
+            trace_crossing_corridor_transition(
+                crossing,
+                "accept_push",
+                state,
+                Some(next_state),
+                primitive.id,
+                key.pending_after_crossing_cells,
+                crossing_outcome.pending_after_crossing_cells,
+                Some(tentative_g),
+                best_next_g,
+            );
             let generation = next_search_generation(&mut counter)?;
             open_set.push(OpenEntry {
                 f_score: tentative_g
@@ -4797,6 +5051,60 @@ fn trace_crossing_candidate(
         partner_margin,
         route_before,
         route_after,
+    );
+}
+
+fn trace_crossing_corridor_transition(
+    crossing: &CrossingSearchConfig,
+    reason: &str,
+    state: State,
+    next_state: Option<State>,
+    primitive_id: u16,
+    pending_before: i32,
+    pending_after: i32,
+    tentative_g: Option<f64>,
+    best_g: Option<f64>,
+) {
+    let Some(bbox_text) = std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_CORRIDOR") else {
+        return;
+    };
+    if let Ok(trace_net_id) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET") {
+        if trace_net_id
+            .parse::<u64>()
+            .is_ok_and(|net_id| net_id != crossing.net_id)
+        {
+            return;
+        }
+    }
+    let bbox_text = bbox_text.to_string_lossy();
+    let parts: Vec<i32> = bbox_text
+        .split(',')
+        .filter_map(|part| part.trim().parse::<i32>().ok())
+        .collect();
+    if parts.len() != 4 {
+        return;
+    }
+    let min_x = parts[0].min(parts[2]);
+    let max_x = parts[0].max(parts[2]);
+    let min_y = parts[1].min(parts[3]);
+    let max_y = parts[1].max(parts[3]);
+    let in_bbox = |s: State| s.x >= min_x && s.x <= max_x && s.y >= min_y && s.y <= max_y;
+    if !in_bbox(state) && !next_state.is_some_and(in_bbox) {
+        return;
+    }
+    eprintln!(
+        "crossing-corridor net={} reason={} state=({}, {}, {}) next={:?} primitive={} pending_before={} pending_after={} tentative_g={:?} best_g={:?}",
+        crossing.net_id,
+        reason,
+        state.x,
+        state.y,
+        state.angle,
+        next_state.map(|s| (s.x, s.y, s.angle)),
+        primitive_id,
+        pending_before,
+        pending_after,
+        tentative_g,
+        best_g,
     );
 }
 
@@ -5240,7 +5548,11 @@ fn crossing_move_outcome_with_segments(
         for contact in contacted_partners.iter() {
             let partner_idx = contact.partner_idx;
             let partner = &crossing.partners[partner_idx];
-            let bit = 1u64 << partner_idx;
+            let bit = if track_crossed_partners {
+                1u64 << partner_idx
+            } else {
+                0
+            };
             let intersection_count_before = route_intersections.len();
             for (route_segment_idx, relative_route_segment) in primitive_segments.iter().enumerate()
             {
@@ -8172,12 +8484,12 @@ mod tests {
         };
 
         let closed_grid =
-            DenseRoutingGrid::from_obstacle_map(&map, bounds, None, 1_000, false, false)
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, None, 1_000, false, false, false)
                 .expect("grid");
         assert!(closed_grid.is_blocked(3, 2));
 
         let opened_grid =
-            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000, false, false)
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000, false, false, false)
                 .expect("grid");
         assert!(!opened_grid.is_blocked(3, 2));
     }
@@ -8196,7 +8508,7 @@ mod tests {
         };
 
         let opened_grid =
-            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000, false, false)
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, Some(&opened), 1_000, false, false, false)
                 .expect("grid");
         assert!(opened_grid.is_blocked(3, 2));
     }
@@ -8251,6 +8563,7 @@ mod tests {
             1_000,
             false,
             false,
+            false,
         )
         .expect("grid");
         assert!(grid.is_blocked(1, 1));
@@ -8276,6 +8589,7 @@ mod tests {
             },
             Some(&opened),
             1_000,
+            false,
             false,
             false,
         )
@@ -8307,6 +8621,7 @@ mod tests {
             1_000,
             false,
             false,
+            false,
         )
         .expect("grid");
 
@@ -8332,6 +8647,7 @@ mod tests {
             },
             None,
             1_000,
+            false,
             false,
             false,
         )
@@ -8369,6 +8685,7 @@ mod tests {
             1_000,
             false,
             false,
+            false,
         )
         .expect("grid");
         let footprint = &[(0, 0), (1, 0), (1, 1)];
@@ -8399,6 +8716,7 @@ mod tests {
             },
             Some(&opened),
             1_000,
+            false,
             false,
             false,
         )

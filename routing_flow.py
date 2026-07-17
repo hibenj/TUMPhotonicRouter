@@ -1583,8 +1583,9 @@ def run_routing_flow(
         routing_window_scale: Optional A* routing-window margin scale. If None,
                       the Rust AStarConfig default is used.
         include_heater_obstacles: If True, include configured heater/metal
-                      layers as static optical-routing obstacles and enable
-                      component-specific heater optical port openings.
+                      layers as static optical-routing obstacles. Component-
+                      specific optical port openings still apply when their
+                      component rules match.
         grid_size_um: Optical routing grid resolution in micrometers.
         waveguide_clearance_um: Static clearance in micrometers for existing
                       optical/waveguide obstacles.

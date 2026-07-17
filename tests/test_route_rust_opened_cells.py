@@ -279,7 +279,7 @@ def test_rust_dynamic_clearance_exempt_batch_uses_endpoint_contact_cells_only():
     assert (12, 12) not in diagonal_cells
 
 
-def test_route_nets_rust_applies_heater_opening_only_to_connected_endpoint(
+def test_route_nets_rust_applies_heater_opening_without_heater_obstacle_layers(
     monkeypatch,
     tmp_path,
 ):
@@ -337,7 +337,7 @@ def test_route_nets_rust_applies_heater_opening_only_to_connected_endpoint(
         debug_prefix="heater_keyed_openings",
         route_width_um=0.5,
         allow_45_degree_turns=False,
-        include_heater_obstacles=True,
+        include_heater_obstacles=False,
         max_iterations=100_000,
         defer_realization=True,
     )
@@ -884,6 +884,81 @@ def test_route_nets_rust_foreign_port_keepout_opens_for_same_instance(monkeypatc
     assert "status=ok" in diag_text
     assert "foreign_port_keepout_cells=3" in diag_text
     assert int(_diagnostic_value(diag_text, "foreign_port_keepout_open_count")) > 0
+
+
+def test_route_nets_rust_removes_foreign_keepout_after_port_is_routed(
+    monkeypatch,
+    tmp_path,
+):
+    routed_lane_y = 10
+    released_lane_y = 12
+    blocked_cells = {
+        (x, y)
+        for x in range(30)
+        for y in range(21)
+        if y not in {routed_lane_y, released_lane_y}
+    }
+
+    def fake_build_static_obstacle_map(_component, config=None):
+        _ = config
+        return _DummyObstacleData(
+            blocked_cells=blocked_cells,
+            raw_blocked_cells=blocked_cells,
+            width=30,
+            height=21,
+        )
+
+    def fake_get_port_from_instance(_layout, inst, port):
+        ports = {
+            ("left_a", "o1"): SimpleNamespace(center=(1.5, 10.5), orientation=0.0),
+            ("mid", "o1"): SimpleNamespace(center=(14.5, 10.5), orientation=180.0),
+            ("left_b", "o1"): SimpleNamespace(center=(1.5, 12.5), orientation=0.0),
+            ("right_b", "o1"): SimpleNamespace(center=(28.5, 12.5), orientation=180.0),
+        }
+        return ports[(inst, port)]
+
+    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
+    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+
+    schematic = _DummySchematic(
+        netlist=_DummyNetlist(
+            routes={
+                "connect_mid": _DummyBundle(links={"left_a,o1": "mid,o1"}),
+                "through_released_keepout": _DummyBundle(
+                    links={"left_b,o1": "right_b,o1"}
+                ),
+            }
+        )
+    )
+
+    route_rust.route_nets_rust(
+        _make_dummy_layout(),
+        schematic,  # type: ignore[arg-type]
+        obstacle_config=StaticObstacleMapConfig(
+            obstacle_mode="rasterized_polygons",
+            grid_size_um=1.0,
+            security_margin_um=0.0,
+            clearance_um=0.0,
+            port_open_radius_um=0.0,
+            die_bbox=(0.0, 0.0, 30.0, 21.0),
+        ),
+        debug_dir=tmp_path,
+        debug_prefix="foreign_keepout_cleanup",
+        route_width_um=0.5,
+        allow_45_degree_turns=False,
+        foreign_port_keepout_cells=3,
+        max_iterations=10_000,
+        defer_realization=True,
+    )
+
+    diag_path = (
+        tmp_path
+        / "routes"
+        / "foreign_keepout_cleanup_through_released_keepout_diagnostics.txt"
+    )
+    diag_text = diag_path.read_text(encoding="utf-8")
+    assert "status=ok" in diag_text
+    assert "route_static_blocked_overlap_count=0" in diag_text
 
 
 def test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor(

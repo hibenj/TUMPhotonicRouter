@@ -1670,6 +1670,14 @@ def _bbox_size_um(component: Component) -> tuple[float, float] | None:
 
 
 def _bbox_center_um(ref: Any) -> tuple[float, float] | None:
+    bounds = _bbox_bounds_um(ref)
+    if bounds is None:
+        return None
+    left, bottom, right, top = bounds
+    return (left + right) / 2.0, (bottom + top) / 2.0
+
+
+def _bbox_bounds_um(ref: Any) -> tuple[float, float, float, float] | None:
     try:
         bbox = ref.dbbox() if callable(ref.dbbox) else ref.dbbox
     except (AttributeError, TypeError):
@@ -1693,7 +1701,9 @@ def _bbox_center_um(ref: Any) -> tuple[float, float] | None:
             return None
     if not all(math.isfinite(value) for value in (left, right, bottom, top)):
         return None
-    return (left + right) / 2.0, (bottom + top) / 2.0
+    if right < left or top < bottom:
+        return None
+    return left, bottom, right, top
 
 
 def _ports_optical_center_um(obj: Any) -> tuple[float, float] | None:
@@ -5726,16 +5736,30 @@ def route_nets_rust(
                 raw_static_rects_for_openings.append(
                     (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
                 )
+    blocked_static_rects_for_openings: list[tuple[int, int, int, int]] = []
+    if hasattr(obstacle_map, "blocked_static_rects"):
+        for rect in cast(
+            Iterable[tuple[int, int, int, int]],
+            getattr(obstacle_map, "blocked_static_rects"),
+        ):
+            if len(rect) == 4:
+                blocked_static_rects_for_openings.append(
+                    (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+                )
+    heater_opening_rects_for_openings = (
+        raw_static_rects_for_openings + blocked_static_rects_for_openings
+    )
     grid_width = int(grid.width)
     grid_height = int(grid.height)
     raw_static_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
+    heater_opening_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
+    raw_static_cells_by_y: dict[int, set[int]] | None = None
 
-    def _raw_static_rect_ranges_by_y() -> dict[int, list[tuple[int, int]]]:
-        nonlocal raw_static_rect_ranges_by_y
-        if raw_static_rect_ranges_by_y is not None:
-            return raw_static_rect_ranges_by_y
+    def _rect_ranges_by_y(
+        rects: Iterable[tuple[int, int, int, int]],
+    ) -> dict[int, list[tuple[int, int]]]:
         ranges_by_y: dict[int, list[tuple[int, int]]] = {}
-        for rect_min_x, rect_min_y, rect_max_x, rect_max_y in raw_static_rects_for_openings:
+        for rect_min_x, rect_min_y, rect_max_x, rect_max_y in rects:
             min_x = max(0, rect_min_x)
             max_x = min(grid_width - 1, rect_max_x)
             min_y = max(0, rect_min_y)
@@ -5754,8 +5778,33 @@ def route_nets_rust(
                     prev_min_x, prev_max_x = merged_ranges[-1]
                     merged_ranges[-1] = (prev_min_x, max(prev_max_x, max_x))
             ranges_by_y[y] = merged_ranges
+        return ranges_by_y
+
+    def _raw_static_rect_ranges_by_y() -> dict[int, list[tuple[int, int]]]:
+        nonlocal raw_static_rect_ranges_by_y
+        if raw_static_rect_ranges_by_y is not None:
+            return raw_static_rect_ranges_by_y
+        ranges_by_y = _rect_ranges_by_y(raw_static_rects_for_openings)
         raw_static_rect_ranges_by_y = ranges_by_y
         return ranges_by_y
+
+    def _heater_opening_rect_ranges_by_y() -> dict[int, list[tuple[int, int]]]:
+        nonlocal heater_opening_rect_ranges_by_y
+        if heater_opening_rect_ranges_by_y is not None:
+            return heater_opening_rect_ranges_by_y
+        ranges_by_y = _rect_ranges_by_y(heater_opening_rects_for_openings)
+        heater_opening_rect_ranges_by_y = ranges_by_y
+        return ranges_by_y
+
+    def _raw_static_cells_by_y() -> dict[int, set[int]]:
+        nonlocal raw_static_cells_by_y
+        if raw_static_cells_by_y is not None:
+            return raw_static_cells_by_y
+        cells_by_y: dict[int, set[int]] = {}
+        for cell_x, cell_y in raw_static_cells:
+            cells_by_y.setdefault(int(cell_y), set()).add(int(cell_x))
+        raw_static_cells_by_y = cells_by_y
+        return cells_by_y
 
     def _cell_in_raw_static(cell: tuple[int, int]) -> bool:
         if cell in raw_static_cells:
@@ -5779,14 +5828,10 @@ def route_nets_rust(
     ) -> tuple[float | None, float | None, str | None]:
         port_type = _port_type_name(port)
         component_name = _schematic_instance_component_name(schematic, instance_name)
-        rule = (
-            find_component_port_access_rule(
-                component_name=component_name,
-                port_name=port_name,
-                port_type=port_type,
-            )
-            if include_heater_obstacles
-            else None
+        rule = find_component_port_access_rule(
+            component_name=component_name,
+            port_name=port_name,
+            port_type=port_type,
         )
         if rule is not None:
             return (
@@ -5797,6 +5842,112 @@ def route_nets_rust(
 
         return None, None, None
 
+    def _instance_ref_by_name(instance_name: str) -> Any | None:
+        try:
+            instances = routed_layout.insts
+        except (AttributeError, TypeError):
+            return None
+        for instance in instances:
+            if getattr(instance, "name", None) == instance_name:
+                return instance
+        return None
+
+    def _heater_pad_port_open_cells(
+        *,
+        instance_name: str,
+        port: Port,
+        center_um: tuple[float, float],
+        orientation: float | None,
+        rule_name: str | None,
+    ) -> set[tuple[int, int]]:
+        if rule_name is None or orientation is None:
+            return set()
+        ref = _instance_ref_by_name(instance_name)
+        if ref is None:
+            return set()
+        bounds = _bbox_bounds_um(ref)
+        if bounds is None:
+            return set()
+        left, bottom, right, top = bounds
+        grid_size = float(grid.grid_size_um)
+        if grid_size <= 0.0:
+            return set()
+
+        angle_rad = math.radians(float(orientation))
+        dir_x = math.cos(angle_rad)
+        dir_y = math.sin(angle_rad)
+        if not math.isfinite(dir_x) or not math.isfinite(dir_y):
+            return set()
+
+        # Heater optical ports need the metal/static pad on the port-facing side
+        # opened, not only the narrow access runway. The router blocks compact
+        # heater rectangles after clearance expansion, so the opening must cover
+        # the matching expanded blocked rectangles too.
+        bbox_margin = 0.5 * grid_size
+        min_x = max(
+            0,
+            int(math.floor((float(left) - bbox_margin - float(origin_x_um)) / grid_size)),
+        )
+        max_x = min(
+            grid_width - 1,
+            int(math.floor((float(right) + bbox_margin - float(origin_x_um)) / grid_size)),
+        )
+        min_y = max(
+            0,
+            int(math.floor((float(bottom) - bbox_margin - float(origin_y_um)) / grid_size)),
+        )
+        max_y = min(
+            grid_height - 1,
+            int(math.floor((float(top) + bbox_margin - float(origin_y_um)) / grid_size)),
+        )
+        if min_x > max_x or min_y > max_y:
+            return set()
+
+        heater_clearance_um = getattr(resolved_obstacle_config, "heater_clearance_um", None)
+        opening_margin_um = max(
+            float(route_clearance_um),
+            0.0 if heater_clearance_um is None else float(heater_clearance_um),
+        )
+        opening_margin_cells = int(math.ceil(opening_margin_um / grid_size)) + 1
+        search_min_x = max(0, min_x - opening_margin_cells)
+        search_max_x = min(grid_width - 1, max_x + opening_margin_cells)
+        search_min_y = max(0, min_y - opening_margin_cells)
+        search_max_y = min(grid_height - 1, max_y + opening_margin_cells)
+
+        candidate_cells: set[tuple[int, int]] = set()
+        explicit_cells_by_y = _raw_static_cells_by_y()
+        heater_rect_ranges_by_y = _heater_opening_rect_ranges_by_y()
+        for cell_y in range(search_min_y, search_max_y + 1):
+            xs: set[int] = set()
+            xs.update(
+                cell_x
+                for cell_x in explicit_cells_by_y.get(cell_y, set())
+                if search_min_x <= int(cell_x) <= search_max_x
+            )
+            for rect_min_x, rect_max_x in heater_rect_ranges_by_y.get(cell_y, ()):
+                start_x = max(search_min_x, int(rect_min_x))
+                end_x = min(search_max_x, int(rect_max_x))
+                if start_x <= end_x:
+                    xs.update(range(start_x, end_x + 1))
+            for cell_x in xs:
+                inside_instance_bbox = (
+                    min_x <= int(cell_x) <= max_x and min_y <= int(cell_y) <= max_y
+                )
+                cell_center = _grid_cell_center_um(int(cell_x), int(cell_y))
+                if inside_instance_bbox:
+                    if cell_center[0] < left - bbox_margin or cell_center[0] > right + bbox_margin:
+                        continue
+                    if cell_center[1] < bottom - bbox_margin or cell_center[1] > top + bbox_margin:
+                        continue
+                outward_distance = (
+                    (cell_center[0] - float(center_um[0])) * dir_x
+                    + (cell_center[1] - float(center_um[1])) * dir_y
+                )
+                if outward_distance >= -bbox_margin:
+                    candidate_cells.add((int(cell_x), int(cell_y)))
+
+        return candidate_cells
+
     route_jobs: list[RouteJob] = []
     endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = {}
     endpoint_port_specs_by_instance: dict[str, set[str]] = {}
@@ -5804,6 +5955,7 @@ def route_nets_rust(
     port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     port_access_rule_by_spec: dict[str, str | None] = {}
+    port_rule_extra_open_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     next_net_id = 1
     t_route_job_build_start = _pipeline_timer_start()
     for net_name, bundle in nets.items():
@@ -5929,7 +6081,7 @@ def route_nets_rust(
         return value
 
     def _env_fanout_stub_bend_steps() -> int:
-        raw_value = os.environ.get("PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES", "45")
+        raw_value = os.environ.get("PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES", "90")
         normalized = raw_value.strip().lower().replace("_", "-")
         aliases = {
             "45": 1,
@@ -6901,6 +7053,13 @@ def route_nets_rust(
             port=port,
         )
         port_access_rule_by_spec[port_spec] = rule_name
+        port_rule_extra_open_cells_by_spec[port_spec] = _heater_pad_port_open_cells(
+            instance_name=instance_name,
+            port=port,
+            center_um=(float(center[0]), float(center[1])),
+            orientation=orientation,
+            rule_name=rule_name,
+        )
         port_opening_inputs.append(
             (
                 port_spec,
@@ -6960,6 +7119,10 @@ def route_nets_rust(
             port_access_candidate_cells_by_spec[str(port_spec)] = {
                 (int(cell[0]), int(cell[1])) for cell in candidate_cells
             }
+            extra_open_cells = port_rule_extra_open_cells_by_spec.get(str(port_spec), set())
+            if extra_open_cells:
+                port_access_cells_by_spec[str(port_spec)].update(extra_open_cells)
+                port_access_candidate_cells_by_spec[str(port_spec)].update(extra_open_cells)
             port_runway_cells_by_spec[str(port_spec)] = {
                 (int(cell[0]), int(cell[1])) for cell in runway_cells
             }
@@ -7121,6 +7284,20 @@ def route_nets_rust(
             _opened_cells_for_spec(foreign_port_keepout_cells_by_spec, port_spec)
             - normal_port_runway_cells
         )
+
+    def _foreign_keepout_cleanup_cells_for_spec(port_spec: str) -> set[tuple[int, int]]:
+        cells = set(foreign_port_keepout_cells_by_spec.get(port_spec, set()))
+        if not cells:
+            return set()
+        cells.difference_update(normal_port_runway_cells)
+        cells.difference_update(fanout_stub_static_cells)
+        cells.difference_update(_cells_in_raw_static_geometry(cells))
+        return cells
+
+    def _foreign_keepout_cleanup_cells_for_job(job: RouteJob) -> list[tuple[int, int]]:
+        cells = _foreign_keepout_cleanup_cells_for_spec(f"{job.inst1},{job.port1}")
+        cells.update(_foreign_keepout_cleanup_cells_for_spec(f"{job.inst2},{job.port2}"))
+        return sorted(cells)
 
     def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
         return port_to_grid_state(
@@ -7296,10 +7473,9 @@ def route_nets_rust(
                 )
             router.set_static_rects(blocked_static_rects)
         else:
-            router.set_static_cells(sorted(static_blocked_cells_before_port_reservations))
+            router.set_static_cells(sorted(raw_static_cells))
     else:
-        static_cells = set(static_blocked_cells_before_port_reservations)
-        sorted_static_cells = sorted(static_cells)
+        sorted_static_cells = sorted(raw_static_cells)
         router.set_static_cells(sorted_static_cells)
     if port_runway_static_cells or foreign_port_keepout_static_cells or fanout_stub_static_cells:
         if not hasattr(router, "add_static_cells"):
@@ -7412,6 +7588,41 @@ def route_nets_rust(
                 continue
             name = f"native_batch_{raw_name}"
             route_nets_timings_s[name] = route_nets_timings_s.get(name, 0.0) + elapsed_s
+
+    def _report_long_straight_congestion(batch_result: dict[str, Any]) -> None:
+        records = [
+            dict(record)
+            for record in cast(
+                Iterable[Mapping[str, object]],
+                batch_result.get("long_straight_congestion", []),
+            )
+        ]
+        if not records or not verbose_route_diagnostics:
+            return
+        grouped: dict[int, list[dict[str, object]]] = {}
+        for record in records:
+            try:
+                net_id = int(record.get("net_id", -1))
+            except (TypeError, ValueError):
+                continue
+            grouped.setdefault(net_id, []).append(record)
+        print("      - Long-straight congestion contributors:")
+        for net_id in sorted(grouped):
+            job = route_jobs_by_id.get(net_id)
+            label = job.net_name if job is not None else f"net_id={net_id}"
+            route_index = job.route_index if job is not None else "?"
+            segments = grouped[net_id]
+            marked_cells = sum(int(segment.get("marked_cells", 0) or 0) for segment in segments)
+            lengths = ", ".join(
+                f"{float(segment.get('length_um', 0.0) or 0.0):.1f}um"
+                for segment in segments
+            )
+            print(
+                "        "
+                f"route[{route_index}] {label}: "
+                f"{len(segments)} long straight(s), "
+                f"marked_cells={marked_cells}, lengths=[{lengths}]"
+            )
 
     def _committed_dynamic_cells(*, exclude_net_id: int | None = None) -> set[tuple[int, int]]:
         return route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
@@ -8180,6 +8391,143 @@ def route_nets_rust(
                     owners[int(net_id)] = sorted(overlap)
             return owners
 
+        def _format_post_crossing_orthogonal_candidates() -> list[str]:
+            if not diagnostics_enabled or not route_dynamic_overlap:
+                return []
+            if int(source_state.angle) != 0 or int(target_state.angle) != 0:
+                return []
+            if source_anchor_cell[1] == target_anchor_cell[1]:
+                return []
+            crossing_cells = sorted(route_dynamic_overlap)
+            if len(crossing_cells) != 1:
+                return []
+            cross_x, cross_y = crossing_cells[0]
+            dy_sign = 1 if target_anchor_cell[1] > cross_y else -1
+            dx_sign = 1 if target_anchor_cell[0] > cross_x else -1
+            if dx_sign != 1:
+                return []
+            radius = max(1, int(bend_radius_cells))
+            routing_static_cells = set(static_blocked_cells_before_port_reservations)
+            routing_static_cells.update(debug_port_keepout_cells)
+            routing_static_cells.update(foreign_port_keepout_static_cells)
+            routing_static_cells.update(fanout_stub_static_cells)
+            opened_search_cells = set(opened_cells_set)
+            allowed_dynamic_cells = set(route_dynamic_overlap)
+            lines: list[str] = []
+            min_start = cross_x + radius
+            max_start = target_anchor_cell[0] - 2 * radius
+            for bend_start_x in range(min_start, max_start + 1):
+                if target_anchor_cell[1] - dy_sign * radius == cross_y:
+                    continue
+                cells: set[tuple[int, int]] = set()
+                for x in range(source_anchor_cell[0], bend_start_x + radius + 1):
+                    cells.add((x, cross_y))
+                first_corner_x = bend_start_x + radius
+                first_corner_y = cross_y
+                first_end_y = cross_y + dy_sign * radius
+                for step in range(0, radius + 1):
+                    cells.add((first_corner_x, first_corner_y + dy_sign * step))
+                vertical_start_y = first_end_y
+                second_start_y = target_anchor_cell[1] - dy_sign * radius
+                y0, y1 = sorted((vertical_start_y, second_start_y))
+                for y in range(y0, y1 + 1):
+                    cells.add((first_corner_x, y))
+                second_end_x = first_corner_x + radius
+                for step in range(0, radius + 1):
+                    cells.add((first_corner_x + step, second_start_y + dy_sign * step))
+                for x in range(second_end_x, target_anchor_cell[0] + 1):
+                    cells.add((x, target_anchor_cell[1]))
+                static_blockers = (cells & routing_static_cells) - opened_search_cells
+                dynamic_blockers = (
+                    (cells & committed_dynamic_cells)
+                    - allowed_dynamic_cells
+                    - (cells & opened_search_cells)
+                )
+                lines.append(
+                    "post_crossing_90_candidate="
+                    f"bend_start_x={bend_start_x}; "
+                    f"cells={len(cells)}; "
+                    f"static_blockers={sorted(static_blockers)[:24]}; "
+                    f"static_blocker_count={len(static_blockers)}; "
+                    f"dynamic_blockers={sorted(dynamic_blockers)[:24]}; "
+                    f"dynamic_blocker_count={len(dynamic_blockers)}; "
+                    f"dynamic_blocker_owners={_dynamic_owners_for_cells(dynamic_blockers)}"
+                )
+            return lines
+
+        def _format_target_bend_footprints() -> list[str]:
+            if not diagnostics_enabled:
+                return []
+            radius = max(1, int(bend_radius_cells))
+            routing_static_cells = set(static_blocked_cells_before_port_reservations)
+            routing_static_cells.update(debug_port_keepout_cells)
+            routing_static_cells.update(foreign_port_keepout_static_cells)
+            routing_static_cells.update(fanout_stub_static_cells)
+            opened_search_cells = set(opened_cells_set)
+
+            def turn_cells(
+                start: tuple[int, int],
+                start_angle: int,
+                delta: int,
+            ) -> set[tuple[int, int]]:
+                start_dir = _angle_to_step(start_angle)
+                end_angle = (int(start_angle) + int(delta)) % 8
+                end_dir = _angle_to_step(end_angle)
+                cells: set[tuple[int, int]] = set()
+                for step in range(radius + 1):
+                    cells.add((
+                        int(start[0]) + start_dir[0] * step,
+                        int(start[1]) + start_dir[1] * step,
+                    ))
+                corner = (
+                    int(start[0]) + start_dir[0] * radius,
+                    int(start[1]) + start_dir[1] * radius,
+                )
+                for step in range(radius + 1):
+                    cells.add((
+                        corner[0] + end_dir[0] * step,
+                        corner[1] + end_dir[1] * step,
+                    ))
+                return cells
+
+            target = target_anchor_cell
+            specs = [
+                (
+                    "end_from_below_to_port",
+                    (target[0] - radius, target[1] - radius),
+                    2,
+                    -2,
+                ),
+                (
+                    "end_from_above_to_port",
+                    (target[0] - radius, target[1] + radius),
+                    6,
+                    2,
+                ),
+                ("target_out_down", target, 0, -2),
+                ("target_out_up", target, 0, 2),
+            ]
+            lines: list[str] = []
+            for label, start, angle, delta in specs:
+                cells = turn_cells(start, angle, delta)
+                static_blockers = (cells & routing_static_cells) - opened_search_cells
+                dynamic_blockers = (
+                    (cells & committed_dynamic_cells)
+                    - (cells & opened_search_cells)
+                    - route_dynamic_overlap
+                )
+                lines.append(
+                    "target_bend_footprint="
+                    f"label={label}; start={start}; angle={angle}; delta={delta}; "
+                    f"cells={sorted(cells)}; "
+                    f"static_blockers={sorted(static_blockers)}; "
+                    f"static_blocker_count={len(static_blockers)}; "
+                    f"dynamic_blockers={sorted(dynamic_blockers)}; "
+                    f"dynamic_blocker_count={len(dynamic_blockers)}; "
+                    f"dynamic_blocker_owners={_dynamic_owners_for_cells(dynamic_blockers)}"
+                )
+            return lines
+
         def _format_first_move_debug() -> list[str]:
             if not diagnostics_enabled:
                 return []
@@ -8303,6 +8651,7 @@ def route_nets_rust(
             f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
             f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
             f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
+            f"opened_dynamic_overlap_owners={_dynamic_owners_for_cells(opened_dynamic_overlap)}",
             "current_port_runway_dynamic_overlap_count="
             f"{len(current_port_runway_dynamic_overlap)}",
             "current_port_runway_dynamic_overlap_bbox="
@@ -8320,6 +8669,7 @@ def route_nets_rust(
             f"route_static_blocked_overlap_bbox={_cells_bbox(route_static_overlap)}",
             f"route_dynamic_overlap_count={len(route_dynamic_overlap)}",
             f"route_dynamic_overlap_bbox={_cells_bbox(route_dynamic_overlap)}",
+            f"route_dynamic_overlap_owners={_dynamic_owners_for_cells(route_dynamic_overlap)}",
             "route_overlap_current_port_runway_count="
             f"{len(route_overlap_current_port_runway)}",
             "route_overlap_current_port_runway_bbox="
@@ -8334,6 +8684,8 @@ def route_nets_rust(
             f"route_overlap_effective_opened_dynamic_count={len(route_overlap_with_effective_opened_dynamic)}",
             f"route_overlap_dynamic_clearance_exempt_count={len(route_overlap_with_dynamic_exempt)}",
         ]
+        lines.extend(_format_post_crossing_orthogonal_candidates())
+        lines.extend(_format_target_bend_footprints())
         lines.extend(_format_first_move_debug())
         if route_segments:
             lines.append("route_segments=" + "; ".join(route_segments))
@@ -8630,6 +8982,7 @@ def route_nets_rust(
                 Any,
                 list[tuple[int, int]],
                 list[tuple[int, int]],
+                list[tuple[int, int]],
                 tuple[float, float] | None,
                 tuple[float, float] | None,
             ]
@@ -8668,6 +9021,7 @@ def route_nets_rust(
                     target_state,
                     opened_cells,
                     clearance_exempt_cells,
+                    _foreign_keepout_cleanup_cells_for_job(job),
                     _routing_endpoint_center_um(job, source=True),
                     _routing_endpoint_center_um(job, source=False),
                 )
@@ -8699,6 +9053,7 @@ def route_nets_rust(
             )
         ]
         _record_native_batch_timings(batch_result)
+        _report_long_straight_congestion(batch_result)
         raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
         per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
         for raw_attempt in raw_attempts:
@@ -8865,6 +9220,7 @@ def route_nets_rust(
                 Any,
                 list[tuple[int, int]],
                 list[tuple[int, int]],
+                list[tuple[int, int]],
                 tuple[float, float] | None,
                 tuple[float, float] | None,
             ]
@@ -8903,6 +9259,7 @@ def route_nets_rust(
                     target_state,
                     opened_cells,
                     clearance_exempt_cells,
+                    _foreign_keepout_cleanup_cells_for_job(job),
                     _routing_endpoint_center_um(job, source=True),
                     _routing_endpoint_center_um(job, source=False),
                 )
@@ -8923,6 +9280,7 @@ def route_nets_rust(
         t_batch_result_processing_start = _pipeline_timer_start()
         batch_result = dict(raw_batch_result)
         _record_native_batch_timings(batch_result)
+        _report_long_straight_congestion(batch_result)
         raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
         per_route_elapsed_s = batch_elapsed_s / max(1, len(raw_routes))
         for raw_entry in raw_routes:
@@ -10226,6 +10584,7 @@ def route_nets_rust(
                     target_state,
                     opened_cells,
                     clearance_exempt_cells,
+                    _foreign_keepout_cleanup_cells_for_job(job),
                     _routing_endpoint_center_um(job, source=True),
                     _routing_endpoint_center_um(job, source=False),
                 )
@@ -10594,6 +10953,7 @@ def route_nets_rust(
                 Any,
                 list[tuple[int, int]],
                 list[tuple[int, int]],
+                list[tuple[int, int]],
                 tuple[float, float] | None,
                 tuple[float, float] | None,
             ]
@@ -10610,6 +10970,7 @@ def route_nets_rust(
                     target_state,
                     opened_cells,
                     clearance_exempt_cells,
+                    _foreign_keepout_cleanup_cells_for_job(job),
                     _routing_endpoint_center_um(job, source=True),
                     _routing_endpoint_center_um(job, source=False),
                 )

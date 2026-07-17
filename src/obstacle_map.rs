@@ -78,6 +78,7 @@ pub struct ObstacleMap {
     net_routes: FxHashMap<NetId, Vec<CellKey>>,
     net_core_routes: FxHashMap<NetId, Vec<CellKey>>,
     history_cost: FxHashMap<CellKey, u32>,
+    congestion_cost: FxHashMap<CellKey, u32>,
 }
 
 impl ObstacleMap {
@@ -108,6 +109,7 @@ impl ObstacleMap {
             net_routes: FxHashMap::default(),
             net_core_routes: FxHashMap::default(),
             history_cost: FxHashMap::default(),
+            congestion_cost: FxHashMap::default(),
         }
     }
 
@@ -241,6 +243,11 @@ impl ObstacleMap {
     /// Packed cell keys with accumulated rip-up history costs.
     pub fn history_entries(&self) -> impl Iterator<Item = (CellKey, u32)> + '_ {
         self.history_cost.iter().map(|(&key, &cost)| (key, cost))
+    }
+
+    /// Packed cell keys with accumulated soft congestion costs.
+    pub fn congestion_entries(&self) -> impl Iterator<Item = (CellKey, u32)> + '_ {
+        self.congestion_cost.iter().map(|(&key, &cost)| (key, cost))
     }
 
     /// Remove every static obstacle entry (compact + cell-based).
@@ -752,6 +759,7 @@ impl ObstacleMap {
             net_routes: FxHashMap::default(),
             net_core_routes: FxHashMap::default(),
             history_cost: self.history_cost.clone(),
+            congestion_cost: self.congestion_cost.clone(),
         };
         for key in self.dynamic_obstacles.keys().copied() {
             let (x, y) = unpack_xy(key);
@@ -828,7 +836,7 @@ impl ObstacleMap {
         false
     }
 
-    /// Add a history/congestion penalty to an in-bounds cell.
+    /// Add a rip-up history penalty to an in-bounds cell.
     ///
     /// Returns false if the cell is out of bounds. Cost addition saturates at
     /// `u32::MAX`.
@@ -842,7 +850,7 @@ impl ObstacleMap {
         true
     }
 
-    /// Return the history/congestion cost for a cell, or zero if none exists.
+    /// Return the rip-up history cost for a cell, or zero if none exists.
     pub fn get_history_cost(&self, x: i32, y: i32) -> u32 {
         if !self.in_bounds(x, y) {
             return 0;
@@ -850,9 +858,36 @@ impl ObstacleMap {
         self.history_cost.get(&pack_xy(x, y)).copied().unwrap_or(0)
     }
 
-    /// Clear all history/congestion penalties.
+    /// Clear all rip-up history penalties.
     pub fn clear_history(&mut self) {
         self.history_cost.clear();
+    }
+
+    /// Add a soft congestion penalty to an in-bounds cell.
+    ///
+    /// Returns false if the cell is out of bounds. Cost addition saturates at
+    /// `u32::MAX`.
+    pub fn add_congestion_cost(&mut self, x: i32, y: i32, amount: u32) -> bool {
+        if !self.in_bounds(x, y) {
+            return false;
+        }
+
+        let entry = self.congestion_cost.entry(pack_xy(x, y)).or_insert(0);
+        *entry = entry.saturating_add(amount);
+        true
+    }
+
+    /// Return the soft congestion cost for a cell, or zero if none exists.
+    pub fn get_congestion_cost(&self, x: i32, y: i32) -> u32 {
+        if !self.in_bounds(x, y) {
+            return 0;
+        }
+        self.congestion_cost.get(&pack_xy(x, y)).copied().unwrap_or(0)
+    }
+
+    /// Clear all soft congestion penalties.
+    pub fn clear_congestion(&mut self) {
+        self.congestion_cost.clear();
     }
 
     /// Check whether every listed cell is in bounds and free.

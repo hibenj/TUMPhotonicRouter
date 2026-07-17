@@ -727,6 +727,8 @@ pub struct PyPhotonicRouter {
     registered_plm: RefCell<RegisteredPlmContext>,
     last_meander_registration_profile: RefCell<Option<MeanderRegistrationProfile>>,
     last_pending_straight_victim: RefCell<Option<PendingStraightVictimHint>>,
+    long_straight_congestion_cells: FxHashMap<CellKey, u32>,
+    long_straight_congestion_records: Vec<LongStraightCongestionRecord>,
 }
 
 #[derive(Clone, Debug)]
@@ -734,6 +736,15 @@ struct PendingStraightVictimHint {
     net_id: u64,
     victim_net_id: u64,
     count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct LongStraightCongestionRecord {
+    net_id: u64,
+    start: (i32, i32),
+    end: (i32, i32),
+    length_um: f64,
+    marked_cells: usize,
 }
 
 #[derive(Clone)]
@@ -745,6 +756,7 @@ struct NativeRouteJob {
     opened_cell_keys: FxHashSet<CellKey>,
     clearance_exempt_cells: Vec<(i32, i32)>,
     clearance_exempt_cell_keys: FxHashSet<CellKey>,
+    static_cleanup_cell_keys: FxHashSet<CellKey>,
     source_port_um: Option<(f64, f64)>,
     target_port_um: Option<(f64, f64)>,
 }
@@ -757,11 +769,13 @@ impl NativeRouteJob {
         target: PyState,
         opened_cells: Vec<(i32, i32)>,
         clearance_exempt_cells: Vec<(i32, i32)>,
+        static_cleanup_cells: Vec<(i32, i32)>,
         source_port_um: Option<(f64, f64)>,
         target_port_um: Option<(f64, f64)>,
     ) -> Self {
         let opened_cell_keys = pack_cells(&opened_cells);
         let clearance_exempt_cell_keys = pack_cells(&clearance_exempt_cells);
+        let static_cleanup_cell_keys = pack_cells(&static_cleanup_cells);
         Self {
             net_id,
             source,
@@ -770,10 +784,18 @@ impl NativeRouteJob {
             opened_cell_keys,
             clearance_exempt_cells,
             clearance_exempt_cell_keys,
+            static_cleanup_cell_keys,
             source_port_um,
             target_port_um,
         }
     }
+}
+
+fn remove_success_static_cleanup(obstacle_map: &mut ObstacleMap, job: &NativeRouteJob) {
+    if job.static_cleanup_cell_keys.is_empty() {
+        return;
+    }
+    obstacle_map.remove_static_keys(&job.static_cleanup_cell_keys);
 }
 
 #[derive(Clone)]
@@ -869,6 +891,9 @@ const CROSSING_SPACING_HISTORY_AMOUNT: u32 = 1;
 const CROSSING_LOCAL_RIPUP_MIN_SOURCE_DEPTH: u32 = 2;
 const CROSSING_LOCAL_RIPUP_MIN_OVERLAP_CELLS: u32 = 64;
 const CROSSING_LOCAL_RIPUP_MIN_EXTRA_SUM: u64 = 64;
+const LONG_STRAIGHT_CONGESTION_MIN_UM: f64 = 200.0;
+const LONG_STRAIGHT_CONGESTION_LATERAL_RADIUS_CELLS: i32 = 5;
+const LONG_STRAIGHT_CONGESTION_AMOUNT: u32 = 1;
 
 fn env_flag_enabled(name: &str) -> Option<bool> {
     std::env::var(name)
@@ -2135,6 +2160,8 @@ fn astar_config_from_py(
     let heuristic_mode = parse_heuristic_mode(&astar_cfg.heuristic_mode)?;
     let heap_tie_breaker = parse_heap_tie_breaker(&astar_cfg.heap_tie_breaker)?;
     let max_search_time_ms = astar_timeout_ms_from_env()?.unwrap_or(astar_cfg.max_search_time_ms);
+    let long_straight_congestion_weight =
+        long_straight_congestion_weight_from_env()?.unwrap_or(0.0);
     if !astar_cfg.proactive_congestion_weight.is_finite()
         || astar_cfg.proactive_congestion_weight < 0.0
     {
@@ -2167,6 +2194,7 @@ fn astar_config_from_py(
         ignore_dynamic_obstacles: ignore_dynamic_obstacles
             .unwrap_or(astar_cfg.ignore_dynamic_obstacles),
         history_weight: history_weight.unwrap_or(astar_cfg.history_weight),
+        long_straight_congestion_weight,
         proactive_congestion_weight: astar_cfg.proactive_congestion_weight,
         proactive_congestion_radius_cells: astar_cfg.proactive_congestion_radius_cells,
         collect_detailed_timing: astar_cfg.collect_detailed_timing,
@@ -2200,6 +2228,23 @@ fn astar_timeout_ms_from_env() -> PyResult<Option<u64>> {
         return Ok(Some((parsed * 1000.0).ceil() as u64));
     }
     Ok(None)
+}
+
+fn long_straight_congestion_weight_from_env() -> PyResult<Option<f64>> {
+    let Ok(value) = std::env::var("PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT") else {
+        return Ok(None);
+    };
+    let parsed = value.trim().parse::<f64>().map_err(|_| {
+        PyValueError::new_err(
+            "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT must be a number",
+        )
+    })?;
+    if !parsed.is_finite() || parsed < 0.0 {
+        return Err(PyValueError::new_err(
+            "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT must be finite and non-negative",
+        ));
+    }
+    Ok(Some(parsed))
 }
 
 fn parse_meander_side(side: &str) -> PyResult<MeanderSide> {
@@ -2878,6 +2923,101 @@ impl PyPhotonicRouter {
         self.add_history_cells(cells, CROSSING_SPACING_HISTORY_AMOUNT);
     }
 
+    fn add_long_straight_congestion_for_route(&mut self, net_id: u64, route: &RouteResult) {
+        let grid_size_um = self.grid.grid_size_um;
+        if !grid_size_um.is_finite() || grid_size_um <= 0.0 {
+            return;
+        }
+        let width = self.grid.width as i32;
+        let height = self.grid.height as i32;
+        for segment in route.compressed_waypoints.windows(2) {
+            let start = segment[0];
+            let end = segment[1];
+            let dx = end.0 - start.0;
+            let dy = end.1 - start.1;
+            let step_x = dx.signum();
+            let step_y = dy.signum();
+            if step_x == 0 && step_y == 0 {
+                continue;
+            }
+            let abs_dx = dx.abs();
+            let abs_dy = dy.abs();
+            let is_axis_aligned = abs_dx == 0 || abs_dy == 0;
+            let is_diagonal = abs_dx == abs_dy;
+            if !is_axis_aligned && !is_diagonal {
+                continue;
+            }
+            let steps = abs_dx.max(abs_dy);
+            if steps <= 0 {
+                continue;
+            }
+            let step_length_um = if is_diagonal {
+                grid_size_um * 2.0_f64.sqrt()
+            } else {
+                grid_size_um
+            };
+            let length_um = f64::from(steps) * step_length_um;
+            if length_um < LONG_STRAIGHT_CONGESTION_MIN_UM {
+                continue;
+            }
+
+            let middle_start = (f64::from(steps) * 0.25).ceil() as i32;
+            let middle_end = (f64::from(steps) * 0.75).floor() as i32;
+            if middle_start > middle_end {
+                continue;
+            }
+
+            let (perp_x, perp_y) = if step_x == 0 {
+                (1, 0)
+            } else if step_y == 0 {
+                (0, 1)
+            } else {
+                (-step_y, step_x)
+            };
+
+            let mut cells: FxHashSet<(i32, i32)> = FxHashSet::default();
+            for t in middle_start..=middle_end {
+                let center_x = start.0 + step_x * t;
+                let center_y = start.1 + step_y * t;
+                for offset in -LONG_STRAIGHT_CONGESTION_LATERAL_RADIUS_CELLS
+                    ..=LONG_STRAIGHT_CONGESTION_LATERAL_RADIUS_CELLS
+                {
+                    let x = center_x + perp_x * offset;
+                    let y = center_y + perp_y * offset;
+                    if x >= 0 && x < width && y >= 0 && y < height {
+                        cells.insert((x, y));
+                    }
+                }
+            }
+            let marked_cells = cells.len();
+            if marked_cells == 0 {
+                continue;
+            }
+            for (x, y) in cells {
+                self.obstacle_map
+                    .add_congestion_cost(x, y, LONG_STRAIGHT_CONGESTION_AMOUNT);
+                let entry = self
+                    .long_straight_congestion_cells
+                    .entry(pack_xy(x, y))
+                    .or_insert(0);
+                *entry = entry.saturating_add(LONG_STRAIGHT_CONGESTION_AMOUNT);
+            }
+            self.long_straight_congestion_records
+                .push(LongStraightCongestionRecord {
+                    net_id,
+                    start,
+                    end,
+                    length_um,
+                    marked_cells,
+                });
+        }
+    }
+
+    fn add_post_commit_guidance_for_route(&mut self, net_id: u64, route: &RouteResult) {
+        self.add_crossing_spacing_history_for_route(net_id, route);
+        self.add_long_straight_congestion_for_route(net_id, route);
+    }
+
     fn crossing_local_ripup_candidates(&self, net_id: u64, limit: usize) -> Vec<u64> {
         if limit == 0 || !self.crossing_context.is_enabled() {
             return Vec::new();
@@ -2961,6 +3101,14 @@ impl PyPhotonicRouter {
             .into_iter()
             .filter(|partner_id| self.obstacle_map.get_net_cells(*partner_id).is_some())
             .collect()
+    }
+
+    fn lidar_pure_owner_lookup_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
+        // In LiDAR-pure this is not a whitelist of nets the route is allowed
+        // to cross. It is only the centerline lookup database for owners that
+        // A* discovers from actual dynamic obstacle cells while expanding
+        // moves.
+        self.crossing_allowed_partner_set(net_id)
     }
 
     fn lidar_pure_crossing_enabled(&self) -> bool {
@@ -5160,7 +5308,9 @@ impl PyPhotonicRouter {
             && !self.use_collision_crossing_routing
             && self.crossing_context.config().allow_only_expected_pairs
             && !expected_crossing_partner_ids.is_empty();
-        let collision_partner_ids = if self.use_collision_crossing_routing {
+        let lidar_pure_crossing = self.lidar_pure_crossing_enabled();
+        let collision_partner_ids = if self.use_collision_crossing_routing && !lidar_pure_crossing
+        {
             self.crossing_partner_lookup_set_for_route(net_id, source_state, target_state)
         } else {
             FxHashSet::default()
@@ -5194,7 +5344,7 @@ impl PyPhotonicRouter {
         } else {
             None
         };
-        let deferred_crossing_attempt = crossing_attempt;
+        let mut deferred_crossing_attempt = crossing_attempt;
         // A failed local collision-crossing attempt means this specific
         // crossing placement is unavailable. It must not make the whole net
         // unroutable: normal A* can still route around the blocker, and only a
@@ -5286,7 +5436,7 @@ impl PyPhotonicRouter {
                         net_id,
                         Some(&validation_opened_cell_keys),
                     );
-                    self.add_crossing_spacing_history_for_route(net_id, &result);
+                    self.add_post_commit_guidance_for_route(net_id, &result);
                     self.invalidate_meander_base_prefix();
                     if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
                         net_id,
@@ -5304,10 +5454,30 @@ impl PyPhotonicRouter {
                 simple_route_time_us += simple_start.elapsed().as_micros();
             }
         }
+        let mut lidar_pure_crossing_attempted = false;
+        if lidar_pure_crossing && deferred_crossing_attempt.is_none() {
+            let owner_lookup_partner_ids = self.lidar_pure_owner_lookup_partner_set(net_id);
+            if !owner_lookup_partner_ids.is_empty() {
+                lidar_pure_crossing_attempted = true;
+                deferred_crossing_attempt = self.try_route_with_collision_crossings(
+                    net_id,
+                    source_state,
+                    target_state,
+                    opened_search_ref,
+                    &cfg,
+                    block_radius_cells,
+                    dynamic_clearance_exempt_keys,
+                    &owner_lookup_partner_ids,
+                    source_port_um,
+                    target_port_um,
+                    Some(&validation_opened_cell_keys),
+                )?;
+            }
+        }
         let mut ordinary_collision_fallback: Option<RouteResult> = None;
         if let Some((mut crossing_result, crossing_events)) = deferred_crossing_attempt {
             let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
-            if crossed_partner_ids.is_empty() {
+            if crossed_partner_ids.is_empty() && !lidar_pure_crossing {
                 ordinary_collision_fallback = Some(crossing_result);
             } else {
                 let allowed_crossing_core_keys =
@@ -5370,7 +5540,7 @@ impl PyPhotonicRouter {
                         net_id,
                         Some(&validation_opened_cell_keys),
                     );
-                    self.add_crossing_spacing_history_for_route(net_id, &crossing_result);
+                    self.add_post_commit_guidance_for_route(net_id, &crossing_result);
                     self.invalidate_meander_base_prefix();
                     if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
                         net_id,
@@ -5381,14 +5551,23 @@ impl PyPhotonicRouter {
                     ) {
                         self.rollback_committed_route(net_id);
                         self.remove_crossing_events_for_net(net_id);
-                        if !self.use_collision_crossing_routing {
+                        if !self.use_collision_crossing_routing || lidar_pure_crossing {
                             return Err(error);
                         }
                     } else {
                         return Ok(crossing_result);
                     }
+                } else if lidar_pure_crossing {
+                    return Err(self.dynamic_commit_rejection_error(
+                        net_id,
+                        &core_cells,
+                        clearance_exempt_cells.unwrap_or(&[]),
+                    ));
                 }
             }
+        }
+        if lidar_pure_crossing_attempted {
+            return Err("No legal LiDAR crossing route found".to_string());
         }
         let search_cfg = if block_radius_cells > 0 {
             let mut search_cfg = self.astar_config(None, Some(false), None)?;
@@ -5541,7 +5720,7 @@ impl PyPhotonicRouter {
             return Err(error);
         }
         self.remember_committed_route_opened_cells(net_id, Some(&validation_opened_cell_keys));
-        self.add_crossing_spacing_history_for_route(net_id, &result);
+        self.add_post_commit_guidance_for_route(net_id, &result);
         self.invalidate_meander_base_prefix();
         if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
             net_id,
@@ -5632,8 +5811,13 @@ impl PyPhotonicRouter {
             && !self.use_collision_crossing_routing
             && self.crossing_context.config().allow_only_expected_pairs
             && !expected_crossing_partner_ids.is_empty();
+        let lidar_pure_crossing = self.lidar_pure_crossing_enabled();
         let collision_partner_ids = if self.use_collision_crossing_routing {
-            self.crossing_partner_lookup_set_for_route(net_id, source_state, target_state)
+            if lidar_pure_crossing {
+                self.lidar_pure_owner_lookup_partner_set(net_id)
+            } else {
+                self.crossing_partner_lookup_set_for_route(net_id, source_state, target_state)
+            }
         } else {
             FxHashSet::default()
         };
@@ -5726,7 +5910,7 @@ impl PyPhotonicRouter {
                     net_id,
                     Some(&validation_opened_cell_keys),
                 );
-                self.add_crossing_spacing_history_for_route(net_id, &crossing_result);
+                self.add_post_commit_guidance_for_route(net_id, &crossing_result);
                 self.invalidate_meander_base_prefix();
                 if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
                     net_id,
@@ -5841,7 +6025,7 @@ impl PyPhotonicRouter {
             return Err(error);
         }
         self.remember_committed_route_opened_cells(net_id, Some(&validation_opened_cell_keys));
-        self.add_crossing_spacing_history_for_route(net_id, &result);
+        self.add_post_commit_guidance_for_route(net_id, &result);
         self.invalidate_meander_base_prefix();
         if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
             net_id,
@@ -6395,7 +6579,7 @@ impl PyPhotonicRouter {
                 return Err("Failed to record committed route centerline".to_string());
             }
             self.remember_committed_route_opened_cells(net_id, opened_cell_keys);
-            self.add_crossing_spacing_history_for_route(net_id, route);
+            self.add_post_commit_guidance_for_route(net_id, route);
             self.invalidate_meander_base_prefix();
             if validate_crossings {
                 if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
@@ -6463,7 +6647,7 @@ impl PyPhotonicRouter {
                 return false;
             }
             self.remember_committed_route_opened_cells(net_id, opened_cell_keys);
-            self.add_crossing_spacing_history_for_route(net_id, route);
+            self.add_post_commit_guidance_for_route(net_id, route);
             self.invalidate_meander_base_prefix();
             if validate_crossings
                 && self
@@ -6695,7 +6879,7 @@ impl PyPhotonicRouter {
                     return Err("Failed to record endpoint-corrected route centerline".to_string());
                 }
                 self.remember_committed_route_opened_cells(net_id, Some(&opened_keys));
-                self.add_crossing_spacing_history_for_route(net_id, route);
+                self.add_post_commit_guidance_for_route(net_id, route);
                 if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
                     net_id,
                     route,
@@ -6900,7 +7084,7 @@ impl PyPhotonicRouter {
                         );
                     }
                     self.remember_committed_route_opened_cells(net_id, Some(&opened_keys));
-                    self.add_crossing_spacing_history_for_route(net_id, route);
+                    self.add_post_commit_guidance_for_route(net_id, route);
                     if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
                         net_id,
                         route,
@@ -7393,6 +7577,8 @@ impl PyPhotonicRouter {
             registered_plm: RefCell::new(RegisteredPlmContext::default()),
             last_meander_registration_profile: RefCell::new(None),
             last_pending_straight_victim: RefCell::new(None),
+            long_straight_congestion_cells: FxHashMap::default(),
+            long_straight_congestion_records: Vec::new(),
         }
     }
 
@@ -7504,6 +7690,8 @@ impl PyPhotonicRouter {
         self.committed_realized_center_routes.clear();
         self.committed_opened_cell_keys.clear();
         self.crossing_events.clear();
+        self.long_straight_congestion_cells.clear();
+        self.long_straight_congestion_records.clear();
         let mut plm = self.registered_plm.borrow_mut();
         plm.clear_registered_routes();
         plm.clear_reserved_cells_and_invalidate_index();
@@ -8135,6 +8323,7 @@ impl PyPhotonicRouter {
             PyState,
             Vec<(i32, i32)>,
             Vec<(i32, i32)>,
+            Vec<(i32, i32)>,
             Option<(f64, f64)>,
             Option<(f64, f64)>,
         )>,
@@ -8142,6 +8331,9 @@ impl PyPhotonicRouter {
         commit_radius_cells: Option<i32>,
         core_radius_cells: Option<i32>,
     ) -> PyResult<PyObject> {
+        self.obstacle_map.clear_congestion();
+        self.long_straight_congestion_cells.clear();
+        self.long_straight_congestion_records.clear();
         let collect_native_timing = self.astar_cfg.collect_detailed_timing;
         let mut timings = NativeBatchTimings::default();
         let unpack_start = native_batch_timer(collect_native_timing);
@@ -8154,6 +8346,7 @@ impl PyPhotonicRouter {
                     target,
                     opened_cells,
                     clearance_exempt_cells,
+                    static_cleanup_cells,
                     source_port_um,
                     target_port_um,
                 )| {
@@ -8163,6 +8356,7 @@ impl PyPhotonicRouter {
                         target,
                         opened_cells,
                         clearance_exempt_cells,
+                        static_cleanup_cells,
                         source_port_um,
                         target_port_um,
                     )
@@ -8193,6 +8387,7 @@ impl PyPhotonicRouter {
             match route_result {
                 Ok(route_result) => {
                     timings.add_route_result_stats_if(collect_native_timing, &route_result);
+                    remove_success_static_cleanup(&mut self.obstacle_map, job);
                     let entry = PyDict::new_bound(py);
                     let route_construct_start = native_batch_timer(collect_native_timing);
                     let route_obj =
@@ -8212,6 +8407,10 @@ impl PyPhotonicRouter {
                     result_dict.set_item("failed_net_id", job.net_id)?;
                     result_dict.set_item("error", error)?;
                     result_dict.set_item("routes", route_entries)?;
+                    result_dict.set_item(
+                        "long_straight_congestion",
+                        self.long_straight_congestion_records(py)?,
+                    )?;
                     timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
                     result_dict
                         .set_item("timings_s", native_batch_timings_to_py_dict(py, &timings)?)?;
@@ -8224,6 +8423,10 @@ impl PyPhotonicRouter {
         result_dict.set_item("failed_net_id", py.None())?;
         result_dict.set_item("error", py.None())?;
         result_dict.set_item("routes", route_entries)?;
+        result_dict.set_item(
+            "long_straight_congestion",
+            self.long_straight_congestion_records(py)?,
+        )?;
         timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
         result_dict.set_item("timings_s", native_batch_timings_to_py_dict(py, &timings)?)?;
         Ok(result_dict.into())
@@ -8240,6 +8443,7 @@ impl PyPhotonicRouter {
             PyState,
             Vec<(i32, i32)>,
             Vec<(i32, i32)>,
+            Vec<(i32, i32)>,
             Option<(f64, f64)>,
             Option<(f64, f64)>,
         )>,
@@ -8251,6 +8455,9 @@ impl PyPhotonicRouter {
         history_weight: f64,
         history_increment: u32,
     ) -> PyResult<PyObject> {
+        self.obstacle_map.clear_congestion();
+        self.long_straight_congestion_cells.clear();
+        self.long_straight_congestion_records.clear();
         let collect_native_timing = self.astar_cfg.collect_detailed_timing;
         let mut timings = NativeBatchTimings::default();
         let unpack_start = native_batch_timer(collect_native_timing);
@@ -8263,6 +8470,7 @@ impl PyPhotonicRouter {
                     target,
                     opened_cells,
                     clearance_exempt_cells,
+                    static_cleanup_cells,
                     source_port_um,
                     target_port_um,
                 )| {
@@ -8272,6 +8480,7 @@ impl PyPhotonicRouter {
                         target,
                         opened_cells,
                         clearance_exempt_cells,
+                        static_cleanup_cells,
                         source_port_um,
                         target_port_um,
                     )
@@ -8385,6 +8594,7 @@ impl PyPhotonicRouter {
                     let current_route = match route_result {
                         Ok(route) => {
                             timings.add_route_result_stats_if(collect_native_timing, &route);
+                            remove_success_static_cleanup(&mut self.obstacle_map, job);
                             route
                         }
                         Err(error) => {
@@ -8423,6 +8633,7 @@ impl PyPhotonicRouter {
                     let victim_route = match reroute_result {
                         Ok(route) => {
                             timings.add_route_result_stats_if(collect_native_timing, &route);
+                            remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
                             route
                         }
                         Err(normal_error) => {
@@ -8449,6 +8660,7 @@ impl PyPhotonicRouter {
                                 Ok(route) => {
                                     timings
                                         .add_route_result_stats_if(collect_native_timing, &route);
+                                    remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
                                     route
                                 }
                                 Err(error) => {
@@ -8526,6 +8738,7 @@ impl PyPhotonicRouter {
             match route_result {
                 Ok(route) => {
                     timings.add_route_result_stats_if(collect_native_timing, &route);
+                    remove_success_static_cleanup(&mut self.obstacle_map, job);
                     attempts.push(NativeRouteAttempt {
                         bucket_name: "normal_route",
                         net_id: job.net_id,
@@ -8607,6 +8820,7 @@ impl PyPhotonicRouter {
                                         collect_native_timing,
                                         &route,
                                     );
+                                    remove_success_static_cleanup(&mut self.obstacle_map, job);
                                     route
                                 }
                                 Err(error) => {
@@ -8656,6 +8870,7 @@ impl PyPhotonicRouter {
                                         collect_native_timing,
                                         &route,
                                     );
+                                    remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
                                     route
                                 }
                                 Err(error) => {
@@ -8819,29 +9034,6 @@ impl PyPhotonicRouter {
                         }
                     }
                 }
-            }
-
-            if self.lidar_pure_crossing_enabled() && self.use_collision_crossing_routing {
-                let error = "No legal LiDAR crossing route found; probe-based victim selection is disabled in crossing mode".to_string();
-                if trace_native_repair {
-                    eprintln!(
-                        "native_repair_lidar_no_probe_victim_selection net={} error={}",
-                        job.net_id, error
-                    );
-                }
-                attempts.push(NativeRouteAttempt {
-                    bucket_name: "lidar_crossing_no_probe",
-                    net_id: job.net_id,
-                    route: None,
-                    failed: true,
-                    error: Some(error.clone()),
-                    repair_round: None,
-                    candidate_blockers: Vec::new(),
-                    ripup_ids: Vec::new(),
-                });
-                failed_net_id = Some(job.net_id);
-                failed_error = Some(error);
-                break;
             }
 
             let probe_start = native_batch_timer(collect_native_timing);
@@ -9210,6 +9402,7 @@ impl PyPhotonicRouter {
                 match route_result {
                     Ok(route) => {
                         timings.add_route_result_stats_if(collect_native_timing, &route);
+                        remove_success_static_cleanup(&mut self.obstacle_map, job);
                         attempts.push(NativeRouteAttempt {
                             bucket_name: "localized_crossing_keepout",
                             net_id: job.net_id,
@@ -9268,6 +9461,7 @@ impl PyPhotonicRouter {
                         match repair_result {
                             Ok(route) => {
                                 timings.add_route_result_stats_if(collect_native_timing, &route);
+                                remove_success_static_cleanup(&mut self.obstacle_map, job);
                                 attempts.push(NativeRouteAttempt {
                                     bucket_name: "localized_crossing_keepout",
                                     net_id: job.net_id,
@@ -9351,7 +9545,7 @@ impl PyPhotonicRouter {
                                 job.net_id,
                                 Some(&job.opened_cell_keys),
                             );
-                            self.add_crossing_spacing_history_for_route(job.net_id, &probe_route);
+                            self.add_post_commit_guidance_for_route(job.net_id, &probe_route);
                             self.invalidate_meander_base_prefix();
                             if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
                                 job.net_id,
@@ -9631,6 +9825,7 @@ impl PyPhotonicRouter {
                         match route_result {
                             Ok(route) => {
                                 timings.add_route_result_stats_if(collect_native_timing, &route);
+                                remove_success_static_cleanup(&mut self.obstacle_map, job);
                                 push_native_repair_trace(
                                     &mut repair_trace,
                                     "current_route",
@@ -9752,6 +9947,7 @@ impl PyPhotonicRouter {
                                             collect_native_timing,
                                             &route,
                                         );
+                                        remove_success_static_cleanup(&mut self.obstacle_map, job);
                                         push_native_repair_trace(
                                             &mut repair_trace,
                                             "current_route",
@@ -10271,6 +10467,7 @@ impl PyPhotonicRouter {
                                 Ok(route) => {
                                     timings
                                         .add_route_result_stats_if(collect_native_timing, &route);
+                                    remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
                                     push_native_repair_trace(
                                         &mut repair_trace,
                                         "victim_reroute",
@@ -10387,6 +10584,7 @@ impl PyPhotonicRouter {
                                                 collect_native_timing,
                                                 &route,
                                             );
+                                            remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
                                             push_native_repair_trace(
                                                 &mut repair_trace,
                                                 "victim_reroute",
@@ -10526,6 +10724,7 @@ impl PyPhotonicRouter {
                         let route = match normal_result {
                             Ok(route) => {
                                 timings.add_route_result_stats_if(collect_native_timing, &route);
+                                remove_success_static_cleanup(&mut self.obstacle_map, job);
                                 push_native_repair_trace(
                                     &mut repair_trace,
                                     "current_route",
@@ -10636,6 +10835,7 @@ impl PyPhotonicRouter {
                                             collect_native_timing,
                                             &route,
                                         );
+                                        remove_success_static_cleanup(&mut self.obstacle_map, job);
                                         push_native_repair_trace(
                                             &mut repair_trace,
                                             "current_route",
@@ -10914,6 +11114,7 @@ impl PyPhotonicRouter {
                                     Ok(route) => {
                                         timings
                                             .add_route_result_stats_if(collect_native_timing, &route);
+                                        remove_success_static_cleanup(&mut self.obstacle_map, job);
                                         attempts.push(NativeRouteAttempt {
                                             bucket_name: "repair_failed_net",
                                             net_id: job.net_id,
@@ -11066,6 +11267,10 @@ impl PyPhotonicRouter {
         result_dict.set_item("routes", route_entries)?;
         result_dict.set_item("attempts", attempt_entries)?;
         result_dict.set_item("repair_trace", repair_trace_entries)?;
+        result_dict.set_item(
+            "long_straight_congestion",
+            self.long_straight_congestion_records(py)?,
+        )?;
         timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
         result_dict.set_item("timings_s", native_batch_timings_to_py_dict(py, &timings)?)?;
         Ok(result_dict.into())
@@ -11260,6 +11465,20 @@ impl PyPhotonicRouter {
         for (x, y) in cells {
             self.obstacle_map.add_history_cost(x, y, amount);
         }
+    }
+
+    fn long_straight_congestion_records(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        let mut out = Vec::with_capacity(self.long_straight_congestion_records.len());
+        for record in &self.long_straight_congestion_records {
+            let d = PyDict::new_bound(py);
+            d.set_item("net_id", record.net_id)?;
+            d.set_item("start", record.start)?;
+            d.set_item("end", record.end)?;
+            d.set_item("length_um", record.length_um)?;
+            d.set_item("marked_cells", record.marked_cells)?;
+            out.push(d.into());
+        }
+        Ok(out)
     }
 
     #[pyo3(signature=(route,block_radius_cells=0,amount=1))]
