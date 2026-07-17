@@ -82,3 +82,32 @@ All runs used `--crossings true`; `benes_16x16` runs used
   `collision`.
 - The untracked file `docs/photonic_router_graph_crossing_plm_full.tex` is an
   intentional local document and should not be included in these commits.
+
+## Current Stable Dense-Benchmark Flags
+
+Use this environment setting and these flags for the current stable dense
+crossing runs:
+
+```powershell
+$env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT="0.05"
+.\.venv\Scripts\python.exe -X utf8 routing_flow.py benes_8x8 `
+  --crossings true `
+  --crossing-mode lidar-pure `
+  --fanout-access-mode static-stubs `
+  --foreign-port-keepout-cells 0
+```
+
+```powershell
+$env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT="0.05"
+.\.venv\Scripts\python.exe -X utf8 routing_flow.py multiportmmi_8x8 `
+  --crossings true `
+  --crossing-mode lidar-pure `
+  --fanout-access-mode static-stubs `
+  --routing-window-scale 0.35 `
+  --foreign-port-keepout-cells 0
+```
+
+The stable `static-stubs` default is 90-degree fanout stubs. Override with
+`PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=45` only for targeted experiments.
+Unset `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT` only for direct
+comparisons against the pre-congestion baseline.

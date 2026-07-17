@@ -20,6 +20,26 @@ EXPECTED_CROSSINGS = TOPOLOGY_METADATA["crossings"]
 NODE_TYPES = benes_node_types(NETWORK_SIZE)
 INTERNAL_DELAYS_UM = benes_internal_delays_um(NETWORK_SIZE)
 
+# Stable crossing-router baseline, July 2026:
+#   $env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT="0.05"
+#   python routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure
+#     --fanout-access-mode static-stubs --foreign-port-keepout-cells 0
+# Static fanout stubs use the router default bend style, currently 90 degrees.
+STABLE_ROUTING_ENV: dict[str, str] = {
+    "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT": "0.05",
+}
+
+STABLE_ROUTING_FLAGS: tuple[str, ...] = (
+    "--crossings",
+    "true",
+    "--crossing-mode",
+    "lidar-pure",
+    "--fanout-access-mode",
+    "static-stubs",
+    "--foreign-port-keepout-cells",
+    "0",
+)
+
 
 def build_schematic() -> Schematic:
     """Build the 8x8 Benes benchmark schematic."""
