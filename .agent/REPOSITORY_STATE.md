@@ -8876,3 +8876,68 @@ Post target-runway 8x8 stability re-run:
   - `111/111`, failures `0`, repairs `0`, endpoint correction `111/111 ok`.
   - total time `23.8590s`.
   - optical routing stage `16.2845s`, native route batch `15.3641s`.
+
+Multiport MMI 16x16 target-runway continuation:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`, `--crossings true`,
+  `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+  `--foreign-port-keepout-cells 0`, `--routing-window-scale 0.35`,
+  `--debug-stop-after-route 128`.
+- `multiportmmi_16x16` stop-after-128 passed:
+  - `128/128`, failures `0`, repairs `0`, endpoint correction `128/128 ok`.
+  - total time `48.5545s`.
+  - optical routing stage `34.2321s`, native route batch `31.9883s`.
+  - slowest routes remain route 75 / `n_74` (`9.8357s`, expanded `1405507`)
+    and route 74 / `n_73` (`8.5805s`, expanded `1389344`).
+  - Current artifact: `build/routed_multiportmmi_16x16.gds`.
+- `multiportmmi_16x16` stop-after-130 with the same config passed:
+  - `130/130`, failures `0`, repairs `0`, endpoint correction `130/130 ok`.
+  - total time `48.3818s`.
+  - optical routing stage `33.9148s`, native route batch `31.7604s`.
+  - slowest routes remain route 75 / `n_74` (`9.4338s`, expanded `1405507`)
+    and route 74 / `n_73` (`8.4678s`, expanded `1389344`).
+  - Current artifact: `build/routed_multiportmmi_16x16.gds`.
+- `multiportmmi_16x16` stop-after-141 with the same config passed:
+  - `141/141`, failures `0`, repairs `0`, endpoint correction `141/141 ok`.
+  - total time `59.0529s`.
+  - optical routing stage `43.3038s`, native route batch `41.0188s`.
+  - slowest routes: route 75 / `n_74` (`9.4279s`, expanded `1405507`),
+    route 74 / `n_73` (`8.7382s`, expanded `1389344`), and new route
+    136 / `n_135` (`5.1726s`, expanded `694593`).
+  - Current artifact: `build/routed_multiportmmi_16x16.gds`.
+- `multiportmmi_16x16` stop-after-173 with the same config passed:
+  - `173/173`, failures `0`, repairs `0`, endpoint correction `173/173 ok`.
+  - total time `61.9149s`.
+  - optical routing stage `42.2484s`, native route batch `39.7203s`.
+  - slowest routes remain route 75 / `n_74` (`9.6639s`, expanded `1405507`),
+    route 74 / `n_73` (`8.2882s`, expanded `1389344`), and route 136 /
+    `n_135` (`5.3595s`, expanded `694593`).
+  - Current artifact: `build/routed_multiportmmi_16x16.gds`.
+
+Multiport MMI 16x16 full-run checkpoint:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`, `--crossings true`,
+  `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+  `--foreign-port-keepout-cells 0`, `--routing-window-scale 0.35`.
+- `multiportmmi_16x16` full run passed:
+  - `223/223`, failures `0`, repairs `0`, endpoint correction `223/223 ok`.
+  - photonic verification: `success=True`, `status=complete`, error count `0`,
+    warning count `0`, missing routes `0`, cross-net waveguide overlaps `0`,
+    waveguide-obstacle overlaps `0`.
+  - crossing verification: `success=True`, `status=complete`, error count `0`,
+    warning count `0`, routed records `223`, crossing records `63`.
+  - optical net routing phase `83.3955s`; native route batch `79.7078s`;
+    A* route-search loop `79.9292s`.
+  - slowest routes in the run were route 222 / `n_221` (`9.6070s`, expanded
+    `686956`), route 191 / `n_190` (`9.3116s`, expanded `1045280`), route 75 /
+    `n_74` (`9.1370s`, expanded `1405507`), route 74 / `n_73` (`8.5115s`,
+    expanded `1389344`), and route 136 / `n_135` (`4.8746s`, expanded
+    `694593`).
+  - Current artifacts:
+    `build/routed_multiportmmi_16x16.gds`,
+    `build/verification/multiportmmi_16x16_photonic_verification.json`,
+    `build/verification/multiportmmi_16x16_crossing_verification.json`.
