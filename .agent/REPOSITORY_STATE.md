@@ -5,9 +5,9 @@ every agent stop, pause, or handoff. It does not replace the active ExecPlan.
 
 ## Current Snapshot
 
-- Date: 2026-07-16 17:20Z
+- Date: 2026-07-17 current local
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `6b0c5cc`
+- Current HEAD: `ad615fd`
 - Current clean-branch base: `731d0a9`
 - Active ExecPlan:
   `.agent/execplans/2026-07-10-crossing-verification-foundation.md`
@@ -26,6 +26,115 @@ verification and router-discovered crossing work. It should stay reviewable and
 should not receive wholesale merges from the experimental branch.
 
 At creation, this worktree was clean at `731d0a9`.
+
+Heater optical port access opening WIP:
+
+- Date: 2026-07-17 current local
+- Scope:
+  - Component-specific optical port access rules now apply independently from
+    `include_heater_obstacles`; that flag still only controls whether extra
+    heater/metal layers are included as static obstacles.
+  - Matching heater optical ports also open raw static cells on the owning
+    instance's port-facing side so the pad-side access region is not limited
+    to the narrow runway rectangle.
+  - Updated the routing-flow docstring and the focused opened-cells test to
+    lock the no-heater-obstacle-layer behavior.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py routing_flow.py`
+    passed.
+  - `.\.venv\Scripts\python.exe -m pytest
+    tests\test_route_rust_opened_cells.py::test_route_nets_rust_applies_heater_opening_without_heater_obstacle_layers -q`
+    passed.
+  - `multiportmmi_8x8 --crossings true --crossing-mode lidar-pure
+    --fanout-access-mode static-stubs --routing-window-scale 0.35
+    --foreign-port-keepout-cells 0 --debug-svgs 35
+    --debug-stop-after-route 35 --verbose-routes` passed. Route `n_34`
+    remained on the same legal waypoint sequence, so the visible S-detour is
+    not explained by the old heater-access gating alone.
+  - Focused `n_34` diagnostics show the target-port 90-degree bend that ends
+    at the heater port from below is not blocked: `end_from_below_to_port`
+    has `static=0` and `dynamic=0`. The same is true for
+    `end_from_above_to_port`.
+  - The only target-port bend footprints blocked by static cells are the
+    artificial `target_out_down`/`target_out_up` probes that start at the port
+    and continue into the heater/pad side; they are not the desired connection
+    direction.
+  - Post-crossing orthogonal candidate probes after the accepted crossing at
+    dynamic owner `32` report no static or dynamic blockers for bend starts
+    `x=758..761`.
+  - Candidate tracing for `n_34` against partner `32` shows
+    `terminal_bump_distance` rejects for attempted second crossings near
+    `(755,190..193)`, while the accepted crossing remains the lower crossing
+    at `(755,176)`. The remaining S-detour is therefore not explained by
+    heater static access or the desired endpoint bend footprint; next audit
+    should focus on A* cost/heuristic/state dominance after the accepted
+    crossing.
+  - Follow-up A* corridor tracing refined this: the short direct route after
+    the accepted lower crossing is partially explored, but the vertical
+    corridor toward the target is rejected as `reject_unopened_static` at
+    static cells such as `(760,186)`, `(760,187)`, `(760,188)`, and `(760,189)`.
+    The effective target port opening for `n_34` only opens static overlap at
+    bbox `(760,768,191,196)`. So the visible S-shape is caused by a lower
+    static blocker band before the already-open target window, not by the
+    final 90-degree bend into the heater port itself.
+  - Current diagnostic WIP added env-gated Rust tracing in `src/astar.rs`
+    (`PHOTONIC_ROUTER_TRACE_CROSSING_CORRIDOR`) and a Python-side corridor
+    probe hook in `translation/route_rust.py`; remove or keep deliberately
+    before the next commit.
+
+Crossing endpoint correction fix:
+
+- Date: 2026-07-17 01:05 local
+- Commit: `ad615fd` (`routing: fix crossing endpoint correction`)
+- Scope:
+  - Crossing-aware endpoint correction now applies the normal endpoint
+    correction sequence to split terminal centerline segments:
+    source -> first crossing and last crossing -> target.
+  - The crossing point is passed as a virtual opposite port, keeping crossings
+    fixed while allowing existing straights/diagonals to absorb endpoint deltas.
+  - Bump insertion is now a last-resort fallback after existing straight,
+    diagonal, shared-axis, and residual-axis correction attempts.
+  - `src/py_router.rs` keeps the collision/static/dynamic check around the
+    corrected terminal segment before accepting it.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8 --crossings true --crossing-mode lidar-pure
+    --foreign-port-keepout-cells 0 --debug-svgs none --debug-timing true`
+    passed; endpoint correction reported `48` calls and `0` failures.
+
+Foreign-port keepout cleanup WIP:
+
+- Date: 2026-07-17 00:40 local
+- Scope:
+  - Foreign-port keepout cells remain built per `port_spec`, but each native
+    route job now also carries the source/target ports' removable foreign
+    keepout cells.
+  - Removable cells are filtered so raw static geometry, normal port runway
+    cells, and fanout stub static cells are not removed.
+  - The native Rust batch removes those cleanup cells from the static obstacle
+    map immediately after a successful route commit, including successful
+    current-route and victim-reroute repair paths.
+  - Python static-map handoff now installs raw static cells first and adds
+    derived port/fanout reservations separately, avoiding duplicate explicit
+    static references in non-rect mode.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `.\.venv\Scripts\python.exe -m pytest
+    tests\test_route_rust_opened_cells.py -k "foreign_port_keepout or
+    removes_foreign_keepout" -q` passed: 4 tests.
+  - `multiportmmi_8x8 --crossings true --crossing-mode lidar-pure
+    --fanout-access-mode static-stubs --routing-window-scale 0.35
+    --foreign-port-keepout-cells 6 --debug-svgs none --debug-timing true
+    --debug-stop-after-route 70` passed and wrote
+    `build\routed_multiportmmi_8x8.gds`.
+- Worktree note:
+  - `src/astar.rs` and some LiDAR-pure owner-lookup edits in `src/py_router.rs`
+    remain part of the existing dirty WIP from before this cleanup change.
+    Do not treat the whole dirty diff as only the foreign-keepout patch.
 
 Benes early simple-route bypass fix:
 
@@ -8373,3 +8482,298 @@ LiDAR-pure owner-lookup experiment and control benchmark check:
   crossing-aware obstacle A* with all committed owners available as lookup data;
   only if that A* cannot find a legal route should ripup use real failure
   signals such as pending-straight/perpendicular reject counters.
+
+Multiport MMI 8x8 `n_34` S-shape investigation:
+
+- Date: 2026-07-17 local
+- User observed that the route segment after the crossing near the heater should
+  be able to use a compact/direct 90-degree bend into the heater port instead of
+  the visible S-shaped detour.
+- Reproduced with:
+  `routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure
+  --fanout-access-mode static-stubs --routing-window-scale 0.35
+  --foreign-port-keepout-cells 0 --debug-svgs 35 --debug-stop-after-route 35
+  --verbose-routes`, with `PHOTONIC_ROUTER_TRACE_N34_S_SHAPE=1`.
+- The end-port bend itself is not the blocker. Earlier probe results showed
+  `end_from_below_to_port` and `end_from_above_to_port` both have
+  `static=0 dynamic=0`, and `target_state=(767,193,0)`.
+- The direct corridor is blocked lower than the raw heater pad:
+  `corridor_probe_raw_static` only contains cells around `y=191..193`, but
+  `corridor_probe_blocked_static_rects` contains the expanded static rectangle
+  at `x=760..767, y=186..193`.
+- The route-specific opened cells include `y=190..193`, but not `y=186..189`.
+  Therefore the A* sees the lower part of the heater clearance rectangle as
+  closed and chooses the S-shaped detour.
+- This is not caused by foreign keepout, normal port runway, fanout stubs, or
+  committed dynamic routes in this corridor; the diagnostic sets for those were
+  empty in the probed box.
+- Likely model issue: heater-port opening currently derives extra opening
+  cells from raw static geometry / instance bbox, while the router blocks with
+  expanded `blocked_static_rects`. For heater optical access, the opening
+  probably needs to cover the relevant expanded heater clearance cells on the
+  port-facing side too, or the static builder needs to represent heater access
+  openings consistently for compact rectangles.
+- Implemented model fix: heater optical port extra opening now uses a prepared
+  opening geometry that combines raw static pad rectangles with the expanded
+  `blocked_static_rects`. The local heater port opening therefore opens the
+  heater's clearance extension with the same port-side logic as the raw pad.
+- Validation after implementation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed after removing the
+    temporary Rust static-sample trace hook.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - Focused `multiportmmi_8x8` stop-after-35 with `foreign-port-keepout-cells
+    0` passed. `n_34` shortened from the old S-detour length `156.000um` to
+    `120.284um`, with expanded states reduced from `28565` to `21664`.
+  - The initial expensive implementation made `port_opening_prep` too slow;
+    it was replaced with a prepared raw+expanded rect-range opening. Focused
+    stop-after-35 now reports `port_opening_prep=0.2281s`.
+  - Full `multiportmmi_8x8` with `foreign-port-keepout-cells 6` still exposes
+    later endpoint snapping errors on `n_76`/`n_77`; user explicitly separated
+    that as a later debugging topic.
+- Temporary one-off `n_34` diagnostics were removed from `translation/route_rust.py`
+  and `src/astar.rs`.
+
+Multiport MMI 8x8 stepwise progress after heater-opening fix:
+
+- Normal config for this series:
+  `multiportmmi_8x8 --crossings true --crossing-mode lidar-pure
+  --fanout-access-mode static-stubs --routing-window-scale 0.35
+  --foreign-port-keepout-cells 6`, with
+  `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`.
+- Stop-after-68 passed: `68/68`, failures `0`, repairs `0`,
+  endpoint correction `68/68 ok`.
+- Route 68 is `n_67`; despite expecting a possible ripup, it routed directly
+  with normal A*: `length=374.024um`, `cost=482.024`,
+  `expanded=153724`, attempt time `0.6544s`.
+- Run timing: total `9.7672s`, net routing phase `5.4513s`,
+  native route batch `3.9847s`, endpoint correction `0.0980s`,
+  `port_opening_prep=0.1981s`.
+- Current GDS from that run: `build/routed_multiportmmi_8x8.gds`.
+- Stop-after-69 passed with the same config: `69/69`, failures `0`,
+  repairs `0`, endpoint correction `69/69 ok`.
+- Route 69 is `n_68`; it also routed without ripup via normal A*:
+  `length=339.539um`, `cost=555.539`, `expanded=242385`, attempt time
+  `1.1643s`.
+- Stop-after-69 timing: total `11.0800s`, net routing phase `6.6599s`,
+  native route batch `5.1917s`, endpoint correction `0.1016s`,
+  `port_opening_prep=0.1954s`.
+- User accepted the current `multiportmmi_8x8` state as stable with
+  `foreign-port-keepout-cells 0`. Stable dense-benchmark commands are now
+  recorded in `benchmarks/benes_8x8.py`, `benchmarks/multiportmmi_8x8.py`,
+  and `docs/crossing_baselines.md`.
+- The `static-stubs` fanout default was changed from 45-degree stubs to
+  90-degree stubs. Experiments can still override it with
+  `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES`.
+- `multiportmmi_8x8` stop-after-69 with `foreign-port-keepout-cells 0`
+  remains stable: `69/69`, failures `0`, repairs `0`, endpoint correction
+  `69/69 ok`; route 69 / `n_68` is shorter with keepout disabled:
+  `length=294.853um`, `cost=400.853`, `expanded=81962`.
+- `multiportmmi_8x8` route 70 with `foreign-port-keepout-cells 0` completes
+  but is not the current stable checkpoint: it triggers repair (`repairs=1`)
+  and takes about `126.6s` total, with `n_69` eventually routed at
+  `length=223.681um`, `cost=331.681`, `expanded=73218`.
+- Commit policy for this state: do not commit this WIP yet. Treat it as a
+  documented local checkpoint until both `benes_8x8` and `multiportmmi_8x8`
+  are completely fixed under the agreed stable flags. The current accepted
+  stable checkpoint is useful for resuming/debugging, but it is not a final
+  repository baseline.
+
+Benes 8x8 renewed focus point:
+
+- Date: 2026-07-17 local
+- Command used:
+  `routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure
+  --fanout-access-mode static-stubs --foreign-port-keepout-cells 0
+  --debug-svgs 14 --debug-stop-after-route 14 --verbose-routes`.
+- Stop-after-14 completed: `14/14`, endpoint correction `14/14 ok`,
+  repairs `1`.
+- Route 14 is `n_s0_2_o1_to_s1_3_i0`; it routed directly via normal A*:
+  `length=630.299um`, `cost=632.299`, `expanded=503`.
+- The repair before this point is on route 13
+  (`n_s0_2_o0_to_s1_1_i0`): normal route failed, then
+  `pending_straight_ripup` succeeded. Slow route attempts are route 13
+  pending-straight (`1.9076s`), route 11 normal (`1.4130s`), and route 12
+  pending-straight (`1.2779s`).
+- Current artifacts:
+  `build/routed_benes_8x8.gds` and
+  `build/routes/benes_8x8_n_s0_2_o1_to_s1_3_i0.svg`.
+
+Passive long-straight congestion experiment:
+
+- Date: 2026-07-17 local
+- Implemented a passive Rust-side long-straight congestion map. This is
+  separate from `ObstacleMap.history_cost`, so it does not affect current A*
+  route costs or repair `history_weight` behavior yet.
+- Rule:
+  - after a route is committed, inspect its compressed 8-direction centerline;
+  - for each straight segment longer than `200um`, mark only the middle half
+    of the segment;
+  - add a lateral halo of 5 cells on both sides of that marked middle section;
+  - record affected net/segment diagnostics in the native batch result.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `benes_8x8` stop-after-12 with stable flags still passes with no repairs.
+  - `benes_8x8` stop-after-14 still reaches the known repair point: route 13
+    normal route fails, `pending_straight_ripup` succeeds, and route 14 routes
+    cleanly.
+- Congestion contributors in `benes_8x8` stop-after-12:
+  - route 9 `n_s0_0_o0_to_s1_0_i0`: one long straight, `540.0um`,
+    `1485` marked cells.
+  - route 10 `n_s0_0_o1_to_s1_2_i0`: one long straight, `619.4um`,
+    `1210` marked cells.
+  - route 11 `n_s0_1_o0_to_s1_0_i1`: two long straights, `280.0um` and
+    `291.3um`, `1353` marked cells.
+  - route 12 `n_s0_1_o1_to_s1_2_i1`: two long straights, `310.0um` and
+    `311.1um`, `1463` marked cells.
+- Additional contributors observed in stop-after-14:
+  - route 13 `n_s0_2_o0_to_s1_1_i0`: two long straights, `236.0um` and
+    `311.1um`, `1254` marked cells.
+  - route 14 `n_s0_2_o1_to_s1_3_i0`: two long straights, `314.0um` and
+    `308.3um`, `1452` marked cells.
+- Note: route 12 appears with four long-straight records in stop-after-14
+  because the repair sequence reroutes/recommits it; the passive map records
+  additions, it does not yet remove or decrement old passive congestion.
+
+Long-straight congestion A* cost experiment:
+
+- Date: 2026-07-17 local
+- Added a separate `ObstacleMap` congestion-cost layer and a new environment
+  option `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT`. The passive
+  long-straight map now stays independent from `history_cost`; when the env
+  value is greater than zero, A* adds `weight * footprint_congestion_sum` to
+  each primitive step. With the env unset, routing behavior is unchanged.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - Baseline `benes_8x8` stop-after-12 with the env unset passed:
+    `12/12`, repairs `0`, endpoint correction `12/12 ok`, total `3.4238s`.
+  - `benes_8x8` stop-after-12 with
+    `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05` passed:
+    `12/12`, repairs `0`, endpoint correction `12/12 ok`, total `3.1173s`.
+    The route choices changed slightly: route 11 long straight changed from
+    `280.0um` to `290.0um`, and route 12 changed from
+    `[310.0um, 311.1um]` to `[311.1um, 256.0um]`.
+  - `benes_8x8` stop-after-14 with
+    `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05` passed:
+    `14/14`, repairs `0`, endpoint correction `14/14 ok`, total `5.6380s`.
+    This is better than the passive stop-after-14 checkpoint, where route 13
+    needed `pending_straight_ripup`; with the small congestion cost, route 13
+    is found by normal A*.
+- Current artifact after the weighted stop-after-14 run:
+  `build/routed_benes_8x8.gds` and
+  `build/routes/benes_8x8_n_s0_2_o1_to_s1_3_i0.svg`.
+- Full `benes_8x8` run with
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05` and stable flags
+  passed:
+  - `48/48` routes completed.
+  - repairs `0`.
+  - endpoint correction `48/48 ok`.
+  - total time `23.0425s`.
+  - native route batch `21.1751s`.
+  - slowest routes: route 37 (`3.7222s`), route 15 (`3.2010s`),
+    route 13 (`2.2626s`), route 39 (`1.9490s`).
+  - Current full-run artifact: `build/routed_benes_8x8.gds`.
+- `multiportmmi_8x8` stop-after-40 with the same congestion weight and stable
+  flags
+  (`--crossings true --crossing-mode lidar-pure --fanout-access-mode
+  static-stubs --foreign-port-keepout-cells 0 --routing-window-scale 0.35`)
+  passed:
+  - `40/40` routes completed.
+  - repairs `0`.
+  - endpoint correction `40/40 ok`.
+  - total time `5.3197s`.
+  - native route batch `1.2032s`.
+  - slowest route: route 36 / `n_35`, `0.6753s`, expanded `152182`.
+  - Current artifact: `build/routed_multiportmmi_8x8.gds`; selected route SVG:
+    `build/routes/multiportmmi_8x8_n_39.svg`.
+- `multiportmmi_8x8` stop-after-51 with the same congestion weight and stable
+  flags passed:
+  - `51/51` routes completed.
+  - repairs `0`.
+  - endpoint correction `51/51 ok`.
+  - total time `5.8961s`.
+  - native route batch `1.3405s`.
+  - route 51 / `n_50` contributed one long straight (`416.0um`,
+    `1155` marked cells) and routed at `length=563.765um`,
+    `cost=567.765`, expanded `49200`.
+  - Current artifact: `build/routed_multiportmmi_8x8.gds`; selected route SVG:
+    `build/routes/multiportmmi_8x8_n_50.svg`.
+- `multiportmmi_8x8` stop-after-53 with the same congestion weight and stable
+  flags passed:
+  - `53/53` routes completed.
+  - repairs `0`.
+  - endpoint correction `53/53 ok`.
+  - total time `6.4179s`.
+  - native route batch `1.7295s`.
+  - route 52 / `n_51` took `0.2889s`, expanded `73066`;
+    route 53 / `n_52` took `0.1091s`, expanded `23894`.
+  - Current artifact: `build/routed_multiportmmi_8x8.gds`; selected route SVG:
+    `build/routes/multiportmmi_8x8_n_52.svg`.
+- `multiportmmi_8x8` stop-after-59 with the same congestion weight and stable
+  flags passed:
+  - `59/59` routes completed.
+  - repairs `0`.
+  - endpoint correction `59/59 ok`.
+  - total time `8.3295s`.
+  - native route batch `3.2342s`.
+  - slowest new route: route 55 / `n_54`, `1.3772s`, expanded `272335`.
+  - route 59 / `n_58` routed at `length=203.706um`, `cost=207.706`,
+    expanded `2430`.
+  - Current artifact: `build/routed_multiportmmi_8x8.gds`; selected route SVG:
+    `build/routes/multiportmmi_8x8_n_58.svg`.
+- `multiportmmi_8x8` stop-after-67 with the same congestion weight and stable
+  flags passed:
+  - `67/67` routes completed.
+  - repairs `0`.
+  - endpoint correction `67/67 ok`.
+  - total time `8.9045s`.
+  - native route batch `3.4172s`.
+  - new long-straight contributors after route 59:
+    route 66 / `n_65` (`252.0um`, `693` marked cells) and
+    route 67 / `n_66` (`330.0um`, `902` marked cells).
+  - Current artifact: `build/routed_multiportmmi_8x8.gds`; selected route SVG:
+    `build/routes/multiportmmi_8x8_n_66.svg`.
+- `multiportmmi_8x8` stop-after-69 with the same congestion weight and stable
+  flags passed:
+  - `69/69` routes completed.
+  - repairs `0`.
+  - endpoint correction `69/69 ok`.
+  - total time `10.0327s`.
+  - native route batch `4.3350s`.
+  - route 68 / `n_67` took `0.7551s`, expanded `144052`;
+    route 69 / `n_68` took `0.1614s`, expanded `31560`.
+  - Current artifact: `build/routed_multiportmmi_8x8.gds`; selected route SVG:
+    `build/routes/multiportmmi_8x8_n_68.svg`.
+- `multiportmmi_8x8` stop-after-70 with the same congestion weight and stable
+  flags passed:
+  - `70/70` routes completed.
+  - repairs `0`.
+  - endpoint correction `70/70 ok`.
+  - total time `11.6679s`.
+  - native route batch `5.4712s`.
+  - route 70 / `n_69` routed legally without repair:
+    `length=289.421um`, `cost=603.421`, expanded `144479`,
+    attempt time `0.8622s`.
+  - Current artifact: `build/routed_multiportmmi_8x8.gds`; selected route SVG:
+    `build/routes/multiportmmi_8x8_n_69.svg`.
+- Full `multiportmmi_8x8` run with the same congestion weight and stable flags
+  passed:
+  - `111/111` routes completed.
+  - repairs `0`.
+  - endpoint correction `111/111 ok`.
+  - total time `20.9471s`.
+  - native route batch `13.4698s`.
+  - slowest routes: route 94 / `n_93` (`2.5760s`, expanded `554149`),
+    route 111 / `n_110` (`2.4081s`, expanded `375067`),
+    route 108 / `n_107` (`1.6406s`, expanded `331581`).
+  - Full-run artifact: `build/routed_multiportmmi_8x8.gds`.
+- This is now written as the stable dense-benchmark configuration:
+  - `benchmarks/benes_8x8.py` and `benchmarks/multiportmmi_8x8.py` expose
+    `STABLE_ROUTING_ENV = {"PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT":
+    "0.05"}` alongside the stable CLI flags.
+  - `docs/crossing_baselines.md` includes the matching PowerShell commands.
+  - `.\.venv\Scripts\python.exe -m py_compile benchmarks\benes_8x8.py
+    benchmarks\multiportmmi_8x8.py` passed after the doc/config update.
