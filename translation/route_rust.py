@@ -6919,7 +6919,73 @@ def route_nets_rust(
             index = run_end
         return lengths_by_spec
 
+    def _dense_target_port_runway_lengths(
+        jobs: list[RouteJob],
+    ) -> dict[str, int]:
+        """Reserve staggered target-port access for dense same-instance sinks."""
+        lengths_by_spec: dict[str, int] = {}
+        grouped: dict[tuple[str, int], list[RouteJob]] = {}
+        for run_job in jobs:
+            angle = _orientation_to_angle(
+                getattr(run_job.target_port, "orientation", None),
+                flip=False,
+            )
+            grouped.setdefault((run_job.inst2, int(angle)), []).append(run_job)
+
+        base_cells = max(1, int(bend_radius_cells) + 1)
+        spacing_cells = _env_nonnegative_int(
+            "PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS",
+            _env_nonnegative_int(
+                "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
+                _env_nonnegative_int(
+                    "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+                    3,
+                ),
+            ),
+        )
+        spacing_cells = max(1, int(spacing_cells))
+
+        for (_instance_name, angle), angle_jobs in grouped.items():
+            if len(angle_jobs) < 4:
+                continue
+            step_x, step_y = _angle_to_step(angle)
+            lateral_x, lateral_y = -step_y, step_x
+
+            def lateral_position(run_job: RouteJob) -> float:
+                center = _port_center_um(run_job.target_port)
+                if center is None:
+                    return float(run_job.route_index)
+                return float(center[0]) * lateral_x + float(center[1]) * lateral_y
+
+            ordered = sorted(
+                angle_jobs,
+                key=lambda run_job: (lateral_position(run_job), int(run_job.route_index)),
+            )
+            count = len(ordered)
+            lower_jobs = ordered[: count // 2]
+            upper_jobs = ordered[count // 2 :]
+            for port_index, run_job in enumerate(lower_jobs):
+                port_spec = f"{run_job.inst2},{run_job.port2}"
+                lengths_by_spec[port_spec] = base_cells + spacing_cells * int(port_index)
+            upper_count = len(upper_jobs)
+            for port_index, run_job in enumerate(upper_jobs):
+                port_spec = f"{run_job.inst2},{run_job.port2}"
+                lengths_by_spec[port_spec] = (
+                    base_cells + spacing_cells * (upper_count - 1 - int(port_index))
+                )
+        return lengths_by_spec
+
     dense_source_port_runway_length_by_spec = _dense_source_port_runway_lengths(route_jobs)
+    dense_target_port_runway_length_by_spec = _dense_target_port_runway_lengths(route_jobs)
+    dense_port_runway_length_by_spec: dict[str, int] = dict(
+        dense_source_port_runway_length_by_spec
+    )
+    for port_spec, runway_length in dense_target_port_runway_length_by_spec.items():
+        existing_length = dense_port_runway_length_by_spec.get(port_spec)
+        dense_port_runway_length_by_spec[port_spec] = max(
+            int(existing_length) if existing_length is not None else 0,
+            int(runway_length),
+        )
     dense_source_cluster_specs_by_port_spec: dict[str, set[str]] = {}
     index = 0
     while index < len(route_jobs):
@@ -7082,7 +7148,7 @@ def route_nets_rust(
     ] = {}
     for item in port_opening_inputs:
         port_spec = str(item[0])
-        custom_runway_length = dense_source_port_runway_length_by_spec.get(port_spec)
+        custom_runway_length = dense_port_runway_length_by_spec.get(port_spec)
         if custom_runway_length is None:
             group_key = (default_runway_length_cells, False)
         else:
@@ -8631,7 +8697,7 @@ def route_nets_rust(
             "source_dense_port_runway_cells="
             f"{dense_source_port_runway_length_by_spec.get(port1_spec)}",
             "target_dense_port_runway_cells="
-            f"{dense_source_port_runway_length_by_spec.get(port2_spec)}",
+            f"{dense_target_port_runway_length_by_spec.get(port2_spec)}",
             "source_dense_source_cluster_size="
             f"{len(dense_source_cluster_specs_by_port_spec.get(port1_spec, set()))}",
             "target_dense_source_cluster_size="

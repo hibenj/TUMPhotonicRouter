@@ -8777,3 +8777,102 @@ Long-straight congestion A* cost experiment:
   - `docs/crossing_baselines.md` includes the matching PowerShell commands.
   - `.\.venv\Scripts\python.exe -m py_compile benchmarks\benes_8x8.py
     benchmarks\multiportmmi_8x8.py` passed after the doc/config update.
+
+Post-commit stable benchmark re-run:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`, `--crossings true`,
+  `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+  `--foreign-port-keepout-cells 0`; `multiportmmi_8x8` additionally used
+  `--routing-window-scale 0.35`.
+- `benes_8x8` full run passed:
+  - `48/48`, failures `0`, repairs `0`, endpoint correction `48/48 ok`.
+  - total time `22.7243s`.
+  - optical routing stage `21.4193s`, native route batch `20.9298s`.
+- `multiportmmi_8x8` full run passed:
+  - `111/111`, failures `0`, repairs `0`, endpoint correction `111/111 ok`.
+  - total time `24.9063s`.
+  - optical routing stage `17.2378s`, native route batch `16.3392s`.
+
+Multiport MMI 16x16 congestion checkpoint:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`, `--crossings true`,
+  `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+  `--foreign-port-keepout-cells 0`, `--routing-window-scale 0.35`,
+  `--debug-stop-after-route 80`.
+- `multiportmmi_16x16` stop-after-80 passed:
+  - `80/80`, failures `0`, repairs `0`, endpoint correction `80/80 ok`.
+  - total time `38.3757s`.
+  - optical routing stage `28.9625s`, native route batch `25.3272s`.
+  - slowest routes: route 75 / `n_74` (`9.1385s`, expanded `1405507`),
+    route 74 / `n_73` (`8.3971s`, expanded `1389344`),
+    route 72 / `n_71` (`2.3473s`, expanded `496600`).
+  - Current artifact: `build/routed_multiportmmi_16x16.gds`; selected route SVG:
+    `build/routes/multiportmmi_16x16_n_79.svg`.
+- `multiportmmi_16x16` stop-after-98 with the same config passed:
+  - `98/98`, failures `0`, repairs `0`, endpoint correction `98/98 ok`.
+  - total time `41.7365s`.
+  - optical routing stage `30.5191s`, native route batch `26.9719s`.
+  - slowest routes remain route 75 / `n_74` (`9.3867s`, expanded `1405507`)
+    and route 74 / `n_73` (`8.3705s`, expanded `1389344`); the new route
+    98 / `n_97` took `0.8215s`, expanded `131991`.
+  - Current artifact: `build/routed_multiportmmi_16x16.gds`; selected route SVG:
+    `build/routes/multiportmmi_16x16_n_97.svg`.
+- `multiportmmi_16x16` stop-after-111 with the same config passed:
+  - `111/111`, failures `0`, repairs `0`, endpoint correction `111/111 ok`.
+  - total time `43.8434s`.
+  - optical routing stage `31.2063s`, native route batch `27.5043s`.
+  - slowest routes still route 75 / `n_74` (`9.0379s`, expanded `1405507`)
+    and route 74 / `n_73` (`8.1592s`, expanded `1389344`); new route 103 /
+    `n_102` took `0.5685s`, expanded `68268`, and route 101 / `n_100`
+    took `0.4130s`, expanded `63789`.
+  - Current artifact: `build/routed_multiportmmi_16x16.gds`; selected route SVG:
+    `build/routes/multiportmmi_16x16_n_110.svg`.
+- `multiportmmi_16x16` stop-after-123 with the same config passed:
+  - `123/123`, failures `0`, repairs `0`, endpoint correction `123/123 ok`.
+  - total time `47.0592s`.
+  - optical routing stage `33.1667s`, native route batch `29.1746s`.
+  - slowest routes remain route 75 / `n_74` (`9.0025s`, expanded `1405507`)
+    and route 74 / `n_73` (`8.1833s`, expanded `1389344`); new route 112 /
+    `n_111` took `0.4523s`, expanded `124634`.
+  - Current artifact: `build/routed_multiportmmi_16x16.gds`; selected route SVG:
+    `build/routes/multiportmmi_16x16_n_122.svg`.
+
+Target-port dense runway checkpoint:
+
+- Date: 2026-07-17 local
+- Change in progress: dense target ports now receive staggered normal runway
+  reservations without stubs. Groups trigger at `>=4` target ports per
+  `(instance, port-orientation)` and split into lower/upper halves. Outer ports
+  keep `bend_radius_cells + 1` cells; each step toward the middle adds
+  `PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS` cells, falling back to
+  fanout protected spacing and then fanout lane spacing (`3` cells by default).
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py` passed.
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `multiportmmi_16x16` stop-after-124 with the same stable config passed:
+    `124/124`, failures `0`, repairs `0`, endpoint correction `124/124 ok`.
+    total time `48.7098s`, optical routing stage `34.3692s`, native route batch
+    `32.2582s`. Slowest routes remain route 75 / `n_74` (`9.4851s`, expanded
+    `1405507`) and route 74 / `n_73` (`8.8849s`, expanded `1389344`).
+  - Current artifact: `build/routed_multiportmmi_16x16.gds`.
+
+Post target-runway 8x8 stability re-run:
+
+- Date: 2026-07-17 local
+- Config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`, `--crossings true`,
+  `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+  `--foreign-port-keepout-cells 0`; `multiportmmi_8x8` additionally used
+  `--routing-window-scale 0.35`.
+- `benes_8x8` full run passed:
+  - `48/48`, failures `0`, repairs `0`, endpoint correction `48/48 ok`.
+  - total time `25.2426s`.
+  - optical routing stage `23.7497s`, native route batch `23.1552s`.
+- `multiportmmi_8x8` full run passed:
+  - `111/111`, failures `0`, repairs `0`, endpoint correction `111/111 ok`.
+  - total time `23.8590s`.
+  - optical routing stage `16.2845s`, native route batch `15.3641s`.
