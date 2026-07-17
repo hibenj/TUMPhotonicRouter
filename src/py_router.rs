@@ -18,6 +18,7 @@ use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
     cells_in_grid_rect as cells_in_grid_rect_rs, centerline_length_um as centerline_length_um_rs,
+    centerline_to_port_corrected_centerline_with_options as centerline_to_port_corrected_centerline_with_options_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
     compress_grid_waypoints as compress_grid_waypoints_rs,
     full_straight_offset_bump_candidates_for_centerline as full_straight_offset_bump_candidates_for_centerline_rs,
@@ -7000,18 +7001,6 @@ impl PyPhotonicRouter {
         let height = self.grid.height as i32;
         let opened_keys = pack_cells(opened_cells);
         let clearance_exempt_keys = pack_cells(clearance_exempt_cells);
-        let candidates = full_straight_offset_bump_candidates_for_centerline_rs(
-            centerline,
-            &self.primitives,
-            source_port_um,
-            target_port_um,
-        )
-        .map_err(|err| err.to_string())?;
-
-        if candidates.is_empty() {
-            return Err("No port endpoint case-4 bump candidates found for centerline segment".to_string());
-        }
-
         let endpoint_bump_trace_net_id = net_id.to_string();
         let trace_endpoint_bumps = std::env::var("PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS")
             .ok()
@@ -7022,6 +7011,99 @@ impl PyPhotonicRouter {
                 })
             })
             .unwrap_or(false);
+
+        if let Ok(corrected_centerline) = centerline_to_port_corrected_centerline_with_options_rs(
+            centerline,
+            &self.primitives,
+            source_port_um,
+            target_port_um,
+            true,
+        ) {
+            let corrected_core_cells =
+                centerline_core_cells(&corrected_centerline, width_um, &static_grid)
+                    .map_err(|err| err.to_string())?;
+            let corrected_blocked_cells =
+                inflate_route_cells(&corrected_core_cells, core_radius_cells, width, height);
+            let old_core_cells =
+                centerline_core_cells(centerline, width_um, &static_grid).unwrap_or_default();
+            let old_core_keys = pack_cells(&old_core_cells);
+            let correction_clearance_exempt_cells = unique_cells(
+                clearance_exempt_cells
+                    .iter()
+                    .copied()
+                    .chain(old_core_cells.iter().copied()),
+            );
+            let correction_clearance_exempt_keys = pack_cells(&correction_clearance_exempt_cells);
+            let out_of_bounds: Vec<(i32, i32)> = corrected_core_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
+                .collect();
+            let static_blockers: Vec<(i32, i32)> = corrected_core_cells
+                .iter()
+                .copied()
+                .filter(|&(x, y)| {
+                    let key = pack_xy(x, y);
+                    self.obstacle_map.in_bounds(x, y)
+                        && self.obstacle_map.is_static_blocked(x, y)
+                        && !opened_keys.contains(&key)
+                        && !old_core_keys.contains(&key)
+                })
+                .collect();
+            let dynamic_blockers = cells_with_other_dynamic_owner(
+                &self.obstacle_map,
+                &corrected_core_cells,
+                &correction_clearance_exempt_keys,
+                net_id,
+            );
+            if out_of_bounds.is_empty() && static_blockers.is_empty() && dynamic_blockers.is_empty()
+            {
+                let mut check_map = self.obstacle_map.clone();
+                if check_map.commit_route_with_clearance_overlap(
+                    net_id,
+                    &corrected_core_cells,
+                    &corrected_blocked_cells,
+                    &correction_clearance_exempt_cells,
+                ) {
+                    if trace_endpoint_bumps {
+                        println!(
+                            "endpoint_bump_trace net_id={net_id} candidate=normal_segment label=normal_segment status=accept core_cells={} core_bbox={} blocked_cells={} blocked_bbox={}",
+                            corrected_core_cells.len(),
+                            format_bbox(&corrected_core_cells),
+                            corrected_blocked_cells.len(),
+                            format_bbox(&corrected_blocked_cells)
+                        );
+                    }
+                    return Ok(NativeEndpointCorrection {
+                        centerline: corrected_centerline,
+                        committed_bump: false,
+                        candidate_index: None,
+                        candidate_label: Some("normal_segment".to_string()),
+                    });
+                }
+            } else if trace_endpoint_bumps {
+                println!(
+                    "endpoint_bump_trace net_id={net_id} candidate=normal_segment label=normal_segment status=reject out_of_bounds={} static_overlap={} dynamic_overlap={} core_cells={} core_bbox={}",
+                    out_of_bounds.len(),
+                    static_blockers.len(),
+                    dynamic_blockers.len(),
+                    corrected_core_cells.len(),
+                    format_bbox(&corrected_core_cells)
+                );
+            }
+        }
+
+        let candidates = full_straight_offset_bump_candidates_for_centerline_rs(
+            centerline,
+            &self.primitives,
+            source_port_um,
+            target_port_um,
+        )
+        .map_err(|err| err.to_string())?;
+
+        if candidates.is_empty() {
+            return Err("No port endpoint correction candidates found for centerline segment".to_string());
+        }
 
         let mut rejection_details = Vec::new();
         let mut first_accepted: Option<NativeEndpointCorrection> = None;

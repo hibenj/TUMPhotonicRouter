@@ -1106,15 +1106,7 @@ pub fn route_to_port_corrected_centerline_with_options(
             &mut centerline,
             source_port_um,
             target_port_um,
-        )? && !(allow_unchecked_bumps
-            && try_apply_full_straight_offset_bump_correction(
-                &mut centerline,
-                route,
-                primitives,
-                source_port_um,
-                target_port_um,
-            )?)
-        {
+        )? {
             try_apply_shared_axis_port_shift(&mut centerline, source_port_um, target_port_um)?;
             if !try_apply_45_degree_endpoint_delta_correction(
                 &mut centerline,
@@ -1125,17 +1117,37 @@ pub fn route_to_port_corrected_centerline_with_options(
                 route,
                 source_port_um,
                 target_port_um,
-                allow_unchecked_bumps,
+                false,
             )? {
-                if allow_unchecked_bumps {
-                    absorb_endpoint_delta_into_axis_runs(
-                        &mut centerline,
-                        &replay.straight_runs,
-                        &replay.dogleg_absorbers,
+                let mut existing_axis_candidate = centerline.clone();
+                if absorb_endpoint_delta_into_existing_axis_runs(
+                    &mut existing_axis_candidate,
+                    &replay.straight_runs,
+                    source_port_um,
+                    target_port_um,
+                )
+                .is_ok()
+                {
+                    centerline = existing_axis_candidate;
+                } else if allow_unchecked_bumps {
+                    let mut bump_candidate = centerline.clone();
+                    match try_apply_full_straight_offset_bump_correction(
+                        &mut bump_candidate,
+                        route,
                         primitives,
                         source_port_um,
                         target_port_um,
-                    )?;
+                    ) {
+                        Ok(true) => centerline = bump_candidate,
+                        Ok(false) | Err(_) => absorb_endpoint_delta_into_axis_runs(
+                            &mut centerline,
+                            &replay.straight_runs,
+                            &replay.dogleg_absorbers,
+                            primitives,
+                            source_port_um,
+                            target_port_um,
+                        )?,
+                    }
                 } else {
                     absorb_endpoint_delta_into_existing_axis_runs(
                         &mut centerline,
@@ -1158,6 +1170,110 @@ pub fn route_to_port_corrected_centerline_with_options(
     if centerline.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
         return Err(GeometryError::ZeroLengthSegment);
     }
+    Ok(centerline)
+}
+
+fn dedupe_centerline(centerline: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut deduped = Vec::with_capacity(centerline.len());
+    for point in centerline.iter().copied() {
+        push_physical_if_different(&mut deduped, point);
+    }
+    deduped
+}
+
+pub fn centerline_to_port_corrected_centerline_with_options(
+    centerline: &[(f64, f64)],
+    primitives: &PrimitiveLibrary,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+    allow_unchecked_bumps: bool,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
+    // Crossing-aware endpoint correction calls this on source->first-crossing
+    // and last-crossing->target slices. The crossing point is passed as the
+    // opposite virtual port, so the crossing itself stays fixed while normal
+    // endpoint correction can still use existing straights/diagonals first.
+    let mut centerline = dedupe_centerline(centerline);
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    if centerline.iter().any(|&point| !is_finite_point(point)) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    let source_angle = angle_for_centerline_segment(centerline[0], centerline[1]);
+    let last_index = centerline.len() - 1;
+    let target_angle =
+        angle_for_centerline_segment(centerline[last_index - 1], centerline[last_index]);
+    let straight_runs = axis_runs_from_centerline(&centerline);
+    let directional_runs = directional_runs_from_centerline(&centerline);
+    let dogleg_absorbers: Vec<DoglegAbsorber> = Vec::new();
+
+    if !try_apply_full_straight_port_correction(&mut centerline, source_port_um, target_port_um)? {
+        if !try_apply_full_diagonal_straight_port_correction(
+            &mut centerline,
+            source_port_um,
+            target_port_um,
+        )? {
+            try_apply_shared_axis_port_shift(&mut centerline, source_port_um, target_port_um)?;
+            if !try_apply_45_degree_centerline_endpoint_delta_correction(
+                &mut centerline,
+                &straight_runs,
+                &directional_runs,
+                &dogleg_absorbers,
+                primitives,
+                source_port_um,
+                target_port_um,
+                false,
+                source_angle,
+                target_angle,
+            )? {
+                let mut existing_axis_candidate = centerline.clone();
+                if absorb_endpoint_delta_into_existing_axis_runs(
+                    &mut existing_axis_candidate,
+                    &straight_runs,
+                    source_port_um,
+                    target_port_um,
+                )
+                .is_ok()
+                {
+                    centerline = existing_axis_candidate;
+                } else if allow_unchecked_bumps {
+                    let mut bump_candidate = centerline.clone();
+                    match try_apply_full_straight_offset_bump_correction_for_centerline(
+                        &mut bump_candidate,
+                        primitives,
+                        source_port_um,
+                        target_port_um,
+                    ) {
+                        Ok(true) => centerline = bump_candidate,
+                        Ok(false) | Err(_) => absorb_endpoint_delta_into_axis_runs(
+                            &mut centerline,
+                            &straight_runs,
+                            &dogleg_absorbers,
+                            primitives,
+                            source_port_um,
+                            target_port_um,
+                        )?,
+                    }
+                } else {
+                    absorb_endpoint_delta_into_existing_axis_runs(
+                        &mut centerline,
+                        &straight_runs,
+                        source_port_um,
+                        target_port_um,
+                    )?;
+                }
+            }
+        }
+    }
+
+    centerline = dedupe_centerline(&centerline);
+    validate_corrected_centerline_endpoint_candidate(
+        &centerline,
+        source_port_um,
+        target_port_um,
+        source_angle,
+        target_angle,
+    )?;
     Ok(centerline)
 }
 
@@ -1517,6 +1633,25 @@ fn try_apply_full_straight_offset_bump_correction(
     };
 
     *centerline = corrected;
+    Ok(true)
+}
+
+fn try_apply_full_straight_offset_bump_correction_for_centerline(
+    centerline: &mut Vec<(f64, f64)>,
+    primitives: &PrimitiveLibrary,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+) -> Result<bool, GeometryError> {
+    let mut candidates = full_straight_offset_bump_candidates_for_centerline(
+        centerline,
+        primitives,
+        source_port_um,
+        target_port_um,
+    )?;
+    let Some(candidate) = candidates.drain(..).next() else {
+        return Ok(false);
+    };
+    *centerline = candidate.centerline;
     Ok(true)
 }
 
@@ -2021,6 +2156,115 @@ fn try_apply_45_degree_endpoint_delta_correction(
     Ok(false)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn try_apply_45_degree_centerline_endpoint_delta_correction(
+    centerline: &mut Vec<(f64, f64)>,
+    straight_runs: &[AxisAlignedRun],
+    directional_runs: &[DirectionalStraightRun],
+    dogleg_absorbers: &[DoglegAbsorber],
+    primitives: &PrimitiveLibrary,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+    allow_unchecked_bumps: bool,
+    source_angle: Option<u8>,
+    target_angle: Option<u8>,
+) -> Result<bool, GeometryError> {
+    if !directional_runs.iter().any(|run| run.angle % 2 == 1) {
+        return Ok(false);
+    }
+
+    let mut axis_only = centerline.clone();
+    let axis_only_result = if allow_unchecked_bumps {
+        absorb_endpoint_delta_into_axis_runs(
+            &mut axis_only,
+            straight_runs,
+            dogleg_absorbers,
+            primitives,
+            source_port_um,
+            target_port_um,
+        )
+    } else {
+        absorb_endpoint_delta_into_existing_axis_runs(
+            &mut axis_only,
+            straight_runs,
+            source_port_um,
+            target_port_um,
+        )
+    };
+    if axis_only_result.is_ok()
+        && validate_corrected_centerline_endpoint_candidate(
+            &axis_only,
+            source_port_um,
+            target_port_um,
+            source_angle,
+            target_angle,
+        )
+        .is_ok()
+    {
+        *centerline = axis_only;
+        return Ok(true);
+    }
+
+    let source_adjustments =
+        diagonal_endpoint_adjustments(centerline, directional_runs, source_port_um, true)?;
+    let target_adjustments =
+        diagonal_endpoint_adjustments(centerline, directional_runs, target_port_um, false)?;
+
+    for source_adjustment in &source_adjustments {
+        for target_adjustment in &target_adjustments {
+            if source_adjustment.is_none() && target_adjustment.is_none() {
+                continue;
+            }
+            let mut candidate = centerline.clone();
+            if let Some(adjustment) = source_adjustment {
+                if apply_diagonal_endpoint_adjustment(&mut candidate, *adjustment, true).is_err() {
+                    continue;
+                }
+            }
+            if let Some(adjustment) = target_adjustment {
+                if apply_diagonal_endpoint_adjustment(&mut candidate, *adjustment, false).is_err() {
+                    continue;
+                }
+            }
+            let residual_result = if allow_unchecked_bumps {
+                absorb_endpoint_delta_into_axis_runs(
+                    &mut candidate,
+                    straight_runs,
+                    dogleg_absorbers,
+                    primitives,
+                    source_port_um,
+                    target_port_um,
+                )
+            } else {
+                absorb_endpoint_delta_into_existing_axis_runs(
+                    &mut candidate,
+                    straight_runs,
+                    source_port_um,
+                    target_port_um,
+                )
+            };
+            if residual_result.is_err() {
+                continue;
+            }
+            if validate_corrected_centerline_endpoint_candidate(
+                &candidate,
+                source_port_um,
+                target_port_um,
+                source_angle,
+                target_angle,
+            )
+            .is_err()
+            {
+                continue;
+            }
+            *centerline = candidate;
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 fn diagonal_endpoint_adjustments(
     centerline: &[(f64, f64)],
     directional_runs: &[DirectionalStraightRun],
@@ -2159,6 +2403,41 @@ fn validate_corrected_endpoint_candidate(
             centerline,
             angle_to_unit_vector(route.states[route.states.len() - 1].angle),
         )?;
+    }
+    Ok(())
+}
+
+fn validate_corrected_centerline_endpoint_candidate(
+    centerline: &[(f64, f64)],
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+    source_angle: Option<u8>,
+    target_angle: Option<u8>,
+) -> Result<(), GeometryError> {
+    if centerline.len() < 2 {
+        return Err(GeometryError::DegenerateRoute);
+    }
+    if centerline.iter().any(|&point| !is_finite_point(point)) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    if centerline.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
+        return Err(GeometryError::ZeroLengthSegment);
+    }
+    if let Some(source) = source_port_um {
+        if distance(centerline[0], source) > 1.0e-6 {
+            return Err(GeometryError::PortEndpointCorrectionRequiresUnsupportedStub);
+        }
+        if let Some(source_angle) = source_angle {
+            validate_source_tangent(centerline, angle_to_unit_vector(source_angle))?;
+        }
+    }
+    if let Some(target) = target_port_um {
+        if distance(centerline[centerline.len() - 1], target) > 1.0e-6 {
+            return Err(GeometryError::PortEndpointCorrectionRequiresUnsupportedStub);
+        }
+        if let Some(target_angle) = target_angle {
+            validate_target_tangent(centerline, angle_to_unit_vector(target_angle))?;
+        }
     }
     Ok(())
 }
@@ -2635,6 +2914,42 @@ fn axis_runs_from_centerline(centerline: &[(f64, f64)]) -> Vec<AxisAlignedRun> {
     runs
 }
 
+fn directional_runs_from_centerline(centerline: &[(f64, f64)]) -> Vec<DirectionalStraightRun> {
+    let mut runs = Vec::new();
+    let mut active: Option<DirectionalStraightRun> = None;
+    for (idx, window) in centerline.windows(2).enumerate() {
+        let Some(angle) = angle_for_centerline_segment(window[0], window[1]) else {
+            if let Some(run) = active.take() {
+                runs.push(run);
+            }
+            continue;
+        };
+        if let Some(mut run) = active.take() {
+            if run.angle == angle {
+                run.end_index = idx + 1;
+                active = Some(run);
+            } else {
+                runs.push(run);
+                active = Some(DirectionalStraightRun {
+                    start_index: idx,
+                    end_index: idx + 1,
+                    angle,
+                });
+            }
+        } else {
+            active = Some(DirectionalStraightRun {
+                start_index: idx,
+                end_index: idx + 1,
+                angle,
+            });
+        }
+    }
+    if let Some(run) = active {
+        runs.push(run);
+    }
+    runs
+}
+
 fn insert_source_delta_bump(
     centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
@@ -2911,6 +3226,24 @@ fn diagonal_angle_for_segment(a: (f64, f64), b: (f64, f64)) -> Option<u8> {
         (false, true) => Some(3),
         (false, false) => Some(5),
         (true, false) => Some(7),
+    }
+}
+
+fn angle_for_centerline_segment(a: (f64, f64), b: (f64, f64)) -> Option<u8> {
+    if is_horizontal_segment(a, b) {
+        if b.0 > a.0 {
+            Some(0)
+        } else {
+            Some(4)
+        }
+    } else if is_vertical_segment(a, b) {
+        if b.1 > a.1 {
+            Some(2)
+        } else {
+            Some(6)
+        }
+    } else {
+        diagonal_angle_for_segment(a, b)
     }
 }
 
