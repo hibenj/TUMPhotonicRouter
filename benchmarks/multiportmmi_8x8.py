@@ -21,12 +21,13 @@ INTERNAL_DELAYS_UM: dict[str, float] = {}
 
 # Stable crossing-router baseline, July 2026:
 #   $env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT="0.05"
+#   $env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES="90"
 #   python routing_flow.py multiportmmi_8x8 --crossings true
 #     --crossing-mode lidar-pure --fanout-access-mode static-stubs
 #     --routing-window-scale 0.35 --foreign-port-keepout-cells 0
-# Static fanout stubs use the router default bend style, currently 90 degrees.
 STABLE_ROUTING_ENV: dict[str, str] = {
     "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT": "0.05",
+    "PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES": "90",
 }
 
 STABLE_ROUTING_FLAGS: tuple[str, ...] = (

@@ -45,6 +45,9 @@ The first visible outcome is a repeatable harness that proves small crossing ben
 - [x] (2026-07-14 12:20Z) Removed temporary validation-bypass experiments from the checkpoint. The standing policy is that Python/Rust realized verification must not be disabled to write invalid GDS during normal routing work.
 - [ ] Continue from the clean invariant boundary: when Layer 1 rejects illegal crossing moves and cannot find a legal route, repair/rip-up is the intended next phase. Future work should improve legal route discovery or repair convergence, not reintroduce post-route illegality acceptance.
 - [x] (2026-07-16 07:40Z) Reached the first full green `multiportmmi_8x8` crossing-mode milestone with 90-degree static stubs: 111/111 routed records, 0 route failures, 0 repairs, crossing verification success with 35/35 legal matched crossing components, and photonic verification success with 0 issues.
+- [x] (2026-07-17 00:00Z) Captured the next dense-fanout strategy for `multiportmmi_32x32`: detect geometric source-port layers by shared source grid x-coordinate, not by instance or element name, and retry a congested layer with a center-out ordering before escalating to normal rip-up.
+- [x] (2026-07-17 18:20Z) Implemented the geometric source-layer reorder strategy in the native batch router. The first `multiportmmi_32x32 --debug-stop-after-route 130` validation reached `130/447` routes and showed the new `source_layer_center_out` bucket on the route-34 / `n_33` congestion case and again near `n_129`.
+- [x] (2026-07-17 19:10Z) Restored the intended routing order for zero-clearance LiDAR-pure runs: simple routes are now tried before crossing-aware A* even when `block_radius_cells == 0`. `multiportmmi_16x16` and `multiportmmi_8x8` stop-after-3 guardrails both report `simple=3/3` with zero expanded A* states.
 
 ## Surprises & Discoveries
 
@@ -537,6 +540,19 @@ The first visible outcome is a repeatable harness that proves small crossing ben
   global blocker/rip-up concern after the local-state rule is proven.
   Date/Author: 2026-07-16 / Codex
 
+- Decision: Define a fanout routing "layer" geometrically by shared source
+  port grid x-coordinate, not by component instance or element ownership.
+  Rationale: In large multiport MMI benchmarks, several physical elements can
+  contribute ports that start at the same x-coordinate and congest the same
+  vertical fanout runway. Treating a layer as "all currently relevant routes
+  whose source ports have the same `source_grid_x`" captures the congestion
+  geometry directly and avoids coupling routing strategy to benchmark naming or
+  schematic hierarchy. When a route in such a layer would trigger rip-up, the
+  router should first reset only the routes in that source-x layer and retry
+  them in an alternate center-out order. Only if that bounded layer retry fails
+  should the existing normal rip-up/repair logic take over.
+  Date/Author: 2026-07-17 / Codex
+
 ## Outcomes & Retrospective
 
 The Planner / Technical Lead audit for the first milestone completed on
@@ -645,6 +661,53 @@ Fifth, run `benes_4x4` and `benes_8x8` with crossing enabled and debug artifacts
 
 Sixth, only after the smaller benchmarks have classified evidence, resume `multiportmmi_8x8`. Use the same harness to decide whether the current blocker is crossing search, route repair, realization, port snapping, or final geometry verification.
 
+Seventh, add a bounded geometric source-layer reorder strategy for dense fanout
+regions. In this plan, a "source layer" means a set of route jobs whose source
+ports map to the same grid x-coordinate, using the same physical-to-grid
+conversion as route start states. This definition is deliberately geometric:
+the jobs may come from one element or from several elements, and the layer key
+is `source_grid_x`, not an instance name, benchmark object, or schematic group.
+For each layer, sort jobs by source-port y-coordinate. The default order remains
+the existing route order. If a route inside the layer would trigger a rip-up or
+pending-straight repair, snapshot the router state from before that layer,
+remove the routes already committed from that layer, and retry the same layer
+once with a center-out order. "Center-out" means split the y-sorted list around
+the middle and route the inner ports first, then alternate outward toward the
+top and bottom. The retry is local to the layer and bounded to avoid loops. If
+the center-out layer retry still fails or requests rip-up, restore the normal
+state and allow the existing repair mechanism to handle the failure.
+
+The first acceptance target for this strategy is `multiportmmi_32x32` around
+route 34 / net `n_33`, where the stop-after-130 run showed `n_33` spending
+about 39 seconds and entering `pending_straight_ripup`. A successful first
+implementation should either route that layer without the pending-straight
+rip-up or clearly record that the center-out retry failed and the normal repair
+path was used. The implementation must not change A* crossing legality itself;
+it only changes the order in which a congested source-x layer is attempted.
+
+Implementation note, 2026-07-17: `src/py_router.rs` snapshots router state at
+the first encounter of each source-grid-x layer. On the first pending-straight
+repair hint in that layer, it restores that snapshot and retries the complete
+source-x layer once in center-out y order, including layer jobs that would have
+appeared later in the original route order. Jobs already committed by this full
+layer retry are skipped when the normal batch loop reaches them later. If the
+bounded retry fails, the pre-retry state is restored and the existing
+pending-straight rip-up/repair path continues. A previous prefix-only prototype
+was rejected because it rerouted only the already-seen subset of the layer.
+Validation on `multiportmmi_32x32 --debug-stop-after-route 130` completed
+`130/447` routes with `repairs=2`, endpoint-correction failures `0`, and native
+route batch time `132.20s`. Native repair diagnostics confirmed the first
+triggered source-x layer has `layer_size=32` at source x `451`; its center-out
+order starts at native net/job `47`, then `48`, `46`, `49`, and continues
+outward to `32` and `63`. A later source x `1618` layer has `layer_size=3`.
+Follow-up correction: the full-state snapshot was replaced with targeted layer
+rollback. The router now removes only routes from the affected layer, restores
+that layer's static cleanup cells, retries the full layer center-out, and
+recommits the saved layer routes if the retry fails. Revalidation of the same
+stop-after-130 run completed successfully with native route batch `128.74s` and
+total `162.33s`; the saved time shows snapshots were real overhead but not the
+dominant source of the remaining runtime.
+
 ## Concrete Steps
 
 Work from the repository root:
@@ -699,6 +762,23 @@ On Windows, note whether debug SVG generation opens browser tabs; the current
 script opens generated SVGs automatically when debug SVGs are enabled.
 
 Record the exact commands, outputs, and artifact paths here after they are run.
+
+For the source-layer reorder milestone, use `multiportmmi_32x32` partial runs
+as the main integration evidence. Keep the same stable large-benchmark config
+used during the July 17 work:
+
+    $env:PYTHONIOENCODING='utf-8'
+    $env:MPLCONFIGDIR='build\mpl'
+    $env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT='0.05'
+    $env:PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE='true'
+    .\.venv\Scripts\python.exe routing_flow.py multiportmmi_32x32 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --foreign-port-keepout-cells 0 --debug-stop-after-route 33
+    .\.venv\Scripts\python.exe routing_flow.py multiportmmi_32x32 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --foreign-port-keepout-cells 0 --debug-stop-after-route 130
+
+Before the layer-reorder implementation, the stop-after-130 run reached
+`130/447` routes with `repairs=2`. The slowest route was
+`route[34] n_33`, with about `39.35s` total and a `pending_straight_ripup`
+attempt of about `33.13s`. After implementation, record the same timing fields
+and whether `route[34] n_33` still enters `pending_straight_ripup`.
 
 During the QA harness slice on 2026-07-10, only lightweight syntax/smoke checks
 ran because the project toolchain was unavailable:
@@ -2871,3 +2951,91 @@ Report checks:
     - crossing report: `issue_count=0`, `legal_crossing_count=1`,
       `matched_crossing_component_count=1`, `illegal_crossing_count=0`.
     - photonic report: `issue_count=0`.
+
+Follow-up, 2026-07-17: Simple-route dynamic halo now matches segment type.
+
+Context:
+
+    Early `multiportmmi_16x16` routes showed unexpectedly low simple-route
+    coverage (`simple=1/223` in full timing, `simple=1/3` in stop-after-3).
+    Inspection showed that the dynamic simple-route query still behaved like a
+    global halo around all candidate cells, while the intended model is
+    segment-specific: cardinal segments do not get a halo, diagonal segments do.
+
+Fix:
+
+    - Added a segment-aware `check_segment_free` hook to the simple-route
+      obstacle query.
+    - Overrode it for the dynamic query so cardinal segments check only core
+      cells and 45-degree diagonal segments add compact diagonal halo witness
+      cells.
+    - Removed the axis-aligned rect fast path from simple candidate validation,
+      because it bypassed segment-specific behavior.
+    - Added focused regressions for cardinal adjacency and diagonal halo
+      contact in `src/simple_routes.rs`.
+
+Validation:
+
+    C:\Users\benja\.cargo\bin\cargo.exe check
+    # passed
+
+    .\.venv\Scripts\python.exe -m maturin develop --release
+    # passed
+
+    $env:PYTHONIOENCODING='utf-8'
+    $env:MPLCONFIGDIR='build\mpl'
+    $env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT='0.05'
+    .\.venv\Scripts\python.exe routing_flow.py multiportmmi_16x16 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --foreign-port-keepout-cells 0 --debug-stop-after-route 3 --debug-svgs false --debug-timing true --verbose-routes
+    # passed; still simple=1/3
+
+Note:
+
+    `cargo test dynamic_simple_query --lib` compiled but the Windows test
+    executable failed to start with `STATUS_DLL_NOT_FOUND`, also with
+    `.venv\Scripts` prepended to PATH. The remaining early-route simple
+    coverage issue is separate from the global halo fix: `n_1`/`n_2` require
+    primitive-footprint-aware simple route generation/validation, because the
+    successful A* route is a Bend/Straight/Bend primitive path rather than a
+    pure idealized polyline candidate.
+
+Follow-up, 2026-07-17: Simple routes now hard-reject long-straight congestion.
+
+Context:
+
+    After enabling passive long-straight congestion as an A* cost, the desired
+    next policy was stricter for deterministic Simple candidates: if a Simple
+    route crosses a congested corridor, it should be rejected and let A* search
+    normally with the soft congestion cost.
+
+Fix:
+
+    - `src/simple_routes.rs` now checks `ObstacleMap::get_congestion_cost` in
+      Simple obstacle queries.
+    - Opened port cells still override the congestion blocker.
+    - The normal A* obstacle map and congestion-cost path are unchanged.
+    - The expanded Simple query also applies the congestion blocker to the
+      diagonal halo cells it already inspects.
+    - Added focused regressions for congested Simple cells, opened congested
+      port cells, and congested diagonal halo cells.
+
+Validation:
+
+    C:\Users\benja\.cargo\bin\cargo.exe check
+    # passed
+
+    .\.venv\Scripts\python.exe -m maturin develop --release
+    # passed
+
+    C:\Users\benja\.cargo\bin\cargo.exe test simple_candidate --lib
+    # compiled, then failed to launch with existing STATUS_DLL_NOT_FOUND
+    # Windows test-harness issue
+
+    $env:PYTHONIOENCODING='utf-8'
+    $env:MPLCONFIGDIR='build\mpl'
+    $env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT='0.05'
+    .\.venv\Scripts\python.exe routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --foreign-port-keepout-cells 0 --debug-svgs false --debug-timing true --verbose-routes
+    # passed; total=35.8539 s; simple=34/48; repairs=0
+
+    $env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES='90'
+    .\.venv\Scripts\python.exe -X utf8 routing_flow.py multiportmmi_8x8 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 0 --debug-svgs none --debug-timing true
+    # passed; total=22.5656 s; simple=59/111; repairs=0

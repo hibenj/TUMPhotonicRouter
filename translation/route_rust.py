@@ -5913,6 +5913,11 @@ def route_nets_rust(
         search_max_x = min(grid_width - 1, max_x + opening_margin_cells)
         search_min_y = max(0, min_y - opening_margin_cells)
         search_max_y = min(grid_height - 1, max_y + opening_margin_cells)
+        opening_margin_distance = float(opening_margin_cells) * grid_size + bbox_margin
+        opening_left = float(left) - opening_margin_distance
+        opening_right = float(right) + opening_margin_distance
+        opening_bottom = float(bottom) - opening_margin_distance
+        opening_top = float(top) + opening_margin_distance
 
         candidate_cells: set[tuple[int, int]] = set()
         explicit_cells_by_y = _raw_static_cells_by_y()
@@ -5934,6 +5939,12 @@ def route_nets_rust(
                     min_x <= int(cell_x) <= max_x and min_y <= int(cell_y) <= max_y
                 )
                 cell_center = _grid_cell_center_um(int(cell_x), int(cell_y))
+                if (
+                    opening_left <= cell_center[0] <= opening_right
+                    and opening_bottom <= cell_center[1] <= opening_top
+                ):
+                    candidate_cells.add((int(cell_x), int(cell_y)))
+                    continue
                 if inside_instance_bbox:
                     if cell_center[0] < left - bbox_margin or cell_center[0] > right + bbox_margin:
                         continue

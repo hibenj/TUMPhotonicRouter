@@ -10,9 +10,10 @@ use crate::astar::{
     export_route_svg_with_port_open_cells,
     route_single_net_with_collision_crossing_config_with_stats, route_single_net_with_config,
     route_single_net_with_crossing_config,
-    route_single_net_with_dynamic_expansion_config, try_simple_route_with_dynamic_expansion_config,
-    AStarConfig, CrossingSearchConfig, CrossingSearchPartner, HeapTieBreaker, HeuristicMode,
-    PrimitiveOrdering, RouteResult, RouteSearchStats, State, TerminalBumpAxis, TerminalBumpGuard,
+    route_single_net_with_dynamic_expansion_config, try_simple_route_with_config,
+    try_simple_route_with_dynamic_expansion_config, AStarConfig, CrossingSearchConfig,
+    CrossingSearchPartner, HeapTieBreaker, HeuristicMode, PrimitiveOrdering, RouteResult,
+    RouteSearchStats, State, TerminalBumpAxis, TerminalBumpGuard,
 };
 use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
 use crate::geometry_realization::{
@@ -792,6 +793,42 @@ impl NativeRouteJob {
     }
 }
 
+fn center_out_layer_job_indices(
+    jobs: &[NativeRouteJob],
+    layer_indices: &[usize],
+    source_x: i32,
+) -> Vec<usize> {
+    if layer_indices.is_empty() {
+        return Vec::new();
+    }
+    let mut indexed: Vec<(i32, usize)> = layer_indices
+        .iter()
+        .copied()
+        .filter(|index| *index < jobs.len() && jobs[*index].source.x == source_x)
+        .map(|index| (jobs[index].source.y, index))
+        .collect();
+    indexed.sort_unstable_by_key(|(source_y, index)| (*source_y, *index));
+    if indexed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ordered = Vec::with_capacity(indexed.len());
+    let mut left = (indexed.len() - 1) / 2;
+    let mut right = left + 1;
+    ordered.push(indexed[left].1);
+    while left > 0 || right < indexed.len() {
+        if right < indexed.len() {
+            ordered.push(indexed[right].1);
+            right += 1;
+        }
+        if left > 0 {
+            left -= 1;
+            ordered.push(indexed[left].1);
+        }
+    }
+    ordered
+}
+
 fn remove_success_static_cleanup(obstacle_map: &mut ObstacleMap, job: &NativeRouteJob) {
     if job.static_cleanup_cell_keys.is_empty() {
         return;
@@ -895,6 +932,7 @@ const CROSSING_LOCAL_RIPUP_MIN_EXTRA_SUM: u64 = 64;
 const LONG_STRAIGHT_CONGESTION_MIN_UM: f64 = 200.0;
 const LONG_STRAIGHT_CONGESTION_LATERAL_RADIUS_CELLS: i32 = 5;
 const LONG_STRAIGHT_CONGESTION_AMOUNT: u32 = 1;
+const SOURCE_LAYER_CENTER_OUT_MIN_JOBS: usize = 8;
 
 fn env_flag_enabled(name: &str) -> Option<bool> {
     std::env::var(name)
@@ -3017,6 +3055,186 @@ impl PyPhotonicRouter {
     fn add_post_commit_guidance_for_route(&mut self, net_id: u64, route: &RouteResult) {
         self.add_crossing_spacing_history_for_route(net_id, route);
         self.add_long_straight_congestion_for_route(net_id, route);
+    }
+
+    fn restore_source_layer_static_cleanup(
+        &mut self,
+        jobs: &[NativeRouteJob],
+        layer_indices: &[usize],
+    ) {
+        for index in layer_indices {
+            let Some(job) = jobs.get(*index) else {
+                continue;
+            };
+            if job.static_cleanup_cell_keys.is_empty() {
+                continue;
+            }
+            self.obstacle_map.add_static_keys(&job.static_cleanup_cell_keys);
+            self.static_cells
+                .extend(job.static_cleanup_cell_keys.iter().copied());
+        }
+        self.invalidate_meander_base_prefix();
+    }
+
+    fn rebuild_long_straight_congestion_from_routes(
+        &mut self,
+        final_routes: &FxHashMap<u64, RouteResult>,
+    ) {
+        self.obstacle_map.clear_congestion();
+        self.long_straight_congestion_cells.clear();
+        self.long_straight_congestion_records.clear();
+        let mut route_ids: Vec<u64> = final_routes.keys().copied().collect();
+        route_ids.sort_unstable();
+        for net_id in route_ids {
+            if let Some(route) = final_routes.get(&net_id) {
+                self.add_long_straight_congestion_for_route(net_id, route);
+            }
+        }
+    }
+
+    fn rollback_source_layer_routes_for_retry(
+        &mut self,
+        jobs: &[NativeRouteJob],
+        layer_indices: &[usize],
+        final_routes: &mut FxHashMap<u64, RouteResult>,
+    ) -> Vec<(usize, RouteResult)> {
+        let mut saved_routes = Vec::new();
+        for index in layer_indices {
+            let Some(job) = jobs.get(*index) else {
+                continue;
+            };
+            if let Some(route) = final_routes.remove(&job.net_id) {
+                saved_routes.push((*index, route));
+                self.rollback_committed_route(job.net_id);
+            }
+        }
+        self.restore_source_layer_static_cleanup(jobs, layer_indices);
+        self.rebuild_long_straight_congestion_from_routes(final_routes);
+        saved_routes
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn restore_saved_source_layer_routes(
+        &mut self,
+        jobs: &[NativeRouteJob],
+        layer_indices: &[usize],
+        saved_routes: Vec<(usize, RouteResult)>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        final_routes: &mut FxHashMap<u64, RouteResult>,
+    ) -> Result<(), String> {
+        for index in layer_indices {
+            if let Some(job) = jobs.get(*index) {
+                if final_routes.remove(&job.net_id).is_some() {
+                    self.rollback_committed_route(job.net_id);
+                }
+            }
+        }
+        self.restore_source_layer_static_cleanup(jobs, layer_indices);
+        for (index, route) in saved_routes {
+            let Some(job) = jobs.get(index) else {
+                continue;
+            };
+            if !self.commit_native_route_with_clearance(
+                job.net_id,
+                &route,
+                block_radius_cells,
+                commit_radius_cells,
+                &job.clearance_exempt_cells,
+                core_radius_cells,
+                job.source_port_um,
+                job.target_port_um,
+                Some(&job.opened_cell_keys),
+            ) {
+                return Err(format!(
+                    "failed to restore source-layer route for net {}",
+                    job.net_id
+                ));
+            }
+            remove_success_static_cleanup(&mut self.obstacle_map, job);
+            final_routes.insert(job.net_id, route);
+        }
+        self.rebuild_long_straight_congestion_from_routes(final_routes);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_route_source_layer_center_out_native(
+        &mut self,
+        jobs: &[NativeRouteJob],
+        layer_indices: &[usize],
+        source_x: i32,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        collect_native_timing: bool,
+        timings: &mut NativeBatchTimings,
+        final_routes: &mut FxHashMap<u64, RouteResult>,
+        attempts: &mut Vec<NativeRouteAttempt>,
+        trace_native_repair: bool,
+    ) -> Result<Vec<u64>, String> {
+        let ordered_indices = center_out_layer_job_indices(jobs, layer_indices, source_x);
+        if ordered_indices.len() < 2 {
+            return Err("source layer has fewer than two routed jobs".to_string());
+        }
+
+        let mut routed_net_ids = Vec::with_capacity(ordered_indices.len());
+        for job_index in ordered_indices {
+            let job = &jobs[job_index];
+            if trace_native_repair {
+                eprintln!(
+                    "native_repair_source_layer_center_out_route source_x={} job_index={} net={}",
+                    source_x,
+                    job_index + 1,
+                    job.net_id
+                );
+            }
+            let route_start = native_batch_timer(collect_native_timing);
+            let route_result = self.route_single_net_and_commit_native(
+                job.net_id,
+                job.source,
+                job.target,
+                block_radius_cells,
+                Some(&job.opened_cells),
+                Some(&job.opened_cell_keys),
+                commit_radius_cells,
+                Some(&job.clearance_exempt_cells),
+                Some(&job.clearance_exempt_cell_keys),
+                core_radius_cells,
+                job.source_port_um,
+                job.target_port_um,
+            );
+            let route_elapsed_us = native_batch_elapsed_us(route_start);
+            timings.repair_failed_net_wall_us += route_elapsed_us;
+            let route = match route_result {
+                Ok(route) => {
+                    timings.add_route_result_stats_if(collect_native_timing, &route);
+                    remove_success_static_cleanup(&mut self.obstacle_map, job);
+                    route
+                }
+                Err(error) => {
+                    timings.repair_failed_net_failed_wall_us += route_elapsed_us;
+                    return Err(format!(
+                        "source-layer center-out failed for net {}: {}",
+                        job.net_id, error
+                    ));
+                }
+            };
+            attempts.push(NativeRouteAttempt {
+                bucket_name: "source_layer_center_out",
+                net_id: job.net_id,
+                route: Some(route.clone()),
+                failed: false,
+                error: None,
+                repair_round: Some(0),
+                candidate_blockers: Vec::new(),
+                ripup_ids: Vec::new(),
+            });
+            final_routes.insert(job.net_id, route);
+            routed_net_ids.push(job.net_id);
+        }
+        Ok(routed_net_ids)
     }
 
     fn crossing_local_ripup_candidates(&self, net_id: u64, limit: usize) -> Vec<u64> {
@@ -5379,13 +5597,9 @@ impl PyPhotonicRouter {
         if require_crossing_compliant_route {
             return Err("No crossing-compliant route found".to_string());
         }
-        if block_radius_cells > 0 {
-            let simple_start = if collect_timing {
-                Some(Instant::now())
-            } else {
-                None
-            };
-            let simple_result = {
+        {
+            let simple_start = collect_timing.then(Instant::now);
+            let simple_result = if block_radius_cells > 0 {
                 try_simple_route_with_dynamic_expansion_config(
                     &self.obstacle_map,
                     &self.primitives,
@@ -5395,6 +5609,15 @@ impl PyPhotonicRouter {
                     &cfg,
                     block_radius_cells,
                     dynamic_clearance_exempt_keys,
+                )
+            } else {
+                try_simple_route_with_config(
+                    &self.obstacle_map,
+                    &self.primitives,
+                    source_state,
+                    target_state,
+                    Some(opened_search_ref),
+                    &cfg,
                 )
             };
             if let Some(mut result) = simple_result {
@@ -8530,6 +8753,13 @@ impl PyPhotonicRouter {
             .cloned()
             .map(|job| (job.net_id, job))
             .collect();
+        let mut source_layer_indices_by_x: FxHashMap<i32, Vec<usize>> = FxHashMap::default();
+        for (index, job) in native_jobs.iter().enumerate() {
+            source_layer_indices_by_x
+                .entry(job.source.x)
+                .or_default()
+                .push(index);
+        }
         let mut final_routes: FxHashMap<u64, RouteResult> = FxHashMap::default();
         let mut attempts: Vec<NativeRouteAttempt> = Vec::new();
         let mut repair_trace: Vec<NativeRepairTraceEvent> = Vec::new();
@@ -8539,8 +8769,19 @@ impl PyPhotonicRouter {
         let trace_native_progress = std::env::var_os("PHOTONIC_ROUTER_NATIVE_PROGRESS").is_some();
         let trace_native_repair = std::env::var_os("PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG").is_some();
         let mut trace_last_route_start: Option<Instant> = None;
+        let mut retried_source_layers: FxHashSet<i32> = FxHashSet::default();
 
         'route_jobs: for (job_index, job) in native_jobs.iter().enumerate() {
+            if final_routes.contains_key(&job.net_id) {
+                if trace_native_progress {
+                    eprintln!(
+                        "native_route_skip_already_routed index={} net_id={}",
+                        job_index + 1,
+                        job.net_id
+                    );
+                }
+                continue;
+            }
             if trace_native_progress {
                 let now = Instant::now();
                 if let Some(last_start) = trace_last_route_start.replace(now) {
@@ -8810,6 +9051,98 @@ impl PyPhotonicRouter {
                 if let Some(hint) = self.pending_straight_victim_hint_for(job.net_id) {
                     if hint.victim_net_id != job.net_id && final_routes.contains_key(&hint.victim_net_id) {
                         if let Some(victim_job) = job_by_id.get(&hint.victim_net_id) {
+                            let source_layer_indices = source_layer_indices_by_x
+                                .get(&job.source.x)
+                                .cloned()
+                                .unwrap_or_default();
+                            if source_layer_indices.len() >= SOURCE_LAYER_CENTER_OUT_MIN_JOBS
+                                && !retried_source_layers.contains(&job.source.x)
+                            {
+                                retried_source_layers.insert(job.source.x);
+                                if trace_native_repair {
+                                    eprintln!(
+                                        "native_repair_source_layer_center_out_start source_x={} layer_size={} trigger_index={} trigger_net={} victim={} count={}",
+                                        job.source.x,
+                                        source_layer_indices.len(),
+                                        job_index + 1,
+                                        job.net_id,
+                                        hint.victim_net_id,
+                                        hint.count
+                                    );
+                                }
+                                let saved_layer_routes = self.rollback_source_layer_routes_for_retry(
+                                    &native_jobs,
+                                    &source_layer_indices,
+                                    &mut final_routes,
+                                );
+                                match self.try_route_source_layer_center_out_native(
+                                    &native_jobs,
+                                    &source_layer_indices,
+                                    job.source.x,
+                                    block_radius_cells,
+                                    commit_radius_cells,
+                                    core_radius_cells,
+                                    collect_native_timing,
+                                    &mut timings,
+                                    &mut final_routes,
+                                    &mut attempts,
+                                    trace_native_repair,
+                                ) {
+                                    Ok(routed_net_ids) => {
+                                        push_native_repair_trace(
+                                            &mut repair_trace,
+                                            "source_layer_center_out",
+                                            Some("center_out"),
+                                            Some("reroute_layer"),
+                                            job.net_id,
+                                            Some(0),
+                                            None,
+                                            &[hint.victim_net_id],
+                                            &[],
+                                            &routed_net_ids,
+                                            None,
+                                            None,
+                                            Some(true),
+                                            None,
+                                        );
+                                        repair_count = repair_count.saturating_add(1);
+                                        continue 'route_jobs;
+                                    }
+                                    Err(error) => {
+                                        let restore_result = self.restore_saved_source_layer_routes(
+                                            &native_jobs,
+                                            &source_layer_indices,
+                                            saved_layer_routes,
+                                            block_radius_cells,
+                                            commit_radius_cells,
+                                            core_radius_cells,
+                                            &mut final_routes,
+                                        );
+                                        let error = match restore_result {
+                                            Ok(()) => error,
+                                            Err(restore_error) => {
+                                                format!("{error}; restore failed: {restore_error}")
+                                            }
+                                        };
+                                        push_native_repair_trace(
+                                            &mut repair_trace,
+                                            "source_layer_center_out",
+                                            Some("center_out"),
+                                            Some("reroute_layer"),
+                                            job.net_id,
+                                            Some(0),
+                                            None,
+                                            &[hint.victim_net_id],
+                                            &[],
+                                            &[],
+                                            None,
+                                            None,
+                                            Some(false),
+                                            Some(error),
+                                        );
+                                    }
+                                }
+                            }
                             'pending_straight_repair_attempt: {
                             let base_map = self.obstacle_map.clone();
                             let base_center_routes = self.committed_center_routes.clone();

@@ -135,11 +135,33 @@ pub trait SimpleRouteObstacleQuery {
         cells: &[(i32, i32)],
         opened_cells: Option<&FxHashSet<CellKey>>,
     ) -> bool;
+
+    fn check_segment_free(
+        &self,
+        segment: Segment,
+        opened_cells: Option<&FxHashSet<CellKey>>,
+    ) -> bool {
+        let Some(seg_points) = expand_segment_points(segment) else {
+            return false;
+        };
+        let seg_cells: Vec<(i32, i32)> = seg_points.into_iter().map(|p| (p.x, p.y)).collect();
+        self.check_cells_free(&seg_cells, opened_cells)
+    }
 }
 
 impl SimpleRouteObstacleQuery for ObstacleMap {
     fn rect_free(&self, rect: GridRect, opened_cells: Option<&FxHashSet<CellKey>>) -> bool {
-        ObstacleMap::rect_free(self, rect, opened_cells)
+        if rect.x_min > rect.x_max || rect.y_min > rect.y_max {
+            return true;
+        }
+        for y in rect.y_min..=rect.y_max {
+            for x in rect.x_min..=rect.x_max {
+                if !simple_cell_free_with_congestion(self, x, y, opened_cells) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     fn check_cells_free(
@@ -147,8 +169,37 @@ impl SimpleRouteObstacleQuery for ObstacleMap {
         cells: &[(i32, i32)],
         opened_cells: Option<&FxHashSet<CellKey>>,
     ) -> bool {
-        ObstacleMap::check_cells_free(self, cells, opened_cells)
+        cells
+            .iter()
+            .all(|&(x, y)| simple_cell_free_with_congestion(self, x, y, opened_cells))
     }
+}
+
+#[inline]
+fn simple_cell_free_with_congestion(
+    obstacle_map: &ObstacleMap,
+    x: i32,
+    y: i32,
+    opened_cells: Option<&FxHashSet<CellKey>>,
+) -> bool {
+    if !obstacle_map.in_bounds(x, y) {
+        return false;
+    }
+
+    let key = crate::obstacle_map::pack_xy(x, y);
+    if obstacle_map.is_dynamic_core_blocked(x, y) {
+        return false;
+    }
+    if opened_cells
+        .map(|cells| cells.contains(&key))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if obstacle_map.is_static_blocked(x, y) {
+        return false;
+    }
+    obstacle_map.get_congestion_cost(x, y) == 0
 }
 
 pub struct ExpandedDynamicObstacleQuery<'a> {
@@ -217,6 +268,47 @@ impl<'a> ExpandedDynamicObstacleQuery<'a> {
             return true;
         }
         !self.obstacle_map.is_static_blocked(x, y)
+            && self.obstacle_map.get_congestion_cost(x, y) == 0
+    }
+
+    #[inline]
+    fn core_cell_free(&self, x: i32, y: i32, opened_cells: Option<&FxHashSet<CellKey>>) -> bool {
+        if !self.obstacle_map.in_bounds(x, y) {
+            return false;
+        }
+        if self.obstacle_map.is_dynamic_core_blocked(x, y) {
+            return false;
+        }
+        if opened_cells
+            .map(|cells| cells.contains(&crate::obstacle_map::pack_xy(x, y)))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        if self.obstacle_map.is_static_blocked(x, y) {
+            return false;
+        }
+        self.obstacle_map.get_congestion_cost(x, y) == 0
+    }
+
+    fn compact_diagonal_halo_cells_for_segment(segment: Segment) -> Option<Vec<(i32, i32)>> {
+        if !segment.is_diagonal_45() {
+            return Some(Vec::new());
+        }
+
+        let points = expand_segment_points(segment)?;
+        let mut cells = Vec::new();
+        for pair in points.windows(2) {
+            let start = pair[0];
+            let end = pair[1];
+            let dx = (end.x - start.x).signum();
+            let dy = (end.y - start.y).signum();
+            push_unique_grid_cell(&mut cells, (start.x + dx, start.y));
+            push_unique_grid_cell(&mut cells, (end.x + dx, end.y));
+            push_unique_grid_cell(&mut cells, (start.x, start.y + dy));
+            push_unique_grid_cell(&mut cells, (end.x, end.y + dy));
+        }
+        Some(cells)
     }
 }
 
@@ -243,6 +335,33 @@ impl SimpleRouteObstacleQuery for ExpandedDynamicObstacleQuery<'_> {
         cells
             .iter()
             .all(|&(x, y)| self.cell_free(x, y, opened_cells))
+    }
+
+    fn check_segment_free(
+        &self,
+        segment: Segment,
+        opened_cells: Option<&FxHashSet<CellKey>>,
+    ) -> bool {
+        let Some(seg_points) = expand_segment_points(segment) else {
+            return false;
+        };
+
+        for point in seg_points {
+            if !self.core_cell_free(point.x, point.y, opened_cells) {
+                return false;
+            }
+        }
+
+        let Some(halo_cells) = Self::compact_diagonal_halo_cells_for_segment(segment) else {
+            return false;
+        };
+        for (x, y) in halo_cells {
+            if !self.core_cell_free(x, y, opened_cells) {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -1234,62 +1353,13 @@ fn check_simple_candidate_with_query<Q: SimpleRouteObstacleQuery + ?Sized>(
     if candidate.has_duplicate_consecutive_points() {
         return false;
     }
-    if candidate.is_axis_aligned() {
-        if let Some(rects) = candidate_segment_rects(candidate, 0) {
-            return rects
-                .into_iter()
-                .all(|rect| obstacle_query.rect_free(rect, opened_cells));
-        }
-    }
-
     for segment in candidate.segments() {
-        let Some(seg_points) = expand_segment_points(segment) else {
-            return false;
-        };
-        let seg_cells: Vec<(i32, i32)> = seg_points.into_iter().map(|p| (p.x, p.y)).collect();
-        if !obstacle_query.check_cells_free(&seg_cells, opened_cells) {
+        if !obstacle_query.check_segment_free(segment, opened_cells) {
             return false;
         }
     }
 
     true
-}
-
-fn candidate_segment_rects(
-    candidate: &SimpleRouteCandidate,
-    half_width_cells: i32,
-) -> Option<Vec<GridRect>> {
-    if half_width_cells < 0 {
-        return None;
-    }
-
-    if candidate.points.len() < 2 {
-        return None;
-    }
-
-    let mut rects = Vec::new();
-    for segment in candidate.segments() {
-        if !segment.is_axis_aligned() {
-            return None;
-        }
-
-        let x_min = segment.start.x.min(segment.end.x) - half_width_cells;
-        let x_max = segment.start.x.max(segment.end.x) + half_width_cells;
-        let y_min = segment.start.y.min(segment.end.y) - half_width_cells;
-        let y_max = segment.start.y.max(segment.end.y) + half_width_cells;
-        if x_min > x_max || y_min > y_max {
-            return None;
-        }
-
-        rects.push(GridRect {
-            x_min,
-            y_min,
-            x_max,
-            y_max,
-        });
-    }
-
-    Some(rects)
 }
 
 fn expand_segment_points(segment: Segment) -> Option<Vec<GridPoint>> {
@@ -1319,6 +1389,12 @@ fn expand_segment_points(segment: Segment) -> Option<Vec<GridPoint>> {
     }
 
     Some(points)
+}
+
+fn push_unique_grid_cell(cells: &mut Vec<(i32, i32)>, cell: (i32, i32)) {
+    if !cells.contains(&cell) {
+        cells.push(cell);
+    }
 }
 
 fn distances_from_offsets(min_leg_len_cells: i32, offsets: &[i32]) -> Vec<i32> {
@@ -1673,6 +1749,44 @@ mod tests {
     }
 
     #[test]
+    fn simple_candidate_rejects_congested_cells() {
+        let mut map = ObstacleMap::new(8, 4);
+        assert!(map.add_congestion_cost(2, 1, 1));
+        let candidate = SimpleRouteCandidate::new(
+            SimpleRouteKind::Straight,
+            vec![GridPoint::new(1, 1), GridPoint::new(4, 1)],
+        );
+
+        assert!(!check_simple_candidate(&candidate, &map, None));
+    }
+
+    #[test]
+    fn simple_candidate_allows_congested_opened_port_cells() {
+        let mut map = ObstacleMap::new(8, 4);
+        assert!(map.add_congestion_cost(2, 1, 1));
+        let candidate = SimpleRouteCandidate::new(
+            SimpleRouteKind::Straight,
+            vec![GridPoint::new(1, 1), GridPoint::new(4, 1)],
+        );
+        let opened = FxHashSet::from_iter([pack_xy(2, 1)]);
+
+        assert!(check_simple_candidate(&candidate, &map, Some(&opened)));
+    }
+
+    #[test]
+    fn expanded_simple_candidate_rejects_congested_diagonal_halo_cells() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.add_congestion_cost(2, 1, 1));
+        let candidate = SimpleRouteCandidate::new(
+            SimpleRouteKind::Straight,
+            vec![GridPoint::new(1, 1), GridPoint::new(4, 4)],
+        );
+        let query = ExpandedDynamicObstacleQuery::new(&map, 0, None);
+
+        assert!(!check_simple_candidate_with_query(&candidate, &query, None));
+    }
+
+    #[test]
     fn candidate_detects_duplicate_consecutive_points() {
         let candidate = SimpleRouteCandidate::new(
             SimpleRouteKind::LShape,
@@ -1837,6 +1951,36 @@ mod tests {
         opened.insert(pack_xy(5, 1));
 
         assert!(check_simple_candidate(&candidate, &map, Some(&opened)));
+    }
+
+    #[test]
+    fn dynamic_simple_query_does_not_expand_cardinal_segments() {
+        let mut map = ObstacleMap::new(10, 10);
+        let core = vec![(1, 1), (2, 1), (3, 1)];
+        let blocked = vec![(1, 1), (2, 1), (3, 1), (1, 2), (2, 2), (3, 2)];
+        assert!(map.commit_route_with_clearance_overlap(7, &core, &blocked, &[]));
+
+        let candidate = SimpleRouteCandidate::new(
+            SimpleRouteKind::Straight,
+            vec![GridPoint::new(1, 2), GridPoint::new(3, 2)],
+        );
+        let query = ExpandedDynamicObstacleQuery::new(&map, 1, None);
+
+        assert!(check_simple_candidate_with_query(&candidate, &query, None));
+    }
+
+    #[test]
+    fn dynamic_simple_query_adds_halo_only_to_diagonal_segments() {
+        let mut map = ObstacleMap::new(10, 10);
+        assert!(map.commit_route_with_clearance_overlap(7, &[(2, 1)], &[(2, 1)], &[]));
+
+        let candidate = SimpleRouteCandidate::new(
+            SimpleRouteKind::Straight,
+            vec![GridPoint::new(1, 1), GridPoint::new(3, 3)],
+        );
+        let query = ExpandedDynamicObstacleQuery::new(&map, 1, None);
+
+        assert!(!check_simple_candidate_with_query(&candidate, &query, None));
     }
 
     #[test]

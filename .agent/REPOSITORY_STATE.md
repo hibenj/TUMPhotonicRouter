@@ -27,6 +27,54 @@ should not receive wholesale merges from the experimental branch.
 
 At creation, this worktree was clean at `731d0a9`.
 
+Multiport MMI 16x16 early simple-route diagnosis:
+
+- Date: 2026-07-17 current local
+- Context:
+  - User asked why the first three `multiportmmi_16x16` routes are not all
+    counted as simple.
+  - Focused stop-after-route-3 run with normal config
+    (`--crossings true --crossing-mode lidar-pure
+    --fanout-access-mode static-stubs --foreign-port-keepout-cells 0`,
+    congestion weight `0.05`) produced:
+    route[1] `n_0` simple, route[2] `n_1` A* with `42` expanded states,
+    route[3] `n_2` A* with `140` expanded states.
+  - Diagnostics written under `build/routes/multiportmmi_16x16_n_*.txt`.
+- Finding:
+  - In an isolated mini-repro, `n_1` is simple on an empty dynamic map:
+    waypoints `(63,419) -> (68,419) -> (92,443) -> (98,443)`,
+    `expanded=0`.
+  - After committing `n_0`, whose simple route is
+    `(63,418) -> (68,418) -> (93,393) -> (98,393)`, the direct `n_1`
+    simple candidate is blocked by `n_0`'s dynamic clearance reservation.
+  - The candidate has direct dynamic hits at `(67,419)` and `(68,419)`.
+    The extra dynamic search expansion then also blocks `(69,420)` via
+    witnesses `(68,419)` and `(69,419)`.
+  - So the immediate cause is dynamic route keepout/clearance from the
+    previously committed neighbor, with the extra search expansion adding one
+    more blocked cell; it is not the diagonal-collision halo alone.
+- Planned model fix:
+  - The simple-route precheck must stop using a uniform dynamic expansion over
+    every candidate segment. That treats horizontal/vertical simple segments as
+    if they had a halo and incorrectly rejects adjacent clean routes.
+  - Simple candidates are made of a small, known set of segments. Validate each
+    segment by orientation:
+    - cardinal horizontal/vertical segments check only their centerline cells
+      against static/dynamic blockers, with the usual opened/exempt endpoint
+      handling;
+    - diagonal segments check their centerline cells plus the same compact
+      two-sided diagonal halo used by A* diagonal primitives, so one-cell
+      diagonal adjacency/collision is still detected.
+  - For 45-degree Z simple routes this means, for example, only the middle
+    diagonal segment gets the halo when the two terminal legs are cardinal.
+    If a future candidate has diagonal terminal legs and a cardinal middle leg,
+    the terminal diagonal legs get the halo and the cardinal middle leg does
+    not.
+  - This should be implemented as a fast segment-oriented simple-candidate
+    query/check, preferably using precomputed per-segment footprint shapes for
+    the two common cases, instead of materializing a full globally expanded
+    obstacle map.
+
 Heater optical port access opening WIP:
 
 - Date: 2026-07-17 current local
@@ -9453,3 +9501,417 @@ Terminal bump guard along-distance fix and Benes 16x16 success:
 - Artifact:
   - Successful GDS copied to
     `build/routed_benes_16x16_terminal_guard_fixed.gds`.
+
+Multiport MMI 32x32 source-layer reorder plan:
+
+- Date: 2026-07-17 local
+- Context:
+  - `multiportmmi_32x32 --debug-stop-after-route 30` passed with `30/447`
+    routes, `0` failures, `0` repairs, and `0` endpoint-correction failures.
+  - `multiportmmi_32x32 --debug-stop-after-route 130` passed with `130/447`
+    routes, but showed `repairs=2`.
+  - The slowest route in the stop-130 run was `route[34] n_33`, about
+    `39.35s`, with a `pending_straight_ripup` retry of about `33.13s`.
+  - `--debug-stop-after-route 33` regenerated the state before `n_33`.
+- Plan recorded:
+  - Updated `.agent/execplans/2026-07-10-crossing-verification-foundation.md`
+    with the next implementation strategy.
+  - A routing "layer" is defined geometrically as all route jobs whose source
+    ports share the same source grid x-coordinate. This is not tied to an
+    element or instance name; multiple elements can belong to one layer.
+  - If a route in such a source-x layer would trigger rip-up, reset only that
+    layer to its pre-layer state and retry it once with a center-out ordering
+    based on source-port y-coordinate.
+  - If the bounded center-out layer retry still fails, fall back to the existing
+    normal rip-up/repair logic.
+  - This strategy is a batch ordering/repair pre-pass, not an A* crossing
+    legality change.
+
+Multiport MMI 32x32 source-layer reorder implementation:
+
+- Date: 2026-07-17 local
+- Code changes:
+  - Added `NativeRouteStateSnapshot` in `src/py_router.rs` to capture and
+    restore the native router state around a source-x layer, including dynamic
+    routes, crossing reservations, terminal bump guards, opened cells, static
+    debug cells, pending-straight hints, and long-straight congestion records.
+  - Added center-out y ordering for a contiguous source-grid-x layer prefix.
+  - Hooked the bounded retry before `pending_straight_ripup`: on the first
+    pending-straight hint in a layer, the router restores the pre-layer
+    snapshot and reroutes the complete source-x layer once in center-out order,
+    including jobs that would have appeared later in the original route order.
+    Those already-routed layer jobs are skipped when the normal batch loop
+    reaches them later. If the retry fails, the pre-retry state is restored and
+    the existing repair path continues unchanged.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed and
+    installed the rebuilt extension.
+  - Ran:
+    `multiportmmi_32x32 --crossings true --crossing-mode lidar-pure
+    --fanout-access-mode static-stubs --foreign-port-keepout-cells 0
+    --debug-stop-after-route 130` with
+    `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05` and native repair
+    diagnostics enabled.
+  - Result: `130/447` routes completed, `failures=2` resolved, `repairs=2`,
+    endpoint-correction failures `0`.
+  - First layer retry triggered at source x `451`, route indices `32..35`,
+    trigger net `35`, victim `34`, and center-out net order `33, 34, 32, 35`.
+  - Second layer retry triggered at source x `1618`, route indices `128..130`,
+    trigger net `130`, victim `129`, and center-out net order `129, 130, 128`.
+  - Slowest route after the change: route `[34] n_33` about `7.55s`
+    (`normal_route/source_layer_center_out`), substantially below the earlier
+    about `39.35s` stop-130 behavior with direct pending-straight rip-up.
+
+Correction:
+
+- Date: 2026-07-17 local
+- The first implementation rerouted only the already-seen source-layer prefix
+  (`n_31` through `n_34` in the first observed `multiportmmi_32x32` layer).
+  The intended strategy is full-layer reorder.
+- Updated `src/py_router.rs` so source-grid-x layers are precomputed across all
+  native jobs. The retry now uses the complete layer's index list, resets to the
+  first encounter snapshot, routes all jobs in that layer center-out, and skips
+  those jobs later in the normal loop if the retry succeeds.
+- Revalidated after this correction:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `multiportmmi_32x32 --debug-stop-after-route 130` passed with `130/447`
+    routes, `repairs=2`, endpoint-correction failures `0`, native route batch
+    `132.20s`, total `167.37s`.
+  - Native repair diagnostics confirmed source x `451` has `layer_size=32` and
+    was retried in full center-out order starting at net/job `47`, then `48`,
+    `46`, `49`, and continuing outward through `32` and `63`.
+  - A later source x `1618` retry had `layer_size=3` and routed `129, 130, 128`
+    in center-out order.
+
+Source-layer retry snapshot removal:
+
+- Date: 2026-07-17 local
+- User correctly pointed out that a full router-state snapshot is too heavy for
+  this strategy. The source-layer retry now rolls back only the routes in the
+  affected layer, restores that layer's static cleanup cells, reroutes the full
+  layer center-out, and skips already-routed layer jobs later in the normal
+  loop. If the retry fails, it rolls back the partial retry and recommits the
+  saved pre-retry routes for that layer.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `multiportmmi_32x32 --debug-stop-after-route 130` passed with `130/447`
+    routes, `repairs=2`, endpoint-correction failures `0`.
+  - Timing after removing full snapshots: native route batch `128.7379s`,
+    total `162.3305s`. This is faster than the full-snapshot version
+    (`132.2007s` native route batch, total `167.3698s`), but shows the dominant
+    cost is still A* route search rather than snapshot cloning.
+
+Multiport MMI 16x16 speed sanity check after source-layer changes:
+
+- Date: 2026-07-17 local
+- Ran full `multiportmmi_16x16` with config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=true`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`.
+- Result: completed all `223/223` routes; attempts `223`; failures `0`;
+  repairs `0`; endpoint-correction failures `0`.
+- Timing: native route batch `63.3341s`, net routing phase `67.1916s`,
+  optical routing stage `67.2638s`, total `92.2930s`.
+- Interpretation: this benchmark does not show a major slowdown from the
+  source-layer retry machinery; no layer repair triggered, and the dominant
+  cost remains normal A* search. Slowest normal routes included `n_190`
+  (`7.01s`), `n_221` (`6.47s`), `n_74` (`6.25s`), and `n_73` (`5.25s`).
+
+Multiport MMI 32x32 stop-135 check:
+
+- Date: 2026-07-17 local
+- Ran `multiportmmi_32x32` with the current stable 32x32 debug config:
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+  `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE=true`,
+  `--crossings true`, `--crossing-mode lidar-pure`,
+  `--fanout-access-mode static-stubs`, `--foreign-port-keepout-cells 0`,
+  `--debug-stop-after-route 135`.
+- Result: completed `135/447` routes. Photonic verification reported
+  `success=true`, `status=partial_debug_stop`, `error_count=0`,
+  `warning_count=0`, `routed_record_count=135`, `missing_route_count=312`.
+- Output artifacts:
+  `build/routed_multiportmmi_32x32.gds`,
+  `build/verification/multiportmmi_32x32_photonic_verification.json`, and
+  `build/verification/multiportmmi_32x32_crossing_verification.json`.
+- Approximate wall time from process/file timestamps was about 2.5 minutes.
+  The original console timing summary was truncated by context compaction, so
+  per-route slowest timing for routes 131-135 was not preserved in a log file.
+
+Multiport MMI 32x32 stop-135 timing scan:
+
+- Date: 2026-07-17 local
+- Re-ran the stop-135 case with `--debug-svgs false --debug-timing true` and
+  saved output to `build/multiportmmi_32x32_stop135_timing.log`.
+- Result: `135/447` routes completed, no verification errors.
+- Timing:
+  - total `152.5122s`
+  - optical routing stage `124.4102s`
+  - net routing phase `124.3854s`
+  - native route batch `118.3216s`
+  - endpoint correction native `2.6320s`
+  - obstacle map `0.7644s`, route job build `0.6024s`,
+    port opening prep/batch about `0.9645s`
+- Search counters: attempts `142`, failures `2`, repairs `2`, simple routes
+  `1/135`, expanded states `3,926,621`, generated neighbors `23,559,726`,
+  heap pushes `6,873,006`, heap pops `4,372,035`, footprint checks
+  `23,426,194`, full-grid fallbacks `0`.
+- Interpretation:
+  - The stop-135 cost is dominated by native A* route search, not Python,
+    endpoint correction, verification, GDS writing, or crossing hot-path
+    legality checks.
+  - The first routing window is not obviously too small: slow attempts report
+    `windows=1` and the run has `full_grid_fallbacks=0`. The router usually
+    finds a route in the initial window, but expands many states inside it.
+  - The crossing hot path is small compared with total runtime; partner
+    segment checks are not the main bottleneck here.
+  - The largest obvious waste is late source-layer reordering: route `[34]`
+    `n_33` spends about `5.57s` in a normal A* attempt before the
+    source-layer center-out repair produces the better layer order. A
+    preemptive center-out pass for large source-x layers should avoid that
+    first expensive failed/poor-order search.
+
+Multiport MMI 16x16 current timing rerun:
+
+- Date: 2026-07-17 local
+- Ran full `multiportmmi_16x16` with the current stable config and saved the
+  console output to `build/multiportmmi_16x16_current_timing.log`.
+- Result: completed `223/223` routes, no failures, no repairs.
+- Timing: total `95.7339s`, optical routing `70.4467s`, net routing
+  `70.3738s`, native route batch `66.5712s`.
+- Simple route coverage is very low: `simple=1/223`.
+- Slowest routes were normal A* attempts with `windows=1`, led by `n_190`
+  (`7.17s`), `n_221` (`6.96s`), `n_74` (`6.13s`), and `n_73` (`5.38s`).
+- Interpretation: simple-route coverage is likely a major missing speed lever
+  for both 16x16 and 32x32; most cost is still broad A* expansion inside the
+  first routing window.
+
+Simple-route diagonal halo fix:
+
+- Date: 2026-07-17 local
+- Implemented the first simple-route model fix in `src/simple_routes.rs`.
+- The dynamic simple-route query no longer applies one uniform dynamic
+  expansion radius to every candidate segment.
+- Candidate validation is now segment-aware:
+  - cardinal horizontal/vertical segments check only their core cells;
+  - diagonal 45-degree segments check core cells plus compact diagonal halo
+    witness cells, matching the A* crossing-contact model;
+  - the old axis-aligned rect fast path was removed so dynamic simple
+    validation cannot accidentally reintroduce global cardinal expansion.
+- Added Rust regressions for:
+  - a cardinal simple segment adjacent to another route's clearance halo;
+  - a diagonal simple segment whose compact halo detects an offset dynamic core
+    contact.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `multiportmmi_16x16 --crossings true --crossing-mode lidar-pure
+    --fanout-access-mode static-stubs --foreign-port-keepout-cells 0
+    --debug-stop-after-route 3 --debug-svgs false --debug-timing true
+    --verbose-routes` passed.
+- Rust unit-test execution note:
+  - `cargo test dynamic_simple_query --lib` currently compiles but the test
+    executable exits with `STATUS_DLL_NOT_FOUND` on this Windows toolchain,
+    even with `.venv\Scripts` prepended to `PATH`.
+  - Treat this as a local Rust test-harness/toolchain issue; the code was
+    validated by `cargo check`, maturin release build, and routing flow.
+- Follow-up:
+  - Superseded by the simple-route flow fix below.
+
+Simple-route flow fix:
+
+- Date: 2026-07-17 local
+- Fixed the native routing control flow so the simple-route probe runs before
+  LiDAR-pure crossing-aware A* even when `block_radius_cells == 0`.
+- Root cause:
+  - `block_radius_cells` is derived from
+    `OpticalRouteClearancePolicy.dynamic_obstacle_search_expansion_radius_cells`.
+  - With the stable dense config (`--waveguide-clearance-um 0`, grid `2.0um`,
+    route width `0.5um`) this radius is `0`.
+  - The previous native flow only ran the pre-crossing simple probe inside
+    `if block_radius_cells > 0`, so dense zero-clearance runs skipped simple
+    routing and entered LiDAR-pure owner-based crossing A* first.
+- Fix:
+  - `src/py_router.rs` now always tries simple routing before LiDAR-pure
+    crossing A*.
+  - For `block_radius_cells > 0` it still uses
+    `try_simple_route_with_dynamic_expansion_config`.
+  - For `block_radius_cells == 0` it uses the normal
+    `try_simple_route_with_config` against the current obstacle map.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `multiportmmi_16x16 --crossings true --crossing-mode lidar-pure
+    --fanout-access-mode static-stubs --foreign-port-keepout-cells 0
+    --debug-stop-after-route 3 --debug-svgs false --debug-timing true
+    --verbose-routes` passed with `simple=3/3`, `expanded_states=0`.
+  - `multiportmmi_8x8` with the same flags and `--debug-stop-after-route 3`
+    also passed with `simple=3/3`, `expanded_states=0`.
+
+Simple-route congestion hard blocker:
+
+- Date: 2026-07-17 local
+- Implemented the requested Simple-only congestion behavior in
+  `src/simple_routes.rs`.
+- Simple route candidate checks now treat any nonzero
+  `ObstacleMap::get_congestion_cost(x, y)` as occupied, after dynamic blocking
+  and after allowing explicitly opened port cells.
+- This is intentionally scoped to the Simple-route obstacle queries. The normal
+  A* path still uses long-straight congestion as a soft cost through
+  `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT`, so rejected Simple
+  candidates fall through to regular A* instead of globally blocking the grid.
+- The expanded Simple query also rejects congestion in the diagonal halo cells
+  it already checks.
+- Added Rust regressions for:
+  - a straight Simple candidate blocked by a congested cell;
+  - an explicitly opened congested port cell staying passable;
+  - an expanded diagonal Simple candidate blocked by congestion in a halo cell.
+- Validation:
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.
+  - `.\.venv\Scripts\python.exe -m maturin develop --release` passed.
+  - `cargo test simple_candidate --lib` compiled the test binary but the
+    executable failed to start with the existing Windows `STATUS_DLL_NOT_FOUND`
+    harness issue.
+  - `benes_8x8` full stable config with
+    `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+    `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`, and
+    `--foreign-port-keepout-cells 0` passed. New behavior reduced Simple
+    coverage to `simple=34/48` and increased total time to `35.8539s`, because
+    congested Simple candidates now correctly fall through to A*.
+  - `multiportmmi_8x8` full stable config with
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`,
+    `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+    `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 0`
+    passed: `111/111`, `simple=59/111`, `repairs=0`, total `22.5656s`.
+  - `benes_16x16` full stable config with the same long-straight congestion
+    weight and `--foreign-port-keepout-cells 0` passed: `128/128`,
+    `simple=86/128`, `repairs=0`, endpoint correction `128/128`, total
+    `176.9450s`. The slowest routes are broad normal-A* searches rather than
+    repair loops, led by route 105 (`19.43s`), route 31 (`18.56s`), route 29
+    (`14.51s`), route 106 (`10.11s`), and route 107 (`8.87s`).
+  - `multiportmmi_16x16` full stable config with
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`,
+    `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+    `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+    `--routing-window-scale 0.35`, and `--foreign-port-keepout-cells 0`
+    passed: `223/223`, `simple=126/223`, `repairs=0`, endpoint correction
+    `223/223`, total `114.2320s`. The slowest routes are normal-A* searches,
+    led by route 191 (`10.26s`), route 222 (`10.11s`), route 75 (`9.11s`),
+    route 74 (`8.97s`), and route 136 (`5.39s`).
+  - `multiportmmi_32x32` with the same stable config and
+    `--debug-stop-after-route 100` passed: `100/100`, `simple=74/100`,
+    `repairs=0`, endpoint correction `100/100`, total `45.9519s`. Route 34 /
+    `n_33` remains the first heavy normal-A* route: `14.0263s`,
+    `expanded=2486467`, `generated=14918802`. The next slowest routes are far
+    smaller: route 32 (`0.91s`), route 96 (`0.88s`), route 98 (`0.65s`), and
+    route 97 (`0.61s`).
+  - `multiportmmi_32x32` with the same stable config and
+    `--debug-stop-after-route 150` passed: `150/150`, `simple=107/150`,
+    `repairs=0`, endpoint correction `150/150`, total `145.3521s`. No
+    `source_layer_center_out` bucket appeared because there were no route
+    failures. Route 130 / `n_129` is the new dominant outlier:
+    `57.9552s`, `expanded=6423577`, `generated=38541462`, `windows=2`,
+    normal-A* bucket. Route 34 / `n_33` remains second at `16.6679s`.
+
+Heater port-opening audit:
+
+- Date: 2026-07-17 local
+- Audited the suspected heater static-opening issue around
+  `multiportmmi_32x32` route 130 / `n_129`.
+- The target port is `mmi0_ps_array_1_heater_2,o1`, centered at
+  `(3674.7, 1850.0)` with orientation `180deg`.
+- With the normal heater obstacle setup (`include_heaters=True`,
+  `grid_size_um=2.0`, `heater_clearance_um=10.0`), the obstacle builder
+  produces expanded `blocked_static_rects` for heater/pad clearance and the
+  Rust router later installs those compact rects with `set_static_rects`.
+- Rust `ObstacleMap::rect_blocked_by_static_rects` requires every overlapped
+  cell of an expanded compact static rect to be present in the active
+  `opened_cells`; a partial opening keeps the whole queried primitive blocked.
+- Reconstructed the current `_heater_pad_port_open_cells` logic for
+  `mmi0_ps_array_1_heater_2,o1`:
+  - search window near the heater port contains 1896 candidate raw/expanded
+    static cells;
+  - current outward-distance filter opens only 126 of them;
+  - nearby expanded heater rects still have large missing opened-cell ranges
+    inside the port/pad clearance slab, e.g. one overlap has 1872 cells but
+    only 126 opened, and the main waveguide/pad rect has 202 cells but only
+    2 opened.
+- Conclusion:
+  - The user suspicion is confirmed in the static-opening model: expanded
+    heater clearance cells can remain static-blocked even for the heater port
+    that should open them.
+  - The likely fix is in `translation/route_rust.py` inside
+    `_heater_pad_port_open_cells`: for matched heater optical ports, open the
+    relevant expanded heater/pad clearance slab from `blocked_static_rects`
+    consistently with the same per-port opening rule, not just the narrow
+    outward-distance subset.
+
+Heater port-opening fix:
+
+- Date: 2026-07-17 local
+- Updated `translation/route_rust.py` so `_heater_pad_port_open_cells` opens
+  raw/expanded heater static cells across the matched heater instance's
+  expanded BBox slab before applying the older outward-distance filter.
+- Scope:
+  - applies only when a component port access rule matched the port, e.g.
+    heater optical ports;
+  - does not remove global static rectangles;
+  - only adds cells to the current port's `opened_cells`, so the opening is
+    active only for nets using that port.
+- Focused audit after the change for `multiportmmi_32x32`
+  `mmi0_ps_array_1_heater_2,o1`:
+  - candidate raw/expanded static cells: `1896`;
+  - opened cells: `1896`;
+  - nearby expanded static rects: `106`;
+  - missing cells in static-rect overlaps after opening: `0`.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile translation\route_rust.py`
+    passed.
+  - `multiportmmi_32x32` stable config with
+    `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90`,
+    `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05`,
+    `--crossing-mode lidar-pure`, `--fanout-access-mode static-stubs`,
+    `--routing-window-scale 0.35`, `--foreign-port-keepout-cells 0`, and
+    `--debug-stop-after-route 130` passed.
+  - Total time for the stop-130 run was `60.4219s`; net routing phase was
+    `33.6352s`.
+  - The previous route-130 / `n_129` outlier disappeared from the slowest-route
+    list. Slowest route is again the known route 34 / `n_33` at `14.5728s`.
+  - Continuing the same config:
+    - `--debug-stop-after-route 140` passed, total `63.8183s`,
+      `simple=105/140`, `repairs=0`.
+    - `--debug-stop-after-route 150` passed, total `84.0923s`,
+      `simple=107/150`, `repairs=0`; routes 145-149 are expensive but legal,
+      led by route 145 / `n_144` at `4.24s` and route 149 / `n_148` at
+      `4.13s`.
+    - `--debug-stop-after-route 155` passed, total `93.8038s`,
+      `simple=107/155`, `repairs=0`; new local slow routes include route 155 /
+      `n_154` at `2.60s` and route 154 / `n_153` at `1.81s`.
+  - `--debug-stop-after-route 156` did not complete within roughly
+      `150s`; the process was manually stopped. Since stop 155 is stable,
+      route 156 / `n_155` is the next route to investigate.
+
+Stable benchmark labels before push:
+
+- Date: 2026-08-11 local
+- Added explicit `STABLE_ROUTING_ENV` / `STABLE_ROUTING_FLAGS` markers for all
+  currently full-run-stable dense benchmarks:
+  - `benchmarks/benes_8x8.py`
+  - `benchmarks/multiportmmi_8x8.py`
+  - `benchmarks/benes_16x16.py`
+  - `benchmarks/multiportmmi_16x16.py`
+- `multiportmmi_8x8` now explicitly records
+  `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES=90` instead of relying on the
+  current router default.
+- `multiportmmi_32x32` is intentionally not marked full-run stable; current
+  stable evidence only reaches stop-after-route 155, while route 156 / `n_155`
+  remains the next slow/hanging route.
+- Validation:
+  - `.\.venv\Scripts\python.exe -m py_compile benchmarks\benes_8x8.py
+    benchmarks\multiportmmi_8x8.py benchmarks\benes_16x16.py
+    benchmarks\multiportmmi_16x16.py translation\route_rust.py` passed.
+  - `C:\Users\benja\.cargo\bin\cargo.exe check` passed.

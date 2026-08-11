@@ -15,6 +15,30 @@ N = 16
 NODE_TYPES: dict[str, str] = {}
 INTERNAL_DELAYS_UM: dict[str, float] = {}
 
+# Stable crossing-router baseline, July 2026:
+#   $env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT="0.05"
+#   $env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES="90"
+#   python routing_flow.py multiportmmi_16x16 --crossings true
+#     --crossing-mode lidar-pure --fanout-access-mode static-stubs
+#     --routing-window-scale 0.35 --foreign-port-keepout-cells 0
+STABLE_ROUTING_ENV: dict[str, str] = {
+    "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT": "0.05",
+    "PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES": "90",
+}
+
+STABLE_ROUTING_FLAGS: tuple[str, ...] = (
+    "--crossings",
+    "true",
+    "--crossing-mode",
+    "lidar-pure",
+    "--fanout-access-mode",
+    "static-stubs",
+    "--routing-window-scale",
+    "0.35",
+    "--foreign-port-keepout-cells",
+    "0",
+)
+
 
 def build_schematic() -> Schematic:
     """Build the LiDAR multiport MMI 16x16 benchmark schematic."""
