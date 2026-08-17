@@ -2,8 +2,16 @@
 
 Status note added 2026-07-10: this ExecPlan is a task-specific historical
 handoff, not the active repository-level project plan. The current active
-project goal is in `.agent/PROJECT_GOAL.md`, and the active next-step plan is
-`.agent/execplans/2026-07-10-crossing-verification-foundation.md`.
+project goal is in `.agent/PROJECT_GOAL.md`.
+
+Status note updated 2026-08-17: the active next-step plan is now
+`.agent/execplans/2026-08-11-refactor-python-routing-flow.md`, a readability
+detour. `.agent/execplans/2026-07-10-crossing-verification-foundation.md` is
+the paused prior milestone plan that work should return to once the
+readability detour (and the broader codebase-structure work it is part of)
+closes. See `.agent/REPOSITORY_STATE.md` for the current snapshot, which is
+kept up to date at every stop and is the source of truth if any of these
+plan-to-plan pointers ever drift again.
 
 This plan uses the phrase "LiDAR-like" in older entries. Interpret that phrase
 narrowly: LiDAR is useful guidance for the idea that crossings are explored by

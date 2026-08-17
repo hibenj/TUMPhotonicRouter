@@ -29,6 +29,11 @@ Use these locations consistently:
   sequential role passes.
 - `.agent/roles/`: reusable role briefs for planner, implementer, reviewer, and
   harness work.
+- `.agent/CLAUDE_CODEX_FLOW.md`: how this workflow maps onto a session where a
+  Claude agent performs the reasoning roles (orchestrator, planner, explorer,
+  reviewer, QA/harness) and Codex CLI performs the Implementation Engineer
+  role via `.agent/scripts/codex_task.sh`. Read this when Claude is the agent
+  driving the session.
 - `.agent/GIT_WORKFLOW.md`: commit, staging, and repository-state checkpoint
   rules.
 - `.agent/REPOSITORY_STATE.md`: compact handoff summary updated before every
@@ -531,3 +536,7 @@ This workflow was shaped by three OpenAI references:
 
 These source notes are background. Future agents must not depend on reading
 external pages to follow this repository workflow.
+
+`.agent/CLAUDE_CODEX_FLOW.md` operationalizes the same three references for a
+session split across two tools: a Claude agent performing the reasoning roles
+and Codex CLI performing the Implementation Engineer role.

@@ -1,5 +1,9 @@
 # Implementation Engineer Role Brief
 
+In a Claude+Codex session (see `.agent/CLAUDE_CODEX_FLOW.md`), this brief is
+handed to Codex CLI verbatim by `.agent/scripts/codex_task.sh`; Codex plays
+this role and only this role.
+
 Read first:
 
 - `AGENTS.md`

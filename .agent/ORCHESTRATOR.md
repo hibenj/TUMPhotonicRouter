@@ -20,7 +20,18 @@ read:
 
 For the current phase, the active ExecPlan is:
 
-    .agent/execplans/2026-07-10-crossing-verification-foundation.md
+    .agent/execplans/2026-08-17-restructure-translation-route-rust.md
+
+This is the first slice of a broader codebase-readability restructuring the
+user asked for on 2026-08-17, itself layered on top of two paused-but-not-
+abandoned plans: `.agent/execplans/2026-08-11-refactor-python-routing-flow.md`
+(the routing_flow.py split; essentially complete, one optional item left) and
+`.agent/execplans/2026-07-10-crossing-verification-foundation.md` (the prior
+crossing-verification milestone). Crossing-verification work should resume
+once the readability restructuring reaches a reasonable stopping point. Check
+`.agent/REPOSITORY_STATE.md`'s "Current Snapshot" section first, since it is
+kept current at every stop and is the source of truth if this pointer and
+that file ever disagree again.
 
 If the user explicitly resumes another ExecPlan, use that plan instead and note
 the switch in the resumed plan's `Decision Log`.
@@ -66,6 +77,13 @@ work local when the next step is tightly coupled, urgent, or hard to specify.
 
 If real subagents are not available, the orchestrator should run the same roles
 sequentially in one session using the role briefs in `.agent/roles/`.
+
+When the orchestrator is a Claude agent (Claude Code) working alongside Codex
+CLI, use `.agent/CLAUDE_CODEX_FLOW.md` instead of spawning further Claude
+subagents for the Implementation Engineer role: Claude keeps the Orchestrator,
+Planner, Explorer, Reviewer, and QA/Harness roles, and delegates only the
+scoped coding step to Codex via `.agent/scripts/codex_task.sh`. The Subagent
+Prompt Contract below still applies; the script attaches it automatically.
 
 ### Mandatory Routing Verification Gate
 

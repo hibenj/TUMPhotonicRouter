@@ -19,3 +19,5 @@ dist/
 .idea/workspace.xml
 .idea/shelf/
 .idea/httpRequests/
+.agent/codex_runs/*
+!.agent/codex_runs/.gitkeep
