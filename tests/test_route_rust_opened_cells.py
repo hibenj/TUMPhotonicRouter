@@ -79,6 +79,75 @@ def _diagnostic_opened_cells(text: str) -> set[tuple[int, int]]:
     }
 
 
+def _corridor_session(width: int, height: int, bend_radius_cells: int = 2):
+    return SimpleNamespace(
+        grid_width=width,
+        grid_height=height,
+        bend_radius_cells=bend_radius_cells,
+    )
+
+
+def _state(x: int, y: int, angle: int = 0):
+    return SimpleNamespace(x=x, y=y, angle=angle)
+
+
+def test_corridor_clearance_reports_no_bare_centerline_path():
+    session = _corridor_session(width=12, height=6)
+    blocked_cells = {(5, y) for y in range(6)}
+
+    diagnostic = route_rust._RouteNetsRustSession._corridor_clearance_diagnostic(
+        session,
+        _state(2, 3),
+        _state(9, 3),
+        blocked_cells,
+        max_radius=3,
+    )
+
+    assert diagnostic["max_radius_checked"] == 3
+    assert diagnostic["last_connected_radius"] is None
+    assert diagnostic["first_disconnected_radius"] == 0
+    assert diagnostic["source_region_size"] == 30
+    assert diagnostic["target_region_size"] == 36
+
+
+def test_corridor_clearance_reports_narrow_gap_closed_by_one_cell_clearance():
+    session = _corridor_session(width=12, height=6)
+    blocked_cells = {(8, y) for y in range(6) if y != 3}
+
+    diagnostic = route_rust._RouteNetsRustSession._corridor_clearance_diagnostic(
+        session,
+        _state(2, 3),
+        _state(10, 3),
+        blocked_cells,
+        max_radius=3,
+    )
+
+    assert diagnostic["last_connected_radius"] == 0
+    assert diagnostic["first_disconnected_radius"] == 1
+    assert diagnostic["source_region_size"] == 42
+    assert diagnostic["target_region_size"] == 12
+    assert diagnostic["source_region_min_distance_to_target"] == 4
+    assert diagnostic["target_region_min_distance_to_source"] == 8
+
+
+def test_corridor_clearance_reports_open_grid_stays_connected():
+    session = _corridor_session(width=12, height=6)
+
+    diagnostic = route_rust._RouteNetsRustSession._corridor_clearance_diagnostic(
+        session,
+        _state(2, 3),
+        _state(10, 3),
+        set(),
+        max_radius=3,
+    )
+
+    assert diagnostic["max_radius_checked"] == 3
+    assert diagnostic["last_connected_radius"] == 3
+    assert diagnostic["first_disconnected_radius"] is None
+    assert diagnostic["source_region_size"] is None
+    assert diagnostic["target_region_size"] is None
+
+
 def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
     wall_cells = {(16, y) for y in range(20)}
 

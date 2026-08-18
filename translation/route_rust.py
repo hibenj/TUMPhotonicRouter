@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -3696,6 +3696,119 @@ class _RouteNetsRustSession:
             f"expanded={expanded_states}"
         )
 
+    def _corridor_clearance_diagnostic(
+        self,
+        source_state: Any,
+        target_state: Any,
+        blocked_cells: set[tuple[int, int]],
+        *,
+        max_radius: int | None = None,
+    ) -> dict[str, Any]:
+        if max_radius is None:
+            max_radius = max(4, int(self.bend_radius_cells) + 2)
+        else:
+            max_radius = int(max_radius)
+
+        source = (int(source_state.x), int(source_state.y))
+        target = (int(target_state.x), int(target_state.y))
+        neighbors = [
+            (-1, -1),
+            (-1, 0),
+            (-1, 1),
+            (0, -1),
+            (0, 1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+        ]
+
+        def inflate(radius: int) -> set[tuple[int, int]]:
+            if radius <= 0:
+                inflated = set(blocked_cells)
+            else:
+                inflated = set()
+                for x, y in blocked_cells:
+                    for dx in range(-radius, radius + 1):
+                        for dy in range(-radius, radius + 1):
+                            inflated.add((x + dx, y + dy))
+            inflated.discard(source)
+            inflated.discard(target)
+            return inflated
+
+        def reachable_from(
+            start: tuple[int, int],
+            blocked: set[tuple[int, int]],
+        ) -> set[tuple[int, int]]:
+            sx, sy = start
+            if not (0 <= sx < self.grid_width and 0 <= sy < self.grid_height):
+                return set()
+            if start in blocked:
+                return set()
+            reached = {start}
+            queue: deque[tuple[int, int]] = deque([start])
+            while queue:
+                x, y = queue.popleft()
+                for dx, dy in neighbors:
+                    nx = x + dx
+                    ny = y + dy
+                    neighbor = (nx, ny)
+                    if (
+                        0 <= nx < self.grid_width
+                        and 0 <= ny < self.grid_height
+                        and neighbor not in blocked
+                        and neighbor not in reached
+                    ):
+                        reached.add(neighbor)
+                        queue.append(neighbor)
+            return reached
+
+        last_connected_radius: int | None = None
+        first_disconnected_radius: int | None = None
+        disconnected_blocked: set[tuple[int, int]] | None = None
+        for radius in range(max_radius + 1):
+            inflated = inflate(radius)
+            reachable = reachable_from(source, inflated)
+            if target in reachable:
+                last_connected_radius = radius
+                continue
+            first_disconnected_radius = radius
+            disconnected_blocked = inflated
+            break
+
+        source_region_size: int | None = None
+        target_region_size: int | None = None
+        source_region_min_distance_to_target: int | None = None
+        target_region_min_distance_to_source: int | None = None
+        if first_disconnected_radius is not None and disconnected_blocked is not None:
+            source_region = reachable_from(source, disconnected_blocked)
+            target_region = reachable_from(target, disconnected_blocked)
+            source_region_size = len(source_region)
+            target_region_size = len(target_region)
+            if target in source_region:
+                source_region_min_distance_to_target = 0
+            elif source_region:
+                source_region_min_distance_to_target = min(
+                    abs(x - target[0]) + abs(y - target[1])
+                    for x, y in source_region
+                )
+            if source in target_region:
+                target_region_min_distance_to_source = 0
+            elif target_region:
+                target_region_min_distance_to_source = min(
+                    abs(x - source[0]) + abs(y - source[1])
+                    for x, y in target_region
+                )
+
+        return {
+            "max_radius_checked": max_radius,
+            "last_connected_radius": last_connected_radius,
+            "first_disconnected_radius": first_disconnected_radius,
+            "source_region_size": source_region_size,
+            "target_region_size": target_region_size,
+            "source_region_min_distance_to_target": source_region_min_distance_to_target,
+            "target_region_min_distance_to_source": target_region_min_distance_to_source,
+        }
+
     def _write_failed_log(
         self,
         job: RouteJob,
@@ -3718,6 +3831,12 @@ class _RouteNetsRustSession:
         )
         opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
         opened_cells_set = set(opened_cells)
+        corridor_diagnostic = self._corridor_clearance_diagnostic(
+            source_state,
+            target_state,
+            (self.static_blocked_cells_before_port_reservations - opened_cells_set)
+            | committed_dynamic_cells,
+        )
         opened_static_overlap = opened_cells_set & self.static_blocked_cells_before_port_reservations
         opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
         current_attempts = [
@@ -3763,6 +3882,15 @@ class _RouteNetsRustSession:
             f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
             f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
             f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
+            f"corridor_clearance_max_radius_checked={corridor_diagnostic['max_radius_checked']}",
+            f"corridor_clearance_last_connected_radius={corridor_diagnostic['last_connected_radius']}",
+            f"corridor_clearance_first_disconnected_radius={corridor_diagnostic['first_disconnected_radius']}",
+            f"corridor_clearance_source_region_size={corridor_diagnostic['source_region_size']}",
+            f"corridor_clearance_target_region_size={corridor_diagnostic['target_region_size']}",
+            "corridor_clearance_source_region_min_distance_to_target="
+            f"{corridor_diagnostic['source_region_min_distance_to_target']}",
+            "corridor_clearance_target_region_min_distance_to_source="
+            f"{corridor_diagnostic['target_region_min_distance_to_source']}",
             f"error={error_text}",
         ]
         if root_cause_line is not None:
