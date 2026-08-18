@@ -3904,8 +3904,6 @@ class _RouteNetsRustSession:
             "dynamic_route_core_radius_cells="
             f"{self.clearance_policy.dynamic_route_core_radius_cells}",
             f"bend_radius_cells={self.bend_radius_cells}",
-            f"port_entry_length_cells={self.port_entry_length_cells}",
-            f"port_entry_half_width_cells={self.port_entry_half_width_cells}",
             f"port_lane_length_cells={self.port_lane_length_cells}",
             f"port_lane_half_width_cells={self.port_lane_half_width_cells}",
             f"opened_candidate_cells_count={len(opened_candidate_cells)}",
@@ -6225,8 +6223,6 @@ class _RouteNetsRustSession:
         self.router = self.rust_backend.PyPhotonicRouter(grid_spec, self.primitive_cfg, self.astar_cfg)
         self._record_pipeline_timing("router_setup", t_router_setup_start)
 
-        self.port_entry_length_cells = max(2, self.bend_radius_cells + 2)
-        self.port_entry_half_width_cells = max(1, self.bend_radius_cells + self.commit_radius_cells + 1)
         self.port_lane_length_cells = max(3, 2 * self.bend_radius_cells + 2)
         self.port_lane_half_width_cells = max(1, self.bend_radius_cells + self.commit_radius_cells + 1)
 
