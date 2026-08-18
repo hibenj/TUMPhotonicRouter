@@ -15,8 +15,8 @@ if it is ever needed.
 
 - Date: 2026-08-18
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `20aab29` (`routing: fix crossing-aware endpoint correction
-  rejecting a valid port-exit fix`)
+- Current HEAD: `5f4cecd` (`test: recalibrate 8 stale Rust crossing unit
+  tests, flag 1 real bug`)
 - Working tree is clean (`git status --short` empty).
 - Process docs revised after the user asked whether the dense-port-runway
   work followed the documented Claude+Codex flow (it didn't, in two
@@ -92,6 +92,25 @@ if it is ever needed.
   passed, 1 skipped`, identical names). Implemented directly (not via
   Codex) with the choice explicitly recorded in the ExecPlan's Decision Log,
   per `.agent/CLAUDE_CODEX_FLOW.md`'s "diagnosis/implementation boundary."
+- `.agent/execplans/2026-08-18-recalibrate-stale-rust-crossing-tests.md` is
+  **complete** (commit `5f4cecd`). Diagnosed and recalibrated the 9
+  pre-existing failing Rust crossing unit tests noted below: dispatched to
+  Codex with an explicit lead (later found incomplete -- see the plan's own
+  Surprises & Discoveries for that correction) and a hard requirement to
+  leave any test that looks like a real bug untouched rather than force it
+  green. 8 of 9 confirmed stale (hand-built fixtures/expected stats from
+  before later, legitimate, already-shipped behavior changes -- commits
+  `35e30fe`, `f9f9ce0`, `7dd8278`) and recalibrated; independently verified
+  by Claude (full diff read, margin arithmetic re-derived by hand, all cited
+  commits confirmed real). The 9th,
+  `py_router::tests::collision_crossing_route_without_event_is_not_accepted`,
+  was deliberately left failing: `try_route_with_collision_crossings`
+  returns `Some(...)` (accepts the route) for two geometrically disjoint
+  routes with zero crossing events and zero accepted candidates -- a real
+  contract violation, traced to `9e0a927`, not fixed here (production-code
+  fix, out of this test-only scope). `cargo test --lib`:
+  `312 passed, 9 failed` -> `320 passed, 1 failed`. `pytest -q` unaffected
+  (Rust test-only change).
 - All three readability plans are complete and committed:
   - `.agent/execplans/2026-08-11-refactor-python-routing-flow.md` (`routing_flow.py`
     split, commit `be95ee1`, including the fix for a 4-name monkeypatch
@@ -196,9 +215,11 @@ if it is ever needed.
   failing to passing -- net zero on the count, see below for the full
   story). Every change was independently re-verified by Claude (not just
   trusted from Codex's self-report). The separate Rust unit-test baseline
-  (`cargo test --lib`) is `312 passed, 9 failed`, all 9 failures
-  pre-existing and crossing-related (see above; one more pass than the
-  prior `311` because the same plan's Milestone 1 added a new Rust test).
+  (`cargo test --lib`) is now `320 passed, 1 failed` (was `312 passed, 9
+  failed`; see the recalibrate-stale-rust-crossing-tests plan entry below --
+  8 of the 9 were stale fixtures from already-shipped, legitimate behavior
+  changes, recalibrated; the 1 remaining is a newly-tracked real bug, not
+  left over by accident).
 - `.agent/execplans/2026-08-18-unify-port-access-region-computation.md` is
   **complete** (all three milestones done, commits `4055992`, `936958c`
   (merge decision only), `d20edcf`, `bf2ac9a`, `fc89187`). It grew out of
@@ -389,8 +410,9 @@ explicitly resumes it.
 
 No active ExecPlan right now. `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`,
 `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
-`.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md`, and
-`.agent/execplans/2026-08-18-crossing-aware-endpoint-correction-direction-sequence.md`
+`.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md`,
+`.agent/execplans/2026-08-18-crossing-aware-endpoint-correction-direction-sequence.md`,
+and `.agent/execplans/2026-08-18-recalibrate-stale-rust-crossing-tests.md`
 are all complete (see Current Snapshot); pick the next one from the
 candidates below with the user before starting.
 
@@ -407,10 +429,14 @@ Candidates, not in a mandated order:
    not a mechanical fix. (`multiportmmi_16x16`'s `n_102` is a *different*,
    likely-unfixable `TOY`-shaped finding, not the same problem -- see
    Worktree State.) Not started.
-2. The 9 pre-existing failing Rust crossing tests discovered while
-   verifying the Stage 5 plan's diagnostics fix (`cargo test --lib`, see
-   Current Snapshot) -- a separate, unexplored thread in the same
-   crossing-legality code area. Not started.
+2. Fix `py_router::tests::collision_crossing_route_without_event_is_not_accepted`'s
+   underlying production bug (see Current Snapshot): `try_route_with_collision_crossings`
+   accepts a route with zero crossing events against its requested partner
+   as if it were a successful collision-crossing result, traced to commit
+   `9e0a927`. This is real production logic in a correctness-sensitive
+   crossing-legality path, not a mechanical test fix -- read `9e0a927`'s
+   diff and the surrounding helper carefully before touching it. Not
+   started.
 3. Continue the broader Python-and-Rust correctness walkthrough into
    Stages 6-8 (endpoint correction, geometry realization, verification),
    or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`
