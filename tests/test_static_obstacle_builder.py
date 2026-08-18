@@ -14,7 +14,11 @@ from photonic_router.benchmark_extractor import ExtractedBenchmark, Port, extrac
 from photonic_router.static_obstacle_builder import (
     GridSpec,
     StaticObstacleMapConfig,
+    StaticObstacleMapData,
+    _apply_perpendicular_heater_clearance,
     _build_static_obstacle_map_rust,
+    _expand_rect_perpendicular_to_long_axis,
+    _materialize_grid_rects,
     build_static_obstacle_map_python_from_extracted,
     build_port_open_cells,
     build_static_obstacle_map,
@@ -28,6 +32,36 @@ from photonic_router.static_obstacle_builder import (
 )
 
 get_generic_pdk().activate()
+
+
+def _static_obstacle_data_for_single_rect(
+    *,
+    blocked_cells: set[tuple[int, int]],
+    rust_blocked_cell_handle=None,
+) -> StaticObstacleMapData:
+    grid = GridSpec(
+        width=8,
+        height=8,
+        grid_size_um=1.0,
+        origin=(0.0, 0.0),
+        die_bbox=(0.0, 0.0, 8.0, 8.0),
+    )
+    benchmark = ExtractedBenchmark(
+        polygons=[[(2.0, 2.0), (5.0, 2.0), (5.0, 3.0), (2.0, 3.0)]],
+        ports=[],
+        bbox=(2.0, 2.0, 5.0, 3.0),
+    )
+    return StaticObstacleMapData(
+        grid=grid,
+        raw_blocked_cells=set(),
+        blocked_cells=blocked_cells,
+        port_open_cells=set(),
+        raw_static_rects=((2, 2, 4, 2),),
+        blocked_static_rects=((2, 2, 4, 2),),
+        benchmark=benchmark,
+        backend="python",
+        rust_blocked_cell_handle=rust_blocked_cell_handle,
+    )
 
 
 def should_show_svg_popup() -> bool:
@@ -370,6 +404,43 @@ def test_static_obstacle_map_can_use_separate_heater_clearance():
     assert (4, 1, 9, 3) not in data.blocked_static_rects
     assert (5, 0, 8, 3) in data.blocked_static_rects
     assert data.backend.endswith("-split")
+
+
+def test_perpendicular_heater_clearance_materializes_expanded_cells_when_input_cells_empty():
+    data = _static_obstacle_data_for_single_rect(blocked_cells=set())
+
+    result = _apply_perpendicular_heater_clearance(data, clearance_um=1.0)
+
+    expected_rects = (
+        _expand_rect_perpendicular_to_long_axis(data.raw_static_rects[0], 1),
+    )
+    assert result.blocked_static_rects == expected_rects
+    assert result.blocked_cells == set(_materialize_grid_rects(expected_rects, data.grid))
+    assert result.blocked_cells == {
+        (2, 1),
+        (3, 1),
+        (4, 1),
+        (2, 2),
+        (3, 2),
+        (4, 2),
+        (2, 3),
+        (3, 3),
+        (4, 3),
+    }
+
+
+def test_perpendicular_heater_clearance_handle_policy_matches_changed_rects():
+    sentinel_handle = object()
+    data = _static_obstacle_data_for_single_rect(
+        blocked_cells={(2, 2), (3, 2), (4, 2)},
+        rust_blocked_cell_handle=sentinel_handle,
+    )
+
+    no_op_result = _apply_perpendicular_heater_clearance(data, clearance_um=0.0)
+    expanded_result = _apply_perpendicular_heater_clearance(data, clearance_um=1.0)
+
+    assert no_op_result.rust_blocked_cell_handle is sentinel_handle
+    assert expanded_result.rust_blocked_cell_handle is None
 
 
 def test_bounding_box_mode_preserves_port_opening_behavior():

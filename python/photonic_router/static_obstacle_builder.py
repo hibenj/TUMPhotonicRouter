@@ -261,11 +261,7 @@ def _apply_perpendicular_heater_clearance(
         _expand_rect_perpendicular_to_long_axis(rect, radius)
         for rect in raw_rects
     )
-    blocked_cells = (
-        set(_materialize_grid_rects(blocked_rects, data.grid))
-        if data.blocked_cells
-        else set()
-    )
+    blocked_cells = set(_materialize_grid_rects(blocked_rects, data.grid))
     return StaticObstacleMapData(
         grid=data.grid,
         raw_blocked_cells=data.raw_blocked_cells,
@@ -276,6 +272,8 @@ def _apply_perpendicular_heater_clearance(
         benchmark=data.benchmark,
         backend=data.backend,
         build_stats=data.build_stats,
+        # Expanded rects invalidate the old handle; merge rebuilds it from rects/cells.
+        rust_blocked_cell_handle=None,
     )
 
 
