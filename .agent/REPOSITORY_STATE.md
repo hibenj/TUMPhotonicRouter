@@ -65,12 +65,11 @@ if it is ever needed.
   Two new, separate findings surfaced once routing got this far, both
   investigated enough to confirm neither was caused by this fix: (1) a
   crossing-legality rejection (`error=No legal LiDAR crossing route found`)
-  on `multiportmmi_8x8` `n_32` and `multiportmmi_16x16` `n_102`, with the
-  same *shape* as the earlier, separately-resolved `TOY` finding (a
-  bare-cell corridor that exists but is too tight once any clearance is
-  required) -- not a port-sizing problem, still open (see below); (2) a
-  photonic-geometry verification `source_endpoint_mismatch` on
-  `multiportmmi_8x8` nets `n_40`/`n_41`/`n_42` -- **now fixed**, see the
+  on `multiportmmi_8x8` `n_32` and `multiportmmi_16x16` `n_102` -- these two
+  turned out to be *different* underlying problems once compared precisely,
+  not one shared finding (see Worktree State); (2) a photonic-geometry
+  verification `source_endpoint_mismatch` on `multiportmmi_8x8` nets
+  `n_40`/`n_41`/`n_42` -- **now fixed**, see the
   next entry.
 - `.agent/execplans/2026-08-18-crossing-aware-endpoint-correction-direction-sequence.md`
   is **complete** (commit `20aab29`). Root-caused and fixed the
@@ -309,9 +308,21 @@ caused by any of the completed plans:
   thought (how much lateral room a single-direction bend genuinely needs
   versus the current symmetric-half-width formula, and how to redistribute
   fairly) rather than a mechanical fix -- a good candidate to discuss with
-  the user before starting, not "heavy work" to just do solo. Not yet
-  independently checked whether `multiportmmi_16x16`'s `n_102` is the same
-  width-axis shape or something else.
+  the user before starting, not "heavy work" to just do solo.
+  `multiportmmi_16x16`'s `n_102` (source `mmi0_multiport_1_0,o9`) was
+  independently checked and is a *different* problem, not the same
+  width-axis shape: `o9`'s own narrowed lane is actually wide and healthy
+  (6 rows, 168 cells, comparable to the widest ports in its group), and the
+  corridor signature is `last_connected_radius=1, first_disconnected_radius=2`
+  (survives one level of clearance inflation, fails at two) -- looser than
+  `n_32`'s `last_connected_radius=0, first_disconnected_radius=1` (fails
+  immediately). Real device geometry borders the source directly to the
+  west either way. This is much closer in shape to the earlier, already-
+  resolved `TOY` finding (a real corridor that exists but is too tight once
+  realistic bend-radius clearance is required near actual device material)
+  than to `n_32`'s lateral-width-allocation bug -- likely a genuine
+  benchmark-placement fact, not a fixable reservation-logic problem, though
+  not confirmed to that same standard of certainty as `TOY` was.
 
 ## Recent Session Notes
 
@@ -393,8 +404,9 @@ Candidates, not in a mandated order:
    regardless of forward reach. This is a design question (how much lateral
    room a single-direction bend actually needs, how to redistribute fairly
    without recreating sibling overlap) worth discussing before implementing,
-   not a mechanical fix. `multiportmmi_16x16`'s `n_102` not yet checked for
-   the same shape. Not started.
+   not a mechanical fix. (`multiportmmi_16x16`'s `n_102` is a *different*,
+   likely-unfixable `TOY`-shaped finding, not the same problem -- see
+   Worktree State.) Not started.
 2. The 9 pre-existing failing Rust crossing tests discovered while
    verifying the Stage 5 plan's diagnostics fix (`cargo test --lib`, see
    Current Snapshot) -- a separate, unexplored thread in the same
