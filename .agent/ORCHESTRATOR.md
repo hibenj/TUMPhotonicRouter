@@ -18,20 +18,26 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-There is no active ExecPlan right now. The three-plan codebase-readability
-restructuring the user asked for on 2026-08-17
+The active ExecPlan is
+`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`.
+It is the next stage of an ad hoc, functionality-by-functionality correctness
+walkthrough of the Python routing pipeline (not a test-by-test triage) that
+the user asked for after the three-plan codebase-readability restructuring
+completed on 2026-08-17-18
 (`.agent/execplans/2026-08-11-refactor-python-routing-flow.md`,
 `.agent/execplans/2026-08-17-restructure-translation-route-rust.md` "Phase 1",
-and `.agent/execplans/2026-08-18-restructure-route-nets-rust.md` "Phase 2")
-is complete and committed. The next step is an open decision for the user;
-`.agent/REPOSITORY_STATE.md`'s "Next Engineering Step" section lists the
-candidates (a small optional continuation of Phase 2, starting the "Future
-Architecture Initiative" from `.agent/PROJECT_GOAL.md`, a Rust-side "Phase 3,"
-or resuming the paused-but-not-abandoned
-`.agent/execplans/2026-07-10-crossing-verification-foundation.md` milestone)
-without prescribing one. Read `.agent/REPOSITORY_STATE.md`'s "Current
-Snapshot" section first at the start of any new session, since it is kept
-current at every stop and is the source of truth for what is actually active.
+and `.agent/execplans/2026-08-18-restructure-route-nets-rust.md` "Phase 2").
+Stages 1-4 of that walkthrough (benchmark loading through grid snapping) were
+done ad hoc and found two real bugs, both fixed and committed (`fae111d`,
+`75edf33`); Stage 5 (routing / A* / crossing verification) is large enough
+and spans Python and Rust closely enough that the user asked for a proper
+ExecPlan before continuing, hence this plan. Read `.agent/REPOSITORY_STATE.md`'s
+"Current Snapshot" section first at the start of any new session, since it is
+kept current at every stop and is the source of truth for what is actually
+active; `.agent/REPOSITORY_STATE.md`'s "Next Engineering Step" section also
+lists lower-priority deferred candidates (Rust-side Phase 3 readability, the
+Future Architecture Initiative from `.agent/PROJECT_GOAL.md`) not currently
+being worked.
 
 Once the user picks a next direction and an ExecPlan exists for it, update
 this pointer to name it explicitly, the way it named Phase 1 and Phase 2

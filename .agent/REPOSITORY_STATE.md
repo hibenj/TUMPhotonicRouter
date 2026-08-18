@@ -64,19 +64,35 @@ if it is ever needed.
     rects in the common case, but that was incidental, not guaranteed.
     Fixed to be correct on its own; new tests in
     `tests/test_static_obstacle_builder.py`.
-  Currently mid-**Stage 3 (obstacle map building)**: the rest of
-  `static_obstacle_builder.py` (1,048 lines; read through ~line 690 of the
-  main flow so far) has not yet been fully walked, and Stages 4-8 have not
-  started.
+  Stages 3 (obstacle map building) and 4 (grid snapping / port-to-grid
+  state) are now fully read with no further bugs found (Stage 4 has one
+  flagged-but-dormant oddity, see below). Stage 5 (routing / A* / crossing
+  verification) is large enough and spans Python and Rust closely enough
+  that the user asked for a proper tracked ExecPlan before continuing
+  rather than staying ad hoc; see
+  `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
+  now the active ExecPlan. That plan's Milestone 0 (orientation) and
+  Milestone 1 (a case study using the TOY benchmark's `gc1_to_mmi_in2`
+  failure, already reproduced with a resolved false-alarm and one still-open
+  question about whether a "No legal LiDAR crossing route found" rejection
+  is correct or a bug) have not started. Stages 6-8 (endpoint correction,
+  geometry realization, verification) have not started.
+- One low-priority, unconfirmed finding from Stage 4, recorded in the Stage 5
+  plan's Surprises & Discoveries rather than fixed: `_snap_same_heading_minimum_bend_offset`
+  in `translation/route_rust.py` (around line 1081) snaps to `min_offset_cells + 1`
+  cells of separation in its "missing == 1" case, where its own docstring
+  implies `min_offset_cells` (no `+1`) is the true minimum -- a plausible
+  off-by-one, but confirmed dormant (fires 0/81 times on `heater_s_mod`) and
+  not the cause of any known test failure, so left alone pending a live case.
 - Full test suite baseline is now `23 failed, 311 passed, 1 skipped` (was
   `23 failed, 307 passed, 1 skipped` at Phase 2 completion; the walkthrough
   has added 4 new passing tests across the two fixes above, same 23
   pre-existing failures, unchanged). Every slice/milestone across Phase 1
   and Phase 2, plus both walkthrough fixes, was independently re-verified
   by Claude (not just trusted from Codex's self-report).
-- No active ExecPlan right now; the walkthrough above is the de facto
-  current work but has not been written up as one yet (see Next
-  Engineering Step).
+- Active ExecPlan:
+  `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`
+  (see Next Engineering Step).
 
 ## Current Goal
 
@@ -174,39 +190,40 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-Active, ongoing (not yet a formal ExecPlan): continue the Python
-correctness walkthrough at **Stage 3 (obstacle map building)**, finishing
-a full read of `python/photonic_router/static_obstacle_builder.py`
-(1,048 lines; the main flow and the heater-clearance split path have been
-read, the rest -- e.g. `build_static_obstacle_map_python_from_extracted`'s
-body past line 391, port-open-cell logic, bbox-cell materialization
-details -- has not), before moving to Stage 4 (grid snapping/port-to-grid
-state). Consider writing this walkthrough up as a proper ExecPlan once a
-stage or two more of findings accumulate, for continuity across sessions.
+Follow the active ExecPlan,
+`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`:
+start its Milestone 0 (orientation into the crossing/A* subsystem spanning
+`translation/route_rust.py`'s `_dispatch_native_routing`,
+`src/py_router.rs`'s `route_single_net_and_commit_native`, and the three
+`crossing_mode` values `window`/`collision`/`lidar-pure`), then Milestone 1
+(determine whether the TOY benchmark's `gc1_to_mmi_in2` "No legal LiDAR
+crossing route found" rejection is correct behavior or a bug -- an
+A*-found route was rejected by crossing-legality checking with no legal
+alternative found on retry; the earlier "foreign port keepout" hypothesis
+for this failure was investigated and ruled out as a red herring, a
+mismatch between two intentionally-different overlap statistics rather
+than a real discrepancy -- see the plan's Progress section for the
+resolved explanation).
 
 Deferred candidates, not in a mandated order:
 
-1. The TOY benchmark's `gc1_to_mmi_in2` "No route found" failure (one of
-   the 23 baseline failures) has an unresolved discrepancy between
-   `FAILED.txt` (100% static overlap) and `diagnostics.txt` (0% overlap,
-   but target-approach footprints show static blockers not visible in the
-   base obstacle SVG); hypothesized "foreign port keepout" (936 cells) as
-   the explanation, not confirmed. Revisit at Stage 5 (Routing) of the
-   walkthrough rather than in isolation.
-2. Start the "Future Architecture Initiative" from `.agent/PROJECT_GOAL.md`:
+1. Start the "Future Architecture Initiative" from `.agent/PROJECT_GOAL.md`:
    extract real swappable interfaces (obstacle map building, grid snapping,
    A* search, geometry realization, path-length matching) with independent
    unit-test coverage. Explicitly deferred by the user until after the
    correctness walkthrough. Nothing scoped yet beyond `PROJECT_GOAL.md`.
-3. A smaller, optional continuation of Phase 2: decompose
+2. A smaller, optional continuation of Phase 2: decompose
    `_write_route_diagnostics` (still 486 lines) and `_route_attempt_diagnostics`
    (still 247 lines), or split `run()` itself (1,104 lines) into a few named
    phase methods. Not started, not committed to.
-4. Phase 3 for the large Rust files (`src/py_router.rs` at 17,399 lines,
+3. Phase 3 for the large Rust files (`src/py_router.rs` at 17,399 lines,
    `src/astar.rs` at 10,388 lines, `src/geometry_realization.rs` at 8,125
    lines) -- the same kind of readability work as Phases 1-2, agreed to
    come after the current Python correctness walkthrough, not started.
-5. Resume the crossing-verification-foundation objective (the pre-readability-
+   Milestone 0 of the active Stage 5 plan will end up reading parts of
+   `src/py_router.rs` and `src/astar.rs` anyway; note anything relevant to
+   this future readability pass there too.
+4. Resume the crossing-verification-foundation objective (the pre-readability-
    work priority). Per the last recorded stable-benchmark checkpoint in git
    history (commit `a29dc00`), `benes_8x8`, `benes_16x16`, `multiportmmi_8x8`,
    and `multiportmmi_16x16` are marked full-run stable; `multiportmmi_32x32`
