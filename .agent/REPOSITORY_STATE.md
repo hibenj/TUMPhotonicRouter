@@ -286,11 +286,32 @@ caused by any of the completed plans:
   rip-up-reroute enabled). One finding remains open and deferred, and only
   manifests with `--ripup-reroute false` (repair papers over it in the
   default config, which is itself worth treating with some suspicion, not
-  just relief): `multiportmmi_8x8` `n_32` / `multiportmmi_16x16` `n_102`'s
+  just relief): `multiportmmi_8x8` `n_32`'s (source `mmi0_multiport_0_0,o11`)
   very first search attempt hits `error=No legal LiDAR crossing route
-  found`, with the same *shape* as the already-resolved `TOY` finding (a
-  bare-cell corridor too tight once clearance is required) -- a candidate
-  for the next engineering step.
+  found`. Investigated further (2026-08-18): this is a *different* axis of
+  the same dense-port-cluster problem the dense-port-runway-clearance-reach
+  plan already fixed one axis of. `o11` is part of a second 6-port group on
+  the same component (`o7`-`o12`); its forward *length* reach is already
+  fixed by that plan's equalization (all six now reach the same far column).
+  What's still narrow is *lateral width*: `_filter_dense_port_opening`
+  splits the group's ~22 available rows unevenly across the 6 ports (`o7`/
+  `o12` get 6 rows each, `o9`/`o11` get only 2), and 2 rows is likely too
+  narrow to execute any bend at all (`bend_radius_cells=3`) regardless of
+  forward reach -- confirmed via `corridor_clearance_source_region_size=1`
+  at just 1 cell of inflation. Real device geometry is a red herring here:
+  it borders the source only on the west, while `o11`'s own orientation
+  (`0.0`, facing east) means the route does not need to go that way at all;
+  every other direction is blocked by sibling reservations, not hardware.
+  Unlike the length fix, there is no already-reserved, provably-safe ceiling
+  to equalize width to -- giving `o11` more rows necessarily takes rows from
+  a neighbor, risking recreating the exact overlap problem
+  `_filter_dense_port_opening` exists to prevent, so this needs real design
+  thought (how much lateral room a single-direction bend genuinely needs
+  versus the current symmetric-half-width formula, and how to redistribute
+  fairly) rather than a mechanical fix -- a good candidate to discuss with
+  the user before starting, not "heavy work" to just do solo. Not yet
+  independently checked whether `multiportmmi_16x16`'s `n_102` is the same
+  width-axis shape or something else.
 
 ## Recent Session Notes
 
@@ -364,13 +385,16 @@ candidates below with the user before starting.
 
 Candidates, not in a mandated order:
 
-1. Investigate the crossing-legality rejection at `multiportmmi_8x8` `n_32`
-   / `multiportmmi_16x16` `n_102` (`error=No legal LiDAR crossing route
-   found` on the very first search attempt, only visible with
-   `--ripup-reroute false`; the default repair-enabled config papers over
-   it, which is itself worth treating with some suspicion -- see Current
-   Snapshot/Worktree State). Same bare-cell-corridor-too-tight-under-clearance
-   shape as the already-resolved `TOY` finding. Not started.
+1. Decide how to handle the dense-port *lateral width* allocation problem
+   found investigating `multiportmmi_8x8` `n_32` (see Current
+   Snapshot/Worktree State for the full diagnosis): `_filter_dense_port_opening`
+   splits a dense group's available rows unevenly, and a port that lands on
+   the narrow end (2 rows for `bend_radius_cells=3`) cannot execute any bend
+   regardless of forward reach. This is a design question (how much lateral
+   room a single-direction bend actually needs, how to redistribute fairly
+   without recreating sibling overlap) worth discussing before implementing,
+   not a mechanical fix. `multiportmmi_16x16`'s `n_102` not yet checked for
+   the same shape. Not started.
 2. The 9 pre-existing failing Rust crossing tests discovered while
    verifying the Stage 5 plan's diagnostics fix (`cargo test --lib`, see
    Current Snapshot) -- a separate, unexplored thread in the same
