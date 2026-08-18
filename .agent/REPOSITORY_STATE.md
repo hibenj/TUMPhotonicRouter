@@ -15,8 +15,8 @@ if it is ever needed.
 
 - Date: 2026-08-18
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `75edf33` (`Fix rust_blocked_cell_handle drop and stale
-  blocked_cells guard in heater clearance expansion`)
+- Current HEAD: `73604f9` (`docs: record verified diagnostics fix and Rust
+  test baseline in Stage 5 plan`)
 - Working tree is clean (`git status --short` empty).
 - All three readability plans are complete and committed:
   - `.agent/execplans/2026-08-11-refactor-python-routing-flow.md` (`routing_flow.py`
@@ -71,12 +71,26 @@ if it is ever needed.
   that the user asked for a proper tracked ExecPlan before continuing
   rather than staying ad hoc; see
   `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
-  now the active ExecPlan. That plan's Milestone 0 (orientation) and
-  Milestone 1 (a case study using the TOY benchmark's `gc1_to_mmi_in2`
-  failure, already reproduced with a resolved false-alarm and one still-open
-  question about whether a "No legal LiDAR crossing route found" rejection
-  is correct or a bug) have not started. Stages 6-8 (endpoint correction,
-  geometry realization, verification) have not started.
+  now the active ExecPlan. Milestone 0 (orientation) is done. Milestone 1
+  (the TOY benchmark's `gc1_to_mmi_in2` "No route found" case study) ruled
+  out crossing-legality, foreign-port-keepout, dense-obstacle-grid-cap, and
+  routing-window-bounds as causes, then found and fixed (commit `8dfb132`,
+  a real Rust change, independently re-verified end to end) a diagnostics
+  bug: failed plain-A* search attempts were silently discarding their real
+  `RouteSearchStats`, so every failure just said "No route found" with no
+  numbers. With that fixed, the TOY case now shows the search genuinely
+  explored 62,904 states across 2 routing-window expansions plus an
+  exhausted full-grid fallback before giving up -- ruling out "search
+  never tried" but not yet distinguishing "genuinely no legal corridor"
+  from "an obstacle-marking step over-blocks a passable region." Next step
+  (not started): inspect the actual obstacle geometry between this net's
+  source and target. Stages 6-8 (endpoint correction, geometry realization,
+  verification) have not started. Also newly discovered and worth knowing
+  before any further Rust work: a separate Rust unit-test baseline (`cargo
+  test --lib`, needs `RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu`
+  since the checked-in `rust-toolchain.toml` is pinned to a Windows
+  target) of `311 passed, 9 failed`, all 9 failures crossing-related and
+  confirmed pre-existing -- a candidate for its own future milestone.
 - One low-priority, unconfirmed finding from Stage 4, recorded in the Stage 5
   plan's Surprises & Discoveries rather than fixed: `_snap_same_heading_minimum_bend_offset`
   in `translation/route_rust.py` (around line 1081) snaps to `min_offset_cells + 1`
