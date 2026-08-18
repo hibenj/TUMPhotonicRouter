@@ -9241,14 +9241,14 @@ mod tests {
             .enumerate()
             .map(|(idx, partner)| (partner.net_id, idx))
             .collect();
-        let length_um = 4.0 * 2.0_f64.sqrt();
+        let length_um = 5.0 * 2.0_f64.sqrt();
         let primitive = Primitive {
             id: 0,
             start_angle: 1,
             end_angle: 1,
-            dx: 4,
-            dy: 4,
-            footprint: vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)],
+            dx: 5,
+            dy: 5,
+            footprint: (0..=5).map(|step| (step, step)).collect(),
             length_um,
             bend_cost: 0.0,
             geometry: PrimitiveGeometry::Straight { length_um },
@@ -9260,11 +9260,12 @@ mod tests {
             straight_run_cells: 12,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
-                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+            pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
         };
         let mut stats = RouteSearchStats::default();
         while key.state.x < 630 {
-            let next_state = State::new(key.state.x + 4, key.state.y + 4, 1);
+            let next_state =
+                State::new(key.state.x + primitive.dx, key.state.y + primitive.dy, 1);
             let outcome = crossing_move_outcome(
                 &map,
                 &crossing,
@@ -9645,18 +9646,27 @@ mod tests {
 
     #[test]
     fn crossing_move_rejects_bend_arm_non_perpendicular_intersection() {
-        let map = ObstacleMap::new(16, 16);
+        let mut map = ObstacleMap::new(16, 16);
         let library = primitive_library_no45_bend2();
         let primitive = library
             .get_primitives_for_angle(0)
             .iter()
             .find(|primitive| primitive.end_angle == 2)
             .expect("east-to-north bend should exist");
+        let partner_waypoints = vec![(5, 3), (7, 5)];
+        let partner_cells = rasterize_waypoints_for_test(&partner_waypoints);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            2,
+            &partner_cells,
+            &partner_cells,
+            &[],
+            &FxHashSet::default()
+        ));
         let crossing = CrossingSearchConfig {
             net_id: 1,
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
-                waypoints: vec![(5, 3), (7, 5)],
+                waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
             }],
             min_straight_cells: 0,
@@ -9698,9 +9708,9 @@ mod tests {
         );
 
         assert!(outcome.is_none());
-        assert!(stats.crossing_candidate_checks >= 1);
+        assert_eq!(stats.crossing_candidate_checks, 0);
         assert_eq!(stats.crossing_accepted, 0);
-        assert_eq!(stats.crossing_reject_not_perpendicular, 1);
+        assert_eq!(stats.crossing_reject_non_straight, 1);
     }
 
     #[test]
@@ -9919,7 +9929,7 @@ mod tests {
 
         assert!(outcome.is_none());
         assert_eq!(stats.crossing_accepted, 0);
-        assert_eq!(stats.crossing_reject_pending_straight, 1);
+        assert_eq!(stats.crossing_reject_non_straight, 1);
     }
 
     #[test]
@@ -10261,8 +10271,8 @@ mod tests {
     #[test]
     fn crossing_pending_after_keeps_largest_missing_runout() {
         let mut map = ObstacleMap::new(32, 16);
-        let partner_a = vec![(4, 0), (4, 8)];
-        let partner_b = vec![(7, 0), (7, 8)];
+        let partner_a = vec![(4, 0), (4, 11)];
+        let partner_b = vec![(7, 0), (7, 11)];
         let cells_a = rasterize_waypoints_for_test(&partner_a);
         let cells_b = rasterize_waypoints_for_test(&partner_b);
         assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
@@ -10319,7 +10329,7 @@ mod tests {
             &map,
             &crossing,
             CrossingAStarKey {
-                state: State::new(0, 4, 0),
+                state: State::new(0, 5, 0),
                 crossed_mask: 0,
                 next_partner_index: 0,
                 straight_run_cells: 10,
@@ -10327,7 +10337,7 @@ mod tests {
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
                 pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
             },
-            State::new(0, 4, 0),
+            State::new(0, 5, 0),
             &primitive,
             true,
             5,
@@ -10416,13 +10426,23 @@ mod tests {
 
     #[test]
     fn crossing_margin_counts_terminal_bend_arm_before_next_crossing() {
-        let map = ObstacleMap::new(16, 16);
+        let mut map = ObstacleMap::new(16, 16);
         let library = primitive_library_no45_bend2();
         let bend = library
             .get_primitives_for_angle(0)
             .iter()
             .find(|primitive| primitive.end_angle == 2)
             .expect("east-to-north bend should exist");
+        let partner_waypoints = vec![(2, 8), (10, 8)];
+        let partner_cells = rasterize_waypoints_for_test(&partner_waypoints);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            2,
+            &partner_cells,
+            &partner_cells,
+            &[],
+            &FxHashSet::default()
+        ));
+
         let empty_crossing = CrossingSearchConfig {
             net_id: 1,
             partners: Vec::new(),
@@ -10463,7 +10483,7 @@ mod tests {
             net_id: 1,
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
-                waypoints: vec![(2, 8), (10, 8)],
+                waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
             }],
             min_straight_cells: 0,

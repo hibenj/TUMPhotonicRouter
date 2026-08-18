@@ -14883,7 +14883,7 @@ mod tests {
             CrossingConfig {
                 enabled: true,
                 allow_only_expected_pairs: false,
-                crossing_half_size_cells: 2,
+                crossing_half_size_cells: 4,
                 min_straight_cells_per_crossing: 2,
                 ..CrossingConfig::default()
             },
@@ -15011,6 +15011,7 @@ mod tests {
             CrossingConfig {
                 enabled: true,
                 allow_only_expected_pairs: false,
+                crossing_half_size_cells: 2,
                 min_straight_cells_per_crossing: 2,
                 ..CrossingConfig::default()
             },
@@ -15590,7 +15591,7 @@ mod tests {
     #[test]
     fn crossing_spacing_history_uses_valid_straight_windows() {
         let route = vec![(2, 10), (12, 10), (12, 16)];
-        let cells = crossing_spacing_history_cells_for_route(&route, 2, 1, 0, 32, 32);
+        let cells = crossing_spacing_history_cells_for_route(&route, 2, 1, 1, 32, 32);
         let keys: FxHashSet<CellKey> = cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
 
         assert!(keys.contains(&pack_xy(6, 9)));
