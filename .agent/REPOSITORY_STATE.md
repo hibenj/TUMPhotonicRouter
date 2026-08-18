@@ -15,12 +15,26 @@ if it is ever needed.
 
 - Date: 2026-08-18
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `af00aeb` (`docs: confirm dense-runway equalization fix
-  also resolves multiportmmi_16x16 n_48`)
-- Working tree is clean (`git status --short` empty), except one
-  uncommitted docs-only change: `.agent/CLAUDE_CODEX_FLOW.md` gained a
-  "What Codex is reliable at, and what it is not" section, left
-  uncommitted for the user to fold into a commit at their discretion.
+- Current HEAD: `c3483b5` (`docs: close process gaps found by auditing this
+  session against its own flow`)
+- Working tree is clean (`git status --short` empty).
+- Process docs revised after the user asked whether the dense-port-runway
+  work followed the documented Claude+Codex flow (it didn't, in two
+  concrete ways) and explicitly authorized adjusting the flow docs, not
+  just noting the gap: `.agent/CLAUDE_CODEX_FLOW.md` gained "The
+  diagnosis/implementation boundary" (diagnosis/probe-script iteration
+  stays with Claude; the moment a fix is bounded and well-specified, an
+  explicit dispatch-to-Codex-or-record-why decision is required, not a
+  silent default to self-implementation); `.agent/WORKFLOW.md`'s
+  Convergence policy now scopes its "fails twice" escalation trigger to
+  validated implementation attempts (not disposable diagnostic scripts,
+  which had made the trigger read as violated when it wasn't), and its
+  Routing Verification Gate now requires an explicit `Verdict:
+  PASS/FAIL/BLOCKED/INCONCLUSIVE` line read from the actual
+  `build/verification/*.json` reports before routing work is called done
+  -- a passing `pytest` run or exit code 0 does not satisfy it, even
+  solo. `.agent/roles/harness.md`'s verdict-line format was tightened to
+  match.
 - `.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md` is
   **complete** (commits `ecc4b79`, `af00aeb`). It fixed the
   `multiportmmi_8x8` `n_24` / `multiportmmi_16x16` `n_48` finding left open
