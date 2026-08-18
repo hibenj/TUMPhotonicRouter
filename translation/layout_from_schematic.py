@@ -78,11 +78,11 @@ def layout_from_schematic(schematic: Schematic) -> Component:
         # Add the component to the layout with transformation
         ref = component.add_ref(sub_component, name=instance_name)
         if anchor is None:
-            ref.movex(x)
-            ref.movey(y)
-            ref.rotate(rotation)
             if mirror:
                 ref.mirror()
+            ref.rotate(rotation)
+            ref.movex(x)
+            ref.movey(y)
         else:
             if mirror:
                 ref.mirror()
