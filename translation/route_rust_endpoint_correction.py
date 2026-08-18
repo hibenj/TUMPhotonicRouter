@@ -633,18 +633,36 @@ def _compatible_terminal_direction_sequence(
         return False
     if expected_port_dir is None:
         return False
-    if allow_extra_at_start:
-        extra_dir = candidate_dirs[0]
-        remainder_dirs = candidate_dirs[1:]
-    else:
-        extra_dir = candidate_dirs[-1]
-        remainder_dirs = candidate_dirs[:-1]
-    if not _same_direction(extra_dir, expected_port_dir):
+
+    # The segment immediately adjacent to the port -- first for a source
+    # prefix, last for a target suffix -- must depart/arrive along the
+    # port's own facing direction. This is a physical constraint on
+    # *position*, independent of which segment turns out to be the newly
+    # inserted one.
+    port_adjacent_dir = candidate_dirs[0] if allow_extra_at_start else candidate_dirs[-1]
+    if not _same_direction(port_adjacent_dir, expected_port_dir):
         return False
-    for candidate_dir, baseline_dir in zip(remainder_dirs, baseline_dirs):
-        if not _same_direction(candidate_dir, baseline_dir):
-            return False
-    return True
+
+    def _remainder_matches_baseline(
+        remainder_dirs: tuple[tuple[float, float], ...],
+    ) -> bool:
+        return len(remainder_dirs) == len(baseline_dirs) and all(
+            _same_direction(candidate_dir, baseline_dir)
+            for candidate_dir, baseline_dir in zip(remainder_dirs, baseline_dirs)
+        )
+
+    # The newly inserted segment that reconciles a small residual offset
+    # does not always sit immediately next to the port. When the baseline's
+    # own port-adjacent segment already matches the port's facing direction
+    # (the common case, since routes normally already depart/approach ports
+    # correctly), a valid correction naturally inserts its extra segment at
+    # the *other* end instead, right before reconnecting with the fixed
+    # continuation point. Both placements are geometrically and physically
+    # legitimate; accept whichever one actually reproduces the baseline's
+    # remaining direction sequence unchanged.
+    return _remainder_matches_baseline(candidate_dirs[1:]) or _remainder_matches_baseline(
+        candidate_dirs[:-1]
+    )
 
 
 def _terminal_anchor_matches(
