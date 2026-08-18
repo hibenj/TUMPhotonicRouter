@@ -15,12 +15,53 @@ if it is ever needed.
 
 - Date: 2026-08-18
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `fc89187` (`docs: record Milestone 3 broad benchmark
-  validation, close out unify-port-access-region plan`)
+- Current HEAD: `af00aeb` (`docs: confirm dense-runway equalization fix
+  also resolves multiportmmi_16x16 n_48`)
 - Working tree is clean (`git status --short` empty), except one
   uncommitted docs-only change: `.agent/CLAUDE_CODEX_FLOW.md` gained a
   "What Codex is reliable at, and what it is not" section, left
   uncommitted for the user to fold into a commit at their discretion.
+- `.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md` is
+  **complete** (commits `ecc4b79`, `af00aeb`). It fixed the
+  `multiportmmi_8x8` `n_24` / `multiportmmi_16x16` `n_48` finding left open
+  by the unify-port-access-region plan: ports staggered by
+  `_dense_target_port_runway_lengths`/`_dense_source_port_runway_lengths`
+  (which deliberately give siblings on a crowded component face different
+  forward reach, to avoid overlapping narrowed lanes) had their *raw*,
+  un-narrowed footprints reserved globally regardless of that narrowing, so
+  a longer-reaching sibling's wide raw footprint could seal a
+  shorter-reaching neighbor in behind it -- a self-inflicted gap, not a real
+  obstacle. Fix: `_equalize_dense_runway_reach` (new helper,
+  `translation/route_rust.py`) raises every port in a dense group to the
+  same forward reach as whichever sibling already reaches furthest, applied
+  at both dense-runway-length call sites (target side, and both branches of
+  the source side). The plan's own first implementation attempt (probing
+  the static obstacle map for a fixed clearance margin) was a complete
+  no-op, caught by validating a before/after value dump rather than trusting
+  the change; a fresh investigation found the real mechanism (sibling
+  reservations, not a margin) and the ExecPlan's Surprises & Discoveries
+  section records the full trace as a worked example of catching a wrong
+  diagnosis via measurement.
+  `multiportmmi_8x8`'s entire 111-net routing stage now completes for the
+  first time (previously always failed at `n_24`); `multiportmmi_16x16`'s
+  `n_48` is independently confirmed fixed too. `pytest -q`:
+  `23 failed, 314 passed, 1 skipped` -> `21 failed, 316 passed, 1 skipped`
+  (only change: both `multiportmmi_8x8` tests in
+  `tests/test_multiportmmi_benchmark.py` flip to passing).
+  Two new, separate, out-of-scope findings surfaced once routing got this
+  far, both investigated enough to confirm neither is caused by this fix,
+  and left as their own follow-ups per the repository owner's direction:
+  (1) a crossing-legality rejection (`error=No legal LiDAR crossing route
+  found`) on `multiportmmi_8x8` `n_32` and `multiportmmi_16x16` `n_102`,
+  with the same *shape* as the earlier, separately-resolved `TOY` finding
+  (a bare-cell corridor that exists but is too tight once any clearance is
+  required) -- not a port-sizing problem; (2) a photonic-geometry
+  verification `source_endpoint_mismatch` (~2.001um off) on
+  `multiportmmi_8x8` nets `n_40`/`n_41`/`n_42`, confirmed to not touch any
+  port this fix changed, and already a named, partially-handled issue code
+  in the pre-existing `_repair_final_photonic_issues` architecture -- a
+  distinct, likely pre-existing bug in endpoint correction/geometry
+  realization, not chased further.
 - All three readability plans are complete and committed:
   - `.agent/execplans/2026-08-11-refactor-python-routing-flow.md` (`routing_flow.py`
     split, commit `be95ee1`, including the fix for a 4-name monkeypatch
@@ -205,14 +246,19 @@ any of the completed plans:
   uncoordinated ones -- a benchmark-placement fact, not a router bug. Not
   planned to be fixed (would mean moving the benchmark's ports, not a code
   change).
-- `multiportmmi_8x8` (`tests/test_multiportmmi_benchmark.py::test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary`,
-  both parametrizations) and a full `multiportmmi_16x16` CLI run both fail
-  at a heater-pad-to-multiport port pair (`n_24` and `n_48` respectively,
-  same port-spec pattern, same `corridor_clearance_first_disconnected_radius=0`/
-  `target_region_size=22` signature) -- newly surfaced by the
-  unify-port-access-region plan's now-correct, wider clearance, not a
-  regression it introduced (see Current Snapshot). Open, not yet
-  investigated further; a candidate for the next engineering step.
+- `multiportmmi_8x8` `n_24` and `multiportmmi_16x16` `n_48` are now **fixed**
+  (dense-port-runway-clearance-reach plan, see Current Snapshot); both
+  `tests/test_multiportmmi_benchmark.py` parametrizations pass again.
+  `multiportmmi_8x8`'s full 111-net routing stage now completes for the
+  first time. Two new, separate, out-of-scope findings surfaced once
+  routing got this far, deferred rather than fixed (see Current Snapshot
+  for the full detail): a crossing-legality rejection at `multiportmmi_8x8`
+  `n_32` / `multiportmmi_16x16` `n_102` (same shape as the already-resolved
+  `TOY` finding -- a bare-cell corridor too tight once clearance is
+  required), and a photonic-geometry `source_endpoint_mismatch` on
+  `multiportmmi_8x8` nets `n_40`/`n_41`/`n_42` (a likely pre-existing bug in
+  endpoint correction, already a named issue code in the existing
+  architecture). Both are candidates for the next engineering step.
 
 ## Recent Session Notes
 
@@ -277,26 +323,30 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-No active ExecPlan right now. Both
-`.agent/execplans/2026-08-18-unify-port-access-region-computation.md` and
-`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`
-are complete (see Current Snapshot); pick the next one from the candidates
+No active ExecPlan right now. `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`,
+`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
+and `.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md` are
+all complete (see Current Snapshot); pick the next one from the candidates
 below with the user before starting.
 
 Candidates, not in a mandated order:
 
-1. Investigate the `multiportmmi_8x8` `n_24` / `multiportmmi_16x16` `n_48`
-   heater-pad-to-multiport clearance finding (see Worktree State and
-   Current Snapshot) -- same signature at two benchmark scales, not yet
-   diagnosed beyond "corridor disconnected even at bare cell connectivity
-   near this specific port geometry." The natural first step is the same
-   BFS-with-inflation technique already used for `TOY`, now cheap to run
-   via the automatic `corridor_clearance_*` `FAILED.txt` fields.
-2. The 9 pre-existing failing Rust crossing tests discovered while
+1. Investigate the crossing-legality rejection newly surfaced by the
+   dense-port-runway-clearance-reach plan (`multiportmmi_8x8` `n_32`,
+   `multiportmmi_16x16` `n_102`, `error=No legal LiDAR crossing route
+   found`, same bare-cell-corridor-too-tight-under-clearance shape as the
+   already-resolved `TOY` finding) -- see Current Snapshot/Worktree State.
+   Not started.
+2. Investigate the photonic-geometry `source_endpoint_mismatch` on
+   `multiportmmi_8x8` `n_40`/`n_41`/`n_42` (~2.001um off; see Current
+   Snapshot/Worktree State) -- already a named issue code in the existing
+   `_repair_final_photonic_issues` architecture, likely a pre-existing
+   endpoint-correction/geometry-realization bug. Not started.
+3. The 9 pre-existing failing Rust crossing tests discovered while
    verifying the Stage 5 plan's diagnostics fix (`cargo test --lib`, see
    Current Snapshot) -- a separate, unexplored thread in the same
    crossing-legality code area. Not started.
-3. Continue the broader Python-and-Rust correctness walkthrough into
+4. Continue the broader Python-and-Rust correctness walkthrough into
    Stages 6-8 (endpoint correction, geometry realization, verification),
    or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`
    module by module (matching how Stages 1-4 were done), rather than
