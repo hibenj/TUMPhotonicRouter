@@ -19,25 +19,31 @@ read:
 7. The active ExecPlan under `.agent/execplans/`
 
 The active ExecPlan is
-`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`.
-It is the next stage of an ad hoc, functionality-by-functionality correctness
-walkthrough of the Python routing pipeline (not a test-by-test triage) that
-the user asked for after the three-plan codebase-readability restructuring
-completed on 2026-08-17-18
-(`.agent/execplans/2026-08-11-refactor-python-routing-flow.md`,
-`.agent/execplans/2026-08-17-restructure-translation-route-rust.md` "Phase 1",
-and `.agent/execplans/2026-08-18-restructure-route-nets-rust.md` "Phase 2").
-Stages 1-4 of that walkthrough (benchmark loading through grid snapping) were
-done ad hoc and found two real bugs, both fixed and committed (`fae111d`,
-`75edf33`); Stage 5 (routing / A* / crossing verification) is large enough
-and spans Python and Rust closely enough that the user asked for a proper
-ExecPlan before continuing, hence this plan. Read `.agent/REPOSITORY_STATE.md`'s
-"Current Snapshot" section first at the start of any new session, since it is
-kept current at every stop and is the source of truth for what is actually
-active; `.agent/REPOSITORY_STATE.md`'s "Next Engineering Step" section also
-lists lower-priority deferred candidates (Rust-side Phase 3 readability, the
-Future Architecture Initiative from `.agent/PROJECT_GOAL.md`) not currently
-being worked.
+`.agent/execplans/2026-08-18-unify-port-access-region-computation.md`. It
+grew directly out of the prior active plan,
+`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`
+(the next stage of an ad hoc, functionality-by-functionality correctness
+walkthrough of the Python routing pipeline, started after the three-plan
+codebase-readability restructuring completed on 2026-08-17-18): that plan's
+investigation into why the `TOY` benchmark's `gc1_to_mmi_in2` net cannot
+route found that "how big is a port's access/keepout region" is currently
+computed by seven independently-parameterized, uncoordinated pieces of
+logic across `src/py_router.rs` and `translation/route_rust.py` -- a real
+architectural inconsistency, not just a single bug, per the repository
+owner's own diagnosis. The new plan's job is to collapse those seven pieces
+into one analytic sizing function plus one explicit must-stay-blocked
+subtraction step, shared by both the "open cells for the net that owns
+this port" and "keep cells blocked as a keepout for other nets" consumers.
+Read `.agent/REPOSITORY_STATE.md`'s "Current Snapshot" section first at the
+start of any new session, since it is kept current at every stop and is the
+source of truth for what is actually active; the Stage 5 plan is still
+relevant background (its Milestone 0/1 findings and the diagnostics feature
+it added are prerequisites this new plan builds on) but is no longer the
+plan actively being executed. `.agent/REPOSITORY_STATE.md`'s "Next
+Engineering Step" section also lists lower-priority deferred candidates
+(Rust-side Phase 3 readability, the Future Architecture Initiative from
+`.agent/PROJECT_GOAL.md`, the 9 pre-existing failing Rust crossing tests)
+not currently being worked.
 
 Once the user picks a next direction and an ExecPlan exists for it, update
 this pointer to name it explicitly, the way it named Phase 1 and Phase 2

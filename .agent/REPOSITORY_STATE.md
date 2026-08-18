@@ -124,8 +124,24 @@ if it is ever needed.
   is `311 passed, 9 failed`, all 9 failures pre-existing and
   crossing-related (see above).
 - Active ExecPlan:
-  `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`
-  (see Next Engineering Step).
+  `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`
+  (see Next Engineering Step). Grew out of chasing the TOY/`mmi_0,o1`
+  clearance question further: digging into *why* widening
+  `port_lane_half_width_cells` (the candidate Milestone 2 fix from the
+  Stage 5 plan, designed and implemented by Codex but never committed --
+  it is correct in isolation but insufficient) had zero effect on the
+  real opened-cell count revealed that "how big is a port's access/keepout
+  region" is computed by seven independently-parameterized, uncoordinated
+  pieces of logic across `src/py_router.rs` and `translation/route_rust.py`
+  (full breakdown in the new plan's Context and Orientation), not one
+  bug. The working tree currently has that uncommitted, insufficient
+  precursor fix (`translation/route_rust.py:6195` plus its still-failing
+  test in `tests/test_route_rust_opened_cells.py`) sitting as-is,
+  deliberately not committed or discarded -- the new plan's Milestone 2
+  explicitly decides what becomes of it (fold into the unified design, or
+  delete as superseded). The Stage 5 plan itself is complete for its own
+  two originally-scoped milestones and is now background/prerequisite
+  reading rather than the actively-executed plan.
 
 ## Current Goal
 
@@ -229,23 +245,31 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-The active ExecPlan,
+Follow the active ExecPlan,
+`.agent/execplans/2026-08-18-unify-port-access-region-computation.md`:
+start its Milestone 1 (add the new unified port-access/keepout sizing
+computation in Rust and Python, additive only, no behavior change yet --
+see that plan's Plan of Work for the exact function shapes agreed with
+the user). Not started.
+
+The prior active plan,
 `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
 has completed both of its originally-scoped milestones (orientation, and
 the `gc1_to_mmi_in2` case study -- concluded as a real clearance shortage
-at the target port's approach, not a router bug; see Current Snapshot and
-that plan's Outcomes & Retrospective). This is an open decision point for
-the user, not a prescribed next task. Candidates, not in a mandated order:
+at the target port's approach, not a router bug, later refined into the
+seven-piece architectural finding that motivated the new plan above; see
+that plan's Outcomes & Retrospective). Once the new plan's Milestone 2
+resolves the `TOY` question for real, mark that plan's own candidate
+Milestone 2 as resolved/superseded with a cross-reference, per the new
+plan's own Milestone 2 instructions.
 
-1. That plan's candidate Milestone 2: distinguish whether `TOY`'s
-   `gc1_to_mmi_in2` failure is a benchmark-placement fact (too tight for
-   the default bend radius) or a general bug (port-opening lane width not
-   scaling with bend radius). Not started.
-2. The 9 pre-existing failing Rust crossing tests discovered while
-   verifying the Milestone 1 diagnostics fix (`cargo test --lib`, see
+Other candidates, not in a mandated order:
+
+1. The 9 pre-existing failing Rust crossing tests discovered while
+   verifying the Stage 5 plan's diagnostics fix (`cargo test --lib`, see
    Current Snapshot) -- a separate, unexplored thread in the same
    crossing-legality code area. Not started.
-3. Continue the broader Python-and-Rust correctness walkthrough into
+2. Continue the broader Python-and-Rust correctness walkthrough into
    Stages 6-8 (endpoint correction, geometry realization, verification),
    or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`
    module by module (matching how Stages 1-4 were done), rather than
