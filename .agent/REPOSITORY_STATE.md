@@ -71,26 +71,37 @@ if it is ever needed.
   that the user asked for a proper tracked ExecPlan before continuing
   rather than staying ad hoc; see
   `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
-  now the active ExecPlan. Milestone 0 (orientation) is done. Milestone 1
-  (the TOY benchmark's `gc1_to_mmi_in2` "No route found" case study) ruled
-  out crossing-legality, foreign-port-keepout, dense-obstacle-grid-cap, and
-  routing-window-bounds as causes, then found and fixed (commit `8dfb132`,
-  a real Rust change, independently re-verified end to end) a diagnostics
-  bug: failed plain-A* search attempts were silently discarding their real
-  `RouteSearchStats`, so every failure just said "No route found" with no
-  numbers. With that fixed, the TOY case now shows the search genuinely
-  explored 62,904 states across 2 routing-window expansions plus an
-  exhausted full-grid fallback before giving up -- ruling out "search
-  never tried" but not yet distinguishing "genuinely no legal corridor"
-  from "an obstacle-marking step over-blocks a passable region." Next step
-  (not started): inspect the actual obstacle geometry between this net's
-  source and target. Stages 6-8 (endpoint correction, geometry realization,
-  verification) have not started. Also newly discovered and worth knowing
-  before any further Rust work: a separate Rust unit-test baseline (`cargo
-  test --lib`, needs `RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu`
-  since the checked-in `rust-toolchain.toml` is pinned to a Windows
-  target) of `311 passed, 9 failed`, all 9 failures crossing-related and
-  confirmed pre-existing -- a candidate for its own future milestone.
+  now the active ExecPlan and now complete for its two originally-scoped
+  milestones. Milestone 0 (orientation) is done. Milestone 1 (the TOY
+  benchmark's `gc1_to_mmi_in2` "No route found" case study) ruled out
+  crossing-legality, foreign-port-keepout, dense-obstacle-grid-cap, and
+  routing-window-bounds as causes, found and fixed (commit `8dfb132`, a
+  real Rust change, independently re-verified end to end) a real
+  diagnostics bug along the way (failed plain-A* search attempts were
+  silently discarding their real `RouteSearchStats`, so every failure just
+  said "No route found" with no numbers), and then, with that fixed, used
+  a direct geometric BFS analysis (independent of A* internals -- capture
+  the real obstacle state via a monkeypatch, then check cell connectivity
+  with and without simulated bend-radius clearance) to conclusively
+  localize the failure: not a crossing-verification bug, not a router
+  logic bug of any kind considered in this plan, but a genuine clearance
+  shortage at the target port `mmi_0,o1`'s immediate approach -- a bare
+  cell-connectivity corridor exists, but it disappears once ~2 cells of
+  clearance (matching the ~2.5-cell default bend radius) is required, and
+  the target's own reachable region at that clearance is a single isolated
+  cell. See that ExecPlan's Outcomes & Retrospective for the full evidence
+  trail. Two explanations remain open, not yet distinguished (a candidate
+  Milestone 2, not started): `TOY`'s placement is simply too tight for the
+  default bend radius at this grid resolution (a benchmark fact), or the
+  port-opening/lane-width logic does not scale with the configured bend
+  radius (a real, more general bug if true). Stages 6-8 (endpoint
+  correction, geometry realization, verification) have not started. Also
+  newly discovered and worth knowing before any further Rust work: a
+  separate Rust unit-test baseline (`cargo test --lib`, needs
+  `RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu` since the checked-in
+  `rust-toolchain.toml` is pinned to a Windows target) of `311 passed, 9
+  failed`, all 9 failures crossing-related and confirmed pre-existing --
+  a candidate for its own future milestone.
 - One low-priority, unconfirmed finding from Stage 4, recorded in the Stage 5
   plan's Surprises & Discoveries rather than fixed: `_snap_same_heading_minimum_bend_offset`
   in `translation/route_rust.py` (around line 1081) snaps to `min_offset_cells + 1`
@@ -139,7 +150,13 @@ and neither caused by any of the three completed plans:
   fails because `RouteAttemptRecord.as_dict()` now includes `crossing_hotpath_*`
   fields the test's expected literal does not list.
 - The default `TOY` CLI benchmark fails at `gc1_to_mmi_in2` with `No route
-  found` on this branch. Do not use `TOY` as a smoke test here.
+  found` on this branch. Do not use `TOY` as a smoke test here. Root cause
+  (confirmed 2026-08-18, see the Stage 5 ExecPlan's Milestone 1): a real
+  clearance shortage at the target port `mmi_0,o1`'s immediate approach,
+  not a router bug -- the corridor exists at the bare-cell level but not
+  once ~2 cells of clearance (matching the default bend radius) is
+  required. Not yet fixed or confirmed as benchmark-vs-code; see that
+  plan's candidate Milestone 2.
 
 ## Recent Session Notes
 
@@ -204,20 +221,27 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-Follow the active ExecPlan,
-`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`:
-start its Milestone 0 (orientation into the crossing/A* subsystem spanning
-`translation/route_rust.py`'s `_dispatch_native_routing`,
-`src/py_router.rs`'s `route_single_net_and_commit_native`, and the three
-`crossing_mode` values `window`/`collision`/`lidar-pure`), then Milestone 1
-(determine whether the TOY benchmark's `gc1_to_mmi_in2` "No legal LiDAR
-crossing route found" rejection is correct behavior or a bug -- an
-A*-found route was rejected by crossing-legality checking with no legal
-alternative found on retry; the earlier "foreign port keepout" hypothesis
-for this failure was investigated and ruled out as a red herring, a
-mismatch between two intentionally-different overlap statistics rather
-than a real discrepancy -- see the plan's Progress section for the
-resolved explanation).
+The active ExecPlan,
+`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
+has completed both of its originally-scoped milestones (orientation, and
+the `gc1_to_mmi_in2` case study -- concluded as a real clearance shortage
+at the target port's approach, not a router bug; see Current Snapshot and
+that plan's Outcomes & Retrospective). This is an open decision point for
+the user, not a prescribed next task. Candidates, not in a mandated order:
+
+1. That plan's candidate Milestone 2: distinguish whether `TOY`'s
+   `gc1_to_mmi_in2` failure is a benchmark-placement fact (too tight for
+   the default bend radius) or a general bug (port-opening lane width not
+   scaling with bend radius). Not started.
+2. The 9 pre-existing failing Rust crossing tests discovered while
+   verifying the Milestone 1 diagnostics fix (`cargo test --lib`, see
+   Current Snapshot) -- a separate, unexplored thread in the same
+   crossing-legality code area. Not started.
+3. Continue the broader Python-and-Rust correctness walkthrough into
+   Stages 6-8 (endpoint correction, geometry realization, verification),
+   or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`
+   module by module (matching how Stages 1-4 were done), rather than
+   staying driven by one specific benchmark case. Not started.
 
 Deferred candidates, not in a mandated order:
 
