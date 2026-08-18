@@ -120,6 +120,50 @@ any non-physical search penalties that affected the chosen path.
 5. Broaden benchmarks only after the first three crossing targets have reliable
    pass/fail evidence.
 
+## Future Architecture Initiative: Modular, Swappable, Independently Tested Stages
+
+The user set this direction on 2026-08-18, after the codebase-readability
+restructuring (see the `2026-08-17-restructure-translation-route-rust.md` and
+`2026-08-18-restructure-route-nets-rust.md` ExecPlans) reached the point where
+`route_nets_rust`'s internal closures were being converted into named methods
+on a session class. The user has a C++ background where functionality lived
+behind a header-declared interface, with implementation and tests each
+answering to that interface. The equivalent in this codebase does not exist
+yet: `translation/route_rust.py` and the Rust files under `src/` mix
+orchestration and algorithm together, and most correctness evidence today
+comes from full end-to-end benchmark runs compared against verification JSON,
+not from unit tests of one stage in isolation.
+
+The target shape, once this initiative starts: pipeline stages that are
+currently buried inside larger functions become their own modules with an
+explicit interface, so a different implementation could be substituted later
+without touching the rest of the pipeline. Concrete candidate stages, in
+roughly the order they occur in the routing pipeline: obstacle map building,
+grid snapping, the A* search itself, geometry realization, and path-length
+matching. In Python, the interface is a `typing.Protocol` or `abc.ABC`
+declaring the stage's contract (for example, an obstacle-map builder that
+takes a layout and configuration and returns an obstacle map, with no
+assumptions about how it is implemented); in Rust, the equivalent is a
+`trait`. Each stage should be testable with a focused fixture that does not
+require running a full benchmark, the same way a C++ unit test exercises one
+translation unit against its header contract.
+
+This is explicitly a future initiative, not part of the current readability
+restructuring. The current ExecPlans (Phase 1 and Phase 2 of the
+`route_rust.py`/`route_nets_rust` restructuring) are deliberately scoped to
+zero-behavior-change code motion: moving functions to files, turning closures
+into methods, nothing more. They are a necessary step toward this initiative,
+not a substitute for it: a stage cannot be judged for "does this need
+everything else in this function, or could it stand alone behind an
+interface" while it is still an anonymous closure with no name; once it is a
+plain, named method with explicit `self.` dependencies (the state of things
+once the current restructuring finishes), that question becomes answerable.
+Do not fold interface extraction or new module boundaries into the current
+restructuring's milestones; treat it as the next major initiative once the
+current restructuring reaches a stopping point the user is satisfied with,
+and expect it to require writing substantial new unit-test coverage, not just
+moving code, since that coverage does not exist at this granularity today.
+
 ## Out Of Scope For The Current Phase
 
 - Reimplementing LiDAR wholesale.
@@ -130,6 +174,12 @@ any non-physical search penalties that affected the chosen path.
 - Expanding metal/electrical routing as a primary goal.
 - Building a large multi-agent orchestration system before the project goal,
   active plan, and validation harness are stable.
+- Extracting swappable interfaces (Python `Protocol`/`ABC`, Rust `trait`) or
+  new module boundaries for routing stages (obstacle map building, grid
+  snapping, A* search, geometry realization, path-length matching) while the
+  current readability restructuring is in progress. See "Future Architecture
+  Initiative" above: it is the next major initiative, not part of the current
+  zero-behavior-change restructuring's milestones.
 
 ## Agent Guidance
 
