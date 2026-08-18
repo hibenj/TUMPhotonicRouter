@@ -138,8 +138,12 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
         ) -> None:
             pass
 
-        def build_route_port_openings(self, *_args: object, **kwargs: object):
-            captured_lane_widths.append(int(kwargs["port_lane_half_width_cells"]))
+        def build_port_footprint_cells(
+            self,
+            ports: list[tuple[str, float, float, float | None, int, int]],
+        ):
+            for _spec, _x_um, _y_um, _orientation, _length_cells, half_width_cells in ports:
+                captured_lane_widths.append(int(half_width_cells))
             raise _PortOpeningCaptured
 
     fake_backend = SimpleNamespace(
@@ -192,7 +196,7 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
                 defer_realization=True,
             )
 
-    assert captured_lane_widths == [2, 4]
+    assert captured_lane_widths == [2, 2, 4, 4]
 
 
 def _footprint_resolver_session(
@@ -905,6 +909,7 @@ def test_route_nets_rust_foreign_port_keepout_blocks_unrelated_net(monkeypatch, 
             debug_prefix="foreign_keepout_blocks",
             route_width_um=0.5,
             allow_45_degree_turns=False,
+            bend_radius_um=3.0,
             foreign_port_keepout_cells=3,
             max_iterations=10_000,
             defer_realization=True,
@@ -969,6 +974,7 @@ def test_route_nets_rust_foreign_port_keepout_does_not_open_sibling_port(
             debug_prefix="foreign_keepout_sibling_closed",
             route_width_um=0.5,
             allow_45_degree_turns=False,
+            bend_radius_um=3.0,
             foreign_port_keepout_cells=3,
             max_iterations=10_000,
             defer_realization=True,
@@ -1038,6 +1044,7 @@ def test_route_nets_rust_dense_same_instance_keepout_does_not_open_raw_static_si
             debug_prefix="dense_same_instance_raw_static_closed",
             route_width_um=0.5,
             allow_45_degree_turns=False,
+            bend_radius_um=2.0,
             foreign_port_keepout_cells=3,
             max_iterations=10_000,
             defer_realization=True,
@@ -1055,7 +1062,10 @@ def test_route_nets_rust_dense_same_instance_keepout_does_not_open_raw_static_si
     assert "foreign_port_keepout_cells=3" in diag_text
 
 
-def test_route_nets_rust_foreign_port_keepout_opens_for_same_instance(monkeypatch, tmp_path):
+def test_route_nets_rust_foreign_port_keepout_uses_unified_self_opening_for_same_instance(
+    monkeypatch,
+    tmp_path,
+):
     corridor_y = 10
     blocked_cells = {
         (x, y)
@@ -1106,6 +1116,7 @@ def test_route_nets_rust_foreign_port_keepout_opens_for_same_instance(monkeypatc
         debug_prefix="foreign_keepout_opens",
         route_width_um=0.5,
         allow_45_degree_turns=False,
+        bend_radius_um=3.0,
         foreign_port_keepout_cells=3,
         max_iterations=10_000,
         defer_realization=True,
@@ -1115,7 +1126,7 @@ def test_route_nets_rust_foreign_port_keepout_opens_for_same_instance(monkeypatc
     diag_text = diag_path.read_text(encoding="utf-8")
     assert "status=ok" in diag_text
     assert "foreign_port_keepout_cells=3" in diag_text
-    assert int(_diagnostic_value(diag_text, "foreign_port_keepout_open_count")) > 0
+    assert int(_diagnostic_value(diag_text, "foreign_port_keepout_open_count")) == 0
 
 
 def test_route_nets_rust_removes_foreign_keepout_after_port_is_routed(
@@ -1301,9 +1312,9 @@ def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
     def fake_get_port_from_instance(_layout, inst, port):
         ports = {
             ("left", "o1"): SimpleNamespace(center=(1.5, 10.5), orientation=0.0),
-            ("future", "o1"): SimpleNamespace(center=(1.5, 13.5), orientation=0.0),
+            ("future", "o1"): SimpleNamespace(center=(1.5, 14.5), orientation=0.0),
             ("multi", "o1"): SimpleNamespace(center=(30.5, 10.5), orientation=180.0),
-            ("multi", "o2"): SimpleNamespace(center=(30.5, 13.5), orientation=180.0),
+            ("multi", "o2"): SimpleNamespace(center=(30.5, 14.5), orientation=180.0),
         }
         return ports[(inst, port)]
 
@@ -1349,7 +1360,7 @@ def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
     diag_text = diag_path.read_text(encoding="utf-8")
     opened_cells = _diagnostic_opened_cells(diag_text)
     assert "status=ok" in diag_text
-    assert (29, 13) not in opened_cells
+    assert (29, 14) not in opened_cells
 
 
 def test_route_nets_rust_clear_port_opening_flag_controls_global_crossing_blocking(monkeypatch, tmp_path):

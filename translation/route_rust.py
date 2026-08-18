@@ -6467,11 +6467,11 @@ class _RouteNetsRustSession:
             self.router.set_collision_crossing_routing(False)
         self._record_pipeline_timing("crossing_context", t_crossing_context_start)
 
-        if not hasattr(self.router, "build_route_port_openings"):
+        if not hasattr(self.router, "build_port_footprint_cells"):
             extension_path = getattr(self.rust_backend, "__file__", "<unknown>")
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
-                "PyPhotonicRouter.build_route_port_openings. Rebuild it with "
+                "PyPhotonicRouter.build_port_footprint_cells. Rebuild it with "
                 "`maturin develop --release`. "
                 f"Loaded extension: {extension_path}"
             )
@@ -6514,86 +6514,68 @@ class _RouteNetsRustSession:
             )
         self._record_pipeline_timing("port_opening_prep", t_port_opening_prep_start)
 
-        raw_static_cells_for_openings = sorted(self.raw_static_cells)
         t_port_opening_batch_start = self._pipeline_timer_start()
-        default_runway_length_cells = int(self.bend_radius_cells) + 1
-        port_opening_groups: dict[
-            tuple[int, bool],
-            list[tuple[str, float, float, float | None, str | None, float | None, float | None]],
-        ] = {}
+
+        # One raw footprint per port, from the single unified sizing computation
+        # (Milestone 1's _resolve_port_footprint_cells plus the dense-runway
+        # length override, matching the precedence the old code already used:
+        # an explicit custom access rule wins over a dense-runway override).
+        # Self-opening and foreign-keepout both derive from this same dict
+        # below, so they can never drift out of sync with each other again --
+        # see .agent/execplans/2026-08-18-unify-port-access-region-computation.md.
+        raw_footprint_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
+        port_footprint_inputs: list[tuple[str, float, float, float | None, int, int]] = []
         for item in port_opening_inputs:
             port_spec = str(item[0])
+            raw_footprint_cells_by_spec[port_spec] = set()
+            _spec, x_um, y_um, orientation, port_type, access_length_um, access_width_um = item
+            instance_name, port_name, port = self.endpoint_ports_by_spec[port_spec]
+            custom_access = access_length_um is not None or access_width_um is not None
+            if not custom_access and port_type is not None and str(port_type) != "optical":
+                continue
+            length_cells, half_width_cells = self._resolve_port_footprint_cells(
+                instance_name=instance_name,
+                port_name=port_name,
+                port=port,
+            )
             custom_runway_length = dense_port_runway_length_by_spec.get(port_spec)
-            if custom_runway_length is None:
-                group_key = (default_runway_length_cells, False)
-            else:
-                group_key = (max(1, int(custom_runway_length)), True)
-            port_opening_groups.setdefault(group_key, []).append(item)
+            if custom_runway_length is not None and not custom_access:
+                length_cells = max(1, int(custom_runway_length))
+            port_footprint_inputs.append(
+                (port_spec, float(x_um), float(y_um), orientation, int(length_cells), int(half_width_cells))
+            )
 
-        for (runway_length_cells, custom_dense_runway), grouped_inputs in port_opening_groups.items():
-            grouped_port_entry_length_cells = (
-                min(int(self.port_entry_length_cells), int(runway_length_cells))
-                if custom_dense_runway
-                else int(self.port_entry_length_cells)
-            )
-            grouped_port_lane_length_cells = (
-                int(runway_length_cells)
-                if custom_dense_runway
-                else int(self.port_lane_length_cells)
-            )
-            for port_spec, cells, candidate_cells, runway_cells in self.router.build_route_port_openings(
-                grouped_inputs,
-                raw_static_cells=raw_static_cells_for_openings,
-                raw_static_rects=self.raw_static_rects_for_openings,
-                route_clearance_um=float(self.route_clearance_um),
-                port_open_radius_um=float(port_open_radius_um),
-                bend_radius_cells=max(0, int(runway_length_cells) - 1),
-                commit_radius_cells=int(self.commit_radius_cells),
-                port_entry_length_cells=grouped_port_entry_length_cells,
-                port_entry_half_width_cells=int(self.port_entry_half_width_cells),
-                port_lane_length_cells=grouped_port_lane_length_cells,
-                port_lane_half_width_cells=int(self.port_lane_half_width_cells),
-            ):
-                self.port_access_cells_by_spec[str(port_spec)] = {
-                    (int(cell[0]), int(cell[1])) for cell in cells
-                }
-                self.port_access_candidate_cells_by_spec[str(port_spec)] = {
-                    (int(cell[0]), int(cell[1])) for cell in candidate_cells
-                }
-                extra_open_cells = port_rule_extra_open_cells_by_spec.get(str(port_spec), set())
-                if extra_open_cells:
-                    self.port_access_cells_by_spec[str(port_spec)].update(extra_open_cells)
-                    self.port_access_candidate_cells_by_spec[str(port_spec)].update(extra_open_cells)
-                self.port_runway_cells_by_spec[str(port_spec)] = {
-                    (int(cell[0]), int(cell[1])) for cell in runway_cells
-                }
+        for port_spec, raw_cells in self.router.build_port_footprint_cells(port_footprint_inputs):
+            raw_footprint_cells_by_spec[str(port_spec)] = {
+                (int(cell[0]), int(cell[1])) for cell in raw_cells
+            }
+
+        for port_spec, raw_footprint_cells in raw_footprint_cells_by_spec.items():
+            open_cells = raw_footprint_cells - self._cells_in_raw_static_geometry(raw_footprint_cells)
+            self.port_access_cells_by_spec[port_spec] = set(open_cells)
+            self.port_access_candidate_cells_by_spec[port_spec] = set(raw_footprint_cells)
+            extra_open_cells = port_rule_extra_open_cells_by_spec.get(port_spec, set())
+            if extra_open_cells:
+                self.port_access_cells_by_spec[port_spec].update(extra_open_cells)
+                self.port_access_candidate_cells_by_spec[port_spec].update(extra_open_cells)
+            self.port_runway_cells_by_spec[port_spec] = set(raw_footprint_cells)
         self._record_pipeline_timing("port_opening_batch", t_port_opening_batch_start)
 
+        # Foreign-keepout reuses the exact same raw footprint each port already
+        # got for its own opening above -- a keepout region is the same shape,
+        # just unfiltered (no must-stay-blocked subtraction), since it exists to
+        # say "nothing else may enter here," not to describe what this port's
+        # own net may route through. foreign_port_keepout_cells now only gates
+        # whether keepout logic runs at all; it no longer controls size.
         self.foreign_port_keepout_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
         foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
         foreign_port_keepout_nonstatic_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
         if self.foreign_port_keepout_cells > 0:
             t_foreign_keepout_start = self._pipeline_timer_start()
-            foreign_length_cells = int(self.foreign_port_keepout_cells)
-            foreign_half_width_cells = int(self.foreign_port_keepout_cells)
-            for port_spec, _cells, _candidate_cells, runway_cells in (
-                self.router.build_route_port_openings(
-                    port_opening_inputs,
-                    raw_static_cells=raw_static_cells_for_openings,
-                    raw_static_rects=self.raw_static_rects_for_openings,
-                    route_clearance_um=float(self.route_clearance_um),
-                    port_open_radius_um=float(port_open_radius_um),
-                    bend_radius_cells=max(0, foreign_length_cells - 1),
-                    commit_radius_cells=foreign_half_width_cells,
-                    port_entry_length_cells=int(self.port_entry_length_cells),
-                    port_entry_half_width_cells=int(self.port_entry_half_width_cells),
-                    port_lane_length_cells=int(self.port_lane_length_cells),
-                    port_lane_half_width_cells=int(self.port_lane_half_width_cells),
-                )
-            ):
-                instance_name = str(port_spec).split(",", 1)[0]
-                cells_for_spec = {(int(cell[0]), int(cell[1])) for cell in runway_cells}
-                self.foreign_port_keepout_cells_by_spec[str(port_spec)] = cells_for_spec
+            for port_spec, raw_footprint_cells in raw_footprint_cells_by_spec.items():
+                instance_name = port_spec.split(",", 1)[0]
+                cells_for_spec = set(raw_footprint_cells)
+                self.foreign_port_keepout_cells_by_spec[port_spec] = cells_for_spec
                 foreign_port_keepout_cells_by_instance.setdefault(instance_name, set()).update(cells_for_spec)
                 nonstatic_cells_for_spec = cells_for_spec - self._cells_in_raw_static_geometry(cells_for_spec)
                 foreign_port_keepout_nonstatic_cells_by_instance.setdefault(

@@ -8370,6 +8370,37 @@ impl PyPhotonicRouter {
         self.invalidate_meander_base_prefix();
     }
 
+    #[pyo3(signature=(ports))]
+    fn build_port_footprint_cells(
+        &self,
+        ports: Vec<(String, f64, f64, Option<f64>, i32, i32)>,
+    ) -> Vec<(String, Vec<(i32, i32)>)> {
+        let grid = StaticGridSpec {
+            width: self.grid.width as i32,
+            height: self.grid.height as i32,
+            grid_size_um: self.grid.grid_size_um,
+            origin: (self.grid.origin_x_um, self.grid.origin_y_um),
+            die_bbox: (0.0, 0.0, 0.0, 0.0),
+        };
+
+        ports
+            .into_iter()
+            .map(
+                |(spec, x_um, y_um, orientation, length_cells, half_width_cells)| {
+                    let cells = route_port_footprint_cells(
+                        &grid,
+                        x_um,
+                        y_um,
+                        orientation,
+                        length_cells,
+                        half_width_cells,
+                    );
+                    (spec, sorted_cells(cells))
+                },
+            )
+            .collect()
+    }
+
     #[pyo3(signature=(
         ports,
         raw_static_cells=None,
