@@ -15,9 +15,12 @@ if it is ever needed.
 
 - Date: 2026-08-18
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `087ba3f` (`Add automatic clearance-corridor diagnostic to
-  failed-route logs`)
-- Working tree is clean (`git status --short` empty).
+- Current HEAD: `fc89187` (`docs: record Milestone 3 broad benchmark
+  validation, close out unify-port-access-region plan`)
+- Working tree is clean (`git status --short` empty), except one
+  uncommitted docs-only change: `.agent/CLAUDE_CODEX_FLOW.md` gained a
+  "What Codex is reliable at, and what it is not" section, left
+  uncommitted for the user to fold into a commit at their discretion.
 - All three readability plans are complete and committed:
   - `.agent/execplans/2026-08-11-refactor-python-routing-flow.md` (`routing_flow.py`
     split, commit `be95ee1`, including the fix for a 4-name monkeypatch
@@ -115,33 +118,52 @@ if it is ever needed.
   off-by-one, but confirmed dormant (fires 0/81 times on `heater_s_mod`) and
   not the cause of any known test failure, so left alone pending a live case.
 - Full Python test suite baseline is now `23 failed, 314 passed, 1 skipped`
-  (was `23 failed, 307 passed, 1 skipped` at Phase 2 completion; the
-  walkthrough and the Stage 5 fixes have added 7 new passing tests total
-  across four changes -- `fae111d`, `75edf33`, `8dfb132`, `087ba3f` --
-  same 23 pre-existing failures, unchanged throughout). Every change was
-  independently re-verified by Claude (not just trusted from Codex's
-  self-report). The separate Rust unit-test baseline (`cargo test --lib`)
-  is `311 passed, 9 failed`, all 9 failures pre-existing and
-  crossing-related (see above).
-- Active ExecPlan:
-  `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`
-  (see Next Engineering Step). Grew out of chasing the TOY/`mmi_0,o1`
-  clearance question further: digging into *why* widening
-  `port_lane_half_width_cells` (the candidate Milestone 2 fix from the
-  Stage 5 plan, designed and implemented by Codex but never committed --
-  it is correct in isolation but insufficient) had zero effect on the
-  real opened-cell count revealed that "how big is a port's access/keepout
-  region" is computed by seven independently-parameterized, uncoordinated
-  pieces of logic across `src/py_router.rs` and `translation/route_rust.py`
-  (full breakdown in the new plan's Context and Orientation), not one
-  bug. The working tree currently has that uncommitted, insufficient
-  precursor fix (`translation/route_rust.py:6195` plus its still-failing
-  test in `tests/test_route_rust_opened_cells.py`) sitting as-is,
-  deliberately not committed or discarded -- the new plan's Milestone 2
-  explicitly decides what becomes of it (fold into the unified design, or
-  delete as superseded). The Stage 5 plan itself is complete for its own
-  two originally-scoped milestones and is now background/prerequisite
-  reading rather than the actively-executed plan.
+  (unchanged in count from Phase 2/Stage 5, but the failure *names* moved:
+  the unify-port-access-region plan's Milestone 3 deleted one pre-existing
+  failing test as genuinely dead code and added two newly-surfaced
+  `multiportmmi_8x8` failures while flipping one unrelated heater test from
+  failing to passing -- net zero on the count, see below for the full
+  story). Every change was independently re-verified by Claude (not just
+  trusted from Codex's self-report). The separate Rust unit-test baseline
+  (`cargo test --lib`) is `312 passed, 9 failed`, all 9 failures
+  pre-existing and crossing-related (see above; one more pass than the
+  prior `311` because the same plan's Milestone 1 added a new Rust test).
+- `.agent/execplans/2026-08-18-unify-port-access-region-computation.md` is
+  **complete** (all three milestones done, commits `4055992`, `936958c`
+  (merge decision only), `d20edcf`, `bf2ac9a`, `fc89187`). It grew out of
+  chasing the TOY/`mmi_0,o1` clearance question further: digging into *why*
+  widening `port_lane_half_width_cells` alone had zero effect on the real
+  opened-cell count revealed that "how big is a port's access/keepout
+  region" was computed by seven independently-parameterized, uncoordinated
+  pieces of logic across `src/py_router.rs` and `translation/route_rust.py`,
+  not one bug. There is now exactly one analytic sizing computation
+  (`_resolve_port_footprint_cells` / Rust `build_port_footprint_cells`),
+  shared by self-opening and foreign-keepout, differing only in one
+  explicit must-stay-blocked subtraction; all the old scattered pieces are
+  either migrated in or deleted as confirmed-dead code (verified by
+  exhaustive grep, not assumed). Two Codex attempts at the merged
+  self-opening+foreign-keepout migration regressed (the second one worse
+  than the first) because both invented a new ad-hoc bolt-on mechanism
+  instead of finding and reusing the pre-existing
+  `_foreign_keepout_open_cells_for_spec`/`normal_port_runway_cells`
+  exemption, which already composed correctly by construction; Claude then
+  implemented it directly after reading that mechanism, and it worked
+  cleanly. See `.agent/CLAUDE_CODEX_FLOW.md`'s new "What Codex is reliable
+  at, and what it is not" section for the generalized lesson.
+  The now-correct, wider clearance surfaced two genuine (not artifactual)
+  routing constraints sharing one signature
+  (`corridor_clearance_first_disconnected_radius=0`,
+  `target_region_size=22`) at the same heater-pad-to-multiport port-spec
+  pattern: `multiportmmi_8x8`'s `n_24` and `multiportmmi_16x16`'s `n_48`.
+  Neither is a regression this plan introduced -- `multiportmmi_16x16` was
+  independently confirmed (via an isolated `git worktree` at the
+  pre-Milestone-2 commit) to already fail full-run at a different,
+  unrelated net (`n_130`) before this plan touched anything, so it was
+  never actually a clean full-run baseline. Both findings are open,
+  tracked here, not yet investigated further -- see Next Engineering Step.
+  The Stage 5 plan is complete for its own two originally-scoped milestones
+  and is now background/prerequisite reading; its own "candidate
+  Milestone 2" is superseded by (and answered by) the plan above.
 
 ## Current Goal
 
@@ -166,21 +188,31 @@ Next Engineering Step for the open decision on what to do next.
 
 ## Worktree State
 
-Clean. Nothing uncommitted. Two known pre-existing, unrelated test/benchmark
-failures remain, both already covered by the 23-item baseline failure list
-and neither caused by any of the three completed plans:
+Clean except one uncommitted docs-only change (`.agent/CLAUDE_CODEX_FLOW.md`,
+see Current Snapshot). Known pre-existing, unrelated test/benchmark failures,
+all already covered by the 23-item baseline failure list and none caused by
+any of the completed plans:
 
 - `tests/test_routing_flow_stats.py::test_run_routing_flow_collects_route_summary_when_stats_requested`
   fails because `RouteAttemptRecord.as_dict()` now includes `crossing_hotpath_*`
   fields the test's expected literal does not list.
-- The default `TOY` CLI benchmark fails at `gc1_to_mmi_in2` with `No route
-  found` on this branch. Do not use `TOY` as a smoke test here. Root cause
-  (confirmed 2026-08-18, see the Stage 5 ExecPlan's Milestone 1): a real
-  clearance shortage at the target port `mmi_0,o1`'s immediate approach,
-  not a router bug -- the corridor exists at the bare-cell level but not
-  once ~2 cells of clearance (matching the default bend radius) is
-  required. Not yet fixed or confirmed as benchmark-vs-code; see that
-  plan's candidate Milestone 2.
+- The default `TOY` CLI benchmark still fails at `gc1_to_mmi_in2` with `No
+  route found` on this branch. Do not use `TOY` as a smoke test here. Root
+  cause is now fully resolved as a question (see the unify-port-access-region
+  plan's Outcomes & Retrospective): a genuine clearance shortage at the
+  target port `mmi_0,o1`'s immediate approach, confirmed via the single,
+  now-unified sizing computation rather than an intersection of several
+  uncoordinated ones -- a benchmark-placement fact, not a router bug. Not
+  planned to be fixed (would mean moving the benchmark's ports, not a code
+  change).
+- `multiportmmi_8x8` (`tests/test_multiportmmi_benchmark.py::test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary`,
+  both parametrizations) and a full `multiportmmi_16x16` CLI run both fail
+  at a heater-pad-to-multiport port pair (`n_24` and `n_48` respectively,
+  same port-spec pattern, same `corridor_clearance_first_disconnected_radius=0`/
+  `target_region_size=22` signature) -- newly surfaced by the
+  unify-port-access-region plan's now-correct, wider clearance, not a
+  regression it introduced (see Current Snapshot). Open, not yet
+  investigated further; a candidate for the next engineering step.
 
 ## Recent Session Notes
 
@@ -245,31 +277,26 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-Follow the active ExecPlan,
-`.agent/execplans/2026-08-18-unify-port-access-region-computation.md`:
-start its Milestone 1 (add the new unified port-access/keepout sizing
-computation in Rust and Python, additive only, no behavior change yet --
-see that plan's Plan of Work for the exact function shapes agreed with
-the user). Not started.
+No active ExecPlan right now. Both
+`.agent/execplans/2026-08-18-unify-port-access-region-computation.md` and
+`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`
+are complete (see Current Snapshot); pick the next one from the candidates
+below with the user before starting.
 
-The prior active plan,
-`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
-has completed both of its originally-scoped milestones (orientation, and
-the `gc1_to_mmi_in2` case study -- concluded as a real clearance shortage
-at the target port's approach, not a router bug, later refined into the
-seven-piece architectural finding that motivated the new plan above; see
-that plan's Outcomes & Retrospective). Once the new plan's Milestone 2
-resolves the `TOY` question for real, mark that plan's own candidate
-Milestone 2 as resolved/superseded with a cross-reference, per the new
-plan's own Milestone 2 instructions.
+Candidates, not in a mandated order:
 
-Other candidates, not in a mandated order:
-
-1. The 9 pre-existing failing Rust crossing tests discovered while
+1. Investigate the `multiportmmi_8x8` `n_24` / `multiportmmi_16x16` `n_48`
+   heater-pad-to-multiport clearance finding (see Worktree State and
+   Current Snapshot) -- same signature at two benchmark scales, not yet
+   diagnosed beyond "corridor disconnected even at bare cell connectivity
+   near this specific port geometry." The natural first step is the same
+   BFS-with-inflation technique already used for `TOY`, now cheap to run
+   via the automatic `corridor_clearance_*` `FAILED.txt` fields.
+2. The 9 pre-existing failing Rust crossing tests discovered while
    verifying the Stage 5 plan's diagnostics fix (`cargo test --lib`, see
    Current Snapshot) -- a separate, unexplored thread in the same
    crossing-legality code area. Not started.
-2. Continue the broader Python-and-Rust correctness walkthrough into
+3. Continue the broader Python-and-Rust correctness walkthrough into
    Stages 6-8 (endpoint correction, geometry realization, verification),
    or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`
    module by module (matching how Stages 1-4 were done), rather than
@@ -290,13 +317,21 @@ Deferred candidates, not in a mandated order:
    `src/astar.rs` at 10,388 lines, `src/geometry_realization.rs` at 8,125
    lines) -- the same kind of readability work as Phases 1-2, agreed to
    come after the current Python correctness walkthrough, not started.
-   Milestone 0 of the active Stage 5 plan will end up reading parts of
-   `src/py_router.rs` and `src/astar.rs` anyway; note anything relevant to
-   this future readability pass there too.
+   The (now complete) Stage 5 and unify-port-access-region plans already
+   read parts of `src/py_router.rs` and `src/astar.rs`; their ExecPlans'
+   Context and Orientation sections are useful orientation for this future
+   readability pass.
 4. Resume the crossing-verification-foundation objective (the pre-readability-
-   work priority). Per the last recorded stable-benchmark checkpoint in git
-   history (commit `a29dc00`), `benes_8x8`, `benes_16x16`, `multiportmmi_8x8`,
-   and `multiportmmi_16x16` are marked full-run stable; `multiportmmi_32x32`
-   is not yet, with route 156 / `n_155` the last known next slow/hanging
-   route to investigate. Re-verify this is still current before acting on
-   it, since it predates this cleanup.
+   work priority). The last recorded stable-benchmark checkpoint (commit
+   `a29dc00`) marked `benes_8x8`, `benes_16x16`, `multiportmmi_8x8`, and
+   `multiportmmi_16x16` full-run stable; this is now **confirmed stale**
+   (2026-08-18, during the unify-port-access-region plan's Milestone 3):
+   `benes_8x8` and `benes_16x16` are genuinely still stable (reconfirmed
+   directly this session), but `multiportmmi_8x8` and `multiportmmi_16x16`
+   both fail full-run at the heater-pad-to-multiport finding described in
+   Worktree State -- `multiportmmi_16x16` was independently confirmed to
+   already fail full-run (at an unrelated net, `n_130`) even at the
+   pre-unify-plan baseline, so this staleness predates today's work.
+   `multiportmmi_32x32` is not yet stable either, with route 156 / `n_155`
+   the last known next slow/hanging route to investigate (not re-verified
+   this session).
