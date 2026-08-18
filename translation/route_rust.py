@@ -3860,6 +3860,423 @@ class _RouteNetsRustSession:
             print(f"ok {self._route_engine_summary(route_obj)}")
 
 
+    def _dispatch_native_routing(self, route_jobs: list[RouteJob]) -> None:
+        if self.repair_config.enabled:
+            if not hasattr(self.router, "route_many_with_repair_and_commit"):
+                raise RuntimeError(
+                    "The loaded photonic_router._rust extension does not expose "
+                    "PyPhotonicRouter.route_many_with_repair_and_commit. Rebuild it with "
+                    "`maturin develop --release`; Python repair fallback has been removed."
+                )
+            batch_jobs: list[
+                tuple[
+                    int,
+                    Any,
+                    Any,
+                    list[tuple[int, int]],
+                    list[tuple[int, int]],
+                    list[tuple[int, int]],
+                    tuple[float, float] | None,
+                    tuple[float, float] | None,
+                ]
+            ] = []
+            batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
+            batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
+            t_batch_job_pack_start = self._pipeline_timer_start()
+            for job in route_jobs:
+                source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
+                clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
+                route_selected_for_debug = (
+                    self.debug_route_indices is None or job.route_index in self.debug_route_indices
+                )
+                should_print_route = self.verbose_route_diagnostics and route_selected_for_debug
+                if self.debug_route_indices is not None and route_selected_for_debug:
+                    should_print_route = True
+                if should_print_route:
+                    print(
+                        f"  Routing [{job.route_index}/{len(route_jobs)}] "
+                        f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
+                        end=" ",
+                    )
+                route_dir = self.debug_path / "routes" if self.debug_path is not None else None
+                diag_txt: Path | None = None
+                if (
+                    self.debug_path is not None
+                    and (route_selected_for_debug or self.collect_attempt_diagnostics)
+                    and route_dir is not None
+                ):
+                    _ensure_dir(route_dir)
+                    diag_txt = route_dir / f"{self.debug_prefix}_{job.net_name}_diagnostics.txt"
+                batch_jobs.append(
+                    (
+                        int(job.net_id),
+                        source_state,
+                        target_state,
+                        opened_cells,
+                        clearance_exempt_cells,
+                        self._foreign_keepout_cleanup_cells_for_job(job),
+                        self._routing_endpoint_center_um(job, source=True),
+                        self._routing_endpoint_center_um(job, source=False),
+                    )
+                )
+                batch_opened_cells_by_id[int(job.net_id)] = opened_cells
+                batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
+            self._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
+
+            batch_start = self._timing_start()
+            raw_batch_result = self.router.route_many_with_repair_and_commit(
+                batch_jobs,
+                self.block_radius_cells,
+                self.commit_radius_cells,
+                self.core_commit_radius_cells,
+                int(self.repair_config.max_rounds),
+                int(self.repair_config.max_victims_per_failure),
+                float(self.repair_config.history_weight),
+                int(self.repair_config.history_increment),
+            )
+            batch_elapsed_s = time.perf_counter() - batch_start if self.collect_timing else 0.0
+            self._record_pipeline_timing("native_route_batch", batch_start)
+            t_batch_result_processing_start = self._pipeline_timer_start()
+            batch_result = dict(raw_batch_result)
+            self.native_repair_trace_records = [
+                dict(record)
+                for record in cast(
+                    Iterable[Mapping[str, object]],
+                    batch_result.get("repair_trace", []),
+                )
+            ]
+            self._record_native_batch_timings(batch_result)
+            self._report_long_straight_congestion(batch_result)
+            raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
+            per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
+            for raw_attempt in raw_attempts:
+                attempt = dict(raw_attempt)
+                net_id = int(attempt["net_id"])
+                job = self.route_jobs_by_id[net_id]
+                route_obj = attempt.get("route")
+                if route_obj is None:
+                    route_obj = None
+                failed = bool(attempt.get("failed", False))
+                bucket_name = str(attempt.get("bucket_name", "normal_route"))
+                error_text = (
+                    str(attempt.get("error"))
+                    if attempt.get("error") is not None
+                    else None
+                )
+                repair_round_raw = attempt.get("repair_round")
+                repair_round = (
+                    int(repair_round_raw)
+                    if repair_round_raw is not None
+                    else None
+                )
+                attempt_index = len(self.route_attempt_records) + 1
+                candidate_blockers = [
+                    int(value)
+                    for value in cast(list[object], attempt.get("candidate_blockers", []))
+                ]
+                ripup_ids = [
+                    int(value)
+                    for value in cast(list[object], attempt.get("ripup_ids", []))
+                ]
+                if (
+                    route_obj is not None
+                    and not failed
+                    and bucket_name != "normal_route"
+                    and self.debug_path is not None
+                    and (self.debug_route_indices is None or job.route_index in self.debug_route_indices)
+                ):
+                    self._export_route_svg(
+                        job,
+                        route_obj,
+                        suffix=f"_attempt{attempt_index}_{bucket_name}",
+                )
+                if self.collect_timing:
+                    bucket = self.route_timing_buckets.setdefault(
+                        bucket_name,
+                        RouteTimingBucket(),
+                    )
+                    if route_obj is not None and not failed:
+                        bucket.record_route(
+                            per_attempt_elapsed_s,
+                            route_obj,
+                        )
+                    else:
+                        bucket.record_elapsed(
+                            per_attempt_elapsed_s,
+                            failed=failed,
+                        )
+                    self.route_attempt_records.append(
+                        route_attempt_record_from_route(
+                            attempt_index=attempt_index,
+                            bucket_name=bucket_name,
+                            net_id=job.net_id,
+                            route_index=job.route_index,
+                            net_name=job.net_name,
+                            source=f"{job.inst1},{job.port1}",
+                            target=f"{job.inst2},{job.port2}",
+                            elapsed_s=per_attempt_elapsed_s,
+                            route_obj=route_obj if route_obj is not None and not failed else None,
+                            failed=failed,
+                            repair_round=repair_round,
+                            error=error_text,
+                            diagnostics=self._route_attempt_diagnostics(
+                                job,
+                                route_obj if route_obj is not None and not failed else None,
+                                candidate_blockers=candidate_blockers,
+                                ripup_ids=ripup_ids,
+                            )
+                            if self.collect_attempt_diagnostics
+                            else None,
+                        )
+                    )
+
+            self.repair_count += int(batch_result.get("repair_count", 0) or 0)
+            raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
+            for raw_entry in raw_routes:
+                entry = dict(raw_entry)
+                net_id = int(entry["net_id"])
+                route_obj = entry["route"]
+                job = self.route_jobs_by_id[net_id]
+                opened_cells = batch_opened_cells_by_id[net_id]
+                self._record_route(job, route_obj, opened_cells)
+                should_print_route, diag_txt = batch_debug_by_id[net_id]
+                self._finalize_committed_route(
+                    job,
+                    route_obj,
+                    opened_cells,
+                    should_print_route=should_print_route,
+                    diag_txt=diag_txt,
+                )
+            self._record_pipeline_timing(
+                "batch_result_processing",
+                t_batch_result_processing_start,
+            )
+
+            if str(batch_result.get("status", "")) != "routed":
+                failed_net_id = int(batch_result.get("failed_net_id", -1))
+                failed_job = self.route_jobs_by_id.get(failed_net_id)
+                error_text = str(batch_result.get("error", "No route found"))
+                if failed_job is None:
+                    raise RuntimeError(error_text)
+                source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
+                    self._state_openings_for_job(failed_job)
+                )
+                should_print_route, diag_txt = batch_debug_by_id.get(
+                    failed_net_id,
+                    (False, None),
+                )
+                if not should_print_route:
+                    print(
+                        f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
+                        f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
+                        f"{failed_job.inst2},{failed_job.port2}... failed"
+                    )
+                self._write_route_diagnostics(
+                    job=failed_job,
+                    source_state=source_state,
+                    target_state=target_state,
+                    opened_candidate_cells=opened_candidate_cells,
+                    dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(failed_job),
+                    opened_cells_set=opened_cells_set,
+                    diag_txt=diag_txt,
+                    status="failed",
+                    error_text=error_text,
+                )
+                self._write_failed_log(
+                    failed_job,
+                    source_state,
+                    target_state,
+                    opened_candidate_cells,
+                    opened_cells,
+                    error_text,
+                )
+                raise RuntimeError(
+                    f"No route found for {failed_job.net_name}: "
+                    f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
+                    f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
+                    f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
+                    f"allow_45_degree_turns={self.allow_45_degree_turns}. "
+                    f"error={error_text}"
+                )
+
+        else:
+            if not hasattr(self.router, "route_many_normal_and_commit"):
+                raise RuntimeError(
+                    "The loaded photonic_router._rust extension does not expose "
+                    "PyPhotonicRouter.route_many_normal_and_commit. Rebuild it with "
+                    "`maturin develop --release`; Python sequential routing fallback has been removed."
+                )
+            batch_jobs: list[
+                tuple[
+                    int,
+                    Any,
+                    Any,
+                    list[tuple[int, int]],
+                    list[tuple[int, int]],
+                    list[tuple[int, int]],
+                    tuple[float, float] | None,
+                    tuple[float, float] | None,
+                ]
+            ] = []
+            batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
+            batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
+            t_batch_job_pack_start = self._pipeline_timer_start()
+            for job in route_jobs:
+                source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
+                clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
+                route_selected_for_debug = (
+                    self.debug_route_indices is None or job.route_index in self.debug_route_indices
+                )
+                should_print_route = self.verbose_route_diagnostics and route_selected_for_debug
+                if self.debug_route_indices is not None and route_selected_for_debug:
+                    should_print_route = True
+                if should_print_route:
+                    print(
+                        f"  Routing [{job.route_index}/{len(route_jobs)}] "
+                        f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
+                        end=" ",
+                    )
+                route_dir = self.debug_path / "routes" if self.debug_path is not None else None
+                diag_txt: Path | None = None
+                if (
+                    self.debug_path is not None
+                    and (route_selected_for_debug or self.collect_attempt_diagnostics)
+                    and route_dir is not None
+                ):
+                    _ensure_dir(route_dir)
+                    diag_txt = route_dir / f"{self.debug_prefix}_{job.net_name}_diagnostics.txt"
+                batch_jobs.append(
+                    (
+                        int(job.net_id),
+                        source_state,
+                        target_state,
+                        opened_cells,
+                        clearance_exempt_cells,
+                        self._foreign_keepout_cleanup_cells_for_job(job),
+                        self._routing_endpoint_center_um(job, source=True),
+                        self._routing_endpoint_center_um(job, source=False),
+                    )
+                )
+                batch_opened_cells_by_id[int(job.net_id)] = opened_cells
+                batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
+            self._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
+
+            batch_start = self._timing_start()
+            raw_batch_result = self.router.route_many_normal_and_commit(
+                batch_jobs,
+                self.block_radius_cells,
+                self.commit_radius_cells,
+                self.core_commit_radius_cells,
+            )
+            batch_elapsed_s = time.perf_counter() - batch_start if self.collect_timing else 0.0
+            self._record_pipeline_timing("native_route_batch", batch_start)
+            t_batch_result_processing_start = self._pipeline_timer_start()
+            batch_result = dict(raw_batch_result)
+            self._record_native_batch_timings(batch_result)
+            self._report_long_straight_congestion(batch_result)
+            raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
+            per_route_elapsed_s = batch_elapsed_s / max(1, len(raw_routes))
+            for raw_entry in raw_routes:
+                entry = dict(raw_entry)
+                net_id = int(entry["net_id"])
+                route_obj = entry["route"]
+                job = self.route_jobs_by_id[net_id]
+                opened_cells = batch_opened_cells_by_id[net_id]
+                if self.collect_timing:
+                    self.route_timing_buckets["normal_route"].record_route(
+                        per_route_elapsed_s,
+                        route_obj,
+                    )
+                    self.route_attempt_records.append(
+                        route_attempt_record_from_route(
+                            attempt_index=len(self.route_attempt_records) + 1,
+                            bucket_name="normal_route",
+                            net_id=job.net_id,
+                            route_index=job.route_index,
+                            net_name=job.net_name,
+                            source=f"{job.inst1},{job.port1}",
+                            target=f"{job.inst2},{job.port2}",
+                            elapsed_s=per_route_elapsed_s,
+                            route_obj=route_obj,
+                        )
+                    )
+                self._record_route(job, route_obj, opened_cells)
+                should_print_route, diag_txt = batch_debug_by_id[net_id]
+                self._finalize_committed_route(
+                    job,
+                    route_obj,
+                    opened_cells,
+                    should_print_route=should_print_route,
+                    diag_txt=diag_txt,
+                )
+            self._record_pipeline_timing(
+                "batch_result_processing",
+                t_batch_result_processing_start,
+            )
+
+            if str(batch_result.get("status", "")) != "routed":
+                failed_net_id = int(batch_result.get("failed_net_id", -1))
+                failed_job = self.route_jobs_by_id.get(failed_net_id)
+                error_text = str(batch_result.get("error", "No route found"))
+                if failed_job is None:
+                    raise RuntimeError(error_text)
+                source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
+                    self._state_openings_for_job(failed_job)
+                )
+                should_print_route, diag_txt = batch_debug_by_id.get(
+                    failed_net_id,
+                    (False, None),
+                )
+                if self.collect_timing:
+                    self.route_timing_buckets["normal_route"].record_elapsed(0.0, failed=True)
+                    self.route_attempt_records.append(
+                        route_attempt_record_from_route(
+                            attempt_index=len(self.route_attempt_records) + 1,
+                            bucket_name="normal_route",
+                            net_id=failed_job.net_id,
+                            route_index=failed_job.route_index,
+                            net_name=failed_job.net_name,
+                            source=f"{failed_job.inst1},{failed_job.port1}",
+                            target=f"{failed_job.inst2},{failed_job.port2}",
+                            elapsed_s=0.0,
+                            route_obj=None,
+                            failed=True,
+                            error=error_text,
+                        )
+                    )
+                if not should_print_route:
+                    print(
+                        f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
+                        f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
+                        f"{failed_job.inst2},{failed_job.port2}... failed"
+                    )
+                self._write_route_diagnostics(
+                    job=failed_job,
+                    source_state=source_state,
+                    target_state=target_state,
+                    opened_candidate_cells=opened_candidate_cells,
+                    dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(failed_job),
+                    opened_cells_set=opened_cells_set,
+                    diag_txt=diag_txt,
+                    status="failed",
+                    error_text=error_text,
+                )
+                self._write_failed_log(
+                    failed_job,
+                    source_state,
+                    target_state,
+                    opened_candidate_cells,
+                    opened_cells,
+                    error_text,
+                )
+                raise RuntimeError(
+                    f"No route found for {failed_job.net_name}: "
+                    f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
+                    f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
+                    f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
+                    f"allow_45_degree_turns={self.allow_45_degree_turns}"
+                )
+
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
         t_obstacle_start = self._pipeline_timer_start()
         self.resolved_obstacle_config = _resolve_obstacle_config(
@@ -4615,7 +5032,7 @@ class _RouteNetsRustSession:
             t_astar_start = time.perf_counter()
         self.total_expanded_states = 0
         self.simple_route_count = 0
-        repair_count = 0
+        self.repair_count = 0
         self.route_attempt_records = []
         self.native_repair_trace_records: list[dict[str, object]] = []
         self.route_timing_buckets: dict[str, RouteTimingBucket] = {
@@ -4678,421 +5095,7 @@ class _RouteNetsRustSession:
             float(self.origin_y_um),
         )
 
-        if self.repair_config.enabled:
-            if not hasattr(self.router, "route_many_with_repair_and_commit"):
-                raise RuntimeError(
-                    "The loaded photonic_router._rust extension does not expose "
-                    "PyPhotonicRouter.route_many_with_repair_and_commit. Rebuild it with "
-                    "`maturin develop --release`; Python repair fallback has been removed."
-                )
-            batch_jobs: list[
-                tuple[
-                    int,
-                    Any,
-                    Any,
-                    list[tuple[int, int]],
-                    list[tuple[int, int]],
-                    list[tuple[int, int]],
-                    tuple[float, float] | None,
-                    tuple[float, float] | None,
-                ]
-            ] = []
-            batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
-            batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-            t_batch_job_pack_start = self._pipeline_timer_start()
-            for job in route_jobs:
-                source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
-                clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
-                route_selected_for_debug = (
-                    self.debug_route_indices is None or job.route_index in self.debug_route_indices
-                )
-                should_print_route = self.verbose_route_diagnostics and route_selected_for_debug
-                if self.debug_route_indices is not None and route_selected_for_debug:
-                    should_print_route = True
-                if should_print_route:
-                    print(
-                        f"  Routing [{job.route_index}/{len(route_jobs)}] "
-                        f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
-                        end=" ",
-                    )
-                route_dir = self.debug_path / "routes" if self.debug_path is not None else None
-                diag_txt: Path | None = None
-                if (
-                    self.debug_path is not None
-                    and (route_selected_for_debug or self.collect_attempt_diagnostics)
-                    and route_dir is not None
-                ):
-                    _ensure_dir(route_dir)
-                    diag_txt = route_dir / f"{self.debug_prefix}_{job.net_name}_diagnostics.txt"
-                batch_jobs.append(
-                    (
-                        int(job.net_id),
-                        source_state,
-                        target_state,
-                        opened_cells,
-                        clearance_exempt_cells,
-                        self._foreign_keepout_cleanup_cells_for_job(job),
-                        self._routing_endpoint_center_um(job, source=True),
-                        self._routing_endpoint_center_um(job, source=False),
-                    )
-                )
-                batch_opened_cells_by_id[int(job.net_id)] = opened_cells
-                batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
-            self._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
-
-            batch_start = self._timing_start()
-            raw_batch_result = self.router.route_many_with_repair_and_commit(
-                batch_jobs,
-                self.block_radius_cells,
-                self.commit_radius_cells,
-                self.core_commit_radius_cells,
-                int(self.repair_config.max_rounds),
-                int(self.repair_config.max_victims_per_failure),
-                float(self.repair_config.history_weight),
-                int(self.repair_config.history_increment),
-            )
-            batch_elapsed_s = time.perf_counter() - batch_start if self.collect_timing else 0.0
-            self._record_pipeline_timing("native_route_batch", batch_start)
-            t_batch_result_processing_start = self._pipeline_timer_start()
-            batch_result = dict(raw_batch_result)
-            self.native_repair_trace_records = [
-                dict(record)
-                for record in cast(
-                    Iterable[Mapping[str, object]],
-                    batch_result.get("repair_trace", []),
-                )
-            ]
-            self._record_native_batch_timings(batch_result)
-            self._report_long_straight_congestion(batch_result)
-            raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
-            per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
-            for raw_attempt in raw_attempts:
-                attempt = dict(raw_attempt)
-                net_id = int(attempt["net_id"])
-                job = self.route_jobs_by_id[net_id]
-                route_obj = attempt.get("route")
-                if route_obj is None:
-                    route_obj = None
-                failed = bool(attempt.get("failed", False))
-                bucket_name = str(attempt.get("bucket_name", "normal_route"))
-                error_text = (
-                    str(attempt.get("error"))
-                    if attempt.get("error") is not None
-                    else None
-                )
-                repair_round_raw = attempt.get("repair_round")
-                repair_round = (
-                    int(repair_round_raw)
-                    if repair_round_raw is not None
-                    else None
-                )
-                attempt_index = len(self.route_attempt_records) + 1
-                candidate_blockers = [
-                    int(value)
-                    for value in cast(list[object], attempt.get("candidate_blockers", []))
-                ]
-                ripup_ids = [
-                    int(value)
-                    for value in cast(list[object], attempt.get("ripup_ids", []))
-                ]
-                if (
-                    route_obj is not None
-                    and not failed
-                    and bucket_name != "normal_route"
-                    and self.debug_path is not None
-                    and (self.debug_route_indices is None or job.route_index in self.debug_route_indices)
-                ):
-                    self._export_route_svg(
-                        job,
-                        route_obj,
-                        suffix=f"_attempt{attempt_index}_{bucket_name}",
-                )
-                if self.collect_timing:
-                    bucket = self.route_timing_buckets.setdefault(
-                        bucket_name,
-                        RouteTimingBucket(),
-                    )
-                    if route_obj is not None and not failed:
-                        bucket.record_route(
-                            per_attempt_elapsed_s,
-                            route_obj,
-                        )
-                    else:
-                        bucket.record_elapsed(
-                            per_attempt_elapsed_s,
-                            failed=failed,
-                        )
-                    self.route_attempt_records.append(
-                        route_attempt_record_from_route(
-                            attempt_index=attempt_index,
-                            bucket_name=bucket_name,
-                            net_id=job.net_id,
-                            route_index=job.route_index,
-                            net_name=job.net_name,
-                            source=f"{job.inst1},{job.port1}",
-                            target=f"{job.inst2},{job.port2}",
-                            elapsed_s=per_attempt_elapsed_s,
-                            route_obj=route_obj if route_obj is not None and not failed else None,
-                            failed=failed,
-                            repair_round=repair_round,
-                            error=error_text,
-                            diagnostics=self._route_attempt_diagnostics(
-                                job,
-                                route_obj if route_obj is not None and not failed else None,
-                                candidate_blockers=candidate_blockers,
-                                ripup_ids=ripup_ids,
-                            )
-                            if self.collect_attempt_diagnostics
-                            else None,
-                        )
-                    )
-
-            repair_count += int(batch_result.get("repair_count", 0) or 0)
-            raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
-            for raw_entry in raw_routes:
-                entry = dict(raw_entry)
-                net_id = int(entry["net_id"])
-                route_obj = entry["route"]
-                job = self.route_jobs_by_id[net_id]
-                opened_cells = batch_opened_cells_by_id[net_id]
-                self._record_route(job, route_obj, opened_cells)
-                should_print_route, diag_txt = batch_debug_by_id[net_id]
-                self._finalize_committed_route(
-                    job,
-                    route_obj,
-                    opened_cells,
-                    should_print_route=should_print_route,
-                    diag_txt=diag_txt,
-                )
-            self._record_pipeline_timing(
-                "batch_result_processing",
-                t_batch_result_processing_start,
-            )
-
-            if str(batch_result.get("status", "")) != "routed":
-                failed_net_id = int(batch_result.get("failed_net_id", -1))
-                failed_job = self.route_jobs_by_id.get(failed_net_id)
-                error_text = str(batch_result.get("error", "No route found"))
-                if failed_job is None:
-                    raise RuntimeError(error_text)
-                source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
-                    self._state_openings_for_job(failed_job)
-                )
-                should_print_route, diag_txt = batch_debug_by_id.get(
-                    failed_net_id,
-                    (False, None),
-                )
-                if not should_print_route:
-                    print(
-                        f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
-                        f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
-                        f"{failed_job.inst2},{failed_job.port2}... failed"
-                    )
-                self._write_route_diagnostics(
-                    job=failed_job,
-                    source_state=source_state,
-                    target_state=target_state,
-                    opened_candidate_cells=opened_candidate_cells,
-                    dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(failed_job),
-                    opened_cells_set=opened_cells_set,
-                    diag_txt=diag_txt,
-                    status="failed",
-                    error_text=error_text,
-                )
-                self._write_failed_log(
-                    failed_job,
-                    source_state,
-                    target_state,
-                    opened_candidate_cells,
-                    opened_cells,
-                    error_text,
-                )
-                raise RuntimeError(
-                    f"No route found for {failed_job.net_name}: "
-                    f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
-                    f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
-                    f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                    f"allow_45_degree_turns={self.allow_45_degree_turns}. "
-                    f"error={error_text}"
-                )
-
-        else:
-            if not hasattr(self.router, "route_many_normal_and_commit"):
-                raise RuntimeError(
-                    "The loaded photonic_router._rust extension does not expose "
-                    "PyPhotonicRouter.route_many_normal_and_commit. Rebuild it with "
-                    "`maturin develop --release`; Python sequential routing fallback has been removed."
-                )
-            batch_jobs: list[
-                tuple[
-                    int,
-                    Any,
-                    Any,
-                    list[tuple[int, int]],
-                    list[tuple[int, int]],
-                    list[tuple[int, int]],
-                    tuple[float, float] | None,
-                    tuple[float, float] | None,
-                ]
-            ] = []
-            batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
-            batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-            t_batch_job_pack_start = self._pipeline_timer_start()
-            for job in route_jobs:
-                source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
-                clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
-                route_selected_for_debug = (
-                    self.debug_route_indices is None or job.route_index in self.debug_route_indices
-                )
-                should_print_route = self.verbose_route_diagnostics and route_selected_for_debug
-                if self.debug_route_indices is not None and route_selected_for_debug:
-                    should_print_route = True
-                if should_print_route:
-                    print(
-                        f"  Routing [{job.route_index}/{len(route_jobs)}] "
-                        f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
-                        end=" ",
-                    )
-                route_dir = self.debug_path / "routes" if self.debug_path is not None else None
-                diag_txt: Path | None = None
-                if (
-                    self.debug_path is not None
-                    and (route_selected_for_debug or self.collect_attempt_diagnostics)
-                    and route_dir is not None
-                ):
-                    _ensure_dir(route_dir)
-                    diag_txt = route_dir / f"{self.debug_prefix}_{job.net_name}_diagnostics.txt"
-                batch_jobs.append(
-                    (
-                        int(job.net_id),
-                        source_state,
-                        target_state,
-                        opened_cells,
-                        clearance_exempt_cells,
-                        self._foreign_keepout_cleanup_cells_for_job(job),
-                        self._routing_endpoint_center_um(job, source=True),
-                        self._routing_endpoint_center_um(job, source=False),
-                    )
-                )
-                batch_opened_cells_by_id[int(job.net_id)] = opened_cells
-                batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
-            self._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
-
-            batch_start = self._timing_start()
-            raw_batch_result = self.router.route_many_normal_and_commit(
-                batch_jobs,
-                self.block_radius_cells,
-                self.commit_radius_cells,
-                self.core_commit_radius_cells,
-            )
-            batch_elapsed_s = time.perf_counter() - batch_start if self.collect_timing else 0.0
-            self._record_pipeline_timing("native_route_batch", batch_start)
-            t_batch_result_processing_start = self._pipeline_timer_start()
-            batch_result = dict(raw_batch_result)
-            self._record_native_batch_timings(batch_result)
-            self._report_long_straight_congestion(batch_result)
-            raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
-            per_route_elapsed_s = batch_elapsed_s / max(1, len(raw_routes))
-            for raw_entry in raw_routes:
-                entry = dict(raw_entry)
-                net_id = int(entry["net_id"])
-                route_obj = entry["route"]
-                job = self.route_jobs_by_id[net_id]
-                opened_cells = batch_opened_cells_by_id[net_id]
-                if self.collect_timing:
-                    self.route_timing_buckets["normal_route"].record_route(
-                        per_route_elapsed_s,
-                        route_obj,
-                    )
-                    self.route_attempt_records.append(
-                        route_attempt_record_from_route(
-                            attempt_index=len(self.route_attempt_records) + 1,
-                            bucket_name="normal_route",
-                            net_id=job.net_id,
-                            route_index=job.route_index,
-                            net_name=job.net_name,
-                            source=f"{job.inst1},{job.port1}",
-                            target=f"{job.inst2},{job.port2}",
-                            elapsed_s=per_route_elapsed_s,
-                            route_obj=route_obj,
-                        )
-                    )
-                self._record_route(job, route_obj, opened_cells)
-                should_print_route, diag_txt = batch_debug_by_id[net_id]
-                self._finalize_committed_route(
-                    job,
-                    route_obj,
-                    opened_cells,
-                    should_print_route=should_print_route,
-                    diag_txt=diag_txt,
-                )
-            self._record_pipeline_timing(
-                "batch_result_processing",
-                t_batch_result_processing_start,
-            )
-
-            if str(batch_result.get("status", "")) != "routed":
-                failed_net_id = int(batch_result.get("failed_net_id", -1))
-                failed_job = self.route_jobs_by_id.get(failed_net_id)
-                error_text = str(batch_result.get("error", "No route found"))
-                if failed_job is None:
-                    raise RuntimeError(error_text)
-                source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
-                    self._state_openings_for_job(failed_job)
-                )
-                should_print_route, diag_txt = batch_debug_by_id.get(
-                    failed_net_id,
-                    (False, None),
-                )
-                if self.collect_timing:
-                    self.route_timing_buckets["normal_route"].record_elapsed(0.0, failed=True)
-                    self.route_attempt_records.append(
-                        route_attempt_record_from_route(
-                            attempt_index=len(self.route_attempt_records) + 1,
-                            bucket_name="normal_route",
-                            net_id=failed_job.net_id,
-                            route_index=failed_job.route_index,
-                            net_name=failed_job.net_name,
-                            source=f"{failed_job.inst1},{failed_job.port1}",
-                            target=f"{failed_job.inst2},{failed_job.port2}",
-                            elapsed_s=0.0,
-                            route_obj=None,
-                            failed=True,
-                            error=error_text,
-                        )
-                    )
-                if not should_print_route:
-                    print(
-                        f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
-                        f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
-                        f"{failed_job.inst2},{failed_job.port2}... failed"
-                    )
-                self._write_route_diagnostics(
-                    job=failed_job,
-                    source_state=source_state,
-                    target_state=target_state,
-                    opened_candidate_cells=opened_candidate_cells,
-                    dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(failed_job),
-                    opened_cells_set=opened_cells_set,
-                    diag_txt=diag_txt,
-                    status="failed",
-                    error_text=error_text,
-                )
-                self._write_failed_log(
-                    failed_job,
-                    source_state,
-                    target_state,
-                    opened_candidate_cells,
-                    opened_cells,
-                    error_text,
-                )
-                raise RuntimeError(
-                    f"No route found for {failed_job.net_name}: "
-                    f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
-                    f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
-                    f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                    f"allow_45_degree_turns={self.allow_45_degree_turns}"
-                )
+        self._dispatch_native_routing(route_jobs)
 
         astar_elapsed_s = 0.0
         if self.collect_timing:
@@ -5845,7 +5848,7 @@ class _RouteNetsRustSession:
                 "      - Route search stats: "
                 f"simple={self.simple_route_count}/{len(route_jobs)}, "
                 f"expanded_states={self.total_expanded_states}, "
-                f"repairs={repair_count}"
+                f"repairs={self.repair_count}"
             )
             print("      - A* timing breakdown by operation:")
             for bucket_name in (
@@ -6939,7 +6942,7 @@ class _RouteNetsRustSession:
                 self.route_timing_buckets,
                 route_count=len(route_jobs),
                 simple_route_count=self.simple_route_count,
-                repair_count=repair_count,
+                repair_count=self.repair_count,
                 astar_elapsed_s=astar_elapsed_s,
             ),
             route_attempt_records=self.route_attempt_records,
