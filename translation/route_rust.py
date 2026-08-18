@@ -4277,6 +4277,1633 @@ class _RouteNetsRustSession:
                     f"allow_45_degree_turns={self.allow_45_degree_turns}"
                 )
 
+    def _apply_checked_endpoint_corrections_for_net_ids(
+        self,
+        net_ids: Iterable[int],
+        *,
+        record_pipeline_timing: bool = True,
+        print_warnings: bool = False,
+    ) -> list[int]:
+        if not self.enable_checked_endpoint_correction:
+            return []
+        if not hasattr(self.router, "apply_checked_endpoint_corrections"):
+            raise RuntimeError(
+                "The loaded photonic_router._rust extension does not expose "
+                "PyPhotonicRouter.apply_checked_endpoint_corrections. "
+                "Rebuild it with `maturin develop --release`."
+            )
+        correction_jobs: list[
+            tuple[
+                int,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
+        ] = []
+        requested_net_ids = [int(net_id) for net_id in net_ids]
+        crossing_net_ids: set[int] = set()
+        if self.enable_crossings and hasattr(self.router, "crossing_events"):
+            try:
+                for raw_event in cast(Iterable[Any], self.router.crossing_events()):
+                    if not isinstance(raw_event, Mapping):
+                        try:
+                            raw_event = dict(cast(Any, raw_event))
+                        except (TypeError, ValueError):
+                            continue
+                    for key in ("net_id", "partner_net_id"):
+                        try:
+                            crossing_net_ids.add(int(cast(Any, raw_event.get(key))))
+                        except (TypeError, ValueError):
+                            continue
+            except Exception:
+                crossing_net_ids = set()
+        t_endpoint_correction_pack_start = self._pipeline_timer_start()
+        for net_id in requested_net_ids:
+            record = self.route_bookkeeping.records_by_id.get(net_id)
+            job = self.route_jobs_by_id.get(net_id)
+            if record is None or job is None:
+                continue
+            if int(net_id) in self.fanout_anchor_net_ids and record.corrected_centerline_um:
+                continue
+            if self.enable_crossings and int(net_id) in crossing_net_ids:
+                continue
+            source_port = self._routing_endpoint_center_um(job, source=True)
+            target_port = self._routing_endpoint_center_um(job, source=False)
+            if source_port is None and target_port is None:
+                continue
+            source_state, target_state, opened_candidate_cells, _, _ = (
+                self._state_openings_for_job(job)
+            )
+            clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
+            correction_jobs.append(
+                (
+                    int(net_id),
+                    record.route_obj,
+                    sorted(opened_candidate_cells),
+                    clearance_exempt_cells,
+                    source_port,
+                    target_port,
+                )
+            )
+        if record_pipeline_timing:
+            self._record_pipeline_timing(
+                "endpoint_correction_pack",
+                t_endpoint_correction_pack_start,
+            )
+        if not correction_jobs:
+            return []
+
+        correction_start = self._timing_start()
+        raw_corrections = self.router.apply_checked_endpoint_corrections(
+            correction_jobs,
+            float(self.route_width_um),
+            int(self.commit_radius_cells),
+            int(self.core_commit_radius_cells),
+            True,
+        )
+        correction_elapsed_s = (
+            time.perf_counter() - correction_start if self.collect_timing else 0.0
+        )
+        if record_pipeline_timing:
+            self._record_pipeline_timing("endpoint_correction_native", correction_start)
+        t_endpoint_correction_processing_start = self._pipeline_timer_start()
+        correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
+        failed_net_ids: list[int] = []
+        for raw_correction in cast(Iterable[Any], raw_corrections):
+            correction = dict(raw_correction)
+            net_id = int(correction["net_id"])
+            record = self.route_bookkeeping.records_by_id.get(net_id)
+            job = self.route_jobs_by_id.get(net_id)
+            if record is None or job is None:
+                continue
+            error = correction.get("error")
+            if error is not None:
+                if self.collect_timing:
+                    self.route_timing_buckets["endpoint_correction"].record_elapsed(
+                        correction_elapsed_per_job_s,
+                        failed=True,
+                    )
+                message = (
+                    "Checked grid-to-port endpoint correction skipped for net "
+                    f"{job.net_name!r}: {error}"
+                )
+                if print_warnings:
+                    print("WARNING: " + message)
+                failed_net_ids.append(net_id)
+                if not self.enable_crossings:
+                    self.route_bookkeeping.records_by_id[net_id] = replace(
+                        record,
+                        corrected_centerline_um=(),
+                        endpoint_correction_error=message,
+                    )
+                continue
+            centerline = _centerline_tuple(correction.get("centerline"))
+            if not centerline:
+                if self.collect_timing:
+                    self.route_timing_buckets["endpoint_correction"].record_elapsed(
+                        correction_elapsed_per_job_s,
+                        failed=True,
+                    )
+                message = (
+                    "Checked grid-to-port endpoint correction skipped for net "
+                    f"{job.net_name!r}: endpoint correction returned an invalid centerline"
+                )
+                if print_warnings:
+                    print("WARNING: " + message)
+                failed_net_ids.append(net_id)
+                if not self.enable_crossings:
+                    self.route_bookkeeping.records_by_id[net_id] = replace(
+                        record,
+                        corrected_centerline_um=(),
+                        endpoint_correction_error=message,
+                    )
+                continue
+            if self.collect_timing:
+                self.route_timing_buckets["endpoint_correction"].record_elapsed(
+                    correction_elapsed_per_job_s,
+                )
+            corrected_total_length_um = float(correction["total_length_um"])
+            self.route_bookkeeping.records_by_id[net_id] = replace(
+                record,
+                total_length_um=corrected_total_length_um,
+                base_total_length_um=(
+                    record.base_total_length_um
+                    if record.base_total_length_um is not None
+                    else float(record.total_length_um)
+                ),
+                corrected_centerline_um=centerline,
+                endpoint_correction_error=None,
+            )
+        if record_pipeline_timing:
+            self._record_pipeline_timing(
+                "endpoint_correction_processing",
+                t_endpoint_correction_processing_start,
+            )
+        return failed_net_ids
+
+    def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
+        self,
+        net_ids: Iterable[int],
+        *,
+        record_pipeline_timing: bool = True,
+        print_warnings: bool = False,
+    ) -> list[int]:
+        if not self.enable_checked_endpoint_correction or not self.fanout_anchor_net_ids:
+            return []
+        if not hasattr(self.router, "apply_checked_endpoint_corrections"):
+            raise RuntimeError(
+                "The loaded photonic_router._rust extension does not expose "
+                "PyPhotonicRouter.apply_checked_endpoint_corrections. "
+                "Rebuild it with `maturin develop --release`."
+            )
+
+        correction_jobs: list[
+            tuple[
+                int,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
+        ] = []
+        job_context_by_id: dict[int, tuple[RoutedNetRecord, bool, bool]] = {}
+        requested_net_ids = [int(net_id) for net_id in net_ids]
+        crossing_net_ids: set[int] = set()
+        if self.enable_crossings and hasattr(self.router, "crossing_events"):
+            try:
+                for raw_event in cast(Iterable[Any], self.router.crossing_events()):
+                    if not isinstance(raw_event, Mapping):
+                        try:
+                            raw_event = dict(cast(Any, raw_event))
+                        except (TypeError, ValueError):
+                            continue
+                    for key in ("net_id", "partner_net_id"):
+                        try:
+                            crossing_net_ids.add(int(cast(Any, raw_event.get(key))))
+                        except (TypeError, ValueError):
+                            continue
+            except Exception:
+                crossing_net_ids = set()
+        t_endpoint_correction_pack_start = self._pipeline_timer_start()
+        for net_id in requested_net_ids:
+            record = self.route_bookkeeping.records_by_id.get(net_id)
+            job = self.route_jobs_by_id.get(net_id)
+            if record is None or job is None or not record.corrected_centerline_um:
+                continue
+            source_has_fanout_stub = int(net_id) in self.fanout_anchor_source_net_ids
+            target_has_fanout_stub = int(net_id) in self.fanout_anchor_target_net_ids
+            if not (source_has_fanout_stub or target_has_fanout_stub):
+                continue
+            if source_has_fanout_stub and target_has_fanout_stub:
+                continue
+            # A fanout stub is already a corrected endpoint adapter. When the
+            # routed net also contains a crossing, the unrestricted native
+            # endpoint corrector may move geometry on the protected side of the
+            # crossing before we merge it back into the stubbed centerline. Let
+            # the crossing-aware pass splice only the source->first-crossing or
+            # last-crossing->target segment instead.
+            if self.enable_crossings and int(net_id) in crossing_net_ids:
+                continue
+
+            source_port = (
+                None
+                if source_has_fanout_stub
+                else self._routing_endpoint_center_um(job, source=True)
+            )
+            target_port = (
+                None
+                if target_has_fanout_stub
+                else self._routing_endpoint_center_um(job, source=False)
+            )
+            if source_port is None and target_port is None:
+                continue
+            _, _, opened_candidate_cells, _, _ = self._state_openings_for_job(job)
+            if source_has_fanout_stub:
+                opened_candidate_cells.update(
+                    self.fanout_stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
+                )
+            if target_has_fanout_stub:
+                opened_candidate_cells.update(
+                    self.fanout_stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
+                )
+            clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
+            correction_jobs.append(
+                (
+                    int(net_id),
+                    record.route_obj,
+                    sorted(opened_candidate_cells),
+                    clearance_exempt_cells,
+                    source_port,
+                    target_port,
+                )
+            )
+            job_context_by_id[int(net_id)] = (
+                record,
+                source_has_fanout_stub,
+                target_has_fanout_stub,
+            )
+
+        if record_pipeline_timing:
+            self._record_pipeline_timing(
+                "fanout_stub_endpoint_correction_pack",
+                t_endpoint_correction_pack_start,
+            )
+        if not correction_jobs:
+            return []
+
+        correction_start = self._timing_start()
+        raw_corrections = self.router.apply_checked_endpoint_corrections(
+            correction_jobs,
+            float(self.route_width_um),
+            int(self.commit_radius_cells),
+            int(self.core_commit_radius_cells),
+            True,
+        )
+        correction_elapsed_s = (
+            time.perf_counter() - correction_start if self.collect_timing else 0.0
+        )
+        if record_pipeline_timing:
+            self._record_pipeline_timing(
+                "fanout_stub_endpoint_correction_native",
+                correction_start,
+            )
+        t_endpoint_correction_processing_start = self._pipeline_timer_start()
+        correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
+        failed_net_ids: list[int] = []
+        for raw_correction in cast(Iterable[Any], raw_corrections):
+            correction = dict(raw_correction)
+            net_id = int(correction["net_id"])
+            context = job_context_by_id.get(net_id)
+            job = self.route_jobs_by_id.get(net_id)
+            if context is None or job is None:
+                continue
+            record, source_has_fanout_stub, target_has_fanout_stub = context
+            error = correction.get("error")
+            if error is not None:
+                if self.collect_timing:
+                    self.route_timing_buckets["endpoint_correction"].record_elapsed(
+                        correction_elapsed_per_job_s,
+                        failed=True,
+                    )
+                message = (
+                    "Checked fanout-stub endpoint correction skipped for net "
+                    f"{job.net_name!r}: {error}"
+                )
+                if print_warnings:
+                    print("WARNING: " + message)
+                failed_net_ids.append(net_id)
+                self.route_bookkeeping.records_by_id[net_id] = replace(
+                    record,
+                    endpoint_correction_error=message,
+                )
+                continue
+
+            corrected_route = _dedupe_centerline(
+                _centerline_tuple(correction.get("centerline"))
+            )
+            route_baseline = _primitive_centerline_for_record(
+                record,
+                router=self.router,
+                prefer_corrected_baseline=False,
+            )
+            existing_baseline = _dedupe_centerline(record.corrected_centerline_um)
+            merged_centerline = _merge_terminal_corrected_route_centerline(
+                existing_baseline=existing_baseline,
+                route_baseline=route_baseline,
+                corrected_route_centerline=corrected_route,
+                freeze_source=source_has_fanout_stub,
+                freeze_target=target_has_fanout_stub,
+            )
+            if len(merged_centerline) < 2:
+                if self.collect_timing:
+                    self.route_timing_buckets["endpoint_correction"].record_elapsed(
+                        correction_elapsed_per_job_s,
+                        failed=True,
+                    )
+                route_start = route_baseline[0] if route_baseline else None
+                route_end = route_baseline[-1] if route_baseline else None
+                existing_start = existing_baseline[0] if existing_baseline else None
+                existing_end = existing_baseline[-1] if existing_baseline else None
+                corrected_start = (
+                    corrected_route[0] if corrected_route else None
+                )
+                corrected_end = corrected_route[-1] if corrected_route else None
+                message = (
+                    "Checked fanout-stub endpoint correction skipped for net "
+                    f"{job.net_name!r}: could not merge corrected route segment "
+                    "back into static stub centerline "
+                    f"(existing_len={len(existing_baseline)}, "
+                    f"route_len={len(route_baseline)}, "
+                    f"corrected_len={len(corrected_route)}, "
+                    f"freeze_source={source_has_fanout_stub}, "
+                    f"freeze_target={target_has_fanout_stub}, "
+                    f"existing_start={existing_start}, existing_end={existing_end}, "
+                    f"route_start={route_start}, route_end={route_end}, "
+                    f"corrected_start={corrected_start}, corrected_end={corrected_end})"
+                )
+                if print_warnings:
+                    print("WARNING: " + message)
+                failed_net_ids.append(net_id)
+                self.route_bookkeeping.records_by_id[net_id] = replace(
+                    record,
+                    endpoint_correction_error=message,
+                )
+                continue
+
+            if self.collect_timing:
+                self.route_timing_buckets["endpoint_correction"].record_elapsed(
+                    correction_elapsed_per_job_s,
+                )
+            centerline_length = getattr(self.router, "centerline_length_um", None)
+            if centerline_length is not None:
+                try:
+                    corrected_total_length_um = float(
+                        centerline_length(list(merged_centerline))
+                    )
+                except Exception:
+                    corrected_total_length_um = _centerline_length_um(merged_centerline)
+            else:
+                corrected_total_length_um = _centerline_length_um(merged_centerline)
+            self.route_bookkeeping.records_by_id[net_id] = replace(
+                record,
+                total_length_um=corrected_total_length_um,
+                base_total_length_um=(
+                    record.base_total_length_um
+                    if record.base_total_length_um is not None
+                    else float(record.total_length_um)
+                ),
+                corrected_centerline_um=merged_centerline,
+                endpoint_correction_error=None,
+            )
+
+        if record_pipeline_timing:
+            self._record_pipeline_timing(
+                "fanout_stub_endpoint_correction_processing",
+                t_endpoint_correction_processing_start,
+            )
+        return failed_net_ids
+
+    def _current_crossing_points_by_net_id(self) -> dict[int, list[tuple[float, float]]]:
+        if not self.enable_crossings or not hasattr(self.router, "crossing_events"):
+            return {}
+        try:
+            raw_events = list(cast(Iterable[Any], self.router.crossing_events()))
+        except Exception:
+            return {}
+        if not raw_events:
+            return {}
+        _populate_realized_intersections_from_native_crossing_events(
+            crossing_plan_info=self.crossing_plan_info,
+            routed_records_by_net_id=self.route_bookkeeping.records_by_id,
+            native_crossing_events=raw_events,
+            realization_grid_spec=self.realization_grid_spec,
+        )
+        return _legal_crossing_points_by_net_id(self.crossing_plan_info)
+
+    def _route_target_grid_center_um(
+        self,
+        route_obj: object | None,
+    ) -> tuple[float, float] | None:
+        if route_obj is None:
+            return None
+        raw_state = getattr(route_obj, "reached_target", None)
+        if raw_state is None:
+            states = getattr(route_obj, "states", None)
+            try:
+                raw_state = cast(Any, states)[-1]
+            except (TypeError, IndexError):
+                return None
+        try:
+            return self._grid_cell_center_um(int(raw_state.x), int(raw_state.y))
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _route_target_angle(
+        self,
+        route_obj: object | None,
+    ) -> int | None:
+        if route_obj is None:
+            return None
+        raw_state = getattr(route_obj, "reached_target", None)
+        if raw_state is None:
+            states = getattr(route_obj, "states", None)
+            try:
+                raw_state = cast(Any, states)[-1]
+            except (TypeError, IndexError):
+                return None
+        try:
+            return int(raw_state.angle) % 8
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _record_terminal_bump_distance_check_candidates(
+        self,
+        crossing_points_by_net_id: Mapping[int, list[tuple[float, float]]],
+        net_ids: Iterable[int],
+    ) -> None:
+        """Record where a terminal bump distance check would become active.
+
+        This is diagnostic-only: the router behavior is unchanged.  The check
+        is axis-specific: horizontal target approaches care only about
+        physical-port-vs-grid y offset, while vertical target approaches care
+        only about physical-port-vs-grid x offset.  If a realized crossing sits
+        on that same target axis, a future A* guard must make sure the
+        remaining terminal segment is long enough to insert the required bump
+        geometry.
+        """
+
+        if not isinstance(self.crossing_plan_info, dict):
+            return
+
+        trace_raw = os.environ.get(
+            "PHOTONIC_ROUTER_TRACE_TERMINAL_BUMP_DISTANCE_CHECKS", ""
+        )
+        trace_tokens = {item.strip() for item in trace_raw.split(",") if item.strip()}
+        trace_all = "*" in trace_tokens
+        grid_size = float(self.grid.grid_size_um)
+        eps = max(1e-6, grid_size * 1e-6)
+        axis_eps = max(1e-6, grid_size * 0.25)
+        crossing_half_um = (
+            float(self.crossing_plan_info.get("crossing_half_size_cells", 0) or 0)
+            * grid_size
+        )
+        required_bump_um = 4.0 * float(self.bend_radius_cells) * grid_size
+
+        target_x_offset_nets: list[dict[str, object]] = []
+        target_y_offset_nets: list[dict[str, object]] = []
+        active_checks: list[dict[str, object]] = []
+
+        for raw_net_id in net_ids:
+            net_id = int(raw_net_id)
+            record = self.route_bookkeeping.records_by_id.get(net_id)
+            job = self.route_jobs_by_id.get(net_id)
+            if record is None or job is None or record.target_port_center_um is None:
+                continue
+            target_grid_um = self._route_target_grid_center_um(record.route_obj)
+            if target_grid_um is None:
+                continue
+            target_port_um = record.target_port_center_um
+            target_dx_um = float(target_port_um[0]) - float(target_grid_um[0])
+            target_dy_um = float(target_port_um[1]) - float(target_grid_um[1])
+            target_angle = self._route_target_angle(record.route_obj)
+            target_axis = (
+                "horizontal"
+                if target_angle in (0, 4)
+                else "vertical"
+                if target_angle in (2, 6)
+                else "diagonal"
+            )
+
+            net_entry = {
+                "net_id": int(net_id),
+                "net_name": str(record.net_name),
+                "target_port": f"{job.inst2},{job.port2}",
+                "target_port_um": [
+                    round(float(target_port_um[0]), 6),
+                    round(float(target_port_um[1]), 6),
+                ],
+                "target_grid_um": [
+                    round(float(target_grid_um[0]), 6),
+                    round(float(target_grid_um[1]), 6),
+                ],
+                "target_dx_um": round(float(target_dx_um), 6),
+                "target_dy_um": round(float(target_dy_um), 6),
+                "target_angle": None if target_angle is None else int(target_angle),
+                "target_axis": target_axis,
+            }
+            target_x_active = target_axis == "vertical" and abs(target_dx_um) > eps
+            target_y_active = target_axis == "horizontal" and abs(target_dy_um) > eps
+            if target_x_active:
+                target_x_offset_nets.append(net_entry)
+            if target_y_active:
+                target_y_offset_nets.append(net_entry)
+            if not target_x_active and not target_y_active:
+                continue
+
+            for crossing_point in crossing_points_by_net_id.get(net_id, []):
+                crossing_x = float(crossing_point[0])
+                crossing_y = float(crossing_point[1])
+                if target_x_active and abs(crossing_x - float(target_grid_um[0])) <= axis_eps:
+                    distance_to_target_um = abs(float(target_grid_um[1]) - crossing_y)
+                    available_um = max(0.0, distance_to_target_um - crossing_half_um)
+                    active_checks.append(
+                        {
+                            **net_entry,
+                            "axis": "target_x",
+                            "crossing_um": [round(crossing_x, 6), round(crossing_y, 6)],
+                            "distance_to_target_um": round(
+                                float(distance_to_target_um), 6
+                            ),
+                            "crossing_half_um": round(float(crossing_half_um), 6),
+                            "available_um": round(float(available_um), 6),
+                            "required_bump_um": round(float(required_bump_um), 6),
+                            "satisfies": bool(available_um + eps >= required_bump_um),
+                        }
+                    )
+                if target_y_active and abs(crossing_y - float(target_grid_um[1])) <= axis_eps:
+                    distance_to_target_um = abs(float(target_grid_um[0]) - crossing_x)
+                    available_um = max(0.0, distance_to_target_um - crossing_half_um)
+                    active_checks.append(
+                        {
+                            **net_entry,
+                            "axis": "target_y",
+                            "crossing_um": [round(crossing_x, 6), round(crossing_y, 6)],
+                            "distance_to_target_um": round(
+                                float(distance_to_target_um), 6
+                            ),
+                            "crossing_half_um": round(float(crossing_half_um), 6),
+                            "available_um": round(float(available_um), 6),
+                            "required_bump_um": round(float(required_bump_um), 6),
+                            "satisfies": bool(available_um + eps >= required_bump_um),
+                        }
+                    )
+
+            should_trace = trace_all or record.net_name in trace_tokens or str(net_id) in trace_tokens
+            if should_trace:
+                matching_checks = [
+                    item for item in active_checks if int(item["net_id"]) == int(net_id)
+                ]
+                print(
+                    "terminal_bump_distance_check "
+                    f"net={record.net_name} id={net_id} "
+                    f"target_port={job.inst2},{job.port2} "
+                    f"target_port={target_port_um} target_grid={target_grid_um} "
+                    f"target_axis={target_axis} "
+                    f"target_dx={target_dx_um:.6f} target_dy={target_dy_um:.6f} "
+                    f"same_axis_crossings={len(matching_checks)}"
+                )
+                for item in matching_checks:
+                    print(
+                        "terminal_bump_distance_check "
+                        f"net={record.net_name} id={net_id} "
+                        f"crossing={item['crossing_um']} "
+                        f"available_um={item['available_um']} "
+                        f"required_um={item['required_bump_um']} "
+                        f"satisfies={item['satisfies']}"
+                    )
+
+        self.crossing_plan_info["terminal_bump_target_x_offset_nets"] = target_x_offset_nets
+        self.crossing_plan_info["terminal_bump_target_x_offset_net_count"] = len(
+            target_x_offset_nets
+        )
+        self.crossing_plan_info["terminal_bump_target_y_offset_nets"] = target_y_offset_nets
+        self.crossing_plan_info["terminal_bump_target_y_offset_net_count"] = len(
+            target_y_offset_nets
+        )
+        failed_checks = [
+            check for check in active_checks if not bool(check.get("satisfies"))
+        ]
+        self.crossing_plan_info["terminal_bump_distance_checks"] = active_checks
+        self.crossing_plan_info["terminal_bump_distance_check_count"] = len(active_checks)
+        self.crossing_plan_info["terminal_bump_distance_failures"] = failed_checks
+        self.crossing_plan_info["terminal_bump_distance_failure_count"] = len(failed_checks)
+
+    def _apply_crossing_aware_endpoint_corrections_for_net_ids(
+        self,
+        net_ids: Iterable[int],
+        *,
+        record_pipeline_timing: bool = True,
+        print_warnings: bool = False,
+    ) -> list[int]:
+        if not self.enable_checked_endpoint_correction or not self.enable_crossings:
+            return []
+        crossing_points_by_net_id = self._current_crossing_points_by_net_id()
+        if not crossing_points_by_net_id:
+            return []
+        requested_net_ids = [int(net_id) for net_id in net_ids]
+        self._record_terminal_bump_distance_check_candidates(
+            crossing_points_by_net_id,
+            requested_net_ids,
+        )
+
+        t_endpoint_correction_start = self._pipeline_timer_start()
+        failed_net_ids: list[int] = []
+        for raw_net_id in requested_net_ids:
+            net_id = int(raw_net_id)
+            crossing_points = crossing_points_by_net_id.get(net_id, [])
+            if not crossing_points:
+                continue
+            record = self.route_bookkeeping.records_by_id.get(net_id)
+            job = self.route_jobs_by_id.get(net_id)
+            if record is None or job is None:
+                continue
+
+            source_has_fanout_stub = net_id in self.fanout_anchor_source_net_ids
+            target_has_fanout_stub = net_id in self.fanout_anchor_target_net_ids
+            record_has_fanout_stub = net_id in self.fanout_anchor_net_ids
+            _, _, opened_candidate_cells, _, _ = self._state_openings_for_job(job)
+            if source_has_fanout_stub:
+                opened_candidate_cells.update(
+                    self.fanout_stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
+                )
+            if target_has_fanout_stub:
+                opened_candidate_cells.update(
+                    self.fanout_stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
+                )
+            clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
+            start_s = self._timing_start()
+            updated = _apply_crossing_aware_endpoint_correction_to_record(
+                record,
+                router=cast(EndpointCorrectionRouter, self.router),
+                crossing_points=crossing_points,
+                realization_grid_spec=self.realization_grid_spec,
+                route_width_um=float(self.route_width_um),
+                allow_unchecked_bumps=False,
+                log_failures=print_warnings,
+                crossing_plan_info=self.crossing_plan_info,
+                correct_source=not source_has_fanout_stub,
+                correct_target=not target_has_fanout_stub,
+                prefer_corrected_baseline=(
+                    record_has_fanout_stub and bool(record.corrected_centerline_um)
+                ),
+                opened_cells=opened_candidate_cells,
+                clearance_exempt_cells=clearance_exempt_cells,
+                clearance_radius_cells=int(self.commit_radius_cells),
+                core_radius_cells=int(self.core_commit_radius_cells),
+            )
+            failed = updated.endpoint_correction_error is not None
+            if self.collect_timing:
+                self.route_timing_buckets["endpoint_correction"].record_elapsed(
+                    time.perf_counter() - start_s,
+                    failed=failed,
+                )
+            if failed:
+                failed_net_ids.append(net_id)
+            self.route_bookkeeping.records_by_id[net_id] = updated
+
+        if record_pipeline_timing:
+            self._record_pipeline_timing(
+                "crossing_endpoint_correction",
+                t_endpoint_correction_start,
+            )
+        return failed_net_ids
+
+    def _grid_cell_from_raw_point(self, raw_point: object) -> tuple[int, int] | None:
+        if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
+            return None
+        try:
+            point_x = float(raw_point[0])
+            point_y = float(raw_point[1])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(point_x) or not math.isfinite(point_y):
+            return None
+        return (
+            int(math.floor((point_x - float(self.origin_x_um)) / float(self.grid.grid_size_um))),
+            int(math.floor((point_y - float(self.origin_y_um)) / float(self.grid.grid_size_um))),
+        )
+
+    def _illegal_crossing_grid_cell(self, item: Mapping[str, object]) -> tuple[int, int] | None:
+        raw_cell = item.get("grid_cell")
+        if isinstance(raw_cell, (tuple, list)) and len(raw_cell) == 2:
+            try:
+                return (int(raw_cell[0]), int(raw_cell[1]))
+            except (TypeError, ValueError):
+                return None
+        return self._grid_cell_from_raw_point(item.get("point_um"))
+
+    def _illegal_crossing_keepout_radius(self, item: Mapping[str, object]) -> int:
+        reason = str(item.get("reason", "") or "")
+        if reason == "not_perpendicular":
+            return max(1, int(self.resolved_crossing_half_size_cells) + 1)
+        if reason == "collinear_route_overlap":
+            return 1
+        blockers = item.get("crossing_footprint_blockers")
+        if isinstance(blockers, IterableABC) and not isinstance(
+            blockers,
+            (str, bytes, bytearray),
+        ):
+            if any(isinstance(blocker, Mapping) for blocker in blockers):
+                return max(1, int(self.resolved_crossing_half_size_cells) + 1)
+        if reason in {
+            "crossing_footprint_contains_route_geometry",
+            "crossing_footprint_overlap",
+        }:
+            return max(1, int(self.resolved_crossing_half_size_cells) + 1)
+        return max(1, min(4, int(self.resolved_crossing_half_size_cells) + 1))
+
+    def _add_keepout_square(
+        self,
+        keepout_cells: set[tuple[int, int]],
+        *,
+        center: tuple[int, int],
+        radius: int,
+    ) -> None:
+        for y in range(center[1] - radius, center[1] + radius + 1):
+            for x in range(center[0] - radius, center[0] + radius + 1):
+                if 0 <= x < int(self.grid.width) and 0 <= y < int(self.grid.height):
+                    keepout_cells.add((x, y))
+
+    def _add_segment_keepout_cells(
+        self,
+        keepout_cells: set[tuple[int, int]],
+        *,
+        start_cell: tuple[int, int],
+        end_cell: tuple[int, int],
+        radius: int,
+    ) -> None:
+        dx = int(end_cell[0]) - int(start_cell[0])
+        dy = int(end_cell[1]) - int(start_cell[1])
+        steps = max(abs(dx), abs(dy), 1)
+        for step in range(steps + 1):
+            t = float(step) / float(steps)
+            cell = (
+                int(round(float(start_cell[0]) + float(dx) * t)),
+                int(round(float(start_cell[1]) + float(dy) * t)),
+            )
+            self._add_keepout_square(keepout_cells, center=cell, radius=radius)
+
+    def _final_crossing_repair_keepout_cells(
+        self,
+        illegal_crossings: Iterable[Mapping[str, object]],
+    ) -> set[tuple[int, int]]:
+        keepout_cells: set[tuple[int, int]] = set()
+        for item in illegal_crossings:
+            radius = self._illegal_crossing_keepout_radius(item)
+            reason = str(item.get("reason", "") or "")
+            if reason == "collinear_route_overlap":
+                start_cell = self._grid_cell_from_raw_point(item.get("overlap_start_um"))
+                end_cell = self._grid_cell_from_raw_point(item.get("overlap_end_um"))
+                if start_cell is not None and end_cell is not None:
+                    self._add_segment_keepout_cells(
+                        keepout_cells,
+                        start_cell=start_cell,
+                        end_cell=end_cell,
+                        radius=radius,
+                    )
+                    continue
+            center = self._illegal_crossing_grid_cell(item)
+            if center is not None:
+                self._add_keepout_square(keepout_cells, center=center, radius=radius)
+            if reason == "crossing_footprint_overlap":
+                peer = item.get("overlapping_crossing")
+                if isinstance(peer, Mapping):
+                    peer_center = self._grid_cell_from_raw_point(peer.get("point_um"))
+                    if peer_center is not None:
+                        self._add_keepout_square(
+                            keepout_cells,
+                            center=peer_center,
+                            radius=radius,
+                        )
+        return keepout_cells
+
+    def _final_crossing_repair_net_ids(
+        self,
+        illegal_crossings: Iterable[Mapping[str, object]],
+    ) -> list[int]:
+        net_ids: set[int] = set()
+
+        def _add_footprint_blocker_net_ids(item: Mapping[str, object]) -> None:
+            blockers = item.get("crossing_footprint_blockers")
+            if not isinstance(blockers, IterableABC) or isinstance(
+                blockers,
+                (str, bytes, bytearray),
+            ):
+                return
+            for blocker in blockers:
+                if not isinstance(blocker, Mapping):
+                    continue
+                try:
+                    blocker_net_id = int(cast(object, blocker.get("net_id")))
+                except (TypeError, ValueError):
+                    continue
+                if blocker_net_id in self.route_jobs_by_id:
+                    net_ids.add(blocker_net_id)
+
+        for item in illegal_crossings:
+            item_pair_ids: list[int] = []
+            for key in ("net_id_a", "net_id_b"):
+                try:
+                    net_id = int(cast(object, item.get(key)))
+                except (TypeError, ValueError):
+                    continue
+                if net_id in self.route_jobs_by_id:
+                    item_pair_ids.append(net_id)
+            reason = str(item.get("reason", "") or "")
+            if reason == "not_perpendicular":
+                net_ids.update(item_pair_ids)
+                _add_footprint_blocker_net_ids(item)
+                continue
+            if reason in {
+                "crossing_footprint_contains_bend",
+                "insufficient_straight_margin",
+            }:
+                if item_pair_ids:
+                    net_ids.add(max(item_pair_ids))
+                _add_footprint_blocker_net_ids(item)
+                continue
+            if reason == "collinear_route_overlap":
+                net_ids.update(item_pair_ids)
+                continue
+            if reason == "crossing_footprint_overlap":
+                peer_pair_ids: set[int] = set()
+                peer = item.get("overlapping_crossing")
+                if isinstance(peer, Mapping):
+                    for key in ("net_id_a", "net_id_b"):
+                        try:
+                            peer_net_id = int(cast(object, peer.get(key)))
+                        except (TypeError, ValueError):
+                            continue
+                        if peer_net_id in self.route_jobs_by_id:
+                            peer_pair_ids.add(peer_net_id)
+                net_ids.update(item_pair_ids)
+                net_ids.update(peer_pair_ids)
+                continue
+            if reason == "crossing_footprint_contains_route_geometry":
+                before_blocker_net_ids = set(net_ids)
+                _add_footprint_blocker_net_ids(item)
+                if net_ids == before_blocker_net_ids:
+                    net_ids.update(item_pair_ids)
+                continue
+            net_ids.update(item_pair_ids)
+        return [net_id for net_id in self.route_order if net_id in net_ids]
+
+    def _final_crossing_repair_batches(
+        self,
+        illegal_crossings: list[dict[str, object]],
+        *,
+        max_net_ids: int,
+    ) -> list[list[dict[str, object]]]:
+        if not illegal_crossings or max_net_ids <= 0:
+            return []
+        components: list[tuple[list[dict[str, object]], set[int]]] = []
+        for item in illegal_crossings:
+            item_net_ids = set(self._final_crossing_repair_net_ids([item]))
+            if not item_net_ids:
+                components.append(([item], set()))
+                continue
+            matching_indices = [
+                index
+                for index, (_items, component_net_ids) in enumerate(components)
+                if component_net_ids.intersection(item_net_ids)
+            ]
+            if not matching_indices:
+                components.append(([item], set(item_net_ids)))
+                continue
+            target_index = matching_indices[0]
+            target_items, target_net_ids = components[target_index]
+            target_items.append(item)
+            target_net_ids.update(item_net_ids)
+            for merge_index in reversed(matching_indices[1:]):
+                merge_items, merge_net_ids = components.pop(merge_index)
+                target_items.extend(merge_items)
+                target_net_ids.update(merge_net_ids)
+
+        capped_batches: list[list[dict[str, object]]] = []
+        oversized: list[dict[str, object]] = []
+        for component_items, _component_net_ids in components:
+            component_repair_ids = self._final_crossing_repair_net_ids(component_items)
+            if component_repair_ids and len(component_repair_ids) <= max_net_ids:
+                capped_batches.append(component_items)
+            else:
+                oversized.extend(component_items)
+
+        if oversized:
+            current_batch: list[dict[str, object]] = []
+            current_net_ids: set[int] = set()
+            for item in oversized:
+                item_net_ids = set(self._final_crossing_repair_net_ids([item]))
+                if (
+                    current_batch
+                    and item_net_ids
+                    and len(current_net_ids.union(item_net_ids)) > max_net_ids
+                ):
+                    capped_batches.append(current_batch)
+                    current_batch = []
+                    current_net_ids = set()
+                current_batch.append(item)
+                current_net_ids.update(item_net_ids)
+            if current_batch:
+                capped_batches.append(current_batch)
+
+        route_index = {int(net_id): index for index, net_id in enumerate(self.route_order)}
+
+        def _batch_sort_key(batch: list[dict[str, object]]) -> tuple[int, int, int]:
+            repair_ids = self._final_crossing_repair_net_ids(batch)
+            first_route_index = min(
+                (route_index.get(int(net_id), len(route_index)) for net_id in repair_ids),
+                default=len(route_index),
+            )
+            return (first_route_index, -len(batch), len(repair_ids))
+
+        capped_batches.sort(key=_batch_sort_key)
+        return capped_batches
+
+    def _repair_final_illegal_crossings(
+        self,
+        illegal_crossings: list[dict[str, object]],
+    ) -> bool:
+        max_repair_net_ids = 12
+        attempts = cast(
+            list[dict[str, object]],
+            self.crossing_plan_info.setdefault("final_crossing_repair_attempts", []),
+        )
+        priority_order = (
+            "collinear_route_overlap",
+            "crossing_footprint_contains_route_geometry",
+            "crossing_footprint_contains_bend",
+            "insufficient_straight_margin",
+            "not_perpendicular",
+            "crossing_footprint_overlap",
+        )
+        selected_reason = next(
+            (
+                reason
+                for reason in priority_order
+                if any(str(item.get("reason", "") or "") == reason for item in illegal_crossings)
+            ),
+            None,
+        )
+        selected_illegal_crossings = [
+            item
+            for item in illegal_crossings
+            if selected_reason is None
+            or str(item.get("reason", "") or "") == selected_reason
+        ]
+        total_selected_issue_count = len(selected_illegal_crossings)
+        if selected_reason in {
+            "crossing_footprint_contains_bend",
+            "insufficient_straight_margin",
+            "not_perpendicular",
+        }:
+            repair_batches = self._final_crossing_repair_batches(
+                selected_illegal_crossings,
+                max_net_ids=min(4, max_repair_net_ids),
+            )
+            if repair_batches:
+                selected_illegal_crossings = repair_batches[0]
+        if (
+            not selected_illegal_crossings
+            or not self.crossing_plan_info.get("enabled")
+            or not self.repair_config.enabled
+            or not hasattr(self.router, "add_static_cells")
+            or not hasattr(self.router, "ripup_route")
+            or not hasattr(self.router, "route_many_with_repair_and_commit")
+        ):
+            return False
+        repair_net_ids = self._final_crossing_repair_net_ids(selected_illegal_crossings)
+        if selected_reason == "not_perpendicular" and repair_net_ids:
+            priority: list[int] = []
+            for item in selected_illegal_crossings:
+                for key in ("net_id_b", "net_id_a"):
+                    try:
+                        net_id = int(cast(object, item.get(key)))
+                    except (TypeError, ValueError):
+                        continue
+                    if net_id in self.route_jobs_by_id and net_id not in priority:
+                        priority.append(net_id)
+                blockers = item.get("crossing_footprint_blockers")
+                if not isinstance(blockers, IterableABC) or isinstance(
+                    blockers,
+                    (str, bytes, bytearray),
+                ):
+                    continue
+                for blocker in blockers:
+                    if not isinstance(blocker, Mapping):
+                        continue
+                    try:
+                        blocker_net_id = int(cast(object, blocker.get("net_id")))
+                    except (TypeError, ValueError):
+                        continue
+                    if blocker_net_id in self.route_jobs_by_id and blocker_net_id not in priority:
+                        priority.append(blocker_net_id)
+            repair_net_ids = [
+                net_id
+                for net_id in priority
+                if net_id in repair_net_ids
+            ] + [
+                net_id
+                for net_id in repair_net_ids
+                if net_id not in priority
+            ]
+        attempt: dict[str, object] = {
+            "selected_reason": selected_reason,
+            "illegal_reason_counts": dict(
+                Counter(str(item.get("reason", "") or "unknown") for item in illegal_crossings)
+            ),
+            "selected_reason_counts": dict(
+                Counter(
+                    str(item.get("reason", "") or "unknown")
+                    for item in selected_illegal_crossings
+                )
+            ),
+            "repair_net_ids": [int(net_id) for net_id in repair_net_ids],
+        }
+        if total_selected_issue_count != len(selected_illegal_crossings):
+            attempt["batched_issue_count"] = len(selected_illegal_crossings)
+            attempt["total_selected_issue_count"] = total_selected_issue_count
+        if not repair_net_ids or len(repair_net_ids) > max_repair_net_ids:
+            attempt["status"] = "skipped"
+            attempt["reason"] = "no_repairable_nets_or_too_many"
+            attempts.append(attempt)
+            return False
+        keepout_cells = self._final_crossing_repair_keepout_cells(selected_illegal_crossings)
+        attempt["keepout_cell_count"] = len(keepout_cells)
+        if not keepout_cells:
+            attempt["status"] = "skipped"
+            attempt["reason"] = "no_keepout_cells"
+            attempts.append(attempt)
+            return False
+
+        self.router.add_static_cells(sorted(keepout_cells))
+        for net_id in repair_net_ids:
+            self.router.ripup_route(int(net_id))
+            self.route_bookkeeping.clear_route(int(net_id))
+
+        repair_jobs: list[
+            tuple[
+                int,
+                Any,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
+        ] = []
+        opened_by_id: dict[int, list[tuple[int, int]]] = {}
+        for net_id in repair_net_ids:
+            job = self.route_jobs_by_id[net_id]
+            source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
+            clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
+            repair_jobs.append(
+                (
+                    int(job.net_id),
+                    source_state,
+                    target_state,
+                    opened_cells,
+                    clearance_exempt_cells,
+                    self._foreign_keepout_cleanup_cells_for_job(job),
+                    self._routing_endpoint_center_um(job, source=True),
+                    self._routing_endpoint_center_um(job, source=False),
+                )
+            )
+            opened_by_id[int(job.net_id)] = opened_cells
+
+        raw_repair_result = self.router.route_many_with_repair_and_commit(
+            repair_jobs,
+            self.block_radius_cells,
+            self.commit_radius_cells,
+            self.core_commit_radius_cells,
+            int(self.repair_config.max_rounds),
+            int(self.repair_config.max_victims_per_failure),
+            float(self.repair_config.history_weight),
+            int(self.repair_config.history_increment),
+        )
+        repair_result = dict(raw_repair_result)
+        attempt["router_status"] = str(repair_result.get("status", ""))
+        attempt["routed_net_ids"] = [
+            int(dict(raw_entry)["net_id"])
+            for raw_entry in cast(Iterable[Any], repair_result.get("routes", []))
+        ]
+        if str(repair_result.get("status", "")) != "routed":
+            attempt["status"] = "failed"
+            attempts.append(attempt)
+            return False
+
+        repaired_records: list[RoutedNetRecord] = []
+        for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
+            entry = dict(raw_entry)
+            net_id = int(entry["net_id"])
+            job = self.route_jobs_by_id[net_id]
+            route_obj = entry["route"]
+            self._record_route(job, route_obj, opened_by_id[net_id])
+            repaired_records.append(self.route_bookkeeping.records_by_id[net_id])
+
+        if self.enable_checked_endpoint_correction and repaired_records:
+            repaired_net_ids = [
+                int(record.net_id)
+                for record in repaired_records
+                if record.net_id is not None
+            ]
+            self._apply_checked_endpoint_corrections_for_net_ids(
+                repaired_net_ids,
+                record_pipeline_timing=False,
+            )
+            self._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
+                repaired_net_ids,
+                record_pipeline_timing=False,
+            )
+        attempt["status"] = "routed"
+        attempts.append(attempt)
+        return True
+
+    def _net_id_by_name(self) -> dict[str, int]:
+        return {
+            record.net_name: int(net_id)
+            for net_id, record in self.route_bookkeeping.records_by_id.items()
+        }
+
+    def _grid_rect_from_um_bbox(
+        self,
+        raw_bbox: object,
+    ) -> tuple[int, int, int, int] | None:
+        if not isinstance(raw_bbox, (tuple, list)) or len(raw_bbox) != 4:
+            return None
+        try:
+            min_x_um = float(raw_bbox[0])
+            min_y_um = float(raw_bbox[1])
+            max_x_um = float(raw_bbox[2])
+            max_y_um = float(raw_bbox[3])
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(v) for v in (min_x_um, min_y_um, max_x_um, max_y_um)):
+            return None
+        if max_x_um < min_x_um:
+            min_x_um, max_x_um = max_x_um, min_x_um
+        if max_y_um < min_y_um:
+            min_y_um, max_y_um = max_y_um, min_y_um
+        grid_size = float(self.grid.grid_size_um)
+        return (
+            int(math.floor((min_x_um - float(self.origin_x_um)) / grid_size)),
+            int(math.ceil((max_x_um - float(self.origin_x_um)) / grid_size)),
+            int(math.floor((min_y_um - float(self.origin_y_um)) / grid_size)),
+            int(math.ceil((max_y_um - float(self.origin_y_um)) / grid_size)),
+        )
+
+    def _add_keepout_rect(
+        self,
+        keepout_cells: set[tuple[int, int]],
+        *,
+        rect: tuple[int, int, int, int],
+        radius: int,
+    ) -> None:
+        min_x, max_x, min_y, max_y = rect
+        if min_x > max_x:
+            min_x, max_x = max_x, min_x
+        if min_y > max_y:
+            min_y, max_y = max_y, min_y
+        for y in range(min_y - radius, max_y + radius + 1):
+            if y < 0 or y >= int(self.grid.height):
+                continue
+            for x in range(min_x - radius, max_x + radius + 1):
+                if 0 <= x < int(self.grid.width):
+                    keepout_cells.add((x, y))
+
+    def _cells_from_um_bbox(
+        self,
+        raw_bbox: object,
+        *,
+        radius: int,
+    ) -> set[tuple[int, int]]:
+        rect = self._grid_rect_from_um_bbox(raw_bbox)
+        if rect is None:
+            return set()
+        cells: set[tuple[int, int]] = set()
+        self._add_keepout_rect(cells, rect=rect, radius=radius)
+        return cells
+
+    def _grid_rect_from_grid_bbox_text(self, text: str, name: str) -> tuple[int, int, int, int] | None:
+        match = re.search(rf"{re.escape(name)}=\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)", text)
+        if match is None:
+            return None
+        try:
+            min_x = int(match.group(1))
+            max_x = int(match.group(2))
+            min_y = int(match.group(3))
+            max_y = int(match.group(4))
+        except (TypeError, ValueError):
+            return None
+        return min_x, max_x, min_y, max_y
+
+    def _polygon_bbox_um(self, raw_polygon: object) -> tuple[float, float, float, float] | None:
+        if not isinstance(raw_polygon, IterableABC) or isinstance(
+            raw_polygon,
+            (str, bytes, bytearray),
+        ):
+            return None
+        points: list[tuple[float, float]] = []
+        for raw_point in raw_polygon:
+            if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
+                return None
+            try:
+                point = (float(raw_point[0]), float(raw_point[1]))
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(point[0]) or not math.isfinite(point[1]):
+                return None
+            points.append(point)
+        if not points:
+            return None
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _photonic_issue_keepout_cells(
+        self,
+        issue: PhotonicVerificationIssue,
+    ) -> set[tuple[int, int]]:
+        radius = max(1, int(self.core_commit_radius_cells) + 1)
+        if issue.code == "endpoint_correction_error":
+            cells: set[tuple[int, int]] = set()
+            for bbox_name in ("static_bbox", "core_bbox"):
+                rect = self._grid_rect_from_grid_bbox_text(issue.message, bbox_name)
+                if rect is None:
+                    continue
+                self._add_keepout_rect(cells, rect=rect, radius=radius)
+                if cells:
+                    return cells
+            return cells
+        details = issue.details or {}
+        if issue.code == "cross_net_waveguide_overlap":
+            return self._cells_from_um_bbox(
+                details.get("overlap_bbox_um"),
+                radius=radius,
+            )
+        if issue.code == "waveguide_obstacle_overlap":
+            return self._cells_from_um_bbox(
+                details.get("overlap_bbox_um"),
+                radius=radius,
+            )
+        if issue.code == "crossing_component_route_overlap":
+            crossing = details.get("crossing")
+            if isinstance(crossing, Mapping):
+                polygon_bbox = self._polygon_bbox_um(
+                    crossing.get("crossing_footprint_polygon_um")
+                )
+                if polygon_bbox is not None:
+                    return self._cells_from_um_bbox(polygon_bbox, radius=radius)
+            return self._cells_from_um_bbox(
+                details.get("overlap_bbox_um"),
+                radius=radius,
+            )
+        return set()
+
+    def _photonic_issue_net_ids(
+        self,
+        issue: PhotonicVerificationIssue,
+    ) -> set[int]:
+        by_name = self._net_id_by_name()
+        net_ids: set[int] = set()
+        if issue.net_name and issue.net_name in by_name:
+            net_ids.add(by_name[issue.net_name])
+        details = issue.details or {}
+        other_net_name = details.get("other_net_name")
+        if isinstance(other_net_name, str) and other_net_name in by_name:
+            net_ids.add(by_name[other_net_name])
+        return net_ids
+
+    def _make_photonic_verification_probe_layout(
+        self,
+        records: Iterable[RoutedNetRecord],
+    ) -> Component:
+        t_probe_layout_total_start = self._pipeline_timer_start()
+        self.photonic_probe_index += 1
+        t_probe_copy_start = self._pipeline_timer_start()
+        probe_layout = self.unrouted_layout.copy()
+        probe_layout.name = f"photonic_repair_probe_{time.time_ns()}_{self.photonic_probe_index}"
+        self._record_pipeline_timing("photonic_probe_copy", t_probe_copy_start)
+        t_probe_realize_start = self._pipeline_timer_start()
+        realize_routed_net_records(
+            probe_layout,
+            list(records),
+            route_width_um=self.route_width_um,
+            route_layer=self.route_layer,
+            realization_grid_spec=self.realization_grid_spec,
+            allow_45_degree_turns=self.allow_45_degree_turns,
+            bend_radius_cells=self.bend_radius_cells,
+            crossing_plan_info=self.crossing_plan_info,
+            enable_endpoint_correction=self.enable_checked_endpoint_correction,
+        )
+        self._record_pipeline_timing("photonic_probe_realize", t_probe_realize_start)
+        if self.crossing_plan_info.get("enabled"):
+            t_probe_crossings_start = self._pipeline_timer_start()
+            _place_realized_crossing_components(probe_layout, self.crossing_plan_info)
+            self._record_pipeline_timing(
+                "photonic_probe_crossing_place",
+                t_probe_crossings_start,
+            )
+        self._record_pipeline_timing(
+            "photonic_probe_layout_total",
+            t_probe_layout_total_start,
+        )
+        return probe_layout
+
+    def _refresh_photonic_verification(self) -> PhotonicVerificationResult:
+        # This is an internal diagnostic verifier, not the intended default
+        # source of truth for production routing success. A* and the grid-level
+        # crossing checks must reject illegal moves locally; the final geometry
+        # gate is the Python verifier in `routing_flow.py` on the realized
+        # layout. Keep this probe available for debugging model mismatches
+        # between grid decisions and realized geometry, but do not treat it as
+        # a mandatory always-on second full verification pass.
+        t_refresh_start = self._pipeline_timer_start()
+        records = self.route_bookkeeping.ordered_records()
+        probe_layout = self._make_photonic_verification_probe_layout(records)
+        self.last_photonic_probe_layout = probe_layout
+        self.last_photonic_probe_records = list(records)
+        t_verify_start = self._pipeline_timer_start()
+        result = verify_photonic_routing(
+            probe_layout,
+            self.schematic,
+            routed_net_records=records,
+            unrouted_layout=self.unrouted_layout,
+            route_width_um=self.route_width_um,
+            route_layer=self.route_layer,
+            obstacle_layers=_default_obstacle_layers(
+                self.route_layer,
+                include_heater_obstacles=self.include_heater_obstacles,
+            ),
+            realization_grid_spec=self.realization_grid_spec,
+            allow_45_degree_turns=self.allow_45_degree_turns,
+            bend_radius_cells=self.bend_radius_cells,
+            legal_overlap_polygons_by_net_id_pair_um=(
+                _legal_crossing_overlap_polygons_for_verification(self.crossing_plan_info)
+            ),
+            crossing_component_footprints_um=(
+                _legal_crossing_component_footprints_for_verification(self.crossing_plan_info)
+            ),
+            check_route_coverage=self.debug_stop_after_route_index is None,
+            check_endpoint_connectivity=self.enable_checked_endpoint_correction,
+        )
+        self._record_pipeline_timing("photonic_probe_verify", t_verify_start)
+        self._record_pipeline_timing("photonic_refresh_total", t_refresh_start)
+        return result
+
+    def _repair_final_photonic_issues(
+        self,
+        issues: tuple[PhotonicVerificationIssue, ...],
+    ) -> bool:
+        attempts = cast(
+            list[dict[str, object]],
+            self.crossing_plan_info.setdefault("final_photonic_repair_attempts", []),
+        )
+        priority_groups: tuple[tuple[str, set[str]], ...] = (
+            (
+                "endpoint_connection",
+                {
+                    "endpoint_correction_error",
+                    "missing_corrected_centerline",
+                    "source_port_not_connected",
+                    "target_port_not_connected",
+                    "source_endpoint_mismatch",
+                    "target_endpoint_mismatch",
+                },
+            ),
+            ("cross_net_waveguide_overlap", {"cross_net_waveguide_overlap"}),
+            ("waveguide_obstacle_overlap", {"waveguide_obstacle_overlap"}),
+            ("crossing_component_route_overlap", {"crossing_component_route_overlap"}),
+        )
+        selected_group = next(
+            (
+                name
+                for name, codes in priority_groups
+                if any(issue.code in codes for issue in issues)
+            ),
+            None,
+        )
+        if selected_group is None:
+            return False
+        selected_codes = dict(priority_groups)[selected_group]
+        selected_issues = [issue for issue in issues if issue.code in selected_codes]
+        if selected_group == "crossing_component_route_overlap":
+            selected_issues = selected_issues[:1]
+        if (
+            not selected_issues
+            or not self.repair_config.enabled
+            or not hasattr(self.router, "add_static_cells")
+            or not hasattr(self.router, "ripup_route")
+            or not hasattr(self.router, "route_many_with_repair_and_commit")
+        ):
+            return False
+
+        repair_net_ids_set: set[int] = set()
+        keepout_cells: set[tuple[int, int]] = set()
+        for issue in selected_issues:
+            repair_net_ids_set.update(self._photonic_issue_net_ids(issue))
+            keepout_cells.update(self._photonic_issue_keepout_cells(issue))
+        repair_net_ids = [net_id for net_id in self.route_order if net_id in repair_net_ids_set]
+        attempt: dict[str, object] = {
+            "selected_group": selected_group,
+            "issue_counts": dict(Counter(issue.code for issue in issues)),
+            "selected_issue_counts": dict(Counter(issue.code for issue in selected_issues)),
+            "repair_net_ids": [int(net_id) for net_id in repair_net_ids],
+            "keepout_cell_count": len(keepout_cells),
+        }
+        if not repair_net_ids or len(repair_net_ids) > 12:
+            attempt["status"] = "skipped"
+            attempt["reason"] = "no_repairable_nets_or_too_many"
+            attempts.append(attempt)
+            return False
+        if not keepout_cells:
+            attempt["status"] = "skipped"
+            attempt["reason"] = "no_keepout_cells"
+            attempts.append(attempt)
+            return False
+
+        self.router.add_static_cells(sorted(keepout_cells))
+        for net_id in repair_net_ids:
+            self.router.ripup_route(int(net_id))
+            self.route_bookkeeping.clear_route(int(net_id))
+
+        repair_jobs: list[
+            tuple[
+                int,
+                Any,
+                Any,
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                list[tuple[int, int]],
+                tuple[float, float] | None,
+                tuple[float, float] | None,
+            ]
+        ] = []
+        opened_by_id: dict[int, list[tuple[int, int]]] = {}
+        for net_id in repair_net_ids:
+            job = self.route_jobs_by_id[net_id]
+            source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
+            clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
+            repair_jobs.append(
+                (
+                    int(job.net_id),
+                    source_state,
+                    target_state,
+                    opened_cells,
+                    clearance_exempt_cells,
+                    self._foreign_keepout_cleanup_cells_for_job(job),
+                    self._routing_endpoint_center_um(job, source=True),
+                    self._routing_endpoint_center_um(job, source=False),
+                )
+            )
+            opened_by_id[int(job.net_id)] = opened_cells
+
+        raw_repair_result = self.router.route_many_with_repair_and_commit(
+            repair_jobs,
+            self.block_radius_cells,
+            self.commit_radius_cells,
+            self.core_commit_radius_cells,
+            int(self.repair_config.max_rounds),
+            int(self.repair_config.max_victims_per_failure),
+            float(self.repair_config.history_weight),
+            int(self.repair_config.history_increment),
+        )
+        repair_result = dict(raw_repair_result)
+        attempt["router_status"] = str(repair_result.get("status", ""))
+        attempt["routed_net_ids"] = [
+            int(dict(raw_entry)["net_id"])
+            for raw_entry in cast(Iterable[Any], repair_result.get("routes", []))
+        ]
+        if str(repair_result.get("status", "")) != "routed":
+            attempt["status"] = "failed"
+            attempts.append(attempt)
+            return False
+
+        repaired_net_ids: list[int] = []
+        for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
+            entry = dict(raw_entry)
+            net_id = int(entry["net_id"])
+            job = self.route_jobs_by_id[net_id]
+            route_obj = entry["route"]
+            self._record_route(job, route_obj, opened_by_id[net_id])
+            repaired_net_ids.append(net_id)
+        if self.enable_checked_endpoint_correction and repaired_net_ids:
+            failed_corrections = self._apply_checked_endpoint_corrections_for_net_ids(
+                repaired_net_ids,
+                record_pipeline_timing=False,
+            )
+            failed_corrections.extend(
+                self._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
+                    repaired_net_ids,
+                    record_pipeline_timing=False,
+                )
+            )
+            attempt["endpoint_correction_failed_net_ids"] = [
+                int(net_id) for net_id in failed_corrections
+            ]
+        attempt["status"] = "routed"
+        attempts.append(attempt)
+        return True
+
+    def _photonic_repair_failure_preview(
+        self,
+        verification: PhotonicVerificationResult,
+    ) -> str:
+        lines: list[str] = []
+        for issue in verification.issues[:5]:
+            details = issue.details or {}
+            suffix_parts: list[str] = []
+            if "overlap_area_um2" in details:
+                suffix_parts.append(f"area={details['overlap_area_um2']}")
+            if "overlap_bbox_um" in details:
+                suffix_parts.append(f"bbox={details['overlap_bbox_um']}")
+            suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
+            lines.append(
+                f"{issue.code} {issue.net_name or '<unknown>'}: "
+                f"{issue.message}{suffix}"
+            )
+        if len(verification.issues) > 5:
+            lines.append(f"... {len(verification.issues) - 5} more")
+        return "; ".join(lines)
+
+    def _refresh_realized_crossing_verification(self) -> list[dict[str, object]]:
+        t_refresh_crossings_start = self._pipeline_timer_start()
+        t_overlap_start = self._pipeline_timer_start()
+        if self.enable_internal_photonic_probe_verification:
+            _augment_crossing_plan_with_realized_overlaps(
+                router=self.router,
+                crossing_plan_info=self.crossing_plan_info,
+                routed_records_by_net_id=self.route_bookkeeping.records_by_id,
+            )
+        self._record_pipeline_timing("realized_crossing_overlap_augment", t_overlap_start)
+        native_crossing_events: list[Any] = []
+        if hasattr(self.router, "crossing_events"):
+            t_native_events_start = self._pipeline_timer_start()
+            try:
+                native_crossing_events = list(cast(Iterable[Any], self.router.crossing_events()))
+            except Exception:
+                native_crossing_events = []
+            self.crossing_plan_info["native_crossing_events"] = native_crossing_events
+            self.crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
+            self._record_pipeline_timing(
+                "realized_crossing_native_events",
+                t_native_events_start,
+            )
+            t_insertion_loss_start = self._pipeline_timer_start()
+            _augment_insertion_loss_report(
+                crossing_plan_info=self.crossing_plan_info,
+                routed_records_by_net_id=self.route_bookkeeping.records_by_id,
+                native_crossing_events=native_crossing_events,
+            )
+            self._record_pipeline_timing(
+                "realized_crossing_insertion_loss",
+                t_insertion_loss_start,
+            )
+        t_illegal_crossing_verify_start = self._pipeline_timer_start()
+        if self.enable_internal_photonic_probe_verification:
+            illegal = _verify_realized_route_intersections(
+                crossing_plan_info=self.crossing_plan_info,
+                routed_records_by_net_id=self.route_bookkeeping.records_by_id,
+                realization_grid_spec=self.realization_grid_spec,
+            )
+        else:
+            illegal = _populate_realized_intersections_from_native_crossing_events(
+                crossing_plan_info=self.crossing_plan_info,
+                routed_records_by_net_id=self.route_bookkeeping.records_by_id,
+                native_crossing_events=native_crossing_events,
+                realization_grid_spec=self.realization_grid_spec,
+            )
+        self._record_pipeline_timing(
+            "realized_crossing_verify_intersections",
+            t_illegal_crossing_verify_start,
+        )
+        t_realized_insertion_loss_start = self._pipeline_timer_start()
+        _augment_insertion_loss_report_from_realized_intersections(
+            crossing_plan_info=self.crossing_plan_info,
+            routed_records_by_net_id=self.route_bookkeeping.records_by_id,
+        )
+        self._record_pipeline_timing(
+            "realized_crossing_realized_loss",
+            t_realized_insertion_loss_start,
+        )
+        self._record_pipeline_timing(
+            "realized_crossing_refresh_total",
+            t_refresh_crossings_start,
+        )
+        return illegal
+
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
         t_obstacle_start = self._pipeline_timer_start()
         self.resolved_obstacle_config = _resolve_obstacle_config(
@@ -5101,706 +6728,15 @@ class _RouteNetsRustSession:
         if self.collect_timing:
             astar_elapsed_s = time.perf_counter() - t_astar_start
 
-        def _apply_checked_endpoint_corrections_for_net_ids(
-            net_ids: Iterable[int],
-            *,
-            record_pipeline_timing: bool = True,
-            print_warnings: bool = False,
-        ) -> list[int]:
-            if not self.enable_checked_endpoint_correction:
-                return []
-            if not hasattr(self.router, "apply_checked_endpoint_corrections"):
-                raise RuntimeError(
-                    "The loaded photonic_router._rust extension does not expose "
-                    "PyPhotonicRouter.apply_checked_endpoint_corrections. "
-                    "Rebuild it with `maturin develop --release`."
-                )
-            correction_jobs: list[
-                tuple[
-                    int,
-                    Any,
-                    list[tuple[int, int]],
-                    list[tuple[int, int]],
-                    tuple[float, float] | None,
-                    tuple[float, float] | None,
-                ]
-            ] = []
-            requested_net_ids = [int(net_id) for net_id in net_ids]
-            crossing_net_ids: set[int] = set()
-            if self.enable_crossings and hasattr(self.router, "crossing_events"):
-                try:
-                    for raw_event in cast(Iterable[Any], self.router.crossing_events()):
-                        if not isinstance(raw_event, Mapping):
-                            try:
-                                raw_event = dict(cast(Any, raw_event))
-                            except (TypeError, ValueError):
-                                continue
-                        for key in ("net_id", "partner_net_id"):
-                            try:
-                                crossing_net_ids.add(int(cast(Any, raw_event.get(key))))
-                            except (TypeError, ValueError):
-                                continue
-                except Exception:
-                    crossing_net_ids = set()
-            t_endpoint_correction_pack_start = self._pipeline_timer_start()
-            for net_id in requested_net_ids:
-                record = self.route_bookkeeping.records_by_id.get(net_id)
-                job = self.route_jobs_by_id.get(net_id)
-                if record is None or job is None:
-                    continue
-                if int(net_id) in self.fanout_anchor_net_ids and record.corrected_centerline_um:
-                    continue
-                if self.enable_crossings and int(net_id) in crossing_net_ids:
-                    continue
-                source_port = self._routing_endpoint_center_um(job, source=True)
-                target_port = self._routing_endpoint_center_um(job, source=False)
-                if source_port is None and target_port is None:
-                    continue
-                source_state, target_state, opened_candidate_cells, _, _ = (
-                    self._state_openings_for_job(job)
-                )
-                clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
-                correction_jobs.append(
-                    (
-                        int(net_id),
-                        record.route_obj,
-                        sorted(opened_candidate_cells),
-                        clearance_exempt_cells,
-                        source_port,
-                        target_port,
-                    )
-                )
-            if record_pipeline_timing:
-                self._record_pipeline_timing(
-                    "endpoint_correction_pack",
-                    t_endpoint_correction_pack_start,
-                )
-            if not correction_jobs:
-                return []
 
-            correction_start = self._timing_start()
-            raw_corrections = self.router.apply_checked_endpoint_corrections(
-                correction_jobs,
-                float(self.route_width_um),
-                int(self.commit_radius_cells),
-                int(self.core_commit_radius_cells),
-                True,
-            )
-            correction_elapsed_s = (
-                time.perf_counter() - correction_start if self.collect_timing else 0.0
-            )
-            if record_pipeline_timing:
-                self._record_pipeline_timing("endpoint_correction_native", correction_start)
-            t_endpoint_correction_processing_start = self._pipeline_timer_start()
-            correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
-            failed_net_ids: list[int] = []
-            for raw_correction in cast(Iterable[Any], raw_corrections):
-                correction = dict(raw_correction)
-                net_id = int(correction["net_id"])
-                record = self.route_bookkeeping.records_by_id.get(net_id)
-                job = self.route_jobs_by_id.get(net_id)
-                if record is None or job is None:
-                    continue
-                error = correction.get("error")
-                if error is not None:
-                    if self.collect_timing:
-                        self.route_timing_buckets["endpoint_correction"].record_elapsed(
-                            correction_elapsed_per_job_s,
-                            failed=True,
-                        )
-                    message = (
-                        "Checked grid-to-port endpoint correction skipped for net "
-                        f"{job.net_name!r}: {error}"
-                    )
-                    if print_warnings:
-                        print("WARNING: " + message)
-                    failed_net_ids.append(net_id)
-                    if not self.enable_crossings:
-                        self.route_bookkeeping.records_by_id[net_id] = replace(
-                            record,
-                            corrected_centerline_um=(),
-                            endpoint_correction_error=message,
-                        )
-                    continue
-                centerline = _centerline_tuple(correction.get("centerline"))
-                if not centerline:
-                    if self.collect_timing:
-                        self.route_timing_buckets["endpoint_correction"].record_elapsed(
-                            correction_elapsed_per_job_s,
-                            failed=True,
-                        )
-                    message = (
-                        "Checked grid-to-port endpoint correction skipped for net "
-                        f"{job.net_name!r}: endpoint correction returned an invalid centerline"
-                    )
-                    if print_warnings:
-                        print("WARNING: " + message)
-                    failed_net_ids.append(net_id)
-                    if not self.enable_crossings:
-                        self.route_bookkeeping.records_by_id[net_id] = replace(
-                            record,
-                            corrected_centerline_um=(),
-                            endpoint_correction_error=message,
-                        )
-                    continue
-                if self.collect_timing:
-                    self.route_timing_buckets["endpoint_correction"].record_elapsed(
-                        correction_elapsed_per_job_s,
-                    )
-                corrected_total_length_um = float(correction["total_length_um"])
-                self.route_bookkeeping.records_by_id[net_id] = replace(
-                    record,
-                    total_length_um=corrected_total_length_um,
-                    base_total_length_um=(
-                        record.base_total_length_um
-                        if record.base_total_length_um is not None
-                        else float(record.total_length_um)
-                    ),
-                    corrected_centerline_um=centerline,
-                    endpoint_correction_error=None,
-                )
-            if record_pipeline_timing:
-                self._record_pipeline_timing(
-                    "endpoint_correction_processing",
-                    t_endpoint_correction_processing_start,
-                )
-            return failed_net_ids
 
-        def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
-            net_ids: Iterable[int],
-            *,
-            record_pipeline_timing: bool = True,
-            print_warnings: bool = False,
-        ) -> list[int]:
-            if not self.enable_checked_endpoint_correction or not self.fanout_anchor_net_ids:
-                return []
-            if not hasattr(self.router, "apply_checked_endpoint_corrections"):
-                raise RuntimeError(
-                    "The loaded photonic_router._rust extension does not expose "
-                    "PyPhotonicRouter.apply_checked_endpoint_corrections. "
-                    "Rebuild it with `maturin develop --release`."
-                )
 
-            correction_jobs: list[
-                tuple[
-                    int,
-                    Any,
-                    list[tuple[int, int]],
-                    list[tuple[int, int]],
-                    tuple[float, float] | None,
-                    tuple[float, float] | None,
-                ]
-            ] = []
-            job_context_by_id: dict[int, tuple[RoutedNetRecord, bool, bool]] = {}
-            requested_net_ids = [int(net_id) for net_id in net_ids]
-            crossing_net_ids: set[int] = set()
-            if self.enable_crossings and hasattr(self.router, "crossing_events"):
-                try:
-                    for raw_event in cast(Iterable[Any], self.router.crossing_events()):
-                        if not isinstance(raw_event, Mapping):
-                            try:
-                                raw_event = dict(cast(Any, raw_event))
-                            except (TypeError, ValueError):
-                                continue
-                        for key in ("net_id", "partner_net_id"):
-                            try:
-                                crossing_net_ids.add(int(cast(Any, raw_event.get(key))))
-                            except (TypeError, ValueError):
-                                continue
-                except Exception:
-                    crossing_net_ids = set()
-            t_endpoint_correction_pack_start = self._pipeline_timer_start()
-            for net_id in requested_net_ids:
-                record = self.route_bookkeeping.records_by_id.get(net_id)
-                job = self.route_jobs_by_id.get(net_id)
-                if record is None or job is None or not record.corrected_centerline_um:
-                    continue
-                source_has_fanout_stub = int(net_id) in self.fanout_anchor_source_net_ids
-                target_has_fanout_stub = int(net_id) in self.fanout_anchor_target_net_ids
-                if not (source_has_fanout_stub or target_has_fanout_stub):
-                    continue
-                if source_has_fanout_stub and target_has_fanout_stub:
-                    continue
-                # A fanout stub is already a corrected endpoint adapter. When the
-                # routed net also contains a crossing, the unrestricted native
-                # endpoint corrector may move geometry on the protected side of the
-                # crossing before we merge it back into the stubbed centerline. Let
-                # the crossing-aware pass splice only the source->first-crossing or
-                # last-crossing->target segment instead.
-                if self.enable_crossings and int(net_id) in crossing_net_ids:
-                    continue
 
-                source_port = (
-                    None
-                    if source_has_fanout_stub
-                    else self._routing_endpoint_center_um(job, source=True)
-                )
-                target_port = (
-                    None
-                    if target_has_fanout_stub
-                    else self._routing_endpoint_center_um(job, source=False)
-                )
-                if source_port is None and target_port is None:
-                    continue
-                _, _, opened_candidate_cells, _, _ = self._state_openings_for_job(job)
-                if source_has_fanout_stub:
-                    opened_candidate_cells.update(
-                        self.fanout_stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
-                    )
-                if target_has_fanout_stub:
-                    opened_candidate_cells.update(
-                        self.fanout_stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
-                    )
-                clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
-                correction_jobs.append(
-                    (
-                        int(net_id),
-                        record.route_obj,
-                        sorted(opened_candidate_cells),
-                        clearance_exempt_cells,
-                        source_port,
-                        target_port,
-                    )
-                )
-                job_context_by_id[int(net_id)] = (
-                    record,
-                    source_has_fanout_stub,
-                    target_has_fanout_stub,
-                )
 
-            if record_pipeline_timing:
-                self._record_pipeline_timing(
-                    "fanout_stub_endpoint_correction_pack",
-                    t_endpoint_correction_pack_start,
-                )
-            if not correction_jobs:
-                return []
 
-            correction_start = self._timing_start()
-            raw_corrections = self.router.apply_checked_endpoint_corrections(
-                correction_jobs,
-                float(self.route_width_um),
-                int(self.commit_radius_cells),
-                int(self.core_commit_radius_cells),
-                True,
-            )
-            correction_elapsed_s = (
-                time.perf_counter() - correction_start if self.collect_timing else 0.0
-            )
-            if record_pipeline_timing:
-                self._record_pipeline_timing(
-                    "fanout_stub_endpoint_correction_native",
-                    correction_start,
-                )
-            t_endpoint_correction_processing_start = self._pipeline_timer_start()
-            correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
-            failed_net_ids: list[int] = []
-            for raw_correction in cast(Iterable[Any], raw_corrections):
-                correction = dict(raw_correction)
-                net_id = int(correction["net_id"])
-                context = job_context_by_id.get(net_id)
-                job = self.route_jobs_by_id.get(net_id)
-                if context is None or job is None:
-                    continue
-                record, source_has_fanout_stub, target_has_fanout_stub = context
-                error = correction.get("error")
-                if error is not None:
-                    if self.collect_timing:
-                        self.route_timing_buckets["endpoint_correction"].record_elapsed(
-                            correction_elapsed_per_job_s,
-                            failed=True,
-                        )
-                    message = (
-                        "Checked fanout-stub endpoint correction skipped for net "
-                        f"{job.net_name!r}: {error}"
-                    )
-                    if print_warnings:
-                        print("WARNING: " + message)
-                    failed_net_ids.append(net_id)
-                    self.route_bookkeeping.records_by_id[net_id] = replace(
-                        record,
-                        endpoint_correction_error=message,
-                    )
-                    continue
-
-                corrected_route = _dedupe_centerline(
-                    _centerline_tuple(correction.get("centerline"))
-                )
-                route_baseline = _primitive_centerline_for_record(
-                    record,
-                    router=self.router,
-                    prefer_corrected_baseline=False,
-                )
-                existing_baseline = _dedupe_centerline(record.corrected_centerline_um)
-                merged_centerline = _merge_terminal_corrected_route_centerline(
-                    existing_baseline=existing_baseline,
-                    route_baseline=route_baseline,
-                    corrected_route_centerline=corrected_route,
-                    freeze_source=source_has_fanout_stub,
-                    freeze_target=target_has_fanout_stub,
-                )
-                if len(merged_centerline) < 2:
-                    if self.collect_timing:
-                        self.route_timing_buckets["endpoint_correction"].record_elapsed(
-                            correction_elapsed_per_job_s,
-                            failed=True,
-                        )
-                    route_start = route_baseline[0] if route_baseline else None
-                    route_end = route_baseline[-1] if route_baseline else None
-                    existing_start = existing_baseline[0] if existing_baseline else None
-                    existing_end = existing_baseline[-1] if existing_baseline else None
-                    corrected_start = (
-                        corrected_route[0] if corrected_route else None
-                    )
-                    corrected_end = corrected_route[-1] if corrected_route else None
-                    message = (
-                        "Checked fanout-stub endpoint correction skipped for net "
-                        f"{job.net_name!r}: could not merge corrected route segment "
-                        "back into static stub centerline "
-                        f"(existing_len={len(existing_baseline)}, "
-                        f"route_len={len(route_baseline)}, "
-                        f"corrected_len={len(corrected_route)}, "
-                        f"freeze_source={source_has_fanout_stub}, "
-                        f"freeze_target={target_has_fanout_stub}, "
-                        f"existing_start={existing_start}, existing_end={existing_end}, "
-                        f"route_start={route_start}, route_end={route_end}, "
-                        f"corrected_start={corrected_start}, corrected_end={corrected_end})"
-                    )
-                    if print_warnings:
-                        print("WARNING: " + message)
-                    failed_net_ids.append(net_id)
-                    self.route_bookkeeping.records_by_id[net_id] = replace(
-                        record,
-                        endpoint_correction_error=message,
-                    )
-                    continue
-
-                if self.collect_timing:
-                    self.route_timing_buckets["endpoint_correction"].record_elapsed(
-                        correction_elapsed_per_job_s,
-                    )
-                centerline_length = getattr(self.router, "centerline_length_um", None)
-                if centerline_length is not None:
-                    try:
-                        corrected_total_length_um = float(
-                            centerline_length(list(merged_centerline))
-                        )
-                    except Exception:
-                        corrected_total_length_um = _centerline_length_um(merged_centerline)
-                else:
-                    corrected_total_length_um = _centerline_length_um(merged_centerline)
-                self.route_bookkeeping.records_by_id[net_id] = replace(
-                    record,
-                    total_length_um=corrected_total_length_um,
-                    base_total_length_um=(
-                        record.base_total_length_um
-                        if record.base_total_length_um is not None
-                        else float(record.total_length_um)
-                    ),
-                    corrected_centerline_um=merged_centerline,
-                    endpoint_correction_error=None,
-                )
-
-            if record_pipeline_timing:
-                self._record_pipeline_timing(
-                    "fanout_stub_endpoint_correction_processing",
-                    t_endpoint_correction_processing_start,
-                )
-            return failed_net_ids
-
-        def _current_crossing_points_by_net_id() -> dict[int, list[tuple[float, float]]]:
-            if not self.enable_crossings or not hasattr(self.router, "crossing_events"):
-                return {}
-            try:
-                raw_events = list(cast(Iterable[Any], self.router.crossing_events()))
-            except Exception:
-                return {}
-            if not raw_events:
-                return {}
-            _populate_realized_intersections_from_native_crossing_events(
-                crossing_plan_info=self.crossing_plan_info,
-                routed_records_by_net_id=self.route_bookkeeping.records_by_id,
-                native_crossing_events=raw_events,
-                realization_grid_spec=self.realization_grid_spec,
-            )
-            return _legal_crossing_points_by_net_id(self.crossing_plan_info)
-
-        def _route_target_grid_center_um(
-            route_obj: object | None,
-        ) -> tuple[float, float] | None:
-            if route_obj is None:
-                return None
-            raw_state = getattr(route_obj, "reached_target", None)
-            if raw_state is None:
-                states = getattr(route_obj, "states", None)
-                try:
-                    raw_state = cast(Any, states)[-1]
-                except (TypeError, IndexError):
-                    return None
-            try:
-                return self._grid_cell_center_um(int(raw_state.x), int(raw_state.y))
-            except (AttributeError, TypeError, ValueError):
-                return None
-
-        def _route_target_angle(
-            route_obj: object | None,
-        ) -> int | None:
-            if route_obj is None:
-                return None
-            raw_state = getattr(route_obj, "reached_target", None)
-            if raw_state is None:
-                states = getattr(route_obj, "states", None)
-                try:
-                    raw_state = cast(Any, states)[-1]
-                except (TypeError, IndexError):
-                    return None
-            try:
-                return int(raw_state.angle) % 8
-            except (AttributeError, TypeError, ValueError):
-                return None
-
-        def _record_terminal_bump_distance_check_candidates(
-            crossing_points_by_net_id: Mapping[int, list[tuple[float, float]]],
-            net_ids: Iterable[int],
-        ) -> None:
-            """Record where a terminal bump distance check would become active.
-
-            This is diagnostic-only: the router behavior is unchanged.  The check
-            is axis-specific: horizontal target approaches care only about
-            physical-port-vs-grid y offset, while vertical target approaches care
-            only about physical-port-vs-grid x offset.  If a realized crossing sits
-            on that same target axis, a future A* guard must make sure the
-            remaining terminal segment is long enough to insert the required bump
-            geometry.
-            """
-
-            if not isinstance(self.crossing_plan_info, dict):
-                return
-
-            trace_raw = os.environ.get(
-                "PHOTONIC_ROUTER_TRACE_TERMINAL_BUMP_DISTANCE_CHECKS", ""
-            )
-            trace_tokens = {item.strip() for item in trace_raw.split(",") if item.strip()}
-            trace_all = "*" in trace_tokens
-            grid_size = float(self.grid.grid_size_um)
-            eps = max(1e-6, grid_size * 1e-6)
-            axis_eps = max(1e-6, grid_size * 0.25)
-            crossing_half_um = (
-                float(self.crossing_plan_info.get("crossing_half_size_cells", 0) or 0)
-                * grid_size
-            )
-            required_bump_um = 4.0 * float(self.bend_radius_cells) * grid_size
-
-            target_x_offset_nets: list[dict[str, object]] = []
-            target_y_offset_nets: list[dict[str, object]] = []
-            active_checks: list[dict[str, object]] = []
-
-            for raw_net_id in net_ids:
-                net_id = int(raw_net_id)
-                record = self.route_bookkeeping.records_by_id.get(net_id)
-                job = self.route_jobs_by_id.get(net_id)
-                if record is None or job is None or record.target_port_center_um is None:
-                    continue
-                target_grid_um = _route_target_grid_center_um(record.route_obj)
-                if target_grid_um is None:
-                    continue
-                target_port_um = record.target_port_center_um
-                target_dx_um = float(target_port_um[0]) - float(target_grid_um[0])
-                target_dy_um = float(target_port_um[1]) - float(target_grid_um[1])
-                target_angle = _route_target_angle(record.route_obj)
-                target_axis = (
-                    "horizontal"
-                    if target_angle in (0, 4)
-                    else "vertical"
-                    if target_angle in (2, 6)
-                    else "diagonal"
-                )
-
-                net_entry = {
-                    "net_id": int(net_id),
-                    "net_name": str(record.net_name),
-                    "target_port": f"{job.inst2},{job.port2}",
-                    "target_port_um": [
-                        round(float(target_port_um[0]), 6),
-                        round(float(target_port_um[1]), 6),
-                    ],
-                    "target_grid_um": [
-                        round(float(target_grid_um[0]), 6),
-                        round(float(target_grid_um[1]), 6),
-                    ],
-                    "target_dx_um": round(float(target_dx_um), 6),
-                    "target_dy_um": round(float(target_dy_um), 6),
-                    "target_angle": None if target_angle is None else int(target_angle),
-                    "target_axis": target_axis,
-                }
-                target_x_active = target_axis == "vertical" and abs(target_dx_um) > eps
-                target_y_active = target_axis == "horizontal" and abs(target_dy_um) > eps
-                if target_x_active:
-                    target_x_offset_nets.append(net_entry)
-                if target_y_active:
-                    target_y_offset_nets.append(net_entry)
-                if not target_x_active and not target_y_active:
-                    continue
-
-                for crossing_point in crossing_points_by_net_id.get(net_id, []):
-                    crossing_x = float(crossing_point[0])
-                    crossing_y = float(crossing_point[1])
-                    if target_x_active and abs(crossing_x - float(target_grid_um[0])) <= axis_eps:
-                        distance_to_target_um = abs(float(target_grid_um[1]) - crossing_y)
-                        available_um = max(0.0, distance_to_target_um - crossing_half_um)
-                        active_checks.append(
-                            {
-                                **net_entry,
-                                "axis": "target_x",
-                                "crossing_um": [round(crossing_x, 6), round(crossing_y, 6)],
-                                "distance_to_target_um": round(
-                                    float(distance_to_target_um), 6
-                                ),
-                                "crossing_half_um": round(float(crossing_half_um), 6),
-                                "available_um": round(float(available_um), 6),
-                                "required_bump_um": round(float(required_bump_um), 6),
-                                "satisfies": bool(available_um + eps >= required_bump_um),
-                            }
-                        )
-                    if target_y_active and abs(crossing_y - float(target_grid_um[1])) <= axis_eps:
-                        distance_to_target_um = abs(float(target_grid_um[0]) - crossing_x)
-                        available_um = max(0.0, distance_to_target_um - crossing_half_um)
-                        active_checks.append(
-                            {
-                                **net_entry,
-                                "axis": "target_y",
-                                "crossing_um": [round(crossing_x, 6), round(crossing_y, 6)],
-                                "distance_to_target_um": round(
-                                    float(distance_to_target_um), 6
-                                ),
-                                "crossing_half_um": round(float(crossing_half_um), 6),
-                                "available_um": round(float(available_um), 6),
-                                "required_bump_um": round(float(required_bump_um), 6),
-                                "satisfies": bool(available_um + eps >= required_bump_um),
-                            }
-                        )
-
-                should_trace = trace_all or record.net_name in trace_tokens or str(net_id) in trace_tokens
-                if should_trace:
-                    matching_checks = [
-                        item for item in active_checks if int(item["net_id"]) == int(net_id)
-                    ]
-                    print(
-                        "terminal_bump_distance_check "
-                        f"net={record.net_name} id={net_id} "
-                        f"target_port={job.inst2},{job.port2} "
-                        f"target_port={target_port_um} target_grid={target_grid_um} "
-                        f"target_axis={target_axis} "
-                        f"target_dx={target_dx_um:.6f} target_dy={target_dy_um:.6f} "
-                        f"same_axis_crossings={len(matching_checks)}"
-                    )
-                    for item in matching_checks:
-                        print(
-                            "terminal_bump_distance_check "
-                            f"net={record.net_name} id={net_id} "
-                            f"crossing={item['crossing_um']} "
-                            f"available_um={item['available_um']} "
-                            f"required_um={item['required_bump_um']} "
-                            f"satisfies={item['satisfies']}"
-                        )
-
-            self.crossing_plan_info["terminal_bump_target_x_offset_nets"] = target_x_offset_nets
-            self.crossing_plan_info["terminal_bump_target_x_offset_net_count"] = len(
-                target_x_offset_nets
-            )
-            self.crossing_plan_info["terminal_bump_target_y_offset_nets"] = target_y_offset_nets
-            self.crossing_plan_info["terminal_bump_target_y_offset_net_count"] = len(
-                target_y_offset_nets
-            )
-            failed_checks = [
-                check for check in active_checks if not bool(check.get("satisfies"))
-            ]
-            self.crossing_plan_info["terminal_bump_distance_checks"] = active_checks
-            self.crossing_plan_info["terminal_bump_distance_check_count"] = len(active_checks)
-            self.crossing_plan_info["terminal_bump_distance_failures"] = failed_checks
-            self.crossing_plan_info["terminal_bump_distance_failure_count"] = len(failed_checks)
-
-        def _apply_crossing_aware_endpoint_corrections_for_net_ids(
-            net_ids: Iterable[int],
-            *,
-            record_pipeline_timing: bool = True,
-            print_warnings: bool = False,
-        ) -> list[int]:
-            if not self.enable_checked_endpoint_correction or not self.enable_crossings:
-                return []
-            crossing_points_by_net_id = _current_crossing_points_by_net_id()
-            if not crossing_points_by_net_id:
-                return []
-            requested_net_ids = [int(net_id) for net_id in net_ids]
-            _record_terminal_bump_distance_check_candidates(
-                crossing_points_by_net_id,
-                requested_net_ids,
-            )
-
-            t_endpoint_correction_start = self._pipeline_timer_start()
-            failed_net_ids: list[int] = []
-            for raw_net_id in requested_net_ids:
-                net_id = int(raw_net_id)
-                crossing_points = crossing_points_by_net_id.get(net_id, [])
-                if not crossing_points:
-                    continue
-                record = self.route_bookkeeping.records_by_id.get(net_id)
-                job = self.route_jobs_by_id.get(net_id)
-                if record is None or job is None:
-                    continue
-
-                source_has_fanout_stub = net_id in self.fanout_anchor_source_net_ids
-                target_has_fanout_stub = net_id in self.fanout_anchor_target_net_ids
-                record_has_fanout_stub = net_id in self.fanout_anchor_net_ids
-                _, _, opened_candidate_cells, _, _ = self._state_openings_for_job(job)
-                if source_has_fanout_stub:
-                    opened_candidate_cells.update(
-                        self.fanout_stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
-                    )
-                if target_has_fanout_stub:
-                    opened_candidate_cells.update(
-                        self.fanout_stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
-                    )
-                clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
-                start_s = self._timing_start()
-                updated = _apply_crossing_aware_endpoint_correction_to_record(
-                    record,
-                    router=cast(EndpointCorrectionRouter, self.router),
-                    crossing_points=crossing_points,
-                    realization_grid_spec=self.realization_grid_spec,
-                    route_width_um=float(self.route_width_um),
-                    allow_unchecked_bumps=False,
-                    log_failures=print_warnings,
-                    crossing_plan_info=self.crossing_plan_info,
-                    correct_source=not source_has_fanout_stub,
-                    correct_target=not target_has_fanout_stub,
-                    prefer_corrected_baseline=(
-                        record_has_fanout_stub and bool(record.corrected_centerline_um)
-                    ),
-                    opened_cells=opened_candidate_cells,
-                    clearance_exempt_cells=clearance_exempt_cells,
-                    clearance_radius_cells=int(self.commit_radius_cells),
-                    core_radius_cells=int(self.core_commit_radius_cells),
-                )
-                failed = updated.endpoint_correction_error is not None
-                if self.collect_timing:
-                    self.route_timing_buckets["endpoint_correction"].record_elapsed(
-                        time.perf_counter() - start_s,
-                        failed=failed,
-                    )
-                if failed:
-                    failed_net_ids.append(net_id)
-                self.route_bookkeeping.records_by_id[net_id] = updated
-
-            if record_pipeline_timing:
-                self._record_pipeline_timing(
-                    "crossing_endpoint_correction",
-                    t_endpoint_correction_start,
-                )
-            return failed_net_ids
 
         if self.enable_checked_endpoint_correction:
-            _apply_checked_endpoint_corrections_for_net_ids(
+            self._apply_checked_endpoint_corrections_for_net_ids(
                 list(self.route_bookkeeping.route_order),
                 print_warnings=(
                     self.collect_attempt_diagnostics
@@ -5808,7 +6744,7 @@ class _RouteNetsRustSession:
                     or self.verbose_route_diagnostics
                 ),
             )
-            _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
+            self._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
                 list(self.route_bookkeeping.route_order),
                 print_warnings=(
                     self.collect_attempt_diagnostics
@@ -5816,7 +6752,7 @@ class _RouteNetsRustSession:
                     or self.verbose_route_diagnostics
                 ),
             )
-            _apply_crossing_aware_endpoint_corrections_for_net_ids(
+            self._apply_crossing_aware_endpoint_corrections_for_net_ids(
                 list(self.route_bookkeeping.route_order),
                 print_warnings=(
                     self.collect_attempt_diagnostics
@@ -5908,918 +6844,31 @@ class _RouteNetsRustSession:
                     )
                 print(line)
 
-        def _grid_cell_from_raw_point(raw_point: object) -> tuple[int, int] | None:
-            if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
-                return None
-            try:
-                point_x = float(raw_point[0])
-                point_y = float(raw_point[1])
-            except (TypeError, ValueError):
-                return None
-            if not math.isfinite(point_x) or not math.isfinite(point_y):
-                return None
-            return (
-                int(math.floor((point_x - float(self.origin_x_um)) / float(self.grid.grid_size_um))),
-                int(math.floor((point_y - float(self.origin_y_um)) / float(self.grid.grid_size_um))),
-            )
 
-        def _illegal_crossing_grid_cell(item: Mapping[str, object]) -> tuple[int, int] | None:
-            raw_cell = item.get("grid_cell")
-            if isinstance(raw_cell, (tuple, list)) and len(raw_cell) == 2:
-                try:
-                    return (int(raw_cell[0]), int(raw_cell[1]))
-                except (TypeError, ValueError):
-                    return None
-            return _grid_cell_from_raw_point(item.get("point_um"))
 
-        def _illegal_crossing_keepout_radius(item: Mapping[str, object]) -> int:
-            reason = str(item.get("reason", "") or "")
-            if reason == "not_perpendicular":
-                return max(1, int(self.resolved_crossing_half_size_cells) + 1)
-            if reason == "collinear_route_overlap":
-                return 1
-            blockers = item.get("crossing_footprint_blockers")
-            if isinstance(blockers, IterableABC) and not isinstance(
-                blockers,
-                (str, bytes, bytearray),
-            ):
-                if any(isinstance(blocker, Mapping) for blocker in blockers):
-                    return max(1, int(self.resolved_crossing_half_size_cells) + 1)
-            if reason in {
-                "crossing_footprint_contains_route_geometry",
-                "crossing_footprint_overlap",
-            }:
-                return max(1, int(self.resolved_crossing_half_size_cells) + 1)
-            return max(1, min(4, int(self.resolved_crossing_half_size_cells) + 1))
 
-        def _add_keepout_square(
-            keepout_cells: set[tuple[int, int]],
-            *,
-            center: tuple[int, int],
-            radius: int,
-        ) -> None:
-            for y in range(center[1] - radius, center[1] + radius + 1):
-                for x in range(center[0] - radius, center[0] + radius + 1):
-                    if 0 <= x < int(self.grid.width) and 0 <= y < int(self.grid.height):
-                        keepout_cells.add((x, y))
 
-        def _add_segment_keepout_cells(
-            keepout_cells: set[tuple[int, int]],
-            *,
-            start_cell: tuple[int, int],
-            end_cell: tuple[int, int],
-            radius: int,
-        ) -> None:
-            dx = int(end_cell[0]) - int(start_cell[0])
-            dy = int(end_cell[1]) - int(start_cell[1])
-            steps = max(abs(dx), abs(dy), 1)
-            for step in range(steps + 1):
-                t = float(step) / float(steps)
-                cell = (
-                    int(round(float(start_cell[0]) + float(dx) * t)),
-                    int(round(float(start_cell[1]) + float(dy) * t)),
-                )
-                _add_keepout_square(keepout_cells, center=cell, radius=radius)
 
-        def _final_crossing_repair_keepout_cells(
-            illegal_crossings: Iterable[Mapping[str, object]],
-        ) -> set[tuple[int, int]]:
-            keepout_cells: set[tuple[int, int]] = set()
-            for item in illegal_crossings:
-                radius = _illegal_crossing_keepout_radius(item)
-                reason = str(item.get("reason", "") or "")
-                if reason == "collinear_route_overlap":
-                    start_cell = _grid_cell_from_raw_point(item.get("overlap_start_um"))
-                    end_cell = _grid_cell_from_raw_point(item.get("overlap_end_um"))
-                    if start_cell is not None and end_cell is not None:
-                        _add_segment_keepout_cells(
-                            keepout_cells,
-                            start_cell=start_cell,
-                            end_cell=end_cell,
-                            radius=radius,
-                        )
-                        continue
-                center = _illegal_crossing_grid_cell(item)
-                if center is not None:
-                    _add_keepout_square(keepout_cells, center=center, radius=radius)
-                if reason == "crossing_footprint_overlap":
-                    peer = item.get("overlapping_crossing")
-                    if isinstance(peer, Mapping):
-                        peer_center = _grid_cell_from_raw_point(peer.get("point_um"))
-                        if peer_center is not None:
-                            _add_keepout_square(
-                                keepout_cells,
-                                center=peer_center,
-                                radius=radius,
-                            )
-            return keepout_cells
 
-        def _final_crossing_repair_net_ids(
-            illegal_crossings: Iterable[Mapping[str, object]],
-        ) -> list[int]:
-            net_ids: set[int] = set()
 
-            def _add_footprint_blocker_net_ids(item: Mapping[str, object]) -> None:
-                blockers = item.get("crossing_footprint_blockers")
-                if not isinstance(blockers, IterableABC) or isinstance(
-                    blockers,
-                    (str, bytes, bytearray),
-                ):
-                    return
-                for blocker in blockers:
-                    if not isinstance(blocker, Mapping):
-                        continue
-                    try:
-                        blocker_net_id = int(cast(object, blocker.get("net_id")))
-                    except (TypeError, ValueError):
-                        continue
-                    if blocker_net_id in self.route_jobs_by_id:
-                        net_ids.add(blocker_net_id)
 
-            for item in illegal_crossings:
-                item_pair_ids: list[int] = []
-                for key in ("net_id_a", "net_id_b"):
-                    try:
-                        net_id = int(cast(object, item.get(key)))
-                    except (TypeError, ValueError):
-                        continue
-                    if net_id in self.route_jobs_by_id:
-                        item_pair_ids.append(net_id)
-                reason = str(item.get("reason", "") or "")
-                if reason == "not_perpendicular":
-                    net_ids.update(item_pair_ids)
-                    _add_footprint_blocker_net_ids(item)
-                    continue
-                if reason in {
-                    "crossing_footprint_contains_bend",
-                    "insufficient_straight_margin",
-                }:
-                    if item_pair_ids:
-                        net_ids.add(max(item_pair_ids))
-                    _add_footprint_blocker_net_ids(item)
-                    continue
-                if reason == "collinear_route_overlap":
-                    net_ids.update(item_pair_ids)
-                    continue
-                if reason == "crossing_footprint_overlap":
-                    peer_pair_ids: set[int] = set()
-                    peer = item.get("overlapping_crossing")
-                    if isinstance(peer, Mapping):
-                        for key in ("net_id_a", "net_id_b"):
-                            try:
-                                peer_net_id = int(cast(object, peer.get(key)))
-                            except (TypeError, ValueError):
-                                continue
-                            if peer_net_id in self.route_jobs_by_id:
-                                peer_pair_ids.add(peer_net_id)
-                    net_ids.update(item_pair_ids)
-                    net_ids.update(peer_pair_ids)
-                    continue
-                if reason == "crossing_footprint_contains_route_geometry":
-                    before_blocker_net_ids = set(net_ids)
-                    _add_footprint_blocker_net_ids(item)
-                    if net_ids == before_blocker_net_ids:
-                        net_ids.update(item_pair_ids)
-                    continue
-                net_ids.update(item_pair_ids)
-            return [net_id for net_id in self.route_order if net_id in net_ids]
 
-        def _final_crossing_repair_batches(
-            illegal_crossings: list[dict[str, object]],
-            *,
-            max_net_ids: int,
-        ) -> list[list[dict[str, object]]]:
-            if not illegal_crossings or max_net_ids <= 0:
-                return []
-            components: list[tuple[list[dict[str, object]], set[int]]] = []
-            for item in illegal_crossings:
-                item_net_ids = set(_final_crossing_repair_net_ids([item]))
-                if not item_net_ids:
-                    components.append(([item], set()))
-                    continue
-                matching_indices = [
-                    index
-                    for index, (_items, component_net_ids) in enumerate(components)
-                    if component_net_ids.intersection(item_net_ids)
-                ]
-                if not matching_indices:
-                    components.append(([item], set(item_net_ids)))
-                    continue
-                target_index = matching_indices[0]
-                target_items, target_net_ids = components[target_index]
-                target_items.append(item)
-                target_net_ids.update(item_net_ids)
-                for merge_index in reversed(matching_indices[1:]):
-                    merge_items, merge_net_ids = components.pop(merge_index)
-                    target_items.extend(merge_items)
-                    target_net_ids.update(merge_net_ids)
 
-            capped_batches: list[list[dict[str, object]]] = []
-            oversized: list[dict[str, object]] = []
-            for component_items, _component_net_ids in components:
-                component_repair_ids = _final_crossing_repair_net_ids(component_items)
-                if component_repair_ids and len(component_repair_ids) <= max_net_ids:
-                    capped_batches.append(component_items)
-                else:
-                    oversized.extend(component_items)
 
-            if oversized:
-                current_batch: list[dict[str, object]] = []
-                current_net_ids: set[int] = set()
-                for item in oversized:
-                    item_net_ids = set(_final_crossing_repair_net_ids([item]))
-                    if (
-                        current_batch
-                        and item_net_ids
-                        and len(current_net_ids.union(item_net_ids)) > max_net_ids
-                    ):
-                        capped_batches.append(current_batch)
-                        current_batch = []
-                        current_net_ids = set()
-                    current_batch.append(item)
-                    current_net_ids.update(item_net_ids)
-                if current_batch:
-                    capped_batches.append(current_batch)
 
-            route_index = {int(net_id): index for index, net_id in enumerate(self.route_order)}
 
-            def _batch_sort_key(batch: list[dict[str, object]]) -> tuple[int, int, int]:
-                repair_ids = _final_crossing_repair_net_ids(batch)
-                first_route_index = min(
-                    (route_index.get(int(net_id), len(route_index)) for net_id in repair_ids),
-                    default=len(route_index),
-                )
-                return (first_route_index, -len(batch), len(repair_ids))
 
-            capped_batches.sort(key=_batch_sort_key)
-            return capped_batches
 
-        def _repair_final_illegal_crossings(
-            illegal_crossings: list[dict[str, object]],
-        ) -> bool:
-            max_repair_net_ids = 12
-            attempts = cast(
-                list[dict[str, object]],
-                self.crossing_plan_info.setdefault("final_crossing_repair_attempts", []),
-            )
-            priority_order = (
-                "collinear_route_overlap",
-                "crossing_footprint_contains_route_geometry",
-                "crossing_footprint_contains_bend",
-                "insufficient_straight_margin",
-                "not_perpendicular",
-                "crossing_footprint_overlap",
-            )
-            selected_reason = next(
-                (
-                    reason
-                    for reason in priority_order
-                    if any(str(item.get("reason", "") or "") == reason for item in illegal_crossings)
-                ),
-                None,
-            )
-            selected_illegal_crossings = [
-                item
-                for item in illegal_crossings
-                if selected_reason is None
-                or str(item.get("reason", "") or "") == selected_reason
-            ]
-            total_selected_issue_count = len(selected_illegal_crossings)
-            if selected_reason in {
-                "crossing_footprint_contains_bend",
-                "insufficient_straight_margin",
-                "not_perpendicular",
-            }:
-                repair_batches = _final_crossing_repair_batches(
-                    selected_illegal_crossings,
-                    max_net_ids=min(4, max_repair_net_ids),
-                )
-                if repair_batches:
-                    selected_illegal_crossings = repair_batches[0]
-            if (
-                not selected_illegal_crossings
-                or not self.crossing_plan_info.get("enabled")
-                or not self.repair_config.enabled
-                or not hasattr(self.router, "add_static_cells")
-                or not hasattr(self.router, "ripup_route")
-                or not hasattr(self.router, "route_many_with_repair_and_commit")
-            ):
-                return False
-            repair_net_ids = _final_crossing_repair_net_ids(selected_illegal_crossings)
-            if selected_reason == "not_perpendicular" and repair_net_ids:
-                priority: list[int] = []
-                for item in selected_illegal_crossings:
-                    for key in ("net_id_b", "net_id_a"):
-                        try:
-                            net_id = int(cast(object, item.get(key)))
-                        except (TypeError, ValueError):
-                            continue
-                        if net_id in self.route_jobs_by_id and net_id not in priority:
-                            priority.append(net_id)
-                    blockers = item.get("crossing_footprint_blockers")
-                    if not isinstance(blockers, IterableABC) or isinstance(
-                        blockers,
-                        (str, bytes, bytearray),
-                    ):
-                        continue
-                    for blocker in blockers:
-                        if not isinstance(blocker, Mapping):
-                            continue
-                        try:
-                            blocker_net_id = int(cast(object, blocker.get("net_id")))
-                        except (TypeError, ValueError):
-                            continue
-                        if blocker_net_id in self.route_jobs_by_id and blocker_net_id not in priority:
-                            priority.append(blocker_net_id)
-                repair_net_ids = [
-                    net_id
-                    for net_id in priority
-                    if net_id in repair_net_ids
-                ] + [
-                    net_id
-                    for net_id in repair_net_ids
-                    if net_id not in priority
-                ]
-            attempt: dict[str, object] = {
-                "selected_reason": selected_reason,
-                "illegal_reason_counts": dict(
-                    Counter(str(item.get("reason", "") or "unknown") for item in illegal_crossings)
-                ),
-                "selected_reason_counts": dict(
-                    Counter(
-                        str(item.get("reason", "") or "unknown")
-                        for item in selected_illegal_crossings
-                    )
-                ),
-                "repair_net_ids": [int(net_id) for net_id in repair_net_ids],
-            }
-            if total_selected_issue_count != len(selected_illegal_crossings):
-                attempt["batched_issue_count"] = len(selected_illegal_crossings)
-                attempt["total_selected_issue_count"] = total_selected_issue_count
-            if not repair_net_ids or len(repair_net_ids) > max_repair_net_ids:
-                attempt["status"] = "skipped"
-                attempt["reason"] = "no_repairable_nets_or_too_many"
-                attempts.append(attempt)
-                return False
-            keepout_cells = _final_crossing_repair_keepout_cells(selected_illegal_crossings)
-            attempt["keepout_cell_count"] = len(keepout_cells)
-            if not keepout_cells:
-                attempt["status"] = "skipped"
-                attempt["reason"] = "no_keepout_cells"
-                attempts.append(attempt)
-                return False
 
-            self.router.add_static_cells(sorted(keepout_cells))
-            for net_id in repair_net_ids:
-                self.router.ripup_route(int(net_id))
-                self.route_bookkeeping.clear_route(int(net_id))
-
-            repair_jobs: list[
-                tuple[
-                    int,
-                    Any,
-                    Any,
-                    list[tuple[int, int]],
-                    list[tuple[int, int]],
-                    tuple[float, float] | None,
-                    tuple[float, float] | None,
-                ]
-            ] = []
-            opened_by_id: dict[int, list[tuple[int, int]]] = {}
-            for net_id in repair_net_ids:
-                job = self.route_jobs_by_id[net_id]
-                source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
-                clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
-                repair_jobs.append(
-                    (
-                        int(job.net_id),
-                        source_state,
-                        target_state,
-                        opened_cells,
-                        clearance_exempt_cells,
-                        self._foreign_keepout_cleanup_cells_for_job(job),
-                        self._routing_endpoint_center_um(job, source=True),
-                        self._routing_endpoint_center_um(job, source=False),
-                    )
-                )
-                opened_by_id[int(job.net_id)] = opened_cells
-
-            raw_repair_result = self.router.route_many_with_repair_and_commit(
-                repair_jobs,
-                self.block_radius_cells,
-                self.commit_radius_cells,
-                self.core_commit_radius_cells,
-                int(self.repair_config.max_rounds),
-                int(self.repair_config.max_victims_per_failure),
-                float(self.repair_config.history_weight),
-                int(self.repair_config.history_increment),
-            )
-            repair_result = dict(raw_repair_result)
-            attempt["router_status"] = str(repair_result.get("status", ""))
-            attempt["routed_net_ids"] = [
-                int(dict(raw_entry)["net_id"])
-                for raw_entry in cast(Iterable[Any], repair_result.get("routes", []))
-            ]
-            if str(repair_result.get("status", "")) != "routed":
-                attempt["status"] = "failed"
-                attempts.append(attempt)
-                return False
-
-            repaired_records: list[RoutedNetRecord] = []
-            for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
-                entry = dict(raw_entry)
-                net_id = int(entry["net_id"])
-                job = self.route_jobs_by_id[net_id]
-                route_obj = entry["route"]
-                self._record_route(job, route_obj, opened_by_id[net_id])
-                repaired_records.append(self.route_bookkeeping.records_by_id[net_id])
-
-            if self.enable_checked_endpoint_correction and repaired_records:
-                repaired_net_ids = [
-                    int(record.net_id)
-                    for record in repaired_records
-                    if record.net_id is not None
-                ]
-                _apply_checked_endpoint_corrections_for_net_ids(
-                    repaired_net_ids,
-                    record_pipeline_timing=False,
-                )
-                _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
-                    repaired_net_ids,
-                    record_pipeline_timing=False,
-                )
-            attempt["status"] = "routed"
-            attempts.append(attempt)
-            return True
-
-        def _net_id_by_name() -> dict[str, int]:
-            return {
-                record.net_name: int(net_id)
-                for net_id, record in self.route_bookkeeping.records_by_id.items()
-            }
-
-        def _grid_rect_from_um_bbox(
-            raw_bbox: object,
-        ) -> tuple[int, int, int, int] | None:
-            if not isinstance(raw_bbox, (tuple, list)) or len(raw_bbox) != 4:
-                return None
-            try:
-                min_x_um = float(raw_bbox[0])
-                min_y_um = float(raw_bbox[1])
-                max_x_um = float(raw_bbox[2])
-                max_y_um = float(raw_bbox[3])
-            except (TypeError, ValueError):
-                return None
-            if not all(math.isfinite(v) for v in (min_x_um, min_y_um, max_x_um, max_y_um)):
-                return None
-            if max_x_um < min_x_um:
-                min_x_um, max_x_um = max_x_um, min_x_um
-            if max_y_um < min_y_um:
-                min_y_um, max_y_um = max_y_um, min_y_um
-            grid_size = float(self.grid.grid_size_um)
-            return (
-                int(math.floor((min_x_um - float(self.origin_x_um)) / grid_size)),
-                int(math.ceil((max_x_um - float(self.origin_x_um)) / grid_size)),
-                int(math.floor((min_y_um - float(self.origin_y_um)) / grid_size)),
-                int(math.ceil((max_y_um - float(self.origin_y_um)) / grid_size)),
-            )
-
-        def _add_keepout_rect(
-            keepout_cells: set[tuple[int, int]],
-            *,
-            rect: tuple[int, int, int, int],
-            radius: int,
-        ) -> None:
-            min_x, max_x, min_y, max_y = rect
-            if min_x > max_x:
-                min_x, max_x = max_x, min_x
-            if min_y > max_y:
-                min_y, max_y = max_y, min_y
-            for y in range(min_y - radius, max_y + radius + 1):
-                if y < 0 or y >= int(self.grid.height):
-                    continue
-                for x in range(min_x - radius, max_x + radius + 1):
-                    if 0 <= x < int(self.grid.width):
-                        keepout_cells.add((x, y))
-
-        def _cells_from_um_bbox(
-            raw_bbox: object,
-            *,
-            radius: int,
-        ) -> set[tuple[int, int]]:
-            rect = _grid_rect_from_um_bbox(raw_bbox)
-            if rect is None:
-                return set()
-            cells: set[tuple[int, int]] = set()
-            _add_keepout_rect(cells, rect=rect, radius=radius)
-            return cells
-
-        def _grid_rect_from_grid_bbox_text(text: str, name: str) -> tuple[int, int, int, int] | None:
-            match = re.search(rf"{re.escape(name)}=\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)", text)
-            if match is None:
-                return None
-            try:
-                min_x = int(match.group(1))
-                max_x = int(match.group(2))
-                min_y = int(match.group(3))
-                max_y = int(match.group(4))
-            except (TypeError, ValueError):
-                return None
-            return min_x, max_x, min_y, max_y
-
-        def _polygon_bbox_um(raw_polygon: object) -> tuple[float, float, float, float] | None:
-            if not isinstance(raw_polygon, IterableABC) or isinstance(
-                raw_polygon,
-                (str, bytes, bytearray),
-            ):
-                return None
-            points: list[tuple[float, float]] = []
-            for raw_point in raw_polygon:
-                if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
-                    return None
-                try:
-                    point = (float(raw_point[0]), float(raw_point[1]))
-                except (TypeError, ValueError):
-                    return None
-                if not math.isfinite(point[0]) or not math.isfinite(point[1]):
-                    return None
-                points.append(point)
-            if not points:
-                return None
-            xs = [point[0] for point in points]
-            ys = [point[1] for point in points]
-            return min(xs), min(ys), max(xs), max(ys)
-
-        def _photonic_issue_keepout_cells(
-            issue: PhotonicVerificationIssue,
-        ) -> set[tuple[int, int]]:
-            radius = max(1, int(self.core_commit_radius_cells) + 1)
-            if issue.code == "endpoint_correction_error":
-                cells: set[tuple[int, int]] = set()
-                for bbox_name in ("static_bbox", "core_bbox"):
-                    rect = _grid_rect_from_grid_bbox_text(issue.message, bbox_name)
-                    if rect is None:
-                        continue
-                    _add_keepout_rect(cells, rect=rect, radius=radius)
-                    if cells:
-                        return cells
-                return cells
-            details = issue.details or {}
-            if issue.code == "cross_net_waveguide_overlap":
-                return _cells_from_um_bbox(
-                    details.get("overlap_bbox_um"),
-                    radius=radius,
-                )
-            if issue.code == "waveguide_obstacle_overlap":
-                return _cells_from_um_bbox(
-                    details.get("overlap_bbox_um"),
-                    radius=radius,
-                )
-            if issue.code == "crossing_component_route_overlap":
-                crossing = details.get("crossing")
-                if isinstance(crossing, Mapping):
-                    polygon_bbox = _polygon_bbox_um(
-                        crossing.get("crossing_footprint_polygon_um")
-                    )
-                    if polygon_bbox is not None:
-                        return _cells_from_um_bbox(polygon_bbox, radius=radius)
-                return _cells_from_um_bbox(
-                    details.get("overlap_bbox_um"),
-                    radius=radius,
-                )
-            return set()
-
-        def _photonic_issue_net_ids(
-            issue: PhotonicVerificationIssue,
-        ) -> set[int]:
-            by_name = _net_id_by_name()
-            net_ids: set[int] = set()
-            if issue.net_name and issue.net_name in by_name:
-                net_ids.add(by_name[issue.net_name])
-            details = issue.details or {}
-            other_net_name = details.get("other_net_name")
-            if isinstance(other_net_name, str) and other_net_name in by_name:
-                net_ids.add(by_name[other_net_name])
-            return net_ids
 
         self.photonic_probe_index = 0
         self.last_photonic_probe_layout: Component | None = None
         self.last_photonic_probe_records: list[RoutedNetRecord] = []
 
-        def _make_photonic_verification_probe_layout(
-            records: Iterable[RoutedNetRecord],
-        ) -> Component:
-            t_probe_layout_total_start = self._pipeline_timer_start()
-            self.photonic_probe_index += 1
-            t_probe_copy_start = self._pipeline_timer_start()
-            probe_layout = self.unrouted_layout.copy()
-            probe_layout.name = f"photonic_repair_probe_{time.time_ns()}_{self.photonic_probe_index}"
-            self._record_pipeline_timing("photonic_probe_copy", t_probe_copy_start)
-            t_probe_realize_start = self._pipeline_timer_start()
-            realize_routed_net_records(
-                probe_layout,
-                list(records),
-                route_width_um=self.route_width_um,
-                route_layer=self.route_layer,
-                realization_grid_spec=self.realization_grid_spec,
-                allow_45_degree_turns=self.allow_45_degree_turns,
-                bend_radius_cells=self.bend_radius_cells,
-                crossing_plan_info=self.crossing_plan_info,
-                enable_endpoint_correction=self.enable_checked_endpoint_correction,
-            )
-            self._record_pipeline_timing("photonic_probe_realize", t_probe_realize_start)
-            if self.crossing_plan_info.get("enabled"):
-                t_probe_crossings_start = self._pipeline_timer_start()
-                _place_realized_crossing_components(probe_layout, self.crossing_plan_info)
-                self._record_pipeline_timing(
-                    "photonic_probe_crossing_place",
-                    t_probe_crossings_start,
-                )
-            self._record_pipeline_timing(
-                "photonic_probe_layout_total",
-                t_probe_layout_total_start,
-            )
-            return probe_layout
 
-        def _refresh_photonic_verification() -> PhotonicVerificationResult:
-            # This is an internal diagnostic verifier, not the intended default
-            # source of truth for production routing success. A* and the grid-level
-            # crossing checks must reject illegal moves locally; the final geometry
-            # gate is the Python verifier in `routing_flow.py` on the realized
-            # layout. Keep this probe available for debugging model mismatches
-            # between grid decisions and realized geometry, but do not treat it as
-            # a mandatory always-on second full verification pass.
-            t_refresh_start = self._pipeline_timer_start()
-            records = self.route_bookkeeping.ordered_records()
-            probe_layout = _make_photonic_verification_probe_layout(records)
-            self.last_photonic_probe_layout = probe_layout
-            self.last_photonic_probe_records = list(records)
-            t_verify_start = self._pipeline_timer_start()
-            result = verify_photonic_routing(
-                probe_layout,
-                self.schematic,
-                routed_net_records=records,
-                unrouted_layout=self.unrouted_layout,
-                route_width_um=self.route_width_um,
-                route_layer=self.route_layer,
-                obstacle_layers=_default_obstacle_layers(
-                    self.route_layer,
-                    include_heater_obstacles=self.include_heater_obstacles,
-                ),
-                realization_grid_spec=self.realization_grid_spec,
-                allow_45_degree_turns=self.allow_45_degree_turns,
-                bend_radius_cells=self.bend_radius_cells,
-                legal_overlap_polygons_by_net_id_pair_um=(
-                    _legal_crossing_overlap_polygons_for_verification(self.crossing_plan_info)
-                ),
-                crossing_component_footprints_um=(
-                    _legal_crossing_component_footprints_for_verification(self.crossing_plan_info)
-                ),
-                check_route_coverage=self.debug_stop_after_route_index is None,
-                check_endpoint_connectivity=self.enable_checked_endpoint_correction,
-            )
-            self._record_pipeline_timing("photonic_probe_verify", t_verify_start)
-            self._record_pipeline_timing("photonic_refresh_total", t_refresh_start)
-            return result
 
-        def _repair_final_photonic_issues(
-            issues: tuple[PhotonicVerificationIssue, ...],
-        ) -> bool:
-            attempts = cast(
-                list[dict[str, object]],
-                self.crossing_plan_info.setdefault("final_photonic_repair_attempts", []),
-            )
-            priority_groups: tuple[tuple[str, set[str]], ...] = (
-                (
-                    "endpoint_connection",
-                    {
-                        "endpoint_correction_error",
-                        "missing_corrected_centerline",
-                        "source_port_not_connected",
-                        "target_port_not_connected",
-                        "source_endpoint_mismatch",
-                        "target_endpoint_mismatch",
-                    },
-                ),
-                ("cross_net_waveguide_overlap", {"cross_net_waveguide_overlap"}),
-                ("waveguide_obstacle_overlap", {"waveguide_obstacle_overlap"}),
-                ("crossing_component_route_overlap", {"crossing_component_route_overlap"}),
-            )
-            selected_group = next(
-                (
-                    name
-                    for name, codes in priority_groups
-                    if any(issue.code in codes for issue in issues)
-                ),
-                None,
-            )
-            if selected_group is None:
-                return False
-            selected_codes = dict(priority_groups)[selected_group]
-            selected_issues = [issue for issue in issues if issue.code in selected_codes]
-            if selected_group == "crossing_component_route_overlap":
-                selected_issues = selected_issues[:1]
-            if (
-                not selected_issues
-                or not self.repair_config.enabled
-                or not hasattr(self.router, "add_static_cells")
-                or not hasattr(self.router, "ripup_route")
-                or not hasattr(self.router, "route_many_with_repair_and_commit")
-            ):
-                return False
 
-            repair_net_ids_set: set[int] = set()
-            keepout_cells: set[tuple[int, int]] = set()
-            for issue in selected_issues:
-                repair_net_ids_set.update(_photonic_issue_net_ids(issue))
-                keepout_cells.update(_photonic_issue_keepout_cells(issue))
-            repair_net_ids = [net_id for net_id in self.route_order if net_id in repair_net_ids_set]
-            attempt: dict[str, object] = {
-                "selected_group": selected_group,
-                "issue_counts": dict(Counter(issue.code for issue in issues)),
-                "selected_issue_counts": dict(Counter(issue.code for issue in selected_issues)),
-                "repair_net_ids": [int(net_id) for net_id in repair_net_ids],
-                "keepout_cell_count": len(keepout_cells),
-            }
-            if not repair_net_ids or len(repair_net_ids) > 12:
-                attempt["status"] = "skipped"
-                attempt["reason"] = "no_repairable_nets_or_too_many"
-                attempts.append(attempt)
-                return False
-            if not keepout_cells:
-                attempt["status"] = "skipped"
-                attempt["reason"] = "no_keepout_cells"
-                attempts.append(attempt)
-                return False
 
-            self.router.add_static_cells(sorted(keepout_cells))
-            for net_id in repair_net_ids:
-                self.router.ripup_route(int(net_id))
-                self.route_bookkeeping.clear_route(int(net_id))
-
-            repair_jobs: list[
-                tuple[
-                    int,
-                    Any,
-                    Any,
-                    list[tuple[int, int]],
-                    list[tuple[int, int]],
-                    list[tuple[int, int]],
-                    tuple[float, float] | None,
-                    tuple[float, float] | None,
-                ]
-            ] = []
-            opened_by_id: dict[int, list[tuple[int, int]]] = {}
-            for net_id in repair_net_ids:
-                job = self.route_jobs_by_id[net_id]
-                source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
-                clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
-                repair_jobs.append(
-                    (
-                        int(job.net_id),
-                        source_state,
-                        target_state,
-                        opened_cells,
-                        clearance_exempt_cells,
-                        self._foreign_keepout_cleanup_cells_for_job(job),
-                        self._routing_endpoint_center_um(job, source=True),
-                        self._routing_endpoint_center_um(job, source=False),
-                    )
-                )
-                opened_by_id[int(job.net_id)] = opened_cells
-
-            raw_repair_result = self.router.route_many_with_repair_and_commit(
-                repair_jobs,
-                self.block_radius_cells,
-                self.commit_radius_cells,
-                self.core_commit_radius_cells,
-                int(self.repair_config.max_rounds),
-                int(self.repair_config.max_victims_per_failure),
-                float(self.repair_config.history_weight),
-                int(self.repair_config.history_increment),
-            )
-            repair_result = dict(raw_repair_result)
-            attempt["router_status"] = str(repair_result.get("status", ""))
-            attempt["routed_net_ids"] = [
-                int(dict(raw_entry)["net_id"])
-                for raw_entry in cast(Iterable[Any], repair_result.get("routes", []))
-            ]
-            if str(repair_result.get("status", "")) != "routed":
-                attempt["status"] = "failed"
-                attempts.append(attempt)
-                return False
-
-            repaired_net_ids: list[int] = []
-            for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
-                entry = dict(raw_entry)
-                net_id = int(entry["net_id"])
-                job = self.route_jobs_by_id[net_id]
-                route_obj = entry["route"]
-                self._record_route(job, route_obj, opened_by_id[net_id])
-                repaired_net_ids.append(net_id)
-            if self.enable_checked_endpoint_correction and repaired_net_ids:
-                failed_corrections = _apply_checked_endpoint_corrections_for_net_ids(
-                    repaired_net_ids,
-                    record_pipeline_timing=False,
-                )
-                failed_corrections.extend(
-                    _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
-                        repaired_net_ids,
-                        record_pipeline_timing=False,
-                    )
-                )
-                attempt["endpoint_correction_failed_net_ids"] = [
-                    int(net_id) for net_id in failed_corrections
-                ]
-            attempt["status"] = "routed"
-            attempts.append(attempt)
-            return True
-
-        def _photonic_repair_failure_preview(
-            verification: PhotonicVerificationResult,
-        ) -> str:
-            lines: list[str] = []
-            for issue in verification.issues[:5]:
-                details = issue.details or {}
-                suffix_parts: list[str] = []
-                if "overlap_area_um2" in details:
-                    suffix_parts.append(f"area={details['overlap_area_um2']}")
-                if "overlap_bbox_um" in details:
-                    suffix_parts.append(f"bbox={details['overlap_bbox_um']}")
-                suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
-                lines.append(
-                    f"{issue.code} {issue.net_name or '<unknown>'}: "
-                    f"{issue.message}{suffix}"
-                )
-            if len(verification.issues) > 5:
-                lines.append(f"... {len(verification.issues) - 5} more")
-            return "; ".join(lines)
-
-        def _refresh_realized_crossing_verification() -> list[dict[str, object]]:
-            t_refresh_crossings_start = self._pipeline_timer_start()
-            t_overlap_start = self._pipeline_timer_start()
-            if self.enable_internal_photonic_probe_verification:
-                _augment_crossing_plan_with_realized_overlaps(
-                    router=self.router,
-                    crossing_plan_info=self.crossing_plan_info,
-                    routed_records_by_net_id=self.route_bookkeeping.records_by_id,
-                )
-            self._record_pipeline_timing("realized_crossing_overlap_augment", t_overlap_start)
-            native_crossing_events: list[Any] = []
-            if hasattr(self.router, "crossing_events"):
-                t_native_events_start = self._pipeline_timer_start()
-                try:
-                    native_crossing_events = list(cast(Iterable[Any], self.router.crossing_events()))
-                except Exception:
-                    native_crossing_events = []
-                self.crossing_plan_info["native_crossing_events"] = native_crossing_events
-                self.crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
-                self._record_pipeline_timing(
-                    "realized_crossing_native_events",
-                    t_native_events_start,
-                )
-                t_insertion_loss_start = self._pipeline_timer_start()
-                _augment_insertion_loss_report(
-                    crossing_plan_info=self.crossing_plan_info,
-                    routed_records_by_net_id=self.route_bookkeeping.records_by_id,
-                    native_crossing_events=native_crossing_events,
-                )
-                self._record_pipeline_timing(
-                    "realized_crossing_insertion_loss",
-                    t_insertion_loss_start,
-                )
-            t_illegal_crossing_verify_start = self._pipeline_timer_start()
-            if self.enable_internal_photonic_probe_verification:
-                illegal = _verify_realized_route_intersections(
-                    crossing_plan_info=self.crossing_plan_info,
-                    routed_records_by_net_id=self.route_bookkeeping.records_by_id,
-                    realization_grid_spec=self.realization_grid_spec,
-                )
-            else:
-                illegal = _populate_realized_intersections_from_native_crossing_events(
-                    crossing_plan_info=self.crossing_plan_info,
-                    routed_records_by_net_id=self.route_bookkeeping.records_by_id,
-                    native_crossing_events=native_crossing_events,
-                    realization_grid_spec=self.realization_grid_spec,
-                )
-            self._record_pipeline_timing(
-                "realized_crossing_verify_intersections",
-                t_illegal_crossing_verify_start,
-            )
-            t_realized_insertion_loss_start = self._pipeline_timer_start()
-            _augment_insertion_loss_report_from_realized_intersections(
-                crossing_plan_info=self.crossing_plan_info,
-                routed_records_by_net_id=self.route_bookkeeping.records_by_id,
-            )
-            self._record_pipeline_timing(
-                "realized_crossing_realized_loss",
-                t_realized_insertion_loss_start,
-            )
-            self._record_pipeline_timing(
-                "realized_crossing_refresh_total",
-                t_refresh_crossings_start,
-            )
-            return illegal
 
         final_crossing_repair_round_limit = 12
         t_final_verification_block_start = self._pipeline_timer_start()
@@ -6831,32 +6880,32 @@ class _RouteNetsRustSession:
         # but the normal flow skips this expensive pass unless debug/failure
         # analysis asks for it. The external Python verifier in `routing_flow.py`
         # remains the final GDS/layout-level gate.
-        illegal_realized_crossings = _refresh_realized_crossing_verification()
+        illegal_realized_crossings = self._refresh_realized_crossing_verification()
         for _final_repair_round in range(final_crossing_repair_round_limit):
             if not illegal_realized_crossings:
                 break
-            if not _repair_final_illegal_crossings(illegal_realized_crossings):
+            if not self._repair_final_illegal_crossings(illegal_realized_crossings):
                 break
             routed_net_records = self.route_bookkeeping.ordered_records()
-            illegal_realized_crossings = _refresh_realized_crossing_verification()
+            illegal_realized_crossings = self._refresh_realized_crossing_verification()
         if not illegal_realized_crossings and self.enable_internal_photonic_probe_verification:
-            final_photonic_verification = _refresh_photonic_verification()
+            final_photonic_verification = self._refresh_photonic_verification()
             for _final_photonic_repair_round in range(8):
                 if final_photonic_verification.success:
                     break
-                if not _repair_final_photonic_issues(final_photonic_verification.issues):
+                if not self._repair_final_photonic_issues(final_photonic_verification.issues):
                     break
-                illegal_realized_crossings = _refresh_realized_crossing_verification()
+                illegal_realized_crossings = self._refresh_realized_crossing_verification()
                 for _nested_crossing_repair_round in range(final_crossing_repair_round_limit):
                     if not illegal_realized_crossings:
                         break
-                    if not _repair_final_illegal_crossings(illegal_realized_crossings):
+                    if not self._repair_final_illegal_crossings(illegal_realized_crossings):
                         break
-                    illegal_realized_crossings = _refresh_realized_crossing_verification()
+                    illegal_realized_crossings = self._refresh_realized_crossing_verification()
                 routed_net_records = self.route_bookkeeping.ordered_records()
                 if illegal_realized_crossings:
                     break
-                final_photonic_verification = _refresh_photonic_verification()
+                final_photonic_verification = self._refresh_photonic_verification()
             if not illegal_realized_crossings and not final_photonic_verification.success:
                 _write_crossing_debug_artifacts(
                     debug_path=self.debug_path if self.debug_path is not None else Path("build"),
@@ -6881,7 +6930,7 @@ class _RouteNetsRustSession:
                 raise RuntimeError(
                     "Final photonic geometry repair failed before realization: "
                     f"{final_photonic_verification.error_count} error(s). "
-                    f"{_photonic_repair_failure_preview(final_photonic_verification)}"
+                    f"{self._photonic_repair_failure_preview(final_photonic_verification)}"
                 )
         self._record_pipeline_timing(
             "final_verification_block",
