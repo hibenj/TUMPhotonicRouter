@@ -15,8 +15,8 @@ if it is ever needed.
 
 - Date: 2026-08-18
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `9925249` (`routing: convert final closures to methods,
-  complete Phase 2 (Milestone 9)`)
+- Current HEAD: `75edf33` (`Fix rust_blocked_cell_handle drop and stale
+  blocked_cells guard in heater clearance expansion`)
 - Working tree is clean (`git status --short` empty).
 - All three readability plans are complete and committed:
   - `.agent/execplans/2026-08-11-refactor-python-routing-flow.md` (`routing_flow.py`
@@ -34,16 +34,49 @@ if it is ever needed.
     7,101 lines, an expected and correct increase from the `self.`/`def
     ...(self, ...)` boilerplate closures need as real methods, not a
     regression).
-- Full test suite is `23 failed, 307 passed, 1 skipped`, the confirmed true
-  pre-refactor baseline; all 23 failures are pre-existing and unrelated to
-  any of the three plans. Every one of the 7+9 = 16 individual slices/
-  milestones across Phase 1 and Phase 2 was independently re-verified by
-  Claude (not just trusted from Codex's self-report): `py_compile`, this
-  exact test-suite baseline, and byte-identical `benes_4x4`/`benes_8x8`/
-  `multiportmmi_8x8` verification JSON, every single time, with zero
-  regressions across all 16.
-- No active ExecPlan right now. The user has not yet decided the next step
-  (see Next Engineering Step).
+- On 2026-08-18, after the three readability plans, the user redirected
+  priorities toward a **functionality-by-functionality correctness
+  walkthrough** of the Python routing pipeline (not test-by-test, since
+  tests themselves may be wrong): compare each stage's code against its
+  intended behavior, before path-length matching / electrical routing
+  (explicitly deferred). Proposed stage order: (1) benchmark loading,
+  (2) `layout_from_schematic`, (3) obstacle map building, (4) grid
+  snapping/port-to-grid-state, (5) routing/A*/crossings, (6) endpoint
+  correction/port snapping, (7) geometry realization, (8) verification.
+  Not yet written up as a formal ExecPlan; tracked ad hoc so far. Two real
+  bugs found and fixed this way, each via the Claude+Codex flow with
+  independent re-verification:
+  - Commit `fae111d`: `translation/layout_from_schematic.py`'s `anchor is
+    None` branch called `ref.rotate()`/`ref.mirror()` (which pivot around
+    the global origin, not the reference's current position) *after*
+    `movex`/`movey`, producing wrong placements for any non-zero
+    `(x, y)` combined with non-zero rotation or mirror. Fixed by
+    reordering to transform-then-translate, matching the already-correct
+    `anchor is not None` branch. No live benchmark was affected (all
+    avoid the dangerous combination); new regression tests added in
+    `tests/test_layout_from_schematic.py`.
+  - Commit `75edf33`: `python/photonic_router/static_obstacle_builder.py`'s
+    `_apply_perpendicular_heater_clearance` dropped `rust_blocked_cell_handle`
+    (silently `None`) and gated newly-expanded `blocked_cells` on the
+    *pre-expansion* set's truthiness in its clearance-applied return
+    branch. No live benchmark was affected today because the sole
+    caller's merge step happens to reconstruct a correct handle from
+    rects in the common case, but that was incidental, not guaranteed.
+    Fixed to be correct on its own; new tests in
+    `tests/test_static_obstacle_builder.py`.
+  Currently mid-**Stage 3 (obstacle map building)**: the rest of
+  `static_obstacle_builder.py` (1,048 lines; read through ~line 690 of the
+  main flow so far) has not yet been fully walked, and Stages 4-8 have not
+  started.
+- Full test suite baseline is now `23 failed, 311 passed, 1 skipped` (was
+  `23 failed, 307 passed, 1 skipped` at Phase 2 completion; the walkthrough
+  has added 4 new passing tests across the two fixes above, same 23
+  pre-existing failures, unchanged). Every slice/milestone across Phase 1
+  and Phase 2, plus both walkthrough fixes, was independently re-verified
+  by Claude (not just trusted from Codex's self-report).
+- No active ExecPlan right now; the walkthrough above is the de facto
+  current work but has not been written up as one yet (see Next
+  Engineering Step).
 
 ## Current Goal
 
@@ -141,27 +174,38 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-No active ExecPlan; this is an open decision point for the user, not a
-prescribed next task. Candidates, not in a mandated order:
+Active, ongoing (not yet a formal ExecPlan): continue the Python
+correctness walkthrough at **Stage 3 (obstacle map building)**, finishing
+a full read of `python/photonic_router/static_obstacle_builder.py`
+(1,048 lines; the main flow and the heater-clearance split path have been
+read, the rest -- e.g. `build_static_obstacle_map_python_from_extracted`'s
+body past line 391, port-open-cell logic, bbox-cell materialization
+details -- has not), before moving to Stage 4 (grid snapping/port-to-grid
+state). Consider writing this walkthrough up as a proper ExecPlan once a
+stage or two more of findings accumulate, for continuity across sessions.
 
-1. Triage the two known pre-existing test/benchmark failures noted above
-   (stats test literal, `TOY` benchmark); low effort, unrelated to any
-   completed plan, safe to do any time.
+Deferred candidates, not in a mandated order:
+
+1. The TOY benchmark's `gc1_to_mmi_in2` "No route found" failure (one of
+   the 23 baseline failures) has an unresolved discrepancy between
+   `FAILED.txt` (100% static overlap) and `diagnostics.txt` (0% overlap,
+   but target-approach footprints show static blockers not visible in the
+   base obstacle SVG); hypothesized "foreign port keepout" (936 cells) as
+   the explanation, not confirmed. Revisit at Stage 5 (Routing) of the
+   walkthrough rather than in isolation.
 2. Start the "Future Architecture Initiative" from `.agent/PROJECT_GOAL.md`:
    extract real swappable interfaces (obstacle map building, grid snapping,
    A* search, geometry realization, path-length matching) with independent
-   unit-test coverage. This needs its own new ExecPlan; nothing has been
-   scoped yet beyond the goal-level description in `PROJECT_GOAL.md`.
-3. A smaller, optional continuation of the just-finished Phase 2: decompose
+   unit-test coverage. Explicitly deferred by the user until after the
+   correctness walkthrough. Nothing scoped yet beyond `PROJECT_GOAL.md`.
+3. A smaller, optional continuation of Phase 2: decompose
    `_write_route_diagnostics` (still 486 lines) and `_route_attempt_diagnostics`
    (still 247 lines), or split `run()` itself (1,104 lines) into a few named
-   phase methods, now that both are tractable in a way they were not before
-   Phase 2. See that plan's Outcomes & Retrospective for detail. Not started,
-   not committed to.
-4. Continue into a Phase 3 for the large Rust files (`src/py_router.rs` at
-   17,399 lines, `src/astar.rs` at 10,388 lines, `src/geometry_realization.rs`
-   at 8,125 lines), the same kind of readability work as Phases 1-2 but on
-   the Rust side. Not scoped yet.
+   phase methods. Not started, not committed to.
+4. Phase 3 for the large Rust files (`src/py_router.rs` at 17,399 lines,
+   `src/astar.rs` at 10,388 lines, `src/geometry_realization.rs` at 8,125
+   lines) -- the same kind of readability work as Phases 1-2, agreed to
+   come after the current Python correctness walkthrough, not started.
 5. Resume the crossing-verification-foundation objective (the pre-readability-
    work priority). Per the last recorded stable-benchmark checkpoint in git
    history (commit `a29dc00`), `benes_8x8`, `benes_16x16`, `multiportmmi_8x8`,
