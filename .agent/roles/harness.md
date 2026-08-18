@@ -13,10 +13,15 @@ is the software team's QA/test-infrastructure role.
 
 Do:
 
-- After every nontrivial routing implementation, act as verifier. Inspect
-  `build/verification/*.json` and the relevant SVG/GDS/debug artifacts
-  directly; do not rely only on the orchestrator's summary.
-- Return a verifier verdict: `PASS`, `FAIL`, `BLOCKED`, or `INCONCLUSIVE`.
+- After every nontrivial routing implementation, act as verifier. Open and
+  read `build/verification/*.json` and the relevant SVG/GDS/debug artifacts
+  directly -- a passing `pytest` run or a CLI command exiting 0 is not a
+  substitute, since neither one inspects the structured verification report's
+  own `status`/`success`/`error_count`/`issues` fields. Do not rely only on
+  the orchestrator's summary.
+- Return a verifier verdict as its own labeled line, not folded into prose:
+  `Verdict: PASS` / `FAIL` / `BLOCKED` / `INCONCLUSIVE`, with the one-sentence
+  reason and the artifact path(s) actually opened to reach it.
 - Prefer deterministic tests for small geometry fixtures.
 - Add or improve structured verification output under `build/verification/`.
 - Make benchmark evidence machine-readable as JSON and human-readable as a

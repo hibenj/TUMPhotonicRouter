@@ -140,3 +140,96 @@ expect it to plan its own work; that is the Planner role's job, and it stays
 with Claude. Write the task file the way `ORCHESTRATOR.md` asks any role
 brief to be written for a subagent: concrete, bounded, with an explicit file
 scope.
+
+## What Codex is reliable at, and what it is not
+
+Codex is reliable when a task file gives it a fully specified target: exact
+formulas, exact call-site shapes, exact expected values, a narrow file scope,
+and clear criteria for reporting "this case is different" rather than forcing
+it to fit the pattern. A task built this way (e.g. a test-recalibration task
+that stated the sizing formula and worked the arithmetic per test) came back
+correct on the first attempt, including correctly flagging the one case that
+was not a simple recalibration instead of quietly forcing an assertion to
+pass.
+
+Codex is not reliable at recognizing and reusing a pre-existing architectural
+mechanism it was not explicitly pointed at. When a change needs to compose
+with an existing invariant or exemption rule living elsewhere in the
+codebase, Codex tends not to go find it; instead it invents a new, parallel
+mechanism to patch the symptom in front of it. In this repository's unify-
+port-access-region work, two successive Codex attempts at the same
+architectural migration produced a new bolt-on subtraction block that did not
+exist in the first attempt and made the regression count worse, not better,
+because neither attempt discovered the pre-existing exemption mechanism
+(`_foreign_keepout_open_cells_for_spec`/`normal_port_runway_cells`) that
+already solved the problem by construction. The fix, once Claude read that
+mechanism directly, was much smaller than either Codex attempt.
+
+Two concrete rules follow from this:
+
+- Before dispatching a task that must compose with existing logic, Claude
+  should find and name the relevant mechanism explicitly in the task file
+  (file, function, and why it already handles part of the problem), not
+  leave Codex to rediscover it. If Claude has not yet found that mechanism
+  itself, that is a sign the planning step is not actually done yet.
+- Watch for non-convergence across repeated attempts at the same
+  architectural problem: if a second or third attempt is flat or worse (same
+  or higher regression count, a new special-case block that was not present
+  before), stop delegating that slice. Read the relevant code directly and
+  implement it personally rather than continuing to iterate Codex on a
+  problem that requires understanding why existing code is shaped the way it
+  is.
+
+## The diagnosis/implementation boundary
+
+A real gap surfaced in this repository's own history: an investigation that
+started from a wrong theory (a routing failure blamed on a fixed obstacle
+margin) went through several rounds of writing a small, disposable Python
+script, running it, reading the real output, and revising the theory --
+entirely reasonable Explorer/Planner work -- and then, the moment the
+correct, fully-specified fix became clear (one new ~25-line method, three
+call sites, exact target values already worked out), Claude wrote that fix
+directly instead of stopping to hand it to Codex. No rule was technically
+broken by the diagnosis itself (writing and discarding probe scripts is not
+"implementing a routing change," and PLANS.md/WORKFLOW.md both expect this
+kind of iteration to stay with Claude), but there was no explicit moment
+where the session asked "is this now a bounded, well-specified Implementation
+Engineer task?" and acted on the answer. This section exists to make that
+moment explicit instead of leaving it to habit.
+
+Diagnosis stays with Claude, in full, no matter how much code it produces
+along the way. Writing a monkeypatch script to dump internal state, running
+it, discarding it, writing the next one -- this is reading and testing the
+codebase, not implementing the fix, even though it involves an edit tool and
+even though the loop can run many times in a row. Do not feel obligated to
+hand any of this to Codex; round-tripping a five-second diagnostic script
+through a full Codex dispatch (prompt assembly, sandboxed run, transcript
+review) would slow the investigation down for no benefit, and Codex is not
+the right tool for open-ended "what does this data actually show" work in
+the first place.
+
+The boundary is crossed the moment a diagnosis is stable enough to state as
+a bounded change: an exact file and function, the exact edit, and (where
+applicable) exact expected before/after values to check it against. At that
+exact moment, stop and choose one of three paths, out loud, before writing
+any of the shipped fix:
+
+1. Write the Codex task file and dispatch it (the default -- this is what
+   "Codex implements" means in practice: the point where the plan is
+   finished, not the point where the code happens to get typed).
+2. Apply the existing `WORKFLOW.md` "small localized edits" exception (a
+   change so small that a Codex round-trip is pure overhead -- a one-line
+   ExecPlan update, a typo, a doc fix) and say so.
+3. Implement directly for a stated, recorded reason (Codex already failed on
+   this exact slice at least once and the reason is on record, per the
+   non-convergence rule above; or the fix is small but its correctness
+   depends on interactive intermediate output from the diagnosis in a way
+   that would not survive being restated as a static prompt). Record which
+   of these applied in the ExecPlan's Decision Log -- "implemented directly
+   because X" -- rather than silently defaulting to self-implementation.
+
+Skipping this choice is itself the failure mode, not any one path being
+wrong in a given case. A plan that goes straight from "diagnosis complete"
+to "fix committed" with no visible decision about who implements it should
+be treated as incomplete, the same way a milestone with no validation
+evidence is treated as incomplete.

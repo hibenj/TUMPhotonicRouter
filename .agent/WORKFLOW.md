@@ -110,12 +110,26 @@ class of blocker has repeated enough times that continuing would only churn.
 
 Convergence does not mean one agent should personally perform every loop in one
 long serial prompt. Escalate from single-agent work to a parallel bundle when a
-focused benchmark or route stop fails twice after different hypotheses, when a
-failure moves but keeps the same root shape, or when the next work can be split
-cleanly into harness, code audit, implementation, benchmark evidence, and
-review. In that situation, the orchestrator should assign bounded lanes with
-disjoint file ownership and integrate their outputs, rather than continuing to
-invent and test every hypothesis in the main window.
+*validated implementation attempt* -- a change applied to real source and put
+through the validation ladder, not a disposable diagnostic script written to
+answer one question -- fails twice after different fixes, when a failure moves
+but keeps the same root shape across such attempts, or when the next work can
+be split cleanly into harness, code audit, implementation, benchmark evidence,
+and review. In that situation, the orchestrator should assign bounded lanes
+with disjoint file ownership and integrate their outputs, rather than
+continuing to invent and test every hypothesis in the main window.
+
+Diagnosis is exempt from this trigger by design: writing a small, throwaway
+script (a monkeypatch that dumps internal state, a one-off obstacle-map probe)
+and iterating on it many times in a row, discarding wrong theories as real
+output rules them out, is Explorer/Planner work, not an implementation attempt,
+even though it touches an edit tool and even though a first theory can turn
+out wrong before a second one is confirmed correct. Do not escalate a fast,
+cheap diagnostic loop just because it took several tries; escalate when actual
+patches to shipped code, each validated and each failing, start piling up
+without a change of approach. See `.agent/CLAUDE_CODEX_FLOW.md`'s "The
+diagnosis/implementation boundary" for where the diagnosis phase ends and an
+explicit implementation-ownership decision must be made.
 
 ### Routing Verification Gate
 
@@ -130,6 +144,21 @@ realization, verification semantics, Python/Rust boundaries, A* repair logic,
 benchmark-specific routing order, or any multi-file routing state. The only
 exception is when user approval, credentials, a missing local tool, or another
 external blocker must be surfaced immediately.
+
+This gate has concrete substance even in a single-agent session, and it is not
+satisfied by pytest passing or a CLI command exiting 0. Before telling the
+user a nontrivial routing change is fixed or complete: open the actual
+`build/verification/*.json` file(s) the change touched (not just its exit
+code or console tail) and read `status`, `success`, `error_count`, and
+`issues`/`metrics` directly; then write one explicit line stating the
+verdict -- `Verdict: PASS` / `FAIL` / `BLOCKED` / `INCONCLUSIVE` -- in both
+the response to the user and the active ExecPlan, before any "fixed" or
+"complete" claim. Treat a response that declares routing work done without
+that line as incomplete, the same way a milestone with no validation command
+is incomplete. This applies whether the QA/Harness role is a separate agent
+or the same agent moving through the role explicitly (see "Multi-Agent
+Roles" below) -- "explicitly" means the verdict actually gets written down,
+not merely that the checks happened somewhere in the reasoning.
 
 The verifier packet must include changed files, exact commands, artifact paths,
 benchmark/route/net identifiers, blocker sets where available, and the changed
@@ -222,7 +251,13 @@ phone.
 
 Use separate software-team roles when the task is large, ambiguous, or
 correctness-sensitive. The roles may be performed by separate agents or by one
-agent moving through the roles explicitly.
+agent moving through the roles explicitly -- "explicitly" means naming the
+role transition in the response as it happens ("Reviewer pass:", "Harness
+verdict:"), not silently folding every role's checks into one undifferentiated
+pass and asserting the result. A single agent that writes code and then reads
+its own diff once, with no separate reviewer-labeled pass against
+`.agent/roles/reviewer.md`'s checklist, has not performed the Reviewer role;
+it has skipped it.
 
 When roles run in parallel, keep their ownership narrow:
 
