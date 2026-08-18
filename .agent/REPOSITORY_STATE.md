@@ -15,8 +15,8 @@ if it is ever needed.
 
 - Date: 2026-08-18
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `c3483b5` (`docs: close process gaps found by auditing this
-  session against its own flow`)
+- Current HEAD: `20aab29` (`routing: fix crossing-aware endpoint correction
+  rejecting a valid port-exit fix`)
 - Working tree is clean (`git status --short` empty).
 - Process docs revised after the user asked whether the dense-port-runway
   work followed the documented Claude+Codex flow (it didn't, in two
@@ -62,20 +62,37 @@ if it is ever needed.
   `23 failed, 314 passed, 1 skipped` -> `21 failed, 316 passed, 1 skipped`
   (only change: both `multiportmmi_8x8` tests in
   `tests/test_multiportmmi_benchmark.py` flip to passing).
-  Two new, separate, out-of-scope findings surfaced once routing got this
-  far, both investigated enough to confirm neither is caused by this fix,
-  and left as their own follow-ups per the repository owner's direction:
-  (1) a crossing-legality rejection (`error=No legal LiDAR crossing route
-  found`) on `multiportmmi_8x8` `n_32` and `multiportmmi_16x16` `n_102`,
-  with the same *shape* as the earlier, separately-resolved `TOY` finding
-  (a bare-cell corridor that exists but is too tight once any clearance is
-  required) -- not a port-sizing problem; (2) a photonic-geometry
-  verification `source_endpoint_mismatch` (~2.001um off) on
-  `multiportmmi_8x8` nets `n_40`/`n_41`/`n_42`, confirmed to not touch any
-  port this fix changed, and already a named, partially-handled issue code
-  in the pre-existing `_repair_final_photonic_issues` architecture -- a
-  distinct, likely pre-existing bug in endpoint correction/geometry
-  realization, not chased further.
+  Two new, separate findings surfaced once routing got this far, both
+  investigated enough to confirm neither was caused by this fix: (1) a
+  crossing-legality rejection (`error=No legal LiDAR crossing route found`)
+  on `multiportmmi_8x8` `n_32` and `multiportmmi_16x16` `n_102`, with the
+  same *shape* as the earlier, separately-resolved `TOY` finding (a
+  bare-cell corridor that exists but is too tight once any clearance is
+  required) -- not a port-sizing problem, still open (see below); (2) a
+  photonic-geometry verification `source_endpoint_mismatch` on
+  `multiportmmi_8x8` nets `n_40`/`n_41`/`n_42` -- **now fixed**, see the
+  next entry.
+- `.agent/execplans/2026-08-18-crossing-aware-endpoint-correction-direction-sequence.md`
+  is **complete** (commit `20aab29`). Root-caused and fixed the
+  `source_endpoint_mismatch` finding above: the crossing-aware endpoint
+  correction path (`translation/route_rust_endpoint_correction.py`) computes
+  a fully correct port-exit fix by slicing the same rich Rust correction the
+  non-crossed path uses, but a compatibility check,
+  `_compatible_terminal_direction_sequence`, assumed the one newly-inserted
+  correction segment always sits at a fixed position (index `0`) in the
+  direction sequence; when the baseline's own port-adjacent segment already
+  matched the port's facing direction (the common case), the real correction
+  instead appended its segment at the *other* end, got rejected, and the
+  code fell back twice more -- to a guard-window-limited solver with no bend
+  available, then to the raw uncorrected route -- landing `2.0014um` off a
+  `2.0um` tolerance. Fixed by checking both placements. `multiportmmi_8x8`
+  now completes **fully clean** end to end for the first time: 111/111
+  routed, zero crossing-verification issues, zero photonic-verification
+  issues, GDS written (`build/verification/*.json` read directly to confirm,
+  not inferred from console output). `pytest -q` unchanged (`21 failed, 316
+  passed, 1 skipped`, identical names). Implemented directly (not via
+  Codex) with the choice explicitly recorded in the ExecPlan's Decision Log,
+  per `.agent/CLAUDE_CODEX_FLOW.md`'s "diagnosis/implementation boundary."
 - All three readability plans are complete and committed:
   - `.agent/execplans/2026-08-11-refactor-python-routing-flow.md` (`routing_flow.py`
     split, commit `be95ee1`, including the fix for a 4-name monkeypatch
@@ -243,10 +260,9 @@ Next Engineering Step for the open decision on what to do next.
 
 ## Worktree State
 
-Clean except one uncommitted docs-only change (`.agent/CLAUDE_CODEX_FLOW.md`,
-see Current Snapshot). Known pre-existing, unrelated test/benchmark failures,
-all already covered by the 23-item baseline failure list and none caused by
-any of the completed plans:
+Clean (`git status --short` empty). Known pre-existing, unrelated test/benchmark
+failures, all already covered by the 23-item baseline failure list and none
+caused by any of the completed plans:
 
 - `tests/test_routing_flow_stats.py::test_run_routing_flow_collects_route_summary_when_stats_requested`
   fails because `RouteAttemptRecord.as_dict()` now includes `crossing_hotpath_*`
@@ -260,19 +276,21 @@ any of the completed plans:
   uncoordinated ones -- a benchmark-placement fact, not a router bug. Not
   planned to be fixed (would mean moving the benchmark's ports, not a code
   change).
-- `multiportmmi_8x8` `n_24` and `multiportmmi_16x16` `n_48` are now **fixed**
-  (dense-port-runway-clearance-reach plan, see Current Snapshot); both
-  `tests/test_multiportmmi_benchmark.py` parametrizations pass again.
-  `multiportmmi_8x8`'s full 111-net routing stage now completes for the
-  first time. Two new, separate, out-of-scope findings surfaced once
-  routing got this far, deferred rather than fixed (see Current Snapshot
-  for the full detail): a crossing-legality rejection at `multiportmmi_8x8`
-  `n_32` / `multiportmmi_16x16` `n_102` (same shape as the already-resolved
-  `TOY` finding -- a bare-cell corridor too tight once clearance is
-  required), and a photonic-geometry `source_endpoint_mismatch` on
-  `multiportmmi_8x8` nets `n_40`/`n_41`/`n_42` (a likely pre-existing bug in
-  endpoint correction, already a named issue code in the existing
-  architecture). Both are candidates for the next engineering step.
+- `multiportmmi_8x8` `n_24`/`n_32`'s port-sizing and `n_40`/`n_41`/`n_42`'s
+  `source_endpoint_mismatch`, and `multiportmmi_16x16`'s `n_48`, are all now
+  **fixed** (dense-port-runway-clearance-reach and
+  crossing-aware-endpoint-correction-direction-sequence plans, see Current
+  Snapshot). `multiportmmi_8x8` now completes **fully clean** end to end for
+  the first time: 111/111 routed, zero crossing/photonic verification
+  issues, GDS written, under this repository's default settings (repair/
+  rip-up-reroute enabled). One finding remains open and deferred, and only
+  manifests with `--ripup-reroute false` (repair papers over it in the
+  default config, which is itself worth treating with some suspicion, not
+  just relief): `multiportmmi_8x8` `n_32` / `multiportmmi_16x16` `n_102`'s
+  very first search attempt hits `error=No legal LiDAR crossing route
+  found`, with the same *shape* as the already-resolved `TOY` finding (a
+  bare-cell corridor too tight once clearance is required) -- a candidate
+  for the next engineering step.
 
 ## Recent Session Notes
 
@@ -339,28 +357,25 @@ explicitly resumes it.
 
 No active ExecPlan right now. `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`,
 `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
-and `.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md` are
-all complete (see Current Snapshot); pick the next one from the candidates
-below with the user before starting.
+`.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md`, and
+`.agent/execplans/2026-08-18-crossing-aware-endpoint-correction-direction-sequence.md`
+are all complete (see Current Snapshot); pick the next one from the
+candidates below with the user before starting.
 
 Candidates, not in a mandated order:
 
-1. Investigate the crossing-legality rejection newly surfaced by the
-   dense-port-runway-clearance-reach plan (`multiportmmi_8x8` `n_32`,
-   `multiportmmi_16x16` `n_102`, `error=No legal LiDAR crossing route
-   found`, same bare-cell-corridor-too-tight-under-clearance shape as the
-   already-resolved `TOY` finding) -- see Current Snapshot/Worktree State.
-   Not started.
-2. Investigate the photonic-geometry `source_endpoint_mismatch` on
-   `multiportmmi_8x8` `n_40`/`n_41`/`n_42` (~2.001um off; see Current
-   Snapshot/Worktree State) -- already a named issue code in the existing
-   `_repair_final_photonic_issues` architecture, likely a pre-existing
-   endpoint-correction/geometry-realization bug. Not started.
-3. The 9 pre-existing failing Rust crossing tests discovered while
+1. Investigate the crossing-legality rejection at `multiportmmi_8x8` `n_32`
+   / `multiportmmi_16x16` `n_102` (`error=No legal LiDAR crossing route
+   found` on the very first search attempt, only visible with
+   `--ripup-reroute false`; the default repair-enabled config papers over
+   it, which is itself worth treating with some suspicion -- see Current
+   Snapshot/Worktree State). Same bare-cell-corridor-too-tight-under-clearance
+   shape as the already-resolved `TOY` finding. Not started.
+2. The 9 pre-existing failing Rust crossing tests discovered while
    verifying the Stage 5 plan's diagnostics fix (`cargo test --lib`, see
    Current Snapshot) -- a separate, unexplored thread in the same
    crossing-legality code area. Not started.
-4. Continue the broader Python-and-Rust correctness walkthrough into
+3. Continue the broader Python-and-Rust correctness walkthrough into
    Stages 6-8 (endpoint correction, geometry realization, verification),
    or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`
    module by module (matching how Stages 1-4 were done), rather than
