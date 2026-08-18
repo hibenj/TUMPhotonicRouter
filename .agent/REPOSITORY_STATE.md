@@ -15,8 +15,8 @@ if it is ever needed.
 
 - Date: 2026-08-18
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `73604f9` (`docs: record verified diagnostics fix and Rust
-  test baseline in Stage 5 plan`)
+- Current HEAD: `087ba3f` (`Add automatic clearance-corridor diagnostic to
+  failed-route logs`)
 - Working tree is clean (`git status --short` empty).
 - All three readability plans are complete and committed:
   - `.agent/execplans/2026-08-11-refactor-python-routing-flow.md` (`routing_flow.py`
@@ -94,9 +94,14 @@ if it is ever needed.
   Milestone 2, not started): `TOY`'s placement is simply too tight for the
   default bend radius at this grid resolution (a benchmark fact), or the
   port-opening/lane-width logic does not scale with the configured bend
-  radius (a real, more general bug if true). Stages 6-8 (endpoint
-  correction, geometry realization, verification) have not started. Also
-  newly discovered and worth knowing before any further Rust work: a
+  radius (a real, more general bug if true). The BFS-with-inflation
+  technique used to reach that answer was then turned into a durable
+  feature (commit `087ba3f`): `_write_failed_log` now automatically writes
+  `corridor_clearance_*` fields into every `FAILED.txt`, so future "why
+  won't this route" investigations don't need a one-off script. Stages 6-8
+  (endpoint correction, geometry realization, verification) have not
+  started. Also newly discovered and worth knowing before any further
+  Rust work: a
   separate Rust unit-test baseline (`cargo test --lib`, needs
   `RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu` since the checked-in
   `rust-toolchain.toml` is pinned to a Windows target) of `311 passed, 9
@@ -109,12 +114,15 @@ if it is ever needed.
   implies `min_offset_cells` (no `+1`) is the true minimum -- a plausible
   off-by-one, but confirmed dormant (fires 0/81 times on `heater_s_mod`) and
   not the cause of any known test failure, so left alone pending a live case.
-- Full test suite baseline is now `23 failed, 311 passed, 1 skipped` (was
-  `23 failed, 307 passed, 1 skipped` at Phase 2 completion; the walkthrough
-  has added 4 new passing tests across the two fixes above, same 23
-  pre-existing failures, unchanged). Every slice/milestone across Phase 1
-  and Phase 2, plus both walkthrough fixes, was independently re-verified
-  by Claude (not just trusted from Codex's self-report).
+- Full Python test suite baseline is now `23 failed, 314 passed, 1 skipped`
+  (was `23 failed, 307 passed, 1 skipped` at Phase 2 completion; the
+  walkthrough and the Stage 5 fixes have added 7 new passing tests total
+  across four changes -- `fae111d`, `75edf33`, `8dfb132`, `087ba3f` --
+  same 23 pre-existing failures, unchanged throughout). Every change was
+  independently re-verified by Claude (not just trusted from Codex's
+  self-report). The separate Rust unit-test baseline (`cargo test --lib`)
+  is `311 passed, 9 failed`, all 9 failures pre-existing and
+  crossing-related (see above).
 - Active ExecPlan:
   `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`
   (see Next Engineering Step).
