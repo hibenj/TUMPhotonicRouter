@@ -2241,6 +2241,7 @@ class _RouteNetsRustSession:
                 for port_index, port_spec in enumerate(upper_specs):
                     runway_rank = upper_count - int(port_index)
                     lengths_by_spec[port_spec] = spacing_cells * runway_rank
+                self._equalize_dense_runway_reach(lengths_by_spec, list(ordered_specs))
             return lengths_by_spec
 
         if self.fanout_access_mode_normalized != "legacy-runway":
@@ -2289,12 +2290,50 @@ class _RouteNetsRustSession:
                     ),
                 )
                 count = len(ordered)
+                group_port_specs: list[str] = []
                 for port_index, run_job in enumerate(ordered):
                     port_spec = f"{run_job.inst1},{run_job.port1}"
                     lengths_by_spec[port_spec] = 3 + 3 * (count - 1 - port_index)
+                    group_port_specs.append(port_spec)
+                self._equalize_dense_runway_reach(lengths_by_spec, group_port_specs)
 
             index = run_end
         return lengths_by_spec
+
+    def _equalize_dense_runway_reach(
+        self,
+        lengths_by_spec: dict[str, int],
+        port_specs: list[str],
+    ) -> None:
+        """Extend every port in one dense group to match the group's own
+        furthest forward reach, in place.
+
+        A port's staggered length only controls how far its own raw
+        footprint extends. That raw footprint (before any per-port lateral
+        narrowing) is reserved globally, in `port_runway_cells_by_spec`,
+        which becomes part of `static_blocked_cells_before_port_reservations`
+        for every OTHER net's routing (see `run()`, where
+        `port_runway_static_cells` is unioned into it). If ports in the same
+        dense group are given different lengths, the longest-reaching one's
+        raw footprint -- which is a wide box, not just that port's own
+        narrow lane, since half_width_cells is not reduced by staggering --
+        can end up blocking a shorter neighbor's own narrower lane in the
+        gap between them, even though nothing physically stands in that gap.
+        Equalizing every port in the group to the same forward reach as its
+        longest sibling removes this self-inflicted gap: by definition, no
+        sibling's own raw footprint reserves anything beyond the group's
+        current maximum reach, so no sibling can block another sibling
+        beyond that point once every port shares the same reach.
+        """
+        if not port_specs:
+            return
+        half_width_cells = int(self.port_lane_half_width_cells)
+        max_reach = max(
+            int(lengths_by_spec[spec]) + half_width_cells - 1 for spec in port_specs
+        )
+        equalized_length = max_reach - half_width_cells + 1
+        for spec in port_specs:
+            lengths_by_spec[spec] = max(int(lengths_by_spec[spec]), equalized_length)
 
     def _dense_target_port_runway_lengths(
         self,
@@ -2345,15 +2384,19 @@ class _RouteNetsRustSession:
             count = len(ordered)
             lower_jobs = ordered[: count // 2]
             upper_jobs = ordered[count // 2 :]
+            group_port_specs: list[str] = []
             for port_index, run_job in enumerate(lower_jobs):
                 port_spec = f"{run_job.inst2},{run_job.port2}"
                 lengths_by_spec[port_spec] = base_cells + spacing_cells * int(port_index)
+                group_port_specs.append(port_spec)
             upper_count = len(upper_jobs)
             for port_index, run_job in enumerate(upper_jobs):
                 port_spec = f"{run_job.inst2},{run_job.port2}"
                 lengths_by_spec[port_spec] = (
                     base_cells + spacing_cells * (upper_count - 1 - int(port_index))
                 )
+                group_port_specs.append(port_spec)
+            self._equalize_dense_runway_reach(lengths_by_spec, group_port_specs)
         return lengths_by_spec
 
     def _filter_dense_port_opening(
