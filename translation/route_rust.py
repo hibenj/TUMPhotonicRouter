@@ -2404,6 +2404,88 @@ class _RouteNetsRustSession:
             as_target=as_target,
         )
 
+    def _dense_source_fanout_route_order(self, jobs: list[RouteJob]) -> list[RouteJob]:
+        """Route consecutive dense source fanouts with inversion-aware extremes."""
+
+        def should_reorder_source(instance_name: str) -> bool:
+            return self._is_dense_source_fanout_instance(instance_name)
+
+        def order_single_run(run: list[RouteJob]) -> list[RouteJob]:
+            if len(run) <= 1:
+                return list(run)
+            order_override = os.environ.get("PHOTONIC_ROUTER_DENSE_FANOUT_ORDER", "")
+            if order_override in ("", "original"):
+                return list(run)
+            if order_override in ("inversion-aware-extremes", "legacy"):
+                pass
+            elif order_override not in (
+                "target-ascending",
+                "target-descending",
+                "second-target-lane-first",
+            ):
+                return list(run)
+            if order_override == "target-ascending":
+                return sorted(
+                    run,
+                    key=lambda route_job: (
+                        float(route_job.target_port.center[1]),
+                        int(route_job.route_index),
+                    ),
+                )
+            if order_override == "target-descending":
+                return sorted(
+                    run,
+                    key=lambda route_job: (
+                        -float(route_job.target_port.center[1]),
+                        int(route_job.route_index),
+                    ),
+                )
+            if order_override == "second-target-lane-first":
+                by_target_lane = sorted(
+                    run,
+                    key=lambda route_job: (
+                        float(route_job.target_port.center[1]),
+                        int(route_job.route_index),
+                    ),
+                )
+                first_job = by_target_lane[min(1, len(by_target_lane) - 1)]
+                return [first_job, *(route_job for route_job in run if route_job != first_job)]
+            target_lanes = [float(route_job.target_port.center[1]) for route_job in run]
+            first_lane = float(run[0].target_port.center[1])
+            first_lane_rank = sorted(target_lanes).index(first_lane)
+            if first_lane_rank >= len(run) // 2:
+                median_target_lane = sorted(target_lanes)[len(target_lanes) // 2]
+                return sorted(
+                    run,
+                    key=lambda route_job: (
+                        -abs(float(route_job.target_port.center[1]) - median_target_lane),
+                        float(route_job.target_port.center[1]),
+                        int(route_job.route_index),
+                    ),
+                )
+            return [run[0], run[-1], *run[1:-1]]
+
+        ordered_jobs: list[RouteJob] = []
+        index = 0
+        while index < len(jobs):
+            job = jobs[index]
+            if not should_reorder_source(job.inst1):
+                ordered_jobs.append(job)
+                index += 1
+                continue
+
+            run_end = index + 1
+            while (
+                run_end < len(jobs)
+                and jobs[run_end].inst1 == job.inst1
+                and should_reorder_source(jobs[run_end].inst1)
+            ):
+                run_end += 1
+
+            ordered_jobs.extend(order_single_run(jobs[index:run_end]))
+            index = run_end
+        return ordered_jobs
+
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
         t_obstacle_start = self._pipeline_timer_start()
         self.resolved_obstacle_config = _resolve_obstacle_config(
@@ -3046,89 +3128,7 @@ class _RouteNetsRustSession:
                     )
                 lane_index += 1
 
-        def _dense_source_fanout_route_order(jobs: list[RouteJob]) -> list[RouteJob]:
-            """Route consecutive dense source fanouts with inversion-aware extremes."""
-
-            def should_reorder_source(instance_name: str) -> bool:
-                return self._is_dense_source_fanout_instance(instance_name)
-
-            def order_single_run(run: list[RouteJob]) -> list[RouteJob]:
-                if len(run) <= 1:
-                    return list(run)
-                order_override = os.environ.get("PHOTONIC_ROUTER_DENSE_FANOUT_ORDER", "")
-                if order_override in ("", "original"):
-                    return list(run)
-                if order_override in ("inversion-aware-extremes", "legacy"):
-                    pass
-                elif order_override not in (
-                    "target-ascending",
-                    "target-descending",
-                    "second-target-lane-first",
-                ):
-                    return list(run)
-                if order_override == "target-ascending":
-                    return sorted(
-                        run,
-                        key=lambda route_job: (
-                            float(route_job.target_port.center[1]),
-                            int(route_job.route_index),
-                        ),
-                    )
-                if order_override == "target-descending":
-                    return sorted(
-                        run,
-                        key=lambda route_job: (
-                            -float(route_job.target_port.center[1]),
-                            int(route_job.route_index),
-                        ),
-                    )
-                if order_override == "second-target-lane-first":
-                    by_target_lane = sorted(
-                        run,
-                        key=lambda route_job: (
-                            float(route_job.target_port.center[1]),
-                            int(route_job.route_index),
-                        ),
-                    )
-                    first_job = by_target_lane[min(1, len(by_target_lane) - 1)]
-                    return [first_job, *(route_job for route_job in run if route_job != first_job)]
-                target_lanes = [float(route_job.target_port.center[1]) for route_job in run]
-                first_lane = float(run[0].target_port.center[1])
-                first_lane_rank = sorted(target_lanes).index(first_lane)
-                if first_lane_rank >= len(run) // 2:
-                    median_target_lane = sorted(target_lanes)[len(target_lanes) // 2]
-                    return sorted(
-                        run,
-                        key=lambda route_job: (
-                            -abs(float(route_job.target_port.center[1]) - median_target_lane),
-                            float(route_job.target_port.center[1]),
-                            int(route_job.route_index),
-                        ),
-                    )
-                return [run[0], run[-1], *run[1:-1]]
-
-            ordered_jobs: list[RouteJob] = []
-            index = 0
-            while index < len(jobs):
-                job = jobs[index]
-                if not should_reorder_source(job.inst1):
-                    ordered_jobs.append(job)
-                    index += 1
-                    continue
-
-                run_end = index + 1
-                while (
-                    run_end < len(jobs)
-                    and jobs[run_end].inst1 == job.inst1
-                    and should_reorder_source(jobs[run_end].inst1)
-                ):
-                    run_end += 1
-
-                ordered_jobs.extend(order_single_run(jobs[index:run_end]))
-                index = run_end
-            return ordered_jobs
-
-        route_jobs = _dense_source_fanout_route_order(route_jobs)
+        route_jobs = self._dense_source_fanout_route_order(route_jobs)
 
         port_runway_static_cells: set[tuple[int, int]] = set()
         for cells in self.port_runway_cells_by_spec.values():
