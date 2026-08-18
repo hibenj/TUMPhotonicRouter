@@ -18,25 +18,24 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-For the current phase, the active ExecPlan is:
+There is no active ExecPlan right now. The three-plan codebase-readability
+restructuring the user asked for on 2026-08-17
+(`.agent/execplans/2026-08-11-refactor-python-routing-flow.md`,
+`.agent/execplans/2026-08-17-restructure-translation-route-rust.md` "Phase 1",
+and `.agent/execplans/2026-08-18-restructure-route-nets-rust.md` "Phase 2")
+is complete and committed. The next step is an open decision for the user;
+`.agent/REPOSITORY_STATE.md`'s "Next Engineering Step" section lists the
+candidates (a small optional continuation of Phase 2, starting the "Future
+Architecture Initiative" from `.agent/PROJECT_GOAL.md`, a Rust-side "Phase 3,"
+or resuming the paused-but-not-abandoned
+`.agent/execplans/2026-07-10-crossing-verification-foundation.md` milestone)
+without prescribing one. Read `.agent/REPOSITORY_STATE.md`'s "Current
+Snapshot" section first at the start of any new session, since it is kept
+current at every stop and is the source of truth for what is actually active.
 
-    .agent/execplans/2026-08-18-restructure-route-nets-rust.md
-
-This is "Phase 2" of the codebase-readability restructuring the user asked
-for on 2026-08-17: decomposing `route_nets_rust`, a ~6,200-line function with
-~100 nested closures, into a class. It follows Phase 1
-(`.agent/execplans/2026-08-17-restructure-translation-route-rust.md`, complete)
-and the `.agent/execplans/2026-08-11-refactor-python-routing-flow.md` split
-(complete), both layered on top of the paused-but-not-abandoned
-`.agent/execplans/2026-07-10-crossing-verification-foundation.md` milestone,
-which crossing-verification work should resume once the readability
-restructuring reaches a reasonable stopping point. Phase 2 is meaningfully
-higher-risk than Phase 1 (real design decisions, not pure code motion; see
-its own Decision Log), so unlike Phase 1's 7 slices it has two built-in
-stop-and-check-in points with the user, after Milestone 4 and before
-Milestone 7. Check `.agent/REPOSITORY_STATE.md`'s "Current Snapshot" section
-first, since it is kept current at every stop and is the source of truth if
-this pointer and that file ever disagree again.
+Once the user picks a next direction and an ExecPlan exists for it, update
+this pointer to name it explicitly, the way it named Phase 1 and Phase 2
+while they were active.
 
 If the user explicitly resumes another ExecPlan, use that plan instead and note
 the switch in the resumed plan's `Decision Log`.
