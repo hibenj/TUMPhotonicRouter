@@ -1212,6 +1212,42 @@ class _RouteNetsRustSession:
     ) -> set[tuple[int, int]]:
         return {cell for cell in cells if self._cell_in_raw_static(cell)}
 
+    def _resolve_port_footprint_cells(
+        self,
+        *,
+        instance_name: str,
+        port_name: str,
+        port: object,
+    ) -> tuple[int, int]:
+        """Return (length_cells, half_width_cells) sizing this port's access/keepout region."""
+        access_length_um, access_width_um, _rule_name = self._keyed_port_access_rule(
+            instance_name=instance_name,
+            port_name=port_name,
+            port=port,
+        )
+        if access_length_um is not None or access_width_um is not None:
+            grid_size = float(self.grid.grid_size_um)
+            length_cells = max(
+                1,
+                int(
+                    math.ceil(
+                        max(0.0, float(access_length_um or 0.0)) / grid_size
+                    )
+                ),
+            )
+            half_width_cells = max(
+                0,
+                int(
+                    math.ceil(
+                        (max(0.0, float(access_width_um or 0.0)) / 2.0)
+                        / grid_size
+                    )
+                ),
+            )
+            return length_cells, half_width_cells
+
+        return int(self.port_lane_length_cells), int(self.port_lane_half_width_cells)
+
     def _keyed_port_access_rule(
         self,
         *,
@@ -6192,7 +6228,7 @@ class _RouteNetsRustSession:
         self.port_entry_length_cells = max(2, self.bend_radius_cells + 2)
         self.port_entry_half_width_cells = max(1, self.bend_radius_cells + self.commit_radius_cells + 1)
         self.port_lane_length_cells = max(3, 2 * self.bend_radius_cells + 2)
-        self.port_lane_half_width_cells = max(1, self.commit_radius_cells + 1)
+        self.port_lane_half_width_cells = max(1, self.bend_radius_cells + self.commit_radius_cells + 1)
 
         port_open_radius_um = _as_float(
             getattr(self.resolved_obstacle_config, "port_open_radius_um", 0.5),

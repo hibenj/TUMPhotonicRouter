@@ -91,6 +91,169 @@ def _state(x: int, y: int, angle: int = 0):
     return SimpleNamespace(x=x, y=y, angle=angle)
 
 
+class _PortOpeningCaptured(Exception):
+    pass
+
+
+def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
+    captured_lane_widths: list[int] = []
+
+    class FakeBackendGridSpec:
+        def __init__(
+            self,
+            width: int,
+            height: int,
+            grid_size_um: float,
+            origin_x_um: float,
+            origin_y_um: float,
+        ) -> None:
+            self.width = width
+            self.height = height
+            self.grid_size_um = grid_size_um
+            self.origin_x_um = origin_x_um
+            self.origin_y_um = origin_y_um
+
+    class FakePrimitiveLibraryConfig:
+        def __init__(
+            self,
+            *,
+            grid_size_um: float,
+            bend_radius_cells: int,
+            allow_45_degree_turns: bool,
+        ) -> None:
+            self.grid_size_um = grid_size_um
+            self.bend_radius_cells = bend_radius_cells
+            self.allow_45_degree_turns = allow_45_degree_turns
+
+    class FakeAStarConfig:
+        def __init__(self, max_iterations: int) -> None:
+            self.max_iterations = max_iterations
+
+    class CapturingRouter:
+        def __init__(
+            self,
+            _grid_spec: FakeBackendGridSpec,
+            _primitive_cfg: FakePrimitiveLibraryConfig,
+            _astar_cfg: FakeAStarConfig,
+        ) -> None:
+            pass
+
+        def build_route_port_openings(self, *_args: object, **kwargs: object):
+            captured_lane_widths.append(int(kwargs["port_lane_half_width_cells"]))
+            raise _PortOpeningCaptured
+
+    fake_backend = SimpleNamespace(
+        GridSpec=FakeBackendGridSpec,
+        PrimitiveLibraryConfig=FakePrimitiveLibraryConfig,
+        AStarConfig=FakeAStarConfig,
+        PyPhotonicRouter=CapturingRouter,
+    )
+
+    def fake_build_static_obstacle_map(_component, config=None):
+        _ = config
+        return _DummyObstacleData(blocked_cells=set(), width=30, height=20)
+
+    def fake_get_port_from_instance(_layout, inst, port):
+        ports = {
+            ("left", "o1"): SimpleNamespace(center=(2.0, 10.0), orientation=0.0),
+            ("right", "o1"): SimpleNamespace(center=(24.0, 10.0), orientation=180.0),
+        }
+        return ports[(inst, port)]
+
+    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: fake_backend)
+    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
+    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+
+    schematic = _DummySchematic(
+        netlist=_DummyNetlist(
+            routes={
+                "port_lane_width": _DummyBundle(links={"left,o1": "right,o1"}),
+            }
+        )
+    )
+
+    for bend_radius_um in (1.0, 3.0):
+        with pytest.raises(_PortOpeningCaptured):
+            route_rust.route_nets_rust(
+                _make_dummy_layout(),
+                schematic,  # type: ignore[arg-type]
+                obstacle_config=StaticObstacleMapConfig(
+                    obstacle_mode="rasterized_polygons",
+                    grid_size_um=1.0,
+                    security_margin_um=0.0,
+                    clearance_um=0.0,
+                    port_open_radius_um=0.0,
+                    die_bbox=(0.0, 0.0, 30.0, 20.0),
+                ),
+                route_width_um=0.5,
+                allow_45_degree_turns=False,
+                bend_radius_um=bend_radius_um,
+                max_iterations=100_000,
+                defer_realization=True,
+            )
+
+    assert captured_lane_widths == [2, 4]
+
+
+def _footprint_resolver_session(
+    *,
+    bend_radius_cells: int,
+    commit_radius_cells: int = 0,
+    grid_size_um: float = 1.0,
+    access_rule: tuple[float | None, float | None, str | None] = (None, None, None),
+) -> SimpleNamespace:
+    def keyed_port_access_rule(**_kwargs: object) -> tuple[float | None, float | None, str | None]:
+        return access_rule
+
+    return SimpleNamespace(
+        grid=SimpleNamespace(grid_size_um=grid_size_um),
+        port_lane_length_cells=max(3, 2 * bend_radius_cells + 2),
+        port_lane_half_width_cells=max(1, bend_radius_cells + commit_radius_cells + 1),
+        _keyed_port_access_rule=keyed_port_access_rule,
+    )
+
+
+def test_resolve_port_footprint_cells_uses_lane_sized_optical_default():
+    small_bend_session = _footprint_resolver_session(bend_radius_cells=1)
+    large_bend_session = _footprint_resolver_session(bend_radius_cells=3)
+    port = SimpleNamespace(port_type="optical")
+
+    small_footprint = route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
+        small_bend_session,
+        instance_name="gc_0",
+        port_name="o1",
+        port=port,
+    )
+    large_footprint = route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
+        large_bend_session,
+        instance_name="gc_0",
+        port_name="o1",
+        port=port,
+    )
+
+    assert small_footprint == (
+        small_bend_session.port_lane_length_cells,
+        small_bend_session.port_lane_half_width_cells,
+    )
+    assert large_footprint == (
+        large_bend_session.port_lane_length_cells,
+        large_bend_session.port_lane_half_width_cells,
+    )
+    assert large_footprint[1] > small_footprint[1]
+
+    custom_session = _footprint_resolver_session(
+        bend_radius_cells=3,
+        grid_size_um=2.0,
+        access_rule=(6.1, 5.0, "gc"),
+    )
+    assert route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
+        custom_session,
+        instance_name="gc_0",
+        port_name="o1",
+        port=port,
+    ) == (4, 2)
+
+
 def test_corridor_clearance_reports_no_bare_centerline_path():
     session = _corridor_session(width=12, height=6)
     blocked_cells = {(5, y) for y in range(6)}

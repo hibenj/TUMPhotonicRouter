@@ -1166,6 +1166,32 @@ fn route_port_access_cells(
     cells
 }
 
+fn route_port_footprint_cells(
+    grid: &StaticGridSpec,
+    x_um: f64,
+    y_um: f64,
+    orientation: Option<f64>,
+    length_cells: i32,
+    half_width_cells: i32,
+) -> FxHashSet<CellKey> {
+    let angle = route_orientation_to_angle(orientation);
+    let (sx, sy) = route_angle_to_step(angle);
+    let (base_x, base_y) = route_port_state_cell(grid, x_um, y_um, orientation);
+    let mut cells = route_collect_inflated_step_cells(
+        grid,
+        base_x,
+        base_y,
+        sx,
+        sy,
+        length_cells,
+        half_width_cells,
+    );
+    if route_in_bounds(base_x, base_y, grid) {
+        cells.insert(pack_xy(base_x, base_y));
+    }
+    cells
+}
+
 fn route_base_port_open_cells(
     grid: &StaticGridSpec,
     x_um: f64,
@@ -14568,6 +14594,54 @@ mod tests {
             ),
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
+    }
+
+    #[test]
+    fn route_port_footprint_cells_matches_directional_box_geometry() {
+        let grid = StaticGridSpec {
+            width: 12,
+            height: 12,
+            grid_size_um: 1.0,
+            origin: (0.0, 0.0),
+            die_bbox: (0.0, 0.0, 12.0, 12.0),
+        };
+
+        let east = route_port_footprint_cells(&grid, 2.0, 10.0, Some(0.0), 3, 1);
+        let expected_east: FxHashSet<CellKey> = [
+            (3, 9),
+            (3, 10),
+            (3, 11),
+            (4, 9),
+            (4, 10),
+            (4, 11),
+            (5, 9),
+            (5, 10),
+            (5, 11),
+            (6, 9),
+            (6, 10),
+            (6, 11),
+        ]
+        .into_iter()
+        .map(|(x, y)| pack_xy(x, y))
+        .collect();
+        assert_eq!(east, expected_east);
+
+        let north = route_port_footprint_cells(&grid, 5.0, 5.0, Some(90.0), 2, 1);
+        let expected_north: FxHashSet<CellKey> = [
+            (4, 6),
+            (4, 7),
+            (4, 8),
+            (5, 6),
+            (5, 7),
+            (5, 8),
+            (6, 6),
+            (6, 7),
+            (6, 8),
+        ]
+        .into_iter()
+        .map(|(x, y)| pack_xy(x, y))
+        .collect();
+        assert_eq!(north, expected_north);
     }
 
     #[test]
