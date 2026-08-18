@@ -30,13 +30,18 @@ other nets" consumers. It grew directly out of
 `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`
 (also complete), whose investigation into why the `TOY` benchmark's
 `gc1_to_mmi_in2` net cannot route first found that architectural
-inconsistency. Read `.agent/REPOSITORY_STATE.md`'s "Current Snapshot"
-section first at the start of any new session, since it is kept current at
-every stop and is the source of truth for what is actually active; its
-"Next Engineering Step" section lists the candidates for the next plan
-(including two genuine, previously-masked routing-clearance findings the
-unified sizing surfaced) plus lower-priority deferred candidates
-(Rust-side Phase 3 readability, the Future Architecture Initiative from
+inconsistency. The unified sizing surfaced two genuine, previously-masked
+routing-clearance findings (`multiportmmi_8x8` `n_24`, `multiportmmi_16x16`
+`n_48`); both are now fixed by a third, also-complete plan,
+`.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md` (a
+self-inflicted gap where differently-staggered sibling ports on a crowded
+component face could seal each other in). Read `.agent/REPOSITORY_STATE.md`'s
+"Current Snapshot" section first at the start of any new session, since it
+is kept current at every stop and is the source of truth for what is
+actually active; its "Next Engineering Step" section lists the candidates
+for the next plan (including two further findings that plan's fix
+surfaced) plus lower-priority deferred candidates (Rust-side Phase 3
+readability, the Future Architecture Initiative from
 `.agent/PROJECT_GOAL.md`, the 9 pre-existing failing Rust crossing tests)
 not currently being worked.
 
