@@ -9,8 +9,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::astar::{
     export_route_svg_with_port_open_cells,
     route_single_net_with_collision_crossing_config_with_stats, route_single_net_with_config,
-    route_single_net_with_crossing_config,
-    route_single_net_with_dynamic_expansion_config, try_simple_route_with_config,
+    route_single_net_with_config_reporting_stats, route_single_net_with_crossing_config,
+    route_single_net_with_dynamic_expansion_config,
+    route_single_net_with_dynamic_expansion_config_reporting_stats, try_simple_route_with_config,
     try_simple_route_with_dynamic_expansion_config, AStarConfig, CrossingSearchConfig,
     CrossingSearchPartner, HeapTieBreaker, HeuristicMode, PrimitiveOrdering, RouteResult,
     RouteSearchStats, State, TerminalBumpAxis, TerminalBumpGuard,
@@ -5830,8 +5831,9 @@ impl PyPhotonicRouter {
             && dynamic_clearance_exempt_keys.is_some()
             && !search_cfg.enable_jps4;
         let mut opened_dynamic_obstacle_map;
+        let mut fallback_search_stats = RouteSearchStats::default();
         let mut result = if block_radius_cells > 0 || zero_radius_overlay {
-            route_single_net_with_dynamic_expansion_config(
+            route_single_net_with_dynamic_expansion_config_reporting_stats(
                 &self.obstacle_map,
                 &self.primitives,
                 source_state,
@@ -5840,6 +5842,7 @@ impl PyPhotonicRouter {
                 &search_cfg,
                 block_radius_cells.max(0),
                 dynamic_clearance_exempt_keys,
+                &mut fallback_search_stats,
             )
         } else {
             let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
@@ -5850,16 +5853,27 @@ impl PyPhotonicRouter {
             } else {
                 &self.obstacle_map
             };
-            route_single_net_with_config(
+            route_single_net_with_config_reporting_stats(
                 search_obstacle_map,
                 &self.primitives,
                 source_state,
                 target_state,
                 Some(opened_search_ref),
                 &search_cfg,
+                &mut fallback_search_stats,
             )
         }
-        .ok_or_else(|| "No route found".to_string())?;
+        .ok_or_else(|| {
+            format!(
+                "No route found (expanded_states={}, generated_neighbors={}, window_attempts={}, used_full_grid_fallback={}, last_window_area_cells={}, max_window_area_cells={})",
+                fallback_search_stats.expanded_states,
+                fallback_search_stats.generated_neighbors,
+                fallback_search_stats.window_attempts,
+                fallback_search_stats.used_full_grid_fallback,
+                fallback_search_stats.last_window_area_cells,
+                fallback_search_stats.max_window_area_cells,
+            )
+        })?;
         if let Some(fallback) = ordinary_collision_fallback {
             if fallback.total_cost + 1.0e-9 < result.total_cost {
                 result = fallback;

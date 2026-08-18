@@ -46,6 +46,8 @@ impl State {
     }
 }
 
+
+
 /// Configuration for the first single-net A* router.
 #[derive(Clone, Debug)]
 pub struct AStarConfig {
@@ -1862,18 +1864,43 @@ pub fn route_single_net_with_config(
     port_open_cells: Option<&FxHashSet<CellKey>>,
     config: &AStarConfig,
 ) -> Option<RouteResult> {
+    let mut discarded_stats = RouteSearchStats::default();
+    route_single_net_with_config_reporting_stats(
+        obstacle_map,
+        primitives,
+        source,
+        target,
+        port_open_cells,
+        config,
+        &mut discarded_stats,
+    )
+}
+
+pub fn route_single_net_with_config_reporting_stats(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    out_stats: &mut RouteSearchStats,
+) -> Option<RouteResult> {
     if config.target_tolerance_cells < 0 {
+        *out_stats = RouteSearchStats::default();
         return None;
     }
     if let Some(mask) = config.allowed_target_angles_mask {
         if mask == 0 {
+            *out_stats = RouteSearchStats::default();
             return None;
         }
     }
     if target.angle > 7 {
+        *out_stats = RouteSearchStats::default();
         return None;
     }
     if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
+        *out_stats = RouteSearchStats::default();
         return None;
     }
     let mut anchor_open_cells = FxHashSet::default();
@@ -1902,6 +1929,7 @@ pub fn route_single_net_with_config(
             primitives.grid_size_um(),
             stats.clone(),
         ) {
+            *out_stats = stats.clone();
             return Some(with_route_search_total_time(
                 route,
                 route_search_total_start.as_ref(),
@@ -1929,7 +1957,8 @@ pub fn route_single_net_with_config(
         stats.simple_route_time_us += simple_route_start.elapsed().as_micros();
     }
     if let Some(mut simple_route) = simple_route {
-        simple_route.stats = stats;
+        simple_route.stats = stats.clone();
+        *out_stats = stats.clone();
         return Some(with_route_search_total_time(
             simple_route,
             route_search_total_start.as_ref(),
@@ -1937,7 +1966,7 @@ pub fn route_single_net_with_config(
     }
 
     if !config.use_routing_window {
-        return route_single_net_with_bounds(
+        let route = route_single_net_with_bounds(
             obstacle_map,
             primitives,
             source,
@@ -1948,11 +1977,18 @@ pub fn route_single_net_with_config(
             &mut stats,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        *out_stats = stats.clone();
+        return route;
     }
 
     let mut last_bounds: Option<RoutingBounds> = None;
     for expansion_idx in 0..=config.routing_window_max_expansions {
-        let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
+        let Some(bounds) =
+            compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)
+        else {
+            *out_stats = stats.clone();
+            return None;
+        };
         if last_bounds == Some(bounds) {
             continue;
         }
@@ -1975,6 +2011,7 @@ pub fn route_single_net_with_config(
             Some(bounds),
             &mut stats,
         ) {
+            *out_stats = stats.clone();
             return Some(with_route_search_total_time(
                 route,
                 route_search_total_start.as_ref(),
@@ -1997,7 +2034,7 @@ pub fn route_single_net_with_config(
         stats.last_window_max_y = full_bounds.max_y;
         stats.last_window_area_cells = window_area(full_bounds);
         stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        return route_single_net_with_bounds(
+        let route = route_single_net_with_bounds(
             obstacle_map,
             primitives,
             source,
@@ -2008,8 +2045,11 @@ pub fn route_single_net_with_config(
             &mut stats,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        *out_stats = stats.clone();
+        return route;
     }
 
+    *out_stats = stats.clone();
     None
 }
 
@@ -2023,18 +2063,47 @@ pub fn route_single_net_with_dynamic_expansion_config(
     dynamic_expansion_radius_cells: i32,
     dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
 ) -> Option<RouteResult> {
+    let mut discarded_stats = RouteSearchStats::default();
+    route_single_net_with_dynamic_expansion_config_reporting_stats(
+        obstacle_map,
+        primitives,
+        source,
+        target,
+        port_open_cells,
+        config,
+        dynamic_expansion_radius_cells,
+        dynamic_clearance_exempt_cells,
+        &mut discarded_stats,
+    )
+}
+
+pub fn route_single_net_with_dynamic_expansion_config_reporting_stats(
+    obstacle_map: &ObstacleMap,
+    primitives: &PrimitiveLibrary,
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    dynamic_expansion_radius_cells: i32,
+    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+    out_stats: &mut RouteSearchStats,
+) -> Option<RouteResult> {
     if config.target_tolerance_cells < 0 {
+        *out_stats = RouteSearchStats::default();
         return None;
     }
     if let Some(mask) = config.allowed_target_angles_mask {
         if mask == 0 {
+            *out_stats = RouteSearchStats::default();
             return None;
         }
     }
     if target.angle > 7 {
+        *out_stats = RouteSearchStats::default();
         return None;
     }
     if !obstacle_map.in_bounds(source.x, source.y) || !obstacle_map.in_bounds(target.x, target.y) {
+        *out_stats = RouteSearchStats::default();
         return None;
     }
     let mut anchor_open_cells = FxHashSet::default();
@@ -2058,7 +2127,7 @@ pub fn route_single_net_with_dynamic_expansion_config(
     }
 
     if !config.use_routing_window {
-        return route_single_net_with_bounds_dynamic_expansion(
+        let route = route_single_net_with_bounds_dynamic_expansion(
             obstacle_map,
             primitives,
             source,
@@ -2071,11 +2140,18 @@ pub fn route_single_net_with_dynamic_expansion_config(
             dynamic_clearance_exempt_cells,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        *out_stats = stats.clone();
+        return route;
     }
 
     let mut last_bounds: Option<RoutingBounds> = None;
     for expansion_idx in 0..=config.routing_window_max_expansions {
-        let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
+        let Some(bounds) =
+            compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)
+        else {
+            *out_stats = stats.clone();
+            return None;
+        };
         if last_bounds == Some(bounds) {
             continue;
         }
@@ -2100,6 +2176,7 @@ pub fn route_single_net_with_dynamic_expansion_config(
             dynamic_expansion_radius_cells,
             dynamic_clearance_exempt_cells,
         ) {
+            *out_stats = stats.clone();
             return Some(with_route_search_total_time(
                 route,
                 route_search_total_start.as_ref(),
@@ -2122,7 +2199,7 @@ pub fn route_single_net_with_dynamic_expansion_config(
         stats.last_window_max_y = full_bounds.max_y;
         stats.last_window_area_cells = window_area(full_bounds);
         stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        return route_single_net_with_bounds_dynamic_expansion(
+        let route = route_single_net_with_bounds_dynamic_expansion(
             obstacle_map,
             primitives,
             source,
@@ -2135,8 +2212,11 @@ pub fn route_single_net_with_dynamic_expansion_config(
             dynamic_clearance_exempt_cells,
         )
         .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        *out_stats = stats.clone();
+        return route;
     }
 
+    *out_stats = stats.clone();
     None
 }
 
@@ -7465,6 +7545,127 @@ mod tests {
     }
 
     #[test]
+    fn reporting_stats_preserves_failed_dense_search_effort() {
+        let mut map = ObstacleMap::new(12, 5);
+        for y in 0..map.height() {
+            map.add_static_cell(5, y);
+        }
+        let mut stats = RouteSearchStats::default();
+
+        let result = route_single_net_with_config_reporting_stats(
+            &map,
+            &primitive_library_no45_bend1(),
+            State::new(1, 2, 0),
+            State::new(10, 2, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: false,
+                require_target_angle: false,
+                use_routing_window: false,
+                max_iterations: 10_000,
+                ..AStarConfig::default()
+            },
+            &mut stats,
+        );
+
+        assert!(result.is_none());
+        assert!(stats.expanded_states > 0);
+    }
+
+    #[test]
+    fn dynamic_reporting_stats_preserves_failed_dense_search_effort() {
+        let mut map = ObstacleMap::new(12, 5);
+        for y in 0..map.height() {
+            map.add_static_cell(5, y);
+        }
+        let mut stats = RouteSearchStats::default();
+
+        let result = route_single_net_with_dynamic_expansion_config_reporting_stats(
+            &map,
+            &primitive_library_no45_bend1(),
+            State::new(1, 2, 0),
+            State::new(10, 2, 0),
+            None,
+            &AStarConfig {
+                enable_simple_routes: false,
+                require_target_angle: false,
+                use_routing_window: false,
+                max_iterations: 10_000,
+                ..AStarConfig::default()
+            },
+            1,
+            None,
+            &mut stats,
+        );
+
+        assert!(result.is_none());
+        assert!(stats.expanded_states > 0);
+    }
+
+    #[test]
+    fn public_wrappers_preserve_successful_routes() {
+        let mut map = ObstacleMap::new(12, 8);
+        map.add_static_cell(3, 1);
+        let library = primitive_library();
+        let source = State::new(1, 1, 0);
+        let target = State::new(5, 1, 0);
+        let config = AStarConfig {
+            enable_simple_routes: true,
+            ..AStarConfig::default()
+        };
+
+        let public_route =
+            route_single_net_with_config(&map, &library, source, target, None, &config)
+                .expect("public wrapper should route");
+        let mut reporting_stats = RouteSearchStats::default();
+        let reporting_route = route_single_net_with_config_reporting_stats(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &config,
+            &mut reporting_stats,
+        )
+        .expect("reporting variant should route");
+
+        assert_eq!(reporting_route.cells, public_route.cells);
+        assert_eq!(reporting_route.states, public_route.states);
+        assert_eq!(reporting_route.primitives, public_route.primitives);
+        assert!((reporting_route.total_cost - public_route.total_cost).abs() < 1.0e-9);
+
+        let mut dynamic_stats = RouteSearchStats::default();
+        let public_dynamic = route_single_net_with_dynamic_expansion_config(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &config,
+            0,
+            None,
+        )
+        .expect("dynamic public wrapper should route");
+        let reporting_dynamic = route_single_net_with_dynamic_expansion_config_reporting_stats(
+            &map,
+            &library,
+            source,
+            target,
+            None,
+            &config,
+            0,
+            None,
+            &mut dynamic_stats,
+        )
+        .expect("dynamic reporting variant should route");
+
+        assert_eq!(reporting_dynamic.cells, public_dynamic.cells);
+        assert_eq!(reporting_dynamic.states, public_dynamic.states);
+        assert_eq!(reporting_dynamic.primitives, public_dynamic.primitives);
+        assert!((reporting_dynamic.total_cost - public_dynamic.total_cost).abs() < 1.0e-9);
+    }
+
+    #[test]
     fn port_opening_allows_blocked_source_and_target_cells() {
         let mut map = ObstacleMap::new(8, 3);
         map.add_static_cell(1, 1);
@@ -10385,4 +10586,3 @@ mod tests {
         assert!(result.is_none());
     }
 }
-
