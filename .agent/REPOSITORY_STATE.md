@@ -79,20 +79,35 @@ Uncommitted change set, per `git status --short` on 2026-08-17:
   `_verification_status_metadata`, and a renamed `parse_debug_svg_selector`)
   that blocked test collection outright, now fixed directly since they match
   the plan's own established compatibility pattern. Once fixed, the full
-  suite reports `29 failed, 301 passed, 1 skipped`. Isolating with
-  `git stash push -u -- routing_flow*.py` against clean HEAD (`a29dc00`)
-  showed 23 of those 29 failures are pre-existing and unrelated to this
-  refactor at all; the other 6 are a genuine regression: `routing_flow_optical.py`
-  now imports `load_benchmark_metadata` directly from `benchmark_metadata`
-  instead of through `routing_flow.py`, so `monkeypatch.setattr(routing_flow,
-  "load_benchmark_metadata", ...)` in `tests/test_routing_flow_stats.py` and
-  `tests/test_path_length_graph.py` no longer reaches the real call site.
-  This 6-test regression is unfixed; it needs a real decision (make the call
-  site patchable from `routing_flow` again, or update the tests to patch
-  `routing_flow_optical`) before this slice can honestly be called complete.
-  See `.agent/execplans/2026-08-17-restructure-translation-route-rust.md`'s
-  `Progress` and `Surprises & Discoveries` sections for the full failing-test
-  list and evidence.
+  suite reported `29 failed, 301 passed, 1 skipped`, 6 more than the true
+  pre-refactor baseline.
+- Fixed, 2026-08-18: the 6-test regression above turned out to be 4 test
+  files monkeypatching the wrong module, not 1. Every affected test chains
+  several `monkeypatch.setattr(routing_flow, "<name>", fake)` calls, and
+  `monkeypatch.setattr` raises immediately on the first missing attribute, so
+  fixing `load_benchmark_metadata` alone just exposed the next mistargeted
+  name in the same test rather than making it pass. Found the full set with a
+  script that regex-scans every `monkeypatch.setattr(routing_flow, "...")`
+  call (including multi-line ones) across `tests/*.py` and cross-checks each
+  name against `hasattr(routing_flow, name)`. All 4 mistargeted names, and
+  the sibling module that now actually owns each one: `load_benchmark_metadata`
+  and `route_match_and_realize` -> `routing_flow_optical`;
+  `verify_photonic_routing` -> `routing_flow_verification`;
+  `route_electrical_heaters` -> `routing_flow_electrical`. Fixed by
+  retargeting all 8 call sites to the module that actually owns the call, per
+  explicit user direction that this is what actually matches the
+  restructuring's own goal (each module tested against its own real
+  dependency), not by routing calls back through `routing_flow.py` for
+  compatibility. `PYTHONPATH=. .venv/bin/pytest -q` now reports
+  `23 failed, 307 passed, 1 skipped`, an exact match to the true pre-refactor
+  baseline. One test does not start passing despite being on the original
+  regression list, correctly: `test_path_length_graph.py::test_main_flow_flag_enables_path_length_matching`
+  was already failing on clean HEAD for a real, unrelated, pre-existing bug
+  (`TypeError` in `translation/route_rust_realization.py:324`) that the
+  mistargeting had been masking; it now fails with that real error instead.
+  Full detail in `.agent/execplans/2026-08-11-refactor-python-routing-flow.md`'s
+  `Progress` section. This slice can now honestly be called complete pending
+  only the optional CLI-parser item above. Not yet committed; see below.
 - Known pre-existing, unrelated failure (one of the 23 above):
   `tests/test_routing_flow_stats.py::test_run_routing_flow_collects_route_summary_when_stats_requested`
   fails because `RouteAttemptRecord.as_dict()` now includes `crossing_hotpath_*`

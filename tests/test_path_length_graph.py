@@ -42,6 +42,7 @@ from translation.route_rust_meanders import (
 )
 import translation.route_rust as route_rust
 import routing_flow
+import routing_flow_optical
 
 
 class _SchematicLike(Protocol):
@@ -1762,7 +1763,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
 
     monkeypatch.setattr(routing_flow, "load_benchmark", lambda _: schematic)
     monkeypatch.setattr(
-        routing_flow,
+        routing_flow_optical,
         "load_benchmark_metadata",
         lambda *args, **kwargs: {
             "node_types": {"src0": "input", "src1": "input", "gate0": "gate"},
@@ -1801,7 +1802,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
         )
 
     monkeypatch.setattr(
-        routing_flow,
+        routing_flow_optical,
         "route_match_and_realize",
         _fake_route_match_and_realize,
     )
@@ -1844,7 +1845,7 @@ def test_main_flow_matching_uses_record_lengths(monkeypatch):
 
     monkeypatch.setattr(routing_flow, "load_benchmark", lambda _: _Schematic())
     monkeypatch.setattr(
-        routing_flow,
+        routing_flow_optical,
         "load_benchmark_metadata",
         lambda *args, **kwargs: {
             "node_types": {"src0": "input", "src1": "input", "gate0": "gate"},
@@ -1853,7 +1854,7 @@ def test_main_flow_matching_uses_record_lengths(monkeypatch):
     )
     monkeypatch.setattr(routing_flow, "layout_from_schematic", lambda _: _Layout())
     monkeypatch.setattr(
-        routing_flow,
+        routing_flow_optical,
         "route_match_and_realize",
         lambda *args, **kwargs: RouteRustPipelineResult(
             routed_layout=Component(name="dummy"),

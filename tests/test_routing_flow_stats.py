@@ -576,14 +576,13 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
         )
 
     import routing_flow
+    import routing_flow_optical
 
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
+    monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
     monkeypatch.setattr(
-        routing_flow, "load_benchmark_metadata", fake_load_metadata
-    )
-    monkeypatch.setattr(
-        routing_flow, "route_match_and_realize", fake_route_match_and_realize
+        routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize
     )
 
     ripup_config = RipupRerouteConfig(enabled=True, max_rounds=2)
@@ -685,12 +684,13 @@ def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_p
         )
 
     import routing_flow
+    import routing_flow_optical
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
-    monkeypatch.setattr(routing_flow, "load_benchmark_metadata", fake_load_metadata)
-    monkeypatch.setattr(routing_flow, "route_match_and_realize", fake_route_match_and_realize)
+    monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
+    monkeypatch.setattr(routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize)
 
     routed = run_routing_flow(
         "FAKE",
@@ -791,12 +791,13 @@ def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_pa
         )
 
     import routing_flow
+    import routing_flow_optical
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
-    monkeypatch.setattr(routing_flow, "load_benchmark_metadata", fake_load_metadata)
-    monkeypatch.setattr(routing_flow, "route_match_and_realize", fake_route_match_and_realize)
+    monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
+    monkeypatch.setattr(routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize)
 
     with pytest.raises(RuntimeError, match="Crossing verification failed"):
         run_routing_flow(
@@ -911,14 +912,16 @@ def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_
     }
 
     import routing_flow
+    import routing_flow_optical
+    import routing_flow_verification
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
-    monkeypatch.setattr(routing_flow, "load_benchmark_metadata", fake_load_metadata)
-    monkeypatch.setattr(routing_flow, "route_match_and_realize", fake_route_match_and_realize)
+    monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
+    monkeypatch.setattr(routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize)
     monkeypatch.setattr(
-        routing_flow,
+        routing_flow_verification,
         "verify_photonic_routing",
         lambda *_args, **_kwargs: verification,
     )
@@ -1038,11 +1041,12 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
         )
 
     import routing_flow
+    import routing_flow_optical
 
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
-    monkeypatch.setattr(routing_flow, "load_benchmark_metadata", fake_load_metadata)
-    monkeypatch.setattr(routing_flow, "route_match_and_realize", fake_route_match_and_realize)
+    monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
+    monkeypatch.setattr(routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize)
 
     stats = RoutingFlowStats()
     run_routing_flow(
@@ -1248,6 +1252,8 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
         )
 
     import routing_flow
+    import routing_flow_electrical
+    import routing_flow_optical
 
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(
@@ -1255,14 +1261,14 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
         "layout_from_schematic",
         fake_layout_from_schematic,
     )
-    monkeypatch.setattr(routing_flow, "load_benchmark_metadata", fake_load_metadata)
+    monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
     monkeypatch.setattr(
-        routing_flow,
+        routing_flow_optical,
         "route_match_and_realize",
         fake_route_match_and_realize,
     )
     monkeypatch.setattr(
-        routing_flow,
+        routing_flow_electrical,
         "route_electrical_heaters",
         fake_route_electrical_heaters,
     )

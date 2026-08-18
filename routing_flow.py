@@ -9,16 +9,10 @@ This module orchestrates the photonic routing flow:
 """
 
 import argparse
-from collections import Counter
-from collections.abc import Mapping
-from dataclasses import dataclass, field
 import importlib
-import json
 import os
 import time
 from pathlib import Path
-import webbrowser
-from typing import Any, cast
 
 if "MPLCONFIGDIR" not in os.environ:
     _default_mpl_config_dir = Path(__file__).resolve().parent / "build" / "mpl"
@@ -28,474 +22,88 @@ if "MPLCONFIGDIR" not in os.environ:
         pass
     os.environ["MPLCONFIGDIR"] = str(_default_mpl_config_dir)
 
-from benchmark_metadata import load_benchmark_metadata
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
-from translation.crossing_verification_report import (
-    RouteCostTerms,
-    build_crossing_verification_report,
-    route_cost_terms_from_mapping,
-)
-from translation.electrical import (
-    DEFAULT_BUS_WIDTH_UM,
-    DEFAULT_PAD_PITCH_UM,
-    DEFAULT_WIRE_WIDTH_UM,
-    ElectricalRoutingConfig,
-    ElectricalVerificationIssue,
-    ElectricalVerificationResult,
-    ElectricalRoutingResult,
-    route_electrical_heaters,
-)
+from translation.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
 from translation.layout_from_schematic import layout_from_schematic
-from translation.photonic_verification import verify_photonic_routing
-from translation.route_rust import (
-    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
-    RipupRerouteConfig,
-    route_match_and_realize,
-)
-from translation.route_rust_types import DEFAULT_MEANDER_MAX_HEIGHT_UM
-from photonic_router.routing_layers import get_routing_obstacle_layers
+from translation.route_rust import RipupRerouteConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+from routing_flow_config import (
+    DebugSvgSelector,
+    SCRIPT_ALLOW_45_DEGREE_TURNS,
+    SCRIPT_ATTEMPT_DIAGNOSTICS,
+    SCRIPT_BENCHMARK,
+    SCRIPT_BEND_RADIUS_UM,
+    SCRIPT_CHIP_ADD_X_UM,
+    SCRIPT_CHIP_ADD_Y_UM,
+    SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC,
+    SCRIPT_CROSSING_MODE,
+    SCRIPT_DEBUG_MEANDERS,
+    SCRIPT_DEBUG_SVGS,
+    SCRIPT_DEBUG_TIMING,
+    SCRIPT_ELECTRICAL_BUS_WIDTH_UM,
+    SCRIPT_ELECTRICAL_GRID_PITCH_UM,
+    SCRIPT_ELECTRICAL_OBSTACLE_CLEARANCE_UM,
+    SCRIPT_ELECTRICAL_PAD_PITCH_UM,
+    SCRIPT_ELECTRICAL_PAD_SIDE,
+    SCRIPT_ELECTRICAL_TERMINAL_CONTACT_WIDTH_UM,
+    SCRIPT_ELECTRICAL_WIRE_WIDTH_UM,
+    SCRIPT_ENABLE_CROSSINGS,
+    SCRIPT_ENABLE_ELECTRICAL_ROUTING,
+    SCRIPT_ENABLE_PATH_LENGTH_MATCHING,
+    SCRIPT_ENABLE_RIPUP_REROUTE,
+    SCRIPT_FANOUT_ACCESS_MODE,
+    SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
+    SCRIPT_GRID_SIZE_UM,
+    SCRIPT_HEATER_CLEARANCE_UM,
+    SCRIPT_INCLUDE_HEATER_OBSTACLES,
+    SCRIPT_MAX_ITERATIONS,
+    SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
+    SCRIPT_OBSTACLE_CLEARANCE_UM,
+    SCRIPT_OBSTACLE_MODE,
+    SCRIPT_PATH_LENGTH_MATCH_OUTPUTS,
+    SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
+    SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
+    SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
+    SCRIPT_RIPUP_HISTORY_INCREMENT,
+    SCRIPT_RIPUP_HISTORY_WEIGHT,
+    SCRIPT_RIPUP_MAX_ROUNDS,
+    SCRIPT_RIPUP_MAX_VICTIMS,
+    SCRIPT_ROUTING_WINDOW_SCALE,
+    SCRIPT_SHOW_KLAYOUT,
+    SCRIPT_VERBOSE_ROUTES,
+    SCRIPT_WAVEGUIDE_CLEARANCE_UM,
+    build_optical_routing_stage_config,
+    build_static_obstacle_config,
+    debug_artifact_routing_options,
+    parse_debug_svg_selector,
+    resolve_legacy_display_options,
+)
+from routing_flow_electrical import run_electrical_routing_step
+from routing_flow_optical import run_photonic_routing_stage
+from routing_flow_plm import attach_and_report_path_length_matching
+from routing_flow_reporting import (
+    _format_debug_route_indices,
+    cleanup_debug_artifacts,
+    report_and_open_debug_svgs,
+    write_or_show_routed_layout,
+)
+from routing_flow_stats import (
+    RoutingFlowStats,
+    populate_route_stats,
+    record_initial_route_stats,
+)
+from routing_flow_verification import (
+    _verification_status_metadata,
+    verify_and_attach_photonic_reports,
+)
 
-DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, ...]
-
-# Edit these values when running `routing_flow.py` directly from an IDE or file.
-# Command-line arguments override these defaults.
-SCRIPT_BENCHMARK = "benes_16x16"
-SCRIPT_DEBUG_SVGS: DebugSvgSelector = False # Examples: True, "all", "5-10", "2,5-10"
-SCRIPT_DEBUG_TIMING = True
-SCRIPT_DEBUG_MEANDERS = False
-SCRIPT_VERBOSE_ROUTES = False
-SCRIPT_SHOW_KLAYOUT = False
-SCRIPT_ALLOW_45_DEGREE_TURNS = True
-SCRIPT_BEND_RADIUS_UM = 5.0
-SCRIPT_ENABLE_PATH_LENGTH_MATCHING = False
-SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = False
-SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = DEFAULT_MEANDER_MAX_HEIGHT_UM
-SCRIPT_ENABLE_CROSSINGS = True
-SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING
-SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS = 6
-SCRIPT_FANOUT_ACCESS_MODE = "legacy-runway"
-SCRIPT_PROACTIVE_CONGESTION_WEIGHT = 0.0
-SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS = 0
-SCRIPT_MAX_ITERATIONS = 5_000_000
-SCRIPT_ROUTING_WINDOW_SCALE = 0.05
-SCRIPT_INCLUDE_HEATER_OBSTACLES = True
-SCRIPT_OBSTACLE_MODE = "bounding_boxes"
-SCRIPT_GRID_SIZE_UM = 2.0
-SCRIPT_WAVEGUIDE_CLEARANCE_UM = 0.0
-SCRIPT_HEATER_CLEARANCE_UM = 10.0
-SCRIPT_CHIP_ADD_X_UM = 0.0
-SCRIPT_CROSSING_MODE = "lidar-pure"
-SCRIPT_CHIP_ADD_Y_UM = 40.0
-SCRIPT_OBSTACLE_CLEARANCE_UM = SCRIPT_WAVEGUIDE_CLEARANCE_UM
-SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC = False
-SCRIPT_ENABLE_RIPUP_REROUTE = True
-SCRIPT_RIPUP_MAX_ROUNDS = 4
-SCRIPT_RIPUP_MAX_VICTIMS = 8
-SCRIPT_RIPUP_HISTORY_WEIGHT = 2.0
-SCRIPT_RIPUP_HISTORY_INCREMENT = 1
-SCRIPT_ATTEMPT_DIAGNOSTICS = False
-SCRIPT_ENABLE_ELECTRICAL_ROUTING = False
-SCRIPT_ELECTRICAL_PAD_SIDE = "top"
-SCRIPT_ELECTRICAL_GRID_PITCH_UM = 10.0
-SCRIPT_ELECTRICAL_OBSTACLE_CLEARANCE_UM = 10.0
-SCRIPT_ELECTRICAL_WIRE_WIDTH_UM = DEFAULT_WIRE_WIDTH_UM
-SCRIPT_ELECTRICAL_BUS_WIDTH_UM = DEFAULT_BUS_WIDTH_UM
-SCRIPT_ELECTRICAL_TERMINAL_CONTACT_WIDTH_UM = 10.0
-SCRIPT_ELECTRICAL_PAD_PITCH_UM = DEFAULT_PAD_PITCH_UM
-
-
-@dataclass
-class RoutingFlowStats:
-    """Compatibility container for legacy routing-flow timing/stat collection."""
-
-    benchmark_name: str | None = None
-    total_time_s: float = 0.0
-    instance_count: int = 0
-    net_count: int = 0
-    static_grid_width: int | None = None
-    static_grid_height: int | None = None
-    raw_blocked_cells: int | None = None
-    blocked_cells: int | None = None
-    port_open_cells: int = 0
-    astar_time_s: float = 0.0
-    route_attempts: int = 0
-    route_failures: int = 0
-    simple_route_count: int = 0
-    repair_count: int = 0
-    expanded_states: int = 0
-    generated_neighbors: int = 0
-    heap_pushes: int = 0
-    heap_pops: int = 0
-    skipped_duplicate_heap_entries: int = 0
-    stale_generation_heap_entries: int = 0
-    closed_heap_entries: int = 0
-    max_heap_size: int = 0
-    dense_search_states: int = 0
-    dense_search_storage_bytes: int = 0
-    best_cost_updates: int = 0
-    parent_updates: int = 0
-    obstacle_clearance_checks: int = 0
-    footprint_checks: int = 0
-    footprint_rect_checks: int = 0
-    crossing_candidate_checks: int = 0
-    crossing_accepted: int = 0
-    crossing_reject_non_straight: int = 0
-    crossing_reject_not_perpendicular: int = 0
-    crossing_reject_margin: int = 0
-    crossing_reject_wrong_order: int = 0
-    crossing_reject_unexpected_owner: int = 0
-    crossing_reject_unmatched_owner: int = 0
-    crossing_reject_unmatched_centerline: int = 0
-    crossing_reject_unmatched_footprint: int = 0
-    crossing_reject_unmatched_route_centerline: int = 0
-    crossing_reject_unmatched_route_footprint: int = 0
-    crossing_reject_pending_straight: int = 0
-    full_grid_fallbacks: int = 0
-    search_loop_time_s: float = 0.0
-    obstacle_map_prepare_time_s: float = 0.0
-    simple_route_time_s: float = 0.0
-    commit_prepare_time_s: float = 0.0
-    commit_time_s: float = 0.0
-    neighbor_generation_time_s: float = 0.0
-    heap_operation_time_s: float = 0.0
-    legality_check_time_s: float = 0.0
-    reconstruction_time_s: float = 0.0
-    electrical_terminal_groups: int = 0
-    electrical_pad_assignments: int = 0
-    electrical_detailed_routes: int = 0
-    electrical_failed_detailed_routes: int = 0
-    route_attempt_records: list[dict[str, object]] = field(default_factory=list)
-    step_times_s: dict[str, float] = field(default_factory=dict)
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "benchmark_name": self.benchmark_name,
-            "total_time_s": self.total_time_s,
-            "instance_count": self.instance_count,
-            "net_count": self.net_count,
-            "static_grid_width": self.static_grid_width,
-            "static_grid_height": self.static_grid_height,
-            "raw_blocked_cells": self.raw_blocked_cells,
-            "blocked_cells": self.blocked_cells,
-            "port_open_cells": self.port_open_cells,
-            "astar_time_s": self.astar_time_s,
-            "route_attempts": self.route_attempts,
-            "route_failures": self.route_failures,
-            "simple_route_count": self.simple_route_count,
-            "repair_count": self.repair_count,
-            "expanded_states": self.expanded_states,
-            "generated_neighbors": self.generated_neighbors,
-            "heap_pushes": self.heap_pushes,
-            "heap_pops": self.heap_pops,
-            "skipped_duplicate_heap_entries": self.skipped_duplicate_heap_entries,
-            "stale_generation_heap_entries": self.stale_generation_heap_entries,
-            "closed_heap_entries": self.closed_heap_entries,
-            "max_heap_size": self.max_heap_size,
-            "dense_search_states": self.dense_search_states,
-            "dense_search_storage_bytes": self.dense_search_storage_bytes,
-            "best_cost_updates": self.best_cost_updates,
-            "parent_updates": self.parent_updates,
-            "obstacle_clearance_checks": self.obstacle_clearance_checks,
-            "footprint_checks": self.footprint_checks,
-            "footprint_rect_checks": self.footprint_rect_checks,
-            "crossing_candidate_checks": self.crossing_candidate_checks,
-            "crossing_accepted": self.crossing_accepted,
-            "crossing_reject_non_straight": self.crossing_reject_non_straight,
-            "crossing_reject_not_perpendicular": self.crossing_reject_not_perpendicular,
-            "crossing_reject_margin": self.crossing_reject_margin,
-            "crossing_reject_wrong_order": self.crossing_reject_wrong_order,
-            "crossing_reject_unexpected_owner": self.crossing_reject_unexpected_owner,
-            "crossing_reject_unmatched_owner": self.crossing_reject_unmatched_owner,
-            "crossing_reject_unmatched_centerline": (
-                self.crossing_reject_unmatched_centerline
-            ),
-            "crossing_reject_unmatched_footprint": (
-                self.crossing_reject_unmatched_footprint
-            ),
-            "crossing_reject_unmatched_route_centerline": (
-                self.crossing_reject_unmatched_route_centerline
-            ),
-            "crossing_reject_unmatched_route_footprint": (
-                self.crossing_reject_unmatched_route_footprint
-            ),
-            "crossing_reject_pending_straight": self.crossing_reject_pending_straight,
-            "full_grid_fallbacks": self.full_grid_fallbacks,
-            "search_loop_time_s": self.search_loop_time_s,
-            "obstacle_map_prepare_time_s": self.obstacle_map_prepare_time_s,
-            "simple_route_time_s": self.simple_route_time_s,
-            "commit_prepare_time_s": self.commit_prepare_time_s,
-            "commit_time_s": self.commit_time_s,
-            "neighbor_generation_time_s": self.neighbor_generation_time_s,
-            "heap_operation_time_s": self.heap_operation_time_s,
-            "legality_check_time_s": self.legality_check_time_s,
-            "reconstruction_time_s": self.reconstruction_time_s,
-            "electrical_terminal_groups": self.electrical_terminal_groups,
-            "electrical_pad_assignments": self.electrical_pad_assignments,
-            "electrical_detailed_routes": self.electrical_detailed_routes,
-            "electrical_failed_detailed_routes": self.electrical_failed_detailed_routes,
-            "route_attempt_records": list(self.route_attempt_records),
-            "step_times_s": dict(self.step_times_s),
-        }
-
-
-def _parse_debug_svg_selector(debug_svgs: DebugSvgSelector) -> tuple[bool, set[int] | None]:
-    """Parse debug SVG selection.
-
-    Returns:
-        `(enabled, selected_route_indices)`, where `selected_route_indices=None`
-        means all route SVGs. Route indices are 1-based in netlist order.
-    """
-    if isinstance(debug_svgs, bool):
-        return debug_svgs, None
-    if isinstance(debug_svgs, int):
-        if debug_svgs < 1:
-            raise ValueError("debug_svgs integer selectors must be >= 1")
-        return True, {debug_svgs}
-    if isinstance(debug_svgs, range):
-        indices = set(debug_svgs)
-        if any(index < 1 for index in indices):
-            raise ValueError("debug_svgs range selectors must contain only indices >= 1")
-        return True, indices
-    if isinstance(debug_svgs, (set, list, tuple)):
-        indices = {int(index) for index in debug_svgs}
-        if any(index < 1 for index in indices):
-            raise ValueError("debug_svgs sequence selectors must contain only indices >= 1")
-        return bool(indices), indices
-    if isinstance(debug_svgs, str):
-        selector = debug_svgs.strip().lower()
-        if selector in {"", "false", "off", "none", "no"}:
-            return False, None
-        if selector in {"true", "on", "yes", "all", "*"}:
-            return True, None
-
-        indices: set[int] = set()
-        for part in selector.split(","):
-            token = part.strip()
-            if not token:
-                continue
-            if "-" in token:
-                start_text, end_text = token.split("-", 1)
-                start = int(start_text.strip())
-                end = int(end_text.strip())
-                if start < 1 or end < 1:
-                    raise ValueError("debug_svgs range selectors must use indices >= 1")
-                if start > end:
-                    raise ValueError(f"debug_svgs range start must be <= end: {token!r}")
-                indices.update(range(start, end + 1))
-            else:
-                index = int(token)
-                if index < 1:
-                    raise ValueError("debug_svgs route selectors must be >= 1")
-                indices.add(index)
-        if not indices:
-            return False, None
-        return True, indices
-
-    raise TypeError(
-        "debug_svgs must be a bool, int, range, sequence of ints, or selector string"
-    )
-
-
-def _format_debug_route_indices(indices: set[int]) -> str:
-    if not indices:
-        return "<none>"
-
-    ranges: list[str] = []
-    sorted_indices = sorted(indices)
-    start = sorted_indices[0]
-    previous = start
-    for index in sorted_indices[1:]:
-        if index == previous + 1:
-            previous = index
-            continue
-        ranges.append(f"{start}" if start == previous else f"{start}-{previous}")
-        start = index
-        previous = index
-    ranges.append(f"{start}" if start == previous else f"{start}-{previous}")
-    return ",".join(ranges)
-
-
-def _route_attempt_as_dict(record: object) -> dict[str, object]:
-    as_dict = getattr(record, "as_dict", None)
-    if callable(as_dict):
-        result = as_dict()
-        if isinstance(result, dict):
-            return dict(result)
-    if isinstance(record, dict):
-        return dict(record)
-    return {}
-
-
-def _route_attempt_float(record: dict[str, object], key: str) -> float:
-    value = record.get(key, 0.0)
-    try:
-        if isinstance(value, (int, float, str, bytes, bytearray)):
-            return float(value)
-    except (TypeError, ValueError):
-        pass
-    return 0.0
-
-
-def _route_attempt_int(record: dict[str, object], key: str) -> int:
-    value = record.get(key, 0)
-    try:
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, (int, float, str, bytes, bytearray)):
-            return int(value)
-    except (TypeError, ValueError):
-        pass
-    return 0
-
-
-def _route_attempt_duration_s(record: dict[str, object]) -> float:
-    route_search_s = _route_attempt_float(record, "route_search_total_time_s")
-    if route_search_s > 0.0:
-        return route_search_s
-    return _route_attempt_float(record, "elapsed_s")
-
-
-def _format_slowest_route_attempt_lines(
-    records: list[dict[str, object]],
-    *,
-    limit: int = 8,
-) -> list[str]:
-    timed_records = [
-        record
-        for record in records
-        if _route_attempt_duration_s(record) > 0.0
-    ]
-    if not timed_records:
-        return []
-
-    slowest = sorted(
-        timed_records,
-        key=_route_attempt_duration_s,
-        reverse=True,
-    )[: max(1, int(limit))]
-    lines: list[str] = []
-    for record in slowest:
-        elapsed_s = _route_attempt_duration_s(record)
-        route_index = _route_attempt_int(record, "route_index")
-        attempt_index = _route_attempt_int(record, "attempt_index")
-        expanded_states = _route_attempt_int(record, "expanded_states")
-        generated_neighbors = _route_attempt_int(record, "generated_neighbors")
-        window_attempts = _route_attempt_int(record, "window_attempts")
-        dense_grid_cells = _route_attempt_int(record, "dense_grid_cells")
-        search_loop_time_s = _route_attempt_float(record, "search_loop_time_s")
-        simple_route_time_s = _route_attempt_float(record, "simple_route_time_s")
-        commit_time_s = _route_attempt_float(record, "commit_time_s")
-        full_grid = bool(record.get("used_full_grid_fallback", False))
-        status = "failed" if bool(record.get("failed", False)) else "ok"
-        route_kind = (
-            "simple" if bool(record.get("used_simple_route", False)) else "astar"
-        )
-        parts = [
-            f"#{attempt_index}",
-            f"route[{route_index}]",
-            str(record.get("net_name", "<unknown>")),
-            str(record.get("bucket_name", "<unknown>")),
-            f"{elapsed_s:.4f}s",
-            status,
-            route_kind,
-            f"expanded={expanded_states}",
-            f"generated={generated_neighbors}",
-            f"windows={window_attempts}",
-        ]
-        if dense_grid_cells:
-            parts.append(f"dense_cells={dense_grid_cells}")
-        if search_loop_time_s > 0.0:
-            parts.append(f"search_loop={search_loop_time_s:.4f}s")
-        if simple_route_time_s > 0.0:
-            parts.append(f"simple_probe={simple_route_time_s:.4f}s")
-        if commit_time_s > 0.0:
-            parts.append(f"commit={commit_time_s:.4f}s")
-        if full_grid:
-            parts.append("full_grid")
-        lines.append("            - " + ", ".join(parts))
-    return lines
-
-
-def _format_slowest_route_net_lines(
-    records: list[dict[str, object]],
-    *,
-    limit: int = 8,
-) -> list[str]:
-    grouped: dict[tuple[int, str], dict[str, object]] = {}
-    for record in records:
-        elapsed_s = _route_attempt_duration_s(record)
-        if elapsed_s <= 0.0:
-            continue
-        route_index = _route_attempt_int(record, "route_index")
-        net_name = str(record.get("net_name", "<unknown>"))
-        key = (route_index, net_name)
-        group = grouped.setdefault(
-            key,
-            {
-                "route_index": route_index,
-                "net_name": net_name,
-                "elapsed_s": 0.0,
-                "attempts": 0,
-                "failures": 0,
-                "expanded_states": 0,
-                "generated_neighbors": 0,
-                "buckets": set(),
-            },
-        )
-        group["elapsed_s"] = _route_attempt_float(group, "elapsed_s") + elapsed_s
-        group["attempts"] = _route_attempt_int(group, "attempts") + 1
-        group["failures"] = _route_attempt_int(group, "failures") + int(
-            bool(record.get("failed", False))
-        )
-        group["expanded_states"] = _route_attempt_int(
-            group,
-            "expanded_states",
-        ) + _route_attempt_int(
-            record,
-            "expanded_states",
-        )
-        group["generated_neighbors"] = _route_attempt_int(
-            group,
-            "generated_neighbors",
-        ) + _route_attempt_int(
-            record,
-            "generated_neighbors",
-        )
-        buckets = group["buckets"]
-        if isinstance(buckets, set):
-            buckets.add(str(record.get("bucket_name", "<unknown>")))
-
-    if not grouped:
-        return []
-
-    slowest = sorted(
-        grouped.values(),
-        key=lambda group: _route_attempt_float(group, "elapsed_s"),
-        reverse=True,
-    )[: max(1, int(limit))]
-    lines: list[str] = []
-    for group in slowest:
-        buckets = group.get("buckets", set())
-        bucket_text = (
-            "/".join(sorted(buckets))
-            if isinstance(buckets, set) and buckets
-            else "<unknown>"
-        )
-        parts = [
-            f"route[{_route_attempt_int(group, 'route_index')}]",
-            str(group["net_name"]),
-            f"{_route_attempt_float(group, 'elapsed_s'):.4f}s",
-            f"attempts={_route_attempt_int(group, 'attempts')}",
-            f"failures={_route_attempt_int(group, 'failures')}",
-            f"expanded={_route_attempt_int(group, 'expanded_states')}",
-            f"generated={_route_attempt_int(group, 'generated_neighbors')}",
-            f"buckets={bucket_text}",
-        ]
-        lines.append("            - " + ", ".join(parts))
-    return lines
+# Compatibility alias: this was a private module-level function before the
+# 2026-08-11 routing-flow readability refactor moved it (and made it public)
+# in routing_flow_config.py; kept here under its old name for existing
+# imports (see tests/test_routing_flow_stats.py).
+_parse_debug_svg_selector = parse_debug_svg_selector
 
 
 def _parse_bool_flag(value: str) -> bool:
@@ -1082,393 +690,64 @@ def load_benchmark(benchmark_name: str) -> Schematic:
         ) from e
 
 
-def _component_info(component: Component) -> Any:
-    """Return a mutable component info object, creating one for test doubles."""
-
-    info = getattr(component, "info", None)
-    if info is None:
-        info = {}
-        setattr(component, "info", info)
-    return info
-
-
-def _copy_component_info(source: Component, target: Component) -> None:
-    source_info = getattr(source, "info", None)
-    if source_info is None:
-        return
-    target_info = _component_info(target)
-    for key, value in getattr(source_info, "items", lambda: ())():
-        if key not in target_info:
-            target_info[key] = value
-
-
-def _crossing_report_route_cost_terms(
-    crossing_plan_info: Mapping[str, object],
-) -> list[RouteCostTerms]:
-    raw_entries = crossing_plan_info.get("insertion_loss_by_net", ())
-    if not isinstance(raw_entries, (list, tuple)):
-        return []
-
-    terms: list[RouteCostTerms] = []
-    for entry in raw_entries:
-        if not isinstance(entry, Mapping):
-            continue
-        terms.append(
-            route_cost_terms_from_mapping(
-                {
-                    "net_id": entry.get("net_id"),
-                    "net_name": entry.get("net_name"),
-                    "length_um": entry.get("length_um"),
-                    "length_loss": entry.get("propagation_loss"),
-                    "bend_loss": entry.get("bend_loss"),
-                    "crossing_loss": entry.get("crossing_loss"),
-                    "physical_insertion_loss": entry.get("insertion_loss"),
-                }
-            )
-        )
-    return terms
-
-
-def _write_crossing_verification_report(
+def _load_benchmark_stage(
     *,
     benchmark_name: str,
-    crossing_plan_info: Mapping[str, object],
-    status_metadata: Mapping[str, object] | None = None,
-    output_dir: Path = Path("build") / "verification",
-) -> dict[str, object]:
-    realized_crossing_components = crossing_plan_info.get(
-        "realized_crossing_components",
-        (),
-    )
-    if not isinstance(realized_crossing_components, (list, tuple)):
-        realized_crossing_components = ()
-    report = build_crossing_verification_report(
-        crossing_plan_info=crossing_plan_info,
-        realized_crossing_components=realized_crossing_components,
-        route_cost_terms=_crossing_report_route_cost_terms(crossing_plan_info),
-    )
-    output_path = output_dir / f"{benchmark_name.lower()}_crossing_verification.json"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    payload = report.as_dict()
-    _apply_verification_status_metadata(payload, status_metadata)
-    output_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    payload["path"] = str(output_path)
-    return payload
+    total_steps: int,
+    stats: RoutingFlowStats | None,
+    debug_meanders: bool,
+) -> Schematic:
+    """Load the schematic and record the load-stage stats/output."""
+    step_load_start = time.perf_counter()
+    print(f"\n[1/{total_steps}] Loading benchmark: {benchmark_name}...")
+    schematic = load_benchmark(benchmark_name)
+    step_load_end = time.perf_counter()
+    if stats is not None:
+        stats.instance_count = len(schematic.netlist.instances)
+        stats.net_count = len(schematic.netlist.routes)
+        stats.step_times_s["load_benchmark"] = step_load_end - step_load_start
+    print("      \u2713 Schematic loaded")
+    if debug_meanders:
+        print(f"      - Instances: {list(schematic.netlist.instances.keys())}")
+        print(f"      - Placements: {list(schematic.placements.keys())}")
+    else:
+        print(f"      - Instances: {len(schematic.netlist.instances)}")
+        print(f"      - Placements: {len(schematic.placements)}")
+    return schematic
 
 
-def _crossing_verification_failure_preview(payload: Mapping[str, object]) -> str:
-    issues = payload.get("issues", ())
-    if not isinstance(issues, list):
-        return ""
-    lines: list[str] = []
-    for raw_issue in issues[:5]:
-        if not isinstance(raw_issue, Mapping):
-            continue
-        code = raw_issue.get("code", "unknown")
-        net_name = raw_issue.get("net_name")
-        message = raw_issue.get("message", "")
-        details = raw_issue.get("details", {})
-        reason = None
-        if isinstance(details, Mapping):
-            reason = details.get("reason")
-            if reason is None:
-                nested = details.get("details")
-                if isinstance(nested, Mapping):
-                    reason = nested.get("reason")
-        suffix = f" ({reason})" if reason else ""
-        lines.append(f"{code} {net_name or '<unknown>'}: {message}{suffix}")
-    if len(issues) > 5:
-        lines.append(f"... {len(issues) - 5} more")
-    return "; ".join(lines)
-
-
-def _legal_crossing_overlap_polygons(
-    crossing_plan_info: Mapping[str, object] | None,
-) -> dict[tuple[int, int], tuple[tuple[tuple[float, float], ...], ...]]:
-    if crossing_plan_info is None:
-        return {}
-    raw_crossings = crossing_plan_info.get("realized_intersections", ())
-    if not isinstance(raw_crossings, (list, tuple)):
-        return {}
-
-    polygons_by_pair: dict[tuple[int, int], list[tuple[tuple[float, float], ...]]] = {}
-    for raw_crossing in raw_crossings:
-        if not isinstance(raw_crossing, Mapping):
-            continue
-        classification = str(raw_crossing.get("classification", "") or "")
-        if not classification.startswith("legal_"):
-            continue
-        try:
-            net_id_a = int(raw_crossing["net_id_a"])
-            net_id_b = int(raw_crossing["net_id_b"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        raw_polygon = raw_crossing.get("crossing_footprint_polygon_um", ())
-        if not isinstance(raw_polygon, (list, tuple)) or len(raw_polygon) < 3:
-            continue
-        points: list[tuple[float, float]] = []
-        for raw_point in raw_polygon:
-            if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
-                points = []
-                break
-            try:
-                points.append((float(raw_point[0]), float(raw_point[1])))
-            except (TypeError, ValueError):
-                points = []
-                break
-        if len(points) >= 3:
-            pair = (net_id_a, net_id_b) if net_id_a <= net_id_b else (net_id_b, net_id_a)
-            polygons_by_pair.setdefault(pair, []).append(tuple(points))
-    return {pair: tuple(polygons) for pair, polygons in polygons_by_pair.items()}
-
-
-def _legal_crossing_component_footprints(
-    crossing_plan_info: Mapping[str, object] | None,
-) -> tuple[dict[str, object], ...]:
-    if crossing_plan_info is None:
-        return ()
-    raw_components = crossing_plan_info.get("realized_crossing_components", ())
-    if isinstance(raw_components, (list, tuple)):
-        components = [
-            dict(component)
-            for component in raw_components
-            if isinstance(component, Mapping)
-        ]
-        if components:
-            return tuple(components)
-    raw_crossings = crossing_plan_info.get("realized_intersections", ())
-    if not isinstance(raw_crossings, (list, tuple)):
-        return ()
-
-    footprints: list[dict[str, object]] = []
-    for raw_crossing in raw_crossings:
-        if not isinstance(raw_crossing, Mapping):
-            continue
-        classification = str(raw_crossing.get("classification", "") or "")
-        if not classification.startswith("legal_"):
-            continue
-        raw_polygon = raw_crossing.get("crossing_footprint_polygon_um", ())
-        if not isinstance(raw_polygon, (list, tuple)) or len(raw_polygon) < 3:
-            continue
-        footprints.append(dict(raw_crossing))
-    return tuple(footprints)
-
-
-def _schematic_route_count(schematic: object) -> int:
-    routes = getattr(getattr(schematic, "netlist", None), "routes", {})
-    if not isinstance(routes, Mapping):
-        return 0
-    count = 0
-    for bundle in routes.values():
-        links = getattr(bundle, "links", None)
-        if isinstance(links, Mapping):
-            count += len(links)
-        else:
-            count += 1
-    return count
-
-
-def _verification_status_metadata(
+def _layout_from_schematic_stage(
     *,
-    debug_stop_after_route_index: int | None,
-    expected_route_count: int,
-    routed_record_count: int,
-    route_coverage_check_enabled: bool,
-) -> dict[str, object]:
-    partial = debug_stop_after_route_index is not None
-    missing_route_count = max(0, int(expected_route_count) - int(routed_record_count))
-    return {
-        "status": "partial_debug_stop" if partial else "complete",
-        "partial": partial,
-        "debug_stop_after_route_index": debug_stop_after_route_index,
-        "expected_route_count": int(expected_route_count),
-        "routed_record_count": int(routed_record_count),
-        "missing_route_count": missing_route_count,
-        "route_coverage_check_enabled": bool(route_coverage_check_enabled),
-    }
+    schematic: Schematic,
+    total_steps: int,
+    stats: RoutingFlowStats | None,
+    debug_timing: bool,
+) -> Component:
+    """Translate the schematic to an unrouted layout and report layout metadata."""
+    step_layout_start = time.perf_counter()
+    print(f"\n[2/{total_steps}] Translating schematic to layout...")
+    unrouted_layout = layout_from_schematic(schematic)
+    step_layout_end = time.perf_counter()
+    if stats is not None:
+        stats.step_times_s["layout_from_schematic"] = step_layout_end - step_layout_start
+    print(f"      \u2713 Layout generated: {unrouted_layout.name}")
+    bbox = unrouted_layout.bbox
+    if callable(bbox):
+        bbox = bbox()
+    print(f"      - Bounding box: {bbox}")
+    if debug_timing:
+        print(f"      - Translation time: {step_layout_end - step_layout_start:.4f} s")
+    return unrouted_layout
 
 
-def _apply_verification_status_metadata(
-    payload: dict[str, object],
-    status_metadata: Mapping[str, object] | None,
-) -> None:
-    if not status_metadata:
-        return
-    payload.update(dict(status_metadata))
-    metrics = payload.setdefault("metrics", {})
-    if isinstance(metrics, dict):
-        metrics.update(dict(status_metadata))
+def _print_flow_header(benchmark_name: str) -> None:
+    print(f"\n{'='*60}")
+    print(f"Routing Flow: {benchmark_name}")
+    print(f"{'='*60}")
 
 
-def _write_photonic_verification_report(
-    *,
-    benchmark_name: str,
-    verification: object,
-    status_metadata: Mapping[str, object] | None = None,
-    output_dir: Path = Path("build") / "verification",
-) -> dict[str, object]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{benchmark_name.lower()}_photonic_verification.json"
-    payload = cast(Any, verification).as_dict()
-    _apply_verification_status_metadata(payload, status_metadata)
-    output_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    payload["path"] = str(output_path)
-    return payload
-
-
-def _photonic_verification_failure_preview(verification: object) -> str:
-    issues = tuple(getattr(verification, "issues", ()) or ())
-    lines: list[str] = []
-    for issue in issues[:5]:
-        code = getattr(issue, "code", "unknown")
-        net_name = getattr(issue, "net_name", None)
-        message = getattr(issue, "message", "")
-        details = getattr(issue, "details", {}) or {}
-        bbox = details.get("overlap_bbox_um") if isinstance(details, Mapping) else None
-        area = details.get("overlap_area_um2") if isinstance(details, Mapping) else None
-        suffix_parts = []
-        if area is not None:
-            suffix_parts.append(f"area={area}")
-        if bbox is not None:
-            suffix_parts.append(f"bbox={bbox}")
-        suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
-        lines.append(f"{code} {net_name or '<unknown>'}: {message}{suffix}")
-    if len(issues) > 5:
-        lines.append(f"... {len(issues) - 5} more")
-    return "; ".join(lines)
-
-
-def _electrical_config_summary(
-    config: ElectricalRoutingConfig | None,
-) -> dict[str, Any]:
-    if config is None:
-        config = ElectricalRoutingConfig()
-    keys = (
-        "pad_side",
-        "bus_side",
-        "routing_grid_pitch_um",
-        "obstacle_clearance_um",
-        "wire_width_um",
-        "bus_width_um",
-        "terminal_contact_width_um",
-        "pad_pitch_um",
-        "bondpad_width_um",
-        "common_bus_bondpad_width_um",
-        "common_bus_bondpad_length_um",
-        "bondpad_length_um",
-        "pad_offset_um",
-        "pad_access_depth_um",
-        "common_bus_pad_position",
-        "individual_route_spacing_um",
-        "obstacle_mode",
-        "clearance_metric",
-        "metal_layer",
-        "pad_marker_layer",
-        "heater_layers",
-        "metal_obstacle_layers",
-    )
-    summary: dict[str, Any] = {}
-    for key in keys:
-        value = getattr(config, key, None)
-        if value is None:
-            continue
-        if isinstance(value, tuple):
-            summary[key] = tuple(value)
-            continue
-        summary[key] = value
-    return summary
-
-
-def _electrical_summary(
-    result: ElectricalRoutingResult,
-    config: ElectricalRoutingConfig | None = None,
-) -> dict[str, Any]:
-    detailed_routes = result.detailed_bundle_routes
-    failed_detailed_routes = (
-        tuple(detailed_routes.failed_routes) if detailed_routes is not None else ()
-    )
-    verification = cast(
-        ElectricalVerificationResult | None,
-        getattr(result, "verification", None),
-    )
-    verification_issues: tuple[ElectricalVerificationIssue, ...] = (
-        verification.issues if verification is not None else ()
-    )
-    issue_counts = Counter(issue.code for issue in verification_issues)
-    realization_metrics = (
-        dict(result.routed_component.info.get("electrical_metal_realization", {}))
-        if result.routed_component is not None
-        else {}
-    )
-    debug_artifacts = dict(result.debug_artifacts)
-    return {
-        "config": _electrical_config_summary(config),
-        "terminal_group_count": len(result.terminal_groups),
-        "common_bus_success": result.common_bus.success,
-        "failed_heaters": tuple(result.common_bus.failed_heaters),
-        "pad_assignment_count": (
-            len(result.pad_plan.assignments) if result.pad_plan is not None else 0
-        ),
-        "common_bus_escape_success": (
-            result.common_bus_escape.success
-            if result.common_bus_escape is not None
-            else None
-        ),
-        "detailed_route_count": (
-            len(detailed_routes.routes) if detailed_routes is not None else 0
-        ),
-        "failed_detailed_route_count": len(failed_detailed_routes),
-        "failed_detailed_routes": tuple(
-            {
-                "terminal_id": route.terminal.id,
-                "reason": route.reason,
-            }
-            for route in failed_detailed_routes
-        ),
-        "verification_success": verification.success if verification is not None else None,
-        "verification_error_count": verification.error_count if verification is not None else 0,
-        "verification_warning_count": (
-            verification.warning_count if verification is not None else 0
-        ),
-        "verification_issue_counts": dict(sorted(issue_counts.items())),
-        "verification_metrics": (
-            dict(verification.metrics)
-            if verification is not None
-            else {}
-        ),
-        "realization_metrics": realization_metrics,
-        "verification_issues": (
-            tuple(
-                {
-                    "code": issue.code,
-                    "message": issue.message,
-                    "severity": issue.severity,
-                    "net_id": issue.net_id,
-                    "details": dict(issue.details),
-                }
-                for issue in verification_issues
-            )
-            if verification is not None
-            else ()
-        ),
-        "debug_artifacts": debug_artifacts,
-        "debug_artifact_count": len(debug_artifacts),
-    }
-
-
-def _electrical_failure_summary(result: ElectricalRoutingResult) -> str:
-    summary = _electrical_summary(result)
-    return (
-        "Electrical routing failed to produce a routed component: "
-        f"failed_heaters={summary['failed_heaters']}, "
-        f"failed_detailed_route_count={summary['failed_detailed_route_count']}"
-    )
+def _print_flow_footer() -> None:
+    print(f"\n{'='*60}\n")
 
 
 def run_routing_flow(
@@ -1612,998 +891,157 @@ def run_routing_flow(
     Returns:
         The routed layout component.
     """
-    if show_routed is not None:
-        show_klayout = bool(show_routed)
-    if show_debug_svgs is not None:
-        debug_svgs = show_debug_svgs
-    if show_static_obstacles_svg is not None:
-        debug_svgs = bool(show_static_obstacles_svg)
-    if show_unrouted is not None:
-        # Historical argument kept for compatibility.
-        pass
-    debug_svgs_enabled, debug_route_indices = _parse_debug_svg_selector(debug_svgs)
+    debug_svgs, show_klayout = resolve_legacy_display_options(
+        debug_svgs=debug_svgs,
+        show_klayout=show_klayout,
+        show_unrouted=show_unrouted,
+        show_routed=show_routed,
+        show_debug_svgs=show_debug_svgs,
+        show_static_obstacles_svg=show_static_obstacles_svg,
+    )
+    debug_svgs_enabled, debug_route_indices = parse_debug_svg_selector(debug_svgs)
     total_steps = 4 if enable_electrical_routing else 3
 
-    print(f"\n{'='*60}")
-    print(f"Routing Flow: {benchmark_name}")
-    print(f"{'='*60}")
+    _print_flow_header(benchmark_name)
 
     if stats is not None:
         stats.benchmark_name = benchmark_name
 
-    if waveguide_clearance_um is None:
-        waveguide_clearance_um = (
-            float(obstacle_clearance_um)
-            if obstacle_clearance_um is not None
-            else SCRIPT_WAVEGUIDE_CLEARANCE_UM
+    route_static_obstacle_config, waveguide_clearance_um, heater_clearance_um = (
+        build_static_obstacle_config(
+            static_obstacle_config=static_obstacle_config,
+            grid_size_um=grid_size_um,
+            waveguide_clearance_um=waveguide_clearance_um,
+            heater_clearance_um=heater_clearance_um,
+            obstacle_clearance_um=obstacle_clearance_um,
+            chip_add_x_um=chip_add_x_um,
+            chip_add_y_um=chip_add_y_um,
         )
-    if heater_clearance_um is None:
-        heater_clearance_um = float(waveguide_clearance_um)
-
-    route_static_obstacle_config = static_obstacle_config or StaticObstacleMapConfig(
-        grid_size_um=float(grid_size_um),
-        obstacle_mode="bounding_boxes",
-        clearance_um=float(waveguide_clearance_um),
-        heater_clearance_um=float(heater_clearance_um),
-        chip_add_x_um=float(chip_add_x_um),
-        chip_add_y_um=float(chip_add_y_um),
-        clear_port_open_cells_from_static=False,
+    )
+    debug_dir, route_debug_indices = debug_artifact_routing_options(
+        debug_svgs_enabled=debug_svgs_enabled,
+        debug_route_indices=debug_route_indices,
+        collect_attempt_diagnostics=collect_attempt_diagnostics,
     )
 
     t_flow_start = time.perf_counter()
 
     if debug_svgs_enabled:
-        prefix = benchmark_name.lower()
-        for pattern in (
-            f"build/static_obstacles/{prefix}_*.svg",
-            f"build/routes/{prefix}_*.svg",
-            f"build/routes/{prefix}_*_diagnostics.txt",
-            f"build/routes/{prefix}_*_FAILED.txt",
-            f"build/crossings/{prefix}_*.json",
-            f"build/crossings/{prefix}_*.txt",
-            f"build/verification/{prefix}_*.json",
-            f"build/electrical/{prefix}_*.svg",
-        ):
-            for path in Path(".").glob(pattern):
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
+        cleanup_debug_artifacts(benchmark_name)
 
-    def _report_partial_debug_artifacts() -> None:
-        if not debug_svgs_enabled:
-            return
-        prefix = benchmark_name.lower()
-        build_dir = Path("build")
-        obstacle_dir = build_dir / "static_obstacles"
-        routes_dir = build_dir / "routes"
-        electrical_dir = build_dir / "electrical"
-        obstacle_svgs = sorted(obstacle_dir.glob(f"{prefix}_*.svg")) if obstacle_dir.exists() else []
-        route_svgs = sorted(routes_dir.glob(f"{prefix}_*.svg")) if routes_dir.exists() else []
-        electrical_svgs = (
-            sorted(electrical_dir.glob(f"{prefix}_*.svg"))
-            if electrical_dir.exists()
-            else []
-        )
-        failed_logs = sorted(routes_dir.glob(f"{prefix}_*_FAILED.txt")) if routes_dir.exists() else []
-
-        print("      - Partial debug artifacts:")
-        print(f"        static obstacle SVGs: {len(obstacle_svgs)}")
-        print(f"        route SVGs: {len(route_svgs)}")
-        print(f"        electrical SVGs: {len(electrical_svgs)}")
-        print(f"        failure logs: {len(failed_logs)}")
-        for failed_log in failed_logs:
-            print(f"        failure log: {failed_log}")
-
-        try:
-            for svg_path in obstacle_svgs:
-                webbrowser.open_new_tab(svg_path.resolve().as_uri())
-            for svg_path in route_svgs:
-                webbrowser.open_new_tab(svg_path.resolve().as_uri())
-            for svg_path in electrical_svgs:
-                webbrowser.open_new_tab(svg_path.resolve().as_uri())
-        except Exception as e:
-            print(f"      - Warning: failed to open partial SVGs automatically: {e}")
-
-    # Step 1: Load benchmark
-    step_load_start = time.perf_counter()
-    print(f"\n[1/{total_steps}] Loading benchmark: {benchmark_name}...")
-    schematic = load_benchmark(benchmark_name)
-    step_load_end = time.perf_counter()
+    # Keep the body below as the stage outline; detailed behavior belongs in
+    # the stage modules and small helpers above.
+    schematic = _load_benchmark_stage(
+        benchmark_name=benchmark_name,
+        total_steps=total_steps,
+        stats=stats,
+        debug_meanders=debug_meanders,
+    )
+    unrouted_layout = _layout_from_schematic_stage(
+        schematic=schematic,
+        total_steps=total_steps,
+        stats=stats,
+        debug_timing=debug_timing,
+    )
+    record_initial_route_stats(stats)
+    optical_config = build_optical_routing_stage_config(
+        enable_path_length_matching=enable_path_length_matching,
+        path_length_match_outputs=path_length_match_outputs,
+        path_length_meander_height_um=path_length_meander_height_um,
+        enable_crossings=enable_crossings,
+        crossing_mode=crossing_mode,
+        crossing_half_size_cells=crossing_half_size_cells,
+        min_straight_cells_per_crossing=min_straight_cells_per_crossing,
+        foreign_port_keepout_cells=foreign_port_keepout_cells,
+        fanout_access_mode=fanout_access_mode,
+        proactive_congestion_weight=proactive_congestion_weight,
+        proactive_congestion_radius_cells=proactive_congestion_radius_cells,
+        allow_45_degree_turns=allow_45_degree_turns,
+        bend_radius_um=bend_radius_um,
+        enable_jps4=enable_jps4,
+        use_indexed_heap=use_indexed_heap,
+        enable_simple_routes=enable_simple_routes,
+        primitive_ordering=primitive_ordering,
+        heuristic_mode=heuristic_mode,
+        heap_tie_breaker=heap_tie_breaker,
+        max_iterations=max_iterations,
+        routing_window_scale=routing_window_scale,
+        include_heater_obstacles=include_heater_obstacles,
+        ripup_reroute_config=ripup_reroute_config,
+        route_static_obstacle_config=route_static_obstacle_config,
+        debug_dir=debug_dir,
+        route_debug_indices=route_debug_indices,
+        debug_stop_after_route_index=debug_stop_after_route_index,
+        debug_timing=debug_timing,
+        debug_meanders=debug_meanders,
+        verbose_routes=verbose_routes,
+        debug_svgs_enabled=debug_svgs_enabled,
+        collect_route_stats=collect_route_stats,
+        collect_attempt_diagnostics=collect_attempt_diagnostics,
+        stats=stats,
+    )
+    optical_result = run_photonic_routing_stage(
+        benchmark_name=benchmark_name,
+        schematic=schematic,
+        unrouted_layout=unrouted_layout,
+        total_steps=total_steps,
+        config=optical_config,
+    )
+    route_result = optical_result.route_result
+    routed_layout = optical_result.routed_layout
+    debug_artifacts = optical_result.debug_artifacts
     if stats is not None:
-        stats.instance_count = len(schematic.netlist.instances)
-        stats.net_count = len(schematic.netlist.routes)
-        stats.step_times_s["load_benchmark"] = step_load_end - step_load_start
-    print("      ✓ Schematic loaded")
-    if debug_meanders:
-        print(f"      - Instances: {list(schematic.netlist.instances.keys())}")
-        print(f"      - Placements: {list(schematic.placements.keys())}")
-    else:
-        print(f"      - Instances: {len(schematic.netlist.instances)}")
-        print(f"      - Placements: {len(schematic.placements)}")
-
-    # Step 2: Translate schematic to layout
-    step_layout_start = time.perf_counter()
-    print(f"\n[2/{total_steps}] Translating schematic to layout...")
-    unrouted_layout = layout_from_schematic(schematic)
-    step_layout_end = time.perf_counter()
-    if stats is not None:
-        stats.step_times_s["layout_from_schematic"] = step_layout_end - step_layout_start
-    print(f"      ✓ Layout generated: {unrouted_layout.name}")
-    bbox = unrouted_layout.bbox
-    if callable(bbox):
-        bbox = bbox()
-    print(f"      - Bounding box: {bbox}")
-    if debug_timing:
-        print(f"      - Translation time: {step_layout_end - step_layout_start:.4f} s")
-
-    # Step 3: Route nets with Rust backend
-    print(f"\n[3/{total_steps}] Routing nets with Rust backend...")
-    if stats is not None:
-        stats.step_times_s["build_static_obstacle_map"] = 0.0
-        stats.step_times_s["baseline_gdsfactory_routing"] = 0.0
-    debug_dir = Path("build") if debug_svgs_enabled or collect_attempt_diagnostics else None
-    route_debug_indices = debug_route_indices
-    if not debug_svgs_enabled and collect_attempt_diagnostics:
-        route_debug_indices = set()
-    metadata = load_benchmark_metadata(benchmark_name, schematic=schematic)
-    t_route_start = time.perf_counter()
-    try:
-        route_result = route_match_and_realize(
-            unrouted_layout,
-            schematic,
-            enable_path_length_matching=enable_path_length_matching,
-            path_length_match_outputs=path_length_match_outputs,
-            node_types=metadata.get("node_types"),
-            internal_delays_um=metadata.get("internal_delays_um"),
-            enable_crossings=enable_crossings,
-            crossing_mode=crossing_mode,
-            crossing_half_size_cells=int(crossing_half_size_cells),
-            min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
-            foreign_port_keepout_cells=int(foreign_port_keepout_cells),
-            fanout_access_mode=fanout_access_mode,
-            node_depths=metadata.get("node_depths"),
-            node_ranks=metadata.get("node_ranks"),
-            edge_ranks=metadata.get("edge_ranks"),
-            debug_dir=debug_dir,
-            debug_prefix=benchmark_name.lower(),
-            debug_route_indices=route_debug_indices,
-            debug_stop_after_route_index=debug_stop_after_route_index,
-            debug_timing=debug_timing,
-            verbose_route_diagnostics=verbose_routes or debug_meanders,
-            allow_45_degree_turns=allow_45_degree_turns,
-            bend_radius_um=bend_radius_um,
-            enable_jps4=enable_jps4,
-            use_indexed_heap=use_indexed_heap,
-            enable_simple_routes=enable_simple_routes,
-            primitive_ordering=primitive_ordering,
-            heuristic_mode=heuristic_mode,
-            heap_tie_breaker=heap_tie_breaker,
-            proactive_congestion_weight=float(proactive_congestion_weight),
-            proactive_congestion_radius_cells=int(proactive_congestion_radius_cells),
-            max_iterations=max_iterations,
-            routing_window_scale=routing_window_scale,
-            collect_route_stats=collect_route_stats or stats is not None,
-            collect_attempt_diagnostics=collect_attempt_diagnostics,
-            include_heater_obstacles=include_heater_obstacles,
-            ripup_reroute_config=ripup_reroute_config,
-            path_length_meander_height_um=path_length_meander_height_um,
-            enable_grid_endpoint_correction=True,
-            obstacle_config=route_static_obstacle_config,
+        populate_route_stats(
+            stats,
+            route_result=route_result,
+            debug_artifacts=debug_artifacts,
+            route_summary=optical_result.route_summary,
+            route_attempt_records=optical_result.route_attempt_records,
+            route_time_s=optical_result.route_time_s,
         )
-    except Exception:
-        print("      ✗ Routing failed.")
-        _report_partial_debug_artifacts()
-        raise
-    routed_layout = route_result.routed_layout
-    debug_artifacts = route_result.debug_artifacts
-    t_route_end = time.perf_counter()
-    route_summary = debug_artifacts.route_search_summary
-    route_attempt_records = [
-        record_dict
-        for record in getattr(debug_artifacts, "route_attempt_records", ())
-        if (record_dict := _route_attempt_as_dict(record))
-    ]
-    if stats is not None:
-        route_time = t_route_end - t_route_start
-        stats.step_times_s["baseline_gdsfactory_routing"] = route_time
-        if "build_static_obstacle_map" not in stats.step_times_s:
-            stats.step_times_s["build_static_obstacle_map"] = 0.0
-        for name, elapsed_s in getattr(route_result, "pipeline_timings_s", {}).items():
-            stats.step_times_s[str(name)] = float(elapsed_s)
-        if debug_artifacts.realization_grid_spec is not None:
-            width, height, *_ = debug_artifacts.realization_grid_spec
-            stats.static_grid_width = int(width)
-            stats.static_grid_height = int(height)
-        blocked_count = len(debug_artifacts.static_blocked_cells)
-        if blocked_count == 0:
-            blocked_count = int(getattr(debug_artifacts, "static_obstacle_count", 0) or 0)
-        if blocked_count > 0:
-            stats.blocked_cells = blocked_count
-            stats.raw_blocked_cells = blocked_count
-            port_open_count = int(
-                getattr(debug_artifacts, "static_port_open_count", 0) or 0
-            )
-            stats.port_open_cells = port_open_count
-        stats.astar_time_s = float(route_summary.astar_elapsed_s)
-        stats.route_attempts = int(route_summary.route_attempts)
-        stats.route_failures = int(route_summary.route_failures)
-        stats.simple_route_count = int(route_summary.simple_route_count)
-        stats.repair_count = int(route_summary.repair_count)
-        stats.expanded_states = int(route_summary.expanded_states)
-        stats.generated_neighbors = int(route_summary.generated_neighbors)
-        stats.heap_pushes = int(route_summary.heap_pushes)
-        stats.heap_pops = int(route_summary.heap_pops)
-        stats.skipped_duplicate_heap_entries = int(
-            route_summary.skipped_duplicate_heap_entries
-        )
-        stats.stale_generation_heap_entries = int(
-            route_summary.stale_generation_heap_entries
-        )
-        stats.closed_heap_entries = int(route_summary.closed_heap_entries)
-        stats.max_heap_size = int(route_summary.max_heap_size)
-        stats.dense_search_states = int(route_summary.dense_search_states)
-        stats.dense_search_storage_bytes = int(
-            route_summary.dense_search_storage_bytes
-        )
-        stats.best_cost_updates = int(route_summary.best_cost_updates)
-        stats.parent_updates = int(route_summary.parent_updates)
-        stats.obstacle_clearance_checks = int(route_summary.obstacle_clearance_checks)
-        stats.footprint_checks = int(route_summary.footprint_checks)
-        stats.footprint_rect_checks = int(route_summary.footprint_rect_checks)
-        stats.crossing_candidate_checks = int(route_summary.crossing_candidate_checks)
-        stats.crossing_accepted = int(route_summary.crossing_accepted)
-        stats.crossing_reject_non_straight = int(
-            route_summary.crossing_reject_non_straight
-        )
-        stats.crossing_reject_not_perpendicular = int(
-            route_summary.crossing_reject_not_perpendicular
-        )
-        stats.crossing_reject_margin = int(route_summary.crossing_reject_margin)
-        stats.crossing_reject_wrong_order = int(route_summary.crossing_reject_wrong_order)
-        stats.crossing_reject_unexpected_owner = int(
-            route_summary.crossing_reject_unexpected_owner
-        )
-        stats.crossing_reject_unmatched_owner = int(
-            route_summary.crossing_reject_unmatched_owner
-        )
-        stats.crossing_reject_unmatched_centerline = int(
-            route_summary.crossing_reject_unmatched_centerline
-        )
-        stats.crossing_reject_unmatched_footprint = int(
-            route_summary.crossing_reject_unmatched_footprint
-        )
-        stats.crossing_reject_unmatched_route_centerline = int(
-            route_summary.crossing_reject_unmatched_route_centerline
-        )
-        stats.crossing_reject_unmatched_route_footprint = int(
-            route_summary.crossing_reject_unmatched_route_footprint
-        )
-        stats.crossing_reject_pending_straight = int(
-            route_summary.crossing_reject_pending_straight
-        )
-        stats.full_grid_fallbacks = int(route_summary.full_grid_fallbacks)
-        stats.neighbor_generation_time_s = (
-            float(route_summary.neighbor_generation_time_us) / 1_000_000.0
-        )
-        stats.heap_operation_time_s = (
-            float(route_summary.heap_operation_time_us) / 1_000_000.0
-        )
-        stats.legality_check_time_s = (
-            float(route_summary.legality_check_time_us) / 1_000_000.0
-        )
-        stats.reconstruction_time_s = (
-            float(route_summary.reconstruction_time_us) / 1_000_000.0
-        )
-        stats.search_loop_time_s = (
-            float(route_summary.search_loop_time_us) / 1_000_000.0
-        )
-        stats.obstacle_map_prepare_time_s = (
-            float(route_summary.obstacle_map_prepare_time_us) / 1_000_000.0
-        )
-        stats.simple_route_time_s = (
-            float(route_summary.simple_route_time_us) / 1_000_000.0
-        )
-        stats.commit_prepare_time_s = (
-            float(route_summary.commit_prepare_time_us) / 1_000_000.0
-        )
-        stats.commit_time_s = float(route_summary.commit_time_us) / 1_000_000.0
-        stats.route_attempt_records = route_attempt_records
-    if debug_timing:
-        route_time = t_route_end - t_route_start
-        timings = getattr(route_result, "pipeline_timings_s", {})
-        route_nets_time = float(timings.get("route_nets", 0.0))
-        plm_analysis_time = float(timings.get("path_length_analysis", 0.0))
-        plm_obstacle_time = float(timings.get("meander_obstacle_map", 0.0))
-        plm_planning_time = float(timings.get("meander_planning", 0.0))
-        route_endpoint_correction_time = float(
-            timings.get("route_endpoint_correction", 0.0)
-        )
-        realization_time = float(timings.get("route_realization", 0.0))
-        plm_total = plm_analysis_time + plm_obstacle_time + plm_planning_time
-        known_substage_time = (
-            route_nets_time
-            + route_endpoint_correction_time
-            + plm_total
-            + realization_time
-        )
-        overhead_time = max(0.0, route_time - known_substage_time)
-        print(
-            "      - Optical routing stage time "
-            f"(net routing + PLM + realization): {route_time:.4f} s"
-        )
-        print(
-            "        - net routing phase "
-            f"(obstacles + A* + repairs): {route_nets_time:.4f} s"
-        )
-        route_nets_subtimings = {
-            str(name).removeprefix("route_nets."): float(elapsed_s)
-            for name, elapsed_s in timings.items()
-            if str(name).startswith("route_nets.")
-        }
-        if route_nets_subtimings:
-            ordered_subtiming_names = (
-                "obstacle_map",
-                "router_setup",
-                "route_job_build",
-                "port_opening_prep",
-                "port_opening_batch",
-                "static_map_handoff",
-                "state_opening_precompute",
-                "clearance_exempt_batch",
-                "batch_job_pack",
-                "native_route_batch",
-                "batch_result_processing",
-                "endpoint_correction_pack",
-                "endpoint_correction_native",
-                "endpoint_correction_processing",
-                "record_assembly",
-                "realized_crossing_overlap_augment",
-                "realized_crossing_native_events",
-                "realized_crossing_insertion_loss",
-                "realized_crossing_verify_intersections",
-                "realized_crossing_realized_loss",
-                "realized_crossing_refresh_total",
-                "photonic_probe_copy",
-                "photonic_probe_realize",
-                "photonic_probe_crossing_place",
-                "photonic_probe_layout_total",
-                "photonic_probe_verify",
-                "photonic_refresh_total",
-                "final_verification_block",
-                "direct_realization",
-                "debug_artifact_assembly",
-            )
-            known_route_nets_s = sum(route_nets_subtimings.values())
-            parts = [
-                f"{name}={route_nets_subtimings[name]:.4f}s"
-                for name in ordered_subtiming_names
-                if route_nets_subtimings.get(name, 0.0) > 0.0
-            ]
-            route_nets_other_s = max(0.0, route_nets_time - known_route_nets_s)
-            if route_nets_other_s > 1.0e-4:
-                parts.append(f"other={route_nets_other_s:.4f}s")
-            print("          route_nets split: " + ", ".join(parts))
-            native_repair_timing_names = (
-                "ripup",
-                "repair_failed_net_wall",
-                "reroute_victims_wall",
-                "repair_probe_victim_selection",
-                "repair_state_reset",
-            )
-            native_repair_timings = {
-                name: float(route_nets_subtimings.get(f"native_batch_{name}", 0.0))
-                for name in native_repair_timing_names
-            }
-            native_repair_total_s = sum(native_repair_timings.values())
-            if native_repair_total_s > 0.0:
-                native_search_s = float(
-                    route_nets_subtimings.get("native_batch_route_search_total", 0.0)
-                )
-                native_dense_astar_s = float(
-                    route_nets_subtimings.get("native_batch_dense_astar", 0.0)
-                )
-                print(
-                    "          native repair profile: "
-                    f"ripup={native_repair_timings['ripup']:.4f}s, "
-                    f"current={native_repair_timings['repair_failed_net_wall']:.4f}s, "
-                    f"victims={native_repair_timings['reroute_victims_wall']:.4f}s, "
-                    f"selection={native_repair_timings['repair_probe_victim_selection']:.4f}s, "
-                    f"reset={native_repair_timings['repair_state_reset']:.4f}s, "
-                    f"repair_total={native_repair_total_s:.4f}s, "
-                    f"native_search={native_search_s:.4f}s, "
-                    f"dense_astar={native_dense_astar_s:.4f}s"
-                )
-        print(
-            "          route search: "
-            f"astar_loop={float(route_summary.astar_elapsed_s):.4f}s, "
-            f"attempts={int(route_summary.route_attempts)}, "
-            f"failures={int(route_summary.route_failures)}, "
-            f"simple={int(route_summary.simple_route_count)}/"
-            f"{int(route_summary.route_count)}, "
-            f"repairs={int(route_summary.repair_count)}"
-        )
-        endpoint_correction_time_s = float(
-            getattr(route_summary, "endpoint_correction_time_s", 0.0)
-        )
-        if endpoint_correction_time_s > 0.0:
-            print(
-                "          endpoint correction: "
-                f"time={endpoint_correction_time_s:.4f}s, "
-                f"calls={int(getattr(route_summary, 'endpoint_correction_calls', 0))}, "
-                f"failures={int(getattr(route_summary, 'endpoint_correction_failures', 0))}"
-            )
-        print(
-            "          A* counters: "
-            f"expanded={int(route_summary.expanded_states)}, "
-            f"generated={int(route_summary.generated_neighbors)}, "
-            f"heap_pushes={int(route_summary.heap_pushes)}, "
-            f"heap_pops={int(route_summary.heap_pops)}, "
-            f"footprint_checks={int(route_summary.footprint_checks)}, "
-            f"rect_checks={int(route_summary.footprint_rect_checks)}, "
-            f"full_grid_fallbacks={int(route_summary.full_grid_fallbacks)}"
-        )
-        print(
-            "          Crossing hot path: "
-            f"no_contact={int(getattr(route_summary, 'crossing_hotpath_no_contact', 0))}, "
-            f"contact_checks={int(getattr(route_summary, 'crossing_hotpath_contact_checks', 0))}, "
-            f"static_rejects={int(getattr(route_summary, 'crossing_hotpath_static_rejects', 0))}, "
-            f"no_owner={int(getattr(route_summary, 'crossing_hotpath_no_owner_contacts', 0))}, "
-            f"single_owner={int(getattr(route_summary, 'crossing_hotpath_single_owner_contacts', 0))}, "
-            f"multi_owner={int(getattr(route_summary, 'crossing_hotpath_multi_owner_contacts', 0))}, "
-            f"candidate_checks={int(route_summary.crossing_candidate_checks)}, "
-            f"accepted={int(route_summary.crossing_accepted)}"
-        )
-        print(
-            "          Crossing hot path detail: "
-            f"witness_cells={int(getattr(route_summary, 'crossing_hotpath_witness_cells_scanned', 0))}, "
-            f"partner_segments={int(getattr(route_summary, 'crossing_hotpath_partner_segment_checks', 0))}, "
-            f"bbox_rejects={int(getattr(route_summary, 'crossing_hotpath_partner_segment_bbox_rejects', 0))}, "
-            f"intersections={int(getattr(route_summary, 'crossing_hotpath_intersection_hits', 0))}, "
-            f"total={float(getattr(route_summary, 'crossing_hotpath_total_time_us', 0)) / 1_000_000.0:.4f}s, "
-            f"owner_scan={float(getattr(route_summary, 'crossing_hotpath_owner_scan_time_us', 0)) / 1_000_000.0:.4f}s, "
-            f"segments={float(getattr(route_summary, 'crossing_hotpath_segment_time_us', 0)) / 1_000_000.0:.4f}s, "
-            f"reservation={float(getattr(route_summary, 'crossing_hotpath_reservation_time_us', 0)) / 1_000_000.0:.4f}s"
-        )
-        print(
-            "          A* timed ops: "
-            f"dense_build={float(route_summary.dense_grid_build_time_us) / 1_000_000.0:.4f}s, "
-            f"search_loop={float(route_summary.search_loop_time_us) / 1_000_000.0:.4f}s, "
-            f"obstacle_prepare={float(route_summary.obstacle_map_prepare_time_us) / 1_000_000.0:.4f}s, "
-            f"simple_probe={float(route_summary.simple_route_time_us) / 1_000_000.0:.4f}s, "
-            f"commit_prepare={float(route_summary.commit_prepare_time_us) / 1_000_000.0:.4f}s, "
-            f"commit={float(route_summary.commit_time_us) / 1_000_000.0:.4f}s, "
-            f"neighbor={float(route_summary.neighbor_generation_time_us) / 1_000_000.0:.4f}s, "
-            f"heap={float(route_summary.heap_operation_time_us) / 1_000_000.0:.4f}s, "
-            f"legality={float(route_summary.legality_check_time_us) / 1_000_000.0:.4f}s, "
-            f"reconstruction={float(route_summary.reconstruction_time_us) / 1_000_000.0:.4f}s"
-        )
-        timed_search_s = float(route_summary.search_loop_time_us) / 1_000_000.0
-        measured_inner_s = (
-            float(route_summary.neighbor_generation_time_us)
-            + float(route_summary.heap_operation_time_us)
-            + float(route_summary.legality_check_time_us)
-        ) / 1_000_000.0
-        route_overhead_s = (
-            float(route_summary.obstacle_map_prepare_time_us)
-            + float(route_summary.simple_route_time_us)
-            + float(route_summary.commit_prepare_time_us)
-            + float(route_summary.commit_time_us)
-        ) / 1_000_000.0
-        if timed_search_s > 0.0:
-            print(
-                "          A* loop attribution: "
-                f"measured_inner={measured_inner_s:.4f}s, "
-                f"other={max(0.0, timed_search_s - measured_inner_s):.4f}s, "
-                f"route_overhead={route_overhead_s:.4f}s"
-            )
-        slowest_net_lines = _format_slowest_route_net_lines(
-            route_attempt_records,
-            limit=8,
-        )
-        if slowest_net_lines:
-            print("          slowest route nets:")
-            for line in slowest_net_lines:
-                print(line)
-        slowest_attempt_lines = _format_slowest_route_attempt_lines(
-            route_attempt_records,
-            limit=8,
-        )
-        if slowest_attempt_lines:
-            print("          slowest route attempts:")
-            for line in slowest_attempt_lines:
-                print(line)
-        if plm_total > 0.0:
-            print(
-                "        - path-length matching phase: "
-                f"{plm_total:.4f} s "
-                f"(analysis={plm_analysis_time:.4f}s, "
-                f"meander_obstacles={plm_obstacle_time:.4f}s, "
-                f"meander_planning={plm_planning_time:.4f}s)"
-            )
-        if route_endpoint_correction_time > 0.0:
-            print(
-                "        - route endpoint correction phase: "
-                f"{route_endpoint_correction_time:.4f} s"
-            )
-        print(f"        - route realization phase: {realization_time:.4f} s")
-        if overhead_time > 1.0e-3:
-            print(f"        - stage overhead/reporting: {overhead_time:.4f} s")
-    print(f"      ✓ Routed layout generated: {routed_layout.name}")
     electrical_result: ElectricalRoutingResult | None = None
 
-    crossing_plan_info = getattr(debug_artifacts, "crossing_plan_info", None)
-    routed_records = tuple(getattr(debug_artifacts, "routed_net_records", ()) or ())
-    route_coverage_check_enabled = debug_stop_after_route_index is None
-    verification_status = _verification_status_metadata(
+    verify_and_attach_photonic_reports(
+        benchmark_name=benchmark_name,
+        schematic=schematic,
+        unrouted_layout=unrouted_layout,
+        routed_layout=routed_layout,
+        debug_artifacts=debug_artifacts,
+        include_heater_obstacles=include_heater_obstacles,
         debug_stop_after_route_index=debug_stop_after_route_index,
-        expected_route_count=_schematic_route_count(schematic),
-        routed_record_count=len(routed_records),
-        route_coverage_check_enabled=route_coverage_check_enabled,
     )
-    routed_info = _component_info(routed_layout)
-    if isinstance(crossing_plan_info, Mapping):
-        routed_info["crossing_plan"] = dict(crossing_plan_info)
-        if bool(crossing_plan_info.get("enabled", False)):
-            crossing_report = _write_crossing_verification_report(
-                benchmark_name=benchmark_name,
-                crossing_plan_info=crossing_plan_info,
-                status_metadata=verification_status,
-            )
-            routed_info["crossing_verification"] = crossing_report
-            print(f"      - Crossing verification JSON: {crossing_report['path']}")
-            if crossing_report.get("success") is False:
-                raise RuntimeError(
-                    "Crossing verification failed before GDS write: "
-                    f"{crossing_report.get('error_count', 0)} error(s). "
-                    f"{_crossing_verification_failure_preview(crossing_report)}"
-                )
-    elif crossing_plan_info is not None:
-        routed_info["crossing_plan"] = crossing_plan_info
 
-    realization_grid_spec = getattr(debug_artifacts, "realization_grid_spec", None)
-    if routed_records and realization_grid_spec is not None:
-        # This Python geometry verifier is the normal final gate for the
-        # realized routed layout. Internal photonic probe verification in
-        # `translation.route_rust` should be treated as diagnostic/mismatch
-        # debugging support; this pass is the authoritative check before the
-        # GDS is accepted.
-        photonic_verification = verify_photonic_routing(
-            routed_layout,
-            schematic,
-            routed_net_records=routed_records,
-            unrouted_layout=unrouted_layout,
-            obstacle_layers=get_routing_obstacle_layers(
-                include_heaters=include_heater_obstacles,
-            ),
-            realization_grid_spec=realization_grid_spec,
-            allow_45_degree_turns=bool(
-                getattr(debug_artifacts, "realization_allow_45_degree_turns", True)
-            ),
-            bend_radius_cells=int(
-                getattr(debug_artifacts, "realization_bend_radius_cells", 4)
-            ),
-            legal_overlap_polygons_by_net_id_pair_um=(
-                _legal_crossing_overlap_polygons(crossing_plan_info)
-                if isinstance(crossing_plan_info, Mapping)
-                else {}
-            ),
-            crossing_component_footprints_um=(
-                _legal_crossing_component_footprints(crossing_plan_info)
-                if isinstance(crossing_plan_info, Mapping)
-                else ()
-            ),
-            check_route_coverage=route_coverage_check_enabled,
-            check_endpoint_connectivity=True,
-        )
-        photonic_report = _write_photonic_verification_report(
-            benchmark_name=benchmark_name,
-            verification=photonic_verification,
-            status_metadata=verification_status,
-        )
-        routed_info["photonic_verification"] = photonic_report
-        print(f"      - Photonic verification JSON: {photonic_report['path']}")
-        if not photonic_verification.success:
-            if os.environ.get(
-                "PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE",
-                "",
-            ).strip().lower() in {"1", "true", "yes", "on"}:
-                print(
-                    "      - WARNING: Photonic geometry verification failed; "
-                    "writing GDS anyway because "
-                    "PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE is set."
-                )
-            else:
-                raise RuntimeError(
-                    "Photonic geometry verification failed before GDS write: "
-                    f"{photonic_verification.error_count} error(s). "
-                    f"{_photonic_verification_failure_preview(photonic_verification)}"
-                )
-
-    if route_result.path_length_analysis_info is not None:
-        meander_report_info = getattr(route_result, "meander_insertion_report_info", None)
-        routed_layout.info["path_length_analysis"] = route_result.path_length_analysis_info
-        routed_layout.info["meander_requirements"] = (
-            route_result.meander_requirements_info or []
-        )
-        if meander_report_info is not None:
-            routed_layout.info["meander_insertion_report"] = (
-                meander_report_info
-            )
-        print(
-            "      - Path-length matching: "
-            f"{len(routed_layout.info['meander_requirements'])} edge(s) require extra length"
-        )
-        group_diagnostics = route_result.path_length_analysis_info.get(
-            "matching_group_diagnostics",
-            route_result.path_length_analysis_info.get("matching_groups", []),
-        )
-        if isinstance(group_diagnostics, list):
-            groups_over_tolerance = sum(
-                1
-                for group in group_diagnostics
-                if isinstance(group, dict) and group.get("within_tolerance") is False
-            )
-            max_residual = max(
-                (
-                    float(group.get("max_accepted_unmatched_um", 0.0))
-                    for group in group_diagnostics
-                    if isinstance(group, dict)
-                ),
-                default=0.0,
-            )
-            print(
-                "      - Path-length groups: "
-                f"{len(group_diagnostics)} group(s), "
-                f"over_tolerance={groups_over_tolerance}, "
-                f"max_residual={max_residual:.6f}um"
-            )
-        if debug_meanders and route_result.path_length_analysis_info is not None:
-            node_timings = route_result.path_length_analysis_info.get("node_timings_um", {})
-            if isinstance(node_timings, dict):
-                for node_name, node_info in node_timings.items():
-                    if not isinstance(node_info, dict):
-                        continue
-                    incoming = node_info.get("incoming_edges")
-                    if incoming is None:
-                        incoming = []
-                    print(
-                        f"        • node={node_name}, "
-                        f"type={node_info.get('node_type')}, "
-                        f"internal={float(node_info.get('internal_delay_um', 0.0)):.3f}um, "
-                        f"input={float(node_info.get('input_arrival_um', 0.0)):.3f}um, "
-                        f"output={float(node_info.get('output_arrival_um', 0.0)):.3f}um"
-                    )
-                    for incoming_entry in incoming:
-                        if not isinstance(incoming_entry, dict):
-                            continue
-                        edge = incoming_entry.get("edge", {})
-                        edge_name = (
-                            f"{edge.get('source', {}).get('instance', '?')}->"
-                            f"{edge.get('target', {}).get('instance', '?')} "
-                            f"({edge.get('net_name', '?')})"
-                        )
-                        print(
-                            "          - "
-                            f"{edge_name}: edge_len={float(incoming_entry.get('routed_length_um', 0.0)):.3f}um, "
-                            f"edge_arrival={float(incoming_entry.get('edge_arrival_um', 0.0)):.3f}um, "
-                            f"missing={float(incoming_entry.get('missing_length_um', 0.0)):.3f}um"
-                        )
-        if meander_report_info is not None:
-            report = meander_report_info
-            total_requested = float(report.get("total_requested_extra_length_um", 0.0))
-            total_inserted = float(report.get("total_inserted_extra_length_um", 0.0))
-            unmatched = float(report.get("unmatched_length_um", 0.0))
-            print(
-                "      - Meander insertion: "
-                f"requested={total_requested:.3f}um, "
-                f"inserted={total_inserted:.3f}um, "
-                f"unmatched={unmatched:.3f}um"
-            )
-            if debug_meanders:
-                setup_profile = report.get("setup_profile", {})
-                if isinstance(setup_profile, dict) and setup_profile:
-                    print(
-                        "        Meander setup profile: "
-                        f"total={float(setup_profile.get('total_s', 0.0)):.4f}s, "
-                        f"router_init={float(setup_profile.get('router_init_s', 0.0)):.4f}s, "
-                        f"by_edge={float(setup_profile.get('by_edge_s', 0.0)):.4f}s, "
-                        f"base_static_collect={float(setup_profile.get('base_static_collect_s', 0.0)):.4f}s, "
-                        f"base_static_reused={int(float(setup_profile.get('base_static_reused', 0.0)))}, "
-                        f"static_handle={int(float(setup_profile.get('combined_static_route_registration_handle', 0.0)))}, "
-                        f"set_static={float(setup_profile.get('set_static_cells_s', 0.0)):.4f}s, "
-                        f"register_routes={float(setup_profile.get('register_route_cells_s', 0.0)):.4f}s, "
-                        f"register_geometry={float(setup_profile.get('register_route_geometry_s', 0.0)):.4f}s, "
-                        f"registered_records={int(float(setup_profile.get('registered_record_count', 0.0)))}, "
-                        f"unregistered_records={int(float(setup_profile.get('unregistered_record_count', 0.0)))}, "
-                        f"unregistered_route_static={int(float(setup_profile.get('unregistered_route_static_cell_count', 0.0)))}, "
-                        f"route_occupancy_radius={int(float(setup_profile.get('route_occupancy_radius_cells', 0.0)))}, "
-                        f"box_clearance_radius={int(float(setup_profile.get('meander_box_clearance_radius_cells', 0.0)))}, "
-                        f"unique_route_cells={int(float(setup_profile.get('unique_route_cell_count', 0.0)))}"
-                    )
-                    print(
-                        "        Meander route-registration setup split: "
-                        f"edge_order={float(setup_profile.get('edge_order_s', 0.0)):.4f}s, "
-                        f"route_objects={float(setup_profile.get('route_object_list_s', 0.0)):.4f}s, "
-                        f"base_static_list={float(setup_profile.get('base_static_registration_list_s', 0.0)):.4f}s, "
-                        f"rust_call={float(setup_profile.get('register_route_cells_call_s', 0.0)):.4f}s, "
-                        f"result_map={float(setup_profile.get('registration_result_map_s', 0.0)):.4f}s"
-                    )
-                    print(
-                        "        Meander geometry-registration setup split: "
-                        f"prepare={float(setup_profile.get('geometry_prepare_s', 0.0)):.4f}s, "
-                        f"centerline_copy={float(setup_profile.get('geometry_centerline_copy_s', 0.0)):.4f}s, "
-                        f"max_bumps={float(setup_profile.get('geometry_max_bumps_s', 0.0)):.4f}s, "
-                        f"rust_call={float(setup_profile.get('geometry_call_s', 0.0)):.4f}s, "
-                        f"result_map={float(setup_profile.get('geometry_result_map_s', 0.0)):.4f}s"
-                    )
-                    if any(
-                        key.startswith("rust_registration_")
-                        for key in setup_profile
-                    ):
-                        print(
-                            "        Rust route-registration split: "
-                            f"total={float(setup_profile.get('rust_registration_total_s', 0.0)):.4f}s, "
-                            f"reset={float(setup_profile.get('rust_registration_reset_s', 0.0)):.4f}s, "
-                            f"base_pack={float(setup_profile.get('rust_registration_base_static_pack_s', 0.0)):.4f}s, "
-                            f"base_obstacles={float(setup_profile.get('rust_registration_base_static_obstacle_add_s', 0.0)):.4f}s, "
-                            f"base_prefix={float(setup_profile.get('rust_registration_base_prefix_build_s', 0.0)):.4f}s, "
-                            f"route_extract={float(setup_profile.get('rust_registration_route_extract_s', 0.0)):.4f}s, "
-                            f"route_cells={float(setup_profile.get('rust_registration_route_cell_collect_s', 0.0)):.4f}s, "
-                            f"open_sets={float(setup_profile.get('rust_registration_open_set_build_s', 0.0)):.4f}s, "
-                            f"route_list={float(setup_profile.get('rust_registration_route_cell_list_s', 0.0)):.4f}s, "
-                            f"route_static={float(setup_profile.get('rust_registration_route_static_add_s', 0.0)):.4f}s, "
-                            f"store={float(setup_profile.get('rust_registration_registered_store_s', 0.0)):.4f}s, "
-                            f"routes={int(float(setup_profile.get('rust_registration_route_count', 0.0)))}, "
-                            f"base_static={int(float(setup_profile.get('rust_registration_base_static_cell_count', 0.0)))}, "
-                            f"unique_route={int(float(setup_profile.get('rust_registration_unique_route_cell_count', 0.0)))}, "
-                            f"open_cells={int(float(setup_profile.get('rust_registration_registered_open_cell_count', 0.0)))}"
-                        )
-                print(
-                    "        Meander overhead profile: "
-                    f"planner={float(report.get('planner_elapsed_s', 0.0)):.4f}s, "
-                    f"candidate_setup={float(report.get('candidate_overhead_s', 0.0)):.4f}s, "
-                    f"commit={float(report.get('commit_elapsed_s', 0.0)):.4f}s"
-                )
-                rust_planner_profile = report.get("rust_planner_profile", {})
-                if isinstance(rust_planner_profile, dict) and rust_planner_profile:
-                    print(
-                        "        Rust meander planner split: "
-                        f"total={float(rust_planner_profile.get('total_s', 0.0)):.4f}s, "
-                        f"free_interval={float(rust_planner_profile.get('free_interval_s', 0.0)):.4f}s, "
-                        f"box_check={float(rust_planner_profile.get('box_check_s', 0.0)):.4f}s, "
-                        f"analytic_plan={float(rust_planner_profile.get('analytic_plan_s', 0.0)):.4f}s, "
-                        f"replacement_check={float(rust_planner_profile.get('replacement_check_s', 0.0)):.4f}s, "
-                        f"footprint={float(rust_planner_profile.get('footprint_s', 0.0)):.4f}s, "
-                        f"run_extraction={float(rust_planner_profile.get('run_extraction_s', 0.0)):.4f}s, "
-                        f"plan_calls={int(float(rust_planner_profile.get('plan_calls', 0.0)))}, "
-                        f"depths={int(float(rust_planner_profile.get('depth_count', 0.0)))}, "
-                        f"run_side_checks={int(float(rust_planner_profile.get('run_side_checks', 0.0)))}, "
-                        f"box_checks={int(float(rust_planner_profile.get('box_checks', 0.0)))}, "
-                        f"analytic_calls={int(float(rust_planner_profile.get('analytic_plan_calls', 0.0)))}"
-                    )
-                rust_wrapper_profile = report.get("rust_wrapper_profile", {})
-                if isinstance(rust_wrapper_profile, dict) and rust_wrapper_profile:
-                    print(
-                        "        Rust meander wrapper split: "
-                        f"planner_call={float(rust_wrapper_profile.get('planner_call_s', 0.0)):.4f}s, "
-                        f"reserved_snapshot={float(rust_wrapper_profile.get('reserved_snapshot_s', 0.0)):.4f}s, "
-                        f"rect_cells={float(rust_wrapper_profile.get('selected_rect_cells_s', 0.0)):.4f}s, "
-                        f"reserved_update={float(rust_wrapper_profile.get('candidate_reserved_update_s', 0.0)):.4f}s, "
-                        f"py_plan={float(rust_wrapper_profile.get('py_plan_conversion_s', 0.0)):.4f}s, "
-                        f"py_candidate_result={float(rust_wrapper_profile.get('py_candidate_result_build_s', 0.0)):.4f}s, "
-                        f"py_result={float(rust_wrapper_profile.get('py_result_build_s', 0.0)):.4f}s, "
-                        f"prepare_calls={int(float(rust_wrapper_profile.get('extra_blocked_prepare_calls', 0.0)))}, "
-                        f"rect_cells_count={int(float(rust_wrapper_profile.get('selected_rect_cell_count', 0.0)))}, "
-                        f"py_plans={int(float(rust_wrapper_profile.get('py_plan_count', 0.0)))}, "
-                        f"candidate_results={int(float(rust_wrapper_profile.get('candidate_result_count', 0.0)))}"
-                    )
-                commit_profile = report.get("commit_profile", {})
-                if isinstance(commit_profile, dict) and commit_profile:
-                    sorted_commit = sorted(
-                        commit_profile.items(),
-                        key=lambda item: -float(item[1]),
-                    )
-                    commit_parts = [
-                        f"{key[:-2] if key.endswith('_s') else key}={float(value):.4f}s"
-                        for key, value in sorted_commit
-                    ]
-                    print(
-                        "        Meander commit split: "
-                        + ", ".join(commit_parts)
-                    )
-                print(
-                    "        Meander candidate execution: "
-                    f"requirement_batches={int(report.get('requirement_batch_calls', 0))}, "
-                    f"requirement_batch_candidates={int(report.get('requirement_batch_candidate_calls', 0))}, "
-                    f"requirement_batch_edge_calls={int(report.get('requirement_batch_edge_calls', 0))}, "
-                    f"bundle_candidates={int(report.get('bundle_candidate_calls', 0))}, "
-                    f"bundle_edge_calls={int(report.get('bundle_edge_calls', 0))}, "
-                    f"bundle_planned={int(report.get('bundle_planned', 0))}, "
-                    f"bundle_no_candidate={int(report.get('bundle_no_candidate', 0))}"
-                )
-                candidate_engine_counts = report.get("candidate_engine_counts", {})
-                if isinstance(candidate_engine_counts, dict) and candidate_engine_counts:
-                    formatted_engine_counts = ", ".join(
-                        f"{key}={int(value)}"
-                        for key, value in sorted(candidate_engine_counts.items())
-                        if isinstance(key, str) and isinstance(value, (int, float))
-                    )
-                    if formatted_engine_counts:
-                        print(
-                            "        Meander candidate engines: "
-                            f"{formatted_engine_counts}"
-                        )
-                candidate_setup_profile = report.get("candidate_setup_profile", {})
-                if isinstance(candidate_setup_profile, dict) and candidate_setup_profile:
-                    sorted_setup = sorted(
-                        candidate_setup_profile.items(),
-                        key=lambda item: -float(item[1]),
-                    )
-                    setup_parts = [
-                        f"{key[:-2] if key.endswith('_s') else key}={float(value):.4f}s"
-                        for key, value in sorted_setup
-                    ]
-                    print(
-                        "        Candidate setup split: "
-                        + ", ".join(setup_parts)
-                    )
-                candidate_profile = report.get("candidate_profile", {})
-                if isinstance(candidate_profile, dict) and candidate_profile:
-                    print("        Candidate planner profile:")
-                    sorted_profile = sorted(
-                        candidate_profile.items(),
-                        key=lambda item: (
-                            -float(item[1].get("elapsed_s", 0.0))
-                            if isinstance(item[1], dict)
-                            else 0.0
-                        ),
-                    )
-                    for reason, raw_profile in sorted_profile:
-                        if not isinstance(raw_profile, dict):
-                            continue
-                        print(
-                            "          - "
-                            f"{reason}: candidates={int(raw_profile.get('candidate_attempts', 0))}, "
-                            f"edge_calls={int(raw_profile.get('edge_calls', 0))}, "
-                            f"planned={int(raw_profile.get('planned', 0))}, "
-                            f"no_candidate={int(raw_profile.get('no_candidate', 0))}, "
-                            f"elapsed={float(raw_profile.get('elapsed_s', 0.0)):.4f}s"
-                        )
-                for entry in report.get("results", []):
-                    edge = entry.get("edge", {})
-                    net_name = edge.get("net_name", "<unknown>")
-                    status = entry.get("status", "<unknown>")
-                    reason = entry.get("reason", "")
-                    req = float(entry.get("requested_extra_length_um", 0.0))
-                    ins = float(entry.get("inserted_extra_length_um", 0.0))
-                    unmatched = float(entry.get("unmatched_length_um", max(0.0, req - ins)))
-                    planning_mode = entry.get("planning_mode", None)
-                    effective_radius = entry.get("effective_bend_radius_um", None)
-                    primitive_radius = entry.get("primitive_bend_radius_um", None)
-                    selected_box = entry.get("selected_box", None)
-                    selected_grid_rect = entry.get("selected_grid_rect", None)
-                    bumps = entry.get("bumps", None)
-                    visual_bumps = entry.get("visual_bumps", None)
-                    u_turns = entry.get("u_turns", None)
-                    quarter_turns = entry.get("quarter_turns", None)
-                    side = entry.get("side", None)
-                    reserved_cells_count = entry.get("reserved_cells_count", None)
-                    print(
-                        f"        • {net_name}: status={status}, requested={req:.3f}um, "
-                        f"inserted={ins:.3f}um, unmatched={unmatched:.3f}um, "
-                        f"planning_mode={planning_mode}, side={side}, bumps={bumps}, "
-                        f"visual_bumps={visual_bumps}, u_turns={u_turns}, "
-                        f"quarter_turns={quarter_turns}, "
-                        f"effective_bend_radius_um={effective_radius}, "
-                        f"primitive_bend_radius_um={primitive_radius}, "
-                        f"selected_box={selected_box}, selected_grid_rect={selected_grid_rect}, "
-                        f"reserved_cells_count={reserved_cells_count}, reason={reason}"
-                    )
+    attach_and_report_path_length_matching(
+        routed_layout=routed_layout,
+        route_result=route_result,
+        debug_meanders=debug_meanders,
+    )
 
     if enable_electrical_routing:
-        print(f"\n[4/{total_steps}] Routing heater electrical metal...")
-        t_electrical_start = time.perf_counter()
-        current_electrical_result = route_electrical_heaters(
-            routed_layout,
-            schematic,
-            electrical_config,
+        routed_layout, electrical_result = run_electrical_routing_step(
+            benchmark_name=benchmark_name,
+            schematic=schematic,
+            routed_layout=routed_layout,
+            electrical_config=electrical_config,
             debug_dir=debug_dir,
-            debug_prefix=benchmark_name.lower(),
+            total_steps=total_steps,
+            stats=stats,
+            debug_timing=debug_timing,
+            debug_svgs_enabled=debug_svgs_enabled,
         )
-        electrical_result = current_electrical_result
-        t_electrical_end = time.perf_counter()
-        if stats is not None:
-            stats.step_times_s["electrical_routing"] = (
-                t_electrical_end - t_electrical_start
-            )
-        if current_electrical_result.routed_component is None:
-            raise RuntimeError(_electrical_failure_summary(current_electrical_result))
-        electrical_summary = _electrical_summary(
-            current_electrical_result,
-            electrical_config,
-        )
-        if stats is not None:
-            stats.electrical_terminal_groups = int(
-                electrical_summary["terminal_group_count"]
-            )
-            stats.electrical_pad_assignments = int(
-                electrical_summary["pad_assignment_count"]
-            )
-            stats.electrical_detailed_routes = int(
-                electrical_summary["detailed_route_count"]
-            )
-            stats.electrical_failed_detailed_routes = int(
-                electrical_summary["failed_detailed_route_count"]
-            )
-        optical_routed_layout = routed_layout
-        routed_layout = current_electrical_result.routed_component
-        _copy_component_info(optical_routed_layout, routed_layout)
-        _component_info(routed_layout)["electrical_routing"] = electrical_summary
-        electrical_pad_count = (
-            len(current_electrical_result.pad_plan.assignments)
-            if current_electrical_result.pad_plan
-            else 0
-        )
-        if current_electrical_result.terminal_groups:
-            print(f"      ✓ Electrical layout generated: {routed_layout.name}")
-        else:
-            print("      ✓ No heater electrical terminals found; electrical routing skipped")
-        print(
-            "      - Electrical routes: "
-            f"heaters={len(current_electrical_result.terminal_groups)}, "
-            f"pads={electrical_pad_count}"
-        )
-        if debug_timing:
-            print(
-                "      - Electrical routing time: "
-                f"{t_electrical_end - t_electrical_start:.4f} s"
-            )
-        if debug_svgs_enabled:
-            for name, path in current_electrical_result.debug_artifacts.items():
-                print(f"      - Electrical {name}: {path}")
 
     if debug_svgs_enabled:
-        if debug_artifacts.obstacle_svg is not None:
-            print(f"      - Obstacle SVG: {debug_artifacts.obstacle_svg}")
-        if debug_route_indices is None:
-            if debug_artifacts.route_svgs:
-                print(f"      - Route SVGs: {len(debug_artifacts.route_svgs)} files")
-        else:
-            selected = _format_debug_route_indices(debug_route_indices)
-            print(
-                f"      - Route SVGs: {len(debug_artifacts.route_svgs)} "
-                f"selected file(s), route indices: {selected}"
-            )
+        report_and_open_debug_svgs(
+            debug_artifacts=debug_artifacts,
+            electrical_result=electrical_result,
+            debug_route_indices=debug_route_indices,
+        )
 
-        # Open generated SVGs in the default browser/viewer so the user can inspect them.
-        try:
-            if debug_artifacts.obstacle_svg is not None:
-                obs_path = Path(debug_artifacts.obstacle_svg)
-                if obs_path.exists():
-                    webbrowser.open_new_tab(obs_path.resolve().as_uri())
-            for svg in debug_artifacts.route_svgs or []:
-                svg_path = Path(svg)
-                if svg_path.exists():
-                    webbrowser.open_new_tab(svg_path.resolve().as_uri())
-            if electrical_result is not None:
-                for svg in electrical_result.debug_artifacts.values():
-                    svg_path = Path(svg)
-                    if svg_path.exists():
-                        webbrowser.open_new_tab(svg_path.resolve().as_uri())
-        except Exception as e:
-            print(f"      - Warning: failed to open SVGs automatically: {e}")
-
-    # Optionally show the final routed layout in KLayout
-    if show_klayout:
-        try:
-            print("      - Opening routed layout in KLayout...")
-            routed_layout.show()
-        except Exception as e:
-            print(f"      - Warning: failed to open layout in KLayout: {e}")
-    else:
-        print("      - Write GDS...")
-        routed_layout.write_gds(f"build/routed_{benchmark_name}.gds")
+    write_or_show_routed_layout(
+        benchmark_name=benchmark_name,
+        routed_layout=routed_layout,
+        show_klayout=show_klayout,
+    )
 
     if debug_timing:
         t_end = time.perf_counter()
@@ -2613,7 +1051,7 @@ def run_routing_flow(
         total = time.perf_counter() - t_flow_start
         stats.total_time_s = float(total)
 
-    print(f"\n{'='*60}\n")
+    _print_flow_footer()
 
     return routed_layout
 
