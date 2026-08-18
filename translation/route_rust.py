@@ -890,24 +890,1274 @@ class _RouteNetsRustSession:
         )
         self.route_nets_timings_s: dict[str, float] = {}
 
-    def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
-        def _pipeline_timer_start() -> float:
-            return time.perf_counter() if self.collect_pipeline_timing else 0.0
+    def _pipeline_timer_start(self) -> float:
+        return time.perf_counter() if self.collect_pipeline_timing else 0.0
 
-        def _record_pipeline_timing(name: str, start_s: float) -> None:
-            if self.collect_pipeline_timing:
-                self.route_nets_timings_s[name] = self.route_nets_timings_s.get(name, 0.0) + (
-                    time.perf_counter() - start_s
+    def _record_pipeline_timing(self, name: str, start_s: float) -> None:
+        if self.collect_pipeline_timing:
+            self.route_nets_timings_s[name] = self.route_nets_timings_s.get(name, 0.0) + (
+                time.perf_counter() - start_s
+            )
+
+    def _orientation_to_angle(self, orientation: float | None, *, flip: bool = False) -> int:
+        if orientation is None:
+            angle = 0
+        else:
+            angle = int(round((float(orientation) % 360.0) / 45.0)) % 8
+
+        if flip:
+            angle = (angle + 4) % 8
+
+        return angle
+
+    def _angle_to_step(self, angle: int) -> tuple[int, int]:
+        steps = [
+            (1, 0),  # 0 east
+            (1, 1),  # 1 northeast
+            (0, 1),  # 2 north
+            (-1, 1),  # 3 northwest
+            (-1, 0),  # 4 west
+            (-1, -1),  # 5 southwest
+            (0, -1),  # 6 south
+            (1, -1),  # 7 southeast
+        ]
+        return steps[angle % 8]
+
+    def _direction_reaches_target_ray(
+        self,
+        *,
+        source_x: int,
+        source_y: int,
+        source_angle: int,
+        target_x: int,
+        target_y: int,
+        tolerance: int,
+    ) -> bool:
+        dx = target_x - source_x
+        dy = target_y - source_y
+        if abs(dx) <= tolerance and abs(dy) <= tolerance:
+            return True
+        dir_x, dir_y = self._angle_to_step(source_angle)
+        if dir_x == 0 and dir_y == 0:
+            return False
+        if dir_x == 0:
+            return abs(dx) <= tolerance and (dy > 0) == (dir_y > 0)
+        if dir_y == 0:
+            return abs(dy) <= tolerance and (dx > 0) == (dir_x > 0)
+        return (
+            (dx > 0) == (dir_x > 0)
+            and (dy > 0) == (dir_y > 0)
+            and abs(abs(dx) - abs(dy)) <= tolerance
+        )
+
+    def _source_lower_bounds(
+        self,
+        *,
+        source_x: int,
+        source_y: int,
+        source_angle: int,
+        target_x: int,
+        target_y: int,
+        target_angle: int,
+    ) -> tuple[float, float]:
+        grid_size_um = float(self.grid.grid_size_um)
+        dx = target_x - source_x
+        dy = target_y - source_y
+        distance = math.hypot(float(dx), float(dy)) * grid_size_um
+        heading_lower_bound = distance
+        if str(self.heuristic_mode) == "heading_aware":
+            target_angle_ok = not bool(getattr(self.astar_cfg, "require_target_angle", True)) or (
+                source_angle % 8 == target_angle % 8
+            )
+            reaches_target_ray = self._direction_reaches_target_ray(
+                source_x=source_x,
+                source_y=source_y,
+                source_angle=source_angle,
+                target_x=target_x,
+                target_y=target_y,
+                tolerance=max(0, int(getattr(self.astar_cfg, "target_tolerance_cells", 0))),
+            )
+            if not target_angle_ok or not reaches_target_ray:
+                minimum_bend_units = 1.0 if self.allow_45_degree_turns else 2.0
+                bend_weight = float(getattr(self.astar_cfg, "bend_weight", 1.0)) * float(
+                    getattr(self.primitive_cfg, "bend_weight", 1.0)
+                )
+                heading_lower_bound += minimum_bend_units * bend_weight
+        return distance, heading_lower_bound
+
+    def _in_bounds(self, gx: int, gy: int) -> bool:
+        return 0 <= gx < int(self.grid.width) and 0 <= gy < int(self.grid.height)
+
+    def port_to_grid_state(
+        self,
+        port: Port,
+        grid_origin_x_um: float,
+        grid_origin_y_um: float,
+        grid_size_um: float,
+        *,
+        as_target: bool = False,
+        outward_cells: int = 1,
+    ):
+        port_angle = self._orientation_to_angle(port.orientation, flip=False)
+
+        # For choosing the grid cell, always move outward from the physical port.
+        # This avoids starting inside the real component/port geometry.
+        sx, sy = self._angle_to_step(port_angle)
+
+        x = float(port.center[0]) + sx * outward_cells * grid_size_um
+        y = float(port.center[1]) + sy * outward_cells * grid_size_um
+
+        gx = int((x - grid_origin_x_um) // grid_size_um)
+        gy = int((y - grid_origin_y_um) // grid_size_um)
+
+        # For the route state angle:
+        # - source: route leaves the port outward
+        # - target: route approaches the port, so flip direction
+        route_angle = self._orientation_to_angle(port.orientation, flip=as_target)
+
+        return self.rust_backend.State(gx, gy, route_angle)
+
+    def _snap_nearly_collinear_states(
+        self,
+        source_state: Any,
+        target_state: Any,
+        source_port: Port,
+        target_port: Port,
+    ) -> tuple[Any, Any, set[tuple[int, int]]]:
+        original_cells = {
+            (int(source_state.x), int(source_state.y)),
+            (int(target_state.x), int(target_state.y)),
+        }
+        source_angle = int(source_state.angle) % 8
+        target_angle = int(target_state.angle) % 8
+        if source_angle != target_angle:
+            return source_state, target_state, original_cells
+
+        source_center = getattr(source_port, "center", None)
+        target_center = getattr(target_port, "center", None)
+        if source_center is None or target_center is None:
+            return source_state, target_state, original_cells
+
+        source_x_um = float(source_center[0])
+        source_y_um = float(source_center[1])
+        target_x_um = float(target_center[0])
+        target_y_um = float(target_center[1])
+        grid_size = float(self.grid.grid_size_um)
+        max_snap_um = max(grid_size, 2.0 * grid_size)
+        max_snap_cells = max(1, math.ceil(max_snap_um / grid_size))
+
+        if source_angle in {0, 4}:
+            direction = 1 if source_angle == 0 else -1
+            if (target_x_um - source_x_um) * direction <= 0.0:
+                return source_state, target_state, original_cells
+            if abs(target_y_um - source_y_um) > max_snap_um:
+                return source_state, target_state, original_cells
+            if abs(int(target_state.y) - int(source_state.y)) > max_snap_cells:
+                return source_state, target_state, original_cells
+            snapped_target = self.rust_backend.State(
+                int(target_state.x),
+                int(source_state.y),
+                int(target_state.angle),
+            )
+            return source_state, snapped_target, original_cells
+
+        if source_angle in {2, 6}:
+            direction = 1 if source_angle == 2 else -1
+            if (target_y_um - source_y_um) * direction <= 0.0:
+                return source_state, target_state, original_cells
+            if abs(target_x_um - source_x_um) > max_snap_um:
+                return source_state, target_state, original_cells
+            if abs(int(target_state.x) - int(source_state.x)) > max_snap_cells:
+                return source_state, target_state, original_cells
+            snapped_target = self.rust_backend.State(
+                int(source_state.x),
+                int(target_state.y),
+                int(target_state.angle),
+            )
+            return source_state, snapped_target, original_cells
+
+        return source_state, target_state, original_cells
+
+    def _snap_same_heading_minimum_bend_offset(
+        self,
+        source_state: Any,
+        target_state: Any,
+    ) -> tuple[Any, Any, set[tuple[int, int]]]:
+        """Snap one-cell-short S-bend offsets to the nearest realizable target.
+
+        With cardinal same-heading ports, two opposing 90-degree bend primitives
+        impose a minimum perpendicular displacement of 2R. Physical port centers
+        often land half a grid cell off that value. Without this snap, exact-cell
+        routing can only satisfy the one-cell deficit by introducing a loop.
+        """
+        extra_cells: set[tuple[int, int]] = set()
+        if self.allow_45_degree_turns:
+            return source_state, target_state, extra_cells
+
+        source_angle = int(source_state.angle) % 8
+        target_angle = int(target_state.angle) % 8
+        if source_angle != target_angle:
+            return source_state, target_state, extra_cells
+
+        min_offset_cells = 2 * int(self.bend_radius_cells)
+        if min_offset_cells <= 0:
+            return source_state, target_state, extra_cells
+
+        sx = int(source_state.x)
+        sy = int(source_state.y)
+        tx = int(target_state.x)
+        ty = int(target_state.y)
+
+        if source_angle in {0, 4}:
+            forward_dx = tx - sx if source_angle == 0 else sx - tx
+            dy = ty - sy
+            if forward_dx < min_offset_cells or dy == 0:
+                return source_state, target_state, extra_cells
+            missing = min_offset_cells - abs(dy)
+            if missing != 1:
+                return source_state, target_state, extra_cells
+            snapped_offset_cells = min_offset_cells + 1
+            snapped_target = self.rust_backend.State(
+                tx,
+                sy + (snapped_offset_cells if dy > 0 else -snapped_offset_cells),
+                target_angle,
+            )
+            if not self._in_bounds(int(snapped_target.x), int(snapped_target.y)):
+                return source_state, target_state, extra_cells
+            extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
+            return source_state, snapped_target, extra_cells
+
+        if source_angle in {2, 6}:
+            forward_dy = ty - sy if source_angle == 2 else sy - ty
+            dx = tx - sx
+            if forward_dy < min_offset_cells or dx == 0:
+                return source_state, target_state, extra_cells
+            missing = min_offset_cells - abs(dx)
+            if missing != 1:
+                return source_state, target_state, extra_cells
+            snapped_offset_cells = min_offset_cells + 1
+            snapped_target = self.rust_backend.State(
+                sx + (snapped_offset_cells if dx > 0 else -snapped_offset_cells),
+                ty,
+                target_angle,
+            )
+            if not self._in_bounds(int(snapped_target.x), int(snapped_target.y)):
+                return source_state, target_state, extra_cells
+            extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
+            return source_state, snapped_target, extra_cells
+
+        return source_state, target_state, extra_cells
+
+    def _rect_ranges_by_y(
+        self,
+        rects: Iterable[tuple[int, int, int, int]],
+    ) -> dict[int, list[tuple[int, int]]]:
+        ranges_by_y: dict[int, list[tuple[int, int]]] = {}
+        for rect_min_x, rect_min_y, rect_max_x, rect_max_y in rects:
+            min_x = max(0, rect_min_x)
+            max_x = min(self.grid_width - 1, rect_max_x)
+            min_y = max(0, rect_min_y)
+            max_y = min(self.grid_height - 1, rect_max_y)
+            if min_x > max_x or min_y > max_y:
+                continue
+            for y in range(min_y, max_y + 1):
+                ranges_by_y.setdefault(y, []).append((min_x, max_x))
+        for y, ranges in list(ranges_by_y.items()):
+            ranges.sort()
+            merged_ranges: list[tuple[int, int]] = []
+            for min_x, max_x in ranges:
+                if not merged_ranges or min_x > merged_ranges[-1][1] + 1:
+                    merged_ranges.append((min_x, max_x))
+                else:
+                    prev_min_x, prev_max_x = merged_ranges[-1]
+                    merged_ranges[-1] = (prev_min_x, max(prev_max_x, max_x))
+            ranges_by_y[y] = merged_ranges
+        return ranges_by_y
+
+    def _raw_static_rect_ranges_by_y(self) -> dict[int, list[tuple[int, int]]]:
+        if self.raw_static_rect_ranges_by_y is not None:
+            return self.raw_static_rect_ranges_by_y
+        ranges_by_y = self._rect_ranges_by_y(self.raw_static_rects_for_openings)
+        self.raw_static_rect_ranges_by_y = ranges_by_y
+        return ranges_by_y
+
+    def _heater_opening_rect_ranges_by_y(self) -> dict[int, list[tuple[int, int]]]:
+        if self.heater_opening_rect_ranges_by_y is not None:
+            return self.heater_opening_rect_ranges_by_y
+        ranges_by_y = self._rect_ranges_by_y(self.heater_opening_rects_for_openings)
+        self.heater_opening_rect_ranges_by_y = ranges_by_y
+        return ranges_by_y
+
+    def _raw_static_cells_by_y(self) -> dict[int, set[int]]:
+        if self.raw_static_cells_by_y is not None:
+            return self.raw_static_cells_by_y
+        cells_by_y: dict[int, set[int]] = {}
+        for cell_x, cell_y in self.raw_static_cells:
+            cells_by_y.setdefault(int(cell_y), set()).add(int(cell_x))
+        self.raw_static_cells_by_y = cells_by_y
+        return cells_by_y
+
+    def _cell_in_raw_static(self, cell: tuple[int, int]) -> bool:
+        if cell in self.raw_static_cells:
+            return True
+        x, y = cell
+        return any(
+            rect_min_x <= x <= rect_max_x
+            for rect_min_x, rect_max_x in self._raw_static_rect_ranges_by_y().get(y, ())
+        )
+
+    def _cells_in_raw_static_geometry(
+        self,
+        cells: set[tuple[int, int]],
+    ) -> set[tuple[int, int]]:
+        return {cell for cell in cells if self._cell_in_raw_static(cell)}
+
+    def _keyed_port_access_rule(
+        self,
+        *,
+        instance_name: str,
+        port_name: str,
+        port: Port,
+    ) -> tuple[float | None, float | None, str | None]:
+        port_type = _port_type_name(port)
+        component_name = _schematic_instance_component_name(self.schematic, instance_name)
+        rule = find_component_port_access_rule(
+            component_name=component_name,
+            port_name=port_name,
+            port_type=port_type,
+        )
+        if rule is not None:
+            return (
+                float(rule.access_length_um),
+                float(rule.access_width_um),
+                rule.component_name_pattern,
+            )
+
+        return None, None, None
+
+    def _instance_ref_by_name(self, instance_name: str) -> Any | None:
+        try:
+            instances = self.routed_layout.insts
+        except (AttributeError, TypeError):
+            return None
+        for instance in instances:
+            if getattr(instance, "name", None) == instance_name:
+                return instance
+        return None
+
+    def _heater_pad_port_open_cells(
+        self,
+        *,
+        instance_name: str,
+        port: Port,
+        center_um: tuple[float, float],
+        orientation: float | None,
+        rule_name: str | None,
+    ) -> set[tuple[int, int]]:
+        if rule_name is None or orientation is None:
+            return set()
+        ref = self._instance_ref_by_name(instance_name)
+        if ref is None:
+            return set()
+        bounds = _bbox_bounds_um(ref)
+        if bounds is None:
+            return set()
+        left, bottom, right, top = bounds
+        grid_size = float(self.grid.grid_size_um)
+        if grid_size <= 0.0:
+            return set()
+
+        angle_rad = math.radians(float(orientation))
+        dir_x = math.cos(angle_rad)
+        dir_y = math.sin(angle_rad)
+        if not math.isfinite(dir_x) or not math.isfinite(dir_y):
+            return set()
+
+        # Heater optical ports need the metal/static pad on the port-facing side
+        # opened, not only the narrow access runway. The router blocks compact
+        # heater rectangles after clearance expansion, so the opening must cover
+        # the matching expanded blocked rectangles too.
+        bbox_margin = 0.5 * grid_size
+        min_x = max(
+            0,
+            int(math.floor((float(left) - bbox_margin - float(self.origin_x_um)) / grid_size)),
+        )
+        max_x = min(
+            self.grid_width - 1,
+            int(math.floor((float(right) + bbox_margin - float(self.origin_x_um)) / grid_size)),
+        )
+        min_y = max(
+            0,
+            int(math.floor((float(bottom) - bbox_margin - float(self.origin_y_um)) / grid_size)),
+        )
+        max_y = min(
+            self.grid_height - 1,
+            int(math.floor((float(top) + bbox_margin - float(self.origin_y_um)) / grid_size)),
+        )
+        if min_x > max_x or min_y > max_y:
+            return set()
+
+        heater_clearance_um = getattr(self.resolved_obstacle_config, "heater_clearance_um", None)
+        opening_margin_um = max(
+            float(self.route_clearance_um),
+            0.0 if heater_clearance_um is None else float(heater_clearance_um),
+        )
+        opening_margin_cells = int(math.ceil(opening_margin_um / grid_size)) + 1
+        search_min_x = max(0, min_x - opening_margin_cells)
+        search_max_x = min(self.grid_width - 1, max_x + opening_margin_cells)
+        search_min_y = max(0, min_y - opening_margin_cells)
+        search_max_y = min(self.grid_height - 1, max_y + opening_margin_cells)
+        opening_margin_distance = float(opening_margin_cells) * grid_size + bbox_margin
+        opening_left = float(left) - opening_margin_distance
+        opening_right = float(right) + opening_margin_distance
+        opening_bottom = float(bottom) - opening_margin_distance
+        opening_top = float(top) + opening_margin_distance
+
+        candidate_cells: set[tuple[int, int]] = set()
+        explicit_cells_by_y = self._raw_static_cells_by_y()
+        heater_rect_ranges_by_y = self._heater_opening_rect_ranges_by_y()
+        for cell_y in range(search_min_y, search_max_y + 1):
+            xs: set[int] = set()
+            xs.update(
+                cell_x
+                for cell_x in explicit_cells_by_y.get(cell_y, set())
+                if search_min_x <= int(cell_x) <= search_max_x
+            )
+            for rect_min_x, rect_max_x in heater_rect_ranges_by_y.get(cell_y, ()):
+                start_x = max(search_min_x, int(rect_min_x))
+                end_x = min(search_max_x, int(rect_max_x))
+                if start_x <= end_x:
+                    xs.update(range(start_x, end_x + 1))
+            for cell_x in xs:
+                inside_instance_bbox = (
+                    min_x <= int(cell_x) <= max_x and min_y <= int(cell_y) <= max_y
+                )
+                cell_center = self._grid_cell_center_um(int(cell_x), int(cell_y))
+                if (
+                    opening_left <= cell_center[0] <= opening_right
+                    and opening_bottom <= cell_center[1] <= opening_top
+                ):
+                    candidate_cells.add((int(cell_x), int(cell_y)))
+                    continue
+                if inside_instance_bbox:
+                    if cell_center[0] < left - bbox_margin or cell_center[0] > right + bbox_margin:
+                        continue
+                    if cell_center[1] < bottom - bbox_margin or cell_center[1] > top + bbox_margin:
+                        continue
+                outward_distance = (
+                    (cell_center[0] - float(center_um[0])) * dir_x
+                    + (cell_center[1] - float(center_um[1])) * dir_y
+                )
+                if outward_distance >= -bbox_margin:
+                    candidate_cells.add((int(cell_x), int(cell_y)))
+
+        return candidate_cells
+
+    def _is_dense_source_fanout_instance(self, instance_name: str) -> bool:
+        return any(
+            len(port_specs) > 2
+            for (group_instance, _angle), port_specs in self.source_port_specs_by_instance_angle.items()
+            if group_instance == instance_name
+        )
+
+    def _is_dense_source_fanout_group(self, instance_name: str, angle: int) -> bool:
+        return (
+            len(self.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set())) > 2
+        )
+
+    @dataclass(frozen=True)
+    class _FanoutAnchor:
+        port_spec: str
+        state_x: int
+        state_y: int
+        physical_angle: int
+        center_um: tuple[float, float]
+        stub_center_cells: tuple[tuple[int, int], ...]
+        stub_centerline_um: tuple[tuple[float, float], ...]
+
+    def _grid_cell_center_um(self, cell_x: int, cell_y: int) -> tuple[float, float]:
+        return (
+            float(self.origin_x_um) + (float(cell_x) + 0.5) * float(self.grid.grid_size_um),
+            float(self.origin_y_um) + (float(cell_y) + 0.5) * float(self.grid.grid_size_um),
+        )
+
+    def _centerline_grid_cells(
+        self,
+        centerline_um: Iterable[tuple[float, float]],
+    ) -> tuple[tuple[int, int], ...]:
+        points = [
+            (float(point[0]), float(point[1]))
+            for point in centerline_um
+            if math.isfinite(float(point[0])) and math.isfinite(float(point[1]))
+        ]
+        if not points:
+            return ()
+        cells: list[tuple[int, int]] = []
+
+        def append_point(point: tuple[float, float]) -> None:
+            cell = _physical_point_to_grid_cell(
+                point,
+                grid_size_um=float(self.grid.grid_size_um),
+                origin_x_um=float(self.origin_x_um),
+                origin_y_um=float(self.origin_y_um),
+            )
+            if cell is None:
+                return
+            if not self._in_bounds(cell[0], cell[1]):
+                return
+            if cells and cells[-1] == cell:
+                return
+            cells.append(cell)
+
+        append_point(points[0])
+        sample_step_um = max(float(self.grid.grid_size_um) / 4.0, 1.0e-6)
+        for start, end in zip(points, points[1:]):
+            dx = float(end[0]) - float(start[0])
+            dy = float(end[1]) - float(start[1])
+            length = math.hypot(dx, dy)
+            if length <= 1.0e-9:
+                append_point(end)
+                continue
+            steps = max(1, int(math.ceil(length / sample_step_um)))
+            for index in range(1, steps + 1):
+                t = float(index) / float(steps)
+                append_point((start[0] + dx * t, start[1] + dy * t))
+        return tuple(dict.fromkeys(cells))
+
+    def _env_nonnegative_int(self, name: str, default: int) -> int:
+        raw_value = os.environ.get(name)
+        if raw_value is None or raw_value.strip() == "":
+            return int(default)
+        try:
+            value = int(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a non-negative integer") from exc
+        if value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+        return value
+
+    def _env_fanout_stub_bend_steps(self) -> int:
+        raw_value = os.environ.get("PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES", "90")
+        normalized = raw_value.strip().lower().replace("_", "-")
+        aliases = {
+            "45": 1,
+            "45deg": 1,
+            "45-degree": 1,
+            "45-deg": 1,
+            "diagonal": 1,
+            "diag": 1,
+            "90": 2,
+            "90deg": 2,
+            "90-degree": 2,
+            "90-deg": 2,
+            "orthogonal": 2,
+            "orthogonal-u": 2,
+        }
+        if normalized not in aliases:
+            raise ValueError(
+                "PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES must be 45 or 90"
+            )
+        return aliases[normalized]
+
+    def _append_grid_step(
+        self,
+        path: list[tuple[int, int]],
+        step_x: int,
+        step_y: int,
+        count: int,
+    ) -> None:
+        if count <= 0:
+            return
+        cell_x, cell_y = path[-1]
+        for _ in range(count):
+            cell_x += step_x
+            cell_y += step_y
+            if self._in_bounds(cell_x, cell_y):
+                path.append((cell_x, cell_y))
+
+    def _inflated_cells(
+        self,
+        cells: Iterable[tuple[int, int]],
+        radius: int,
+    ) -> set[tuple[int, int]]:
+        radius = max(0, int(radius))
+        inflated: set[tuple[int, int]] = set()
+        for cell_x, cell_y in cells:
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    nx = int(cell_x) + dx
+                    ny = int(cell_y) + dy
+                    if self._in_bounds(nx, ny):
+                        inflated.add((nx, ny))
+        return inflated
+
+    def _angle_to_unit_vector(self, angle: int) -> tuple[float, float]:
+        radians = (int(angle) % 8) * (math.pi / 4.0)
+        return (math.cos(radians), math.sin(radians))
+
+    def _rotate_left_vector(self, vector: tuple[float, float]) -> tuple[float, float]:
+        return (-vector[1], vector[0])
+
+    def _rotate_right_vector(self, vector: tuple[float, float]) -> tuple[float, float]:
+        return (vector[1], -vector[0])
+
+    def _cross2(
+        self,
+        a: tuple[float, float],
+        b: tuple[float, float],
+    ) -> float:
+        return float(a[0]) * float(b[1]) - float(a[1]) * float(b[0])
+
+    def _append_stub_point(
+        self,
+        out: list[tuple[float, float]],
+        point: tuple[float, float],
+    ) -> None:
+        point = (float(point[0]), float(point[1]))
+        if out:
+            last_x, last_y = out[-1]
+            if math.hypot(point[0] - last_x, point[1] - last_y) <= 1.0e-9:
+                return
+        out.append(point)
+
+    def _append_circular_stub_bend(
+        self,
+        out: list[tuple[float, float]],
+        *,
+        start_point: tuple[float, float],
+        start_angle: int,
+        end_point: tuple[float, float],
+        end_angle: int,
+        angle_delta: int,
+    ) -> None:
+        radius_um = float(self.bend_radius_cells) * float(self.grid.grid_size_um)
+        if radius_um <= 0.0 or not math.isfinite(radius_um):
+            self._append_stub_point(out, end_point)
+            return
+        start_dir = self._angle_to_unit_vector(start_angle)
+        end_dir = self._angle_to_unit_vector(end_angle)
+        chord = (
+            float(end_point[0]) - float(start_point[0]),
+            float(end_point[1]) - float(start_point[1]),
+        )
+        denom = self._cross2(start_dir, end_dir)
+        if abs(denom) <= 1.0e-9:
+            self._append_stub_point(out, end_point)
+            return
+        in_len = self._cross2(chord, end_dir) / denom
+        out_len = self._cross2(start_dir, chord) / denom
+        if (
+            not math.isfinite(in_len)
+            or not math.isfinite(out_len)
+            or in_len <= 1.0e-9
+            or out_len <= 1.0e-9
+        ):
+            self._append_stub_point(out, end_point)
+            return
+        corner = (
+            float(start_point[0]) + start_dir[0] * in_len,
+            float(start_point[1]) + start_dir[1] * in_len,
+        )
+        turn_abs = abs(int(angle_delta)) * (math.pi / 4.0)
+        trim = radius_um * math.tan(turn_abs / 2.0)
+        trim_eff = min(trim, in_len, out_len)
+        if not math.isfinite(trim_eff) or trim_eff <= 1.0e-9:
+            self._append_stub_point(out, end_point)
+            return
+        t_in = (
+            corner[0] - start_dir[0] * trim_eff,
+            corner[1] - start_dir[1] * trim_eff,
+        )
+        t_out = (
+            corner[0] + end_dir[0] * trim_eff,
+            corner[1] + end_dir[1] * trim_eff,
+        )
+        self._append_stub_point(out, t_in)
+        left_turn = int(angle_delta) > 0
+        n_start = (
+            self._rotate_left_vector(start_dir)
+            if left_turn
+            else self._rotate_right_vector(start_dir)
+        )
+        n_end = (
+            self._rotate_left_vector(end_dir)
+            if left_turn
+            else self._rotate_right_vector(end_dir)
+        )
+        c0 = (
+            t_in[0] + n_start[0] * radius_um,
+            t_in[1] + n_start[1] * radius_um,
+        )
+        c1 = (
+            t_out[0] + n_end[0] * radius_um,
+            t_out[1] + n_end[1] * radius_um,
+        )
+        center = ((c0[0] + c1[0]) * 0.5, (c0[1] + c1[1]) * 0.5)
+        a0 = math.atan2(t_in[1] - center[1], t_in[0] - center[0])
+        a1 = math.atan2(t_out[1] - center[1], t_out[0] - center[0])
+        if left_turn:
+            while a1 <= a0:
+                a1 += math.tau
+        else:
+            while a1 >= a0:
+                a1 -= math.tau
+        arc_span = abs(a1 - a0)
+        steps = max(2, int(math.ceil((arc_span / (math.pi / 2.0)) * 16.0)))
+        for index in range(1, steps):
+            t = float(index) / float(steps)
+            angle = a0 + (a1 - a0) * t
+            self._append_stub_point(
+                out,
+                (
+                    center[0] + radius_um * math.cos(angle),
+                    center[1] + radius_um * math.sin(angle),
+                ),
+            )
+        self._append_stub_point(out, t_out)
+        self._append_stub_point(out, end_point)
+
+    def _append_arc_from_tangencies(
+        self,
+        out: list[tuple[float, float]],
+        *,
+        t_in: tuple[float, float],
+        t_out: tuple[float, float],
+        start_angle: int,
+        end_angle: int,
+        angle_delta: int,
+    ) -> None:
+        radius_um = float(self.bend_radius_cells) * float(self.grid.grid_size_um)
+        if radius_um <= 0.0 or not math.isfinite(radius_um):
+            self._append_stub_point(out, t_out)
+            return
+        start_dir = self._angle_to_unit_vector(start_angle)
+        end_dir = self._angle_to_unit_vector(end_angle)
+        self._append_stub_point(out, t_in)
+        left_turn = int(angle_delta) > 0
+        n_start = (
+            self._rotate_left_vector(start_dir)
+            if left_turn
+            else self._rotate_right_vector(start_dir)
+        )
+        n_end = (
+            self._rotate_left_vector(end_dir)
+            if left_turn
+            else self._rotate_right_vector(end_dir)
+        )
+        c0 = (
+            float(t_in[0]) + n_start[0] * radius_um,
+            float(t_in[1]) + n_start[1] * radius_um,
+        )
+        c1 = (
+            float(t_out[0]) + n_end[0] * radius_um,
+            float(t_out[1]) + n_end[1] * radius_um,
+        )
+        center = ((c0[0] + c1[0]) * 0.5, (c0[1] + c1[1]) * 0.5)
+        a0 = math.atan2(float(t_in[1]) - center[1], float(t_in[0]) - center[0])
+        a1 = math.atan2(float(t_out[1]) - center[1], float(t_out[0]) - center[0])
+        if left_turn:
+            while a1 <= a0:
+                a1 += math.tau
+        else:
+            while a1 >= a0:
+                a1 -= math.tau
+        arc_span = abs(a1 - a0)
+        steps = max(2, int(math.ceil((arc_span / (math.pi / 2.0)) * 16.0)))
+        for index in range(1, steps):
+            t = float(index) / float(steps)
+            angle = a0 + (a1 - a0) * t
+            self._append_stub_point(
+                out,
+                (
+                    center[0] + radius_um * math.cos(angle),
+                    center[1] + radius_um * math.sin(angle),
+                ),
+            )
+        self._append_stub_point(out, t_out)
+
+    def _append_realized_stub_bend(
+        self,
+        out: list[tuple[float, float]],
+        start_point_um: tuple[float, float],
+        start_angle: int,
+        angle_delta: int,
+    ) -> tuple[float, float]:
+        arm_um = float(self.bend_radius_cells) * float(self.grid.grid_size_um)
+        radius_um = arm_um
+        turn_abs = abs(int(angle_delta)) * (math.pi / 4.0)
+        trim = radius_um * math.tan(turn_abs / 2.0)
+        end_angle = (int(start_angle) + int(angle_delta)) % 8
+        start_dir = self._angle_to_unit_vector(int(start_angle) % 8)
+        end_dir = self._angle_to_unit_vector(end_angle)
+        start_step = self._angle_to_step(int(start_angle) % 8)
+        end_step = self._angle_to_step(end_angle)
+        start_point = (float(start_point_um[0]), float(start_point_um[1]))
+        corner = (
+            start_point[0] + float(start_step[0]) * arm_um,
+            start_point[1] + float(start_step[1]) * arm_um,
+        )
+        end_point = (
+            corner[0] + float(end_step[0]) * arm_um,
+            corner[1] + float(end_step[1]) * arm_um,
+        )
+        t_in = (
+            corner[0] - start_dir[0] * trim,
+            corner[1] - start_dir[1] * trim,
+        )
+        t_out = (
+            corner[0] + end_dir[0] * trim,
+            corner[1] + end_dir[1] * trim,
+        )
+        self._append_stub_point(out, t_in)
+        self._append_arc_from_tangencies(
+            out,
+            t_in=t_in,
+            t_out=t_out,
+            start_angle=int(start_angle) % 8,
+            end_angle=end_angle,
+            angle_delta=int(angle_delta),
+        )
+        self._append_stub_point(out, end_point)
+        return end_point
+
+    def _two_bend_static_stub_centerline_um(
+        self,
+        port_center_um: tuple[float, float],
+        physical_angle: int,
+        lateral_sign: int,
+        target_anchor_y_cell: int | None = None,
+        min_forward_cells: int = 0,
+        initial_forward_cells: int = 0,
+        extra_final_forward_cells: int = 0,
+    ) -> tuple[tuple[tuple[float, float], ...], tuple[int, int]] | None:
+        start_angle = int(physical_angle) % 8
+        bend_delta = int(lateral_sign) * self._env_fanout_stub_bend_steps()
+        intermediate_angle = (start_angle + bend_delta) % 8
+        intermediate_step = self._angle_to_step(intermediate_angle)
+        final_step = self._angle_to_step(start_angle)
+        trace_fanout_stubs = os.environ.get("PHOTONIC_ROUTER_TRACE_FANOUT_STUBS", "").strip()
+
+        def fail(reason: str, extra: str = "") -> None:
+            if trace_fanout_stubs:
+                print(
+                    "fanout_stub_failed "
+                    f"reason={reason} "
+                    f"port={port_center_um} "
+                    f"angle={start_angle} lateral_sign={lateral_sign} "
+                    f"target_anchor_y_cell={target_anchor_y_cell} "
+                    f"min_forward_cells={min_forward_cells} "
+                    f"initial_forward_cells={initial_forward_cells} "
+                    f"extra_final_forward_cells={extra_final_forward_cells}"
+                    f"{extra}",
+                    file=sys.stderr,
                 )
 
-        t_obstacle_start = _pipeline_timer_start()
+        if abs(final_step[0]) + abs(final_step[1]) != 1:
+            fail("non_cardinal_final")
+            return None
+        if intermediate_step[1] == 0:
+            fail("intermediate_has_no_y")
+            return None
+        port_point = (float(port_center_um[0]), float(port_center_um[1]))
+
+        def _next_grid_axis_value(
+            value: float,
+            origin: float,
+            direction: int,
+        ) -> float | None:
+            if direction == 0:
+                return None
+            rel = (float(value) - float(origin)) / float(self.grid.grid_size_um) - 0.5
+            eps = 1.0e-9
+            if direction > 0:
+                index = math.ceil(rel - eps)
+            else:
+                index = math.floor(rel + eps)
+            return float(origin) + (float(index) + 0.5) * float(self.grid.grid_size_um)
+
+        points: list[tuple[float, float]] = [port_point]
+        bend_start = port_point
+        initial_forward_um = (
+            float(max(0, int(initial_forward_cells))) * float(self.grid.grid_size_um)
+        )
+        if initial_forward_um > 1.0e-9:
+            bend_start = (
+                port_point[0] + float(final_step[0]) * initial_forward_um,
+                port_point[1] + float(final_step[1]) * initial_forward_um,
+            )
+            self._append_stub_point(points, bend_start)
+        first_end = self._append_realized_stub_bend(
+            points,
+            bend_start,
+            start_angle,
+            bend_delta,
+        )
+        if target_anchor_y_cell is None:
+            target_intermediate_y = _next_grid_axis_value(
+                first_end[1],
+                self.origin_y_um,
+                int(intermediate_step[1]),
+            )
+        else:
+            target_intermediate_y = self._grid_cell_center_um(
+                0,
+                int(target_anchor_y_cell)
+                - int(intermediate_step[1]) * int(self.bend_radius_cells),
+            )[1]
+        if target_intermediate_y is None:
+            fail("no_target_intermediate_y")
+            return None
+        intermediate_delta_y = float(target_intermediate_y) - float(first_end[1])
+        if intermediate_delta_y * float(intermediate_step[1]) < -1.0e-9:
+            fail("intermediate_moves_backward")
+            return None
+        intermediate_delta_x = intermediate_delta_y * (
+            float(intermediate_step[0]) / float(intermediate_step[1])
+        )
+        intermediate_end = (
+            first_end[0] + intermediate_delta_x,
+            float(target_intermediate_y),
+        )
+        self._append_stub_point(points, intermediate_end)
+        second_end = self._append_realized_stub_bend(
+            points,
+            intermediate_end,
+            intermediate_angle,
+            angle_delta=-bend_delta,
+        )
+        if final_step[0] != 0:
+            target_final_x = _next_grid_axis_value(
+                second_end[0],
+                self.origin_x_um,
+                int(final_step[0]),
+            )
+            if target_final_x is None:
+                fail("no_target_final_x")
+                return None
+            min_forward_x = (
+                port_point[0]
+                + float(final_step[0])
+                * float(
+                    max(0, int(min_forward_cells))
+                    + max(0, int(initial_forward_cells))
+                    + max(0, int(extra_final_forward_cells))
+                )
+                * float(self.grid.grid_size_um)
+            )
+            if int(final_step[0]) > 0:
+                if float(target_final_x) < float(min_forward_x):
+                    snapped_min_forward_x = _next_grid_axis_value(
+                        float(min_forward_x),
+                        self.origin_x_um,
+                        int(final_step[0]),
+                    )
+                    if snapped_min_forward_x is None:
+                        fail("no_snapped_min_forward_x")
+                        return None
+                    target_final_x = float(snapped_min_forward_x)
+            else:
+                if float(target_final_x) > float(min_forward_x):
+                    snapped_min_forward_x = _next_grid_axis_value(
+                        float(min_forward_x),
+                        self.origin_x_um,
+                        int(final_step[0]),
+                    )
+                    if snapped_min_forward_x is None:
+                        fail("no_snapped_min_forward_x")
+                        return None
+                    target_final_x = float(snapped_min_forward_x)
+            final_delta_x = float(target_final_x) - float(second_end[0])
+            if final_delta_x * float(final_step[0]) < -1.0e-9:
+                fail("final_moves_backward_x")
+                return None
+            anchor_point = (float(target_final_x), float(second_end[1]))
+        else:
+            target_final_y = _next_grid_axis_value(
+                second_end[1],
+                self.origin_y_um,
+                int(final_step[1]),
+            )
+            if target_final_y is None:
+                fail("no_target_final_y")
+                return None
+            final_delta_y = float(target_final_y) - float(second_end[1])
+            if final_delta_y * float(final_step[1]) < -1.0e-9:
+                fail("final_moves_backward_y")
+                return None
+            anchor_point = (float(second_end[0]), float(target_final_y))
+        self._append_stub_point(points, anchor_point)
+        anchor_x = int(
+            round((anchor_point[0] - self.origin_x_um) / float(self.grid.grid_size_um) - 0.5)
+        )
+        anchor_y = int(
+            round((anchor_point[1] - self.origin_y_um) / float(self.grid.grid_size_um) - 0.5)
+        )
+        snapped_anchor = self._grid_cell_center_um(anchor_x, anchor_y)
+        snap_error_um = math.hypot(
+            float(snapped_anchor[0]) - float(anchor_point[0]),
+            float(snapped_anchor[1]) - float(anchor_point[1]),
+        )
+        if snap_error_um > max(1.0e-6, 0.05 * float(self.grid.grid_size_um)):
+            fail(
+                f"snap_error:{snap_error_um:.6g}",
+                " "
+                f"anchor_point=({anchor_point[0]:.6g},{anchor_point[1]:.6g}) "
+                f"anchor_cell=({anchor_x},{anchor_y}) "
+                f"snapped=({snapped_anchor[0]:.6g},{snapped_anchor[1]:.6g}) "
+                f"origin=({self.origin_x_um:.6g},{self.origin_y_um:.6g}) "
+                f"grid={float(self.grid.grid_size_um):.6g} "
+                f"bend_radius_cells={self.bend_radius_cells}",
+            )
+            return None
+        if not self._in_bounds(anchor_x, anchor_y):
+            fail("anchor_out_of_bounds")
+            return None
+        return _compress_centerline(tuple(points)), (anchor_x, anchor_y)
+
+    def _fanout_stub_centerline_um(
+        self,
+        port_center_um: tuple[float, float] | None,
+        anchor_center_um: tuple[float, float],
+        physical_angle: int,
+    ) -> tuple[tuple[float, float], ...]:
+        if port_center_um is None:
+            return (anchor_center_um,)
+        forward_x, forward_y = self._angle_to_step(int(physical_angle) % 8)
+        lateral_x, lateral_y = -forward_y, forward_x
+        port_x, port_y = (float(port_center_um[0]), float(port_center_um[1]))
+        anchor_x, anchor_y = (float(anchor_center_um[0]), float(anchor_center_um[1]))
+        delta_x = anchor_x - port_x
+        delta_y = anchor_y - port_y
+        forward_delta = delta_x * forward_x + delta_y * forward_y
+        lateral_delta = delta_x * lateral_x + delta_y * lateral_y
+        if forward_delta <= 1.0e-9:
+            return _compress_centerline((port_center_um, anchor_center_um))
+        lateral_abs = abs(lateral_delta)
+        available_straight = forward_delta - lateral_abs
+        if available_straight <= 1.0e-9:
+            return _compress_centerline((port_center_um, anchor_center_um))
+
+        preferred_first_straight_um = max(
+            float(self.grid.grid_size_um),
+            float(self.bend_radius_cells) * float(self.grid.grid_size_um),
+        )
+        first_straight_um = min(preferred_first_straight_um, available_straight)
+        points: list[tuple[float, float]] = [
+            (port_x, port_y),
+            (
+                port_x + forward_x * first_straight_um,
+                port_y + forward_y * first_straight_um,
+            ),
+        ]
+        if lateral_abs > 1.0e-9:
+            lateral_sign = 1 if lateral_delta > 0.0 else -1
+            diagonal_angle = (int(physical_angle) + lateral_sign) % 8
+            diagonal_end = (
+                points[-1][0]
+                + forward_x * lateral_abs
+                + lateral_x * lateral_delta,
+                points[-1][1]
+                + forward_y * lateral_abs
+                + lateral_y * lateral_delta,
+            )
+            smoothed: list[tuple[float, float]] = [points[0]]
+            self._append_circular_stub_bend(
+                smoothed,
+                start_point=points[0],
+                start_angle=physical_angle,
+                end_point=diagonal_end,
+                end_angle=diagonal_angle,
+                angle_delta=lateral_sign,
+            )
+            self._append_circular_stub_bend(
+                smoothed,
+                start_point=diagonal_end,
+                start_angle=diagonal_angle,
+                end_point=(anchor_x, anchor_y),
+                end_angle=physical_angle,
+                angle_delta=-lateral_sign,
+            )
+            return _compress_centerline(tuple(smoothed))
+        points.append((anchor_x, anchor_y))
+        return _compress_centerline(tuple(points))
+
+    def _build_static_fanout_anchors(self) -> dict[str, _FanoutAnchor]:
+        if self.fanout_access_mode_normalized != "static-stubs":
+            return {}
+        default_forward_cells = max(3, int(self.bend_radius_cells) + 3)
+        default_lane_spacing_cells = 11
+        forward_cells = self._env_nonnegative_int(
+            "PHOTONIC_ROUTER_FANOUT_STUB_FORWARD_CELLS",
+            default_forward_cells,
+        )
+        lane_spacing_cells = self._env_nonnegative_int(
+            "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+            default_lane_spacing_cells,
+        )
+        stub_x_offset_cells = self._env_nonnegative_int(
+            "PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS",
+            1,
+        )
+        if forward_cells <= 0 or lane_spacing_cells <= 0:
+            return {}
+
+        anchors: dict[str, _FanoutAnchor] = {}
+        for instance_name, port_specs in self.source_port_specs_by_instance.items():
+            if not self._is_dense_source_fanout_instance(instance_name):
+                continue
+            by_angle: dict[int, list[str]] = {}
+            for port_spec in port_specs:
+                _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
+                angle = self._orientation_to_angle(getattr(port, "orientation", None), flip=False)
+                step_x, step_y = self._angle_to_step(angle)
+                # The first static-stub implementation intentionally handles
+                # cardinal MMI port rows. Diagonal component ports fall back to
+                # the normal endpoint behavior until a safe breakout is defined.
+                if abs(step_x) + abs(step_y) != 1:
+                    continue
+                by_angle.setdefault(angle, []).append(port_spec)
+
+            for angle, group_specs in by_angle.items():
+                if not self._is_dense_source_fanout_group(instance_name, angle):
+                    continue
+                step_x, step_y = self._angle_to_step(angle)
+                lateral_x, lateral_y = -step_y, step_x
+                ordered_items: list[tuple[str, int, Any]] = []
+                for port_spec in group_specs:
+                    _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
+                    state = self.port_to_grid_state(
+                        port,
+                        self.origin_x_um,
+                        self.origin_y_um,
+                        float(self.grid.grid_size_um),
+                        as_target=False,
+                    )
+                    lateral_cell = int(state.x) * lateral_x + int(state.y) * lateral_y
+                    ordered_items.append((port_spec, lateral_cell, state))
+                ordered_items.sort(key=lambda item: (item[1], item[0]))
+                count = len(ordered_items)
+                if count <= 2 or step_y != 0:
+                    continue
+
+                def add_two_bend_anchor(
+                    item: tuple[str, int, Any],
+                    lateral_sign: int,
+                    target_anchor_y_cell: int | None,
+                    initial_forward_cells: int = 0,
+                    extra_final_forward_cells: int = 0,
+                ) -> tuple[int, int] | None:
+                    port_spec, _current_lateral, state = item
+                    _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
+                    real_center = _port_center_um(port)
+                    if real_center is None:
+                        return None
+                    stub_result = self._two_bend_static_stub_centerline_um(
+                        real_center,
+                        angle,
+                        lateral_sign,
+                        target_anchor_y_cell=target_anchor_y_cell,
+                        min_forward_cells=int(forward_cells),
+                        initial_forward_cells=max(0, int(initial_forward_cells)),
+                        extra_final_forward_cells=max(0, int(extra_final_forward_cells)),
+                    )
+                    if stub_result is None:
+                        return None
+                    centerline, (anchor_x, anchor_y) = stub_result
+                    anchor_center = self._grid_cell_center_um(anchor_x, anchor_y)
+                    anchors[port_spec] = self._FanoutAnchor(
+                        port_spec=port_spec,
+                        state_x=anchor_x,
+                        state_y=anchor_y,
+                        physical_angle=angle,
+                        center_um=anchor_center,
+                        stub_center_cells=self._centerline_grid_cells(centerline),
+                        stub_centerline_um=centerline,
+                    )
+                    return anchor_x, anchor_y
+
+                lower_items = ordered_items[: count // 2]
+                upper_items = ordered_items[count // 2 :]
+                if not lower_items or not upper_items:
+                    continue
+                stub_bend_steps = self._env_fanout_stub_bend_steps()
+                stagger_forward_cells = (
+                    int(stub_x_offset_cells) if int(stub_bend_steps) >= 2 else 0
+                )
+
+                lower_inner = lower_items[-1]
+                lower_count = len(lower_items)
+                lower_inner_anchor = add_two_bend_anchor(
+                    lower_inner,
+                    -1,
+                    target_anchor_y_cell=None,
+                    initial_forward_cells=(lower_count - 1) * stagger_forward_cells,
+                    extra_final_forward_cells=0,
+                )
+                if lower_inner_anchor is not None:
+                    lower_base_y = int(lower_inner_anchor[1])
+                    for rank, item in enumerate(reversed(lower_items[:-1]), start=1):
+                        initial_rank = lower_count - 1 - int(rank)
+                        final_rank = int(rank)
+                        _min_anchor = add_two_bend_anchor(
+                            item,
+                            -1,
+                            target_anchor_y_cell=None,
+                            initial_forward_cells=initial_rank * stagger_forward_cells,
+                            extra_final_forward_cells=final_rank * stagger_forward_cells,
+                        )
+                        desired_y = lower_base_y - int(rank) * int(lane_spacing_cells)
+                        if _min_anchor is not None:
+                            desired_y = min(desired_y, int(_min_anchor[1]))
+                        add_two_bend_anchor(
+                            item,
+                            -1,
+                            target_anchor_y_cell=desired_y,
+                            initial_forward_cells=initial_rank * stagger_forward_cells,
+                            extra_final_forward_cells=final_rank * stagger_forward_cells,
+                        )
+
+                upper_inner = upper_items[0]
+                upper_count = len(upper_items)
+                upper_inner_anchor = add_two_bend_anchor(
+                    upper_inner,
+                    1,
+                    target_anchor_y_cell=None,
+                    initial_forward_cells=(upper_count - 1) * stagger_forward_cells,
+                    extra_final_forward_cells=0,
+                )
+                if upper_inner_anchor is not None:
+                    upper_base_y = int(upper_inner_anchor[1])
+                    for rank, item in enumerate(upper_items[1:], start=1):
+                        initial_rank = upper_count - 1 - int(rank)
+                        final_rank = int(rank)
+                        _min_anchor = add_two_bend_anchor(
+                            item,
+                            1,
+                            target_anchor_y_cell=None,
+                            initial_forward_cells=initial_rank * stagger_forward_cells,
+                            extra_final_forward_cells=final_rank * stagger_forward_cells,
+                        )
+                        desired_y = upper_base_y + int(rank) * int(lane_spacing_cells)
+                        if _min_anchor is not None:
+                            desired_y = max(desired_y, int(_min_anchor[1]))
+                        add_two_bend_anchor(
+                            item,
+                            1,
+                            target_anchor_y_cell=desired_y,
+                            initial_forward_cells=initial_rank * stagger_forward_cells,
+                            extra_final_forward_cells=final_rank * stagger_forward_cells,
+                        )
+        return anchors
+
+    def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
+        t_obstacle_start = self._pipeline_timer_start()
         self.resolved_obstacle_config = _resolve_obstacle_config(
             self.obstacle_config,
             route_layer=self.route_layer,
             include_heater_obstacles=self.include_heater_obstacles,
         )
         obstacle_map = build_static_obstacle_map(self.unrouted_layout, config=self.resolved_obstacle_config)
-        _record_pipeline_timing("obstacle_map", t_obstacle_start)
+        self._record_pipeline_timing("obstacle_map", t_obstacle_start)
         if self.debug_timing and self.verbose_route_diagnostics:
             print(
                 "      - Obstacle Map time: "
@@ -958,7 +2208,7 @@ class _RouteNetsRustSession:
                 "Rebuild/install the Rust extension with the class-based API."
             )
 
-        t_router_setup_start = _pipeline_timer_start()
+        t_router_setup_start = self._pipeline_timer_start()
         self.origin_x_um, self.origin_y_um = _grid_origin_xy(self.grid)
         grid_spec = self.rust_backend.GridSpec(
             int(self.grid.width),
@@ -1054,256 +2304,12 @@ class _RouteNetsRustSession:
             int(12 * self.bend_radius_cells + 2 * self.commit_radius_cells),
         )
         self.router = self.rust_backend.PyPhotonicRouter(grid_spec, self.primitive_cfg, self.astar_cfg)
-        _record_pipeline_timing("router_setup", t_router_setup_start)
+        self._record_pipeline_timing("router_setup", t_router_setup_start)
 
         self.port_entry_length_cells = max(2, self.bend_radius_cells + 2)
         self.port_entry_half_width_cells = max(1, self.bend_radius_cells + self.commit_radius_cells + 1)
         self.port_lane_length_cells = max(3, 2 * self.bend_radius_cells + 2)
         self.port_lane_half_width_cells = max(1, self.commit_radius_cells + 1)
-        def _orientation_to_angle(orientation: float | None, *, flip: bool = False) -> int:
-            if orientation is None:
-                angle = 0
-            else:
-                angle = int(round((float(orientation) % 360.0) / 45.0)) % 8
-
-            if flip:
-                angle = (angle + 4) % 8
-
-            return angle
-
-
-        def _angle_to_step(angle: int) -> tuple[int, int]:
-            steps = [
-                (1, 0),  # 0 east
-                (1, 1),  # 1 northeast
-                (0, 1),  # 2 north
-                (-1, 1),  # 3 northwest
-                (-1, 0),  # 4 west
-                (-1, -1),  # 5 southwest
-                (0, -1),  # 6 south
-                (1, -1),  # 7 southeast
-            ]
-            return steps[angle % 8]
-
-        def _direction_reaches_target_ray(
-            *,
-            source_x: int,
-            source_y: int,
-            source_angle: int,
-            target_x: int,
-            target_y: int,
-            tolerance: int,
-        ) -> bool:
-            dx = target_x - source_x
-            dy = target_y - source_y
-            if abs(dx) <= tolerance and abs(dy) <= tolerance:
-                return True
-            dir_x, dir_y = _angle_to_step(source_angle)
-            if dir_x == 0 and dir_y == 0:
-                return False
-            if dir_x == 0:
-                return abs(dx) <= tolerance and (dy > 0) == (dir_y > 0)
-            if dir_y == 0:
-                return abs(dy) <= tolerance and (dx > 0) == (dir_x > 0)
-            return (
-                (dx > 0) == (dir_x > 0)
-                and (dy > 0) == (dir_y > 0)
-                and abs(abs(dx) - abs(dy)) <= tolerance
-            )
-
-        def _source_lower_bounds(
-            *,
-            source_x: int,
-            source_y: int,
-            source_angle: int,
-            target_x: int,
-            target_y: int,
-            target_angle: int,
-        ) -> tuple[float, float]:
-            grid_size_um = float(self.grid.grid_size_um)
-            dx = target_x - source_x
-            dy = target_y - source_y
-            distance = math.hypot(float(dx), float(dy)) * grid_size_um
-            heading_lower_bound = distance
-            if str(self.heuristic_mode) == "heading_aware":
-                target_angle_ok = not bool(getattr(self.astar_cfg, "require_target_angle", True)) or (
-                    source_angle % 8 == target_angle % 8
-                )
-                reaches_target_ray = _direction_reaches_target_ray(
-                    source_x=source_x,
-                    source_y=source_y,
-                    source_angle=source_angle,
-                    target_x=target_x,
-                    target_y=target_y,
-                    tolerance=max(0, int(getattr(self.astar_cfg, "target_tolerance_cells", 0))),
-                )
-                if not target_angle_ok or not reaches_target_ray:
-                    minimum_bend_units = 1.0 if self.allow_45_degree_turns else 2.0
-                    bend_weight = float(getattr(self.astar_cfg, "bend_weight", 1.0)) * float(
-                        getattr(self.primitive_cfg, "bend_weight", 1.0)
-                    )
-                    heading_lower_bound += minimum_bend_units * bend_weight
-            return distance, heading_lower_bound
-
-        def _in_bounds(gx: int, gy: int) -> bool:
-            return 0 <= gx < int(self.grid.width) and 0 <= gy < int(self.grid.height)
-
-        def port_to_grid_state(
-            port: Port,
-            grid_origin_x_um: float,
-            grid_origin_y_um: float,
-            grid_size_um: float,
-            *,
-            as_target: bool = False,
-            outward_cells: int = 1,
-        ):
-            port_angle = _orientation_to_angle(port.orientation, flip=False)
-
-            # For choosing the grid cell, always move outward from the physical port.
-            # This avoids starting inside the real component/port geometry.
-            sx, sy = _angle_to_step(port_angle)
-
-            x = float(port.center[0]) + sx * outward_cells * grid_size_um
-            y = float(port.center[1]) + sy * outward_cells * grid_size_um
-
-            gx = int((x - grid_origin_x_um) // grid_size_um)
-            gy = int((y - grid_origin_y_um) // grid_size_um)
-
-            # For the route state angle:
-            # - source: route leaves the port outward
-            # - target: route approaches the port, so flip direction
-            route_angle = _orientation_to_angle(port.orientation, flip=as_target)
-
-            return self.rust_backend.State(gx, gy, route_angle)
-
-        def _snap_nearly_collinear_states(
-            source_state: Any,
-            target_state: Any,
-            source_port: Port,
-            target_port: Port,
-        ) -> tuple[Any, Any, set[tuple[int, int]]]:
-            original_cells = {
-                (int(source_state.x), int(source_state.y)),
-                (int(target_state.x), int(target_state.y)),
-            }
-            source_angle = int(source_state.angle) % 8
-            target_angle = int(target_state.angle) % 8
-            if source_angle != target_angle:
-                return source_state, target_state, original_cells
-
-            source_center = getattr(source_port, "center", None)
-            target_center = getattr(target_port, "center", None)
-            if source_center is None or target_center is None:
-                return source_state, target_state, original_cells
-
-            source_x_um = float(source_center[0])
-            source_y_um = float(source_center[1])
-            target_x_um = float(target_center[0])
-            target_y_um = float(target_center[1])
-            grid_size = float(self.grid.grid_size_um)
-            max_snap_um = max(grid_size, 2.0 * grid_size)
-            max_snap_cells = max(1, math.ceil(max_snap_um / grid_size))
-
-            if source_angle in {0, 4}:
-                direction = 1 if source_angle == 0 else -1
-                if (target_x_um - source_x_um) * direction <= 0.0:
-                    return source_state, target_state, original_cells
-                if abs(target_y_um - source_y_um) > max_snap_um:
-                    return source_state, target_state, original_cells
-                if abs(int(target_state.y) - int(source_state.y)) > max_snap_cells:
-                    return source_state, target_state, original_cells
-                snapped_target = self.rust_backend.State(
-                    int(target_state.x),
-                    int(source_state.y),
-                    int(target_state.angle),
-                )
-                return source_state, snapped_target, original_cells
-
-            if source_angle in {2, 6}:
-                direction = 1 if source_angle == 2 else -1
-                if (target_y_um - source_y_um) * direction <= 0.0:
-                    return source_state, target_state, original_cells
-                if abs(target_x_um - source_x_um) > max_snap_um:
-                    return source_state, target_state, original_cells
-                if abs(int(target_state.x) - int(source_state.x)) > max_snap_cells:
-                    return source_state, target_state, original_cells
-                snapped_target = self.rust_backend.State(
-                    int(source_state.x),
-                    int(target_state.y),
-                    int(target_state.angle),
-                )
-                return source_state, snapped_target, original_cells
-
-            return source_state, target_state, original_cells
-
-        def _snap_same_heading_minimum_bend_offset(
-            source_state: Any,
-            target_state: Any,
-        ) -> tuple[Any, Any, set[tuple[int, int]]]:
-            """Snap one-cell-short S-bend offsets to the nearest realizable target.
-
-            With cardinal same-heading ports, two opposing 90-degree bend primitives
-            impose a minimum perpendicular displacement of 2R. Physical port centers
-            often land half a grid cell off that value. Without this snap, exact-cell
-            routing can only satisfy the one-cell deficit by introducing a loop.
-            """
-            extra_cells: set[tuple[int, int]] = set()
-            if self.allow_45_degree_turns:
-                return source_state, target_state, extra_cells
-
-            source_angle = int(source_state.angle) % 8
-            target_angle = int(target_state.angle) % 8
-            if source_angle != target_angle:
-                return source_state, target_state, extra_cells
-
-            min_offset_cells = 2 * int(self.bend_radius_cells)
-            if min_offset_cells <= 0:
-                return source_state, target_state, extra_cells
-
-            sx = int(source_state.x)
-            sy = int(source_state.y)
-            tx = int(target_state.x)
-            ty = int(target_state.y)
-
-            if source_angle in {0, 4}:
-                forward_dx = tx - sx if source_angle == 0 else sx - tx
-                dy = ty - sy
-                if forward_dx < min_offset_cells or dy == 0:
-                    return source_state, target_state, extra_cells
-                missing = min_offset_cells - abs(dy)
-                if missing != 1:
-                    return source_state, target_state, extra_cells
-                snapped_offset_cells = min_offset_cells + 1
-                snapped_target = self.rust_backend.State(
-                    tx,
-                    sy + (snapped_offset_cells if dy > 0 else -snapped_offset_cells),
-                    target_angle,
-                )
-                if not _in_bounds(int(snapped_target.x), int(snapped_target.y)):
-                    return source_state, target_state, extra_cells
-                extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
-                return source_state, snapped_target, extra_cells
-
-            if source_angle in {2, 6}:
-                forward_dy = ty - sy if source_angle == 2 else sy - ty
-                dx = tx - sx
-                if forward_dy < min_offset_cells or dx == 0:
-                    return source_state, target_state, extra_cells
-                missing = min_offset_cells - abs(dx)
-                if missing != 1:
-                    return source_state, target_state, extra_cells
-                snapped_offset_cells = min_offset_cells + 1
-                snapped_target = self.rust_backend.State(
-                    sx + (snapped_offset_cells if dx > 0 else -snapped_offset_cells),
-                    ty,
-                    target_angle,
-                )
-                if not _in_bounds(int(snapped_target.x), int(snapped_target.y)):
-                    return source_state, target_state, extra_cells
-                extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
-                return source_state, snapped_target, extra_cells
-
-            return source_state, target_state, extra_cells
 
         port_open_radius_um = _as_float(
             getattr(self.resolved_obstacle_config, "port_open_radius_um", 0.5),
@@ -1343,213 +2349,9 @@ class _RouteNetsRustSession:
         )
         self.grid_width = int(self.grid.width)
         self.grid_height = int(self.grid.height)
-        raw_static_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
-        heater_opening_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
-        raw_static_cells_by_y: dict[int, set[int]] | None = None
-
-        def _rect_ranges_by_y(
-            rects: Iterable[tuple[int, int, int, int]],
-        ) -> dict[int, list[tuple[int, int]]]:
-            ranges_by_y: dict[int, list[tuple[int, int]]] = {}
-            for rect_min_x, rect_min_y, rect_max_x, rect_max_y in rects:
-                min_x = max(0, rect_min_x)
-                max_x = min(self.grid_width - 1, rect_max_x)
-                min_y = max(0, rect_min_y)
-                max_y = min(self.grid_height - 1, rect_max_y)
-                if min_x > max_x or min_y > max_y:
-                    continue
-                for y in range(min_y, max_y + 1):
-                    ranges_by_y.setdefault(y, []).append((min_x, max_x))
-            for y, ranges in list(ranges_by_y.items()):
-                ranges.sort()
-                merged_ranges: list[tuple[int, int]] = []
-                for min_x, max_x in ranges:
-                    if not merged_ranges or min_x > merged_ranges[-1][1] + 1:
-                        merged_ranges.append((min_x, max_x))
-                    else:
-                        prev_min_x, prev_max_x = merged_ranges[-1]
-                        merged_ranges[-1] = (prev_min_x, max(prev_max_x, max_x))
-                ranges_by_y[y] = merged_ranges
-            return ranges_by_y
-
-        def _raw_static_rect_ranges_by_y() -> dict[int, list[tuple[int, int]]]:
-            nonlocal raw_static_rect_ranges_by_y
-            if raw_static_rect_ranges_by_y is not None:
-                return raw_static_rect_ranges_by_y
-            ranges_by_y = _rect_ranges_by_y(self.raw_static_rects_for_openings)
-            raw_static_rect_ranges_by_y = ranges_by_y
-            return ranges_by_y
-
-        def _heater_opening_rect_ranges_by_y() -> dict[int, list[tuple[int, int]]]:
-            nonlocal heater_opening_rect_ranges_by_y
-            if heater_opening_rect_ranges_by_y is not None:
-                return heater_opening_rect_ranges_by_y
-            ranges_by_y = _rect_ranges_by_y(self.heater_opening_rects_for_openings)
-            heater_opening_rect_ranges_by_y = ranges_by_y
-            return ranges_by_y
-
-        def _raw_static_cells_by_y() -> dict[int, set[int]]:
-            nonlocal raw_static_cells_by_y
-            if raw_static_cells_by_y is not None:
-                return raw_static_cells_by_y
-            cells_by_y: dict[int, set[int]] = {}
-            for cell_x, cell_y in self.raw_static_cells:
-                cells_by_y.setdefault(int(cell_y), set()).add(int(cell_x))
-            raw_static_cells_by_y = cells_by_y
-            return cells_by_y
-
-        def _cell_in_raw_static(cell: tuple[int, int]) -> bool:
-            if cell in self.raw_static_cells:
-                return True
-            x, y = cell
-            return any(
-                rect_min_x <= x <= rect_max_x
-                for rect_min_x, rect_max_x in _raw_static_rect_ranges_by_y().get(y, ())
-            )
-
-        def _cells_in_raw_static_geometry(
-            cells: set[tuple[int, int]],
-        ) -> set[tuple[int, int]]:
-            return {cell for cell in cells if _cell_in_raw_static(cell)}
-
-        def _keyed_port_access_rule(
-            *,
-            instance_name: str,
-            port_name: str,
-            port: Port,
-        ) -> tuple[float | None, float | None, str | None]:
-            port_type = _port_type_name(port)
-            component_name = _schematic_instance_component_name(self.schematic, instance_name)
-            rule = find_component_port_access_rule(
-                component_name=component_name,
-                port_name=port_name,
-                port_type=port_type,
-            )
-            if rule is not None:
-                return (
-                    float(rule.access_length_um),
-                    float(rule.access_width_um),
-                    rule.component_name_pattern,
-                )
-
-            return None, None, None
-
-        def _instance_ref_by_name(instance_name: str) -> Any | None:
-            try:
-                instances = self.routed_layout.insts
-            except (AttributeError, TypeError):
-                return None
-            for instance in instances:
-                if getattr(instance, "name", None) == instance_name:
-                    return instance
-            return None
-
-        def _heater_pad_port_open_cells(
-            *,
-            instance_name: str,
-            port: Port,
-            center_um: tuple[float, float],
-            orientation: float | None,
-            rule_name: str | None,
-        ) -> set[tuple[int, int]]:
-            if rule_name is None or orientation is None:
-                return set()
-            ref = _instance_ref_by_name(instance_name)
-            if ref is None:
-                return set()
-            bounds = _bbox_bounds_um(ref)
-            if bounds is None:
-                return set()
-            left, bottom, right, top = bounds
-            grid_size = float(self.grid.grid_size_um)
-            if grid_size <= 0.0:
-                return set()
-
-            angle_rad = math.radians(float(orientation))
-            dir_x = math.cos(angle_rad)
-            dir_y = math.sin(angle_rad)
-            if not math.isfinite(dir_x) or not math.isfinite(dir_y):
-                return set()
-
-            # Heater optical ports need the metal/static pad on the port-facing side
-            # opened, not only the narrow access runway. The router blocks compact
-            # heater rectangles after clearance expansion, so the opening must cover
-            # the matching expanded blocked rectangles too.
-            bbox_margin = 0.5 * grid_size
-            min_x = max(
-                0,
-                int(math.floor((float(left) - bbox_margin - float(self.origin_x_um)) / grid_size)),
-            )
-            max_x = min(
-                self.grid_width - 1,
-                int(math.floor((float(right) + bbox_margin - float(self.origin_x_um)) / grid_size)),
-            )
-            min_y = max(
-                0,
-                int(math.floor((float(bottom) - bbox_margin - float(self.origin_y_um)) / grid_size)),
-            )
-            max_y = min(
-                self.grid_height - 1,
-                int(math.floor((float(top) + bbox_margin - float(self.origin_y_um)) / grid_size)),
-            )
-            if min_x > max_x or min_y > max_y:
-                return set()
-
-            heater_clearance_um = getattr(self.resolved_obstacle_config, "heater_clearance_um", None)
-            opening_margin_um = max(
-                float(self.route_clearance_um),
-                0.0 if heater_clearance_um is None else float(heater_clearance_um),
-            )
-            opening_margin_cells = int(math.ceil(opening_margin_um / grid_size)) + 1
-            search_min_x = max(0, min_x - opening_margin_cells)
-            search_max_x = min(self.grid_width - 1, max_x + opening_margin_cells)
-            search_min_y = max(0, min_y - opening_margin_cells)
-            search_max_y = min(self.grid_height - 1, max_y + opening_margin_cells)
-            opening_margin_distance = float(opening_margin_cells) * grid_size + bbox_margin
-            opening_left = float(left) - opening_margin_distance
-            opening_right = float(right) + opening_margin_distance
-            opening_bottom = float(bottom) - opening_margin_distance
-            opening_top = float(top) + opening_margin_distance
-
-            candidate_cells: set[tuple[int, int]] = set()
-            explicit_cells_by_y = _raw_static_cells_by_y()
-            heater_rect_ranges_by_y = _heater_opening_rect_ranges_by_y()
-            for cell_y in range(search_min_y, search_max_y + 1):
-                xs: set[int] = set()
-                xs.update(
-                    cell_x
-                    for cell_x in explicit_cells_by_y.get(cell_y, set())
-                    if search_min_x <= int(cell_x) <= search_max_x
-                )
-                for rect_min_x, rect_max_x in heater_rect_ranges_by_y.get(cell_y, ()):
-                    start_x = max(search_min_x, int(rect_min_x))
-                    end_x = min(search_max_x, int(rect_max_x))
-                    if start_x <= end_x:
-                        xs.update(range(start_x, end_x + 1))
-                for cell_x in xs:
-                    inside_instance_bbox = (
-                        min_x <= int(cell_x) <= max_x and min_y <= int(cell_y) <= max_y
-                    )
-                    cell_center = _grid_cell_center_um(int(cell_x), int(cell_y))
-                    if (
-                        opening_left <= cell_center[0] <= opening_right
-                        and opening_bottom <= cell_center[1] <= opening_top
-                    ):
-                        candidate_cells.add((int(cell_x), int(cell_y)))
-                        continue
-                    if inside_instance_bbox:
-                        if cell_center[0] < left - bbox_margin or cell_center[0] > right + bbox_margin:
-                            continue
-                        if cell_center[1] < bottom - bbox_margin or cell_center[1] > top + bbox_margin:
-                            continue
-                    outward_distance = (
-                        (cell_center[0] - float(center_um[0])) * dir_x
-                        + (cell_center[1] - float(center_um[1])) * dir_y
-                    )
-                    if outward_distance >= -bbox_margin:
-                        candidate_cells.add((int(cell_x), int(cell_y)))
-
-            return candidate_cells
+        self.raw_static_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
+        self.heater_opening_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
+        self.raw_static_cells_by_y: dict[int, set[int]] | None = None
 
         route_jobs: list[RouteJob] = []
         self.endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = {}
@@ -1560,7 +2362,7 @@ class _RouteNetsRustSession:
         self.port_access_rule_by_spec: dict[str, str | None] = {}
         port_rule_extra_open_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
         next_net_id = 1
-        t_route_job_build_start = _pipeline_timer_start()
+        t_route_job_build_start = self._pipeline_timer_start()
         for net_name, bundle in nets.items():
             links = bundle.links
             for port1_spec, port2_spec in links.items():
@@ -1586,14 +2388,14 @@ class _RouteNetsRustSession:
                 self.endpoint_ports_by_spec.setdefault(port2_spec, (inst2, port2, target_port))
                 endpoint_port_specs_by_instance.setdefault(inst1, set()).add(port1_spec)
                 endpoint_port_specs_by_instance.setdefault(inst2, set()).add(port2_spec)
-        _record_pipeline_timing("route_job_build", t_route_job_build_start)
+        self._record_pipeline_timing("route_job_build", t_route_job_build_start)
 
         self.source_port_specs_by_instance: dict[str, set[str]] = {}
         self.source_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
         for run_job in route_jobs:
             port_spec = f"{run_job.inst1},{run_job.port1}"
             self.source_port_specs_by_instance.setdefault(run_job.inst1, set()).add(port_spec)
-            angle = _orientation_to_angle(
+            angle = self._orientation_to_angle(
                 getattr(run_job.source_port, "orientation", None),
                 flip=False,
             )
@@ -1601,795 +2403,9 @@ class _RouteNetsRustSession:
                 port_spec
             )
 
-        def _is_dense_source_fanout_instance(instance_name: str) -> bool:
-            return any(
-                len(port_specs) > 2
-                for (group_instance, _angle), port_specs in self.source_port_specs_by_instance_angle.items()
-                if group_instance == instance_name
-            )
-
-        def _is_dense_source_fanout_group(instance_name: str, angle: int) -> bool:
-            return (
-                len(self.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set())) > 2
-            )
-
-        @dataclass(frozen=True)
-        class _FanoutAnchor:
-            port_spec: str
-            state_x: int
-            state_y: int
-            physical_angle: int
-            center_um: tuple[float, float]
-            stub_center_cells: tuple[tuple[int, int], ...]
-            stub_centerline_um: tuple[tuple[float, float], ...]
-
-        def _grid_cell_center_um(cell_x: int, cell_y: int) -> tuple[float, float]:
-            return (
-                float(self.origin_x_um) + (float(cell_x) + 0.5) * float(self.grid.grid_size_um),
-                float(self.origin_y_um) + (float(cell_y) + 0.5) * float(self.grid.grid_size_um),
-            )
-
-        def _centerline_grid_cells(
-            centerline_um: Iterable[tuple[float, float]],
-        ) -> tuple[tuple[int, int], ...]:
-            points = [
-                (float(point[0]), float(point[1]))
-                for point in centerline_um
-                if math.isfinite(float(point[0])) and math.isfinite(float(point[1]))
-            ]
-            if not points:
-                return ()
-            cells: list[tuple[int, int]] = []
-
-            def append_point(point: tuple[float, float]) -> None:
-                cell = _physical_point_to_grid_cell(
-                    point,
-                    grid_size_um=float(self.grid.grid_size_um),
-                    origin_x_um=float(self.origin_x_um),
-                    origin_y_um=float(self.origin_y_um),
-                )
-                if cell is None:
-                    return
-                if not _in_bounds(cell[0], cell[1]):
-                    return
-                if cells and cells[-1] == cell:
-                    return
-                cells.append(cell)
-
-            append_point(points[0])
-            sample_step_um = max(float(self.grid.grid_size_um) / 4.0, 1.0e-6)
-            for start, end in zip(points, points[1:]):
-                dx = float(end[0]) - float(start[0])
-                dy = float(end[1]) - float(start[1])
-                length = math.hypot(dx, dy)
-                if length <= 1.0e-9:
-                    append_point(end)
-                    continue
-                steps = max(1, int(math.ceil(length / sample_step_um)))
-                for index in range(1, steps + 1):
-                    t = float(index) / float(steps)
-                    append_point((start[0] + dx * t, start[1] + dy * t))
-            return tuple(dict.fromkeys(cells))
-
-        def _env_nonnegative_int(name: str, default: int) -> int:
-            raw_value = os.environ.get(name)
-            if raw_value is None or raw_value.strip() == "":
-                return int(default)
-            try:
-                value = int(raw_value)
-            except ValueError as exc:
-                raise ValueError(f"{name} must be a non-negative integer") from exc
-            if value < 0:
-                raise ValueError(f"{name} must be a non-negative integer")
-            return value
-
-        def _env_fanout_stub_bend_steps() -> int:
-            raw_value = os.environ.get("PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES", "90")
-            normalized = raw_value.strip().lower().replace("_", "-")
-            aliases = {
-                "45": 1,
-                "45deg": 1,
-                "45-degree": 1,
-                "45-deg": 1,
-                "diagonal": 1,
-                "diag": 1,
-                "90": 2,
-                "90deg": 2,
-                "90-degree": 2,
-                "90-deg": 2,
-                "orthogonal": 2,
-                "orthogonal-u": 2,
-            }
-            if normalized not in aliases:
-                raise ValueError(
-                    "PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES must be 45 or 90"
-                )
-            return aliases[normalized]
-
-        def _append_grid_step(
-            path: list[tuple[int, int]],
-            step_x: int,
-            step_y: int,
-            count: int,
-        ) -> None:
-            if count <= 0:
-                return
-            cell_x, cell_y = path[-1]
-            for _ in range(count):
-                cell_x += step_x
-                cell_y += step_y
-                if _in_bounds(cell_x, cell_y):
-                    path.append((cell_x, cell_y))
-
-        def _inflated_cells(
-            cells: Iterable[tuple[int, int]],
-            radius: int,
-        ) -> set[tuple[int, int]]:
-            radius = max(0, int(radius))
-            inflated: set[tuple[int, int]] = set()
-            for cell_x, cell_y in cells:
-                for dx in range(-radius, radius + 1):
-                    for dy in range(-radius, radius + 1):
-                        nx = int(cell_x) + dx
-                        ny = int(cell_y) + dy
-                        if _in_bounds(nx, ny):
-                            inflated.add((nx, ny))
-            return inflated
-
-        def _angle_to_unit_vector(angle: int) -> tuple[float, float]:
-            radians = (int(angle) % 8) * (math.pi / 4.0)
-            return (math.cos(radians), math.sin(radians))
-
-        def _rotate_left_vector(vector: tuple[float, float]) -> tuple[float, float]:
-            return (-vector[1], vector[0])
-
-        def _rotate_right_vector(vector: tuple[float, float]) -> tuple[float, float]:
-            return (vector[1], -vector[0])
-
-        def _cross2(
-            a: tuple[float, float],
-            b: tuple[float, float],
-        ) -> float:
-            return float(a[0]) * float(b[1]) - float(a[1]) * float(b[0])
-
-        def _append_stub_point(
-            out: list[tuple[float, float]],
-            point: tuple[float, float],
-        ) -> None:
-            point = (float(point[0]), float(point[1]))
-            if out:
-                last_x, last_y = out[-1]
-                if math.hypot(point[0] - last_x, point[1] - last_y) <= 1.0e-9:
-                    return
-            out.append(point)
-
-        def _append_circular_stub_bend(
-            out: list[tuple[float, float]],
-            *,
-            start_point: tuple[float, float],
-            start_angle: int,
-            end_point: tuple[float, float],
-            end_angle: int,
-            angle_delta: int,
-        ) -> None:
-            radius_um = float(self.bend_radius_cells) * float(self.grid.grid_size_um)
-            if radius_um <= 0.0 or not math.isfinite(radius_um):
-                _append_stub_point(out, end_point)
-                return
-            start_dir = _angle_to_unit_vector(start_angle)
-            end_dir = _angle_to_unit_vector(end_angle)
-            chord = (
-                float(end_point[0]) - float(start_point[0]),
-                float(end_point[1]) - float(start_point[1]),
-            )
-            denom = _cross2(start_dir, end_dir)
-            if abs(denom) <= 1.0e-9:
-                _append_stub_point(out, end_point)
-                return
-            in_len = _cross2(chord, end_dir) / denom
-            out_len = _cross2(start_dir, chord) / denom
-            if (
-                not math.isfinite(in_len)
-                or not math.isfinite(out_len)
-                or in_len <= 1.0e-9
-                or out_len <= 1.0e-9
-            ):
-                _append_stub_point(out, end_point)
-                return
-            corner = (
-                float(start_point[0]) + start_dir[0] * in_len,
-                float(start_point[1]) + start_dir[1] * in_len,
-            )
-            turn_abs = abs(int(angle_delta)) * (math.pi / 4.0)
-            trim = radius_um * math.tan(turn_abs / 2.0)
-            trim_eff = min(trim, in_len, out_len)
-            if not math.isfinite(trim_eff) or trim_eff <= 1.0e-9:
-                _append_stub_point(out, end_point)
-                return
-            t_in = (
-                corner[0] - start_dir[0] * trim_eff,
-                corner[1] - start_dir[1] * trim_eff,
-            )
-            t_out = (
-                corner[0] + end_dir[0] * trim_eff,
-                corner[1] + end_dir[1] * trim_eff,
-            )
-            _append_stub_point(out, t_in)
-            left_turn = int(angle_delta) > 0
-            n_start = (
-                _rotate_left_vector(start_dir)
-                if left_turn
-                else _rotate_right_vector(start_dir)
-            )
-            n_end = (
-                _rotate_left_vector(end_dir)
-                if left_turn
-                else _rotate_right_vector(end_dir)
-            )
-            c0 = (
-                t_in[0] + n_start[0] * radius_um,
-                t_in[1] + n_start[1] * radius_um,
-            )
-            c1 = (
-                t_out[0] + n_end[0] * radius_um,
-                t_out[1] + n_end[1] * radius_um,
-            )
-            center = ((c0[0] + c1[0]) * 0.5, (c0[1] + c1[1]) * 0.5)
-            a0 = math.atan2(t_in[1] - center[1], t_in[0] - center[0])
-            a1 = math.atan2(t_out[1] - center[1], t_out[0] - center[0])
-            if left_turn:
-                while a1 <= a0:
-                    a1 += math.tau
-            else:
-                while a1 >= a0:
-                    a1 -= math.tau
-            arc_span = abs(a1 - a0)
-            steps = max(2, int(math.ceil((arc_span / (math.pi / 2.0)) * 16.0)))
-            for index in range(1, steps):
-                t = float(index) / float(steps)
-                angle = a0 + (a1 - a0) * t
-                _append_stub_point(
-                    out,
-                    (
-                        center[0] + radius_um * math.cos(angle),
-                        center[1] + radius_um * math.sin(angle),
-                    ),
-                )
-            _append_stub_point(out, t_out)
-            _append_stub_point(out, end_point)
-
-        def _append_arc_from_tangencies(
-            out: list[tuple[float, float]],
-            *,
-            t_in: tuple[float, float],
-            t_out: tuple[float, float],
-            start_angle: int,
-            end_angle: int,
-            angle_delta: int,
-        ) -> None:
-            radius_um = float(self.bend_radius_cells) * float(self.grid.grid_size_um)
-            if radius_um <= 0.0 or not math.isfinite(radius_um):
-                _append_stub_point(out, t_out)
-                return
-            start_dir = _angle_to_unit_vector(start_angle)
-            end_dir = _angle_to_unit_vector(end_angle)
-            _append_stub_point(out, t_in)
-            left_turn = int(angle_delta) > 0
-            n_start = (
-                _rotate_left_vector(start_dir)
-                if left_turn
-                else _rotate_right_vector(start_dir)
-            )
-            n_end = (
-                _rotate_left_vector(end_dir)
-                if left_turn
-                else _rotate_right_vector(end_dir)
-            )
-            c0 = (
-                float(t_in[0]) + n_start[0] * radius_um,
-                float(t_in[1]) + n_start[1] * radius_um,
-            )
-            c1 = (
-                float(t_out[0]) + n_end[0] * radius_um,
-                float(t_out[1]) + n_end[1] * radius_um,
-            )
-            center = ((c0[0] + c1[0]) * 0.5, (c0[1] + c1[1]) * 0.5)
-            a0 = math.atan2(float(t_in[1]) - center[1], float(t_in[0]) - center[0])
-            a1 = math.atan2(float(t_out[1]) - center[1], float(t_out[0]) - center[0])
-            if left_turn:
-                while a1 <= a0:
-                    a1 += math.tau
-            else:
-                while a1 >= a0:
-                    a1 -= math.tau
-            arc_span = abs(a1 - a0)
-            steps = max(2, int(math.ceil((arc_span / (math.pi / 2.0)) * 16.0)))
-            for index in range(1, steps):
-                t = float(index) / float(steps)
-                angle = a0 + (a1 - a0) * t
-                _append_stub_point(
-                    out,
-                    (
-                        center[0] + radius_um * math.cos(angle),
-                        center[1] + radius_um * math.sin(angle),
-                    ),
-                )
-            _append_stub_point(out, t_out)
-
-        def _append_realized_stub_bend(
-            out: list[tuple[float, float]],
-            start_point_um: tuple[float, float],
-            start_angle: int,
-            angle_delta: int,
-        ) -> tuple[float, float]:
-            arm_um = float(self.bend_radius_cells) * float(self.grid.grid_size_um)
-            radius_um = arm_um
-            turn_abs = abs(int(angle_delta)) * (math.pi / 4.0)
-            trim = radius_um * math.tan(turn_abs / 2.0)
-            end_angle = (int(start_angle) + int(angle_delta)) % 8
-            start_dir = _angle_to_unit_vector(int(start_angle) % 8)
-            end_dir = _angle_to_unit_vector(end_angle)
-            start_step = _angle_to_step(int(start_angle) % 8)
-            end_step = _angle_to_step(end_angle)
-            start_point = (float(start_point_um[0]), float(start_point_um[1]))
-            corner = (
-                start_point[0] + float(start_step[0]) * arm_um,
-                start_point[1] + float(start_step[1]) * arm_um,
-            )
-            end_point = (
-                corner[0] + float(end_step[0]) * arm_um,
-                corner[1] + float(end_step[1]) * arm_um,
-            )
-            t_in = (
-                corner[0] - start_dir[0] * trim,
-                corner[1] - start_dir[1] * trim,
-            )
-            t_out = (
-                corner[0] + end_dir[0] * trim,
-                corner[1] + end_dir[1] * trim,
-            )
-            _append_stub_point(out, t_in)
-            _append_arc_from_tangencies(
-                out,
-                t_in=t_in,
-                t_out=t_out,
-                start_angle=int(start_angle) % 8,
-                end_angle=end_angle,
-                angle_delta=int(angle_delta),
-            )
-            _append_stub_point(out, end_point)
-            return end_point
-
-        def _two_bend_static_stub_centerline_um(
-            port_center_um: tuple[float, float],
-            physical_angle: int,
-            lateral_sign: int,
-            target_anchor_y_cell: int | None = None,
-            min_forward_cells: int = 0,
-            initial_forward_cells: int = 0,
-            extra_final_forward_cells: int = 0,
-        ) -> tuple[tuple[tuple[float, float], ...], tuple[int, int]] | None:
-            start_angle = int(physical_angle) % 8
-            bend_delta = int(lateral_sign) * _env_fanout_stub_bend_steps()
-            intermediate_angle = (start_angle + bend_delta) % 8
-            intermediate_step = _angle_to_step(intermediate_angle)
-            final_step = _angle_to_step(start_angle)
-            trace_fanout_stubs = os.environ.get("PHOTONIC_ROUTER_TRACE_FANOUT_STUBS", "").strip()
-
-            def fail(reason: str, extra: str = "") -> None:
-                if trace_fanout_stubs:
-                    print(
-                        "fanout_stub_failed "
-                        f"reason={reason} "
-                        f"port={port_center_um} "
-                        f"angle={start_angle} lateral_sign={lateral_sign} "
-                        f"target_anchor_y_cell={target_anchor_y_cell} "
-                        f"min_forward_cells={min_forward_cells} "
-                        f"initial_forward_cells={initial_forward_cells} "
-                        f"extra_final_forward_cells={extra_final_forward_cells}"
-                        f"{extra}",
-                        file=sys.stderr,
-                    )
-
-            if abs(final_step[0]) + abs(final_step[1]) != 1:
-                fail("non_cardinal_final")
-                return None
-            if intermediate_step[1] == 0:
-                fail("intermediate_has_no_y")
-                return None
-            port_point = (float(port_center_um[0]), float(port_center_um[1]))
-
-            def _next_grid_axis_value(
-                value: float,
-                origin: float,
-                direction: int,
-            ) -> float | None:
-                if direction == 0:
-                    return None
-                rel = (float(value) - float(origin)) / float(self.grid.grid_size_um) - 0.5
-                eps = 1.0e-9
-                if direction > 0:
-                    index = math.ceil(rel - eps)
-                else:
-                    index = math.floor(rel + eps)
-                return float(origin) + (float(index) + 0.5) * float(self.grid.grid_size_um)
-
-            points: list[tuple[float, float]] = [port_point]
-            bend_start = port_point
-            initial_forward_um = (
-                float(max(0, int(initial_forward_cells))) * float(self.grid.grid_size_um)
-            )
-            if initial_forward_um > 1.0e-9:
-                bend_start = (
-                    port_point[0] + float(final_step[0]) * initial_forward_um,
-                    port_point[1] + float(final_step[1]) * initial_forward_um,
-                )
-                _append_stub_point(points, bend_start)
-            first_end = _append_realized_stub_bend(
-                points,
-                bend_start,
-                start_angle,
-                bend_delta,
-            )
-            if target_anchor_y_cell is None:
-                target_intermediate_y = _next_grid_axis_value(
-                    first_end[1],
-                    self.origin_y_um,
-                    int(intermediate_step[1]),
-                )
-            else:
-                target_intermediate_y = _grid_cell_center_um(
-                    0,
-                    int(target_anchor_y_cell)
-                    - int(intermediate_step[1]) * int(self.bend_radius_cells),
-                )[1]
-            if target_intermediate_y is None:
-                fail("no_target_intermediate_y")
-                return None
-            intermediate_delta_y = float(target_intermediate_y) - float(first_end[1])
-            if intermediate_delta_y * float(intermediate_step[1]) < -1.0e-9:
-                fail("intermediate_moves_backward")
-                return None
-            intermediate_delta_x = intermediate_delta_y * (
-                float(intermediate_step[0]) / float(intermediate_step[1])
-            )
-            intermediate_end = (
-                first_end[0] + intermediate_delta_x,
-                float(target_intermediate_y),
-            )
-            _append_stub_point(points, intermediate_end)
-            second_end = _append_realized_stub_bend(
-                points,
-                intermediate_end,
-                intermediate_angle,
-                angle_delta=-bend_delta,
-            )
-            if final_step[0] != 0:
-                target_final_x = _next_grid_axis_value(
-                    second_end[0],
-                    self.origin_x_um,
-                    int(final_step[0]),
-                )
-                if target_final_x is None:
-                    fail("no_target_final_x")
-                    return None
-                min_forward_x = (
-                    port_point[0]
-                    + float(final_step[0])
-                    * float(
-                        max(0, int(min_forward_cells))
-                        + max(0, int(initial_forward_cells))
-                        + max(0, int(extra_final_forward_cells))
-                    )
-                    * float(self.grid.grid_size_um)
-                )
-                if int(final_step[0]) > 0:
-                    if float(target_final_x) < float(min_forward_x):
-                        snapped_min_forward_x = _next_grid_axis_value(
-                            float(min_forward_x),
-                            self.origin_x_um,
-                            int(final_step[0]),
-                        )
-                        if snapped_min_forward_x is None:
-                            fail("no_snapped_min_forward_x")
-                            return None
-                        target_final_x = float(snapped_min_forward_x)
-                else:
-                    if float(target_final_x) > float(min_forward_x):
-                        snapped_min_forward_x = _next_grid_axis_value(
-                            float(min_forward_x),
-                            self.origin_x_um,
-                            int(final_step[0]),
-                        )
-                        if snapped_min_forward_x is None:
-                            fail("no_snapped_min_forward_x")
-                            return None
-                        target_final_x = float(snapped_min_forward_x)
-                final_delta_x = float(target_final_x) - float(second_end[0])
-                if final_delta_x * float(final_step[0]) < -1.0e-9:
-                    fail("final_moves_backward_x")
-                    return None
-                anchor_point = (float(target_final_x), float(second_end[1]))
-            else:
-                target_final_y = _next_grid_axis_value(
-                    second_end[1],
-                    self.origin_y_um,
-                    int(final_step[1]),
-                )
-                if target_final_y is None:
-                    fail("no_target_final_y")
-                    return None
-                final_delta_y = float(target_final_y) - float(second_end[1])
-                if final_delta_y * float(final_step[1]) < -1.0e-9:
-                    fail("final_moves_backward_y")
-                    return None
-                anchor_point = (float(second_end[0]), float(target_final_y))
-            _append_stub_point(points, anchor_point)
-            anchor_x = int(
-                round((anchor_point[0] - self.origin_x_um) / float(self.grid.grid_size_um) - 0.5)
-            )
-            anchor_y = int(
-                round((anchor_point[1] - self.origin_y_um) / float(self.grid.grid_size_um) - 0.5)
-            )
-            snapped_anchor = _grid_cell_center_um(anchor_x, anchor_y)
-            snap_error_um = math.hypot(
-                float(snapped_anchor[0]) - float(anchor_point[0]),
-                float(snapped_anchor[1]) - float(anchor_point[1]),
-            )
-            if snap_error_um > max(1.0e-6, 0.05 * float(self.grid.grid_size_um)):
-                fail(
-                    f"snap_error:{snap_error_um:.6g}",
-                    " "
-                    f"anchor_point=({anchor_point[0]:.6g},{anchor_point[1]:.6g}) "
-                    f"anchor_cell=({anchor_x},{anchor_y}) "
-                    f"snapped=({snapped_anchor[0]:.6g},{snapped_anchor[1]:.6g}) "
-                    f"origin=({self.origin_x_um:.6g},{self.origin_y_um:.6g}) "
-                    f"grid={float(self.grid.grid_size_um):.6g} "
-                    f"bend_radius_cells={self.bend_radius_cells}",
-                )
-                return None
-            if not _in_bounds(anchor_x, anchor_y):
-                fail("anchor_out_of_bounds")
-                return None
-            return _compress_centerline(tuple(points)), (anchor_x, anchor_y)
-
-        def _fanout_stub_centerline_um(
-            port_center_um: tuple[float, float] | None,
-            anchor_center_um: tuple[float, float],
-            physical_angle: int,
-        ) -> tuple[tuple[float, float], ...]:
-            if port_center_um is None:
-                return (anchor_center_um,)
-            forward_x, forward_y = _angle_to_step(int(physical_angle) % 8)
-            lateral_x, lateral_y = -forward_y, forward_x
-            port_x, port_y = (float(port_center_um[0]), float(port_center_um[1]))
-            anchor_x, anchor_y = (float(anchor_center_um[0]), float(anchor_center_um[1]))
-            delta_x = anchor_x - port_x
-            delta_y = anchor_y - port_y
-            forward_delta = delta_x * forward_x + delta_y * forward_y
-            lateral_delta = delta_x * lateral_x + delta_y * lateral_y
-            if forward_delta <= 1.0e-9:
-                return _compress_centerline((port_center_um, anchor_center_um))
-            lateral_abs = abs(lateral_delta)
-            available_straight = forward_delta - lateral_abs
-            if available_straight <= 1.0e-9:
-                return _compress_centerline((port_center_um, anchor_center_um))
-
-            preferred_first_straight_um = max(
-                float(self.grid.grid_size_um),
-                float(self.bend_radius_cells) * float(self.grid.grid_size_um),
-            )
-            first_straight_um = min(preferred_first_straight_um, available_straight)
-            points: list[tuple[float, float]] = [
-                (port_x, port_y),
-                (
-                    port_x + forward_x * first_straight_um,
-                    port_y + forward_y * first_straight_um,
-                ),
-            ]
-            if lateral_abs > 1.0e-9:
-                lateral_sign = 1 if lateral_delta > 0.0 else -1
-                diagonal_angle = (int(physical_angle) + lateral_sign) % 8
-                diagonal_end = (
-                    points[-1][0]
-                    + forward_x * lateral_abs
-                    + lateral_x * lateral_delta,
-                    points[-1][1]
-                    + forward_y * lateral_abs
-                    + lateral_y * lateral_delta,
-                )
-                smoothed: list[tuple[float, float]] = [points[0]]
-                _append_circular_stub_bend(
-                    smoothed,
-                    start_point=points[0],
-                    start_angle=physical_angle,
-                    end_point=diagonal_end,
-                    end_angle=diagonal_angle,
-                    angle_delta=lateral_sign,
-                )
-                _append_circular_stub_bend(
-                    smoothed,
-                    start_point=diagonal_end,
-                    start_angle=diagonal_angle,
-                    end_point=(anchor_x, anchor_y),
-                    end_angle=physical_angle,
-                    angle_delta=-lateral_sign,
-                )
-                return _compress_centerline(tuple(smoothed))
-            points.append((anchor_x, anchor_y))
-            return _compress_centerline(tuple(points))
-
-        def _build_static_fanout_anchors() -> dict[str, _FanoutAnchor]:
-            if self.fanout_access_mode_normalized != "static-stubs":
-                return {}
-            default_forward_cells = max(3, int(self.bend_radius_cells) + 3)
-            default_lane_spacing_cells = 11
-            forward_cells = _env_nonnegative_int(
-                "PHOTONIC_ROUTER_FANOUT_STUB_FORWARD_CELLS",
-                default_forward_cells,
-            )
-            lane_spacing_cells = _env_nonnegative_int(
-                "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
-                default_lane_spacing_cells,
-            )
-            stub_x_offset_cells = _env_nonnegative_int(
-                "PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS",
-                1,
-            )
-            if forward_cells <= 0 or lane_spacing_cells <= 0:
-                return {}
-
-            anchors: dict[str, _FanoutAnchor] = {}
-            for instance_name, port_specs in self.source_port_specs_by_instance.items():
-                if not _is_dense_source_fanout_instance(instance_name):
-                    continue
-                by_angle: dict[int, list[str]] = {}
-                for port_spec in port_specs:
-                    _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
-                    angle = _orientation_to_angle(getattr(port, "orientation", None), flip=False)
-                    step_x, step_y = _angle_to_step(angle)
-                    # The first static-stub implementation intentionally handles
-                    # cardinal MMI port rows. Diagonal component ports fall back to
-                    # the normal endpoint behavior until a safe breakout is defined.
-                    if abs(step_x) + abs(step_y) != 1:
-                        continue
-                    by_angle.setdefault(angle, []).append(port_spec)
-
-                for angle, group_specs in by_angle.items():
-                    if not _is_dense_source_fanout_group(instance_name, angle):
-                        continue
-                    step_x, step_y = _angle_to_step(angle)
-                    lateral_x, lateral_y = -step_y, step_x
-                    ordered_items: list[tuple[str, int, Any]] = []
-                    for port_spec in group_specs:
-                        _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
-                        state = port_to_grid_state(
-                            port,
-                            self.origin_x_um,
-                            self.origin_y_um,
-                            float(self.grid.grid_size_um),
-                            as_target=False,
-                        )
-                        lateral_cell = int(state.x) * lateral_x + int(state.y) * lateral_y
-                        ordered_items.append((port_spec, lateral_cell, state))
-                    ordered_items.sort(key=lambda item: (item[1], item[0]))
-                    count = len(ordered_items)
-                    if count <= 2 or step_y != 0:
-                        continue
-
-                    def add_two_bend_anchor(
-                        item: tuple[str, int, Any],
-                        lateral_sign: int,
-                        target_anchor_y_cell: int | None,
-                        initial_forward_cells: int = 0,
-                        extra_final_forward_cells: int = 0,
-                    ) -> tuple[int, int] | None:
-                        port_spec, _current_lateral, state = item
-                        _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
-                        real_center = _port_center_um(port)
-                        if real_center is None:
-                            return None
-                        stub_result = _two_bend_static_stub_centerline_um(
-                            real_center,
-                            angle,
-                            lateral_sign,
-                            target_anchor_y_cell=target_anchor_y_cell,
-                            min_forward_cells=int(forward_cells),
-                            initial_forward_cells=max(0, int(initial_forward_cells)),
-                            extra_final_forward_cells=max(0, int(extra_final_forward_cells)),
-                        )
-                        if stub_result is None:
-                            return None
-                        centerline, (anchor_x, anchor_y) = stub_result
-                        anchor_center = _grid_cell_center_um(anchor_x, anchor_y)
-                        anchors[port_spec] = _FanoutAnchor(
-                            port_spec=port_spec,
-                            state_x=anchor_x,
-                            state_y=anchor_y,
-                            physical_angle=angle,
-                            center_um=anchor_center,
-                            stub_center_cells=_centerline_grid_cells(centerline),
-                            stub_centerline_um=centerline,
-                        )
-                        return anchor_x, anchor_y
-
-                    lower_items = ordered_items[: count // 2]
-                    upper_items = ordered_items[count // 2 :]
-                    if not lower_items or not upper_items:
-                        continue
-                    stub_bend_steps = _env_fanout_stub_bend_steps()
-                    stagger_forward_cells = (
-                        int(stub_x_offset_cells) if int(stub_bend_steps) >= 2 else 0
-                    )
-
-                    lower_inner = lower_items[-1]
-                    lower_count = len(lower_items)
-                    lower_inner_anchor = add_two_bend_anchor(
-                        lower_inner,
-                        -1,
-                        target_anchor_y_cell=None,
-                        initial_forward_cells=(lower_count - 1) * stagger_forward_cells,
-                        extra_final_forward_cells=0,
-                    )
-                    if lower_inner_anchor is not None:
-                        lower_base_y = int(lower_inner_anchor[1])
-                        for rank, item in enumerate(reversed(lower_items[:-1]), start=1):
-                            initial_rank = lower_count - 1 - int(rank)
-                            final_rank = int(rank)
-                            _min_anchor = add_two_bend_anchor(
-                                item,
-                                -1,
-                                target_anchor_y_cell=None,
-                                initial_forward_cells=initial_rank * stagger_forward_cells,
-                                extra_final_forward_cells=final_rank * stagger_forward_cells,
-                            )
-                            desired_y = lower_base_y - int(rank) * int(lane_spacing_cells)
-                            if _min_anchor is not None:
-                                desired_y = min(desired_y, int(_min_anchor[1]))
-                            add_two_bend_anchor(
-                                item,
-                                -1,
-                                target_anchor_y_cell=desired_y,
-                                initial_forward_cells=initial_rank * stagger_forward_cells,
-                                extra_final_forward_cells=final_rank * stagger_forward_cells,
-                            )
-
-                    upper_inner = upper_items[0]
-                    upper_count = len(upper_items)
-                    upper_inner_anchor = add_two_bend_anchor(
-                        upper_inner,
-                        1,
-                        target_anchor_y_cell=None,
-                        initial_forward_cells=(upper_count - 1) * stagger_forward_cells,
-                        extra_final_forward_cells=0,
-                    )
-                    if upper_inner_anchor is not None:
-                        upper_base_y = int(upper_inner_anchor[1])
-                        for rank, item in enumerate(upper_items[1:], start=1):
-                            initial_rank = upper_count - 1 - int(rank)
-                            final_rank = int(rank)
-                            _min_anchor = add_two_bend_anchor(
-                                item,
-                                1,
-                                target_anchor_y_cell=None,
-                                initial_forward_cells=initial_rank * stagger_forward_cells,
-                                extra_final_forward_cells=final_rank * stagger_forward_cells,
-                            )
-                            desired_y = upper_base_y + int(rank) * int(lane_spacing_cells)
-                            if _min_anchor is not None:
-                                desired_y = max(desired_y, int(_min_anchor[1]))
-                            add_two_bend_anchor(
-                                item,
-                                1,
-                                target_anchor_y_cell=desired_y,
-                                initial_forward_cells=initial_rank * stagger_forward_cells,
-                                extra_final_forward_cells=final_rank * stagger_forward_cells,
-                            )
-            return anchors
-
-        self.fanout_anchor_by_port_spec = _build_static_fanout_anchors()
+        self.fanout_anchor_by_port_spec = self._build_static_fanout_anchors()
         self.fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = {
-            port_spec: _inflated_cells(anchor.stub_center_cells, int(self.commit_radius_cells))
+            port_spec: self._inflated_cells(anchor.stub_center_cells, int(self.commit_radius_cells))
             for port_spec, anchor in self.fanout_anchor_by_port_spec.items()
         }
         self.fanout_stub_center_cells: set[tuple[int, int]] = set()
@@ -2438,7 +2454,7 @@ class _RouteNetsRustSession:
                 for (_instance_name, angle), specs in grouped_specs.items():
                     if len(specs) <= 2:
                         continue
-                    step_x, step_y = _angle_to_step(angle)
+                    step_x, step_y = self._angle_to_step(angle)
                     lateral_x, lateral_y = -step_y, step_x
 
                     def anchor_lateral_position(port_spec: str) -> int:
@@ -2453,9 +2469,9 @@ class _RouteNetsRustSession:
                         ),
                     )
                     count = len(ordered_specs)
-                    spacing_cells = _env_nonnegative_int(
+                    spacing_cells = self._env_nonnegative_int(
                         "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
-                        _env_nonnegative_int(
+                        self._env_nonnegative_int(
                             "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
                             3,
                         ),
@@ -2478,30 +2494,30 @@ class _RouteNetsRustSession:
             index = 0
             while index < len(jobs):
                 job = jobs[index]
-                if not _is_dense_source_fanout_instance(job.inst1):
+                if not self._is_dense_source_fanout_instance(job.inst1):
                     index += 1
                     continue
                 run_end = index + 1
                 while (
                     run_end < len(jobs)
                     and jobs[run_end].inst1 == job.inst1
-                    and _is_dense_source_fanout_instance(jobs[run_end].inst1)
+                    and self._is_dense_source_fanout_instance(jobs[run_end].inst1)
                 ):
                     run_end += 1
 
                 run = jobs[index:run_end]
                 by_angle: dict[int, list[RouteJob]] = {}
                 for run_job in run:
-                    angle = _orientation_to_angle(
+                    angle = self._orientation_to_angle(
                         getattr(run_job.source_port, "orientation", None),
                         flip=False,
                     )
                     by_angle.setdefault(angle, []).append(run_job)
 
                 for angle, angle_jobs in by_angle.items():
-                    if not _is_dense_source_fanout_group(job.inst1, angle):
+                    if not self._is_dense_source_fanout_group(job.inst1, angle):
                         continue
-                    step_x, step_y = _angle_to_step(angle)
+                    step_x, step_y = self._angle_to_step(angle)
                     lateral_x, lateral_y = -step_y, step_x
 
                     def lateral_position(run_job: RouteJob) -> float:
@@ -2529,18 +2545,18 @@ class _RouteNetsRustSession:
             lengths_by_spec: dict[str, int] = {}
             grouped: dict[tuple[str, int], list[RouteJob]] = {}
             for run_job in jobs:
-                angle = _orientation_to_angle(
+                angle = self._orientation_to_angle(
                     getattr(run_job.target_port, "orientation", None),
                     flip=False,
                 )
                 grouped.setdefault((run_job.inst2, int(angle)), []).append(run_job)
 
             base_cells = max(1, int(self.bend_radius_cells) + 1)
-            spacing_cells = _env_nonnegative_int(
+            spacing_cells = self._env_nonnegative_int(
                 "PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS",
-                _env_nonnegative_int(
+                self._env_nonnegative_int(
                     "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
-                    _env_nonnegative_int(
+                    self._env_nonnegative_int(
                         "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
                         3,
                     ),
@@ -2551,7 +2567,7 @@ class _RouteNetsRustSession:
             for (_instance_name, angle), angle_jobs in grouped.items():
                 if len(angle_jobs) < 4:
                     continue
-                step_x, step_y = _angle_to_step(angle)
+                step_x, step_y = self._angle_to_step(angle)
                 lateral_x, lateral_y = -step_y, step_x
 
                 def lateral_position(run_job: RouteJob) -> float:
@@ -2627,7 +2643,7 @@ class _RouteNetsRustSession:
                 for port_spec in cluster_specs:
                     self.dense_source_cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
 
-        t_crossing_context_start = _pipeline_timer_start()
+        t_crossing_context_start = self._pipeline_timer_start()
         self.crossing_plan_info = _build_crossing_plan_info(
             rust_backend=self.rust_backend,
             router=self.router,
@@ -2649,7 +2665,7 @@ class _RouteNetsRustSession:
         )
         self.crossing_plan_info["bend_runout_cells_per_crossing"] = int(self.bend_radius_cells)
         self.crossing_plan_info["fanout_stub_bend_degrees"] = 45 * int(
-            _env_fanout_stub_bend_steps()
+            self._env_fanout_stub_bend_steps()
         )
         self.crossing_plan_info["required_straight_margin_cells_per_crossing"] = int(
             self.resolved_crossing_half_size_cells
@@ -2693,7 +2709,7 @@ class _RouteNetsRustSession:
             self.router.set_collision_crossing_routing(True)
         elif hasattr(self.router, "set_collision_crossing_routing"):
             self.router.set_collision_crossing_routing(False)
-        _record_pipeline_timing("crossing_context", t_crossing_context_start)
+        self._record_pipeline_timing("crossing_context", t_crossing_context_start)
 
         if not hasattr(self.router, "build_route_port_openings"):
             extension_path = getattr(self.rust_backend, "__file__", "<unknown>")
@@ -2704,7 +2720,7 @@ class _RouteNetsRustSession:
                 f"Loaded extension: {extension_path}"
             )
 
-        t_port_opening_prep_start = _pipeline_timer_start()
+        t_port_opening_prep_start = self._pipeline_timer_start()
         port_opening_inputs: list[
             tuple[str, float, float, float | None, str | None, float | None, float | None]
         ] = []
@@ -2716,13 +2732,13 @@ class _RouteNetsRustSession:
             orientation_value = getattr(port, "orientation", None)
             orientation = None if orientation_value is None else float(orientation_value)
             port_type = _port_type_name(port)
-            access_length_um, access_width_um, rule_name = _keyed_port_access_rule(
+            access_length_um, access_width_um, rule_name = self._keyed_port_access_rule(
                 instance_name=instance_name,
                 port_name=port_name,
                 port=port,
             )
             self.port_access_rule_by_spec[port_spec] = rule_name
-            port_rule_extra_open_cells_by_spec[port_spec] = _heater_pad_port_open_cells(
+            port_rule_extra_open_cells_by_spec[port_spec] = self._heater_pad_port_open_cells(
                 instance_name=instance_name,
                 port=port,
                 center_um=(float(center[0]), float(center[1])),
@@ -2740,10 +2756,10 @@ class _RouteNetsRustSession:
                     access_width_um,
                 )
             )
-        _record_pipeline_timing("port_opening_prep", t_port_opening_prep_start)
+        self._record_pipeline_timing("port_opening_prep", t_port_opening_prep_start)
 
         raw_static_cells_for_openings = sorted(self.raw_static_cells)
-        t_port_opening_batch_start = _pipeline_timer_start()
+        t_port_opening_batch_start = self._pipeline_timer_start()
         default_runway_length_cells = int(self.bend_radius_cells) + 1
         port_opening_groups: dict[
             tuple[int, bool],
@@ -2795,13 +2811,13 @@ class _RouteNetsRustSession:
                 self.port_runway_cells_by_spec[str(port_spec)] = {
                     (int(cell[0]), int(cell[1])) for cell in runway_cells
                 }
-        _record_pipeline_timing("port_opening_batch", t_port_opening_batch_start)
+        self._record_pipeline_timing("port_opening_batch", t_port_opening_batch_start)
 
         self.foreign_port_keepout_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
         foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
         foreign_port_keepout_nonstatic_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
         if self.foreign_port_keepout_cells > 0:
-            t_foreign_keepout_start = _pipeline_timer_start()
+            t_foreign_keepout_start = self._pipeline_timer_start()
             foreign_length_cells = int(self.foreign_port_keepout_cells)
             foreign_half_width_cells = int(self.foreign_port_keepout_cells)
             for port_spec, _cells, _candidate_cells, runway_cells in (
@@ -2823,12 +2839,12 @@ class _RouteNetsRustSession:
                 cells_for_spec = {(int(cell[0]), int(cell[1])) for cell in runway_cells}
                 self.foreign_port_keepout_cells_by_spec[str(port_spec)] = cells_for_spec
                 foreign_port_keepout_cells_by_instance.setdefault(instance_name, set()).update(cells_for_spec)
-                nonstatic_cells_for_spec = cells_for_spec - _cells_in_raw_static_geometry(cells_for_spec)
+                nonstatic_cells_for_spec = cells_for_spec - self._cells_in_raw_static_geometry(cells_for_spec)
                 foreign_port_keepout_nonstatic_cells_by_instance.setdefault(
                     instance_name,
                     set(),
                 ).update(nonstatic_cells_for_spec)
-            _record_pipeline_timing("foreign_port_keepout_batch", t_foreign_keepout_start)
+            self._record_pipeline_timing("foreign_port_keepout_batch", t_foreign_keepout_start)
 
         self.dense_port_lateral_windows: dict[str, tuple[float, float, float, float, float]] = {}
         self.dense_port_lateral_owner_groups: dict[
@@ -2845,9 +2861,9 @@ class _RouteNetsRustSession:
                 angle = (
                     int(fanout_anchor.physical_angle) % 8
                     if fanout_anchor is not None
-                    else _orientation_to_angle(getattr(port, "orientation", None), flip=False)
+                    else self._orientation_to_angle(getattr(port, "orientation", None), flip=False)
                 )
-                step_x, step_y = _angle_to_step(angle)
+                step_x, step_y = self._angle_to_step(angle)
                 lateral_x, lateral_y = -step_y, step_x
                 center = fanout_anchor.center_um if fanout_anchor is not None else _port_center_um(port)
                 if center is None or (lateral_x == 0 and lateral_y == 0):
@@ -2857,7 +2873,7 @@ class _RouteNetsRustSession:
             for angle, group in groups.items():
                 if len(group) <= 1:
                     continue
-                step_x, step_y = _angle_to_step(angle)
+                step_x, step_y = self._angle_to_step(angle)
                 lateral_x, lateral_y = -step_y, step_x
                 ordered = sorted(group, key=lambda item: item[1])
                 owner_group = tuple(ordered)
@@ -2960,7 +2976,7 @@ class _RouteNetsRustSession:
                 return set()
             cells.difference_update(self.normal_port_runway_cells)
             cells.difference_update(self.fanout_stub_static_cells)
-            cells.difference_update(_cells_in_raw_static_geometry(cells))
+            cells.difference_update(self._cells_in_raw_static_geometry(cells))
             return cells
 
         def _foreign_keepout_cleanup_cells_for_job(job: RouteJob) -> list[tuple[int, int]]:
@@ -2969,7 +2985,7 @@ class _RouteNetsRustSession:
             return sorted(cells)
 
         def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
-            return port_to_grid_state(
+            return self.port_to_grid_state(
                 port,
                 self.origin_x_um,
                 self.origin_y_um,
@@ -2992,7 +3008,7 @@ class _RouteNetsRustSession:
             unique_endpoints = list(dict.fromkeys((spec, is_target) for spec, is_target, _ in endpoints))
             if len(unique_endpoints) <= 1:
                 continue
-            step_x, step_y = _angle_to_step(angle)
+            step_x, step_y = self._angle_to_step(angle)
             lateral_x, lateral_y = -step_y, step_x
             if lateral_x == 0 and lateral_y == 0:
                 continue
@@ -3013,7 +3029,7 @@ class _RouteNetsRustSession:
                 seen_endpoint_keys.add(endpoint_key)
                 candidate_x = base_x + lateral_x * lane_index
                 candidate_y = base_y + lateral_y * lane_index
-                if _in_bounds(candidate_x, candidate_y):
+                if self._in_bounds(candidate_x, candidate_y):
                     self.port_state_lane_offsets[endpoint_key] = (
                         lateral_x * lane_index,
                         lateral_y * lane_index,
@@ -3024,7 +3040,7 @@ class _RouteNetsRustSession:
             """Route consecutive dense source fanouts with inversion-aware extremes."""
 
             def should_reorder_source(instance_name: str) -> bool:
-                return _is_dense_source_fanout_instance(instance_name)
+                return self._is_dense_source_fanout_instance(instance_name)
 
             def order_single_run(run: list[RouteJob]) -> list[RouteJob]:
                 if len(run) <= 1:
@@ -3118,7 +3134,7 @@ class _RouteNetsRustSession:
         self.static_blocked_cells_before_port_reservations.update(self.foreign_port_keepout_static_cells)
         self.static_blocked_cells_before_port_reservations.update(self.fanout_stub_static_cells)
 
-        t_static_handoff_start = _pipeline_timer_start()
+        t_static_handoff_start = self._pipeline_timer_start()
         self.blocked_static_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
         if hasattr(obstacle_map, "blocked_static_rects"):
             blocked_static_rects: list[tuple[int, int, int, int]] = []
@@ -3160,7 +3176,7 @@ class _RouteNetsRustSession:
                     | self.fanout_stub_static_cells
                 )
             )
-        _record_pipeline_timing("static_map_handoff", t_static_handoff_start)
+        self._record_pipeline_timing("static_map_handoff", t_static_handoff_start)
 
         full_route_jobs = list(route_jobs)
         self.full_route_jobs_by_route_index = {int(job.route_index): job for job in full_route_jobs}
@@ -3366,7 +3382,7 @@ class _RouteNetsRustSession:
             """Cells a local endpoint bump may need opened against its own port pad."""
             base_x = int(state.x)
             base_y = int(state.y)
-            step_x, step_y = _angle_to_step(int(state.angle) % 8)
+            step_x, step_y = self._angle_to_step(int(state.angle) % 8)
             side_steps = ((-step_y, step_x), (step_y, -step_x))
             reach = max(1, int(self.bend_radius_cells))
             axis_reach = 4 * reach
@@ -3398,7 +3414,7 @@ class _RouteNetsRustSession:
             source_fanout_anchor = self.fanout_anchor_by_port_spec.get(port1_spec)
             target_fanout_anchor = self.fanout_anchor_by_port_spec.get(port2_spec)
             if source_fanout_anchor is None:
-                source_state = port_to_grid_state(
+                source_state = self.port_to_grid_state(
                     job.source_port,
                     self.origin_x_um,
                     self.origin_y_um,
@@ -3412,7 +3428,7 @@ class _RouteNetsRustSession:
                     int(source_fanout_anchor.physical_angle) % 8,
                 )
             if target_fanout_anchor is None:
-                target_state = port_to_grid_state(
+                target_state = self.port_to_grid_state(
                     job.target_port,
                     self.origin_x_um,
                     self.origin_y_um,
@@ -3440,14 +3456,14 @@ class _RouteNetsRustSession:
                     int(target_state.angle),
                 )
             if source_fanout_anchor is None and target_fanout_anchor is None:
-                source_state, target_state, original_anchor_cells = _snap_nearly_collinear_states(
+                source_state, target_state, original_anchor_cells = self._snap_nearly_collinear_states(
                     source_state,
                     target_state,
                     job.source_port,
                     job.target_port,
                 )
                 source_state, target_state, snapped_anchor_cells = (
-                    _snap_same_heading_minimum_bend_offset(source_state, target_state)
+                    self._snap_same_heading_minimum_bend_offset(source_state, target_state)
                 )
                 original_anchor_cells.update(snapped_anchor_cells)
             else:
@@ -3550,12 +3566,12 @@ class _RouteNetsRustSession:
                 f"Loaded extension: {extension_path}"
             )
 
-        t_state_opening_precompute_start = _pipeline_timer_start()
+        t_state_opening_precompute_start = self._pipeline_timer_start()
         self.route_state_openings_by_id = {
             int(job.net_id): _states_and_openings(job)
             for job in route_jobs
         }
-        _record_pipeline_timing(
+        self._record_pipeline_timing(
             "state_opening_precompute",
             t_state_opening_precompute_start,
         )
@@ -3563,7 +3579,7 @@ class _RouteNetsRustSession:
             (int(net_id), state_openings[0], state_openings[1])
             for net_id, state_openings in self.route_state_openings_by_id.items()
         ]
-        t_clearance_exempt_batch_start = _pipeline_timer_start()
+        t_clearance_exempt_batch_start = self._pipeline_timer_start()
         self.batch_clearance_exempt_cells_by_id = {
             int(net_id): [(int(cell[0]), int(cell[1])) for cell in cells]
             for net_id, cells in self.router.build_dynamic_clearance_exempt_cells_for_routes(
@@ -3573,7 +3589,7 @@ class _RouteNetsRustSession:
                 int(self.commit_radius_cells),
             )
         }
-        _record_pipeline_timing(
+        self._record_pipeline_timing(
             "clearance_exempt_batch",
             t_clearance_exempt_batch_start,
         )
@@ -3714,7 +3730,7 @@ class _RouteNetsRustSession:
                 if route_obj is not None
                 else None
             )
-            euclidean_lower_bound, heading_lower_bound = _source_lower_bounds(
+            euclidean_lower_bound, heading_lower_bound = self._source_lower_bounds(
                 source_x=source_x,
                 source_y=source_y,
                 source_angle=source_angle,
@@ -3901,10 +3917,10 @@ class _RouteNetsRustSession:
             committed_dynamic_cells = _committed_dynamic_cells(exclude_net_id=job.net_id)
             if self.diagnostics_enabled:
                 opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
-                opened_candidate_static_overlap = _cells_in_raw_static_geometry(
+                opened_candidate_static_overlap = self._cells_in_raw_static_geometry(
                     opened_candidate_cells
                 )
-                opened_static_overlap = _cells_in_raw_static_geometry(opened_cells_set)
+                opened_static_overlap = self._cells_in_raw_static_geometry(opened_cells_set)
                 opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
                 dynamic_exempt_dynamic_overlap = (
                     dynamic_clearance_exempt_cells & committed_dynamic_cells
@@ -3917,7 +3933,7 @@ class _RouteNetsRustSession:
                 dynamic_exempt_dynamic_overlap = set()
 
             route_cells = route_cells or set()
-            route_static_overlap = _cells_in_raw_static_geometry(route_cells)
+            route_static_overlap = self._cells_in_raw_static_geometry(route_cells)
             route_overlap_with_candidate_opened_static = (
                 route_cells & opened_candidate_static_overlap
             )
@@ -4012,7 +4028,7 @@ class _RouteNetsRustSession:
                 cells: int = 0,
                 delta: int = 0,
             ) -> tuple[tuple[int, int], int, list[tuple[int, int]]]:
-                start_dir = _angle_to_step(source_angle)
+                start_dir = self._angle_to_step(source_angle)
                 if kind == "straight":
                     relative = _relative_line_cells(
                         start=(0, 0),
@@ -4023,7 +4039,7 @@ class _RouteNetsRustSession:
                     end_angle = int(source_angle) % 8
                 else:
                     end_angle = (int(source_angle) + int(delta)) % 8
-                    end_dir = _angle_to_step(end_angle)
+                    end_dir = self._angle_to_step(end_angle)
                     radius = max(0, int(self.bend_radius_cells))
                     first_leg = _relative_line_cells(
                         start=(0, 0),
@@ -4139,9 +4155,9 @@ class _RouteNetsRustSession:
                     start_angle: int,
                     delta: int,
                 ) -> set[tuple[int, int]]:
-                    start_dir = _angle_to_step(start_angle)
+                    start_dir = self._angle_to_step(start_angle)
                     end_angle = (int(start_angle) + int(delta)) % 8
-                    end_dir = _angle_to_step(end_angle)
+                    end_dir = self._angle_to_step(end_angle)
                     cells: set[tuple[int, int]] = set()
                     for step in range(radius + 1):
                         cells.add((
@@ -4235,7 +4251,7 @@ class _RouteNetsRustSession:
                         delta=delta,
                     )
                     footprint_set = set(footprint)
-                    static_overlap = _cells_in_raw_static_geometry(footprint_set)
+                    static_overlap = self._cells_in_raw_static_geometry(footprint_set)
                     routing_static_overlap = footprint_set & routing_static_cells
                     effective_static_blockers = routing_static_overlap - opened_search_cells
                     dynamic_overlap = footprint_set & committed_dynamic_cells
@@ -4289,7 +4305,7 @@ class _RouteNetsRustSession:
                 f"target_access_rule={self.port_access_rule_by_spec.get(port2_spec)}",
                 f"foreign_port_keepout_cells={int(self.foreign_port_keepout_cells)}",
                 f"fanout_access_mode={self.fanout_access_mode_normalized}",
-                f"fanout_stub_bend_degrees={45 * int(_env_fanout_stub_bend_steps())}",
+                f"fanout_stub_bend_degrees={45 * int(self._env_fanout_stub_bend_steps())}",
                 f"fanout_anchor_port_count={len(self.fanout_anchor_by_port_spec)}",
                 f"fanout_stub_center_cell_count={len(self.fanout_stub_center_cells)}",
                 f"fanout_stub_static_cell_count={len(self.fanout_stub_static_cells)}",
@@ -4657,7 +4673,7 @@ class _RouteNetsRustSession:
             ] = []
             batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
             batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-            t_batch_job_pack_start = _pipeline_timer_start()
+            t_batch_job_pack_start = self._pipeline_timer_start()
             for job in route_jobs:
                 source_state, target_state, _, _, opened_cells = _state_openings_for_job(job)
                 clearance_exempt_cells = _clearance_exempt_cells_for_job(job)
@@ -4696,7 +4712,7 @@ class _RouteNetsRustSession:
                 )
                 batch_opened_cells_by_id[int(job.net_id)] = opened_cells
                 batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
-            _record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
+            self._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
 
             batch_start = _timing_start()
             raw_batch_result = self.router.route_many_with_repair_and_commit(
@@ -4710,8 +4726,8 @@ class _RouteNetsRustSession:
                 int(self.repair_config.history_increment),
             )
             batch_elapsed_s = time.perf_counter() - batch_start if self.collect_timing else 0.0
-            _record_pipeline_timing("native_route_batch", batch_start)
-            t_batch_result_processing_start = _pipeline_timer_start()
+            self._record_pipeline_timing("native_route_batch", batch_start)
+            t_batch_result_processing_start = self._pipeline_timer_start()
             batch_result = dict(raw_batch_result)
             self.native_repair_trace_records = [
                 dict(record)
@@ -4822,7 +4838,7 @@ class _RouteNetsRustSession:
                     should_print_route=should_print_route,
                     diag_txt=diag_txt,
                 )
-            _record_pipeline_timing(
+            self._record_pipeline_timing(
                 "batch_result_processing",
                 t_batch_result_processing_start,
             )
@@ -4895,7 +4911,7 @@ class _RouteNetsRustSession:
             ] = []
             batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
             batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-            t_batch_job_pack_start = _pipeline_timer_start()
+            t_batch_job_pack_start = self._pipeline_timer_start()
             for job in route_jobs:
                 source_state, target_state, _, _, opened_cells = _state_openings_for_job(job)
                 clearance_exempt_cells = _clearance_exempt_cells_for_job(job)
@@ -4934,7 +4950,7 @@ class _RouteNetsRustSession:
                 )
                 batch_opened_cells_by_id[int(job.net_id)] = opened_cells
                 batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
-            _record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
+            self._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
 
             batch_start = _timing_start()
             raw_batch_result = self.router.route_many_normal_and_commit(
@@ -4944,8 +4960,8 @@ class _RouteNetsRustSession:
                 self.core_commit_radius_cells,
             )
             batch_elapsed_s = time.perf_counter() - batch_start if self.collect_timing else 0.0
-            _record_pipeline_timing("native_route_batch", batch_start)
-            t_batch_result_processing_start = _pipeline_timer_start()
+            self._record_pipeline_timing("native_route_batch", batch_start)
+            t_batch_result_processing_start = self._pipeline_timer_start()
             batch_result = dict(raw_batch_result)
             _record_native_batch_timings(batch_result)
             _report_long_straight_congestion(batch_result)
@@ -4984,7 +5000,7 @@ class _RouteNetsRustSession:
                     should_print_route=should_print_route,
                     diag_txt=diag_txt,
                 )
-            _record_pipeline_timing(
+            self._record_pipeline_timing(
                 "batch_result_processing",
                 t_batch_result_processing_start,
             )
@@ -5097,7 +5113,7 @@ class _RouteNetsRustSession:
                                 continue
                 except Exception:
                     crossing_net_ids = set()
-            t_endpoint_correction_pack_start = _pipeline_timer_start()
+            t_endpoint_correction_pack_start = self._pipeline_timer_start()
             for net_id in requested_net_ids:
                 record = self.route_bookkeeping.records_by_id.get(net_id)
                 job = self.route_jobs_by_id.get(net_id)
@@ -5126,7 +5142,7 @@ class _RouteNetsRustSession:
                     )
                 )
             if record_pipeline_timing:
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "endpoint_correction_pack",
                     t_endpoint_correction_pack_start,
                 )
@@ -5145,8 +5161,8 @@ class _RouteNetsRustSession:
                 time.perf_counter() - correction_start if self.collect_timing else 0.0
             )
             if record_pipeline_timing:
-                _record_pipeline_timing("endpoint_correction_native", correction_start)
-            t_endpoint_correction_processing_start = _pipeline_timer_start()
+                self._record_pipeline_timing("endpoint_correction_native", correction_start)
+            t_endpoint_correction_processing_start = self._pipeline_timer_start()
             correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
             failed_net_ids: list[int] = []
             for raw_correction in cast(Iterable[Any], raw_corrections):
@@ -5215,7 +5231,7 @@ class _RouteNetsRustSession:
                     endpoint_correction_error=None,
                 )
             if record_pipeline_timing:
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "endpoint_correction_processing",
                     t_endpoint_correction_processing_start,
                 )
@@ -5264,7 +5280,7 @@ class _RouteNetsRustSession:
                                 continue
                 except Exception:
                     crossing_net_ids = set()
-            t_endpoint_correction_pack_start = _pipeline_timer_start()
+            t_endpoint_correction_pack_start = self._pipeline_timer_start()
             for net_id in requested_net_ids:
                 record = self.route_bookkeeping.records_by_id.get(net_id)
                 job = self.route_jobs_by_id.get(net_id)
@@ -5324,7 +5340,7 @@ class _RouteNetsRustSession:
                 )
 
             if record_pipeline_timing:
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "fanout_stub_endpoint_correction_pack",
                     t_endpoint_correction_pack_start,
                 )
@@ -5343,11 +5359,11 @@ class _RouteNetsRustSession:
                 time.perf_counter() - correction_start if self.collect_timing else 0.0
             )
             if record_pipeline_timing:
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "fanout_stub_endpoint_correction_native",
                     correction_start,
                 )
-            t_endpoint_correction_processing_start = _pipeline_timer_start()
+            t_endpoint_correction_processing_start = self._pipeline_timer_start()
             correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
             failed_net_ids: list[int] = []
             for raw_correction in cast(Iterable[Any], raw_corrections):
@@ -5457,7 +5473,7 @@ class _RouteNetsRustSession:
                 )
 
             if record_pipeline_timing:
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "fanout_stub_endpoint_correction_processing",
                     t_endpoint_correction_processing_start,
                 )
@@ -5493,7 +5509,7 @@ class _RouteNetsRustSession:
                 except (TypeError, IndexError):
                     return None
             try:
-                return _grid_cell_center_um(int(raw_state.x), int(raw_state.y))
+                return self._grid_cell_center_um(int(raw_state.x), int(raw_state.y))
             except (AttributeError, TypeError, ValueError):
                 return None
 
@@ -5692,7 +5708,7 @@ class _RouteNetsRustSession:
                 requested_net_ids,
             )
 
-            t_endpoint_correction_start = _pipeline_timer_start()
+            t_endpoint_correction_start = self._pipeline_timer_start()
             failed_net_ids: list[int] = []
             for raw_net_id in requested_net_ids:
                 net_id = int(raw_net_id)
@@ -5748,7 +5764,7 @@ class _RouteNetsRustSession:
                 self.route_bookkeeping.records_by_id[net_id] = updated
 
             if record_pipeline_timing:
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "crossing_endpoint_correction",
                     t_endpoint_correction_start,
                 )
@@ -5780,7 +5796,7 @@ class _RouteNetsRustSession:
                 ),
             )
 
-        t_record_assembly_start = _pipeline_timer_start()
+        t_record_assembly_start = self._pipeline_timer_start()
         routed_net_records = self.route_bookkeeping.ordered_records()
         routed_record_keys = [
             (record.net_name, record.source.instance, record.source.port, record.target.instance, record.target.port)
@@ -5795,7 +5811,7 @@ class _RouteNetsRustSession:
                 for name, src_i, src_p, dst_i, dst_p in duplicate_record_keys[:8]
             )
             raise RuntimeError(f"Duplicate routed records generated: {formatted}")
-        _record_pipeline_timing("record_assembly", t_record_assembly_start)
+        self._record_pipeline_timing("record_assembly", t_record_assembly_start)
 
         if self.debug_timing and self.verbose_route_diagnostics:
             print(f"      - A* route-search loop time: {astar_elapsed_s:.4f} s")
@@ -6464,13 +6480,13 @@ class _RouteNetsRustSession:
         def _make_photonic_verification_probe_layout(
             records: Iterable[RoutedNetRecord],
         ) -> Component:
-            t_probe_layout_total_start = _pipeline_timer_start()
+            t_probe_layout_total_start = self._pipeline_timer_start()
             self.photonic_probe_index += 1
-            t_probe_copy_start = _pipeline_timer_start()
+            t_probe_copy_start = self._pipeline_timer_start()
             probe_layout = self.unrouted_layout.copy()
             probe_layout.name = f"photonic_repair_probe_{time.time_ns()}_{self.photonic_probe_index}"
-            _record_pipeline_timing("photonic_probe_copy", t_probe_copy_start)
-            t_probe_realize_start = _pipeline_timer_start()
+            self._record_pipeline_timing("photonic_probe_copy", t_probe_copy_start)
+            t_probe_realize_start = self._pipeline_timer_start()
             realize_routed_net_records(
                 probe_layout,
                 list(records),
@@ -6482,15 +6498,15 @@ class _RouteNetsRustSession:
                 crossing_plan_info=self.crossing_plan_info,
                 enable_endpoint_correction=self.enable_checked_endpoint_correction,
             )
-            _record_pipeline_timing("photonic_probe_realize", t_probe_realize_start)
+            self._record_pipeline_timing("photonic_probe_realize", t_probe_realize_start)
             if self.crossing_plan_info.get("enabled"):
-                t_probe_crossings_start = _pipeline_timer_start()
+                t_probe_crossings_start = self._pipeline_timer_start()
                 _place_realized_crossing_components(probe_layout, self.crossing_plan_info)
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "photonic_probe_crossing_place",
                     t_probe_crossings_start,
                 )
-            _record_pipeline_timing(
+            self._record_pipeline_timing(
                 "photonic_probe_layout_total",
                 t_probe_layout_total_start,
             )
@@ -6504,12 +6520,12 @@ class _RouteNetsRustSession:
             # layout. Keep this probe available for debugging model mismatches
             # between grid decisions and realized geometry, but do not treat it as
             # a mandatory always-on second full verification pass.
-            t_refresh_start = _pipeline_timer_start()
+            t_refresh_start = self._pipeline_timer_start()
             records = self.route_bookkeeping.ordered_records()
             probe_layout = _make_photonic_verification_probe_layout(records)
             self.last_photonic_probe_layout = probe_layout
             self.last_photonic_probe_records = list(records)
-            t_verify_start = _pipeline_timer_start()
+            t_verify_start = self._pipeline_timer_start()
             result = verify_photonic_routing(
                 probe_layout,
                 self.schematic,
@@ -6533,8 +6549,8 @@ class _RouteNetsRustSession:
                 check_route_coverage=self.debug_stop_after_route_index is None,
                 check_endpoint_connectivity=self.enable_checked_endpoint_correction,
             )
-            _record_pipeline_timing("photonic_probe_verify", t_verify_start)
-            _record_pipeline_timing("photonic_refresh_total", t_refresh_start)
+            self._record_pipeline_timing("photonic_probe_verify", t_verify_start)
+            self._record_pipeline_timing("photonic_refresh_total", t_refresh_start)
             return result
 
         def _repair_final_photonic_issues(
@@ -6711,39 +6727,39 @@ class _RouteNetsRustSession:
             return "; ".join(lines)
 
         def _refresh_realized_crossing_verification() -> list[dict[str, object]]:
-            t_refresh_crossings_start = _pipeline_timer_start()
-            t_overlap_start = _pipeline_timer_start()
+            t_refresh_crossings_start = self._pipeline_timer_start()
+            t_overlap_start = self._pipeline_timer_start()
             if self.enable_internal_photonic_probe_verification:
                 _augment_crossing_plan_with_realized_overlaps(
                     router=self.router,
                     crossing_plan_info=self.crossing_plan_info,
                     routed_records_by_net_id=self.route_bookkeeping.records_by_id,
                 )
-            _record_pipeline_timing("realized_crossing_overlap_augment", t_overlap_start)
+            self._record_pipeline_timing("realized_crossing_overlap_augment", t_overlap_start)
             native_crossing_events: list[Any] = []
             if hasattr(self.router, "crossing_events"):
-                t_native_events_start = _pipeline_timer_start()
+                t_native_events_start = self._pipeline_timer_start()
                 try:
                     native_crossing_events = list(cast(Iterable[Any], self.router.crossing_events()))
                 except Exception:
                     native_crossing_events = []
                 self.crossing_plan_info["native_crossing_events"] = native_crossing_events
                 self.crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "realized_crossing_native_events",
                     t_native_events_start,
                 )
-                t_insertion_loss_start = _pipeline_timer_start()
+                t_insertion_loss_start = self._pipeline_timer_start()
                 _augment_insertion_loss_report(
                     crossing_plan_info=self.crossing_plan_info,
                     routed_records_by_net_id=self.route_bookkeeping.records_by_id,
                     native_crossing_events=native_crossing_events,
                 )
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "realized_crossing_insertion_loss",
                     t_insertion_loss_start,
                 )
-            t_illegal_crossing_verify_start = _pipeline_timer_start()
+            t_illegal_crossing_verify_start = self._pipeline_timer_start()
             if self.enable_internal_photonic_probe_verification:
                 illegal = _verify_realized_route_intersections(
                     crossing_plan_info=self.crossing_plan_info,
@@ -6757,27 +6773,27 @@ class _RouteNetsRustSession:
                     native_crossing_events=native_crossing_events,
                     realization_grid_spec=self.realization_grid_spec,
                 )
-            _record_pipeline_timing(
+            self._record_pipeline_timing(
                 "realized_crossing_verify_intersections",
                 t_illegal_crossing_verify_start,
             )
-            t_realized_insertion_loss_start = _pipeline_timer_start()
+            t_realized_insertion_loss_start = self._pipeline_timer_start()
             _augment_insertion_loss_report_from_realized_intersections(
                 crossing_plan_info=self.crossing_plan_info,
                 routed_records_by_net_id=self.route_bookkeeping.records_by_id,
             )
-            _record_pipeline_timing(
+            self._record_pipeline_timing(
                 "realized_crossing_realized_loss",
                 t_realized_insertion_loss_start,
             )
-            _record_pipeline_timing(
+            self._record_pipeline_timing(
                 "realized_crossing_refresh_total",
                 t_refresh_crossings_start,
             )
             return illegal
 
         final_crossing_repair_round_limit = 12
-        t_final_verification_block_start = _pipeline_timer_start()
+        t_final_verification_block_start = self._pipeline_timer_start()
         # Crossing legality is still checked internally because the router owns the
         # crossing event model and can repair/reroute before final realization.
         #
@@ -6829,7 +6845,7 @@ class _RouteNetsRustSession:
                     allow_unchecked_bumps=True,
                 )
                 self.crossing_plan_info["photonic_probe_failure_artifacts"] = probe_failure_artifacts
-                _record_pipeline_timing(
+                self._record_pipeline_timing(
                     "final_verification_block",
                     t_final_verification_block_start,
                 )
@@ -6838,12 +6854,12 @@ class _RouteNetsRustSession:
                     f"{final_photonic_verification.error_count} error(s). "
                     f"{_photonic_repair_failure_preview(final_photonic_verification)}"
                 )
-        _record_pipeline_timing(
+        self._record_pipeline_timing(
             "final_verification_block",
             t_final_verification_block_start,
         )
         if not illegal_realized_crossings and not self.defer_realization:
-            t_direct_realization_start = _pipeline_timer_start()
+            t_direct_realization_start = self._pipeline_timer_start()
             realize_routed_net_records(
                 self.routed_layout,
                 routed_net_records,
@@ -6855,7 +6871,7 @@ class _RouteNetsRustSession:
                 crossing_plan_info=self.crossing_plan_info,
                 enable_endpoint_correction=self.enable_checked_endpoint_correction,
             )
-            _record_pipeline_timing("direct_realization", t_direct_realization_start)
+            self._record_pipeline_timing("direct_realization", t_direct_realization_start)
             _place_realized_crossing_components(self.routed_layout, self.crossing_plan_info)
         elif self.crossing_plan_info.get("enabled"):
             self.crossing_plan_info.setdefault("realized_crossing_components", [])
@@ -6884,7 +6900,7 @@ class _RouteNetsRustSession:
                 f"{len(illegal_realized_crossings)} found. {preview}"
             )
 
-        t_debug_artifact_start = _pipeline_timer_start()
+        t_debug_artifact_start = self._pipeline_timer_start()
         debug_artifacts = build_route_debug_artifacts(
             obstacle_svg=obstacle_svg,
             route_svgs=self.route_svgs,
@@ -6907,7 +6923,7 @@ class _RouteNetsRustSession:
             debug_artifacts,
             crossing_plan_info=self.crossing_plan_info,
         )
-        _record_pipeline_timing("debug_artifact_assembly", t_debug_artifact_start)
+        self._record_pipeline_timing("debug_artifact_assembly", t_debug_artifact_start)
         if self.collect_pipeline_timing:
             debug_artifacts = replace(
                 debug_artifacts,
