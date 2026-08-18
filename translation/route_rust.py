@@ -2813,6 +2813,1053 @@ class _RouteNetsRustSession:
         return set(self._clearance_exempt_cells_for_job(job))
 
 
+    def _static_cells_in_rect(self, min_x: int, max_x: int, min_y: int, max_y: int) -> int:
+        if min_x > max_x or min_y > max_y:
+            return 0
+        if self.blocked_static_rects_for_diagnostics:
+            return sum(
+                _rect_overlap_cell_count(
+                    rect,
+                    min_x=min_x,
+                    max_x=max_x,
+                    min_y=min_y,
+                    max_y=max_y,
+                )
+                for rect in self.blocked_static_rects_for_diagnostics
+            )
+        return sum(
+            1
+            for x, y in self.static_blocked_cells_before_port_reservations
+            if min_x <= x <= max_x and min_y <= y <= max_y
+        )
+
+    def _cells_in_rect(
+        self,
+        cells: set[tuple[int, int]],
+        *,
+        min_x: int,
+        max_x: int,
+        min_y: int,
+        max_y: int,
+    ) -> int:
+        if min_x > max_x or min_y > max_y:
+            return 0
+        return sum(1 for x, y in cells if min_x <= x <= max_x and min_y <= y <= max_y)
+
+    def _route_attempt_diagnostics(
+        self,
+        job: RouteJob,
+        route_obj: object | None,
+        *,
+        candidate_blockers: list[int] | None = None,
+        ripup_ids: list[int] | None = None,
+    ) -> dict[str, object]:
+        dynamic_cells_before = self._committed_dynamic_cells_for_attempt(exclude_net_id=job.net_id)
+        source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
+        source_x = int(source_state.x)
+        source_y = int(source_state.y)
+        source_angle = int(source_state.angle)
+        target_x = int(target_state.x)
+        target_y = int(target_state.y)
+        target_angle = int(target_state.angle)
+        span_x = abs(target_x - source_x)
+        span_y = abs(target_y - source_y)
+        span_bbox_min_x = min(source_x, target_x)
+        span_bbox_max_x = max(source_x, target_x)
+        span_bbox_min_y = min(source_y, target_y)
+        span_bbox_max_y = max(source_y, target_y)
+        span_bbox_area = _rect_cell_count(
+            min_x=span_bbox_min_x,
+            max_x=span_bbox_max_x,
+            min_y=span_bbox_min_y,
+            max_y=span_bbox_max_y,
+        )
+        window_min_x = int(getattr(route_obj, "last_window_min_x", 0)) if route_obj else 0
+        window_max_x = int(getattr(route_obj, "last_window_max_x", -1)) if route_obj else -1
+        window_min_y = int(getattr(route_obj, "last_window_min_y", 0)) if route_obj else 0
+        window_max_y = int(getattr(route_obj, "last_window_max_y", -1)) if route_obj else -1
+        window_area = int(getattr(route_obj, "last_window_area_cells", 0)) if route_obj else 0
+        if window_area <= 0:
+            window_area = _rect_cell_count(
+                min_x=window_min_x,
+                max_x=window_max_x,
+                min_y=window_min_y,
+                max_y=window_max_y,
+            )
+        window_static_cells = self._static_cells_in_rect(
+            window_min_x,
+            window_max_x,
+            window_min_y,
+            window_max_y,
+        )
+        window_dynamic_cells = self._cells_in_rect(
+            dynamic_cells_before,
+            min_x=window_min_x,
+            max_x=window_max_x,
+            min_y=window_min_y,
+            max_y=window_max_y,
+        )
+        span_static_cells = self._static_cells_in_rect(
+            span_bbox_min_x,
+            span_bbox_max_x,
+            span_bbox_min_y,
+            span_bbox_max_y,
+        )
+        span_dynamic_cells = self._cells_in_rect(
+            dynamic_cells_before,
+            min_x=span_bbox_min_x,
+            max_x=span_bbox_max_x,
+            min_y=span_bbox_min_y,
+            max_y=span_bbox_max_y,
+        )
+        route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
+        route_bbox = _route_cells_bbox(route_cells or ())
+        if route_bbox is None:
+            route_bbox_min_x = 0
+            route_bbox_max_x = -1
+            route_bbox_min_y = 0
+            route_bbox_max_y = -1
+        else:
+            route_bbox_min_x, route_bbox_max_x, route_bbox_min_y, route_bbox_max_y = route_bbox
+        route_bbox_area = _rect_cell_count(
+            min_x=route_bbox_min_x,
+            max_x=route_bbox_max_x,
+            min_y=route_bbox_min_y,
+            max_y=route_bbox_max_y,
+        )
+        total_cost = (
+            float(getattr(route_obj, "total_cost", 0.0))
+            if route_obj is not None
+            else None
+        )
+        euclidean_lower_bound, heading_lower_bound = self._source_lower_bounds(
+            source_x=source_x,
+            source_y=source_y,
+            source_angle=source_angle,
+            target_x=target_x,
+            target_y=target_y,
+            target_angle=target_angle,
+        )
+        blocker_ids = list(candidate_blockers or [])
+        victim_ids = list(ripup_ids or [])
+        raw_dynamic_cells: set[tuple[int, int]] = set()
+        raw_dynamic_refcount_gt1_cells: set[tuple[int, int]] = set()
+        raw_core_cells: set[tuple[int, int]] = set()
+        raw_core_refcount_gt1_cells: set[tuple[int, int]] = set()
+        raw_net_route_cells: set[tuple[int, int]] = set()
+        if hasattr(self.router, "raw_dynamic_obstacle_cells"):
+            raw_dynamic_entries = [
+                (int(x), int(y), int(refs))
+                for x, y, refs in self.router.raw_dynamic_obstacle_cells()
+            ]
+            raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
+            raw_dynamic_refcount_gt1_cells = {
+                (x, y) for x, y, refs in raw_dynamic_entries if refs > 1
+            }
+        if hasattr(self.router, "raw_dynamic_core_cells"):
+            raw_core_entries = [
+                (int(x), int(y), int(refs))
+                for x, y, refs in self.router.raw_dynamic_core_cells()
+            ]
+            raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
+            raw_core_refcount_gt1_cells = {
+                (x, y) for x, y, refs in raw_core_entries if refs > 1
+            }
+        if hasattr(self.router, "all_net_route_cells"):
+            for _, cells in self.router.all_net_route_cells():
+                raw_net_route_cells.update(
+                    (int(cell[0]), int(cell[1])) for cell in cells
+                )
+        raw_dynamic_without_owner = raw_dynamic_cells - raw_net_route_cells
+        raw_net_route_without_dynamic = raw_net_route_cells - raw_dynamic_cells
+        raw_core_without_dynamic = raw_core_cells - raw_dynamic_cells
+        raw_dynamic_span_cells = {
+            (x, y)
+            for x, y in raw_dynamic_cells
+            if span_bbox_min_x <= x <= span_bbox_max_x
+            and span_bbox_min_y <= y <= span_bbox_max_y
+        }
+        raw_dynamic_without_owner_span_cells = {
+            (x, y)
+            for x, y in raw_dynamic_without_owner
+            if span_bbox_min_x <= x <= span_bbox_max_x
+            and span_bbox_min_y <= y <= span_bbox_max_y
+        }
+        return {
+            "source_state": [source_x, source_y, source_angle],
+            "target_state": [target_x, target_y, target_angle],
+            "span_x_cells": span_x,
+            "span_y_cells": span_y,
+            "span_manhattan_cells": span_x + span_y,
+            "span_bbox_area_cells": span_bbox_area,
+            "span_static_cells": span_static_cells,
+            "span_dynamic_cells": span_dynamic_cells,
+            "route_bbox_min_x": route_bbox_min_x,
+            "route_bbox_max_x": route_bbox_max_x,
+            "route_bbox_min_y": route_bbox_min_y,
+            "route_bbox_max_y": route_bbox_max_y,
+            "route_bbox_width_cells": max(0, route_bbox_max_x - route_bbox_min_x + 1),
+            "route_bbox_height_cells": max(0, route_bbox_max_y - route_bbox_min_y + 1),
+            "route_bbox_area_cells": route_bbox_area,
+            "route_bbox_to_span_bbox_area": (
+                float(route_bbox_area) / float(span_bbox_area)
+                if span_bbox_area > 0 and route_bbox_area > 0
+                else None
+            ),
+            "opened_cells_count": len(opened_cells),
+            "block_radius_cells": self.block_radius_cells,
+            "dynamic_obstacle_search_expansion_radius_cells": (
+                self.clearance_policy.dynamic_obstacle_search_expansion_radius_cells
+            ),
+            "dynamic_route_commit_keepout_radius_cells": (
+                self.clearance_policy.dynamic_route_commit_keepout_radius_cells
+            ),
+            "dynamic_route_core_radius_cells": (
+                self.clearance_policy.dynamic_route_core_radius_cells
+            ),
+            "bend_radius_cells": self.bend_radius_cells,
+            "window_width_cells": max(0, window_max_x - window_min_x + 1),
+            "window_height_cells": max(0, window_max_y - window_min_y + 1),
+            "window_area_cells": window_area,
+            "window_to_span_bbox_area": (
+                float(window_area) / float(span_bbox_area)
+                if span_bbox_area > 0 and window_area > 0
+                else None
+            ),
+            "route_bbox_to_window_area": (
+                float(route_bbox_area) / float(window_area)
+                if window_area > 0 and route_bbox_area > 0
+                else None
+            ),
+            "window_static_cells": window_static_cells,
+            "window_dynamic_cells": window_dynamic_cells,
+            "window_static_density": (
+                float(window_static_cells) / float(window_area)
+                if window_area > 0
+                else None
+            ),
+            "window_dynamic_density": (
+                float(window_dynamic_cells) / float(window_area)
+                if window_area > 0
+                else None
+            ),
+            "total_cost": total_cost,
+            "euclidean_lower_bound_cost": euclidean_lower_bound,
+            "heading_lower_bound_cost": heading_lower_bound,
+            "euclidean_lower_bound_to_cost": (
+                euclidean_lower_bound / total_cost
+                if total_cost is not None and total_cost > 0.0
+                else None
+            ),
+            "heading_lower_bound_to_cost": (
+                heading_lower_bound / total_cost
+                if total_cost is not None and total_cost > 0.0
+                else None
+            ),
+            "heading_lower_bound_gap_cost": (
+                total_cost - heading_lower_bound
+                if total_cost is not None
+                else None
+            ),
+            "committed_dynamic_cells_before": len(dynamic_cells_before),
+            "raw_dynamic_obstacle_cells_before": len(raw_dynamic_cells),
+            "raw_dynamic_core_cells_before": len(raw_core_cells),
+            "raw_net_route_cells_before": len(raw_net_route_cells),
+            "raw_dynamic_refcount_gt1_count": len(raw_dynamic_refcount_gt1_cells),
+            "raw_dynamic_refcount_gt1_bbox": _cells_bbox(raw_dynamic_refcount_gt1_cells),
+            "raw_core_refcount_gt1_count": len(raw_core_refcount_gt1_cells),
+            "raw_dynamic_without_owner_count": len(raw_dynamic_without_owner),
+            "raw_dynamic_without_owner_bbox": _cells_bbox(raw_dynamic_without_owner),
+            "raw_dynamic_without_owner_sample": sorted(raw_dynamic_without_owner)[:12],
+            "raw_net_route_without_dynamic_count": len(raw_net_route_without_dynamic),
+            "raw_net_route_without_dynamic_bbox": _cells_bbox(raw_net_route_without_dynamic),
+            "raw_core_without_dynamic_count": len(raw_core_without_dynamic),
+            "span_raw_dynamic_cells": len(raw_dynamic_span_cells),
+            "span_raw_dynamic_without_owner_count": len(raw_dynamic_without_owner_span_cells),
+            "span_raw_dynamic_without_owner_bbox": _cells_bbox(
+                raw_dynamic_without_owner_span_cells
+            ),
+            "candidate_blocker_count": len(blocker_ids),
+            "candidate_blocker_net_ids": blocker_ids,
+            "candidate_blocker_route_indices": [
+                self.route_jobs_by_id[net_id].route_index
+                for net_id in blocker_ids
+                if net_id in self.route_jobs_by_id
+            ],
+            "ripup_victim_count": len(victim_ids),
+            "ripup_victim_net_ids": victim_ids,
+            "ripup_victim_route_indices": [
+                self.route_jobs_by_id[net_id].route_index
+                for net_id in victim_ids
+                if net_id in self.route_jobs_by_id
+            ],
+        }
+
+    def _write_route_diagnostics(
+        self,
+        *,
+        job: RouteJob,
+        source_state: Any,
+        target_state: Any,
+        opened_candidate_cells: set[tuple[int, int]],
+        dynamic_clearance_exempt_cells: set[tuple[int, int]],
+        opened_cells_set: set[tuple[int, int]],
+        diag_txt: Path | None,
+        status: str,
+        error_text: str | None = None,
+        route_cells: set[tuple[int, int]] | None = None,
+        route_obj: Any | None = None,
+        repair_note: str | None = None,
+    ) -> None:
+        if diag_txt is None:
+            return
+        port1_spec = f"{job.inst1},{job.port1}"
+        port2_spec = f"{job.inst2},{job.port2}"
+        source_anchor_cell = (int(source_state.x), int(source_state.y))
+        target_anchor_cell = (int(target_state.x), int(target_state.y))
+        committed_dynamic_cells = self._committed_dynamic_cells(exclude_net_id=job.net_id)
+        if self.diagnostics_enabled:
+            opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
+            opened_candidate_static_overlap = self._cells_in_raw_static_geometry(
+                opened_candidate_cells
+            )
+            opened_static_overlap = self._cells_in_raw_static_geometry(opened_cells_set)
+            opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
+            dynamic_exempt_dynamic_overlap = (
+                dynamic_clearance_exempt_cells & committed_dynamic_cells
+            )
+        else:
+            opened_candidate_dynamic_overlap = set()
+            opened_candidate_static_overlap = set()
+            opened_static_overlap = set()
+            opened_dynamic_overlap = set()
+            dynamic_exempt_dynamic_overlap = set()
+
+        route_cells = route_cells or set()
+        route_static_overlap = self._cells_in_raw_static_geometry(route_cells)
+        route_overlap_with_candidate_opened_static = (
+            route_cells & opened_candidate_static_overlap
+        )
+        route_overlap_with_effective_opened_static = route_cells & opened_static_overlap
+        route_dynamic_overlap = route_cells & committed_dynamic_cells
+        route_overlap_with_candidate_opened_dynamic = (
+            route_cells & opened_candidate_dynamic_overlap
+        )
+        route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
+        route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
+        current_endpoint_foreign_keepout_cells = set(
+            self._foreign_keepout_open_cells_for_spec(port1_spec)
+        )
+        current_endpoint_foreign_keepout_cells.update(
+            self._foreign_keepout_open_cells_for_spec(port2_spec)
+        )
+        foreign_keepout_open_cells = current_endpoint_foreign_keepout_cells & opened_cells_set
+        current_port_runway_cells = set(self.port_runway_cells_by_spec.get(port1_spec, set()))
+        current_port_runway_cells.update(self.port_runway_cells_by_spec.get(port2_spec, set()))
+        source_sibling_port_runway_cells: set[tuple[int, int]] = set()
+        for cluster_port_spec in self.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()):
+            if cluster_port_spec == port1_spec:
+                continue
+            source_sibling_port_runway_cells.update(
+                self.port_runway_cells_by_spec.get(cluster_port_spec, set())
+            )
+        target_sibling_port_runway_cells: set[tuple[int, int]] = set()
+        for cluster_port_spec in self.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()):
+            if cluster_port_spec == port2_spec:
+                continue
+            target_sibling_port_runway_cells.update(
+                self.port_runway_cells_by_spec.get(cluster_port_spec, set())
+            )
+        sibling_port_runway_cells = (
+            source_sibling_port_runway_cells | target_sibling_port_runway_cells
+        )
+        current_port_runway_dynamic_overlap = (
+            current_port_runway_cells & committed_dynamic_cells
+        )
+        sibling_port_runway_dynamic_overlap = (
+            sibling_port_runway_cells & committed_dynamic_cells
+        )
+        route_overlap_current_port_runway = route_cells & current_port_runway_cells
+        route_overlap_sibling_port_runway = route_cells & sibling_port_runway_cells
+        route_segments: list[str] = []
+        if route_obj is not None:
+            for segment in cast(list[object], getattr(route_obj, "segments", []) or []):
+                try:
+                    entry = dict(cast(Any, segment))
+                except (TypeError, ValueError):
+                    continue
+                route_segments.append(
+                    "{kind}:{start}->{end}@{start_angle}->{end_angle}".format(
+                        kind=entry.get("kind"),
+                        start=entry.get("start"),
+                        end=entry.get("end"),
+                        start_angle=entry.get("start_angle"),
+                        end_angle=entry.get("end_angle"),
+                    )
+                )
+
+        def _relative_line_cells(
+            *,
+            start: tuple[int, int],
+            direction: tuple[int, int],
+            cells: int,
+        ) -> list[tuple[int, int]]:
+            return [
+                (int(start[0]) + int(direction[0]) * step,
+                 int(start[1]) + int(direction[1]) * step)
+                for step in range(max(0, int(cells)) + 1)
+            ]
+
+        def _unique_cells(
+            cells: Iterable[tuple[int, int]],
+        ) -> list[tuple[int, int]]:
+            seen: set[tuple[int, int]] = set()
+            unique: list[tuple[int, int]] = []
+            for cell in cells:
+                normalized = (int(cell[0]), int(cell[1]))
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                unique.append(normalized)
+            return unique
+
+        def _first_move_footprint(
+            *,
+            source: tuple[int, int],
+            source_angle: int,
+            kind: str,
+            cells: int = 0,
+            delta: int = 0,
+        ) -> tuple[tuple[int, int], int, list[tuple[int, int]]]:
+            start_dir = self._angle_to_step(source_angle)
+            if kind == "straight":
+                relative = _relative_line_cells(
+                    start=(0, 0),
+                    direction=start_dir,
+                    cells=cells,
+                )
+                end = relative[-1]
+                end_angle = int(source_angle) % 8
+            else:
+                end_angle = (int(source_angle) + int(delta)) % 8
+                end_dir = self._angle_to_step(end_angle)
+                radius = max(0, int(self.bend_radius_cells))
+                first_leg = _relative_line_cells(
+                    start=(0, 0),
+                    direction=start_dir,
+                    cells=radius,
+                )
+                corner = (start_dir[0] * radius, start_dir[1] * radius)
+                second_leg = _relative_line_cells(
+                    start=corner,
+                    direction=end_dir,
+                    cells=radius,
+                )
+                relative = _unique_cells([*first_leg, *second_leg])
+                end = relative[-1]
+            absolute = [
+                (int(source[0]) + int(dx), int(source[1]) + int(dy))
+                for dx, dy in relative
+            ]
+            return (
+                (int(source[0]) + int(end[0]), int(source[1]) + int(end[1])),
+                end_angle,
+                absolute,
+            )
+
+        def _dynamic_owners_for_cells(
+            cells: set[tuple[int, int]],
+        ) -> dict[int, list[tuple[int, int]]]:
+            owners: dict[int, list[tuple[int, int]]] = {}
+            for net_id in self.route_bookkeeping.records_by_id:
+                if int(net_id) == int(job.net_id):
+                    continue
+                overlap = cells & self._route_cells_from_router(int(net_id))
+                if overlap:
+                    owners[int(net_id)] = sorted(overlap)
+            return owners
+
+        def _format_post_crossing_orthogonal_candidates() -> list[str]:
+            if not self.diagnostics_enabled or not route_dynamic_overlap:
+                return []
+            if int(source_state.angle) != 0 or int(target_state.angle) != 0:
+                return []
+            if source_anchor_cell[1] == target_anchor_cell[1]:
+                return []
+            crossing_cells = sorted(route_dynamic_overlap)
+            if len(crossing_cells) != 1:
+                return []
+            cross_x, cross_y = crossing_cells[0]
+            dy_sign = 1 if target_anchor_cell[1] > cross_y else -1
+            dx_sign = 1 if target_anchor_cell[0] > cross_x else -1
+            if dx_sign != 1:
+                return []
+            radius = max(1, int(self.bend_radius_cells))
+            routing_static_cells = set(self.static_blocked_cells_before_port_reservations)
+            routing_static_cells.update(self.debug_port_keepout_cells)
+            routing_static_cells.update(self.foreign_port_keepout_static_cells)
+            routing_static_cells.update(self.fanout_stub_static_cells)
+            opened_search_cells = set(opened_cells_set)
+            allowed_dynamic_cells = set(route_dynamic_overlap)
+            lines: list[str] = []
+            min_start = cross_x + radius
+            max_start = target_anchor_cell[0] - 2 * radius
+            for bend_start_x in range(min_start, max_start + 1):
+                if target_anchor_cell[1] - dy_sign * radius == cross_y:
+                    continue
+                cells: set[tuple[int, int]] = set()
+                for x in range(source_anchor_cell[0], bend_start_x + radius + 1):
+                    cells.add((x, cross_y))
+                first_corner_x = bend_start_x + radius
+                first_corner_y = cross_y
+                first_end_y = cross_y + dy_sign * radius
+                for step in range(0, radius + 1):
+                    cells.add((first_corner_x, first_corner_y + dy_sign * step))
+                vertical_start_y = first_end_y
+                second_start_y = target_anchor_cell[1] - dy_sign * radius
+                y0, y1 = sorted((vertical_start_y, second_start_y))
+                for y in range(y0, y1 + 1):
+                    cells.add((first_corner_x, y))
+                second_end_x = first_corner_x + radius
+                for step in range(0, radius + 1):
+                    cells.add((first_corner_x + step, second_start_y + dy_sign * step))
+                for x in range(second_end_x, target_anchor_cell[0] + 1):
+                    cells.add((x, target_anchor_cell[1]))
+                static_blockers = (cells & routing_static_cells) - opened_search_cells
+                dynamic_blockers = (
+                    (cells & committed_dynamic_cells)
+                    - allowed_dynamic_cells
+                    - (cells & opened_search_cells)
+                )
+                lines.append(
+                    "post_crossing_90_candidate="
+                    f"bend_start_x={bend_start_x}; "
+                    f"cells={len(cells)}; "
+                    f"static_blockers={sorted(static_blockers)[:24]}; "
+                    f"static_blocker_count={len(static_blockers)}; "
+                    f"dynamic_blockers={sorted(dynamic_blockers)[:24]}; "
+                    f"dynamic_blocker_count={len(dynamic_blockers)}; "
+                    f"dynamic_blocker_owners={_dynamic_owners_for_cells(dynamic_blockers)}"
+                )
+            return lines
+
+        def _format_target_bend_footprints() -> list[str]:
+            if not self.diagnostics_enabled:
+                return []
+            radius = max(1, int(self.bend_radius_cells))
+            routing_static_cells = set(self.static_blocked_cells_before_port_reservations)
+            routing_static_cells.update(self.debug_port_keepout_cells)
+            routing_static_cells.update(self.foreign_port_keepout_static_cells)
+            routing_static_cells.update(self.fanout_stub_static_cells)
+            opened_search_cells = set(opened_cells_set)
+
+            def turn_cells(
+                start: tuple[int, int],
+                start_angle: int,
+                delta: int,
+            ) -> set[tuple[int, int]]:
+                start_dir = self._angle_to_step(start_angle)
+                end_angle = (int(start_angle) + int(delta)) % 8
+                end_dir = self._angle_to_step(end_angle)
+                cells: set[tuple[int, int]] = set()
+                for step in range(radius + 1):
+                    cells.add((
+                        int(start[0]) + start_dir[0] * step,
+                        int(start[1]) + start_dir[1] * step,
+                    ))
+                corner = (
+                    int(start[0]) + start_dir[0] * radius,
+                    int(start[1]) + start_dir[1] * radius,
+                )
+                for step in range(radius + 1):
+                    cells.add((
+                        corner[0] + end_dir[0] * step,
+                        corner[1] + end_dir[1] * step,
+                    ))
+                return cells
+
+            target = target_anchor_cell
+            specs = [
+                (
+                    "end_from_below_to_port",
+                    (target[0] - radius, target[1] - radius),
+                    2,
+                    -2,
+                ),
+                (
+                    "end_from_above_to_port",
+                    (target[0] - radius, target[1] + radius),
+                    6,
+                    2,
+                ),
+                ("target_out_down", target, 0, -2),
+                ("target_out_up", target, 0, 2),
+            ]
+            lines: list[str] = []
+            for label, start, angle, delta in specs:
+                cells = turn_cells(start, angle, delta)
+                static_blockers = (cells & routing_static_cells) - opened_search_cells
+                dynamic_blockers = (
+                    (cells & committed_dynamic_cells)
+                    - (cells & opened_search_cells)
+                    - route_dynamic_overlap
+                )
+                lines.append(
+                    "target_bend_footprint="
+                    f"label={label}; start={start}; angle={angle}; delta={delta}; "
+                    f"cells={sorted(cells)}; "
+                    f"static_blockers={sorted(static_blockers)}; "
+                    f"static_blocker_count={len(static_blockers)}; "
+                    f"dynamic_blockers={sorted(dynamic_blockers)}; "
+                    f"dynamic_blocker_count={len(dynamic_blockers)}; "
+                    f"dynamic_blocker_owners={_dynamic_owners_for_cells(dynamic_blockers)}"
+                )
+            return lines
+
+        def _format_first_move_debug() -> list[str]:
+            if not self.diagnostics_enabled:
+                return []
+            source = source_anchor_cell
+            source_angle = int(source_state.angle)
+            source_key = source_anchor_cell
+            target_key = target_anchor_cell
+            opened_search_cells = {
+                cell
+                for cell in opened_cells_set
+                if cell == source_key
+                or cell == target_key
+                or cell not in committed_dynamic_cells
+            }
+            routing_static_cells = set(self.static_blocked_cells_before_port_reservations)
+            routing_static_cells.update(self.debug_port_keepout_cells)
+            routing_static_cells.update(self.foreign_port_keepout_static_cells)
+            routing_static_cells.update(self.fanout_stub_static_cells)
+            primitive_specs: list[tuple[str, str, int, int]] = [
+                ("straight_short", "straight", int(self.primitive_cfg.straight_short_cells), 0),
+                ("straight_long", "straight", int(self.primitive_cfg.straight_long_cells), 0),
+                ("turn45_left", "turn", 0, 1),
+                ("turn45_right", "turn", 0, -1),
+                ("turn90_left", "turn", 0, 2),
+                ("turn90_right", "turn", 0, -2),
+            ]
+            debug_lines: list[str] = []
+            for label, kind, cells, delta in primitive_specs:
+                if not self.allow_45_degree_turns and abs(int(delta)) == 1:
+                    continue
+                end_cell, end_angle, footprint = _first_move_footprint(
+                    source=source,
+                    source_angle=source_angle,
+                    kind=kind,
+                    cells=cells,
+                    delta=delta,
+                )
+                footprint_set = set(footprint)
+                static_overlap = self._cells_in_raw_static_geometry(footprint_set)
+                routing_static_overlap = footprint_set & routing_static_cells
+                effective_static_blockers = routing_static_overlap - opened_search_cells
+                dynamic_overlap = footprint_set & committed_dynamic_cells
+                effective_dynamic_blockers = (
+                    dynamic_overlap
+                    - dynamic_clearance_exempt_cells
+                    - (footprint_set & opened_search_cells)
+                )
+                owner_cells = _dynamic_owners_for_cells(dynamic_overlap)
+                debug_lines.append(
+                    "first_move_{label}="
+                    "end=({end_x},{end_y},{end_angle}); "
+                    "footprint={footprint}; "
+                    "static={static}; "
+                    "routing_static={routing_static}; "
+                    "static_blockers={static_blockers}; "
+                    "dynamic={dynamic}; "
+                    "dynamic_blockers={dynamic_blockers}; "
+                    "dynamic_owners={owners}; "
+                    "opened={opened}; "
+                    "opened_search={opened_search}; "
+                    "dynamic_exempt={dynamic_exempt}".format(
+                        label=label,
+                        end_x=end_cell[0],
+                        end_y=end_cell[1],
+                        end_angle=end_angle,
+                        footprint=footprint,
+                        static=sorted(static_overlap),
+                        routing_static=sorted(routing_static_overlap),
+                        static_blockers=sorted(effective_static_blockers),
+                        dynamic=sorted(dynamic_overlap),
+                        dynamic_blockers=sorted(effective_dynamic_blockers),
+                        owners=owner_cells,
+                        opened=sorted(footprint_set & opened_cells_set),
+                        opened_search=sorted(footprint_set & opened_search_cells),
+                        dynamic_exempt=sorted(
+                            footprint_set & dynamic_clearance_exempt_cells
+                        ),
+                    )
+                )
+            return debug_lines
+
+        lines = [
+            f"net_name={job.net_name}",
+            f"status={status}",
+            f"source_spec={port1_spec}",
+            f"target_spec={port2_spec}",
+            f"source_component={_schematic_instance_component_name(self.schematic, job.inst1)}",
+            f"target_component={_schematic_instance_component_name(self.schematic, job.inst2)}",
+            f"source_access_rule={self.port_access_rule_by_spec.get(port1_spec)}",
+            f"target_access_rule={self.port_access_rule_by_spec.get(port2_spec)}",
+            f"foreign_port_keepout_cells={int(self.foreign_port_keepout_cells)}",
+            f"fanout_access_mode={self.fanout_access_mode_normalized}",
+            f"fanout_stub_bend_degrees={45 * int(self._env_fanout_stub_bend_steps())}",
+            f"fanout_anchor_port_count={len(self.fanout_anchor_by_port_spec)}",
+            f"fanout_stub_center_cell_count={len(self.fanout_stub_center_cells)}",
+            f"fanout_stub_static_cell_count={len(self.fanout_stub_static_cells)}",
+            "source_fanout_anchor="
+            f"{f'{job.inst1},{job.port1}' in self.fanout_anchor_by_port_spec}",
+            "target_fanout_anchor="
+            f"{f'{job.inst2},{job.port2}' in self.fanout_anchor_by_port_spec}",
+            "source_dense_port_runway_cells="
+            f"{self.dense_source_port_runway_length_by_spec.get(port1_spec)}",
+            "target_dense_port_runway_cells="
+            f"{self.dense_target_port_runway_length_by_spec.get(port2_spec)}",
+            "source_dense_source_cluster_size="
+            f"{len(self.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()))}",
+            "target_dense_source_cluster_size="
+            f"{len(self.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()))}",
+            f"foreign_port_keepout_static_count={len(self.foreign_port_keepout_static_cells)}",
+            f"foreign_port_keepout_open_count={len(foreign_keepout_open_cells)}",
+            f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
+            f"target_state=({target_anchor_cell[0]}, {target_anchor_cell[1]}, {int(target_state.angle)})",
+            f"opened_candidate_cells_count={len(opened_candidate_cells)}",
+            f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
+            f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
+            f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
+            f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
+            f"opened_cells_count={len(opened_cells_set)}",
+            f"opened_cells={sorted(opened_cells_set)}",
+            f"opened_static_overlap_count={len(opened_static_overlap)}",
+            f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
+            f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
+            f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
+            f"opened_dynamic_overlap_owners={_dynamic_owners_for_cells(opened_dynamic_overlap)}",
+            "current_port_runway_dynamic_overlap_count="
+            f"{len(current_port_runway_dynamic_overlap)}",
+            "current_port_runway_dynamic_overlap_bbox="
+            f"{_cells_bbox(current_port_runway_dynamic_overlap)}",
+            "sibling_port_runway_dynamic_overlap_count="
+            f"{len(sibling_port_runway_dynamic_overlap)}",
+            "sibling_port_runway_dynamic_overlap_bbox="
+            f"{_cells_bbox(sibling_port_runway_dynamic_overlap)}",
+            f"dynamic_clearance_exempt_cells_count={len(dynamic_clearance_exempt_cells)}",
+            f"dynamic_clearance_exempt_cells_bbox={_cells_bbox(dynamic_clearance_exempt_cells)}",
+            f"dynamic_clearance_exempt_dynamic_overlap_count={len(dynamic_exempt_dynamic_overlap)}",
+            f"dynamic_clearance_exempt_dynamic_overlap_bbox={_cells_bbox(dynamic_exempt_dynamic_overlap)}",
+            f"route_cells_count={len(route_cells)}",
+            f"route_static_blocked_overlap_count={len(route_static_overlap)}",
+            f"route_static_blocked_overlap_bbox={_cells_bbox(route_static_overlap)}",
+            f"route_dynamic_overlap_count={len(route_dynamic_overlap)}",
+            f"route_dynamic_overlap_bbox={_cells_bbox(route_dynamic_overlap)}",
+            f"route_dynamic_overlap_owners={_dynamic_owners_for_cells(route_dynamic_overlap)}",
+            "route_overlap_current_port_runway_count="
+            f"{len(route_overlap_current_port_runway)}",
+            "route_overlap_current_port_runway_bbox="
+            f"{_cells_bbox(route_overlap_current_port_runway)}",
+            "route_overlap_sibling_port_runway_count="
+            f"{len(route_overlap_sibling_port_runway)}",
+            "route_overlap_sibling_port_runway_bbox="
+            f"{_cells_bbox(route_overlap_sibling_port_runway)}",
+            f"route_overlap_candidate_opened_static_count={len(route_overlap_with_candidate_opened_static)}",
+            f"route_overlap_effective_opened_static_count={len(route_overlap_with_effective_opened_static)}",
+            f"route_overlap_candidate_opened_dynamic_count={len(route_overlap_with_candidate_opened_dynamic)}",
+            f"route_overlap_effective_opened_dynamic_count={len(route_overlap_with_effective_opened_dynamic)}",
+            f"route_overlap_dynamic_clearance_exempt_count={len(route_overlap_with_dynamic_exempt)}",
+        ]
+        lines.extend(_format_post_crossing_orthogonal_candidates())
+        lines.extend(_format_target_bend_footprints())
+        lines.extend(_format_first_move_debug())
+        if route_segments:
+            lines.append("route_segments=" + "; ".join(route_segments))
+        if repair_note is not None:
+            lines.append(f"repair={repair_note}")
+        if error_text is not None:
+            lines.append(f"error={error_text}")
+        diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _record_route(
+        self,
+        job: RouteJob,
+        route_obj: Any,
+        opened_cells: list[tuple[int, int]],
+        *,
+        corrected_centerline_um: tuple[tuple[float, float], ...] = (),
+        corrected_total_length_um: float | None = None,
+    ) -> None:
+        if not corrected_centerline_um:
+            corrected_centerline_um = self._fanout_stubbed_centerline(job, route_obj)
+        if (
+            not corrected_centerline_um
+            and not self.enable_checked_endpoint_correction
+            and hasattr(self.router, "route_primitive_centerline")
+        ):
+            try:
+                corrected_centerline_um = _centerline_tuple(
+                    self.router.route_primitive_centerline(route_obj)
+                )
+            except Exception:
+                corrected_centerline_um = ()
+            if corrected_centerline_um and hasattr(self.router, "centerline_length_um"):
+                try:
+                    corrected_total_length_um = float(
+                        self.router.centerline_length_um(list(corrected_centerline_um))
+                    )
+                except Exception:
+                    corrected_total_length_um = None
+        self.route_bookkeeping.record_route(
+            job,
+            route_obj,
+            opened_cells,
+            route_cells=self._route_cells_from_router(job.net_id) if self.track_dynamic_cells else None,
+            corrected_centerline_um=corrected_centerline_um,
+            corrected_total_length_um=corrected_total_length_um,
+        )
+
+    def _export_route_svg(
+        self,
+        job: RouteJob,
+        route_obj: Any,
+        *,
+        suffix: str = "",
+        obstacle_cells: set[tuple[int, int]] | None = None,
+        opened_cells: list[tuple[int, int]] | None = None,
+    ) -> None:
+        should_export = (
+            self.debug_path is not None
+            and (self.debug_route_indices is None or job.route_index in self.debug_route_indices)
+        )
+        if not should_export:
+            return
+        route_dir = self.debug_path / "routes"
+        _ensure_dir(route_dir)
+        route_svg = route_dir / f"{self.debug_prefix}_{job.net_name}{suffix}.svg"
+        if obstacle_cells is not None and hasattr(
+            self.router, "export_debug_svg_with_obstacle_cells"
+        ):
+            svg_text = self.router.export_debug_svg_with_obstacle_cells(
+                route_obj,
+                sorted(obstacle_cells),
+            )
+        else:
+            svg_text = self.router.export_debug_svg(route_obj)
+        if opened_cells is None:
+            try:
+                _, _, _, _, opened_cells = self._state_openings_for_job(job)
+            except Exception:
+                opened_cells = []
+        if (
+            self.debug_stop_after_route_index is not None
+            and int(job.route_index) == int(self.debug_stop_after_route_index)
+        ):
+            next_job = self.full_route_jobs_by_route_index.get(
+                int(self.debug_stop_after_route_index) + 1
+            )
+            if next_job is not None:
+                try:
+                    _, _, _, _, opened_cells = self._states_and_openings(next_job)
+                except Exception:
+                    pass
+        red_keepout_cells = self.debug_port_keepout_cells - {
+            (int(cell[0]), int(cell[1])) for cell in opened_cells
+        }
+        if red_keepout_cells:
+            overlay = ['<g id="port-keepout-cells">']
+            for gx, gy in sorted(red_keepout_cells):
+                if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
+                    svg_y = self.grid_height - gy - 1
+                    overlay.append(
+                        f'<rect class="port-keepout" x="{gx}" y="{svg_y}" '
+                        'width="1" height="1" fill="#d93025" opacity="0.38" />'
+                    )
+            overlay.append("</g>")
+            overlay_text = "".join(overlay)
+            if "</svg>" in svg_text and 'id="port-keepout-cells"' not in svg_text:
+                svg_text = svg_text.replace("</svg>", overlay_text + "</svg>", 1)
+        route_svg.write_text(svg_text, encoding="utf-8")
+        self.route_svgs.append(route_svg)
+
+    def _route_engine_summary(self, route_obj: Any) -> str:
+        expanded_states = int(getattr(route_obj, "expanded_states", 0))
+        route_kind = "simple" if expanded_states == 0 else "astar"
+        length_um = _as_float(getattr(route_obj, "total_length_um", 0.0), 0.0)
+        total_cost = _as_float(getattr(route_obj, "total_cost", 0.0), 0.0)
+        return (
+            f"{route_kind} "
+            f"length={length_um:.3f}um "
+            f"cost={total_cost:.3f} "
+            f"expanded={expanded_states}"
+        )
+
+    def _write_failed_log(
+        self,
+        job: RouteJob,
+        source_state: Any,
+        target_state: Any,
+        opened_candidate_cells: set[tuple[int, int]],
+        opened_cells: list[tuple[int, int]],
+        error_text: str,
+    ) -> None:
+        if self.debug_path is None:
+            return
+        route_dir = self.debug_path / "routes"
+        _ensure_dir(route_dir)
+        port1_spec = f"{job.inst1},{job.port1}"
+        port2_spec = f"{job.inst2},{job.port2}"
+        fail_txt = route_dir / f"{self.debug_prefix}_{job.net_name}_FAILED.txt"
+        committed_dynamic_cells = self._committed_dynamic_cells()
+        opened_candidate_static_overlap = (
+            opened_candidate_cells & self.static_blocked_cells_before_port_reservations
+        )
+        opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
+        opened_cells_set = set(opened_cells)
+        opened_static_overlap = opened_cells_set & self.static_blocked_cells_before_port_reservations
+        opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
+        current_attempts = [
+            ("current", record)
+            for record in self.route_attempt_records
+            if getattr(record, "net_id", None) == job.net_id
+        ]
+        recent_attempts = [("recent", record) for record in self.route_attempt_records[-12:]]
+        root_cause_line = _format_illegal_crossing_root_causes_line(
+            [error_text]
+            + [
+                str(attempt.error)
+                for _, attempt in (current_attempts[-8:] + recent_attempts)
+                if getattr(attempt, "error", None)
+            ]
+        )
+        fail_lines = [
+            f"net_name={job.net_name}",
+            f"source_spec={port1_spec}",
+            f"target_spec={port2_spec}",
+            f"source_state=({int(source_state.x)}, {int(source_state.y)}, {int(source_state.angle)})",
+            f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
+            f"allow_45_degree_turns={self.allow_45_degree_turns}",
+            f"block_radius_cells={self.block_radius_cells}",
+            "dynamic_obstacle_search_expansion_radius_cells="
+            f"{self.clearance_policy.dynamic_obstacle_search_expansion_radius_cells}",
+            "dynamic_route_commit_keepout_radius_cells="
+            f"{self.clearance_policy.dynamic_route_commit_keepout_radius_cells}",
+            "dynamic_route_core_radius_cells="
+            f"{self.clearance_policy.dynamic_route_core_radius_cells}",
+            f"bend_radius_cells={self.bend_radius_cells}",
+            f"port_entry_length_cells={self.port_entry_length_cells}",
+            f"port_entry_half_width_cells={self.port_entry_half_width_cells}",
+            f"port_lane_length_cells={self.port_lane_length_cells}",
+            f"port_lane_half_width_cells={self.port_lane_half_width_cells}",
+            f"opened_candidate_cells_count={len(opened_candidate_cells)}",
+            f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
+            f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
+            f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
+            f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
+            f"opened_cells_count={len(opened_cells)}",
+            f"opened_static_overlap_count={len(opened_static_overlap)}",
+            f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
+            f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
+            f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
+            f"error={error_text}",
+        ]
+        if root_cause_line is not None:
+            fail_lines.append(root_cause_line)
+        fail_lines.extend(_format_native_repair_trace_lines(self.native_repair_trace_records))
+        for label, attempt in (current_attempts[-8:] + recent_attempts):
+            as_dict = attempt.as_dict()
+            diagnostics = as_dict.get("diagnostics")
+            fail_lines.append(
+                f"attempt_{label}="
+                + ", ".join(
+                    f"{key}={as_dict.get(key)}"
+                    for key in (
+                        "attempt_index",
+                        "bucket_name",
+                        "failed",
+                        "error",
+                        "elapsed_s",
+                        "expanded_states",
+                        "generated_neighbors",
+                        "window_attempts",
+                        "used_full_grid_fallback",
+                        "candidate_blocker_count",
+                        "candidate_blocker_route_indices",
+                        "ripup_victim_count",
+                        "ripup_victim_route_indices",
+                    )
+                    if key in as_dict
+                )
+            )
+            if isinstance(diagnostics, dict) and diagnostics:
+                fail_lines.append(
+                    f"attempt_{label}_diagnostics="
+                    + ", ".join(
+                        f"{key}={diagnostics.get(key)}"
+                        for key in (
+                            "candidate_blocker_count",
+                            "candidate_blocker_route_indices",
+                            "ripup_victim_count",
+                            "ripup_victim_route_indices",
+                            "route_bbox_min_x",
+                            "route_bbox_max_x",
+                            "route_bbox_min_y",
+                            "route_bbox_max_y",
+                        )
+                        if key in diagnostics
+                    )
+                )
+        fail_txt.write_text("\n".join(fail_lines) + "\n", encoding="utf-8")
+
+    def _finalize_committed_route(
+        self,
+        job: RouteJob,
+        route_obj: Any,
+        opened_cells: list[tuple[int, int]],
+        *,
+        should_print_route: bool,
+        diag_txt: Path | None,
+        debug_obstacle_cells: set[tuple[int, int]] | None = None,
+    ) -> None:
+        expanded_states = int(getattr(route_obj, "expanded_states", 0))
+        self.total_expanded_states += expanded_states
+        if expanded_states == 0:
+            self.simple_route_count += 1
+
+        if self.diagnostics_enabled:
+            source_state, target_state, opened_candidate_cells, opened_cells_set, _ = (
+                self._state_openings_for_job(job)
+            )
+            route_cells = {
+                (int(cell[0]), int(cell[1]))
+                for cell in (getattr(route_obj, "cells", None) or [])
+            }
+            self._write_route_diagnostics(
+                job=job,
+                source_state=source_state,
+                target_state=target_state,
+                opened_candidate_cells=opened_candidate_cells,
+                dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(job),
+                opened_cells_set=opened_cells_set,
+                diag_txt=diag_txt,
+                status="ok",
+                route_cells=route_cells,
+                route_obj=route_obj,
+            )
+
+        self._export_route_svg(
+            job,
+            route_obj,
+            obstacle_cells=debug_obstacle_cells,
+            opened_cells=opened_cells,
+        )
+
+        if should_print_route:
+            print(f"ok {self._route_engine_summary(route_obj)}")
+
+
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
         t_obstacle_start = self._pipeline_timer_start()
         self.resolved_obstacle_config = _resolve_obstacle_config(
@@ -3631,1045 +4678,6 @@ class _RouteNetsRustSession:
             float(self.origin_y_um),
         )
 
-        def _static_cells_in_rect(min_x: int, max_x: int, min_y: int, max_y: int) -> int:
-            if min_x > max_x or min_y > max_y:
-                return 0
-            if self.blocked_static_rects_for_diagnostics:
-                return sum(
-                    _rect_overlap_cell_count(
-                        rect,
-                        min_x=min_x,
-                        max_x=max_x,
-                        min_y=min_y,
-                        max_y=max_y,
-                    )
-                    for rect in self.blocked_static_rects_for_diagnostics
-                )
-            return sum(
-                1
-                for x, y in self.static_blocked_cells_before_port_reservations
-                if min_x <= x <= max_x and min_y <= y <= max_y
-            )
-
-        def _cells_in_rect(
-            cells: set[tuple[int, int]],
-            *,
-            min_x: int,
-            max_x: int,
-            min_y: int,
-            max_y: int,
-        ) -> int:
-            if min_x > max_x or min_y > max_y:
-                return 0
-            return sum(1 for x, y in cells if min_x <= x <= max_x and min_y <= y <= max_y)
-
-        def _route_attempt_diagnostics(
-            job: RouteJob,
-            route_obj: object | None,
-            *,
-            candidate_blockers: list[int] | None = None,
-            ripup_ids: list[int] | None = None,
-        ) -> dict[str, object]:
-            dynamic_cells_before = self._committed_dynamic_cells_for_attempt(exclude_net_id=job.net_id)
-            source_state, target_state, _, _, opened_cells = self._state_openings_for_job(job)
-            source_x = int(source_state.x)
-            source_y = int(source_state.y)
-            source_angle = int(source_state.angle)
-            target_x = int(target_state.x)
-            target_y = int(target_state.y)
-            target_angle = int(target_state.angle)
-            span_x = abs(target_x - source_x)
-            span_y = abs(target_y - source_y)
-            span_bbox_min_x = min(source_x, target_x)
-            span_bbox_max_x = max(source_x, target_x)
-            span_bbox_min_y = min(source_y, target_y)
-            span_bbox_max_y = max(source_y, target_y)
-            span_bbox_area = _rect_cell_count(
-                min_x=span_bbox_min_x,
-                max_x=span_bbox_max_x,
-                min_y=span_bbox_min_y,
-                max_y=span_bbox_max_y,
-            )
-            window_min_x = int(getattr(route_obj, "last_window_min_x", 0)) if route_obj else 0
-            window_max_x = int(getattr(route_obj, "last_window_max_x", -1)) if route_obj else -1
-            window_min_y = int(getattr(route_obj, "last_window_min_y", 0)) if route_obj else 0
-            window_max_y = int(getattr(route_obj, "last_window_max_y", -1)) if route_obj else -1
-            window_area = int(getattr(route_obj, "last_window_area_cells", 0)) if route_obj else 0
-            if window_area <= 0:
-                window_area = _rect_cell_count(
-                    min_x=window_min_x,
-                    max_x=window_max_x,
-                    min_y=window_min_y,
-                    max_y=window_max_y,
-                )
-            window_static_cells = _static_cells_in_rect(
-                window_min_x,
-                window_max_x,
-                window_min_y,
-                window_max_y,
-            )
-            window_dynamic_cells = _cells_in_rect(
-                dynamic_cells_before,
-                min_x=window_min_x,
-                max_x=window_max_x,
-                min_y=window_min_y,
-                max_y=window_max_y,
-            )
-            span_static_cells = _static_cells_in_rect(
-                span_bbox_min_x,
-                span_bbox_max_x,
-                span_bbox_min_y,
-                span_bbox_max_y,
-            )
-            span_dynamic_cells = _cells_in_rect(
-                dynamic_cells_before,
-                min_x=span_bbox_min_x,
-                max_x=span_bbox_max_x,
-                min_y=span_bbox_min_y,
-                max_y=span_bbox_max_y,
-            )
-            route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
-            route_bbox = _route_cells_bbox(route_cells or ())
-            if route_bbox is None:
-                route_bbox_min_x = 0
-                route_bbox_max_x = -1
-                route_bbox_min_y = 0
-                route_bbox_max_y = -1
-            else:
-                route_bbox_min_x, route_bbox_max_x, route_bbox_min_y, route_bbox_max_y = route_bbox
-            route_bbox_area = _rect_cell_count(
-                min_x=route_bbox_min_x,
-                max_x=route_bbox_max_x,
-                min_y=route_bbox_min_y,
-                max_y=route_bbox_max_y,
-            )
-            total_cost = (
-                float(getattr(route_obj, "total_cost", 0.0))
-                if route_obj is not None
-                else None
-            )
-            euclidean_lower_bound, heading_lower_bound = self._source_lower_bounds(
-                source_x=source_x,
-                source_y=source_y,
-                source_angle=source_angle,
-                target_x=target_x,
-                target_y=target_y,
-                target_angle=target_angle,
-            )
-            blocker_ids = list(candidate_blockers or [])
-            victim_ids = list(ripup_ids or [])
-            raw_dynamic_cells: set[tuple[int, int]] = set()
-            raw_dynamic_refcount_gt1_cells: set[tuple[int, int]] = set()
-            raw_core_cells: set[tuple[int, int]] = set()
-            raw_core_refcount_gt1_cells: set[tuple[int, int]] = set()
-            raw_net_route_cells: set[tuple[int, int]] = set()
-            if hasattr(self.router, "raw_dynamic_obstacle_cells"):
-                raw_dynamic_entries = [
-                    (int(x), int(y), int(refs))
-                    for x, y, refs in self.router.raw_dynamic_obstacle_cells()
-                ]
-                raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
-                raw_dynamic_refcount_gt1_cells = {
-                    (x, y) for x, y, refs in raw_dynamic_entries if refs > 1
-                }
-            if hasattr(self.router, "raw_dynamic_core_cells"):
-                raw_core_entries = [
-                    (int(x), int(y), int(refs))
-                    for x, y, refs in self.router.raw_dynamic_core_cells()
-                ]
-                raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
-                raw_core_refcount_gt1_cells = {
-                    (x, y) for x, y, refs in raw_core_entries if refs > 1
-                }
-            if hasattr(self.router, "all_net_route_cells"):
-                for _, cells in self.router.all_net_route_cells():
-                    raw_net_route_cells.update(
-                        (int(cell[0]), int(cell[1])) for cell in cells
-                    )
-            raw_dynamic_without_owner = raw_dynamic_cells - raw_net_route_cells
-            raw_net_route_without_dynamic = raw_net_route_cells - raw_dynamic_cells
-            raw_core_without_dynamic = raw_core_cells - raw_dynamic_cells
-            raw_dynamic_span_cells = {
-                (x, y)
-                for x, y in raw_dynamic_cells
-                if span_bbox_min_x <= x <= span_bbox_max_x
-                and span_bbox_min_y <= y <= span_bbox_max_y
-            }
-            raw_dynamic_without_owner_span_cells = {
-                (x, y)
-                for x, y in raw_dynamic_without_owner
-                if span_bbox_min_x <= x <= span_bbox_max_x
-                and span_bbox_min_y <= y <= span_bbox_max_y
-            }
-            return {
-                "source_state": [source_x, source_y, source_angle],
-                "target_state": [target_x, target_y, target_angle],
-                "span_x_cells": span_x,
-                "span_y_cells": span_y,
-                "span_manhattan_cells": span_x + span_y,
-                "span_bbox_area_cells": span_bbox_area,
-                "span_static_cells": span_static_cells,
-                "span_dynamic_cells": span_dynamic_cells,
-                "route_bbox_min_x": route_bbox_min_x,
-                "route_bbox_max_x": route_bbox_max_x,
-                "route_bbox_min_y": route_bbox_min_y,
-                "route_bbox_max_y": route_bbox_max_y,
-                "route_bbox_width_cells": max(0, route_bbox_max_x - route_bbox_min_x + 1),
-                "route_bbox_height_cells": max(0, route_bbox_max_y - route_bbox_min_y + 1),
-                "route_bbox_area_cells": route_bbox_area,
-                "route_bbox_to_span_bbox_area": (
-                    float(route_bbox_area) / float(span_bbox_area)
-                    if span_bbox_area > 0 and route_bbox_area > 0
-                    else None
-                ),
-                "opened_cells_count": len(opened_cells),
-                "block_radius_cells": self.block_radius_cells,
-                "dynamic_obstacle_search_expansion_radius_cells": (
-                    self.clearance_policy.dynamic_obstacle_search_expansion_radius_cells
-                ),
-                "dynamic_route_commit_keepout_radius_cells": (
-                    self.clearance_policy.dynamic_route_commit_keepout_radius_cells
-                ),
-                "dynamic_route_core_radius_cells": (
-                    self.clearance_policy.dynamic_route_core_radius_cells
-                ),
-                "bend_radius_cells": self.bend_radius_cells,
-                "window_width_cells": max(0, window_max_x - window_min_x + 1),
-                "window_height_cells": max(0, window_max_y - window_min_y + 1),
-                "window_area_cells": window_area,
-                "window_to_span_bbox_area": (
-                    float(window_area) / float(span_bbox_area)
-                    if span_bbox_area > 0 and window_area > 0
-                    else None
-                ),
-                "route_bbox_to_window_area": (
-                    float(route_bbox_area) / float(window_area)
-                    if window_area > 0 and route_bbox_area > 0
-                    else None
-                ),
-                "window_static_cells": window_static_cells,
-                "window_dynamic_cells": window_dynamic_cells,
-                "window_static_density": (
-                    float(window_static_cells) / float(window_area)
-                    if window_area > 0
-                    else None
-                ),
-                "window_dynamic_density": (
-                    float(window_dynamic_cells) / float(window_area)
-                    if window_area > 0
-                    else None
-                ),
-                "total_cost": total_cost,
-                "euclidean_lower_bound_cost": euclidean_lower_bound,
-                "heading_lower_bound_cost": heading_lower_bound,
-                "euclidean_lower_bound_to_cost": (
-                    euclidean_lower_bound / total_cost
-                    if total_cost is not None and total_cost > 0.0
-                    else None
-                ),
-                "heading_lower_bound_to_cost": (
-                    heading_lower_bound / total_cost
-                    if total_cost is not None and total_cost > 0.0
-                    else None
-                ),
-                "heading_lower_bound_gap_cost": (
-                    total_cost - heading_lower_bound
-                    if total_cost is not None
-                    else None
-                ),
-                "committed_dynamic_cells_before": len(dynamic_cells_before),
-                "raw_dynamic_obstacle_cells_before": len(raw_dynamic_cells),
-                "raw_dynamic_core_cells_before": len(raw_core_cells),
-                "raw_net_route_cells_before": len(raw_net_route_cells),
-                "raw_dynamic_refcount_gt1_count": len(raw_dynamic_refcount_gt1_cells),
-                "raw_dynamic_refcount_gt1_bbox": _cells_bbox(raw_dynamic_refcount_gt1_cells),
-                "raw_core_refcount_gt1_count": len(raw_core_refcount_gt1_cells),
-                "raw_dynamic_without_owner_count": len(raw_dynamic_without_owner),
-                "raw_dynamic_without_owner_bbox": _cells_bbox(raw_dynamic_without_owner),
-                "raw_dynamic_without_owner_sample": sorted(raw_dynamic_without_owner)[:12],
-                "raw_net_route_without_dynamic_count": len(raw_net_route_without_dynamic),
-                "raw_net_route_without_dynamic_bbox": _cells_bbox(raw_net_route_without_dynamic),
-                "raw_core_without_dynamic_count": len(raw_core_without_dynamic),
-                "span_raw_dynamic_cells": len(raw_dynamic_span_cells),
-                "span_raw_dynamic_without_owner_count": len(raw_dynamic_without_owner_span_cells),
-                "span_raw_dynamic_without_owner_bbox": _cells_bbox(
-                    raw_dynamic_without_owner_span_cells
-                ),
-                "candidate_blocker_count": len(blocker_ids),
-                "candidate_blocker_net_ids": blocker_ids,
-                "candidate_blocker_route_indices": [
-                    self.route_jobs_by_id[net_id].route_index
-                    for net_id in blocker_ids
-                    if net_id in self.route_jobs_by_id
-                ],
-                "ripup_victim_count": len(victim_ids),
-                "ripup_victim_net_ids": victim_ids,
-                "ripup_victim_route_indices": [
-                    self.route_jobs_by_id[net_id].route_index
-                    for net_id in victim_ids
-                    if net_id in self.route_jobs_by_id
-                ],
-            }
-
-        def _write_route_diagnostics(
-            *,
-            job: RouteJob,
-            source_state: Any,
-            target_state: Any,
-            opened_candidate_cells: set[tuple[int, int]],
-            dynamic_clearance_exempt_cells: set[tuple[int, int]],
-            opened_cells_set: set[tuple[int, int]],
-            diag_txt: Path | None,
-            status: str,
-            error_text: str | None = None,
-            route_cells: set[tuple[int, int]] | None = None,
-            route_obj: Any | None = None,
-            repair_note: str | None = None,
-        ) -> None:
-            if diag_txt is None:
-                return
-            port1_spec = f"{job.inst1},{job.port1}"
-            port2_spec = f"{job.inst2},{job.port2}"
-            source_anchor_cell = (int(source_state.x), int(source_state.y))
-            target_anchor_cell = (int(target_state.x), int(target_state.y))
-            committed_dynamic_cells = self._committed_dynamic_cells(exclude_net_id=job.net_id)
-            if self.diagnostics_enabled:
-                opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
-                opened_candidate_static_overlap = self._cells_in_raw_static_geometry(
-                    opened_candidate_cells
-                )
-                opened_static_overlap = self._cells_in_raw_static_geometry(opened_cells_set)
-                opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
-                dynamic_exempt_dynamic_overlap = (
-                    dynamic_clearance_exempt_cells & committed_dynamic_cells
-                )
-            else:
-                opened_candidate_dynamic_overlap = set()
-                opened_candidate_static_overlap = set()
-                opened_static_overlap = set()
-                opened_dynamic_overlap = set()
-                dynamic_exempt_dynamic_overlap = set()
-
-            route_cells = route_cells or set()
-            route_static_overlap = self._cells_in_raw_static_geometry(route_cells)
-            route_overlap_with_candidate_opened_static = (
-                route_cells & opened_candidate_static_overlap
-            )
-            route_overlap_with_effective_opened_static = route_cells & opened_static_overlap
-            route_dynamic_overlap = route_cells & committed_dynamic_cells
-            route_overlap_with_candidate_opened_dynamic = (
-                route_cells & opened_candidate_dynamic_overlap
-            )
-            route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
-            route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
-            current_endpoint_foreign_keepout_cells = set(
-                self._foreign_keepout_open_cells_for_spec(port1_spec)
-            )
-            current_endpoint_foreign_keepout_cells.update(
-                self._foreign_keepout_open_cells_for_spec(port2_spec)
-            )
-            foreign_keepout_open_cells = current_endpoint_foreign_keepout_cells & opened_cells_set
-            current_port_runway_cells = set(self.port_runway_cells_by_spec.get(port1_spec, set()))
-            current_port_runway_cells.update(self.port_runway_cells_by_spec.get(port2_spec, set()))
-            source_sibling_port_runway_cells: set[tuple[int, int]] = set()
-            for cluster_port_spec in self.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()):
-                if cluster_port_spec == port1_spec:
-                    continue
-                source_sibling_port_runway_cells.update(
-                    self.port_runway_cells_by_spec.get(cluster_port_spec, set())
-                )
-            target_sibling_port_runway_cells: set[tuple[int, int]] = set()
-            for cluster_port_spec in self.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()):
-                if cluster_port_spec == port2_spec:
-                    continue
-                target_sibling_port_runway_cells.update(
-                    self.port_runway_cells_by_spec.get(cluster_port_spec, set())
-                )
-            sibling_port_runway_cells = (
-                source_sibling_port_runway_cells | target_sibling_port_runway_cells
-            )
-            current_port_runway_dynamic_overlap = (
-                current_port_runway_cells & committed_dynamic_cells
-            )
-            sibling_port_runway_dynamic_overlap = (
-                sibling_port_runway_cells & committed_dynamic_cells
-            )
-            route_overlap_current_port_runway = route_cells & current_port_runway_cells
-            route_overlap_sibling_port_runway = route_cells & sibling_port_runway_cells
-            route_segments: list[str] = []
-            if route_obj is not None:
-                for segment in cast(list[object], getattr(route_obj, "segments", []) or []):
-                    try:
-                        entry = dict(cast(Any, segment))
-                    except (TypeError, ValueError):
-                        continue
-                    route_segments.append(
-                        "{kind}:{start}->{end}@{start_angle}->{end_angle}".format(
-                            kind=entry.get("kind"),
-                            start=entry.get("start"),
-                            end=entry.get("end"),
-                            start_angle=entry.get("start_angle"),
-                            end_angle=entry.get("end_angle"),
-                        )
-                    )
-
-            def _relative_line_cells(
-                *,
-                start: tuple[int, int],
-                direction: tuple[int, int],
-                cells: int,
-            ) -> list[tuple[int, int]]:
-                return [
-                    (int(start[0]) + int(direction[0]) * step,
-                     int(start[1]) + int(direction[1]) * step)
-                    for step in range(max(0, int(cells)) + 1)
-                ]
-
-            def _unique_cells(
-                cells: Iterable[tuple[int, int]],
-            ) -> list[tuple[int, int]]:
-                seen: set[tuple[int, int]] = set()
-                unique: list[tuple[int, int]] = []
-                for cell in cells:
-                    normalized = (int(cell[0]), int(cell[1]))
-                    if normalized in seen:
-                        continue
-                    seen.add(normalized)
-                    unique.append(normalized)
-                return unique
-
-            def _first_move_footprint(
-                *,
-                source: tuple[int, int],
-                source_angle: int,
-                kind: str,
-                cells: int = 0,
-                delta: int = 0,
-            ) -> tuple[tuple[int, int], int, list[tuple[int, int]]]:
-                start_dir = self._angle_to_step(source_angle)
-                if kind == "straight":
-                    relative = _relative_line_cells(
-                        start=(0, 0),
-                        direction=start_dir,
-                        cells=cells,
-                    )
-                    end = relative[-1]
-                    end_angle = int(source_angle) % 8
-                else:
-                    end_angle = (int(source_angle) + int(delta)) % 8
-                    end_dir = self._angle_to_step(end_angle)
-                    radius = max(0, int(self.bend_radius_cells))
-                    first_leg = _relative_line_cells(
-                        start=(0, 0),
-                        direction=start_dir,
-                        cells=radius,
-                    )
-                    corner = (start_dir[0] * radius, start_dir[1] * radius)
-                    second_leg = _relative_line_cells(
-                        start=corner,
-                        direction=end_dir,
-                        cells=radius,
-                    )
-                    relative = _unique_cells([*first_leg, *second_leg])
-                    end = relative[-1]
-                absolute = [
-                    (int(source[0]) + int(dx), int(source[1]) + int(dy))
-                    for dx, dy in relative
-                ]
-                return (
-                    (int(source[0]) + int(end[0]), int(source[1]) + int(end[1])),
-                    end_angle,
-                    absolute,
-                )
-
-            def _dynamic_owners_for_cells(
-                cells: set[tuple[int, int]],
-            ) -> dict[int, list[tuple[int, int]]]:
-                owners: dict[int, list[tuple[int, int]]] = {}
-                for net_id in self.route_bookkeeping.records_by_id:
-                    if int(net_id) == int(job.net_id):
-                        continue
-                    overlap = cells & self._route_cells_from_router(int(net_id))
-                    if overlap:
-                        owners[int(net_id)] = sorted(overlap)
-                return owners
-
-            def _format_post_crossing_orthogonal_candidates() -> list[str]:
-                if not self.diagnostics_enabled or not route_dynamic_overlap:
-                    return []
-                if int(source_state.angle) != 0 or int(target_state.angle) != 0:
-                    return []
-                if source_anchor_cell[1] == target_anchor_cell[1]:
-                    return []
-                crossing_cells = sorted(route_dynamic_overlap)
-                if len(crossing_cells) != 1:
-                    return []
-                cross_x, cross_y = crossing_cells[0]
-                dy_sign = 1 if target_anchor_cell[1] > cross_y else -1
-                dx_sign = 1 if target_anchor_cell[0] > cross_x else -1
-                if dx_sign != 1:
-                    return []
-                radius = max(1, int(self.bend_radius_cells))
-                routing_static_cells = set(self.static_blocked_cells_before_port_reservations)
-                routing_static_cells.update(self.debug_port_keepout_cells)
-                routing_static_cells.update(self.foreign_port_keepout_static_cells)
-                routing_static_cells.update(self.fanout_stub_static_cells)
-                opened_search_cells = set(opened_cells_set)
-                allowed_dynamic_cells = set(route_dynamic_overlap)
-                lines: list[str] = []
-                min_start = cross_x + radius
-                max_start = target_anchor_cell[0] - 2 * radius
-                for bend_start_x in range(min_start, max_start + 1):
-                    if target_anchor_cell[1] - dy_sign * radius == cross_y:
-                        continue
-                    cells: set[tuple[int, int]] = set()
-                    for x in range(source_anchor_cell[0], bend_start_x + radius + 1):
-                        cells.add((x, cross_y))
-                    first_corner_x = bend_start_x + radius
-                    first_corner_y = cross_y
-                    first_end_y = cross_y + dy_sign * radius
-                    for step in range(0, radius + 1):
-                        cells.add((first_corner_x, first_corner_y + dy_sign * step))
-                    vertical_start_y = first_end_y
-                    second_start_y = target_anchor_cell[1] - dy_sign * radius
-                    y0, y1 = sorted((vertical_start_y, second_start_y))
-                    for y in range(y0, y1 + 1):
-                        cells.add((first_corner_x, y))
-                    second_end_x = first_corner_x + radius
-                    for step in range(0, radius + 1):
-                        cells.add((first_corner_x + step, second_start_y + dy_sign * step))
-                    for x in range(second_end_x, target_anchor_cell[0] + 1):
-                        cells.add((x, target_anchor_cell[1]))
-                    static_blockers = (cells & routing_static_cells) - opened_search_cells
-                    dynamic_blockers = (
-                        (cells & committed_dynamic_cells)
-                        - allowed_dynamic_cells
-                        - (cells & opened_search_cells)
-                    )
-                    lines.append(
-                        "post_crossing_90_candidate="
-                        f"bend_start_x={bend_start_x}; "
-                        f"cells={len(cells)}; "
-                        f"static_blockers={sorted(static_blockers)[:24]}; "
-                        f"static_blocker_count={len(static_blockers)}; "
-                        f"dynamic_blockers={sorted(dynamic_blockers)[:24]}; "
-                        f"dynamic_blocker_count={len(dynamic_blockers)}; "
-                        f"dynamic_blocker_owners={_dynamic_owners_for_cells(dynamic_blockers)}"
-                    )
-                return lines
-
-            def _format_target_bend_footprints() -> list[str]:
-                if not self.diagnostics_enabled:
-                    return []
-                radius = max(1, int(self.bend_radius_cells))
-                routing_static_cells = set(self.static_blocked_cells_before_port_reservations)
-                routing_static_cells.update(self.debug_port_keepout_cells)
-                routing_static_cells.update(self.foreign_port_keepout_static_cells)
-                routing_static_cells.update(self.fanout_stub_static_cells)
-                opened_search_cells = set(opened_cells_set)
-
-                def turn_cells(
-                    start: tuple[int, int],
-                    start_angle: int,
-                    delta: int,
-                ) -> set[tuple[int, int]]:
-                    start_dir = self._angle_to_step(start_angle)
-                    end_angle = (int(start_angle) + int(delta)) % 8
-                    end_dir = self._angle_to_step(end_angle)
-                    cells: set[tuple[int, int]] = set()
-                    for step in range(radius + 1):
-                        cells.add((
-                            int(start[0]) + start_dir[0] * step,
-                            int(start[1]) + start_dir[1] * step,
-                        ))
-                    corner = (
-                        int(start[0]) + start_dir[0] * radius,
-                        int(start[1]) + start_dir[1] * radius,
-                    )
-                    for step in range(radius + 1):
-                        cells.add((
-                            corner[0] + end_dir[0] * step,
-                            corner[1] + end_dir[1] * step,
-                        ))
-                    return cells
-
-                target = target_anchor_cell
-                specs = [
-                    (
-                        "end_from_below_to_port",
-                        (target[0] - radius, target[1] - radius),
-                        2,
-                        -2,
-                    ),
-                    (
-                        "end_from_above_to_port",
-                        (target[0] - radius, target[1] + radius),
-                        6,
-                        2,
-                    ),
-                    ("target_out_down", target, 0, -2),
-                    ("target_out_up", target, 0, 2),
-                ]
-                lines: list[str] = []
-                for label, start, angle, delta in specs:
-                    cells = turn_cells(start, angle, delta)
-                    static_blockers = (cells & routing_static_cells) - opened_search_cells
-                    dynamic_blockers = (
-                        (cells & committed_dynamic_cells)
-                        - (cells & opened_search_cells)
-                        - route_dynamic_overlap
-                    )
-                    lines.append(
-                        "target_bend_footprint="
-                        f"label={label}; start={start}; angle={angle}; delta={delta}; "
-                        f"cells={sorted(cells)}; "
-                        f"static_blockers={sorted(static_blockers)}; "
-                        f"static_blocker_count={len(static_blockers)}; "
-                        f"dynamic_blockers={sorted(dynamic_blockers)}; "
-                        f"dynamic_blocker_count={len(dynamic_blockers)}; "
-                        f"dynamic_blocker_owners={_dynamic_owners_for_cells(dynamic_blockers)}"
-                    )
-                return lines
-
-            def _format_first_move_debug() -> list[str]:
-                if not self.diagnostics_enabled:
-                    return []
-                source = source_anchor_cell
-                source_angle = int(source_state.angle)
-                source_key = source_anchor_cell
-                target_key = target_anchor_cell
-                opened_search_cells = {
-                    cell
-                    for cell in opened_cells_set
-                    if cell == source_key
-                    or cell == target_key
-                    or cell not in committed_dynamic_cells
-                }
-                routing_static_cells = set(self.static_blocked_cells_before_port_reservations)
-                routing_static_cells.update(self.debug_port_keepout_cells)
-                routing_static_cells.update(self.foreign_port_keepout_static_cells)
-                routing_static_cells.update(self.fanout_stub_static_cells)
-                primitive_specs: list[tuple[str, str, int, int]] = [
-                    ("straight_short", "straight", int(self.primitive_cfg.straight_short_cells), 0),
-                    ("straight_long", "straight", int(self.primitive_cfg.straight_long_cells), 0),
-                    ("turn45_left", "turn", 0, 1),
-                    ("turn45_right", "turn", 0, -1),
-                    ("turn90_left", "turn", 0, 2),
-                    ("turn90_right", "turn", 0, -2),
-                ]
-                debug_lines: list[str] = []
-                for label, kind, cells, delta in primitive_specs:
-                    if not self.allow_45_degree_turns and abs(int(delta)) == 1:
-                        continue
-                    end_cell, end_angle, footprint = _first_move_footprint(
-                        source=source,
-                        source_angle=source_angle,
-                        kind=kind,
-                        cells=cells,
-                        delta=delta,
-                    )
-                    footprint_set = set(footprint)
-                    static_overlap = self._cells_in_raw_static_geometry(footprint_set)
-                    routing_static_overlap = footprint_set & routing_static_cells
-                    effective_static_blockers = routing_static_overlap - opened_search_cells
-                    dynamic_overlap = footprint_set & committed_dynamic_cells
-                    effective_dynamic_blockers = (
-                        dynamic_overlap
-                        - dynamic_clearance_exempt_cells
-                        - (footprint_set & opened_search_cells)
-                    )
-                    owner_cells = _dynamic_owners_for_cells(dynamic_overlap)
-                    debug_lines.append(
-                        "first_move_{label}="
-                        "end=({end_x},{end_y},{end_angle}); "
-                        "footprint={footprint}; "
-                        "static={static}; "
-                        "routing_static={routing_static}; "
-                        "static_blockers={static_blockers}; "
-                        "dynamic={dynamic}; "
-                        "dynamic_blockers={dynamic_blockers}; "
-                        "dynamic_owners={owners}; "
-                        "opened={opened}; "
-                        "opened_search={opened_search}; "
-                        "dynamic_exempt={dynamic_exempt}".format(
-                            label=label,
-                            end_x=end_cell[0],
-                            end_y=end_cell[1],
-                            end_angle=end_angle,
-                            footprint=footprint,
-                            static=sorted(static_overlap),
-                            routing_static=sorted(routing_static_overlap),
-                            static_blockers=sorted(effective_static_blockers),
-                            dynamic=sorted(dynamic_overlap),
-                            dynamic_blockers=sorted(effective_dynamic_blockers),
-                            owners=owner_cells,
-                            opened=sorted(footprint_set & opened_cells_set),
-                            opened_search=sorted(footprint_set & opened_search_cells),
-                            dynamic_exempt=sorted(
-                                footprint_set & dynamic_clearance_exempt_cells
-                            ),
-                        )
-                    )
-                return debug_lines
-
-            lines = [
-                f"net_name={job.net_name}",
-                f"status={status}",
-                f"source_spec={port1_spec}",
-                f"target_spec={port2_spec}",
-                f"source_component={_schematic_instance_component_name(self.schematic, job.inst1)}",
-                f"target_component={_schematic_instance_component_name(self.schematic, job.inst2)}",
-                f"source_access_rule={self.port_access_rule_by_spec.get(port1_spec)}",
-                f"target_access_rule={self.port_access_rule_by_spec.get(port2_spec)}",
-                f"foreign_port_keepout_cells={int(self.foreign_port_keepout_cells)}",
-                f"fanout_access_mode={self.fanout_access_mode_normalized}",
-                f"fanout_stub_bend_degrees={45 * int(self._env_fanout_stub_bend_steps())}",
-                f"fanout_anchor_port_count={len(self.fanout_anchor_by_port_spec)}",
-                f"fanout_stub_center_cell_count={len(self.fanout_stub_center_cells)}",
-                f"fanout_stub_static_cell_count={len(self.fanout_stub_static_cells)}",
-                "source_fanout_anchor="
-                f"{f'{job.inst1},{job.port1}' in self.fanout_anchor_by_port_spec}",
-                "target_fanout_anchor="
-                f"{f'{job.inst2},{job.port2}' in self.fanout_anchor_by_port_spec}",
-                "source_dense_port_runway_cells="
-                f"{self.dense_source_port_runway_length_by_spec.get(port1_spec)}",
-                "target_dense_port_runway_cells="
-                f"{self.dense_target_port_runway_length_by_spec.get(port2_spec)}",
-                "source_dense_source_cluster_size="
-                f"{len(self.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()))}",
-                "target_dense_source_cluster_size="
-                f"{len(self.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()))}",
-                f"foreign_port_keepout_static_count={len(self.foreign_port_keepout_static_cells)}",
-                f"foreign_port_keepout_open_count={len(foreign_keepout_open_cells)}",
-                f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
-                f"target_state=({target_anchor_cell[0]}, {target_anchor_cell[1]}, {int(target_state.angle)})",
-                f"opened_candidate_cells_count={len(opened_candidate_cells)}",
-                f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
-                f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
-                f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
-                f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
-                f"opened_cells_count={len(opened_cells_set)}",
-                f"opened_cells={sorted(opened_cells_set)}",
-                f"opened_static_overlap_count={len(opened_static_overlap)}",
-                f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
-                f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
-                f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
-                f"opened_dynamic_overlap_owners={_dynamic_owners_for_cells(opened_dynamic_overlap)}",
-                "current_port_runway_dynamic_overlap_count="
-                f"{len(current_port_runway_dynamic_overlap)}",
-                "current_port_runway_dynamic_overlap_bbox="
-                f"{_cells_bbox(current_port_runway_dynamic_overlap)}",
-                "sibling_port_runway_dynamic_overlap_count="
-                f"{len(sibling_port_runway_dynamic_overlap)}",
-                "sibling_port_runway_dynamic_overlap_bbox="
-                f"{_cells_bbox(sibling_port_runway_dynamic_overlap)}",
-                f"dynamic_clearance_exempt_cells_count={len(dynamic_clearance_exempt_cells)}",
-                f"dynamic_clearance_exempt_cells_bbox={_cells_bbox(dynamic_clearance_exempt_cells)}",
-                f"dynamic_clearance_exempt_dynamic_overlap_count={len(dynamic_exempt_dynamic_overlap)}",
-                f"dynamic_clearance_exempt_dynamic_overlap_bbox={_cells_bbox(dynamic_exempt_dynamic_overlap)}",
-                f"route_cells_count={len(route_cells)}",
-                f"route_static_blocked_overlap_count={len(route_static_overlap)}",
-                f"route_static_blocked_overlap_bbox={_cells_bbox(route_static_overlap)}",
-                f"route_dynamic_overlap_count={len(route_dynamic_overlap)}",
-                f"route_dynamic_overlap_bbox={_cells_bbox(route_dynamic_overlap)}",
-                f"route_dynamic_overlap_owners={_dynamic_owners_for_cells(route_dynamic_overlap)}",
-                "route_overlap_current_port_runway_count="
-                f"{len(route_overlap_current_port_runway)}",
-                "route_overlap_current_port_runway_bbox="
-                f"{_cells_bbox(route_overlap_current_port_runway)}",
-                "route_overlap_sibling_port_runway_count="
-                f"{len(route_overlap_sibling_port_runway)}",
-                "route_overlap_sibling_port_runway_bbox="
-                f"{_cells_bbox(route_overlap_sibling_port_runway)}",
-                f"route_overlap_candidate_opened_static_count={len(route_overlap_with_candidate_opened_static)}",
-                f"route_overlap_effective_opened_static_count={len(route_overlap_with_effective_opened_static)}",
-                f"route_overlap_candidate_opened_dynamic_count={len(route_overlap_with_candidate_opened_dynamic)}",
-                f"route_overlap_effective_opened_dynamic_count={len(route_overlap_with_effective_opened_dynamic)}",
-                f"route_overlap_dynamic_clearance_exempt_count={len(route_overlap_with_dynamic_exempt)}",
-            ]
-            lines.extend(_format_post_crossing_orthogonal_candidates())
-            lines.extend(_format_target_bend_footprints())
-            lines.extend(_format_first_move_debug())
-            if route_segments:
-                lines.append("route_segments=" + "; ".join(route_segments))
-            if repair_note is not None:
-                lines.append(f"repair={repair_note}")
-            if error_text is not None:
-                lines.append(f"error={error_text}")
-            diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-        def _record_route(
-            job: RouteJob,
-            route_obj: Any,
-            opened_cells: list[tuple[int, int]],
-            *,
-            corrected_centerline_um: tuple[tuple[float, float], ...] = (),
-            corrected_total_length_um: float | None = None,
-        ) -> None:
-            if not corrected_centerline_um:
-                corrected_centerline_um = self._fanout_stubbed_centerline(job, route_obj)
-            if (
-                not corrected_centerline_um
-                and not self.enable_checked_endpoint_correction
-                and hasattr(self.router, "route_primitive_centerline")
-            ):
-                try:
-                    corrected_centerline_um = _centerline_tuple(
-                        self.router.route_primitive_centerline(route_obj)
-                    )
-                except Exception:
-                    corrected_centerline_um = ()
-                if corrected_centerline_um and hasattr(self.router, "centerline_length_um"):
-                    try:
-                        corrected_total_length_um = float(
-                            self.router.centerline_length_um(list(corrected_centerline_um))
-                        )
-                    except Exception:
-                        corrected_total_length_um = None
-            self.route_bookkeeping.record_route(
-                job,
-                route_obj,
-                opened_cells,
-                route_cells=self._route_cells_from_router(job.net_id) if self.track_dynamic_cells else None,
-                corrected_centerline_um=corrected_centerline_um,
-                corrected_total_length_um=corrected_total_length_um,
-            )
-
-        def _export_route_svg(
-            job: RouteJob,
-            route_obj: Any,
-            *,
-            suffix: str = "",
-            obstacle_cells: set[tuple[int, int]] | None = None,
-            opened_cells: list[tuple[int, int]] | None = None,
-        ) -> None:
-            should_export = (
-                self.debug_path is not None
-                and (self.debug_route_indices is None or job.route_index in self.debug_route_indices)
-            )
-            if not should_export:
-                return
-            route_dir = self.debug_path / "routes"
-            _ensure_dir(route_dir)
-            route_svg = route_dir / f"{self.debug_prefix}_{job.net_name}{suffix}.svg"
-            if obstacle_cells is not None and hasattr(
-                self.router, "export_debug_svg_with_obstacle_cells"
-            ):
-                svg_text = self.router.export_debug_svg_with_obstacle_cells(
-                    route_obj,
-                    sorted(obstacle_cells),
-                )
-            else:
-                svg_text = self.router.export_debug_svg(route_obj)
-            if opened_cells is None:
-                try:
-                    _, _, _, _, opened_cells = self._state_openings_for_job(job)
-                except Exception:
-                    opened_cells = []
-            if (
-                self.debug_stop_after_route_index is not None
-                and int(job.route_index) == int(self.debug_stop_after_route_index)
-            ):
-                next_job = self.full_route_jobs_by_route_index.get(
-                    int(self.debug_stop_after_route_index) + 1
-                )
-                if next_job is not None:
-                    try:
-                        _, _, _, _, opened_cells = self._states_and_openings(next_job)
-                    except Exception:
-                        pass
-            red_keepout_cells = self.debug_port_keepout_cells - {
-                (int(cell[0]), int(cell[1])) for cell in opened_cells
-            }
-            if red_keepout_cells:
-                overlay = ['<g id="port-keepout-cells">']
-                for gx, gy in sorted(red_keepout_cells):
-                    if 0 <= gx < self.grid_width and 0 <= gy < self.grid_height:
-                        svg_y = self.grid_height - gy - 1
-                        overlay.append(
-                            f'<rect class="port-keepout" x="{gx}" y="{svg_y}" '
-                            'width="1" height="1" fill="#d93025" opacity="0.38" />'
-                        )
-                overlay.append("</g>")
-                overlay_text = "".join(overlay)
-                if "</svg>" in svg_text and 'id="port-keepout-cells"' not in svg_text:
-                    svg_text = svg_text.replace("</svg>", overlay_text + "</svg>", 1)
-            route_svg.write_text(svg_text, encoding="utf-8")
-            self.route_svgs.append(route_svg)
-
-        def _route_engine_summary(route_obj: Any) -> str:
-            expanded_states = int(getattr(route_obj, "expanded_states", 0))
-            route_kind = "simple" if expanded_states == 0 else "astar"
-            length_um = _as_float(getattr(route_obj, "total_length_um", 0.0), 0.0)
-            total_cost = _as_float(getattr(route_obj, "total_cost", 0.0), 0.0)
-            return (
-                f"{route_kind} "
-                f"length={length_um:.3f}um "
-                f"cost={total_cost:.3f} "
-                f"expanded={expanded_states}"
-            )
-
-        def _write_failed_log(
-            job: RouteJob,
-            source_state: Any,
-            target_state: Any,
-            opened_candidate_cells: set[tuple[int, int]],
-            opened_cells: list[tuple[int, int]],
-            error_text: str,
-        ) -> None:
-            if self.debug_path is None:
-                return
-            route_dir = self.debug_path / "routes"
-            _ensure_dir(route_dir)
-            port1_spec = f"{job.inst1},{job.port1}"
-            port2_spec = f"{job.inst2},{job.port2}"
-            fail_txt = route_dir / f"{self.debug_prefix}_{job.net_name}_FAILED.txt"
-            committed_dynamic_cells = self._committed_dynamic_cells()
-            opened_candidate_static_overlap = (
-                opened_candidate_cells & self.static_blocked_cells_before_port_reservations
-            )
-            opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
-            opened_cells_set = set(opened_cells)
-            opened_static_overlap = opened_cells_set & self.static_blocked_cells_before_port_reservations
-            opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
-            current_attempts = [
-                ("current", record)
-                for record in self.route_attempt_records
-                if getattr(record, "net_id", None) == job.net_id
-            ]
-            recent_attempts = [("recent", record) for record in self.route_attempt_records[-12:]]
-            root_cause_line = _format_illegal_crossing_root_causes_line(
-                [error_text]
-                + [
-                    str(attempt.error)
-                    for _, attempt in (current_attempts[-8:] + recent_attempts)
-                    if getattr(attempt, "error", None)
-                ]
-            )
-            fail_lines = [
-                f"net_name={job.net_name}",
-                f"source_spec={port1_spec}",
-                f"target_spec={port2_spec}",
-                f"source_state=({int(source_state.x)}, {int(source_state.y)}, {int(source_state.angle)})",
-                f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
-                f"allow_45_degree_turns={self.allow_45_degree_turns}",
-                f"block_radius_cells={self.block_radius_cells}",
-                "dynamic_obstacle_search_expansion_radius_cells="
-                f"{self.clearance_policy.dynamic_obstacle_search_expansion_radius_cells}",
-                "dynamic_route_commit_keepout_radius_cells="
-                f"{self.clearance_policy.dynamic_route_commit_keepout_radius_cells}",
-                "dynamic_route_core_radius_cells="
-                f"{self.clearance_policy.dynamic_route_core_radius_cells}",
-                f"bend_radius_cells={self.bend_radius_cells}",
-                f"port_entry_length_cells={self.port_entry_length_cells}",
-                f"port_entry_half_width_cells={self.port_entry_half_width_cells}",
-                f"port_lane_length_cells={self.port_lane_length_cells}",
-                f"port_lane_half_width_cells={self.port_lane_half_width_cells}",
-                f"opened_candidate_cells_count={len(opened_candidate_cells)}",
-                f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
-                f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
-                f"opened_candidate_dynamic_overlap_count={len(opened_candidate_dynamic_overlap)}",
-                f"opened_candidate_dynamic_overlap_bbox={_cells_bbox(opened_candidate_dynamic_overlap)}",
-                f"opened_cells_count={len(opened_cells)}",
-                f"opened_static_overlap_count={len(opened_static_overlap)}",
-                f"opened_static_overlap_bbox={_cells_bbox(opened_static_overlap)}",
-                f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
-                f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
-                f"error={error_text}",
-            ]
-            if root_cause_line is not None:
-                fail_lines.append(root_cause_line)
-            fail_lines.extend(_format_native_repair_trace_lines(self.native_repair_trace_records))
-            for label, attempt in (current_attempts[-8:] + recent_attempts):
-                as_dict = attempt.as_dict()
-                diagnostics = as_dict.get("diagnostics")
-                fail_lines.append(
-                    f"attempt_{label}="
-                    + ", ".join(
-                        f"{key}={as_dict.get(key)}"
-                        for key in (
-                            "attempt_index",
-                            "bucket_name",
-                            "failed",
-                            "error",
-                            "elapsed_s",
-                            "expanded_states",
-                            "generated_neighbors",
-                            "window_attempts",
-                            "used_full_grid_fallback",
-                            "candidate_blocker_count",
-                            "candidate_blocker_route_indices",
-                            "ripup_victim_count",
-                            "ripup_victim_route_indices",
-                        )
-                        if key in as_dict
-                    )
-                )
-                if isinstance(diagnostics, dict) and diagnostics:
-                    fail_lines.append(
-                        f"attempt_{label}_diagnostics="
-                        + ", ".join(
-                            f"{key}={diagnostics.get(key)}"
-                            for key in (
-                                "candidate_blocker_count",
-                                "candidate_blocker_route_indices",
-                                "ripup_victim_count",
-                                "ripup_victim_route_indices",
-                                "route_bbox_min_x",
-                                "route_bbox_max_x",
-                                "route_bbox_min_y",
-                                "route_bbox_max_y",
-                            )
-                            if key in diagnostics
-                        )
-                    )
-            fail_txt.write_text("\n".join(fail_lines) + "\n", encoding="utf-8")
-
-        def _finalize_committed_route(
-            job: RouteJob,
-            route_obj: Any,
-            opened_cells: list[tuple[int, int]],
-            *,
-            should_print_route: bool,
-            diag_txt: Path | None,
-            debug_obstacle_cells: set[tuple[int, int]] | None = None,
-        ) -> None:
-            expanded_states = int(getattr(route_obj, "expanded_states", 0))
-            self.total_expanded_states += expanded_states
-            if expanded_states == 0:
-                self.simple_route_count += 1
-
-            if self.diagnostics_enabled:
-                source_state, target_state, opened_candidate_cells, opened_cells_set, _ = (
-                    self._state_openings_for_job(job)
-                )
-                route_cells = {
-                    (int(cell[0]), int(cell[1]))
-                    for cell in (getattr(route_obj, "cells", None) or [])
-                }
-                _write_route_diagnostics(
-                    job=job,
-                    source_state=source_state,
-                    target_state=target_state,
-                    opened_candidate_cells=opened_candidate_cells,
-                    dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(job),
-                    opened_cells_set=opened_cells_set,
-                    diag_txt=diag_txt,
-                    status="ok",
-                    route_cells=route_cells,
-                    route_obj=route_obj,
-                )
-
-            _export_route_svg(
-                job,
-                route_obj,
-                obstacle_cells=debug_obstacle_cells,
-                opened_cells=opened_cells,
-            )
-
-            if should_print_route:
-                print(f"ok {_route_engine_summary(route_obj)}")
-
         if self.repair_config.enabled:
             if not hasattr(self.router, "route_many_with_repair_and_commit"):
                 raise RuntimeError(
@@ -4794,7 +4802,7 @@ class _RouteNetsRustSession:
                     and self.debug_path is not None
                     and (self.debug_route_indices is None or job.route_index in self.debug_route_indices)
                 ):
-                    _export_route_svg(
+                    self._export_route_svg(
                         job,
                         route_obj,
                         suffix=f"_attempt{attempt_index}_{bucket_name}",
@@ -4828,7 +4836,7 @@ class _RouteNetsRustSession:
                             failed=failed,
                             repair_round=repair_round,
                             error=error_text,
-                            diagnostics=_route_attempt_diagnostics(
+                            diagnostics=self._route_attempt_diagnostics(
                                 job,
                                 route_obj if route_obj is not None and not failed else None,
                                 candidate_blockers=candidate_blockers,
@@ -4847,9 +4855,9 @@ class _RouteNetsRustSession:
                 route_obj = entry["route"]
                 job = self.route_jobs_by_id[net_id]
                 opened_cells = batch_opened_cells_by_id[net_id]
-                _record_route(job, route_obj, opened_cells)
+                self._record_route(job, route_obj, opened_cells)
                 should_print_route, diag_txt = batch_debug_by_id[net_id]
-                _finalize_committed_route(
+                self._finalize_committed_route(
                     job,
                     route_obj,
                     opened_cells,
@@ -4880,7 +4888,7 @@ class _RouteNetsRustSession:
                         f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
                         f"{failed_job.inst2},{failed_job.port2}... failed"
                     )
-                _write_route_diagnostics(
+                self._write_route_diagnostics(
                     job=failed_job,
                     source_state=source_state,
                     target_state=target_state,
@@ -4891,7 +4899,7 @@ class _RouteNetsRustSession:
                     status="failed",
                     error_text=error_text,
                 )
-                _write_failed_log(
+                self._write_failed_log(
                     failed_job,
                     source_state,
                     target_state,
@@ -5009,9 +5017,9 @@ class _RouteNetsRustSession:
                             route_obj=route_obj,
                         )
                     )
-                _record_route(job, route_obj, opened_cells)
+                self._record_route(job, route_obj, opened_cells)
                 should_print_route, diag_txt = batch_debug_by_id[net_id]
-                _finalize_committed_route(
+                self._finalize_committed_route(
                     job,
                     route_obj,
                     opened_cells,
@@ -5059,7 +5067,7 @@ class _RouteNetsRustSession:
                         f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
                         f"{failed_job.inst2},{failed_job.port2}... failed"
                     )
-                _write_route_diagnostics(
+                self._write_route_diagnostics(
                     job=failed_job,
                     source_state=source_state,
                     target_state=target_state,
@@ -5070,7 +5078,7 @@ class _RouteNetsRustSession:
                     status="failed",
                     error_text=error_text,
                 )
-                _write_failed_log(
+                self._write_failed_log(
                     failed_job,
                     source_state,
                     target_state,
@@ -6320,7 +6328,7 @@ class _RouteNetsRustSession:
                 net_id = int(entry["net_id"])
                 job = self.route_jobs_by_id[net_id]
                 route_obj = entry["route"]
-                _record_route(job, route_obj, opened_by_id[net_id])
+                self._record_route(job, route_obj, opened_by_id[net_id])
                 repaired_records.append(self.route_bookkeeping.records_by_id[net_id])
 
             if self.enable_checked_endpoint_correction and repaired_records:
@@ -6704,7 +6712,7 @@ class _RouteNetsRustSession:
                 net_id = int(entry["net_id"])
                 job = self.route_jobs_by_id[net_id]
                 route_obj = entry["route"]
-                _record_route(job, route_obj, opened_by_id[net_id])
+                self._record_route(job, route_obj, opened_by_id[net_id])
                 repaired_net_ids.append(net_id)
             if self.enable_checked_endpoint_correction and repaired_net_ids:
                 failed_corrections = _apply_checked_endpoint_corrections_for_net_ids(
