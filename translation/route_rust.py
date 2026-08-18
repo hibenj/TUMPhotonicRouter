@@ -2149,6 +2149,261 @@ class _RouteNetsRustSession:
                         )
         return anchors
 
+    def _dense_source_port_runway_lengths(
+        self,
+        jobs: list[RouteJob],
+    ) -> dict[str, int]:
+        """Reserve staggered source-port access in dense MMI fanout runs."""
+        lengths_by_spec: dict[str, int] = {}
+        if self.fanout_access_mode_normalized == "static-stubs":
+            grouped_specs: dict[tuple[str, int], set[str]] = {}
+            source_specs = {
+                f"{run_job.inst1},{run_job.port1}"
+                for run_job in jobs
+                if f"{run_job.inst1},{run_job.port1}" in self.fanout_anchor_by_port_spec
+            }
+            for port_spec in source_specs:
+                anchor = self.fanout_anchor_by_port_spec[port_spec]
+                instance_name = port_spec.split(",", 1)[0]
+                grouped_specs.setdefault(
+                    (instance_name, int(anchor.physical_angle) % 8),
+                    set(),
+                ).add(port_spec)
+
+            for (_instance_name, angle), specs in grouped_specs.items():
+                if len(specs) <= 2:
+                    continue
+                step_x, step_y = self._angle_to_step(angle)
+                lateral_x, lateral_y = -step_y, step_x
+
+                def anchor_lateral_position(port_spec: str) -> int:
+                    anchor = self.fanout_anchor_by_port_spec[port_spec]
+                    return int(anchor.state_x) * lateral_x + int(anchor.state_y) * lateral_y
+
+                ordered_specs = sorted(
+                    specs,
+                    key=lambda port_spec: (
+                        anchor_lateral_position(port_spec),
+                        port_spec,
+                    ),
+                )
+                count = len(ordered_specs)
+                spacing_cells = self._env_nonnegative_int(
+                    "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
+                    self._env_nonnegative_int(
+                        "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+                        3,
+                    ),
+                )
+                spacing_cells = max(1, int(spacing_cells))
+                lower_specs = ordered_specs[: count // 2]
+                upper_specs = ordered_specs[count // 2 :]
+                for port_index, port_spec in enumerate(lower_specs):
+                    runway_rank = int(port_index) + 1
+                    lengths_by_spec[port_spec] = spacing_cells * runway_rank
+                upper_count = len(upper_specs)
+                for port_index, port_spec in enumerate(upper_specs):
+                    runway_rank = upper_count - int(port_index)
+                    lengths_by_spec[port_spec] = spacing_cells * runway_rank
+            return lengths_by_spec
+
+        if self.fanout_access_mode_normalized != "legacy-runway":
+            return {}
+
+        index = 0
+        while index < len(jobs):
+            job = jobs[index]
+            if not self._is_dense_source_fanout_instance(job.inst1):
+                index += 1
+                continue
+            run_end = index + 1
+            while (
+                run_end < len(jobs)
+                and jobs[run_end].inst1 == job.inst1
+                and self._is_dense_source_fanout_instance(jobs[run_end].inst1)
+            ):
+                run_end += 1
+
+            run = jobs[index:run_end]
+            by_angle: dict[int, list[RouteJob]] = {}
+            for run_job in run:
+                angle = self._orientation_to_angle(
+                    getattr(run_job.source_port, "orientation", None),
+                    flip=False,
+                )
+                by_angle.setdefault(angle, []).append(run_job)
+
+            for angle, angle_jobs in by_angle.items():
+                if not self._is_dense_source_fanout_group(job.inst1, angle):
+                    continue
+                step_x, step_y = self._angle_to_step(angle)
+                lateral_x, lateral_y = -step_y, step_x
+
+                def _lateral_position_for_dense_source_runway(run_job: RouteJob) -> float:
+                    center = _port_center_um(run_job.source_port)
+                    if center is None:
+                        return float(run_job.route_index)
+                    return float(center[0]) * lateral_x + float(center[1]) * lateral_y
+
+                ordered = sorted(
+                    angle_jobs,
+                    key=lambda run_job: (
+                        _lateral_position_for_dense_source_runway(run_job),
+                        int(run_job.route_index),
+                    ),
+                )
+                count = len(ordered)
+                for port_index, run_job in enumerate(ordered):
+                    port_spec = f"{run_job.inst1},{run_job.port1}"
+                    lengths_by_spec[port_spec] = 3 + 3 * (count - 1 - port_index)
+
+            index = run_end
+        return lengths_by_spec
+
+    def _dense_target_port_runway_lengths(
+        self,
+        jobs: list[RouteJob],
+    ) -> dict[str, int]:
+        """Reserve staggered target-port access for dense same-instance sinks."""
+        lengths_by_spec: dict[str, int] = {}
+        grouped: dict[tuple[str, int], list[RouteJob]] = {}
+        for run_job in jobs:
+            angle = self._orientation_to_angle(
+                getattr(run_job.target_port, "orientation", None),
+                flip=False,
+            )
+            grouped.setdefault((run_job.inst2, int(angle)), []).append(run_job)
+
+        base_cells = max(1, int(self.bend_radius_cells) + 1)
+        spacing_cells = self._env_nonnegative_int(
+            "PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS",
+            self._env_nonnegative_int(
+                "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
+                self._env_nonnegative_int(
+                    "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+                    3,
+                ),
+            ),
+        )
+        spacing_cells = max(1, int(spacing_cells))
+
+        for (_instance_name, angle), angle_jobs in grouped.items():
+            if len(angle_jobs) < 4:
+                continue
+            step_x, step_y = self._angle_to_step(angle)
+            lateral_x, lateral_y = -step_y, step_x
+
+            def _lateral_position_for_dense_target_runway(run_job: RouteJob) -> float:
+                center = _port_center_um(run_job.target_port)
+                if center is None:
+                    return float(run_job.route_index)
+                return float(center[0]) * lateral_x + float(center[1]) * lateral_y
+
+            ordered = sorted(
+                angle_jobs,
+                key=lambda run_job: (
+                    _lateral_position_for_dense_target_runway(run_job),
+                    int(run_job.route_index),
+                ),
+            )
+            count = len(ordered)
+            lower_jobs = ordered[: count // 2]
+            upper_jobs = ordered[count // 2 :]
+            for port_index, run_job in enumerate(lower_jobs):
+                port_spec = f"{run_job.inst2},{run_job.port2}"
+                lengths_by_spec[port_spec] = base_cells + spacing_cells * int(port_index)
+            upper_count = len(upper_jobs)
+            for port_index, run_job in enumerate(upper_jobs):
+                port_spec = f"{run_job.inst2},{run_job.port2}"
+                lengths_by_spec[port_spec] = (
+                    base_cells + spacing_cells * (upper_count - 1 - int(port_index))
+                )
+        return lengths_by_spec
+
+    def _filter_dense_port_opening(
+        self,
+        port_spec: str,
+        cells: set[tuple[int, int]],
+    ) -> set[tuple[int, int]]:
+        owner_group = self.dense_port_lateral_owner_groups.get(port_spec)
+        if owner_group is not None and cells:
+            lateral_x, lateral_y, owners = owner_group
+            grid_size = float(self.grid.grid_size_um)
+            filtered: set[tuple[int, int]] = set()
+            for cell_x, cell_y in cells:
+                center_x = self.origin_x_um + (float(cell_x) + 0.5) * grid_size
+                center_y = self.origin_y_um + (float(cell_y) + 0.5) * grid_size
+                lateral_position = center_x * lateral_x + center_y * lateral_y
+                nearest_spec = min(
+                    owners,
+                    key=lambda item: (abs(lateral_position - item[1]), item[0]),
+                )[0]
+                if nearest_spec == port_spec:
+                    filtered.add((cell_x, cell_y))
+            return filtered
+
+        window = self.dense_port_lateral_windows.get(port_spec)
+        if window is None or not cells:
+            return set(cells)
+        lateral_x, lateral_y, lower, upper, lane_margin_um = window
+        grid_size = float(self.grid.grid_size_um)
+        lower -= lane_margin_um
+        upper += lane_margin_um
+        eps = max(1.0e-9, grid_size * 1.0e-9)
+        filtered: set[tuple[int, int]] = set()
+        for cell_x, cell_y in cells:
+            center_x = self.origin_x_um + (float(cell_x) + 0.5) * grid_size
+            center_y = self.origin_y_um + (float(cell_y) + 0.5) * grid_size
+            lateral_position = center_x * lateral_x + center_y * lateral_y
+            if lower - eps <= lateral_position <= upper + eps:
+                filtered.add((cell_x, cell_y))
+        return filtered
+
+    def _opened_cells_for_spec(
+        self,
+        cells_by_spec: Mapping[str, set[tuple[int, int]]],
+        port_spec: str,
+    ) -> set[tuple[int, int]]:
+        return self._filter_dense_port_opening(
+            port_spec,
+            set(cells_by_spec.get(port_spec, set())),
+        )
+
+    def _foreign_keepout_open_cells_for_spec(self, port_spec: str) -> set[tuple[int, int]]:
+        cluster_specs = self.dense_source_cluster_specs_by_port_spec.get(port_spec)
+        if cluster_specs:
+            cells: set[tuple[int, int]] = set()
+            for cluster_port_spec in cluster_specs:
+                cells.update(self.foreign_port_keepout_cells_by_spec.get(cluster_port_spec, set()))
+            return cells - self.normal_port_runway_cells
+        return (
+            self._opened_cells_for_spec(self.foreign_port_keepout_cells_by_spec, port_spec)
+            - self.normal_port_runway_cells
+        )
+
+    def _foreign_keepout_cleanup_cells_for_spec(self, port_spec: str) -> set[tuple[int, int]]:
+        cells = set(self.foreign_port_keepout_cells_by_spec.get(port_spec, set()))
+        if not cells:
+            return set()
+        cells.difference_update(self.normal_port_runway_cells)
+        cells.difference_update(self.fanout_stub_static_cells)
+        cells.difference_update(self._cells_in_raw_static_geometry(cells))
+        return cells
+
+    def _foreign_keepout_cleanup_cells_for_job(self, job: RouteJob) -> list[tuple[int, int]]:
+        cells = self._foreign_keepout_cleanup_cells_for_spec(f"{job.inst1},{job.port1}")
+        cells.update(self._foreign_keepout_cleanup_cells_for_spec(f"{job.inst2},{job.port2}"))
+        return sorted(cells)
+
+    def _endpoint_state_for_lane_assignment(self, port: Port, *, as_target: bool):
+        return self.port_to_grid_state(
+            port,
+            self.origin_x_um,
+            self.origin_y_um,
+            float(self.grid.grid_size_um),
+            as_target=as_target,
+        )
+
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
         t_obstacle_start = self._pipeline_timer_start()
         self.resolved_obstacle_config = _resolve_obstacle_config(
@@ -2431,171 +2686,8 @@ class _RouteNetsRustSession:
             if f"{job.inst2},{job.port2}" in self.fanout_anchor_by_port_spec
         }
 
-        def _dense_source_port_runway_lengths(
-            jobs: list[RouteJob],
-        ) -> dict[str, int]:
-            """Reserve staggered source-port access in dense MMI fanout runs."""
-            lengths_by_spec: dict[str, int] = {}
-            if self.fanout_access_mode_normalized == "static-stubs":
-                grouped_specs: dict[tuple[str, int], set[str]] = {}
-                source_specs = {
-                    f"{run_job.inst1},{run_job.port1}"
-                    for run_job in jobs
-                    if f"{run_job.inst1},{run_job.port1}" in self.fanout_anchor_by_port_spec
-                }
-                for port_spec in source_specs:
-                    anchor = self.fanout_anchor_by_port_spec[port_spec]
-                    instance_name = port_spec.split(",", 1)[0]
-                    grouped_specs.setdefault(
-                        (instance_name, int(anchor.physical_angle) % 8),
-                        set(),
-                    ).add(port_spec)
-
-                for (_instance_name, angle), specs in grouped_specs.items():
-                    if len(specs) <= 2:
-                        continue
-                    step_x, step_y = self._angle_to_step(angle)
-                    lateral_x, lateral_y = -step_y, step_x
-
-                    def anchor_lateral_position(port_spec: str) -> int:
-                        anchor = self.fanout_anchor_by_port_spec[port_spec]
-                        return int(anchor.state_x) * lateral_x + int(anchor.state_y) * lateral_y
-
-                    ordered_specs = sorted(
-                        specs,
-                        key=lambda port_spec: (
-                            anchor_lateral_position(port_spec),
-                            port_spec,
-                        ),
-                    )
-                    count = len(ordered_specs)
-                    spacing_cells = self._env_nonnegative_int(
-                        "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
-                        self._env_nonnegative_int(
-                            "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
-                            3,
-                        ),
-                    )
-                    spacing_cells = max(1, int(spacing_cells))
-                    lower_specs = ordered_specs[: count // 2]
-                    upper_specs = ordered_specs[count // 2 :]
-                    for port_index, port_spec in enumerate(lower_specs):
-                        runway_rank = int(port_index) + 1
-                        lengths_by_spec[port_spec] = spacing_cells * runway_rank
-                    upper_count = len(upper_specs)
-                    for port_index, port_spec in enumerate(upper_specs):
-                        runway_rank = upper_count - int(port_index)
-                        lengths_by_spec[port_spec] = spacing_cells * runway_rank
-                return lengths_by_spec
-
-            if self.fanout_access_mode_normalized != "legacy-runway":
-                return {}
-
-            index = 0
-            while index < len(jobs):
-                job = jobs[index]
-                if not self._is_dense_source_fanout_instance(job.inst1):
-                    index += 1
-                    continue
-                run_end = index + 1
-                while (
-                    run_end < len(jobs)
-                    and jobs[run_end].inst1 == job.inst1
-                    and self._is_dense_source_fanout_instance(jobs[run_end].inst1)
-                ):
-                    run_end += 1
-
-                run = jobs[index:run_end]
-                by_angle: dict[int, list[RouteJob]] = {}
-                for run_job in run:
-                    angle = self._orientation_to_angle(
-                        getattr(run_job.source_port, "orientation", None),
-                        flip=False,
-                    )
-                    by_angle.setdefault(angle, []).append(run_job)
-
-                for angle, angle_jobs in by_angle.items():
-                    if not self._is_dense_source_fanout_group(job.inst1, angle):
-                        continue
-                    step_x, step_y = self._angle_to_step(angle)
-                    lateral_x, lateral_y = -step_y, step_x
-
-                    def lateral_position(run_job: RouteJob) -> float:
-                        center = _port_center_um(run_job.source_port)
-                        if center is None:
-                            return float(run_job.route_index)
-                        return float(center[0]) * lateral_x + float(center[1]) * lateral_y
-
-                    ordered = sorted(
-                        angle_jobs,
-                        key=lambda run_job: (lateral_position(run_job), int(run_job.route_index)),
-                    )
-                    count = len(ordered)
-                    for port_index, run_job in enumerate(ordered):
-                        port_spec = f"{run_job.inst1},{run_job.port1}"
-                        lengths_by_spec[port_spec] = 3 + 3 * (count - 1 - port_index)
-
-                index = run_end
-            return lengths_by_spec
-
-        def _dense_target_port_runway_lengths(
-            jobs: list[RouteJob],
-        ) -> dict[str, int]:
-            """Reserve staggered target-port access for dense same-instance sinks."""
-            lengths_by_spec: dict[str, int] = {}
-            grouped: dict[tuple[str, int], list[RouteJob]] = {}
-            for run_job in jobs:
-                angle = self._orientation_to_angle(
-                    getattr(run_job.target_port, "orientation", None),
-                    flip=False,
-                )
-                grouped.setdefault((run_job.inst2, int(angle)), []).append(run_job)
-
-            base_cells = max(1, int(self.bend_radius_cells) + 1)
-            spacing_cells = self._env_nonnegative_int(
-                "PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS",
-                self._env_nonnegative_int(
-                    "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
-                    self._env_nonnegative_int(
-                        "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
-                        3,
-                    ),
-                ),
-            )
-            spacing_cells = max(1, int(spacing_cells))
-
-            for (_instance_name, angle), angle_jobs in grouped.items():
-                if len(angle_jobs) < 4:
-                    continue
-                step_x, step_y = self._angle_to_step(angle)
-                lateral_x, lateral_y = -step_y, step_x
-
-                def lateral_position(run_job: RouteJob) -> float:
-                    center = _port_center_um(run_job.target_port)
-                    if center is None:
-                        return float(run_job.route_index)
-                    return float(center[0]) * lateral_x + float(center[1]) * lateral_y
-
-                ordered = sorted(
-                    angle_jobs,
-                    key=lambda run_job: (lateral_position(run_job), int(run_job.route_index)),
-                )
-                count = len(ordered)
-                lower_jobs = ordered[: count // 2]
-                upper_jobs = ordered[count // 2 :]
-                for port_index, run_job in enumerate(lower_jobs):
-                    port_spec = f"{run_job.inst2},{run_job.port2}"
-                    lengths_by_spec[port_spec] = base_cells + spacing_cells * int(port_index)
-                upper_count = len(upper_jobs)
-                for port_index, run_job in enumerate(upper_jobs):
-                    port_spec = f"{run_job.inst2},{run_job.port2}"
-                    lengths_by_spec[port_spec] = (
-                        base_cells + spacing_cells * (upper_count - 1 - int(port_index))
-                    )
-            return lengths_by_spec
-
-        self.dense_source_port_runway_length_by_spec = _dense_source_port_runway_lengths(route_jobs)
-        self.dense_target_port_runway_length_by_spec = _dense_target_port_runway_lengths(route_jobs)
+        self.dense_source_port_runway_length_by_spec = self._dense_source_port_runway_lengths(route_jobs)
+        self.dense_target_port_runway_length_by_spec = self._dense_target_port_runway_lengths(route_jobs)
         dense_port_runway_length_by_spec: dict[str, int] = dict(
             self.dense_source_port_runway_length_by_spec
         )
@@ -2907,91 +2999,9 @@ class _RouteNetsRustSession:
                         lane_margin_um,
                     )
 
-        def _filter_dense_port_opening(
-            port_spec: str,
-            cells: set[tuple[int, int]],
-        ) -> set[tuple[int, int]]:
-            owner_group = self.dense_port_lateral_owner_groups.get(port_spec)
-            if owner_group is not None and cells:
-                lateral_x, lateral_y, owners = owner_group
-                grid_size = float(self.grid.grid_size_um)
-                filtered: set[tuple[int, int]] = set()
-                for cell_x, cell_y in cells:
-                    center_x = self.origin_x_um + (float(cell_x) + 0.5) * grid_size
-                    center_y = self.origin_y_um + (float(cell_y) + 0.5) * grid_size
-                    lateral_position = center_x * lateral_x + center_y * lateral_y
-                    nearest_spec = min(
-                        owners,
-                        key=lambda item: (abs(lateral_position - item[1]), item[0]),
-                    )[0]
-                    if nearest_spec == port_spec:
-                        filtered.add((cell_x, cell_y))
-                return filtered
-
-            window = self.dense_port_lateral_windows.get(port_spec)
-            if window is None or not cells:
-                return set(cells)
-            lateral_x, lateral_y, lower, upper, lane_margin_um = window
-            grid_size = float(self.grid.grid_size_um)
-            lower -= lane_margin_um
-            upper += lane_margin_um
-            eps = max(1.0e-9, grid_size * 1.0e-9)
-            filtered: set[tuple[int, int]] = set()
-            for cell_x, cell_y in cells:
-                center_x = self.origin_x_um + (float(cell_x) + 0.5) * grid_size
-                center_y = self.origin_y_um + (float(cell_y) + 0.5) * grid_size
-                lateral_position = center_x * lateral_x + center_y * lateral_y
-                if lower - eps <= lateral_position <= upper + eps:
-                    filtered.add((cell_x, cell_y))
-            return filtered
-
-        def _opened_cells_for_spec(
-            cells_by_spec: Mapping[str, set[tuple[int, int]]],
-            port_spec: str,
-        ) -> set[tuple[int, int]]:
-            return _filter_dense_port_opening(
-                port_spec,
-                set(cells_by_spec.get(port_spec, set())),
-            )
-
         self.normal_port_runway_cells: set[tuple[int, int]] = set()
         for cells in self.port_runway_cells_by_spec.values():
             self.normal_port_runway_cells.update(cells)
-
-        def _foreign_keepout_open_cells_for_spec(port_spec: str) -> set[tuple[int, int]]:
-            cluster_specs = self.dense_source_cluster_specs_by_port_spec.get(port_spec)
-            if cluster_specs:
-                cells: set[tuple[int, int]] = set()
-                for cluster_port_spec in cluster_specs:
-                    cells.update(self.foreign_port_keepout_cells_by_spec.get(cluster_port_spec, set()))
-                return cells - self.normal_port_runway_cells
-            return (
-                _opened_cells_for_spec(self.foreign_port_keepout_cells_by_spec, port_spec)
-                - self.normal_port_runway_cells
-            )
-
-        def _foreign_keepout_cleanup_cells_for_spec(port_spec: str) -> set[tuple[int, int]]:
-            cells = set(self.foreign_port_keepout_cells_by_spec.get(port_spec, set()))
-            if not cells:
-                return set()
-            cells.difference_update(self.normal_port_runway_cells)
-            cells.difference_update(self.fanout_stub_static_cells)
-            cells.difference_update(self._cells_in_raw_static_geometry(cells))
-            return cells
-
-        def _foreign_keepout_cleanup_cells_for_job(job: RouteJob) -> list[tuple[int, int]]:
-            cells = _foreign_keepout_cleanup_cells_for_spec(f"{job.inst1},{job.port1}")
-            cells.update(_foreign_keepout_cleanup_cells_for_spec(f"{job.inst2},{job.port2}"))
-            return sorted(cells)
-
-        def _endpoint_state_for_lane_assignment(port: Port, *, as_target: bool):
-            return self.port_to_grid_state(
-                port,
-                self.origin_x_um,
-                self.origin_y_um,
-                float(self.grid.grid_size_um),
-                as_target=as_target,
-            )
 
         endpoint_ports_by_key: dict[tuple[int, int, int], list[tuple[str, bool, Port]]] = {}
         for job in route_jobs:
@@ -2999,7 +3009,7 @@ class _RouteNetsRustSession:
                 (f"{job.inst1},{job.port1}", job.source_port, False),
                 (f"{job.inst2},{job.port2}", job.target_port, True),
             ):
-                state = _endpoint_state_for_lane_assignment(port, as_target=as_target)
+                state = self._endpoint_state_for_lane_assignment(port, as_target=as_target)
                 key = (int(state.x), int(state.y), int(state.angle) % 8)
                 endpoint_ports_by_key.setdefault(key, []).append((port_spec, as_target, port))
 
@@ -3013,13 +3023,13 @@ class _RouteNetsRustSession:
             if lateral_x == 0 and lateral_y == 0:
                 continue
 
-            def lateral_position(item: tuple[str, bool, Port]) -> float:
+            def _lateral_position_for_lane_assignment(item: tuple[str, bool, Port]) -> float:
                 center = _port_center_um(item[2])
                 if center is None:
                     return 0.0
                 return center[0] * lateral_x + center[1] * lateral_y
 
-            sorted_endpoints = sorted(endpoints, key=lateral_position)
+            sorted_endpoints = sorted(endpoints, key=_lateral_position_for_lane_assignment)
             seen_endpoint_keys: set[tuple[str, bool]] = set()
             lane_index = 0
             for port_spec, is_target, _ in sorted_endpoints:
@@ -3474,23 +3484,23 @@ class _RouteNetsRustSession:
             source_anchor_cell = (int(source_state.x), int(source_state.y))
             target_anchor_cell = (int(target_state.x), int(target_state.y))
             endpoint_foreign_keepout_open_cells = set(
-                _foreign_keepout_open_cells_for_spec(port1_spec)
+                self._foreign_keepout_open_cells_for_spec(port1_spec)
             )
             endpoint_foreign_keepout_open_cells.update(
-                _foreign_keepout_open_cells_for_spec(port2_spec)
+                self._foreign_keepout_open_cells_for_spec(port2_spec)
             )
             opened_candidate_cells = set(
-                _opened_cells_for_spec(self.port_access_candidate_cells_by_spec, port1_spec)
+                self._opened_cells_for_spec(self.port_access_candidate_cells_by_spec, port1_spec)
             )
             opened_candidate_cells.update(
-                _opened_cells_for_spec(self.port_access_candidate_cells_by_spec, port2_spec)
+                self._opened_cells_for_spec(self.port_access_candidate_cells_by_spec, port2_spec)
             )
             opened_candidate_cells.update(endpoint_foreign_keepout_open_cells)
             opened_candidate_cells.update(original_anchor_cells)
             opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
 
-            opened_cells_set = set(_opened_cells_for_spec(self.port_access_cells_by_spec, port1_spec))
-            opened_cells_set.update(_opened_cells_for_spec(self.port_access_cells_by_spec, port2_spec))
+            opened_cells_set = set(self._opened_cells_for_spec(self.port_access_cells_by_spec, port1_spec))
+            opened_cells_set.update(self._opened_cells_for_spec(self.port_access_cells_by_spec, port2_spec))
             opened_cells_set.update(endpoint_foreign_keepout_open_cells)
             opened_cells_set.update(original_anchor_cells)
             opened_cells_set.update({source_anchor_cell, target_anchor_cell})
@@ -3945,10 +3955,10 @@ class _RouteNetsRustSession:
             route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
             route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
             current_endpoint_foreign_keepout_cells = set(
-                _foreign_keepout_open_cells_for_spec(port1_spec)
+                self._foreign_keepout_open_cells_for_spec(port1_spec)
             )
             current_endpoint_foreign_keepout_cells.update(
-                _foreign_keepout_open_cells_for_spec(port2_spec)
+                self._foreign_keepout_open_cells_for_spec(port2_spec)
             )
             foreign_keepout_open_cells = current_endpoint_foreign_keepout_cells & opened_cells_set
             current_port_runway_cells = set(self.port_runway_cells_by_spec.get(port1_spec, set()))
@@ -4705,7 +4715,7 @@ class _RouteNetsRustSession:
                         target_state,
                         opened_cells,
                         clearance_exempt_cells,
-                        _foreign_keepout_cleanup_cells_for_job(job),
+                        self._foreign_keepout_cleanup_cells_for_job(job),
                         _routing_endpoint_center_um(job, source=True),
                         _routing_endpoint_center_um(job, source=False),
                     )
@@ -4943,7 +4953,7 @@ class _RouteNetsRustSession:
                         target_state,
                         opened_cells,
                         clearance_exempt_cells,
-                        _foreign_keepout_cleanup_cells_for_job(job),
+                        self._foreign_keepout_cleanup_cells_for_job(job),
                         _routing_endpoint_center_um(job, source=True),
                         _routing_endpoint_center_um(job, source=False),
                     )
@@ -6268,7 +6278,7 @@ class _RouteNetsRustSession:
                         target_state,
                         opened_cells,
                         clearance_exempt_cells,
-                        _foreign_keepout_cleanup_cells_for_job(job),
+                        self._foreign_keepout_cleanup_cells_for_job(job),
                         _routing_endpoint_center_um(job, source=True),
                         _routing_endpoint_center_um(job, source=False),
                     )
@@ -6652,7 +6662,7 @@ class _RouteNetsRustSession:
                         target_state,
                         opened_cells,
                         clearance_exempt_cells,
-                        _foreign_keepout_cleanup_cells_for_job(job),
+                        self._foreign_keepout_cleanup_cells_for_job(job),
                         _routing_endpoint_center_um(job, source=True),
                         _routing_endpoint_center_um(job, source=False),
                     )
