@@ -18,17 +18,17 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**Active ExecPlan**:
+**There is no active ExecPlan right now.**
 `.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`
-(start at Milestone 0). The repository owner explicitly redirected
-priorities away from benchmark cleanliness and toward restructuring for
-logical soundness, after this session's investigation into fixing
-`.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`'s
-bug surfaced real, concrete duplication in the crossing-partner-discovery
-code (`src/py_router.rs`): at least seven near-duplicate "candidate
-partner" functions and at least three independent, already-confirmed-
-divergent hand-written decision sites. Read that new plan's own Surprises
-& Discoveries for the full, evidenced terrain map before starting.
+is complete (all 4 milestones, 2026-08-19): the crossing-partner-discovery
+tangle (seven overlapping "candidate partner" functions, three
+independent decision sites) is now two clean base-case functions, one
+shared bbox-filter helper, and one shared, explicitly-parameterized
+decision function for the one real, confirmed-intentional divergence
+between fresh and repair routing -- with `route_many_with_repair_and_commit`'s
+own five usage contexts deliberately left alone, since Milestone 0 found
+no evidence they needed restructuring. Read that plan's own Outcomes &
+Retrospective for the full detail.
 
 Three prior plans completed earlier the same day:
 `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`

@@ -15,13 +15,14 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `1d08a1c`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+- Current HEAD: `fc6400b`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
   (all 6 milestones), its follow-up
   `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`
-  (all 4 milestones), and
-  `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
-  are **all complete**, 17 focused commits across the session. Working tree
-  clean.
+  (all 4 milestones),
+  `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`,
+  and `.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`
+  (all 4 milestones) are **all complete**, 27 focused commits across the
+  session. Working tree clean.
 - **Correction (2026-08-19, found via a post-hoc recheck, do not trust the
   "confirmed clean" claim about `multiportmmi_16x16` two bullets below --
   it was true when written but is now stale):** re-running
@@ -40,21 +41,35 @@ if it is ever needed.
   zero-event-acceptance fix specifically, not the restore-bookkeeping fix.
   Not yet investigated further or fixed; this is the motivation for the new
   active plan below.
-- **New active plan**:
-  `.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`.
-  The repository owner redirected priorities during the 16x16 recheck
-  discussion above: benchmark cleanliness is not the current goal,
-  restructuring for logical soundness is, and this session's own
-  investigation into the zero-event-acceptance bug found a concrete,
-  well-evidenced target for that: at least seven distinctly-named
-  "candidate partner net" functions and at least three independent,
-  textually-divergent hand-written blocks (in three different top-level
-  functions) that each separately decide which other nets a net's
-  collision-crossing attempt should check against -- two of which are
-  already confirmed to disagree with each other. See that plan's own
-  Surprises & Discoveries for the full, evidenced terrain map and its Plan
-  of Work for the exhaustive-characterization-first approach (Milestone 0)
-  before any redesign is locked in. Not started implementing yet.
+- **`.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md` is
+  also now complete** (all 4 milestones). The repository owner redirected
+  priorities during the 16x16 recheck discussion above: benchmark
+  cleanliness was not the goal for this plan, restructuring for logical
+  soundness was, targeting a concrete, well-evidenced tangle found while
+  fixing the zero-event-acceptance bug: seven overlapping "candidate
+  partner net" functions and (initially) three independent, textually-
+  divergent hand-written decision blocks. Milestone 0's exhaustive audit
+  found the real shape was narrower and more structured than first
+  described: the seven functions reduce to two real pre-/post-search
+  helper pairs, one base case that silently served two different intents,
+  one naming-only passthrough, and one genuinely distinct probe mechanism;
+  and `route_many_with_repair_and_commit`'s "third decision site" was
+  actually five distinct usage contexts with no evidence of accidental
+  duplication, so they were deliberately left alone (see that plan's own
+  Decision Log). Split `crossing_allowed_partner_set`'s silent mode branch
+  into two named functions (Milestone 1, purely additive); consolidated
+  the one real, confirmed-intentional divergence -- `route_single_net_and_commit_native`
+  tries plain-A*-first with collision-crossing as fallback,
+  `route_single_net_and_commit_repair_native` tries the opposite order --
+  into one shared function with an explicit, documented `CollisionCrossingTryOrder`
+  parameter instead of leaving the difference implicit in each function's
+  own control flow (Milestone 2, repository owner explicitly confirmed
+  both orderings should be kept, not unified); added four focused Rust
+  unit tests pinning this down directly, one of which caught a wrong
+  assumption in this plan's own documentation before it could ship
+  (Milestone 3). Full validation ladder clean or identical to already-
+  documented pre-existing findings throughout (Milestone 4) -- see that
+  plan's own Outcomes & Retrospective for the complete detail.
 - **Superseded (see correction above)**: fixed the one pre-existing failing Rust unit test,
   `collision_crossing_route_without_event_is_not_accepted`
   (`try_route_with_collision_crossings_using_primitives` accepted a route
@@ -571,30 +586,27 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**Active ExecPlan**:
-`.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`.
-Start at its Milestone 0 (exhaustive characterization -- full call graph,
-divergence audit, dead-code check -- before any redesign). The repository
-owner explicitly redirected priorities to this: benchmark cleanliness is
-not the current goal, restructuring the crossing-partner-discovery
-architecture for logical soundness is, per real, concrete duplication
-found while fixing `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`'s
-bug (see that plan's own Surprises & Discoveries for the full terrain
-map: at least seven near-duplicate "candidate partner" functions, at
-least three independently-written and already-confirmed-divergent
-decision sites). Not started implementing yet.
-
+**No active ExecPlan right now.** All five of today's plans are complete
+(see Current Snapshot and each plan's own Outcomes & Retrospective):
 `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`,
 its follow-up
 `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`,
-and `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
-are complete (see Current Snapshot and each plan's own Outcomes &
-Retrospective) -- note the "Correction" bullet in Current Snapshot: the
-last of these three's benchmark validation turned out to be incomplete
+`.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`,
+and `.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`.
+`.agent/ORCHESTRATOR.md`'s "Required Startup" pointer needs updating to
+name whichever candidate below is picked next. The repository owner has
+not yet chosen the next objective; pick from the candidates below or ask,
+do not assume.
+
+Note the "Correction" bullet in Current Snapshot: the zero-event-
+acceptance plan's own benchmark validation turned out to be incomplete
 (`multiportmmi_16x16` stable-baseline was not rechecked at the time and
 is now known to be broken by it), which is part of why the repository
-owner redirected toward restructuring rather than continuing to chase
-benchmark state.
+owner redirected toward the crossing-partner-discovery restructuring
+rather than continuing to chase benchmark state. That restructuring is
+now done, but the underlying `n_50`/`n_67`/`70`/`71` benchmark findings
+it surfaced (see Current Snapshot) remain open -- confirmed unaffected,
+neither better nor worse, by the restructuring itself.
 
 `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`,
 `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
