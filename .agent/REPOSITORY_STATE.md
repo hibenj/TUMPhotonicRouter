@@ -15,9 +15,27 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `f540d65` (`docs: add ExecPlan for restructuring port
-  endpoint correction`)
-- Working tree is clean (`git status --short` empty).
+- Current HEAD: about to advance past `f540d65` with Milestone 0 and 0.5 of
+  the active ExecPlan (commits pending as of this update -- see below).
+- Working tree: Milestone 0 (endpoint-correction dispatch characterization
+  tests) and Milestone 0.5 (the real physical `cross_net_waveguide_overlap`
+  fix) are both complete and about to be committed. Milestone 0.5 fixed a
+  genuine, confirmed design-rule violation on `multiportmmi_16x16`
+  (`n_196`/`n_197` waveguides physically overlapping): a caller-side
+  self-authorizing overlap allow-list in
+  `route_port_corrected_centerline_checked_and_commit_native`
+  (`src/py_router.rs`) plus an overly-broad `if not self.enable_crossings`
+  guard in `translation/route_rust.py` that suppressed failure visibility
+  and let a third, separate call site
+  (`translation/route_rust_realization.py:_physical_port_centerline`)
+  silently re-derive the same unsafe geometry. Both fixed; the overlap is
+  confirmed gone via the structured verification JSON, at the honest cost
+  of 2 nets (`n_196`, `n_203`) now cleanly failing to connect instead of
+  silently colliding -- the repository owner explicitly chose to stop at
+  that state rather than extend the correction algorithm further (see the
+  ExecPlan's own Decision Log and Outcomes & Retrospective for the full,
+  three-turn investigation trail). Next up: Milestone 1 (consolidate net
+  classification), per the active ExecPlan.
 - **Active ExecPlan, ready to execute in a fresh session**:
   `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`.
   Written deliberately for handoff -- read it first, it is self-contained
