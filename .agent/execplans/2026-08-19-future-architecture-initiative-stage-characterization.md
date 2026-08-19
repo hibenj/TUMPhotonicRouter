@@ -35,9 +35,14 @@ This plan directly follows the repository owner's 2026-08-19 decision (see `.age
 - Decision: scope this plan to characterization only, not extraction or implementation of any interface. Rationale: `.agent/PLANS.md` discourages over-specifying milestones before source inspection justifies the design, and `.agent/PROJECT_GOAL.md` itself only names the five candidate stages without prescribing which to do first or how entangled each currently is -- that has to be established with real evidence before a sensible extraction order or interface shape can be chosen.
   Date/Author: 2026-08-19, Claude, following the repository owner's direction to move on to the Future Architecture Initiative.
 
+- Decision: close this plan after Milestone 0; do not add extraction milestones to it. Rationale: per `.agent/PLANS.md`'s guidance and this plan's own original scoping, characterization and extraction are different kinds of work with different risk profiles (read-only vs. behavior-changing) -- keeping them in separate plans lets each have its own clean Validation and Acceptance bar, matching the pattern already used elsewhere in this session (e.g. closing the benchmark-findings plan as diagnosis-only rather than folding a deferred fix into it).
+  Date/Author: 2026-08-19, Claude, recorded here after reviewing the characterization fork's findings.
+
 ## Outcomes & Retrospective
 
-(To be filled in as this plan's milestones complete.)
+Milestone 0 delivered a concrete, evidence-backed extraction order (Surprises & Discoveries) and closes this plan. The headline finding: two of the five nominal stages -- obstacle map building/grid snapping, and single-net A* search -- are already at or near the target shape (stable signatures, no session coupling, deep existing test coverage), so the initiative's real work is not "extract five stages" but "extract three separable stages, then do a dedicated restructuring pass on ripup/repair orchestration before it is even extraction-ready, and settle the geometry-realization/path-length-matching boundary before extracting either." This reframes the initiative's own shape in a way `.agent/PROJECT_GOAL.md`'s original five-stage list did not anticipate, and directly validates this session's earlier decision (in the now-closed `2026-08-19-fix-open-repair-and-dense-port-findings.md` plan) not to patch `route_many_with_repair_and_commit` in its current form: independent evidence (three real bugs there this session, zero stage-granular tests, a god-object session struct) confirms that function specifically is the least-ready part of the whole pipeline for either a bug fix or an interface extraction.
+
+This plan is now closed. The natural next ExecPlan is scoped extraction of stage 1+2 (obstacle map building + grid snapping) -- the lowest-risk, best-evidenced starting point per the recommended order above -- starting with formalizing the existing `build_static_obstacle_map` contract as an explicit `Protocol`/`trait` rather than inventing a new boundary.
 
 ## Context and Orientation
 
