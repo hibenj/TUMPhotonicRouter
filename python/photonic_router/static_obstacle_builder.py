@@ -8,13 +8,22 @@ from importlib import machinery, util
 from importlib import import_module
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Iterable, List, Optional, Protocol, Sequence, Set, Tuple, runtime_checkable
 
 from photonic_router.benchmark_extractor import BBox, ExtractedBenchmark, Point, Polygon, extract_benchmark
 from photonic_router.routing_layers import HEATER_METAL_OBSTACLE_LAYERS
 
 GridCell = Tuple[int, int]
 GridRect = Tuple[int, int, int, int]
+
+
+@runtime_checkable
+class ObstacleMapBuilder(Protocol):
+    def build(
+        self,
+        component: object,
+        config: StaticObstacleMapConfig,
+    ) -> StaticObstacleMapData: ...
 
 
 @dataclass(frozen=True)
@@ -814,12 +823,24 @@ def _validate_nonnegative_margin(value: float, name: str) -> float:
     return value
 
 
+def floor_snap_to_grid(coord: float, origin: float, grid_size_um: float) -> int:
+    """Floor-snap one physical micrometer coordinate to a grid-cell index."""
+
+    return math.floor((coord - origin) / grid_size_um)
+
+
+def cell_center_coordinate(cell: int, origin: float, grid_size_um: float) -> float:
+    """Return the physical coordinate of one grid-cell center on one axis."""
+
+    return origin + (cell + 0.5) * grid_size_um
+
+
 def physical_to_grid(x: float, y: float, grid: GridSpec) -> GridCell:
     """Convert physical micrometer coordinates to integer grid coordinates."""
 
     xmin, ymin = grid.origin
-    gx = math.floor((x - xmin) / grid.grid_size_um)
-    gy = math.floor((y - ymin) / grid.grid_size_um)
+    gx = floor_snap_to_grid(x, xmin, grid.grid_size_um)
+    gy = floor_snap_to_grid(y, ymin, grid.grid_size_um)
     return gx, gy
 
 
@@ -828,8 +849,8 @@ def grid_cell_center(gx: int, gy: int, grid: GridSpec) -> Point:
 
     xmin, ymin = grid.origin
     return (
-        xmin + (gx + 0.5) * grid.grid_size_um,
-        ymin + (gy + 0.5) * grid.grid_size_um,
+        cell_center_coordinate(gx, xmin, grid.grid_size_um),
+        cell_center_coordinate(gy, ymin, grid.grid_size_um),
     )
 
 

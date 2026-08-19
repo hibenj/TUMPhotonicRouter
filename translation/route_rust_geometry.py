@@ -7,6 +7,7 @@ import math
 import re
 from typing import Any, Iterable, Mapping, cast
 
+from photonic_router.static_obstacle_builder import floor_snap_to_grid
 from translation.route_rust_types import RoutedNetRecord
 
 _ILLEGAL_REALIZED_CROSSING_RE = re.compile(
@@ -382,8 +383,8 @@ def _physical_point_to_grid_cell(
     if not math.isfinite(x) or not math.isfinite(y):
         return None
     return (
-        int(math.floor((x - float(origin_x_um)) / float(grid_size_um))),
-        int(math.floor((y - float(origin_y_um)) / float(grid_size_um))),
+        floor_snap_to_grid(x, float(origin_x_um), float(grid_size_um)),
+        floor_snap_to_grid(y, float(origin_y_um), float(grid_size_um)),
     )
 
 

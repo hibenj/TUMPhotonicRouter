@@ -29,6 +29,7 @@ from translation.route_gds import get_port_from_instance
 from photonic_router.routing_layers import (
     find_component_port_access_rule,
 )
+from photonic_router.static_obstacle_builder import grid_cell_center, physical_to_grid
 from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
 from photonic_router.topology_analysis import analyze_schematic_topology
 from translation.route_rust_analysis import (
@@ -1316,21 +1317,31 @@ class _RouteNetsRustSession:
         # heater rectangles after clearance expansion, so the opening must cover
         # the matching expanded blocked rectangles too.
         bbox_margin = 0.5 * grid_size
+        min_bbox_cell = physical_to_grid(
+            float(left) - bbox_margin,
+            float(bottom) - bbox_margin,
+            self.grid,
+        )
+        max_bbox_cell = physical_to_grid(
+            float(right) + bbox_margin,
+            float(top) + bbox_margin,
+            self.grid,
+        )
         min_x = max(
             0,
-            int(math.floor((float(left) - bbox_margin - float(self.origin_x_um)) / grid_size)),
+            min_bbox_cell[0],
         )
         max_x = min(
             self.grid_width - 1,
-            int(math.floor((float(right) + bbox_margin - float(self.origin_x_um)) / grid_size)),
+            max_bbox_cell[0],
         )
         min_y = max(
             0,
-            int(math.floor((float(bottom) - bbox_margin - float(self.origin_y_um)) / grid_size)),
+            min_bbox_cell[1],
         )
         max_y = min(
             self.grid_height - 1,
-            int(math.floor((float(top) + bbox_margin - float(self.origin_y_um)) / grid_size)),
+            max_bbox_cell[1],
         )
         if min_x > max_x or min_y > max_y:
             return set()
@@ -1414,10 +1425,7 @@ class _RouteNetsRustSession:
         stub_centerline_um: tuple[tuple[float, float], ...]
 
     def _grid_cell_center_um(self, cell_x: int, cell_y: int) -> tuple[float, float]:
-        return (
-            float(self.origin_x_um) + (float(cell_x) + 0.5) * float(self.grid.grid_size_um),
-            float(self.origin_y_um) + (float(cell_y) + 0.5) * float(self.grid.grid_size_um),
-        )
+        return grid_cell_center(cell_x, cell_y, self.grid)
 
     def _centerline_grid_cells(
         self,
@@ -1800,18 +1808,24 @@ class _RouteNetsRustSession:
 
         def _next_grid_axis_value(
             value: float,
-            origin: float,
+            axis: str,
             direction: int,
         ) -> float | None:
             if direction == 0:
                 return None
+            origin = self.origin_x_um if axis == "x" else self.origin_y_um
             rel = (float(value) - float(origin)) / float(self.grid.grid_size_um) - 0.5
             eps = 1.0e-9
             if direction > 0:
                 index = math.ceil(rel - eps)
             else:
                 index = math.floor(rel + eps)
-            return float(origin) + (float(index) + 0.5) * float(self.grid.grid_size_um)
+            center = grid_cell_center(
+                int(index) if axis == "x" else 0,
+                int(index) if axis == "y" else 0,
+                self.grid,
+            )
+            return center[0] if axis == "x" else center[1]
 
         points: list[tuple[float, float]] = [port_point]
         bend_start = port_point
@@ -1833,7 +1847,7 @@ class _RouteNetsRustSession:
         if target_anchor_y_cell is None:
             target_intermediate_y = _next_grid_axis_value(
                 first_end[1],
-                self.origin_y_um,
+                "y",
                 int(intermediate_step[1]),
             )
         else:
@@ -1866,7 +1880,7 @@ class _RouteNetsRustSession:
         if final_step[0] != 0:
             target_final_x = _next_grid_axis_value(
                 second_end[0],
-                self.origin_x_um,
+                "x",
                 int(final_step[0]),
             )
             if target_final_x is None:
@@ -1886,7 +1900,7 @@ class _RouteNetsRustSession:
                 if float(target_final_x) < float(min_forward_x):
                     snapped_min_forward_x = _next_grid_axis_value(
                         float(min_forward_x),
-                        self.origin_x_um,
+                        "x",
                         int(final_step[0]),
                     )
                     if snapped_min_forward_x is None:
@@ -1897,7 +1911,7 @@ class _RouteNetsRustSession:
                 if float(target_final_x) > float(min_forward_x):
                     snapped_min_forward_x = _next_grid_axis_value(
                         float(min_forward_x),
-                        self.origin_x_um,
+                        "x",
                         int(final_step[0]),
                     )
                     if snapped_min_forward_x is None:
@@ -1912,7 +1926,7 @@ class _RouteNetsRustSession:
         else:
             target_final_y = _next_grid_axis_value(
                 second_end[1],
-                self.origin_y_um,
+                "y",
                 int(final_step[1]),
             )
             if target_final_y is None:
@@ -2412,8 +2426,7 @@ class _RouteNetsRustSession:
             grid_size = float(self.grid.grid_size_um)
             filtered: set[tuple[int, int]] = set()
             for cell_x, cell_y in cells:
-                center_x = self.origin_x_um + (float(cell_x) + 0.5) * grid_size
-                center_y = self.origin_y_um + (float(cell_y) + 0.5) * grid_size
+                center_x, center_y = grid_cell_center(cell_x, cell_y, self.grid)
                 lateral_position = center_x * lateral_x + center_y * lateral_y
                 nearest_spec = min(
                     owners,
@@ -2433,8 +2446,7 @@ class _RouteNetsRustSession:
         eps = max(1.0e-9, grid_size * 1.0e-9)
         filtered: set[tuple[int, int]] = set()
         for cell_x, cell_y in cells:
-            center_x = self.origin_x_um + (float(cell_x) + 0.5) * grid_size
-            center_y = self.origin_y_um + (float(cell_y) + 0.5) * grid_size
+            center_x, center_y = grid_cell_center(cell_x, cell_y, self.grid)
             lateral_position = center_x * lateral_x + center_y * lateral_y
             if lower - eps <= lateral_position <= upper + eps:
                 filtered.add((cell_x, cell_y))
@@ -5387,10 +5399,7 @@ class _RouteNetsRustSession:
             return None
         if not math.isfinite(point_x) or not math.isfinite(point_y):
             return None
-        return (
-            int(math.floor((point_x - float(self.origin_x_um)) / float(self.grid.grid_size_um))),
-            int(math.floor((point_y - float(self.origin_y_um)) / float(self.grid.grid_size_um))),
-        )
+        return physical_to_grid(point_x, point_y, self.grid)
 
     def _illegal_crossing_grid_cell(self, item: Mapping[str, object]) -> tuple[int, int] | None:
         raw_cell = item.get("grid_cell")
@@ -5849,10 +5858,11 @@ class _RouteNetsRustSession:
         if max_y_um < min_y_um:
             min_y_um, max_y_um = max_y_um, min_y_um
         grid_size = float(self.grid.grid_size_um)
+        min_cell = physical_to_grid(min_x_um, min_y_um, self.grid)
         return (
-            int(math.floor((min_x_um - float(self.origin_x_um)) / grid_size)),
+            min_cell[0],
             int(math.ceil((max_x_um - float(self.origin_x_um)) / grid_size)),
-            int(math.floor((min_y_um - float(self.origin_y_um)) / grid_size)),
+            min_cell[1],
             int(math.ceil((max_y_um - float(self.origin_y_um)) / grid_size)),
         )
 

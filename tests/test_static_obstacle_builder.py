@@ -13,6 +13,7 @@ from gdsfactory.gpdk import get_generic_pdk
 from photonic_router.benchmark_extractor import ExtractedBenchmark, Port, extract_benchmark
 from photonic_router.static_obstacle_builder import (
     GridSpec,
+    ObstacleMapBuilder,
     StaticObstacleMapConfig,
     StaticObstacleMapData,
     _apply_perpendicular_heater_clearance,
@@ -169,6 +170,32 @@ def test_coordinate_transformation_and_cell_center():
     assert physical_to_grid(-0.51, 2.49, grid) == (0, 0)
     assert physical_to_grid(0.0, 3.0, grid) == (2, 2)
     assert grid_cell_center(2, 2, grid) == (0.25, 3.25)
+
+    negative_origin_grid = GridSpec(
+        width=8,
+        height=8,
+        grid_size_um=2.0,
+        origin=(-5.0, -3.0),
+        die_bbox=(-5.0, -3.0, 11.0, 13.0),
+    )
+    assert physical_to_grid(-5.0, -3.0, negative_origin_grid) == (0, 0)
+    assert physical_to_grid(-5.01, -3.01, negative_origin_grid) == (-1, -1)
+    assert physical_to_grid(-1.0, 1.0, negative_origin_grid) == (2, 2)
+    assert grid_cell_center(2, 2, negative_origin_grid) == (0.0, 2.0)
+
+
+def test_obstacle_map_builder_protocol_is_structural_at_runtime():
+    class _MinimalBuilder:
+        def build(
+            self,
+            component: object,
+            config: StaticObstacleMapConfig,
+        ) -> StaticObstacleMapData:
+            return _static_obstacle_data_for_single_rect(blocked_cells=set())
+
+    builder: ObstacleMapBuilder = _MinimalBuilder()
+
+    assert isinstance(builder, ObstacleMapBuilder)
 
 
 def test_rasterizes_polygon_by_cell_centers():

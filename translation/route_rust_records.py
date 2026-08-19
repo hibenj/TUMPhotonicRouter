@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol, Sequence, cast
 
+from photonic_router.static_obstacle_builder import cell_center_coordinate
 from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
 
 from translation.route_rust_types import (
@@ -68,8 +69,8 @@ def _grid_cell_center_um(
     if cell is None:
         return None
     return (
-        float(origin_x_um) + (float(cell[0]) + 0.5) * float(grid_size_um),
-        float(origin_y_um) + (float(cell[1]) + 0.5) * float(grid_size_um),
+        cell_center_coordinate(int(cell[0]), float(origin_x_um), float(grid_size_um)),
+        cell_center_coordinate(int(cell[1]), float(origin_y_um), float(grid_size_um)),
     )
 
 
