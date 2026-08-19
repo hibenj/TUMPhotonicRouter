@@ -15,14 +15,47 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `212d323`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+- Current HEAD: `1d08a1c`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
   (all 6 milestones), its follow-up
   `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`
   (all 4 milestones), and
   `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
   are **all complete**, 17 focused commits across the session. Working tree
   clean.
-- **Latest plan**: fixed the one pre-existing failing Rust unit test,
+- **Correction (2026-08-19, found via a post-hoc recheck, do not trust the
+  "confirmed clean" claim about `multiportmmi_16x16` two bullets below --
+  it was true when written but is now stale):** re-running
+  `multiportmmi_16x16` under its documented stable-baseline config *after*
+  both fixes in `2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
+  landed shows it is **not** clean -- it now hard-fails with `RuntimeError:
+  No route found for n_50` at net 51/223, the same "an honest failure
+  replacing what used to be silently accepted" shape as the `multiportmmi_8x8`
+  bare-defaults finding, but on the *stable-baseline* config this time, which
+  matters more since that config was the one being treated as the actual
+  "official clean" target. Bisected (via isolated `git worktree` checkouts of
+  each commit, rebuilding the shared `.venv`'s extension for each, then
+  rebuilding back to `HEAD` afterward) to confirm: clean at `9302efd` (before
+  either fix), broken identically at `3bea008` (the zero-event-acceptance fix
+  alone) and at `HEAD` (both fixes) -- so this is caused by the
+  zero-event-acceptance fix specifically, not the restore-bookkeeping fix.
+  Not yet investigated further or fixed; this is the motivation for the new
+  active plan below.
+- **New active plan**:
+  `.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`.
+  The repository owner redirected priorities during the 16x16 recheck
+  discussion above: benchmark cleanliness is not the current goal,
+  restructuring for logical soundness is, and this session's own
+  investigation into the zero-event-acceptance bug found a concrete,
+  well-evidenced target for that: at least seven distinctly-named
+  "candidate partner net" functions and at least three independent,
+  textually-divergent hand-written blocks (in three different top-level
+  functions) that each separately decide which other nets a net's
+  collision-crossing attempt should check against -- two of which are
+  already confirmed to disagree with each other. See that plan's own
+  Surprises & Discoveries for the full, evidenced terrain map and its Plan
+  of Work for the exhaustive-characterization-first approach (Milestone 0)
+  before any redesign is locked in. Not started implementing yet.
+- **Superseded (see correction above)**: fixed the one pre-existing failing Rust unit test,
   `collision_crossing_route_without_event_is_not_accepted`
   (`try_route_with_collision_crossings_using_primitives` accepted a route
   with zero crossing events as a successful collision-crossing result,
@@ -64,10 +97,14 @@ if it is ever needed.
   working multi-candidate structure, so the fix was adding a
   `collision_check` closure parameter to its existing acceptance points
   rather than building new search logic. `multiportmmi_16x16` under its
-  documented stable-baseline config now reports `success=true,
+  documented stable-baseline config reported `success=true,
   error_count=0, warning_count=0` -- 223/223 nets routed, `n_196`/`n_203`
-  fully connected with zero collision and zero fallback warning. Full
-  detail in that plan's own Outcomes & Retrospective.
+  fully connected with zero collision and zero fallback warning -- **at the
+  time this plan completed.** This is **no longer true as of the later
+  `2026-08-19-fix-collision-crossing-zero-event-acceptance.md` plan** (see
+  the "Correction" bullet near the top of this Current Snapshot section) --
+  do not treat this paragraph as current state, only as this plan's own
+  historical result. Full detail in that plan's own Outcomes & Retrospective.
 - **Both ExecPlans are complete** and neither is the active plan; see
   "Next Engineering Step" below for what to read/do next. Kept here as a
   compact summary since its own file is long: endpoint correction was
@@ -534,17 +571,30 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.**
+**Active ExecPlan**:
+`.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`.
+Start at its Milestone 0 (exhaustive characterization -- full call graph,
+divergence audit, dead-code check -- before any redesign). The repository
+owner explicitly redirected priorities to this: benchmark cleanliness is
+not the current goal, restructuring the crossing-partner-discovery
+architecture for logical soundness is, per real, concrete duplication
+found while fixing `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`'s
+bug (see that plan's own Surprises & Discoveries for the full terrain
+map: at least seven near-duplicate "candidate partner" functions, at
+least three independently-written and already-confirmed-divergent
+decision sites). Not started implementing yet.
+
 `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`,
 its follow-up
 `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`,
 and `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
 are complete (see Current Snapshot and each plan's own Outcomes &
-Retrospective). `.agent/ORCHESTRATOR.md`'s "Required Startup" pointer
-needs updating to name whichever candidate below is picked next, per its
-own instruction to do so once its named plan completes. The repository
-owner has not yet chosen the next objective; pick from the candidates
-below or ask, do not assume.
+Retrospective) -- note the "Correction" bullet in Current Snapshot: the
+last of these three's benchmark validation turned out to be incomplete
+(`multiportmmi_16x16` stable-baseline was not rechecked at the time and
+is now known to be broken by it), which is part of why the repository
+owner redirected toward restructuring rather than continuing to chase
+benchmark state.
 
 `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`,
 `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
@@ -587,7 +637,21 @@ Other candidates, deliberately not started yet (parked, not forgotten):
    mechanical fix. `multiportmmi_8x8`'s documented stable-baseline config
    is unaffected. Not started; a good candidate to discuss shape/approach
    before diving in, same as the `n_32` item above.
-3. Continue the broader Python-and-Rust correctness walkthrough into
+3. **New (2026-08-19)**: `multiportmmi_16x16` under its documented
+   stable-baseline config -- unlike `multiportmmi_8x8`'s stable-baseline
+   config, which is unaffected -- now hard-fails: `RuntimeError: No route
+   found for n_50` at net 51/223. Same underlying shape as item 2 above
+   (a net that used to get a vacuous "success" from the now-fixed
+   zero-event-acceptance bug now genuinely can't be routed by current
+   repair strategies), confirmed via `git worktree` bisection to be caused
+   by the zero-event-acceptance fix specifically (clean at `9302efd`,
+   broken at `3bea008` and at `HEAD`). Not investigated in depth (no root
+   cause trace yet, unlike item 2's `n_67`/`70`/`71` cluster which has
+   one) -- deliberately not pursued further because the repository owner
+   redirected priorities to the restructuring plan above instead. If
+   picked up later, start by getting the same kind of root-cause trace
+   item 2 already has before attempting a fix.
+4. Continue the broader Python-and-Rust correctness walkthrough into
    Stages 6-8 (endpoint correction, geometry realization, verification),
    or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`
    module by module (matching how Stages 1-4 were done), rather than

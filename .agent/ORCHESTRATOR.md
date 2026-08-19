@@ -18,34 +18,45 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**There is no active ExecPlan right now.**
-`.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md` is
-complete (all 6 milestones, 2026-08-19): endpoint correction is now one
-classification function feeding two named orchestration entry points,
-with every fallback visible in structured verification JSON instead of
-silently discoverable only via a geometric audit; along the way it also
-fixed a real, confirmed physical waveguide-overlap bug on
-`multiportmmi_16x16`. Its follow-up,
-`.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`,
-is also complete (same day): the two nets left honestly-failing by that
-fix now route cleanly too, via a collision-check added to an existing
-multi-candidate search rather than a caller-side reject-only check.
-`multiportmmi_16x16` under its documented stable-baseline config is now
-fully clean end to end. A third, separate plan,
-`.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`,
-is also complete: it fixed the one pre-existing failing Rust unit test
+**Active ExecPlan**:
+`.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`
+(start at Milestone 0). The repository owner explicitly redirected
+priorities away from benchmark cleanliness and toward restructuring for
+logical soundness, after this session's investigation into fixing
+`.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`'s
+bug surfaced real, concrete duplication in the crossing-partner-discovery
+code (`src/py_router.rs`): at least seven near-duplicate "candidate
+partner" functions and at least three independent, already-confirmed-
+divergent hand-written decision sites. Read that new plan's own Surprises
+& Discoveries for the full, evidenced terrain map before starting.
+
+Three prior plans completed earlier the same day:
+`.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+(all 6 milestones): endpoint correction is now one classification
+function feeding two named orchestration entry points, with every
+fallback visible in structured verification JSON instead of silently
+discoverable only via a geometric audit; along the way it also fixed a
+real, confirmed physical waveguide-overlap bug on `multiportmmi_16x16`.
+Its follow-up, `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`
+(all 4 milestones): the two nets left honestly-failing by that fix
+route cleanly too now, via a collision-check added to an existing
+multi-candidate search. A third, `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`:
+fixed the one pre-existing failing Rust unit test
 (`try_route_with_collision_crossings_using_primitives` was accepting a
 route with zero crossing events as a successful collision-crossing
-result) and, in validating that fix, found and -- at the repository
-owner's direction -- also fixed a second, separate, pre-existing
-native-repair bookkeeping bug (`restore_saved_source_layer_routes` could
-silently lose a net's route on a partial restore failure). The fixed
-repo still does not route `multiportmmi_8x8` bare CLI defaults cleanly
-end to end -- it now fails honestly and deterministically on a genuinely
-congested cluster of nets instead of silently losing one -- see
-`.agent/REPOSITORY_STATE.md`'s "Next Engineering Step" for that as a new,
-separately tracked candidate.
-All three plans grew out of five prior, now-complete
+result) and, at the repository owner's direction, also fixed a second,
+separate, pre-existing native-repair bookkeeping bug
+(`restore_saved_source_layer_routes` could silently lose a net's route
+on a partial restore failure). **Important**: that third plan's own
+benchmark validation was incomplete -- it did not recheck
+`multiportmmi_16x16`, which is now confirmed (via the redirect
+discussion, see `.agent/REPOSITORY_STATE.md`'s "Correction" bullet) to
+have been broken by the zero-event-acceptance fix. Both this and the
+`multiportmmi_8x8` bare-defaults finding from that same plan are tracked
+as separate candidates in `.agent/REPOSITORY_STATE.md`'s "Next
+Engineering Step", not resolved.
+
+All four plans grew out of five prior, now-complete
 plans (`.agent/execplans/2026-08-18-*.md`) that together unified port
 access/keepout sizing, fixed two real dense-port and endpoint-correction
 bugs, and recalibrated the Rust crossing test suite. Read
