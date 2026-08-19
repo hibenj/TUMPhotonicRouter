@@ -15,12 +15,28 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `ab4a6e4` and later commits completing
-  `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md` --
-  **this plan is now fully complete, all 6 milestones (0, 0.5, 1, 2, 3, 4,
-  5)**, committed in 11 focused commits across the session. Working tree
-  clean.
-- **This ExecPlan is complete** and is no longer the active plan; see
+- Current HEAD: `33ad62c`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+  (all 6 milestones) and its follow-up,
+  `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`
+  (all 4 milestones), are **both fully complete**, 14 focused commits
+  across the session. Working tree clean.
+- **The follow-up plan is also complete.** It picked up the one residual
+  item the restructuring plan left open at the repository owner's
+  direction: `multiportmmi_16x16`'s `n_196`/`n_203` were cleanly failing
+  to connect (`target_port_not_connected`) instead of silently colliding,
+  because the checked corrector's `candidates.is_empty()` fallback branch
+  (`src/py_router.rs`) had no alternative placement to try once its one
+  construction collided. Traced (temporary tracing, removed after) to the
+  exact responsible strategy, `try_apply_45_degree_endpoint_delta_correction`
+  (`src/geometry_realization.rs`) -- which turned out to already have a
+  working multi-candidate structure, so the fix was adding a
+  `collision_check` closure parameter to its existing acceptance points
+  rather than building new search logic. `multiportmmi_16x16` under its
+  documented stable-baseline config now reports `success=true,
+  error_count=0, warning_count=0` -- 223/223 nets routed, `n_196`/`n_203`
+  fully connected with zero collision and zero fallback warning. Full
+  detail in that plan's own Outcomes & Retrospective.
+- **Both ExecPlans are complete** and neither is the active plan; see
   "Next Engineering Step" below for what to read/do next. Kept here as a
   compact summary since its own file is long: endpoint correction was
   three duplicated, independently-ordered passes over routed nets in
@@ -486,30 +502,16 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
-is complete (all 6 milestones -- see Current Snapshot and the plan's own
-Outcomes & Retrospective). `.agent/ORCHESTRATOR.md`'s "Required Startup"
-pointer needs updating to name whichever candidate below is picked next,
-per its own instruction to do so once its named plan completes. The
-repository owner has not yet chosen the next objective; pick from the
-candidates below or ask, do not assume.
-
-New candidate surfaced by the just-completed plan, not yet started:
-making `multiportmmi_16x16`'s `n_196`/`n_203` (and any other net with the
-same shape) route successfully instead of honestly failing with
-`target_port_not_connected`. The checked endpoint corrector now correctly
-rejects an unsafe candidate for these two nets (Milestone 0.5's fix,
-confirmed real and working), but its `candidates.is_empty()` fallback
-branch (`src/py_router.rs`'s
-`route_port_corrected_centerline_checked_and_commit_native`) has no
-alternative placement to try once its one deterministic construction
-collides, unlike the case-4 bump path's multi-candidate search. Fixing
-this needs either extending that branch to produce and try alternative
-placements, or feeding obstacle awareness earlier into the construction
-itself. The repository owner explicitly chose to stop at the
-honest-failure state rather than pick this up immediately; see the
-ExecPlan's own Progress and Outcomes & Retrospective for the full
-reproduction case.
+**No active ExecPlan right now.** Both
+`.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+and its follow-up,
+`.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`,
+are complete (see Current Snapshot and each plan's own Outcomes &
+Retrospective). `.agent/ORCHESTRATOR.md`'s "Required Startup" pointer
+needs updating to name whichever candidate below is picked next, per its
+own instruction to do so once its named plan completes. The repository
+owner has not yet chosen the next objective; pick from the candidates
+below or ask, do not assume.
 
 `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`,
 `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,

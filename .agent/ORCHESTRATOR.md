@@ -25,8 +25,14 @@ classification function feeding two named orchestration entry points,
 with every fallback visible in structured verification JSON instead of
 silently discoverable only via a geometric audit; along the way it also
 fixed a real, confirmed physical waveguide-overlap bug on
-`multiportmmi_16x16`. It grew out of five prior, now-complete plans
-(`.agent/execplans/2026-08-18-*.md`) that together unified port
+`multiportmmi_16x16`. Its follow-up,
+`.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`,
+is also complete (same day): the two nets left honestly-failing by that
+fix now route cleanly too, via a collision-check added to an existing
+multi-candidate search rather than a caller-side reject-only check.
+`multiportmmi_16x16` under its documented stable-baseline config is now
+fully clean end to end. Both plans grew out of five prior, now-complete
+plans (`.agent/execplans/2026-08-18-*.md`) that together unified port
 access/keepout sizing, fixed two real dense-port and endpoint-correction
 bugs, and recalibrated the Rust crossing test suite. Read
 `.agent/REPOSITORY_STATE.md`'s "Current Snapshot" and "Next Engineering
