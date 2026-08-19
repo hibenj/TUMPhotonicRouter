@@ -455,17 +455,27 @@ pub fn make_grid_spec(die_bbox: BBox, grid_size_um: f64) -> Result<StaticGridSpe
 
 /// Convert physical micrometer coordinates to integer grid coordinates.
 pub fn physical_to_grid(x: f64, y: f64, grid: &StaticGridSpec) -> GridCell {
-    let gx = ((x - grid.origin.0) / grid.grid_size_um).floor() as i32;
-    let gy = ((y - grid.origin.1) / grid.grid_size_um).floor() as i32;
+    let gx = floor_snap_to_grid(x, grid.origin.0, grid.grid_size_um);
+    let gy = floor_snap_to_grid(y, grid.origin.1, grid.grid_size_um);
     (gx, gy)
+}
+
+/// Floor-snap one physical micrometer coordinate to a grid-cell index.
+pub fn floor_snap_to_grid(coord: f64, origin: f64, grid_size_um: f64) -> i32 {
+    ((coord - origin) / grid_size_um).floor() as i32
 }
 
 /// Return the physical center of a grid cell.
 pub fn grid_cell_center(gx: i32, gy: i32, grid: &StaticGridSpec) -> Point {
     (
-        grid.origin.0 + (gx as f64 + 0.5) * grid.grid_size_um,
-        grid.origin.1 + (gy as f64 + 0.5) * grid.grid_size_um,
+        cell_center_coordinate(gx, grid.origin.0, grid.grid_size_um),
+        cell_center_coordinate(gy, grid.origin.1, grid.grid_size_um),
     )
+}
+
+/// Return the physical coordinate of one grid-cell center on one axis.
+pub fn cell_center_coordinate(cell: i32, origin: f64, grid_size_um: f64) -> f64 {
+    origin + (cell as f64 + 0.5) * grid_size_um
 }
 
 /// Rasterize one polygon into packed cell keys using cell-center tests.
@@ -625,8 +635,7 @@ fn polygon_to_grid_bbox(polygon: &Polygon, grid: &StaticGridSpec) -> Option<Grid
         return None;
     }
 
-    let mut gx_min = ((min_x - grid.origin.0) / grid.grid_size_um).floor() as i32;
-    let mut gy_min = ((min_y - grid.origin.1) / grid.grid_size_um).floor() as i32;
+    let (mut gx_min, mut gy_min) = physical_to_grid(min_x, min_y, grid);
     let mut gx_max = ((max_x - grid.origin.0) / grid.grid_size_um).ceil() as i32 - 1;
     let mut gy_max = ((max_y - grid.origin.1) / grid.grid_size_um).ceil() as i32 - 1;
 
@@ -1064,6 +1073,93 @@ mod tests {
         assert_eq!(physical_to_grid(-1.0, 2.0, &grid), (0, 0));
         assert_eq!(physical_to_grid(-0.51, 2.49, &grid), (0, 0));
         assert_eq!(physical_to_grid(0.0, 3.0, &grid), (2, 2));
+    }
+
+    #[test]
+    fn floor_snap_to_grid_handles_boundaries_mid_cell_and_negative_origin() {
+        let origin = -2.0;
+        let grid_size_um = 0.5;
+
+        assert_eq!(floor_snap_to_grid(-2.0, origin, grid_size_um), 0);
+        assert_eq!(floor_snap_to_grid(-1.75, origin, grid_size_um), 0);
+        assert_eq!(floor_snap_to_grid(-2.25, origin, grid_size_um), -1);
+    }
+
+    #[test]
+    fn cell_center_coordinate_handles_positive_and_negative_cells() {
+        let origin = -2.0;
+        let grid_size_um = 0.5;
+
+        assert_eq!(cell_center_coordinate(0, origin, grid_size_um), -1.75);
+        assert_eq!(cell_center_coordinate(1, origin, grid_size_um), -1.25);
+        assert_eq!(cell_center_coordinate(-1, origin, grid_size_um), -2.25);
+    }
+
+    #[test]
+    fn snapped_cell_center_lands_inside_snapped_cell() {
+        let origin = -2.0;
+        let grid_size_um = 0.5;
+
+        for coord in [-2.0, -1.75, -2.25, 0.125] {
+            let cell = floor_snap_to_grid(coord, origin, grid_size_um);
+            let center = cell_center_coordinate(cell, origin, grid_size_um);
+            let lower = origin + cell as f64 * grid_size_um;
+            let upper = origin + (cell as f64 + 1.0) * grid_size_um;
+
+            assert!(center >= lower);
+            assert!(center < upper);
+            assert!((center - coord).abs() <= grid_size_um * 0.5);
+        }
+    }
+
+    #[test]
+    fn grid_coordinate_wrappers_match_existing_formula_outputs() {
+        let cases = [
+            (
+                StaticGridSpec {
+                    width: 10,
+                    height: 10,
+                    grid_size_um: 0.5,
+                    origin: (-1.0, 2.0),
+                    die_bbox: (-1.0, 2.0, 4.0, 7.0),
+                },
+                (-1.0, 2.0),
+                (0, 0),
+                (-0.75, 2.25),
+            ),
+            (
+                StaticGridSpec {
+                    width: 10,
+                    height: 10,
+                    grid_size_um: 0.5,
+                    origin: (-1.0, 2.0),
+                    die_bbox: (-1.0, 2.0, 4.0, 7.0),
+                },
+                (0.0, 3.0),
+                (2, 2),
+                (0.25, 3.25),
+            ),
+            (
+                StaticGridSpec {
+                    width: 20,
+                    height: 12,
+                    grid_size_um: 0.25,
+                    origin: (-2.0, -1.0),
+                    die_bbox: (-2.0, -1.0, 3.0, 2.0),
+                },
+                (-2.125, -0.875),
+                (-1, 0),
+                (-2.125, -0.875),
+            ),
+        ];
+
+        for (grid, point, expected_cell, expected_center) in cases {
+            assert_eq!(physical_to_grid(point.0, point.1, &grid), expected_cell);
+            assert_eq!(
+                grid_cell_center(expected_cell.0, expected_cell.1, &grid),
+                expected_center
+            );
+        }
     }
 
     #[test]

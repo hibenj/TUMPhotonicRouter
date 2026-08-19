@@ -21,7 +21,8 @@ use crate::primitives::{PrimitiveGeometry, PrimitiveLibrary};
 #[cfg(test)]
 use crate::static_obstacle_builder::rasterize_polygon;
 use crate::static_obstacle_builder::{
-    grid_cell_center, physical_to_grid, PortInput, StaticGridSpec,
+    cell_center_coordinate, floor_snap_to_grid, grid_cell_center, physical_to_grid, PortInput,
+    StaticGridSpec,
 };
 
 const EPS: f64 = 1.0e-9;
@@ -498,8 +499,8 @@ impl GeometryGridSpec {
 
     pub fn cell_center(&self, x: i32, y: i32) -> (f64, f64) {
         (
-            self.origin_x_um + (x as f64 + 0.5) * self.grid_size_um,
-            self.origin_y_um + (y as f64 + 0.5) * self.grid_size_um,
+            cell_center_coordinate(x, self.origin_x_um, self.grid_size_um),
+            cell_center_coordinate(y, self.origin_y_um, self.grid_size_um),
         )
     }
 }
@@ -3562,8 +3563,8 @@ pub fn meander_box_to_grid_rect(
         return Err(GeometryError::InvalidMeanderBox);
     }
 
-    let gx0 = ((box_um.min_x_um - grid.origin_x_um) / grid.grid_size_um).floor() as i32;
-    let gy0 = ((box_um.min_y_um - grid.origin_y_um) / grid.grid_size_um).floor() as i32;
+    let gx0 = floor_snap_to_grid(box_um.min_x_um, grid.origin_x_um, grid.grid_size_um);
+    let gy0 = floor_snap_to_grid(box_um.min_y_um, grid.origin_y_um, grid.grid_size_um);
     let gx1 = ((box_um.max_x_um - grid.origin_x_um) / grid.grid_size_um).ceil() as i32 - 1;
     let gy1 = ((box_um.max_y_um - grid.origin_y_um) / grid.grid_size_um).ceil() as i32 - 1;
 
@@ -4109,7 +4110,7 @@ fn projected_free_interval_segments(
     } else {
         grid.origin_y_um
     };
-    let first_idx = ((allowed_min_coord - axis_origin) / grid.grid_size_um).floor() as i32;
+    let first_idx = floor_snap_to_grid(allowed_min_coord, axis_origin, grid.grid_size_um);
     let last_idx = ((allowed_max_coord - axis_origin) / grid.grid_size_um).ceil() as i32 - 1;
     if first_idx > last_idx {
         return Ok(Vec::new());

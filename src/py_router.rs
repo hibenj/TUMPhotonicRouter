@@ -68,7 +68,8 @@ use crate::primitives::{
     PrimitiveLibraryConfig, DIRECTIONS,
 };
 use crate::static_obstacle_builder::{
-    physical_to_grid, rasterize_polygon, PortInput, PyStaticCellSet, StaticGridSpec,
+    floor_snap_to_grid, physical_to_grid, rasterize_polygon, PortInput, PyStaticCellSet,
+    StaticGridSpec,
 };
 
 #[pyclass(name = "GridSpec")]
@@ -3754,8 +3755,8 @@ impl PyPhotonicRouter {
         if !point.0.is_finite() || !point.1.is_finite() || self.grid.grid_size_um <= 0.0 {
             return None;
         }
-        let x = ((point.0 - self.grid.origin_x_um) / self.grid.grid_size_um).floor() as i32;
-        let y = ((point.1 - self.grid.origin_y_um) / self.grid.grid_size_um).floor() as i32;
+        let x = floor_snap_to_grid(point.0, self.grid.origin_x_um, self.grid.grid_size_um);
+        let y = floor_snap_to_grid(point.1, self.grid.origin_y_um, self.grid.grid_size_um);
         self.obstacle_map.in_bounds(x, y).then_some((x, y))
     }
 

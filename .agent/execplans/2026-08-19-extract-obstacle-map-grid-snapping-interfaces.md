@@ -17,7 +17,9 @@ This plan follows the zero-behavior-change discipline already established in thi
 ## Progress
 
 - [x] Milestone 0 (confirm the grid-snapping duplication, map every consumer): done, see Surprises & Discoveries. Confirmed inventory: 2 formulas (floor-snap, cell-center) plus one genuinely-distinct round-to-nearest variant and one genuinely-distinct no-offset variant, inlined or re-derived across `python/photonic_router/static_obstacle_builder.py`, `translation/route_rust.py`, `translation/route_rust_geometry.py`, `translation/route_rust_records.py` (Python) and `src/static_obstacle_builder.rs`, `src/geometry_realization.rs`, `src/py_router.rs` (Rust) -- 7 files total, no other files in the repository contain either formula (confirmed by exhaustive grep of all remaining `src/*.rs` and `python/photonic_router/*.py`/`translation/*.py` files).
-- [ ] Milestone 1 (design): in progress, see Plan of Work below.
+- [x] Milestone 1 (design): done, see Plan of Work below (obstacle-map-building gets a real `Protocol`; grid-snapping gets a canonicalize-and-migrate design, no `Protocol`/`trait`, including the `floor_snap_to_grid`/`cell_center_coordinate` scalar-helper refinement).
+- [x] (2026-08-19, Codex) Rust half of Milestone 2 completed: `src/static_obstacle_builder.rs` now owns `floor_snap_to_grid` and `cell_center_coordinate`, the existing Rust `physical_to_grid`/`grid_cell_center` wrappers delegate to them, and the five assigned Rust call sites in `src/static_obstacle_builder.rs`, `src/geometry_realization.rs`, and `src/py_router.rs` call the shared helpers instead of re-deriving the formulas inline. Four focused Rust unit tests were added for the scalar helpers, wrapper outputs, and snapped-cell-center bounds. Validation passed with `cargo check --lib`, `cargo test --lib`, and `maturin develop --release`; the pre-change `cargo test --lib` baseline was `326 passed; 0 failed`, the post-change result was `330 passed; 0 failed`, and the before/after failure list was byte-identical with zero entries. **Reviewed by Claude (2026-08-19)**: diff read in full, all 5 target sites confirmed correctly migrated (including good judgment on `polygon_to_grid_bbox`, using the `physical_to_grid` wrapper since a `StaticGridSpec` was already in scope, rather than the raw scalar function), the `.ceil() as i32 - 1` sibling lines correctly left untouched at both `geometry_realization.rs` sites, `cargo test --lib` independently re-run and confirmed `330 passed; 0 failed`. Committed.
+- [ ] Python half of Milestone 2: dispatched to Codex, in progress.
 
 ## Surprises & Discoveries
 
@@ -27,6 +29,8 @@ This plan follows the zero-behavior-change discipline already established in thi
   - A third, related-but-distinct formula also exists: `_grid_point_to_physical_um` (`translation/route_rust_geometry.py:390-400`, used from `translation/route_rust_crossing_verification.py:763-805`) computes `origin + point * grid_size_um` (**no** `+0.5` cell-center offset) -- this converts a fractional/sub-cell-resolution grid coordinate to physical um directly, a genuinely different operation from cell-center snapping, not a duplicate of formula (b). Milestone 1's interface design must not conflate this with grid-snapping proper.
   **The Rust side has the same pattern, independently confirmed**: beyond `src/static_obstacle_builder.rs:457-459`'s canonical `physical_to_grid`, the same floor-division formula is inlined again in the same file at `:628-629` (a bbox-min variant) and at `:601` with a **different** rounding rule (`((coord - origin) / grid_size_um - 0.5 + EPS).floor()`, i.e. round-to-nearest rather than floor-to-cell -- a genuinely different snapping rule, not a duplicate, and must not be conflated with the others), plus independently again in `src/geometry_realization.rs:3565-3566,4112` and `src/py_router.rs:3757-3758`. So this duplication spans at least 4 Rust files and 4+ Python files/locations, not 2.
   This means the earlier characterization plan's claim of "a single canonical definition each side, no duplication found" was too narrow -- it checked whether the *named* `physical_to_grid`/`grid_cell_center` functions were duplicated (they aren't), not whether their *formulas* were reimplemented inline elsewhere (they are, extensively, primarily in `translation/route_rust.py`). This raises both the value and the risk of this extraction: unifying all of this behind one interface is a much bigger real deduplication than originally scoped, but touches more call sites, so Milestone 1's design must explicitly account for the margin-adjusted variant (a), the guard-clause variant (a), the bound-method-vs-free-function split (b), the second independent Rust implementation (b), and the genuinely-different grid-to-physical-without-offset operation, rather than assuming one drop-in replacement covers every call site.
+
+- **Rust Milestone 2 implementation found no semantic mismatch at the five assigned Rust migration sites.** `src/static_obstacle_builder.rs`'s `polygon_to_grid_bbox` already had a `&StaticGridSpec`, so its bbox-min floor-snap now delegates through `physical_to_grid`; the adjacent `ceil() as i32 - 1` bbox-max calculation remains untouched because it is a different "last covered cell" rule. `src/geometry_realization.rs`'s `GeometryGridSpec::cell_center`, `meander_box_to_grid_rect` bbox-min calculation, and `projected_free_interval_segments` first-index calculation all use the same origin/grid-size fields as the canonical scalar formula, so they now call `cell_center_coordinate` or `floor_snap_to_grid` directly. `src/py_router.rs`'s `grid_cell_for_physical_point` kept its existing non-finite/grid-size guards and bounds wrapping; only the two floor-snap lines changed. No site had to be skipped.
 
 ## Decision Log
 
@@ -87,9 +91,19 @@ Concrete design (per the repository owner's 2026-08-19 "full unification" decisi
 - **`_physical_point_to_grid_cell`** (`translation/route_rust_geometry.py:372-387`) keeps its distinct name and its `None`-on-invalid-input guard (real, load-bearing behavior, not incidental) -- but its body becomes a thin wrapper: validate, then delegate to the canonical `physical_to_grid` (which needs a `GridSpec`-shaped argument or an equivalent adapter; exact signature reconciliation is an implementation-time decision, not a design-time one, since `GridSpec` and this function's explicit `origin_x_um`/`origin_y_um`/`grid_size_um` triple carry the same information in different shapes).
 - **`_grid_cell_center_um`** (`translation/route_rust_records.py:61-72`, free function) and the same-named bound method (`translation/route_rust.py:1416-1420`) both become thin delegates to the canonical `grid_cell_center`, for the same reason.
 - **`_grid_point_to_physical_um`** (`translation/route_rust_geometry.py:390-400`) is a genuinely different operation (no cell-center offset) -- **out of scope for this unification**, left as-is.
-- **Rust canonical functions** (unchanged location/signature): `physical_to_grid`/`grid_cell_center` in `src/static_obstacle_builder.rs:457,464`.
-- **Migrate to call the canonical functions**: the bbox-min variant at `src/static_obstacle_builder.rs:628-629` (same file, trivial), and the independent re-derivations in `src/geometry_realization.rs:501-502,3565-3566,4112` and `src/py_router.rs:3757-3758`.
-- **`src/static_obstacle_builder.rs:601`'s round-to-nearest variant stays a separate, distinctly-named function** (e.g. rename if it is currently anonymous/inline to make its distinctness self-documenting) -- it must never be merged into the floor-based canonical function, per Milestone 0's finding that it is a genuinely different rounding rule.
+- **Rust design refinement (found while preparing Milestone 2's Codex task, 2026-08-19)**: `physical_to_grid`/`grid_cell_center` take `&StaticGridSpec`, but two of the migration targets do not have a `StaticGridSpec` value to pass -- `src/geometry_realization.rs`'s `cell_center` method (line 498) reads `self.origin_x_um`/`self.origin_y_um`/`self.grid_size_um` off a *different* struct with the same field shape, and `src/py_router.rs`'s `grid_cell_for_physical_point` (line 3753) reads the equivalent fields off `self.grid` (also not a `StaticGridSpec`). Constructing a throwaway `StaticGridSpec` at each such call site just to call the existing functions would be awkward and adds indirection the original code doesn't have. Instead: extract the core arithmetic into two new scalar-level free functions in `src/static_obstacle_builder.rs`, next to the existing `physical_to_grid`/`grid_cell_center` (which become thin wrappers around them):
+
+      pub fn floor_snap_to_grid(coord: f64, origin: f64, grid_size_um: f64) -> i32 {
+          ((coord - origin) / grid_size_um).floor() as i32
+      }
+
+      pub fn cell_center_coordinate(cell: i32, origin: f64, grid_size_um: f64) -> f64 {
+          origin + (cell as f64 + 0.5) * grid_size_um
+      }
+
+  `physical_to_grid(x, y, grid)` becomes `(floor_snap_to_grid(x, grid.origin.0, grid.grid_size_um), floor_snap_to_grid(y, grid.origin.1, grid.grid_size_um))`, `grid_cell_center` mirrors this with `cell_center_coordinate`. Every migration target -- `StaticGridSpec`-based or not -- calls whichever of the two scalar functions fits, per axis. This is the actual canonical implementation; `physical_to_grid`/`grid_cell_center` stay as the `StaticGridSpec`-convenience wrappers most existing callers already expect.
+- **Migrate to call `floor_snap_to_grid`/`cell_center_coordinate` (via the wrappers where a `StaticGridSpec` is already at hand, directly where it is not)**: the bbox-min variant at `src/static_obstacle_builder.rs:628-629` (same file, via the wrappers), and the independent re-derivations in `src/geometry_realization.rs:501-502` (`cell_center` method, via `cell_center_coordinate` directly -- no `StaticGridSpec` available), `:3565-3566,4112` (check at implementation time whether a `StaticGridSpec`/`GeometryGridSpec` value is already at hand at each site; use the wrapper if so, the scalar function directly if not), and `src/py_router.rs:3757-3758` (`grid_cell_for_physical_point`, via `floor_snap_to_grid` directly).
+- **`src/static_obstacle_builder.rs:596-602`'s round-to-nearest functions are already distinctly named** (`first_cell_center_at_or_after`, `last_cell_center_at_or_before`) -- correcting Milestone 0's earlier note, which described them as "inline/anonymous"; they are not, no rename is needed. They must still never be merged into the floor-based functions -- confirmed distinct and intentional (used for a "range of cell centers within a physical span" computation, not point snapping).
 
 This migration is mechanical (replace inline arithmetic with a call to an existing, already-tested function) but touches ~15 call sites across 7 files, so Milestone 2's implementation must verify each site's inputs genuinely match the canonical function's expected `GridSpec`/origin/grid-size semantics before replacing it -- a call site using a *different* origin or grid size than the canonical `GridSpec` would not be safe to unify blindly. Milestone 2 should re-confirm this per call site as part of implementation, not assume Milestone 1's design survey was exhaustive on this specific point.
 
@@ -130,6 +144,27 @@ Milestone 0 is read-only and safe to redo freely. Milestones 1-3 should land as 
 ## Artifacts and Notes
 
 Originating plan: `.agent/execplans/2026-08-19-future-architecture-initiative-stage-characterization.md` (Milestone 0's Surprises & Discoveries, "Recommended extraction order"). `.agent/PROJECT_GOAL.md`'s "Future Architecture Initiative" section is the ultimate source of this whole effort.
+
+2026-08-19 Codex Rust-half validation evidence:
+
+    Pre-change baseline:
+    RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --lib
+    test result: ok. 326 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+    Required validation after the Rust helper extraction:
+    RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python" cargo check --lib 2>&1 | tail -40
+    Finished `dev` profile [unoptimized + debuginfo]
+
+    RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --lib 2>&1 | tail -80
+    test result: ok. 330 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+    RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python" .venv/bin/python -m maturin develop --release 2>&1 | tail -15
+    Finished `release` profile [optimized]
+    Installed photonic-router-rs-0.1.0
+
+    Full-output comparison used `/tmp/tumphotonicrouter_cargo_test_lib_before.txt` and `/tmp/tumphotonicrouter_cargo_test_lib_after.txt`; both failure lists had zero entries and compared byte-identical.
+
+Revision note, 2026-08-19 Codex: updated this living plan after completing the Rust half of Milestone 2 so future agents can see the exact helper extraction, migration-site semantic confirmation, and validation evidence without relying on chat history.
 
 ## Interfaces and Dependencies
 
