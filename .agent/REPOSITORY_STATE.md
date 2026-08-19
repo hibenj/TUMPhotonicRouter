@@ -20,8 +20,8 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `77ebf54`. Working tree clean.
-- Current test baselines: `cargo test --lib` `330 passed, 0 failed`;
+- Current HEAD: `d1b7b1c`. Working tree clean.
+- Current test baselines: `cargo test --lib` `334 passed, 0 failed`;
   `PYTHONPATH=. .venv/bin/pytest -q` `21 failed, 325 passed, 1 skipped`
   (failure set has been stable/byte-identical across the last several
   plans -- see Current Findings below for what's actually behind it).
@@ -31,17 +31,32 @@ now lives only in the referenced ExecPlan and `git log`.)
   `.agent/execplans/2026-08-19-future-architecture-initiative-stage-characterization.md`:
   (1) obstacle map building + grid snapping -- **done**, see
   `.agent/execplans/2026-08-19-extract-obstacle-map-grid-snapping-interfaces.md`;
-  (2) A* single-net search -- **active**, see
+  (2) A* single-net search -- **done**, see
   `.agent/execplans/2026-08-19-extract-astar-single-net-search-interface.md`;
-  (3) geometry realization; (4) path-length matching. Ripup/repair
-  orchestration (`route_many_with_repair_and_commit`, `src/py_router.rs`) is
-  explicitly excluded from this order -- it needs its own restructuring pass
+  (3) geometry realization -- **next, not started, needs a design decision
+  before it can proceed autonomously** (see "Next Engineering Step" below);
+  (4) path-length matching. Ripup/repair orchestration
+  (`route_many_with_repair_and_commit`, `src/py_router.rs`) is explicitly
+  excluded from this order -- it needs its own restructuring pass
   (god-object session state, zero stage-granular tests, three real bugs
   found in/near it this session) before interface extraction is well-posed.
   The three benchmark findings under Current Findings below are parked until
   this initiative gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-19-extract-astar-single-net-search-interface.md` -- added a
+    purely-additive `SingleNetSearch` trait (`src/astar.rs`, 4 methods, one
+    per genuine mode) implemented by a new `AStarSingleNetSearch` marker
+    type delegating to the existing 10 free functions; no production call
+    site migrated. Also deduped `CrossingSearchConfig` construction (was
+    repeated 3x in `src/py_router.rs`) behind a new helper mirroring the
+    existing `astar_config` pattern. Flagged two findings for later, not
+    acted on: `route_single_net_and_commit_native` reimplements the
+    simple-then-full fallback pattern inline instead of reusing the entry
+    points that already have it (smaller instance of the same shape as the
+    parked ripup/repair god-method); `SimpleRouteObstacleQuery`
+    (`src/simple_routes.rs`) confirmed already correctly-scoped, left
+    untouched.
   - `2026-08-19-extract-obstacle-map-grid-snapping-interfaces.md` -- added
     `ObstacleMapBuilder` `Protocol`; unified grid-snapping math (was
     duplicated ~10+ times across 7 files in both languages) behind one
@@ -185,16 +200,21 @@ investigate. `benes_8x8`/`benes_16x16` were last confirmed stable
   (`2026-07-10-crossing-verification-foundation.md`,
   `2026-07-06-match-lidar-multiportmmi-routing.md`) have never had a
   staleness audit -- treat their internal detail as unverified.
-- **Characterization claims need active verification, not just trust.**
-  Twice now (`2026-08-18-unify-port-access-region-computation.md`'s "seven
-  independent sizing computations" turned out to be an undercount in one
-  direction; `2026-08-19-extract-obstacle-map-grid-snapping-interfaces.md`'s
-  "no duplication found" turned out to miss a formula duplicated across 7
-  files because it only checked named-function duplication, not inline
-  re-derivation), an initial "this looks clean" pass understated real
-  structural problems. When starting a new extraction/refactor milestone,
-  budget time to actively look for what a prior characterization might
-  have missed, not just confirm its claims.
+- **Characterization claims need active verification, not just trust --
+  but they aren't always wrong.** Twice, an initial "this looks clean" pass
+  understated real structural problems (`2026-08-18-unify-port-access-region-computation.md`'s
+  "seven independent sizing computations" was an undercount;
+  `2026-08-19-extract-obstacle-map-grid-snapping-interfaces.md`'s "no
+  duplication found" missed a formula duplicated across 7 files because it
+  only checked named-function duplication, not inline re-derivation).
+  `2026-08-19-extract-astar-single-net-search-interface.md`'s own
+  Milestone 0 found a third instance (the "4 clean entry points" claim
+  undercounted a real 10-function surface) *and* a case where a prior
+  claim held up exactly as stated ("no Python-side reimplementation").
+  Net lesson: when starting a new extraction/refactor milestone, budget
+  time to actively look for what a prior characterization might have
+  missed -- but the answer is genuinely "it depends," not "always
+  distrust." Verify either way; don't assume the direction of the error.
 - Codex reliably stops and reports when a task file's assumption is wrong
   (which tests were pre-existing failures, whether closures were nested
   where a task file assumed) rather than guessing -- a positive signal for
@@ -233,18 +253,27 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**Active ExecPlan**:
-`.agent/execplans/2026-08-19-extract-astar-single-net-search-interface.md`.
-Milestone 0 (full characterization, including the `src/simple_routes.rs`
-`SimpleRouteObstacleQuery` trait relationship and an active search for
-anything the prior stage-characterization pass missed) is in progress,
-dispatched to a fork. See that plan's own Progress/Surprises & Discoveries
-for the latest state.
+**No active ExecPlan right now.** The A* single-net search extraction plan
+above is complete and closed. **Next step** (not yet started, no ExecPlan
+written for it yet): geometry realization (`src/geometry_realization.rs`),
+the third stage in the recommended order. **Unlike the two extractions
+already done, this one needs a repository-owner check-in before
+proceeding**: the stage-characterization plan found geometry realization is
+coupled at the Rust type level with path-length matching (`src/plm.rs`
+directly imports meander-geometry types from `src/geometry_realization.rs`
+-- `AutoMeanderConfig`, `AutoRouteAnalyticMeanderPlan`, etc.), so a
+deliberate decision about where the boundary between the two stages should
+sit is needed before either can extract cleanly -- this is a real design
+tradeoff, not a mechanical characterization step, so present options rather
+than deciding solo, matching how the dense-port lateral-width finding
+(Current Findings item 2) was handled. Start by characterizing the exact
+coupling (which types/functions are shared, whether the boundary is
+natural or arbitrary) and present the tradeoff, not by picking a boundary
+and implementing it.
 
-After this plan: geometry realization, then path-length matching (per the
-recommended order in Current Snapshot). Ripup/repair orchestration needs
-its own dedicated restructuring pass before it's extraction-ready --
-consider scoping that as its own plan once the three stage extractions
+Path-length matching is the stage after that. Ripup/repair orchestration
+needs its own dedicated restructuring pass before it's extraction-ready --
+consider scoping that as its own plan once the remaining stage extractions
 above are done, since Current Findings items 1 and 2 both live in code
 that restructuring would touch.
 
