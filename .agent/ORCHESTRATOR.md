@@ -18,24 +18,22 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-The active ExecPlan is
-`.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
-(start at its Milestone 0). It consolidates three sequential, partially-
-duplicated endpoint-correction passes into one readable orchestration
-function with focused test coverage, per two architectural decisions
-recorded in its own Decision Log: Python orchestrates each pipeline stage
-as a separate call (not one large Rust function), and this pass
-consolidates and tests existing behavior without yet building the full
-`Protocol`/`trait` interface extraction from `.agent/PROJECT_GOAL.md`'s
-"Future Architecture Initiative" (deliberately deferred, a heavier later
-step). It grew out of five prior, now-complete plans (`.agent/execplans/2026-08-18-*.md`)
-that together unified port access/keepout sizing, fixed two real dense-port
-and endpoint-correction bugs, and recalibrated the Rust crossing test suite
--- read `.agent/REPOSITORY_STATE.md`'s "Current Snapshot" section for the
-full, current summary of each rather than this file, since that file is
-kept current at every stop and is the source of truth for what is actually
-active; do not treat this paragraph's own history as authoritative once it
-grows stale.
+**There is no active ExecPlan right now.**
+`.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md` is
+complete (all 6 milestones, 2026-08-19): endpoint correction is now one
+classification function feeding two named orchestration entry points,
+with every fallback visible in structured verification JSON instead of
+silently discoverable only via a geometric audit; along the way it also
+fixed a real, confirmed physical waveguide-overlap bug on
+`multiportmmi_16x16`. It grew out of five prior, now-complete plans
+(`.agent/execplans/2026-08-18-*.md`) that together unified port
+access/keepout sizing, fixed two real dense-port and endpoint-correction
+bugs, and recalibrated the Rust crossing test suite. Read
+`.agent/REPOSITORY_STATE.md`'s "Current Snapshot" and "Next Engineering
+Step" sections for the current summary and the candidate list for what to
+do next -- the repository owner has not yet chosen the next objective, so
+do not assume one; that file is kept current at every stop and is the
+source of truth for what is actually active, not this paragraph.
 
 Once this plan completes (or a different direction is chosen), update this
 pointer to name whatever is active next, the way it has for every plan so

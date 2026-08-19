@@ -15,60 +15,56 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: about to advance past `f540d65` with Milestone 0 and 0.5 of
-  the active ExecPlan (commits pending as of this update -- see below).
-- Working tree: Milestone 0 (endpoint-correction dispatch characterization
-  tests) and Milestone 0.5 (the real physical `cross_net_waveguide_overlap`
-  fix) are both complete and about to be committed. Milestone 0.5 fixed a
-  genuine, confirmed design-rule violation on `multiportmmi_16x16`
-  (`n_196`/`n_197` waveguides physically overlapping): a caller-side
-  self-authorizing overlap allow-list in
-  `route_port_corrected_centerline_checked_and_commit_native`
-  (`src/py_router.rs`) plus an overly-broad `if not self.enable_crossings`
-  guard in `translation/route_rust.py` that suppressed failure visibility
-  and let a third, separate call site
-  (`translation/route_rust_realization.py:_physical_port_centerline`)
-  silently re-derive the same unsafe geometry. Both fixed; the overlap is
-  confirmed gone via the structured verification JSON, at the honest cost
-  of 2 nets (`n_196`, `n_203`) now cleanly failing to connect instead of
-  silently colliding -- the repository owner explicitly chose to stop at
-  that state rather than extend the correction algorithm further (see the
-  ExecPlan's own Decision Log and Outcomes & Retrospective for the full,
-  three-turn investigation trail). Next up: Milestone 1 (consolidate net
-  classification), per the active ExecPlan.
-- **Active ExecPlan, ready to execute in a fresh session**:
-  `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`.
-  Written deliberately for handoff -- read it first, it is self-contained
-  and does not require this file's older history below to execute. Short
-  version: endpoint correction today is three sequential passes over
-  routed nets (`_apply_checked_endpoint_corrections_for_net_ids`,
-  `_apply_checked_fanout_stub_endpoint_corrections_for_net_ids`,
-  `_apply_crossing_aware_endpoint_corrections_for_net_ids`, all in
-  `translation/route_rust.py`) with duplicated logic between them and a
-  silent-fallback pattern (the exact shape of the `2026-08-18` bug fixed
-  the day before this plan was written -- see below) that can hide a wrong
-  answer until a much later verification stage catches it. The plan's
-  milestones: characterize current behavior + add the missing regression
-  test for the `2026-08-18` bug class; **(added 2026-08-19, sequenced first)
-  give bump/dogleg endpoint-correction geometry insertion real collision
-  awareness against other nets** -- see below, this is a real, confirmed-
-  likely correctness bug, not a readability item; consolidate net
-  classification into one place; make any correction fallback visible in
-  diagnostics instead of silent; collapse the three passes into one readable
-  entry point; broaden test coverage; broad validation. Two architectural
-  decisions are recorded
-  in the plan's own Decision Log and should not be re-litigated without
-  reason: Python orchestrates each pipeline stage as a separate call (not
-  pushed into one big Rust function), and this pass consolidates + adds
-  tests without yet building the full `Protocol`/`trait` interface
-  extraction from `.agent/PROJECT_GOAL.md`'s "Future Architecture
-  Initiative" (a deliberately deferred, heavier future step). Keep
-  `multiportmmi_8x8` as the running benchmark check throughout (validate
-  under both its bare CLI defaults and its documented
-  `STABLE_ROUTING_ENV`/`STABLE_ROUTING_FLAGS` config from
-  `benchmarks/multiportmmi_8x8.py` -- see below for why these differ
-  meaningfully); `multiportmmi_16x16` is explicitly out of scope for this
-  plan's validation, per the repository owner's own direction.
+- Current HEAD: `ab4a6e4` and later commits completing
+  `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md` --
+  **this plan is now fully complete, all 6 milestones (0, 0.5, 1, 2, 3, 4,
+  5)**, committed in 11 focused commits across the session. Working tree
+  clean.
+- **This ExecPlan is complete** and is no longer the active plan; see
+  "Next Engineering Step" below for what to read/do next. Kept here as a
+  compact summary since its own file is long: endpoint correction was
+  three duplicated, independently-ordered passes over routed nets in
+  `translation/route_rust.py` with a silent-fallback pattern that could
+  hide a wrong answer until a much later verification stage caught it
+  (the exact shape of the `2026-08-18` bug this plan generalized from).
+  It is now one classification function (`_classify_net_for_endpoint_correction`,
+  naming five categories including two that had no name in the code
+  before) feeding two named orchestration entry points
+  (`_apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids`,
+  `_apply_all_endpoint_corrections_for_net_ids`), with every fallback
+  visible on the routed record (`RoutedNetRecord.endpoint_correction_fallback_note`)
+  and surfaced as a non-fatal warning in structured verification JSON
+  instead of silently discoverable only via a geometric audit. Along the
+  way (Milestone 0.5, added mid-plan, sequenced first ahead of the
+  readability consolidation with the repository owner's explicit sign-off
+  at two separate decision points) it fixed a real, confirmed physical
+  design-rule violation on `multiportmmi_16x16` -- `n_196`/`n_197`'s
+  waveguides genuinely overlapping in silicon -- traced through two
+  distinct bugs (a self-authorizing overlap allow-list in
+  `src/py_router.rs`, and a failure-visibility gap in
+  `translation/route_rust.py` that let a third call site in
+  `translation/route_rust_realization.py` silently reproduce the same
+  unsafe geometry) found only by measuring rather than trusting each fix
+  in turn. Final validation ladder, every verdict read from structured
+  JSON: full `pytest -q` unchanged at the pre-existing `21`-failure
+  baseline (`322 passed` now, `4` net-new tests); `benes_4x4` **PASS**
+  (`error_count=0, warning_count=0`); `multiportmmi_8x8` **PASS** under
+  both its bare CLI defaults (`error_count=0, warning_count=2`) and its
+  documented stable-baseline crossing config (`error_count=0,
+  warning_count=1`) -- the warnings are real, pre-existing fallback usage
+  this plan's own Milestone 2 made visible, not regressions.
+  `multiportmmi_16x16` was intentionally excluded from this plan's own
+  validation scope, per the repository owner's direction, but is exactly
+  the benchmark Milestone 0.5 fixed a real bug on outside that scope. One
+  explicit, tracked-not-forgotten residual: `multiportmmi_16x16`'s
+  `n_196`/`n_203` (and any net with the same shape) now cleanly fail to
+  connect instead of silently colliding, since making them route
+  collision-free would need the correction algorithm itself to gain
+  alternative candidate placements -- the repository owner explicitly
+  chose to stop at the honest-failure state rather than extend scope
+  further. Full detail, including the complete investigation trail, is in
+  the ExecPlan's own Outcomes & Retrospective; do not summarize it again
+  here as the plan's own history changes.
 - Process docs revised after the user asked whether the dense-port-runway
   work followed the documented Claude+Codex flow (it didn't, in two
   concrete ways) and explicitly authorized adjusting the flow docs, not
@@ -490,10 +486,30 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**Active ExecPlan**: `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`.
-Start at its Milestone 0 (characterize current behavior, add the missing
-regression test for the `2026-08-18` bug class). See Current Snapshot for
-the short version; the plan itself is self-contained.
+**No active ExecPlan right now.** `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+is complete (all 6 milestones -- see Current Snapshot and the plan's own
+Outcomes & Retrospective). `.agent/ORCHESTRATOR.md`'s "Required Startup"
+pointer needs updating to name whichever candidate below is picked next,
+per its own instruction to do so once its named plan completes. The
+repository owner has not yet chosen the next objective; pick from the
+candidates below or ask, do not assume.
+
+New candidate surfaced by the just-completed plan, not yet started:
+making `multiportmmi_16x16`'s `n_196`/`n_203` (and any other net with the
+same shape) route successfully instead of honestly failing with
+`target_port_not_connected`. The checked endpoint corrector now correctly
+rejects an unsafe candidate for these two nets (Milestone 0.5's fix,
+confirmed real and working), but its `candidates.is_empty()` fallback
+branch (`src/py_router.rs`'s
+`route_port_corrected_centerline_checked_and_commit_native`) has no
+alternative placement to try once its one deterministic construction
+collides, unlike the case-4 bump path's multi-candidate search. Fixing
+this needs either extending that branch to produce and try alternative
+placements, or feeding obstacle awareness earlier into the construction
+itself. The repository owner explicitly chose to stop at the
+honest-failure state rather than pick this up immediately; see the
+ExecPlan's own Progress and Outcomes & Retrospective for the full
+reproduction case.
 
 `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`,
 `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
