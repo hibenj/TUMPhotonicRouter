@@ -634,21 +634,25 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** The characterization plan above is
-complete and closed. **Next step** (not yet started, no ExecPlan written
-for it yet): a new ExecPlan for scoped extraction of stage 1+2 (obstacle
-map building + grid snapping) -- formalize the existing
-`build_static_obstacle_map`/Rust-dispatch contract
-(`python/photonic_router/static_obstacle_builder.py:101`) as an explicit
-`Protocol`/`trait` rather than inventing a new boundary, per the
-characterization plan's recommended order. This is `.agent/PROJECT_GOAL.md`'s
-"Future Architecture Initiative," continuing per the repository owner's
-2026-08-19 direction after deciding not to fix the three open benchmark
-findings below inside code that is itself a restructuring target (see the
-note on the closed `2026-08-19-fix-open-repair-and-dense-port-findings.md`
-plan above). Also follows the repository owner's same-day direction to
-use the Claude+Codex flow for implementation slices once a fix or
-extraction is well-specified -- see `.agent/CLAUDE_CODEX_FLOW.md`.
+**Active ExecPlan**:
+`.agent/execplans/2026-08-19-extract-obstacle-map-grid-snapping-interfaces.md`,
+just created, not yet started. Start at its Milestone 0: while scoping
+this plan, found that grid-snapping math is duplicated a *third* time
+(`translation/route_rust.py`'s `_grid_cell_center_um`/`_physical_point_to_grid_cell`,
+independently re-deriving the same formula as the canonical
+`python/photonic_router/static_obstacle_builder.py`'s
+`physical_to_grid`/`grid_cell_center`, mirrored in
+`src/static_obstacle_builder.rs`) -- Milestone 0 must confirm this
+duplication is truly always equivalent (not just same formula, same
+inputs at every call site) before unifying anything. This continues
+`.agent/PROJECT_GOAL.md`'s "Future Architecture Initiative," per the
+repository owner's 2026-08-19 direction, following the recommended
+extraction order from the now-closed stage-characterization plan
+(obstacle map building + grid snapping first -- the lowest-risk,
+best-evidenced starting point). Also follows the repository owner's
+same-day direction to use the Claude+Codex flow for implementation
+slices once a fix or extraction is well-specified -- see
+`.agent/CLAUDE_CODEX_FLOW.md`.
 
 The three benchmark findings below are now explicitly **parked, not
 active work** -- revisit once the restructuring gives the surrounding
