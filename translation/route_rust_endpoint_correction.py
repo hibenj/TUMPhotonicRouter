@@ -689,7 +689,22 @@ def _spliced_crossing_endpoint_centerline(
     route_obj: object | None = None,
     source_port_orientation_deg: float | None = None,
     target_port_orientation_deg: float | None = None,
+    fallback_notes: list[str] | None = None,
 ) -> tuple[tuple[float, float], ...]:
+    """Splice the rich, unrestricted correction into the crossing-protected
+    baseline, touching only the source-to-first-crossing and
+    last-crossing-to-target regions.
+
+    When `fallback_notes` is given, this appends one short, human-readable
+    note for each terminal region (source prefix, target suffix) that
+    could not use the rich correction directly and had to fall back --
+    first to `_absorbed_terminal_centerline` (a weaker, guard-window-limited
+    solver), and, if that also fails, to the raw, uncorrected baseline for
+    that region. See Milestone 2 of
+    .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md:
+    this is what makes a fallback visible instead of silent, the exact
+    pattern the `2026-08-18` bug (commit `20aab29`) fell through unnoticed.
+    """
     if len(baseline) < 2 or not crossing_points:
         return ()
 
@@ -803,6 +818,16 @@ def _spliced_crossing_endpoint_centerline(
         )
         if not prefix:
             prefix = baseline_prefix
+            if fallback_notes is not None:
+                fallback_notes.append(
+                    "source prefix: rich correction and absorbed-terminal solver both "
+                    "failed, used the raw uncorrected baseline for this region"
+                )
+        elif fallback_notes is not None:
+            fallback_notes.append(
+                "source prefix: rich correction rejected, used the "
+                "absorbed-terminal solver instead"
+            )
     if (
         not suffix
         or not _terminal_anchor_matches(
@@ -824,6 +849,16 @@ def _spliced_crossing_endpoint_centerline(
         )
         if not suffix:
             suffix = baseline_suffix
+            if fallback_notes is not None:
+                fallback_notes.append(
+                    "target suffix: rich correction and absorbed-terminal solver both "
+                    "failed, used the raw uncorrected baseline for this region"
+                )
+        elif fallback_notes is not None:
+            fallback_notes.append(
+                "target suffix: rich correction rejected, used the "
+                "absorbed-terminal solver instead"
+            )
 
     pieces: list[tuple[float, float]] = []
     for segment in (prefix, middle, suffix):
@@ -1386,7 +1421,9 @@ def _apply_crossing_aware_endpoint_correction_to_record(
                     endpoint_correction_error=None,
                 )
 
-    def _candidate(*, use_source: bool, use_target: bool) -> tuple[tuple[float, float], ...]:
+    def _candidate(
+        *, use_source: bool, use_target: bool
+    ) -> tuple[tuple[tuple[float, float], ...], list[str]]:
         if not use_source and not use_target:
             corrected = baseline
         else:
@@ -1396,7 +1433,7 @@ def _apply_crossing_aware_endpoint_correction_to_record(
                 None,
             )
             if route_port_corrected_centerline is None:
-                return ()
+                return (), []
             try:
                 corrected = _centerline_tuple(
                     route_port_corrected_centerline(
@@ -1411,8 +1448,9 @@ def _apply_crossing_aware_endpoint_correction_to_record(
                     )
                 )
             except Exception:
-                return ()
-        return _spliced_crossing_endpoint_centerline(
+                return (), []
+        notes: list[str] = []
+        centerline = _spliced_crossing_endpoint_centerline(
             baseline=baseline,
             corrected_centerline=_dedupe_centerline(corrected),
             crossing_points=crossing_points,
@@ -1425,7 +1463,9 @@ def _apply_crossing_aware_endpoint_correction_to_record(
             target_port_orientation_deg=(
                 record.target_port_orientation_deg if correct_target else None
             ),
+            fallback_notes=notes,
         )
+        return centerline, notes
 
     candidate_modes = tuple(
         (use_source, use_target)
@@ -1438,8 +1478,9 @@ def _apply_crossing_aware_endpoint_correction_to_record(
         if (correct_source or not use_source) and (correct_target or not use_target)
     )
     centerline = ()
+    fallback_notes: list[str] = []
     for use_source, use_target in candidate_modes:
-        candidate = _candidate(use_source=use_source, use_target=use_target)
+        candidate, candidate_notes = _candidate(use_source=use_source, use_target=use_target)
         accepts = len(candidate) >= 2 and _realization_accepts(candidate)
         if trace_endpoint:
             print(
@@ -1456,6 +1497,7 @@ def _apply_crossing_aware_endpoint_correction_to_record(
             )
         if accepts:
             centerline = candidate
+            fallback_notes = candidate_notes
             break
     if len(centerline) < 2:
         message = format_port_endpoint_correction_error(
@@ -1475,6 +1517,16 @@ def _apply_crossing_aware_endpoint_correction_to_record(
             corrected_total_length_um = _centerline_length_um(centerline)
     else:
         corrected_total_length_um = _centerline_length_um(centerline)
+    if fallback_notes and log_failures:
+        print(
+            "WARNING: "
+            + format_port_endpoint_correction_error(
+                record,
+                "crossing-aware endpoint correction used a fallback strategy: "
+                + "; ".join(fallback_notes),
+                realization_grid_spec=realization_grid_spec,
+            )
+        )
     return replace(
         record,
         total_length_um=corrected_total_length_um,
@@ -1485,6 +1537,9 @@ def _apply_crossing_aware_endpoint_correction_to_record(
         ),
         corrected_centerline_um=centerline,
         endpoint_correction_error=None,
+        endpoint_correction_fallback_note=(
+            "; ".join(fallback_notes) if fallback_notes else None
+        ),
     )
 
 

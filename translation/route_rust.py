@@ -4500,20 +4500,26 @@ class _RouteNetsRustSession:
         """
         crossing_net_ids: set[int] = set()
         if self.enable_crossings and hasattr(self.router, "crossing_events"):
-            try:
-                for raw_event in cast(Iterable[Any], self.router.crossing_events()):
-                    if not isinstance(raw_event, Mapping):
-                        try:
-                            raw_event = dict(cast(Any, raw_event))
-                        except (TypeError, ValueError):
-                            continue
-                    for key in ("net_id", "partner_net_id"):
-                        try:
-                            crossing_net_ids.add(int(cast(Any, raw_event.get(key))))
-                        except (TypeError, ValueError):
-                            continue
-            except Exception:
-                crossing_net_ids = set()
+            # No broad `except Exception` here: Milestone 0 of the
+            # restructuring ExecPlan confirmed via git history that this
+            # used to swallow any error from `router.crossing_events()`
+            # (introduced verbatim by commit 9925249, never touched since,
+            # no test/log/diagnostic anywhere shows it ever legitimately
+            # firing). A real failure here means crossing detection is
+            # broken, which should stop the run loudly, not be silently
+            # treated as "no crossings" and let every net fall through to
+            # the unrestricted corrector as if crossings were disabled.
+            for raw_event in cast(Iterable[Any], self.router.crossing_events()):
+                if not isinstance(raw_event, Mapping):
+                    try:
+                        raw_event = dict(cast(Any, raw_event))
+                    except (TypeError, ValueError):
+                        continue
+                for key in ("net_id", "partner_net_id"):
+                    try:
+                        crossing_net_ids.add(int(cast(Any, raw_event.get(key))))
+                    except (TypeError, ValueError):
+                        continue
         return crossing_net_ids
 
     def _classify_net_for_endpoint_correction(

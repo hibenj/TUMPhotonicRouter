@@ -398,6 +398,27 @@ def _verify_record_connectivity(
                 net_name=record.net_name,
             )
         )
+    if record.endpoint_correction_fallback_note is not None:
+        # A fallback can still produce a valid, in-tolerance route (that is
+        # exactly what the crossing-aware path's weaker strategies exist
+        # for), so this is a warning, not an error: it must not affect
+        # error_count or the overall success verdict. It exists so a
+        # fallback is visible in the same structured evidence this
+        # repository's workflow already requires reading, rather than only
+        # discoverable after the fact via a geometric audit -- see
+        # Milestone 2 of
+        # .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md.
+        issues.append(
+            PhotonicVerificationIssue(
+                code="endpoint_correction_fallback_used",
+                message=(
+                    f"Route {record.net_name} used a crossing-aware endpoint "
+                    f"correction fallback: {record.endpoint_correction_fallback_note}"
+                ),
+                net_name=record.net_name,
+                severity="warning",
+            )
+        )
 
     _verify_one_port_connection(
         issues,

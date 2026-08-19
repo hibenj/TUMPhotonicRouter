@@ -843,6 +843,14 @@ def test_crossing_aware_endpoint_correction_absorbs_both_split_terminal_sides():
         (16.0, 0.0),
         (21.0, 0.0),
     )
+    # Milestone 2 of the 2026-08-19-restructure-port-endpoint-correction
+    # ExecPlan: this scenario's whole point is that both terminal regions
+    # fall back to the absorbed-terminal solver, so that fallback must now
+    # be visible on the record instead of silent.
+    assert updated.endpoint_correction_fallback_note is not None
+    assert "source prefix" in updated.endpoint_correction_fallback_note
+    assert "target suffix" in updated.endpoint_correction_fallback_note
+    assert "absorbed-terminal solver" in updated.endpoint_correction_fallback_note
 
 
 def test_crossing_aware_endpoint_correction_rejects_unanchored_source_prefix():
