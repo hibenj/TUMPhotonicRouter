@@ -18,7 +18,22 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**There is no active ExecPlan right now.**
+**Active ExecPlan**:
+`.agent/execplans/2026-08-19-fix-open-repair-and-dense-port-findings.md`
+(start at Milestone 0). The repository owner's direction (2026-08-19):
+fix the open, previously-parked benchmark findings first, then move on
+to the Future Architecture Initiative. Three findings in scope: the
+`multiportmmi_8x8` bare-defaults `n_67`/`n_70`/`n_71` repair-congestion
+cluster, `multiportmmi_16x16` stable-baseline's `n_50` finding (same
+outer symptom, not yet confirmed to share a root cause), and the
+dense-port lateral-width allocation problem (a design question, not a
+mechanical fix). This plan also follows the repository owner's
+2026-08-19 direction to use the Claude+Codex flow
+(`.agent/CLAUDE_CODEX_FLOW.md`) for implementation slices going forward
+-- diagnosis stays with Claude, but once a fix is bounded and
+well-specified, dispatch it to Codex via `.agent/scripts/codex_task.sh`
+rather than implementing directly.
+
 `.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`
 is complete (all 4 milestones, 2026-08-19): the crossing-partner-discovery
 tangle (seven overlapping "candidate partner" functions, three

@@ -586,17 +586,23 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** All five of today's plans are complete
-(see Current Snapshot and each plan's own Outcomes & Retrospective):
+**Active ExecPlan**:
+`.agent/execplans/2026-08-19-fix-open-repair-and-dense-port-findings.md`.
+Start at its Milestone 0 (root-cause the `multiportmmi_8x8`
+`n_67`/`n_70`/`n_71` congestion cluster). Repository owner's direction
+(2026-08-19): fix the open problems below (items 2/3/candidate-1 in this
+section) before moving on to the Future Architecture Initiative. Also
+follows the repository owner's same-day direction to use the Claude+Codex
+flow for implementation slices once a fix is well-specified -- see
+`.agent/CLAUDE_CODEX_FLOW.md`.
+
+Five prior plans are complete (see Current Snapshot and each plan's own
+Outcomes & Retrospective):
 `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`,
 its follow-up
 `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`,
 `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`,
 and `.agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md`.
-`.agent/ORCHESTRATOR.md`'s "Required Startup" pointer needs updating to
-name whichever candidate below is picked next. The repository owner has
-not yet chosen the next objective; pick from the candidates below or ask,
-do not assume.
 
 Note the "Correction" bullet in Current Snapshot: the zero-event-
 acceptance plan's own benchmark validation turned out to be incomplete
