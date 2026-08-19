@@ -2808,6 +2808,29 @@ impl PyPhotonicRouter {
         Ok(cfg)
     }
 
+    fn crossing_search_config(
+        &self,
+        net_id: u64,
+        partners: Vec<CrossingSearchPartner>,
+        crossing_cfg: &CrossingConfig,
+        target: State,
+        target_port_um: Option<(f64, f64)>,
+        crossing_loss_override: Option<f64>,
+        require_all_partners_override: Option<bool>,
+    ) -> CrossingSearchConfig {
+        CrossingSearchConfig {
+            net_id,
+            partners,
+            min_straight_cells: crossing_cfg.min_straight_cells_per_crossing,
+            crossing_half_size_cells: crossing_cfg.crossing_half_size_cells,
+            bend_runout_cells: self.primitive_cfg.bend_radius_cells,
+            crossing_loss: crossing_loss_override.unwrap_or(crossing_cfg.crossing_loss),
+            require_all_partners: require_all_partners_override
+                .unwrap_or(crossing_cfg.allow_only_expected_pairs),
+            terminal_bump_guard: self.terminal_bump_guard_for_target(target, target_port_um),
+        }
+    }
+
     fn net_has_crossing_requirements(&self, net_id: u64) -> bool {
         self.crossing_context.is_enabled()
             && self.crossing_context.expected_crossing_count(net_id) > 0
@@ -4330,16 +4353,15 @@ impl PyPhotonicRouter {
         if crossing_partners.is_empty() {
             return Ok(None);
         }
-        let crossing_search = CrossingSearchConfig {
+        let crossing_search = self.crossing_search_config(
             net_id,
-            partners: crossing_partners,
-            min_straight_cells: crossing_cfg.min_straight_cells_per_crossing,
-            crossing_half_size_cells: crossing_cfg.crossing_half_size_cells,
-            bend_runout_cells: self.primitive_cfg.bend_radius_cells,
-            crossing_loss: crossing_loss_override.unwrap_or(crossing_cfg.crossing_loss),
-            require_all_partners: crossing_cfg.allow_only_expected_pairs,
-            terminal_bump_guard: self.terminal_bump_guard_for_target(target, target_port_um),
-        };
+            crossing_partners,
+            crossing_cfg,
+            target,
+            target_port_um,
+            crossing_loss_override,
+            None,
+        );
         let search_partner_ids: FxHashSet<u64> = crossing_search
             .partners
             .iter()
@@ -4529,16 +4551,15 @@ impl PyPhotonicRouter {
         if crossing_partners.is_empty() {
             return Ok(None);
         }
-        let crossing_search = CrossingSearchConfig {
+        let crossing_search = self.crossing_search_config(
             net_id,
-            partners: crossing_partners,
-            min_straight_cells: crossing_cfg.min_straight_cells_per_crossing,
-            crossing_half_size_cells: crossing_cfg.crossing_half_size_cells,
-            bend_runout_cells: self.primitive_cfg.bend_radius_cells,
-            crossing_loss: crossing_cfg.crossing_loss,
-            require_all_partners: true,
-            terminal_bump_guard: self.terminal_bump_guard_for_target(target, target_port_um),
-        };
+            crossing_partners,
+            crossing_cfg,
+            target,
+            target_port_um,
+            None,
+            Some(true),
+        );
         let mut crossing_search_cfg = search_cfg.clone();
         crossing_search_cfg.require_terminal_straights = false;
         crossing_search_cfg.enable_simple_routes = false;
@@ -5368,16 +5389,15 @@ impl PyPhotonicRouter {
         if crossing_partners.is_empty() {
             return None;
         }
-        let crossing_search = CrossingSearchConfig {
+        let crossing_search = self.crossing_search_config(
             net_id,
-            partners: crossing_partners,
-            min_straight_cells: crossing_cfg.min_straight_cells_per_crossing,
-            crossing_half_size_cells: crossing_cfg.crossing_half_size_cells,
-            bend_runout_cells: self.primitive_cfg.bend_radius_cells,
-            crossing_loss: crossing_cfg.crossing_loss,
-            require_all_partners: require_all_expected_partners,
-            terminal_bump_guard: self.terminal_bump_guard_for_target(target, target_port_um),
-        };
+            crossing_partners,
+            crossing_cfg,
+            target,
+            target_port_um,
+            None,
+            Some(require_all_expected_partners),
+        );
         let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
