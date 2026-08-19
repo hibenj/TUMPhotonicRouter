@@ -1099,6 +1099,37 @@ pub fn route_to_port_corrected_centerline_with_options(
     target_port_um: Option<(f64, f64)>,
     allow_unchecked_bumps: bool,
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
+    route_to_port_corrected_centerline_with_options_and_collision_check(
+        route,
+        primitives,
+        grid,
+        source_port_um,
+        target_port_um,
+        allow_unchecked_bumps,
+        None,
+    )
+}
+
+/// Same as `route_to_port_corrected_centerline_with_options`, with an
+/// additional, optional collision check consulted by any strategy in this
+/// chain that already tries multiple candidates before picking one
+/// (currently just `try_apply_45_degree_endpoint_delta_correction`). See
+/// that function's own doc comment for what the check must do and why it
+/// exists (2026-08-19,
+/// .agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md).
+/// `None` reproduces `route_to_port_corrected_centerline_with_options`'s
+/// exact prior behavior; every caller except
+/// `route_port_corrected_centerline_checked_and_commit_native`
+/// (`src/py_router.rs`) passes `None`.
+pub fn route_to_port_corrected_centerline_with_options_and_collision_check(
+    route: &RouteResult,
+    primitives: &PrimitiveLibrary,
+    grid: &GeometryGridSpec,
+    source_port_um: Option<(f64, f64)>,
+    target_port_um: Option<(f64, f64)>,
+    allow_unchecked_bumps: bool,
+    collision_check: Option<&dyn Fn(&[(f64, f64)]) -> bool>,
+) -> Result<Vec<(f64, f64)>, GeometryError> {
     let replay = route_to_primitive_centerline_with_runs(route, primitives, grid)?;
     let mut centerline = replay.centerline;
     if !try_apply_full_straight_port_correction(&mut centerline, source_port_um, target_port_um)? {
@@ -1118,6 +1149,7 @@ pub fn route_to_port_corrected_centerline_with_options(
                 source_port_um,
                 target_port_um,
                 false,
+                collision_check,
             )? {
                 let mut existing_axis_candidate = centerline.clone();
                 if absorb_endpoint_delta_into_existing_axis_runs(
@@ -2056,6 +2088,7 @@ struct DiagonalEndpointAdjustment {
     delta: (f64, f64),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_apply_45_degree_endpoint_delta_correction(
     centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
@@ -2066,7 +2099,30 @@ fn try_apply_45_degree_endpoint_delta_correction(
     source_port_um: Option<(f64, f64)>,
     target_port_um: Option<(f64, f64)>,
     allow_unchecked_bumps: bool,
+    collision_check: Option<&dyn Fn(&[(f64, f64)]) -> bool>,
 ) -> Result<bool, GeometryError> {
+    // `collision_check`, when given, is called on every candidate centerline
+    // this function is about to accept, in addition to the existing
+    // `validate_corrected_endpoint_candidate` geometric/kinematic check. It
+    // must return true when the candidate is safe to accept (no collision
+    // with another net's already-committed geometry) and false when the
+    // candidate should be rejected so this function's existing "try the
+    // next candidate" loop moves on, exactly the same way a failed
+    // `validate_corrected_endpoint_candidate` already does. This function
+    // was identified (2026-08-19,
+    // .agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md,
+    // Milestone 1) as the actual strategy that produced
+    // `multiportmmi_16x16`'s n_196/n_203 collisions: it already tries
+    // multiple candidates (the axis-only absorption, then every
+    // (source_adjustment, target_adjustment) pair below) and accepts the
+    // first one that is internally consistent, but had no way to know one
+    // of those candidates physically overlapped a different net until the
+    // caller checked the final, already-chosen answer after the fact, too
+    // late to try another candidate. Only the caller
+    // (`route_port_corrected_centerline_checked_and_commit_native`,
+    // `src/py_router.rs`) has the obstacle-map access needed to build a
+    // real check; every other caller of this function passes `None`,
+    // preserving today's behavior exactly.
     if !directional_runs.iter().any(|run| run.angle % 2 == 1) {
         return Ok(false);
     }
@@ -2092,6 +2148,7 @@ fn try_apply_45_degree_endpoint_delta_correction(
     if axis_only_result.is_ok()
         && validate_corrected_endpoint_candidate(&axis_only, route, source_port_um, target_port_um)
             .is_ok()
+        && collision_check.is_none_or(|check| check(&axis_only))
     {
         *centerline = axis_only;
         return Ok(true);
@@ -2146,6 +2203,9 @@ fn try_apply_45_degree_endpoint_delta_correction(
             )
             .is_err()
             {
+                continue;
+            }
+            if !collision_check.is_none_or(|check| check(&candidate)) {
                 continue;
             }
             *centerline = candidate;
@@ -6589,6 +6649,93 @@ mod tests {
         validate_target_tangent(&corrected, angle_to_unit_vector(2)).unwrap();
         assert_eq!(corrected.len(), base.len());
         assert!(corrected.windows(2).all(|w| distance(w[0], w[1]) > EPS));
+    }
+
+    #[test]
+    fn port_corrected_45_degree_delta_correction_retries_a_rejected_candidate() {
+        // Regression test for the collision-avoidance fix in
+        // .agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md:
+        // try_apply_45_degree_endpoint_delta_correction (via this fixture's
+        // (0.25, 0.55) delta, the same fixture and delta the sibling test
+        // above uses) has more than one internal way to reach a valid
+        // corrected centerline (multiple (source_adjustment, target_adjustment)
+        // pairs, each with its own residual-absorption attempt). This test
+        // rejects whichever candidate it picks by default via a
+        // caller-supplied collision_check and asserts a *different*, still
+        // fully valid centerline comes back, proving the new collision_check
+        // parameter makes this function retry rather than being limited to
+        // "accept the first internally-consistent candidate or fail
+        // outright" -- the limitation that previously let the caller-side
+        // check in route_port_corrected_centerline_checked_and_commit_native
+        // (src/py_router.rs) only ever reject a collision, never route
+        // around it.
+        let lib = test_lib();
+        let straight_ne = primitive_id_for(&lib, 1, |p| {
+            p.start_angle == 1 && p.end_angle == 1 && p.dx == 4 && p.dy == 4
+        });
+        let bend_left = primitive_id_for(&lib, 1, |p| p.start_angle == 1 && p.end_angle == 2);
+        let long_north = primitive_id_for(&lib, 2, |p| {
+            p.start_angle == 2 && p.end_angle == 2 && p.dx == 0 && p.dy == 4
+        });
+        let primitive_ids = vec![straight_ne, bend_left, long_north];
+        let states = states_from_primitives(&lib, State::new(1, 1, 1), &primitive_ids);
+        let requested_target = *states.last().unwrap();
+        let route = RouteResult {
+            states,
+            primitives: primitive_ids,
+            cells: vec![],
+            compressed_waypoints: vec![],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target,
+            reached_target: requested_target,
+            stats: Default::default(),
+        };
+
+        let base = route_to_primitive_centerline(&route, &lib, &grid()).unwrap();
+        let source_port = (base[0].0 + 0.25, base[0].1 + 0.55);
+        let target_port = *base.last().unwrap();
+
+        let unconstrained = route_to_port_corrected_centerline_with_options_and_collision_check(
+            &route,
+            &lib,
+            &grid(),
+            Some(source_port),
+            Some(target_port),
+            true,
+            None,
+        )
+        .unwrap();
+
+        let forbidden = unconstrained.clone();
+        let reject_default_candidate = move |candidate: &[(f64, f64)]| -> bool {
+            candidate.len() != forbidden.len()
+                || candidate
+                    .iter()
+                    .zip(forbidden.iter())
+                    .any(|(a, b)| distance(*a, *b) > EPS)
+        };
+        let retried = route_to_port_corrected_centerline_with_options_and_collision_check(
+            &route,
+            &lib,
+            &grid(),
+            Some(source_port),
+            Some(target_port),
+            true,
+            Some(&reject_default_candidate),
+        )
+        .unwrap();
+
+        assert!(distance(*retried.first().unwrap(), source_port) <= EPS);
+        assert!(distance(*retried.last().unwrap(), target_port) <= EPS);
+        validate_source_tangent(&retried, angle_to_unit_vector(1)).unwrap();
+        validate_target_tangent(&retried, angle_to_unit_vector(2)).unwrap();
+        assert!(retried.windows(2).all(|w| distance(w[0], w[1]) > EPS));
+        assert_ne!(
+            retried, unconstrained,
+            "collision_check rejecting the default candidate must produce a different \
+             centerline, not silently return the same one or fail outright"
+        );
     }
 
     #[test]

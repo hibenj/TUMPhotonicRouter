@@ -44,6 +44,7 @@ use crate::geometry_realization::{
     realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     route_to_grid_path as route_to_grid_path_rs,
     route_to_port_corrected_centerline_with_options as route_to_port_corrected_centerline_with_options_rs,
+    route_to_port_corrected_centerline_with_options_and_collision_check,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
     splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
     AutoMeanderConfig, AutoMeanderPlanningProfile, AutoMeanderSidePolicy, DenseOccupancyPrefix,
@@ -6883,13 +6884,41 @@ impl PyPhotonicRouter {
         .map_err(|err| err.to_string())?;
 
         if candidates.is_empty() {
-            let centerline = route_to_port_corrected_centerline_with_options_rs(
+            // Give any candidate-trying strategy inside this call
+            // (currently only try_apply_45_degree_endpoint_delta_correction)
+            // the ability to skip a candidate that dynamically collides with
+            // another net's already-committed geometry and try its next
+            // candidate instead, rather than only being caught by this
+            // function's own post-construction check below (which can only
+            // reject, not retry) -- confirmed via direct tracing
+            // (multiportmmi_16x16's n_196/n_203) that this exact strategy is
+            // what previously produced a colliding candidate with no
+            // alternative to fall back to. See
+            // .agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md.
+            // The post-construction check below is left unchanged and still
+            // runs as a defense-in-depth backstop.
+            let candidate_collision_check = |candidate: &[(f64, f64)]| -> bool {
+                let Ok(candidate_core_cells) = centerline_core_cells(candidate, width_um, &static_grid)
+                else {
+                    return false;
+                };
+                !candidate_core_cells.iter().any(|&(x, y)| {
+                    self.obstacle_map.in_bounds(x, y)
+                        && self
+                            .obstacle_map
+                            .dynamic_owners_at(x, y)
+                            .iter()
+                            .any(|&owner| owner != net_id)
+                })
+            };
+            let centerline = route_to_port_corrected_centerline_with_options_and_collision_check(
                 route,
                 &self.primitives,
                 &grid,
                 source_port_um,
                 target_port_um,
                 allow_unchecked_fallback,
+                Some(&candidate_collision_check),
             )
             .map_err(|err| err.to_string())?;
             let corrected_core_cells = centerline_core_cells(&centerline, width_um, &static_grid)
