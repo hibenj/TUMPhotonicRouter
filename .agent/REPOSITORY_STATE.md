@@ -15,7 +15,28 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `19cdbec`.
+- Current HEAD: `4461a06`.
+- **`.agent/execplans/2026-08-19-future-architecture-initiative-stage-characterization.md`
+  is complete.** Milestone 0 characterized all five candidate pipeline
+  stages with direct source evidence and reframed the initiative's real
+  shape: obstacle map building + grid snapping (`python/photonic_router/static_obstacle_builder.py`,
+  `src/static_obstacle_builder.rs`/`src/obstacle_map.rs`) and single-net A*
+  search (`src/astar.rs`) are already cleanly separable, session-state-free,
+  and deeply tested (20-97 unit tests each); ripup/repair orchestration
+  (`route_many_with_repair_and_commit`, `src/py_router.rs`) is the least
+  separable code in the pipeline -- a god-object session struct, zero
+  stage-granular tests, three real bugs found in/near it this session alone
+  -- and needs its own restructuring pass before interface extraction is
+  even well-posed (this independently confirms the decision, in the closed
+  `fix-open-repair-and-dense-port-findings` plan, not to patch it now);
+  geometry realization (`src/geometry_realization.rs`) and path-length
+  matching (`src/plm.rs`, `python/photonic_router/path_length_graph.py`)
+  are coupled at the Rust type level and need a deliberate boundary
+  decision before either extracts cleanly. Recommended order: (1) obstacle
+  map building + grid snapping, (2) A* single-net search, (3) geometry
+  realization, (4) path-length matching -- ripup/repair excluded until its
+  own restructuring lands. Full evidence in that plan's Surprises &
+  Discoveries.
 - **`.agent/execplans/2026-08-19-fix-open-repair-and-dense-port-findings.md` is
   complete, closed as diagnosis-only** (no code changes). Milestone 0
   root-caused the `multiportmmi_8x8` `n_67`/`n_70`/`n_71` cluster precisely:
@@ -613,24 +634,21 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**Active ExecPlan**:
-`.agent/execplans/2026-08-19-future-architecture-initiative-stage-characterization.md`,
-just created, not yet started. Start at its Milestone 0: characterize all
-five routing-pipeline stages' current boundaries (obstacle map building,
-grid snapping, A* search, geometry realization, path-length matching)
-across `translation/*.py` and `src/*.rs`, with direct source evidence, and
-propose a concrete extraction order -- do not design or implement any
-interface yet, per that plan's own scoping and `.agent/PLANS.md`'s
-guidance against over-specifying before source inspection justifies the
-design. This is `.agent/PROJECT_GOAL.md`'s "Future Architecture
-Initiative," started per the repository owner's 2026-08-19 direction
-after deciding not to fix the three open benchmark findings below inside
-code that is itself a restructuring target (see the note on the now-
-closed `2026-08-19-fix-open-repair-and-dense-port-findings.md` plan
-above). Also follows the repository owner's same-day direction to use the
-Claude+Codex flow for implementation slices once a fix or extraction is
-well-specified -- see `.agent/CLAUDE_CODEX_FLOW.md` (not expected to apply
-within this characterization-only plan itself).
+**No active ExecPlan right now.** The characterization plan above is
+complete and closed. **Next step** (not yet started, no ExecPlan written
+for it yet): a new ExecPlan for scoped extraction of stage 1+2 (obstacle
+map building + grid snapping) -- formalize the existing
+`build_static_obstacle_map`/Rust-dispatch contract
+(`python/photonic_router/static_obstacle_builder.py:101`) as an explicit
+`Protocol`/`trait` rather than inventing a new boundary, per the
+characterization plan's recommended order. This is `.agent/PROJECT_GOAL.md`'s
+"Future Architecture Initiative," continuing per the repository owner's
+2026-08-19 direction after deciding not to fix the three open benchmark
+findings below inside code that is itself a restructuring target (see the
+note on the closed `2026-08-19-fix-open-repair-and-dense-port-findings.md`
+plan above). Also follows the repository owner's same-day direction to
+use the Claude+Codex flow for implementation slices once a fix or
+extraction is well-specified -- see `.agent/CLAUDE_CODEX_FLOW.md`.
 
 The three benchmark findings below are now explicitly **parked, not
 active work** -- revisit once the restructuring gives the surrounding
