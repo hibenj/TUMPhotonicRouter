@@ -29,12 +29,16 @@ if it is ever needed.
   `translation/route_rust.py`) with duplicated logic between them and a
   silent-fallback pattern (the exact shape of the `2026-08-18` bug fixed
   the day before this plan was written -- see below) that can hide a wrong
-  answer until a much later verification stage catches it. The plan's five
+  answer until a much later verification stage catches it. The plan's
   milestones: characterize current behavior + add the missing regression
-  test for the `2026-08-18` bug class; consolidate net classification into
-  one place; make any correction fallback visible in diagnostics instead of
-  silent; collapse the three passes into one readable entry point; broaden
-  test coverage; broad validation. Two architectural decisions are recorded
+  test for the `2026-08-18` bug class; **(added 2026-08-19, sequenced first)
+  give bump/dogleg endpoint-correction geometry insertion real collision
+  awareness against other nets** -- see below, this is a real, confirmed-
+  likely correctness bug, not a readability item; consolidate net
+  classification into one place; make any correction fallback visible in
+  diagnostics instead of silent; collapse the three passes into one readable
+  entry point; broaden test coverage; broad validation. Two architectural
+  decisions are recorded
   in the plan's own Decision Log and should not be re-litigated without
   reason: Python orchestrates each pipeline stage as a separate call (not
   pushed into one big Rust function), and this pass consolidates + adds
@@ -373,6 +377,37 @@ caused by any of the completed plans:
   than to `n_32`'s lateral-width-allocation bug -- likely a genuine
   benchmark-placement fact, not a fixable reservation-logic problem, though
   not confirmed to that same standard of certainty as `TOY` was.
+- (2026-08-19) `multiportmmi_16x16`, run under its documented stable-baseline
+  config (`STABLE_ROUTING_ENV`/`STABLE_ROUTING_FLAGS`, see
+  `benchmarks/multiportmmi_16x16.py`), routes all 223/223 nets successfully
+  and passes crossing verification cleanly (0 issues), but photonic
+  verification then catches a real, physical
+  `cross_net_waveguide_overlap` between two *different* nets: `n_196`
+  overlaps `n_197`'s waveguide (`overlap_area_um2=50.60`, near
+  `(5865-5982, 1470-1587)`). Not a crossing-legality problem -- this is a
+  genuine geometric collision the crossing verifier has no reason to catch.
+  Root cause is now believed likely (not yet confirmed with net-specific
+  tracing): reading `src/geometry_realization.rs`'s endpoint-correction
+  strategy chain (`route_to_port_corrected_centerline_with_options`, line
+  1094, and everything it calls) directly, none of the geometry-inserting
+  correction strategies -- both independent "insert a bump" implementations
+  (`build_ordered_compact_offset_bump`; `insert_source_delta_bump`/
+  `insert_target_delta_bump`) and the dogleg-absorption fallback
+  (`insert_source_delta_dogleg`/`insert_target_delta_dogleg`) -- have any
+  access to other nets' already-committed geometry; they validate only
+  internal tangent/geometric consistency, never spatial collision. This was
+  found while checking the repository owner's own independently-described
+  mental model of the correction algorithm against the real code, which
+  explicitly expected a collision check at exactly this point. Now tracked
+  as **Milestone 0.5** of the active ExecPlan
+  (`.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`),
+  sequenced before that plan's readability-consolidation milestones since a
+  real physical-overlap bug outranks a readability problem; it is the one
+  deliberate exception to that plan's "Python orchestrates, Rust stays
+  stable" decision, since the fix requires a real Rust algorithm change
+  (threading obstacle awareness into the strategies that insert new
+  geometry). Full evidence trail in that plan's Surprises & Discoveries and
+  Decision Log (2026-08-19 entries).
 
 ## Recent Session Notes
 
