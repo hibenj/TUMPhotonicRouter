@@ -5294,6 +5294,89 @@ class _RouteNetsRustSession:
             )
         return failed_net_ids
 
+    def _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+        self,
+        net_ids: Iterable[int],
+        *,
+        record_pipeline_timing: bool = True,
+        print_warnings: bool = False,
+    ) -> list[int]:
+        """Pass 1 and pass 2 together: every net in `net_ids` not involved
+        in a crossing gets either the unrestricted corrector or the
+        fanout-stub-partial corrector, whichever `_classify_net_for_endpoint_correction`
+        calls for; a net involved in a crossing is left untouched here (see
+        `_apply_all_endpoint_corrections_for_net_ids` below for where that
+        net gets handled). Both existing passes already self-filter safely
+        by classification, so calling both with the same, unfiltered
+        `net_ids` list is exactly equivalent to today's behavior, just
+        expressed as one call instead of two.
+
+        This is also, deliberately, as far as consolidation goes for the
+        two mid-repair call sites in `_route_many_with_repair_and_commit`-style
+        methods (around what were lines 5638-5645 and 6019-6028 before this
+        milestone): repair runs before the run's final crossing plan is
+        settled, so those call sites only ever need this pair, never the
+        crossing-aware pass, and always did -- this method exists to give
+        that pre-existing two-call pattern one name instead of leaving it
+        duplicated verbatim in two places (Milestone 3 of
+        .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md).
+        """
+        net_id_list = [int(net_id) for net_id in net_ids]
+        failed_net_ids = list(
+            self._apply_checked_endpoint_corrections_for_net_ids(
+                net_id_list,
+                record_pipeline_timing=record_pipeline_timing,
+                print_warnings=print_warnings,
+            )
+        )
+        failed_net_ids.extend(
+            self._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
+                net_id_list,
+                record_pipeline_timing=record_pipeline_timing,
+                print_warnings=print_warnings,
+            )
+        )
+        return failed_net_ids
+
+    def _apply_all_endpoint_corrections_for_net_ids(
+        self,
+        net_ids: Iterable[int],
+        *,
+        print_warnings: bool = False,
+    ) -> list[int]:
+        """The one entry point for endpoint correction, telling the whole
+        story top to bottom: every net not involved in a crossing gets the
+        unrestricted or fanout-stub-partial corrector (whichever its
+        classification calls for -- see `_classify_net_for_endpoint_correction`
+        and `_apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids`
+        above); every net involved in a crossing instead gets the separate,
+        splice-based crossing-aware corrector, whose fallback strategies
+        are now visible via `RoutedNetRecord.endpoint_correction_fallback_note`
+        (Milestone 2). Replaces `run()`'s three separate, independently-ordered
+        calls with one (Milestone 3 of
+        .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md).
+
+        This function is not used by the two mid-repair call sites, which
+        only ever need the first two passes (see
+        `_apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids`'s
+        own docstring for why) -- calling this one there would run the
+        crossing-aware pass mid-repair, before the run's final crossing
+        plan is settled, which is not equivalent to today's behavior and
+        was deliberately not attempted as part of this additive milestone.
+        """
+        net_id_list = [int(net_id) for net_id in net_ids]
+        failed_net_ids = self._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+            net_id_list,
+            print_warnings=print_warnings,
+        )
+        failed_net_ids.extend(
+            self._apply_crossing_aware_endpoint_corrections_for_net_ids(
+                net_id_list,
+                print_warnings=print_warnings,
+            )
+        )
+        return failed_net_ids
+
     def _grid_cell_from_raw_point(self, raw_point: object) -> tuple[int, int] | None:
         if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
             return None
@@ -5732,11 +5815,7 @@ class _RouteNetsRustSession:
                 for record in repaired_records
                 if record.net_id is not None
             ]
-            self._apply_checked_endpoint_corrections_for_net_ids(
-                repaired_net_ids,
-                record_pipeline_timing=False,
-            )
-            self._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
+            self._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
                 repaired_net_ids,
                 record_pipeline_timing=False,
             )
@@ -6113,15 +6192,9 @@ class _RouteNetsRustSession:
             self._record_route(job, route_obj, opened_by_id[net_id])
             repaired_net_ids.append(net_id)
         if self.enable_checked_endpoint_correction and repaired_net_ids:
-            failed_corrections = self._apply_checked_endpoint_corrections_for_net_ids(
+            failed_corrections = self._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
                 repaired_net_ids,
                 record_pipeline_timing=False,
-            )
-            failed_corrections.extend(
-                self._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
-                    repaired_net_ids,
-                    record_pipeline_timing=False,
-                )
             )
             attempt["endpoint_correction_failed_net_ids"] = [
                 int(net_id) for net_id in failed_corrections
@@ -7029,23 +7102,7 @@ class _RouteNetsRustSession:
 
 
         if self.enable_checked_endpoint_correction:
-            self._apply_checked_endpoint_corrections_for_net_ids(
-                list(self.route_bookkeeping.route_order),
-                print_warnings=(
-                    self.collect_attempt_diagnostics
-                    or self.diagnostics_enabled
-                    or self.verbose_route_diagnostics
-                ),
-            )
-            self._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
-                list(self.route_bookkeeping.route_order),
-                print_warnings=(
-                    self.collect_attempt_diagnostics
-                    or self.diagnostics_enabled
-                    or self.verbose_route_diagnostics
-                ),
-            )
-            self._apply_crossing_aware_endpoint_corrections_for_net_ids(
+            self._apply_all_endpoint_corrections_for_net_ids(
                 list(self.route_bookkeeping.route_order),
                 print_warnings=(
                     self.collect_attempt_diagnostics
