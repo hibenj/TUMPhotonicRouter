@@ -1205,6 +1205,68 @@ def test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor(
     assert len(record.corrected_centerline_um) > 2
 
 
+def test_apply_checked_fanout_stub_endpoint_corrections_skips_both_sides_fanout_net():
+    # Characterizes the currently-implicit both_fanout_stub fall-through
+    # (2026-08-19-restructure-port-endpoint-correction ExecPlan, Milestone 0):
+    # a net with fanout stubs on both its source and target sides is skipped
+    # entirely by this pass, via the explicit
+    # `if source_has_fanout_stub and target_has_fanout_stub: continue` guard
+    # at translation/route_rust.py:4705, before it ever reaches port
+    # resolution or the native corrector.
+    #
+    # A real, end-to-end benchmark layout could not be built to exercise this
+    # case with an actual successful route (investigated directly, not
+    # assumed): fanout anchors are only ever built from a net's *source*
+    # side (`_build_static_fanout_anchors` only reads
+    # `source_port_specs_by_instance`), so the only way for a net's *target*
+    # port to also be a fanout anchor is for that exact port to be reused as
+    # a different net's source port. Constructing that (two mmi_3x3-style
+    # hubs, the second hub's port used both as one net's target and a
+    # second net's source) makes the router reject one of the two nets
+    # outright: the shared anchor grid cell cannot simultaneously be one
+    # route's commit-destination and a different route's commit-origin in
+    # the router's dynamic occupancy model ("No route found ...
+    # candidate_blockers=[<the other net's id>]"). So this test instead
+    # constructs the minimal session state needed to exercise the guard
+    # directly, and proves via spies that control flow never reaches port
+    # resolution (i.e. the explicit both-sides guard is what skips the net,
+    # not some other, later fallback that happens to produce the same
+    # empty result).
+    net_id = 1
+    record = SimpleNamespace(corrected_centerline_um=((0.0, 0.0), (1.0, 0.0)))
+    job = SimpleNamespace()
+
+    def _unexpected_call(name: str):
+        def _raise(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError(f"{name} must not be called for a both-fanout-stub net")
+
+        return _raise
+
+    session = object.__new__(route_rust._RouteNetsRustSession)
+    session.enable_checked_endpoint_correction = True
+    session.fanout_anchor_net_ids = {net_id}
+    session.fanout_anchor_source_net_ids = {net_id}
+    session.fanout_anchor_target_net_ids = {net_id}
+    session.enable_crossings = False
+    session.router = SimpleNamespace(
+        apply_checked_endpoint_corrections=_unexpected_call(
+            "apply_checked_endpoint_corrections"
+        ),
+    )
+    session.route_bookkeeping = SimpleNamespace(records_by_id={net_id: record})
+    session.route_jobs_by_id = {net_id: job}
+    session._pipeline_timer_start = lambda: 0.0
+    session._record_pipeline_timing = lambda *_args, **_kwargs: None
+    session._routing_endpoint_center_um = _unexpected_call("_routing_endpoint_center_um")
+    session._state_openings_for_job = _unexpected_call("_state_openings_for_job")
+
+    corrected_net_ids = session._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
+        [net_id]
+    )
+
+    assert corrected_net_ids == []
+
+
 def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
     monkeypatch,
     tmp_path,
