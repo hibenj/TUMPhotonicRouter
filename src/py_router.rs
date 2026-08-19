@@ -3198,18 +3198,18 @@ impl PyPhotonicRouter {
             .collect()
     }
 
-    fn crossing_allowed_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
-        if !self.crossing_context.is_enabled() {
-            return FxHashSet::default();
-        }
-        if !self.crossing_context.config().allow_only_expected_pairs {
-            return self
-                .obstacle_map
-                .net_route_entries()
-                .map(|(partner_id, _)| partner_id)
-                .filter(|partner_id| *partner_id != net_id)
-                .collect();
-        }
+    /// The topology-declared allowed-partner set for `net_id`, used only in
+    /// `allow_only_expected_pairs` mode: before routing, some upstream
+    /// process decides which specific pairs of nets are allowed to cross,
+    /// and this returns that pre-decided set (filtered to partners that
+    /// actually have committed cells). See `lidar_pure_full_map_partner_set`
+    /// for the unrelated, reactive lidar-pure case this function used to be
+    /// silently combined with inside the single `crossing_allowed_partner_set`
+    /// function (split apart in
+    /// .agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md,
+    /// Milestone 1, since the two represent different intents, not two
+    /// configurations of the same intent).
+    fn expected_pairs_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
         self.crossing_context
             .allowed_partners_for(net_id)
             .into_iter()
@@ -3217,18 +3217,84 @@ impl PyPhotonicRouter {
             .collect()
     }
 
+    /// Every currently-committed net other than `net_id`, unfiltered by any
+    /// spatial window. In lidar-pure mode this is not a whitelist of nets a
+    /// route is allowed to cross -- it is the full centerline lookup
+    /// database a collision-crossing search attempt can consult once it
+    /// discovers, from actual dynamic obstacle cells while expanding moves,
+    /// which other net it just collided with. See `expected_pairs_partner_set`
+    /// for the unrelated `allow_only_expected_pairs` case.
+    fn lidar_pure_full_map_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
+        self.obstacle_map
+            .net_route_entries()
+            .map(|(partner_id, _)| partner_id)
+            .filter(|partner_id| *partner_id != net_id)
+            .collect()
+    }
+
+    /// Dispatches to `expected_pairs_partner_set` or
+    /// `lidar_pure_full_map_partner_set` depending on
+    /// `allow_only_expected_pairs`, or an empty set when crossing is
+    /// disabled entirely. Kept as a thin, unchanged-behavior compatibility
+    /// point for callers not yet migrated to call the specific function
+    /// their own mode already implies directly (Milestone 2 of
+    /// .agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md
+    /// decides which remaining callers should migrate).
+    fn crossing_allowed_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
+        if !self.crossing_context.is_enabled() {
+            return FxHashSet::default();
+        }
+        if !self.crossing_context.config().allow_only_expected_pairs {
+            return self.lidar_pure_full_map_partner_set(net_id);
+        }
+        self.expected_pairs_partner_set(net_id)
+    }
+
     fn lidar_pure_owner_lookup_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
         // In LiDAR-pure this is not a whitelist of nets the route is allowed
         // to cross. It is only the centerline lookup database for owners that
         // A* discovers from actual dynamic obstacle cells while expanding
         // moves.
-        self.crossing_allowed_partner_set(net_id)
+        self.lidar_pure_full_map_partner_set(net_id)
     }
 
     fn lidar_pure_crossing_enabled(&self) -> bool {
         self.crossing_context.is_enabled()
             && self.use_collision_crossing_routing
             && !self.crossing_context.config().allow_only_expected_pairs
+    }
+
+    /// Every currently-committed net (other than `net_id`) with at least one
+    /// cell inside the axis-aligned box `[min_x, max_x] x [min_y, max_y]`.
+    /// Shared by `lidar_route_window_partner_lookup_set` (box derived from a
+    /// source/target state pair, before a route exists) and
+    /// `lidar_route_result_partner_lookup_set` (box derived from an actual
+    /// route's cells, after one exists) -- the two differ only in how they
+    /// compute the box, not in how they filter by it (previously
+    /// unshared, near-identical code in each; extracted in
+    /// .agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md,
+    /// Milestone 1).
+    fn partners_within_bbox(
+        &self,
+        net_id: u64,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> FxHashSet<u64> {
+        self.obstacle_map
+            .net_route_entries()
+            .filter_map(|(partner_id, cells)| {
+                if partner_id == net_id {
+                    return None;
+                }
+                cells.iter().any(|key| {
+                    let (x, y) = unpack_xy(*key);
+                    x >= min_x && x <= max_x && y >= min_y && y <= max_y
+                })
+                .then_some(partner_id)
+            })
+            .collect()
     }
 
     fn lidar_route_window_partner_lookup_set(
@@ -3246,19 +3312,7 @@ impl PyPhotonicRouter {
         let max_x = source.x.max(target.x).saturating_add(extra);
         let min_y = source.y.min(target.y).saturating_sub(extra);
         let max_y = source.y.max(target.y).saturating_add(extra);
-        self.obstacle_map
-            .net_route_entries()
-            .filter_map(|(partner_id, cells)| {
-                if partner_id == net_id {
-                    return None;
-                }
-                cells.iter().any(|key| {
-                    let (x, y) = unpack_xy(*key);
-                    x >= min_x && x <= max_x && y >= min_y && y <= max_y
-                })
-                .then_some(partner_id)
-            })
-            .collect()
+        self.partners_within_bbox(net_id, min_x, max_x, min_y, max_y)
     }
 
     fn lidar_probe_partner_lookup_set(
@@ -3316,19 +3370,7 @@ impl PyPhotonicRouter {
             .max()
             .unwrap_or(0)
             .saturating_add(extra);
-        self.obstacle_map
-            .net_route_entries()
-            .filter_map(|(partner_id, cells)| {
-                if partner_id == net_id {
-                    return None;
-                }
-                cells.iter().any(|key| {
-                    let (x, y) = unpack_xy(*key);
-                    x >= min_x && x <= max_x && y >= min_y && y <= max_y
-                })
-                .then_some(partner_id)
-            })
-            .collect()
+        self.partners_within_bbox(net_id, min_x, max_x, min_y, max_y)
     }
 
     fn crossing_partner_lookup_set_for_result(
