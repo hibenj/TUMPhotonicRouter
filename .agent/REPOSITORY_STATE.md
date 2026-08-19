@@ -15,7 +15,34 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `fc6400b`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+- Current HEAD: `19cdbec`.
+- **`.agent/execplans/2026-08-19-fix-open-repair-and-dense-port-findings.md` is
+  complete, closed as diagnosis-only** (no code changes). Milestone 0
+  root-caused the `multiportmmi_8x8` `n_67`/`n_70`/`n_71` cluster precisely:
+  net 70 routes fine standalone, but fails only when repair rips it up as
+  net 71's victim, because `route_many_with_repair_and_commit`'s victim-set
+  expansion (`src/py_router.rs:10038-10074`) is built solely from the
+  *originally failing* net's direct blockers and has no mechanism to fold a
+  victim's own secondary blocker (here, net 67) into the ripup set --
+  confirmed as a real but architectural gap (multi-hour fix, real regression
+  risk, in one of the repository's most complex and already-bug-prone
+  functions), not a small bug. Milestone 1 (`multiportmmi_16x16`'s `n_50`)
+  was deferred mid-diagnostic (16x16-scale iteration is far slower than
+  8x8-scale; repository owner redirected focus). Milestones 2/3 (implement
+  the Finding 1 fix; design the dense-port lateral-width fix) were
+  deliberately **not** implemented: the repository owner decided that
+  patching code which is a direct target of the upcoming Future Architecture
+  Initiative restructuring is likely wasted effort, and redirected to that
+  restructuring instead. All three findings stay parked below in "Next
+  Engineering Step." Full detail in that plan's own Surprises & Discoveries
+  and Outcomes & Retrospective.
+- **New active plan**:
+  `.agent/execplans/2026-08-19-future-architecture-initiative-stage-characterization.md`,
+  just created, not yet started. Kicks off `.agent/PROJECT_GOAL.md`'s Future
+  Architecture Initiative (extracting `Protocol`/`trait` interfaces for the
+  five routing-pipeline stages) with a characterization-only Milestone 0 --
+  see "Next Engineering Step" below.
+- Prior history (all still complete, unaffected by the above): `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
   (all 6 milestones), its follow-up
   `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`
   (all 4 milestones),
@@ -587,23 +614,28 @@ explicitly resumes it.
 ## Next Engineering Step
 
 **Active ExecPlan**:
-`.agent/execplans/2026-08-19-fix-open-repair-and-dense-port-findings.md`.
-Milestone 0 is done (root-caused the `multiportmmi_8x8`
-`n_67`/`n_70`/`n_71` congestion cluster -- see that plan's Surprises &
-Discoveries: it's genuine corridor-tightness from dense-port fan-out,
-triggered only when repair rips net 70 up as a victim, not a search-
-strategy gap in isolation). Milestone 1 (`multiportmmi_16x16`'s `n_50`,
-item 3 below) was **deferred out of this plan's scope on 2026-08-19**
--- the repository owner directed that 16x16-scale work is not the
-current focus (a diagnostic run was killed after ~10 minutes with no
-result, versus seconds for 8x8-scale reproductions); it stays parked as
-item 3 below for a future dedicated pass. Next up: Milestone 2 (design/
-implement the Finding 1 fix, 8x8-scale only). Repository owner's
-direction (2026-08-19): fix the open problems below (items 1/2 in this
-section, item 3 now deferred) before moving on to the Future
-Architecture Initiative. Also follows the repository owner's same-day
-direction to use the Claude+Codex flow for implementation slices once a
-fix is well-specified -- see `.agent/CLAUDE_CODEX_FLOW.md`.
+`.agent/execplans/2026-08-19-future-architecture-initiative-stage-characterization.md`,
+just created, not yet started. Start at its Milestone 0: characterize all
+five routing-pipeline stages' current boundaries (obstacle map building,
+grid snapping, A* search, geometry realization, path-length matching)
+across `translation/*.py` and `src/*.rs`, with direct source evidence, and
+propose a concrete extraction order -- do not design or implement any
+interface yet, per that plan's own scoping and `.agent/PLANS.md`'s
+guidance against over-specifying before source inspection justifies the
+design. This is `.agent/PROJECT_GOAL.md`'s "Future Architecture
+Initiative," started per the repository owner's 2026-08-19 direction
+after deciding not to fix the three open benchmark findings below inside
+code that is itself a restructuring target (see the note on the now-
+closed `2026-08-19-fix-open-repair-and-dense-port-findings.md` plan
+above). Also follows the repository owner's same-day direction to use the
+Claude+Codex flow for implementation slices once a fix or extraction is
+well-specified -- see `.agent/CLAUDE_CODEX_FLOW.md` (not expected to apply
+within this characterization-only plan itself).
+
+The three benchmark findings below are now explicitly **parked, not
+active work** -- revisit once the restructuring gives the surrounding
+code a clearer structure to fix them in, per the repository owner's
+2026-08-19 direction.
 
 Five prior plans are complete (see Current Snapshot and each plan's own
 Outcomes & Retrospective):
@@ -662,14 +694,19 @@ Other candidates, deliberately not started yet (parked, not forgotten):
    `n_196`/`n_203` follow-up did for a different, earlier finding) would
    need better repair-strategy capability for this specific case, not a
    mechanical fix. `multiportmmi_8x8`'s documented stable-baseline config
-   is unaffected. **Root-caused (2026-08-19)** by the active ExecPlan's
+   is unaffected. **Root-caused (2026-08-19)** by the now-closed
+   `2026-08-19-fix-open-repair-and-dense-port-findings.md` plan's
    Milestone 0: net 70 routes fine standalone; the failure is repair-time
-   only, triggered when net 71's repair rips net 70 up as a victim, and
-   corridor-clearance diagnostics show genuine geometric tightness (not
-   just a rejected candidate) -- see that plan's Surprises & Discoveries
-   for full detail, including an open question for Milestone 2 (repair
-   never tried ripping up net 67 alongside 70). Now in progress at
-   Milestone 2 (design/implement the fix).
+   only, triggered when net 71's repair rips net 70 up as a victim,
+   because `route_many_with_repair_and_commit`'s victim-set expansion has
+   no mechanism to fold a victim's own secondary blocker (net 67) into
+   the ripup set -- see that plan's Surprises & Discoveries for full
+   detail. **Deliberately left unfixed (2026-08-19)**: the fix is
+   architectural (multi-hour, real regression risk) and lives in code
+   that is a direct target of the Future Architecture Initiative
+   restructuring now underway (see "Active ExecPlan" above); fixing now
+   risks being rewritten shortly after landing. Revisit once that
+   restructuring gives this code a clearer shape.
 3. **New (2026-08-19)**: `multiportmmi_16x16` under its documented
    stable-baseline config -- unlike `multiportmmi_8x8`'s stable-baseline
    config, which is unaffected -- now hard-fails: `RuntimeError: No route
@@ -697,11 +734,9 @@ Other candidates, deliberately not started yet (parked, not forgotten):
 
 Deferred candidates, not in a mandated order:
 
-1. Start the "Future Architecture Initiative" from `.agent/PROJECT_GOAL.md`:
-   extract real swappable interfaces (obstacle map building, grid snapping,
-   A* search, geometry realization, path-length matching) with independent
-   unit-test coverage. Explicitly deferred by the user until after the
-   correctness walkthrough. Nothing scoped yet beyond `PROJECT_GOAL.md`.
+1. ~~Start the "Future Architecture Initiative"~~ -- **no longer deferred,
+   now the active ExecPlan as of 2026-08-19** (see "Active ExecPlan"
+   above): `.agent/execplans/2026-08-19-future-architecture-initiative-stage-characterization.md`.
 2. A smaller, optional continuation of Phase 2: decompose
    `_write_route_diagnostics` (still 486 lines) and `_route_attempt_diagnostics`
    (still 247 lines), or split `run()` itself (1,104 lines) into a few named
