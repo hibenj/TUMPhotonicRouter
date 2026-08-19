@@ -15,11 +15,32 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `33ad62c`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
-  (all 6 milestones) and its follow-up,
+- Current HEAD: `3bea008`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+  (all 6 milestones), its follow-up
   `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`
-  (all 4 milestones), are **both fully complete**, 14 focused commits
-  across the session. Working tree clean.
+  (all 4 milestones), and
+  `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
+  are **all complete**, 15 focused commits across the session. Working tree
+  clean.
+- **Latest plan**: fixed the one pre-existing failing Rust unit test,
+  `collision_crossing_route_without_event_is_not_accepted`
+  (`try_route_with_collision_crossings_using_primitives` accepted a route
+  with zero crossing events as a successful collision-crossing result,
+  traced to commit `9e0a927`) -- `cargo test --lib` now `322 passed, 0
+  failed`. Fixing it surfaced a second, separate, pre-existing bug in
+  native repair bookkeeping (`restore_saved_source_layer_routes` can fail
+  partway through restoring a layer's saved routes and silently abandons
+  the rest, with no caller detecting or retrying the loss), newly exposed
+  -- not caused -- by the fix (it makes a net's first collision-crossing
+  attempt legitimately fail more often, which exercises the pre-existing
+  buggy repair path more often). Reproduces as `multiportmmi_8x8`
+  `missing_route_record n_68` **under bare CLI defaults only**;
+  `multiportmmi_8x8`'s documented stable-baseline config, `benes_4x4`,
+  `cargo test --lib`, and full `pytest -q` are all confirmed clean/at
+  baseline. Deliberately **not fixed** in this plan -- explicitly recorded
+  as an open decision for the repository owner (fix now vs. track
+  separately), not yet answered. Full root-cause trace in that plan's own
+  Surprises & Discoveries.
 - **The follow-up plan is also complete.** It picked up the one residual
   item the restructuring plan left open at the repository owner's
   direction: `multiportmmi_16x16`'s `n_196`/`n_203` were cleanly failing
@@ -502,10 +523,11 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** Both
-`.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
-and its follow-up,
+**No active ExecPlan right now.**
+`.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`,
+its follow-up
 `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`,
+and `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
 are complete (see Current Snapshot and each plan's own Outcomes &
 Retrospective). `.agent/ORCHESTRATOR.md`'s "Required Startup" pointer
 needs updating to name whichever candidate below is picked next, per its
@@ -533,14 +555,23 @@ Other candidates, deliberately not started yet (parked, not forgotten):
    not a mechanical fix. (`multiportmmi_16x16`'s `n_102` is a *different*,
    likely-unfixable `TOY`-shaped finding, not the same problem -- see
    Worktree State.) Not started.
-2. Fix `py_router::tests::collision_crossing_route_without_event_is_not_accepted`'s
-   underlying production bug (see Current Snapshot): `try_route_with_collision_crossings`
-   accepts a route with zero crossing events against its requested partner
-   as if it were a successful collision-crossing result, traced to commit
-   `9e0a927`. This is real production logic in a correctness-sensitive
-   crossing-legality path, not a mechanical test fix -- read `9e0a927`'s
-   diff and the surrounding helper carefully before touching it. Not
-   started.
+2. **New (2026-08-19), awaiting the repository owner's fix-now-vs-track
+   decision**: `restore_saved_source_layer_routes` (`src/py_router.rs`,
+   around line 3000) can fail partway through restoring a native-repair
+   layer's saved routes and silently abandons whichever remaining nets it
+   hadn't gotten to yet -- no caller detects or retries the loss. Newly
+   exposed (not caused) by the `2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
+   fix, which legitimately increases how often the repair path that hits
+   this bug gets exercised. Reproduces as `multiportmmi_8x8`
+   `missing_route_record n_68` under bare CLI defaults only (the
+   documented stable-baseline config, `benes_4x4`, and the full test
+   suites are all unaffected). Full root-cause trace, including why a
+   partial restore silently loses some nets but not others depending on
+   whether their own job index in the outer processing loop has already
+   been passed, is in that plan's own Surprises & Discoveries. Not
+   started -- a real fix needs a design decision (retry the abandoned
+   members individually vs. escalate to a hard failure instead of
+   silently continuing vs. something else), not just a mechanical patch.
 3. Continue the broader Python-and-Rust correctness walkthrough into
    Stages 6-8 (endpoint correction, geometry realization, verification),
    or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`

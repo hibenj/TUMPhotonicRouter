@@ -31,7 +31,16 @@ is also complete (same day): the two nets left honestly-failing by that
 fix now route cleanly too, via a collision-check added to an existing
 multi-candidate search rather than a caller-side reject-only check.
 `multiportmmi_16x16` under its documented stable-baseline config is now
-fully clean end to end. Both plans grew out of five prior, now-complete
+fully clean end to end. A third, separate plan,
+`.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`,
+is also complete: it fixed the one pre-existing failing Rust unit test
+(`try_route_with_collision_crossings_using_primitives` was accepting a
+route with zero crossing events as a successful collision-crossing
+result) and, in validating that fix, found a second, separate, pre-existing
+native-repair bookkeeping bug that it deliberately left unfixed as an
+explicit, tracked follow-up rather than in-scope work -- see
+`.agent/REPOSITORY_STATE.md`'s "Next Engineering Step" for that follow-up.
+All three plans grew out of five prior, now-complete
 plans (`.agent/execplans/2026-08-18-*.md`) that together unified port
 access/keepout sizing, fixed two real dense-port and endpoint-correction
 bugs, and recalibrated the Rust crossing test suite. Read
