@@ -725,6 +725,26 @@ Other candidates, deliberately not started yet (parked, not forgotten):
    restructuring now underway (see "Active ExecPlan" above); fixing now
    risks being rewritten shortly after landing. Revisit once that
    restructuring gives this code a clearer shape.
+   **Idea for the eventual repair rewrite (2026-08-19, save-don't-implement-yet)**:
+   the repository owner asked whether repair's necessity might just be a net-
+   ordering artifact. Checked directly: `--ripup-reroute false` does *not*
+   disable crossing search (it still routes via `route_single_net_and_commit_native`,
+   which retries with collision-crossing search per net,
+   `src/py_router.rs:8579`) -- it disables only victim rip-up. Confirmed
+   even `benes_4x4`/`benes_8x8` (the two simplest benchmarks in the repo)
+   fail immediately without rip-up, and net ordering today is just raw
+   netlist declaration order (`translation/route_rust.py:6503`, sequential
+   `next_net_id` while iterating `nets.items()`), not a deliberate
+   heuristic. This is a real instance of the general reason rip-up-reroute
+   exists in sequential/greedy routing at all: no single static net order
+   can be proven to avoid every crossing-legality conflict for an
+   arbitrary netlist, because an earlier net's best choice can depend on a
+   later net's needs, which aren't known yet when it commits. So repair
+   (or an equivalent renegotiation mechanism) can't be deleted outright --
+   but a smarter net-ordering heuristic could plausibly *reduce how often*
+   it needs to fire, shrinking repair's real surface area. Worth carrying
+   into the eventual repair-restructuring plan as a design lever, not
+   acted on now.
 3. **New (2026-08-19)**: `multiportmmi_16x16` under its documented
    stable-baseline config -- unlike `multiportmmi_8x8`'s stable-baseline
    config, which is unaffected -- now hard-fails: `RuntimeError: No route
