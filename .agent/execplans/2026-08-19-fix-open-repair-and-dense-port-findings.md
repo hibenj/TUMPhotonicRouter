@@ -10,7 +10,9 @@ This repository (`TUMPhotonicRouter`) routes optical waveguides on a discrete gr
 2. `multiportmmi_16x16` under its documented stable-baseline configuration fails with `RuntimeError: No route found for n_50`, the same general shape (a net that used to get a vacuous "success" from a now-fixed bug now genuinely fails), but not yet root-caused to the same depth as finding 1.
 3. A dense multi-port component's row allocation (`_filter_dense_port_opening` in `translation/route_rust.py`) splits a group's available lateral rows unevenly across sibling ports, and a port that lands on the narrow end (as few as 2 rows, when the configured bend radius needs at least 3) cannot execute any bend at all regardless of how much forward reach it has. This surfaced as `multiportmmi_8x8` `n_32`'s source port (`mmi0_multiport_0_0,o11`) failing with `error=No legal LiDAR crossing route found`.
 
-After this plan is complete, `multiportmmi_8x8` should route cleanly end to end under its bare CLI defaults, `multiportmmi_16x16` should route cleanly end to end under its documented stable-baseline configuration, and the dense-port lateral-width allocation should either be fixed (if a design is agreed and implemented) or have a clearly recorded, deliberate decision not to fix it yet with a stated reason -- not simply left as an unexamined "known issue." A person can see this working by running the exact benchmark commands in Concrete Steps below and reading `build/verification/*.json` directly: today `multiportmmi_8x8` (bare defaults) and `multiportmmi_16x16` (stable-baseline) both raise a `RuntimeError` before any verification JSON is even written; after this plan, both should produce a verification report with `success: true`.
+After this plan is complete, `multiportmmi_8x8` should route cleanly end to end under its bare CLI defaults, and the dense-port lateral-width allocation should either be fixed (if a design is agreed and implemented) or have a clearly recorded, deliberate decision not to fix it yet with a stated reason -- not simply left as an unexamined "known issue." A person can see this working by running the exact benchmark commands in Concrete Steps below and reading `build/verification/*.json` directly: today `multiportmmi_8x8` (bare defaults) raises a `RuntimeError` before any verification JSON is even written; after this plan, it should produce a verification report with `success: true`.
+
+**Finding 2 (`multiportmmi_16x16`'s `n_50`) was deferred out of this plan's scope on 2026-08-19** -- see Decision Log. The 16x16-scale benchmark is much slower to iterate on than the 8x8-scale findings, and the repository owner directed that 16x16-scale work is not the current focus; it stays a `RuntimeError` today and remains parked in `.agent/REPOSITORY_STATE.md` for a future, dedicated pass. This plan's remaining scope is Finding 1 and Finding 3, both 8x8-scale.
 
 This plan follows the priority the repository owner set on 2026-08-19: a readable, tested, well-structured repository is the primary goal, and fixing benchmarks is downstream work that both matters in its own right and is used as evidence along the way -- not the other way around. Concretely, this means: root-cause each finding for real (not just enough to make one benchmark pass), record what was learned in a way a future reader can act on even if the specific benchmark placement changes, and add focused test coverage for whatever gets fixed, not just a benchmark-level check.
 
@@ -19,7 +21,8 @@ This plan also follows the repository owner's 2026-08-19 direction to use the Cl
 ## Progress
 
 - [x] Milestone 0 (root-causing the `n_67`/`n_70`/`n_71` cluster): done, see Surprises & Discoveries. Verdict: genuine geometric congestion from dense-port fan-out, not a repair-strategy search gap.
-- [ ] Milestone 1 (root-cause `multiportmmi_16x16`'s `n_50`): in progress.
+- [x] Milestone 1 (root-cause `multiportmmi_16x16`'s `n_50`): **deferred, out of scope for this plan** -- see Decision Log. The diagnostic run was killed mid-flight (it ran ~10 minutes without finishing, versus seconds for the 8x8-scale reproductions) once the repository owner decided the 16x16-scale benchmarks are not the current focus.
+- [ ] Milestone 2 (design/implement the Finding 1 repair-strategy fix): next up, scoped to the 8x8 finding only.
 
 ## Surprises & Discoveries
 
@@ -33,6 +36,9 @@ This plan also follows the repository owner's 2026-08-19 direction to use the Cl
 - Decision: address all three findings in one plan, in the order (a) root-cause and fix the `multiportmmi_8x8` `n_67`/`n_70`/`n_71` congestion cluster, (b) root-cause and fix `multiportmmi_16x16`'s `n_50` finding (checking first whether it shares a mechanism with (a) before assuming a separate fix is needed), (c) the dense-port lateral-width design question, then broaden test coverage and validate.
   Rationale: repository owner's explicit direction ("fix the open problems and then move on to the architecture initiative"), given after being offered the option to start the Future Architecture Initiative first instead. Findings (a) and (b) share the same triggering fix (the zero-event-acceptance bug fix) and a very similar failure shape (repair strategies exhausted against a congested cluster), so investigating (a) first and checking whether it explains (b) is more efficient than treating them as fully independent from the start; finding (c) is architecturally unrelated (port-opening/lane-width sizing, not repair/rip-up strategy) and is ordered last because it was already flagged as needing a design discussion before implementation, unlike (a)/(b) which may turn out to be more mechanical once root-caused.
   Date/Author: 2026-08-19, repository owner (via direct instruction) and Claude, recorded here.
+
+- Decision: defer Finding 2 (`multiportmmi_16x16`'s `n_50`) out of this plan's scope. Milestone 1's diagnostic reproduction was started (with `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1` and `--attempt-diagnostics`) but killed after ~10 minutes without completing -- the 16x16-scale benchmark is far slower to reproduce and iterate on than the 8x8-scale findings (which complete in seconds). The repository owner decided the 16x16-scale benchmarks are not the current focus and this problem should be picked up later, separately. This plan now proceeds with Milestone 2 (Finding 1's fix) and Milestone 3 (Finding 3's design question) only, both 8x8-scale; Finding 2 stays parked in `.agent/REPOSITORY_STATE.md`'s "Next Engineering Step" candidates for a future, dedicated pass. No conclusion about whether Finding 2 shares a root cause with Finding 1 was reached -- this remains genuinely open, not resolved.
+  Date/Author: 2026-08-19, repository owner (via direct instruction), recorded here.
 
 ## Outcomes & Retrospective
 
@@ -118,9 +124,9 @@ Do not run `--debug-svgs` with no value on `multiportmmi_8x8` or `multiportmmi_1
 
 Reproduce finding 1 (Concrete Steps below). Determine, with direct evidence (not inference from the error message alone): the actual physical geometry of nets 67, 70, and 71 at the point of conflict; why the crossing between 70 and 67 fails `insufficient_straight_margin` specifically (what straight-run length is available versus required, per `CrossingConfig`'s `min_straight_cells_per_crossing`); and why every alternative repair strategy (`reroute_victims`, `repair_failed_net`, `pending_straight_ripup`) also fails rather than finding some other legal arrangement -- is this a genuine dead end for the current grid/placement, or is there a legal arrangement the current repair strategies simply do not search for. Use this repository's established diagnostic pattern (a disposable Python monkeypatch/probe script to dump real intermediate state, per `.agent/CLAUDE_CODEX_FLOW.md`'s "diagnosis/implementation boundary" section) rather than guessing from the error text alone.
 
-### Milestone 1: root-cause `multiportmmi_16x16`'s `n_50`
+### Milestone 1: root-cause `multiportmmi_16x16`'s `n_50` -- DEFERRED
 
-Reproduce finding 2. Get to the same depth of understanding Milestone 0 reaches for finding 1, and explicitly compare the two: do they share a root cause (a general repair-strategy capability gap) or are they two separate, unrelated congestion situations that happen to produce the same outer symptom. Record the comparison explicitly in Surprises & Discoveries either way.
+Deferred out of this plan's scope on 2026-08-19; see Decision Log. Not attempted beyond a killed, incomplete diagnostic run.
 
 ### Milestone 2: design and implement the repair-strategy fix(es)
 
@@ -136,7 +142,7 @@ For each fix landed in Milestones 2 and 3, add focused tests (Rust unit tests fo
 
 ### Milestone 5: broad validation
 
-Full validation ladder: `cargo test --lib`, `PYTHONPATH=. .venv/bin/pytest -q`, `benes_4x4`, `multiportmmi_8x8` under both bare CLI defaults and its documented stable-baseline config, `multiportmmi_16x16` under its documented stable-baseline config. Every verdict read from `build/verification/*.json` directly, per `.agent/WORKFLOW.md`'s Routing Verification Gate, not inferred from console output or exit codes.
+Full validation ladder: `cargo test --lib`, `PYTHONPATH=. .venv/bin/pytest -q`, `benes_4x4`, `multiportmmi_8x8` under both bare CLI defaults and its documented stable-baseline config. `multiportmmi_16x16` is excluded per the Milestone 1 deferral (Decision Log) -- it stays at its pre-existing baseline failure and is not re-verified by this plan. Every verdict read from `build/verification/*.json` directly, per `.agent/WORKFLOW.md`'s Routing Verification Gate, not inferred from console output or exit codes.
 
 ## Concrete Steps
 
@@ -154,7 +160,7 @@ See "Finding 1"/"Finding 2" reproduction commands and "Toolchain notes" under Co
 
 ## Validation and Acceptance
 
-`multiportmmi_8x8` under bare CLI defaults and `multiportmmi_16x16` under its stable-baseline config both report `success: true` in their photonic and crossing verification JSON, with no new issues introduced elsewhere. The dense-port lateral-width finding either has a landed, tested fix or an explicit, recorded decision not to fix it yet with a stated reason. `cargo test --lib` and the full validation ladder show no regressions. Each fix has focused test coverage, not just a full-benchmark check.
+`multiportmmi_8x8` under bare CLI defaults reports `success: true` in its photonic and crossing verification JSON, with no new issues introduced elsewhere. The dense-port lateral-width finding either has a landed, tested fix or an explicit, recorded decision not to fix it yet with a stated reason. `cargo test --lib` and the full validation ladder (8x8-scale only, per the Milestone 1 deferral) show no regressions. Each fix has focused test coverage, not just a full-benchmark check. `multiportmmi_16x16`'s `n_50` is explicitly out of scope for this plan's acceptance criteria -- see Decision Log.
 
 ## Idempotence and Recovery
 
