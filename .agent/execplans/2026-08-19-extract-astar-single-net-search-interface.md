@@ -18,6 +18,7 @@ This plan follows the zero-behavior-change discipline already established in thi
 
 - [x] Milestone 0 (full characterization) done, see Surprises & Discoveries. Summary: `SimpleRouteObstacleQuery` is already correctly-scoped prior art (an obstacle-query trait, not a search trait) and should stay untouched, used internally. The real single-net-search public surface is 10 functions (not 4), forming a mode x stats-reporting matrix -- Milestone 1's trait needs config-driven dispatch, not one method per function. Found one real, actionable, in-scope duplication (`CrossingSearchConfig` construction repeated 3x in `py_router.rs`, no shared helper unlike `AStarConfig`'s existing one) -- recommend folding into this plan's scope. Found one architectural finding out of scope for this plan (`route_single_net_and_commit_native` reimplements the simple-then-full fallback pattern rather than reusing the entry points that already have it) -- flag for a future follow-up, do not attempt here, same reasoning as the parked ripup/repair restructuring. `AStarConfig`/`CrossingSearchConfig`/`RouteSearchStats` are all clean owned value types. Test coverage is genuinely entry-point-level (54/97 tests call the public functions directly). No Python-side reimplementation exists -- the one characterization claim that held up unmodified.
   **Recommendation for Milestone 1**: design a trait covering the 10 `astar.rs` single-net-search entry points (config-driven mode dispatch, not 10 separate methods), and fold in the `CrossingSearchConfig`-construction-helper fix as part of the same milestone's implementation scope (small, adjacent, same spirit as the grid-snapping plan's own in-review fixes). Do not touch `SimpleRouteObstacleQuery` (already correct) or `route_single_net_and_commit_native` (out of scope, needs its own future restructuring).
+- [x] Milestone 1 (design) done, see Plan of Work below. A 4-method, purely-additive `SingleNetSearch` trait (one method per genuine mode, not per stats-reporting variant) implemented by a new zero-sized marker type delegating to the existing free functions -- no existing call site migrates. Plus the `CrossingSearchConfig` dedup helper, folded in as adjacent scope.
 
 ## Surprises & Discoveries
 
@@ -89,7 +90,64 @@ Record findings in Surprises & Discoveries, explicitly noting anything that conf
 
 ### Milestone 1: design the trait interface
 
-Not yet specified in detail, per `.agent/PLANS.md`'s guidance against over-specifying before source inspection justifies the design -- Milestone 0 must inform the exact shape, in particular whether `SimpleRouteObstacleQuery` and the full A* search share one interface or two.
+**Design decision (2026-08-19, Claude, informed by Milestone 0's findings)**: the trait is purely additive -- it formalizes a substitutable-algorithm contract without migrating any of the 9 existing real call sites in `src/py_router.rs`, matching the posture that worked for the grid-snapping plan's `ObstacleMapBuilder` `Protocol` (which also didn't force `build_static_obstacle_map`'s two existing implementations into formal classes). Rationale: Milestone 0 found the 10-function surface is a genuine mode x stats-reporting matrix, not one algorithm with incidental variation; collapsing it into fewer methods by making crossing/dynamic-expansion parameters optional inside one method would be a real signature redesign (higher risk, arguably out of scope for "give this an explicit interface" versus "redesign this interface"), while forcing the 9 call sites to route through a new trait object right now would touch already-tested production code for no immediate behavioral benefit, given `route_single_net_and_commit_native` (the main caller) is itself flagged as not ready for this kind of restructuring (Milestone 0's out-of-scope finding). PROJECT_GOAL.md's actual ask -- "a different implementation could be substituted later without touching the rest of the pipeline" -- is satisfied by a trait a future alternative search algorithm can implement, without requiring current callers to migrate today.
+
+Concrete design: one trait, `SingleNetSearch`, in `src/astar.rs`, with 4 methods -- one per genuine mode found in Milestone 0 (base, dynamic-expansion, collision-crossing, crossing-config -- the mode axis, not the stats-reporting axis, since the non-stats-reporting free functions are themselves trivial wrappers that discard `out_stats`, the same pattern the trait methods should follow). Each method's signature matches the fullest-capability existing free function for that mode (the `_reporting_stats`/`_with_stats` variant, or `route_single_net_with_crossing_config` itself for the 4th mode, which has no separate stats variant):
+
+    pub trait SingleNetSearch {
+        fn search(
+            &self,
+            obstacle_map: &ObstacleMap,
+            primitives: &PrimitiveLibrary,
+            source: State,
+            target: State,
+            port_open_cells: Option<&FxHashSet<CellKey>>,
+            config: &AStarConfig,
+            out_stats: &mut RouteSearchStats,
+        ) -> Option<RouteResult>;
+
+        fn search_with_dynamic_expansion(
+            &self,
+            obstacle_map: &ObstacleMap,
+            primitives: &PrimitiveLibrary,
+            source: State,
+            target: State,
+            port_open_cells: Option<&FxHashSet<CellKey>>,
+            config: &AStarConfig,
+            dynamic_expansion_radius_cells: i32,
+            dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+            out_stats: &mut RouteSearchStats,
+        ) -> Option<RouteResult>;
+
+        fn search_with_collision_crossing(
+            &self,
+            obstacle_map: &ObstacleMap,
+            primitives: &PrimitiveLibrary,
+            source: State,
+            target: State,
+            port_open_cells: Option<&FxHashSet<CellKey>>,
+            config: &AStarConfig,
+            crossing: &CrossingSearchConfig,
+            out_stats: &mut RouteSearchStats,
+        ) -> Option<RouteResult>;
+
+        fn search_with_crossing_config(
+            &self,
+            obstacle_map: &ObstacleMap,
+            primitives: &PrimitiveLibrary,
+            source: State,
+            target: State,
+            port_open_cells: Option<&FxHashSet<CellKey>>,
+            config: &AStarConfig,
+            dynamic_expansion_radius_cells: i32,
+            dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+            crossing: &CrossingSearchConfig,
+        ) -> Option<RouteResult>;
+    }
+
+Implemented by one new zero-sized marker type, `pub struct AStarSingleNetSearch;`, whose 4 method bodies each call straight through to the corresponding existing free function (`route_single_net_with_config_reporting_stats`, `route_single_net_with_dynamic_expansion_config_reporting_stats`, `route_single_net_with_collision_crossing_config_with_stats`, `route_single_net_with_crossing_config` respectively) -- one line each, no logic duplication. `SimpleRouteObstacleQuery` is deliberately not touched or referenced by this trait, per Milestone 0's Q1 finding that it is already correctly-scoped, separate prior art.
+
+**Folded into this milestone's scope** (per Milestone 0's Q3 recommendation, same shape of finding as the grid-snapping plan's own in-review fixes): add `fn crossing_search_config(&self, net_id: NetId, target: State, target_port_um: Option<(f64, f64)>, crossing_loss_override: Option<f64>, require_all_partners_override: Option<bool>) -> CrossingSearchConfig` to `impl PyPhotonicRouter` in `src/py_router.rs`, mirroring the existing `astar_config` helper's pattern (`src/py_router.rs:2788`), and migrate the 3 duplicate `CrossingSearchConfig` struct-literal construction sites (`src/py_router.rs:4333-4341`, `:4532-4540`, `:5371-5379`) to call it -- passing `crossing_loss_override`/`require_all_partners_override` as `None` at the two sites that don't need an override, and the appropriate `Some(...)` at site 1 (`crossing_loss_override`) and the appropriate value at each site for `require_all_partners` (site 2's hardcoded `true`, site 3's `require_all_expected_partners` variable, site 1's `crossing_cfg.allow_only_expected_pairs`). Zero behavior change -- each site's resulting `CrossingSearchConfig` value must be identical before and after.
 
 ### Milestone 2: implement
 
@@ -131,4 +189,4 @@ Originating plan: `.agent/execplans/2026-08-19-future-architecture-initiative-st
 
 ## Interfaces and Dependencies
 
-To be determined during Milestone 1, once Milestone 0's characterization justifies the exact design, per `.agent/PLANS.md`'s own guidance.
+Per Milestone 1's design (Plan of Work above): `pub trait SingleNetSearch` (4 methods, one per mode) in `src/astar.rs`, implemented by a new zero-sized marker type `pub struct AStarSingleNetSearch;`. No Python-side interface -- this stage has no Python-side presence per Milestone 0's Q5 finding.
