@@ -4317,7 +4317,22 @@ impl PyPhotonicRouter {
             || self
                 .invalid_crossing_intersections_for_route(net_id, &result, &search_partner_ids)
                 .is_empty();
-        let satisfies = route_has_no_unresolved_grid_crossings
+        // This function's whole purpose is to find a route that achieves a
+        // crossing with at least one of `partner_ids` -- a route with zero
+        // crossing events never engaged with any partner at all, so it must
+        // never be accepted here, regardless of what `required_partner_ids`
+        // evaluates to. Without this, the `!crossing_cfg.allow_only_expected_pairs`
+        // branch above derives `required_partner_ids` from `crossing_events`
+        // itself (`crossed_partner_ids`), so zero events yields an empty
+        // required set, which `crossing_events_satisfy_partner_constraints`'s
+        // own `partner_ids.is_empty() => true` case (itself correct and
+        // needed by an unrelated repair-probe caller, `src/py_router.rs`
+        // around line 9316, where "no partners required" legitimately means
+        // "trivially compliant") then vacuously satisfies -- exactly the bug
+        // traced to commit 9e0a927 and pinned by the regression test
+        // `collision_crossing_route_without_event_is_not_accepted`.
+        let satisfies = !crossing_events.is_empty()
+            && route_has_no_unresolved_grid_crossings
             && self.crossing_events_satisfy_partner_constraints(
                 net_id,
                 required_partner_ids,

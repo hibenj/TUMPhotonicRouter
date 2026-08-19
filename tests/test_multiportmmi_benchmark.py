@@ -37,15 +37,46 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
 
 
 @pytest.mark.parametrize(
-    ("enable_crossings", "crossing_mode"),
+    (
+        "enable_crossings",
+        "crossing_mode",
+        "expected_route_attempts",
+        "expected_route_failures",
+        "expected_repair_count",
+    ),
     [
-        (False, "window"),
-        (True, "lidar-pure"),
+        (False, "window", 31, 0, 0),
+        # attempts=42 (not 31), failures=8 (not 0), repairs=1 (not 0): fixing
+        # try_route_with_collision_crossings_using_primitives's
+        # "collision_crossing_route_without_event_is_not_accepted" bug (a route
+        # with zero crossing events against its requested partner was being
+        # vacuously accepted as a successful collision-crossing result) means
+        # some of these first 31 nets no longer get a free pass on their first,
+        # non-crossing collision-crossing attempt: that attempt is now correctly
+        # counted as a failed attempt (route_failures), and the net falls
+        # through to a second, plain-A* attempt (route_attempts) that still
+        # routes it cleanly -- exactly the "a failed local collision-crossing
+        # attempt must not make the whole net unroutable" fallback this
+        # function's own caller already documents and relies on. One net's
+        # plain-A* fallback also needed one rip-up/repair round to clear a
+        # dynamic blocker (repair_count), which the routing flow already
+        # supports and which still ends in a fully clean result (still
+        # success=True, error_count=0, 31/31 routed) -- only these internal
+        # attempt/failure/repair counters legitimately changed, and their
+        # prior values of 0 were themselves a symptom of the bug (every
+        # collision-crossing attempt vacuously "succeeded" on the first try,
+        # so no attempt ever needed a fallback), not evidence of cleaner
+        # routing. See
+        # .agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md.
+        (True, "lidar-pure", 42, 8, 1),
     ],
 )
 def test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary(
     enable_crossings,
     crossing_mode,
+    expected_route_attempts,
+    expected_route_failures,
+    expected_repair_count,
 ):
     stats = RoutingFlowStats()
 
@@ -70,6 +101,6 @@ def test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary(
     assert photonic_verification["error_count"] == 0
     assert photonic_verification["debug_stop_after_route_index"] == 31
     assert photonic_verification["routed_record_count"] == 31
-    assert stats.route_attempts == 31
-    assert stats.route_failures == 0
-    assert stats.repair_count == 0
+    assert stats.route_attempts == expected_route_attempts
+    assert stats.route_failures == expected_route_failures
+    assert stats.repair_count == expected_repair_count
