@@ -13,11 +13,40 @@ if it is ever needed.
 
 ## Current Snapshot
 
-- Date: 2026-08-18
+- Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `5f4cecd` (`test: recalibrate 8 stale Rust crossing unit
-  tests, flag 1 real bug`)
+- Current HEAD: `f540d65` (`docs: add ExecPlan for restructuring port
+  endpoint correction`)
 - Working tree is clean (`git status --short` empty).
+- **Active ExecPlan, ready to execute in a fresh session**:
+  `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`.
+  Written deliberately for handoff -- read it first, it is self-contained
+  and does not require this file's older history below to execute. Short
+  version: endpoint correction today is three sequential passes over
+  routed nets (`_apply_checked_endpoint_corrections_for_net_ids`,
+  `_apply_checked_fanout_stub_endpoint_corrections_for_net_ids`,
+  `_apply_crossing_aware_endpoint_corrections_for_net_ids`, all in
+  `translation/route_rust.py`) with duplicated logic between them and a
+  silent-fallback pattern (the exact shape of the `2026-08-18` bug fixed
+  the day before this plan was written -- see below) that can hide a wrong
+  answer until a much later verification stage catches it. The plan's five
+  milestones: characterize current behavior + add the missing regression
+  test for the `2026-08-18` bug class; consolidate net classification into
+  one place; make any correction fallback visible in diagnostics instead of
+  silent; collapse the three passes into one readable entry point; broaden
+  test coverage; broad validation. Two architectural decisions are recorded
+  in the plan's own Decision Log and should not be re-litigated without
+  reason: Python orchestrates each pipeline stage as a separate call (not
+  pushed into one big Rust function), and this pass consolidates + adds
+  tests without yet building the full `Protocol`/`trait` interface
+  extraction from `.agent/PROJECT_GOAL.md`'s "Future Architecture
+  Initiative" (a deliberately deferred, heavier future step). Keep
+  `multiportmmi_8x8` as the running benchmark check throughout (validate
+  under both its bare CLI defaults and its documented
+  `STABLE_ROUTING_ENV`/`STABLE_ROUTING_FLAGS` config from
+  `benchmarks/multiportmmi_8x8.py` -- see below for why these differ
+  meaningfully); `multiportmmi_16x16` is explicitly out of scope for this
+  plan's validation, per the repository owner's own direction.
 - Process docs revised after the user asked whether the dense-port-runway
   work followed the documented Claude+Codex flow (it didn't, in two
   concrete ways) and explicitly authorized adjusting the flow docs, not
@@ -408,15 +437,19 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-No active ExecPlan right now. `.agent/execplans/2026-08-18-unify-port-access-region-computation.md`,
+**Active ExecPlan**: `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`.
+Start at its Milestone 0 (characterize current behavior, add the missing
+regression test for the `2026-08-18` bug class). See Current Snapshot for
+the short version; the plan itself is self-contained.
+
+`.agent/execplans/2026-08-18-unify-port-access-region-computation.md`,
 `.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`,
 `.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md`,
 `.agent/execplans/2026-08-18-crossing-aware-endpoint-correction-direction-sequence.md`,
 and `.agent/execplans/2026-08-18-recalibrate-stale-rust-crossing-tests.md`
-are all complete (see Current Snapshot); pick the next one from the
-candidates below with the user before starting.
+are all complete (see Current Snapshot).
 
-Candidates, not in a mandated order:
+Other candidates, deliberately not started yet (parked, not forgotten):
 
 1. Decide how to handle the dense-port *lateral width* allocation problem
    found investigating `multiportmmi_8x8` `n_32` (see Current

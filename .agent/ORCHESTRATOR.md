@@ -18,36 +18,28 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-There is no active ExecPlan right now.
-`.agent/execplans/2026-08-18-unify-port-access-region-computation.md` is
-complete (all three milestones committed): it collapsed "how big is a
-port's access/keepout region," previously seven independently-parameterized,
-uncoordinated pieces of logic across `src/py_router.rs` and
-`translation/route_rust.py`, into one analytic sizing function plus one
-explicit must-stay-blocked subtraction step, shared by both the "open cells
-for the net that owns this port" and "keep cells blocked as a keepout for
-other nets" consumers. It grew directly out of
-`.agent/execplans/2026-08-18-stage5-routing-crossing-correctness-walkthrough.md`
-(also complete), whose investigation into why the `TOY` benchmark's
-`gc1_to_mmi_in2` net cannot route first found that architectural
-inconsistency. The unified sizing surfaced two genuine, previously-masked
-routing-clearance findings (`multiportmmi_8x8` `n_24`, `multiportmmi_16x16`
-`n_48`); both are now fixed by a third, also-complete plan,
-`.agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md` (a
-self-inflicted gap where differently-staggered sibling ports on a crowded
-component face could seal each other in). Read `.agent/REPOSITORY_STATE.md`'s
-"Current Snapshot" section first at the start of any new session, since it
-is kept current at every stop and is the source of truth for what is
-actually active; its "Next Engineering Step" section lists the candidates
-for the next plan (including two further findings that plan's fix
-surfaced) plus lower-priority deferred candidates (Rust-side Phase 3
-readability, the Future Architecture Initiative from
-`.agent/PROJECT_GOAL.md`, the 9 pre-existing failing Rust crossing tests)
-not currently being worked.
+The active ExecPlan is
+`.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+(start at its Milestone 0). It consolidates three sequential, partially-
+duplicated endpoint-correction passes into one readable orchestration
+function with focused test coverage, per two architectural decisions
+recorded in its own Decision Log: Python orchestrates each pipeline stage
+as a separate call (not one large Rust function), and this pass
+consolidates and tests existing behavior without yet building the full
+`Protocol`/`trait` interface extraction from `.agent/PROJECT_GOAL.md`'s
+"Future Architecture Initiative" (deliberately deferred, a heavier later
+step). It grew out of five prior, now-complete plans (`.agent/execplans/2026-08-18-*.md`)
+that together unified port access/keepout sizing, fixed two real dense-port
+and endpoint-correction bugs, and recalibrated the Rust crossing test suite
+-- read `.agent/REPOSITORY_STATE.md`'s "Current Snapshot" section for the
+full, current summary of each rather than this file, since that file is
+kept current at every stop and is the source of truth for what is actually
+active; do not treat this paragraph's own history as authoritative once it
+grows stale.
 
-Once the user picks a next direction and an ExecPlan exists for it, update
-this pointer to name it explicitly, the way it named Phase 1 and Phase 2
-while they were active.
+Once this plan completes (or a different direction is chosen), update this
+pointer to name whatever is active next, the way it has for every plan so
+far.
 
 If the user explicitly resumes another ExecPlan, use that plan instead and note
 the switch in the resumed plan's `Decision Log`.
