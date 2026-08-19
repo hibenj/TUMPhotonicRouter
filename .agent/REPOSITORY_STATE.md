@@ -588,13 +588,22 @@ explicitly resumes it.
 
 **Active ExecPlan**:
 `.agent/execplans/2026-08-19-fix-open-repair-and-dense-port-findings.md`.
-Start at its Milestone 0 (root-cause the `multiportmmi_8x8`
-`n_67`/`n_70`/`n_71` congestion cluster). Repository owner's direction
-(2026-08-19): fix the open problems below (items 2/3/candidate-1 in this
-section) before moving on to the Future Architecture Initiative. Also
-follows the repository owner's same-day direction to use the Claude+Codex
-flow for implementation slices once a fix is well-specified -- see
-`.agent/CLAUDE_CODEX_FLOW.md`.
+Milestone 0 is done (root-caused the `multiportmmi_8x8`
+`n_67`/`n_70`/`n_71` congestion cluster -- see that plan's Surprises &
+Discoveries: it's genuine corridor-tightness from dense-port fan-out,
+triggered only when repair rips net 70 up as a victim, not a search-
+strategy gap in isolation). Milestone 1 (`multiportmmi_16x16`'s `n_50`,
+item 3 below) was **deferred out of this plan's scope on 2026-08-19**
+-- the repository owner directed that 16x16-scale work is not the
+current focus (a diagnostic run was killed after ~10 minutes with no
+result, versus seconds for 8x8-scale reproductions); it stays parked as
+item 3 below for a future dedicated pass. Next up: Milestone 2 (design/
+implement the Finding 1 fix, 8x8-scale only). Repository owner's
+direction (2026-08-19): fix the open problems below (items 1/2 in this
+section, item 3 now deferred) before moving on to the Future
+Architecture Initiative. Also follows the repository owner's same-day
+direction to use the Claude+Codex flow for implementation slices once a
+fix is well-specified -- see `.agent/CLAUDE_CODEX_FLOW.md`.
 
 Five prior plans are complete (see Current Snapshot and each plan's own
 Outcomes & Retrospective):
@@ -653,8 +662,14 @@ Other candidates, deliberately not started yet (parked, not forgotten):
    `n_196`/`n_203` follow-up did for a different, earlier finding) would
    need better repair-strategy capability for this specific case, not a
    mechanical fix. `multiportmmi_8x8`'s documented stable-baseline config
-   is unaffected. Not started; a good candidate to discuss shape/approach
-   before diving in, same as the `n_32` item above.
+   is unaffected. **Root-caused (2026-08-19)** by the active ExecPlan's
+   Milestone 0: net 70 routes fine standalone; the failure is repair-time
+   only, triggered when net 71's repair rips net 70 up as a victim, and
+   corridor-clearance diagnostics show genuine geometric tightness (not
+   just a rejected candidate) -- see that plan's Surprises & Discoveries
+   for full detail, including an open question for Milestone 2 (repair
+   never tried ripping up net 67 alongside 70). Now in progress at
+   Milestone 2 (design/implement the fix).
 3. **New (2026-08-19)**: `multiportmmi_16x16` under its documented
    stable-baseline config -- unlike `multiportmmi_8x8`'s stable-baseline
    config, which is unaffected -- now hard-fails: `RuntimeError: No route
@@ -666,9 +681,14 @@ Other candidates, deliberately not started yet (parked, not forgotten):
    broken at `3bea008` and at `HEAD`). Not investigated in depth (no root
    cause trace yet, unlike item 2's `n_67`/`70`/`71` cluster which has
    one) -- deliberately not pursued further because the repository owner
-   redirected priorities to the restructuring plan above instead. If
-   picked up later, start by getting the same kind of root-cause trace
-   item 2 already has before attempting a fix.
+   redirected priorities to the restructuring plan above instead.
+   **Explicitly deferred again (2026-08-19)** as the active ExecPlan's
+   Milestone 1: a diagnostic reproduction was started but killed after
+   ~10 minutes without completing (16x16-scale is far slower to iterate
+   on than 8x8-scale), and the repository owner directed that 16x16-scale
+   work is not the current focus. If picked up later, start by getting
+   the same kind of root-cause trace item 2 already has before attempting
+   a fix.
 4. Continue the broader Python-and-Rust correctness walkthrough into
    Stages 6-8 (endpoint correction, geometry realization, verification),
    or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`
