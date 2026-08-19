@@ -15,7 +15,31 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `4461a06`.
+- Current HEAD: `67a1dd7`.
+- **`.agent/execplans/2026-08-19-extract-obstacle-map-grid-snapping-interfaces.md`
+  is complete.** First concrete extraction step of the Future Architecture
+  Initiative. Obstacle-map-building now has an explicit, minimal
+  `ObstacleMapBuilder` `Protocol` (`python/photonic_router/static_obstacle_builder.py`)
+  formalizing the existing Rust/pure-Python dispatch contract. Grid-snapping's
+  duplication turned out much larger than first scoped (~10+ inlined
+  re-derivations across 7 files in both languages, found in three successive,
+  progressively-wider greps -- a lesson recorded in that plan's Outcomes &
+  Retrospective: "no duplication found" from a symbol-name search does not
+  rule out formula-level duplication) -- fully unified per the repository
+  owner's explicit choice, behind `floor_snap_to_grid`/`cell_center_coordinate`
+  scalar helpers in both `src/static_obstacle_builder.rs` and
+  `python/photonic_router/static_obstacle_builder.py`, with every other call
+  site migrated to call them. The one genuinely-different round-to-nearest
+  rule and the one genuinely-different no-offset conversion were correctly
+  identified and left untouched. Implemented via two sequential Codex slices
+  (Rust, then Python -- run sequentially given this machine's demonstrated
+  resource constraints), both reviewed by Claude; one minor code-quality fix
+  (a throwaway `GridSpec(width=0, height=0, ...)` construction) applied
+  directly rather than a third Codex round-trip. Zero behavior change,
+  confirmed by full validation ladder: `cargo test --lib` 330/0,
+  `pytest -q` 21 failed/325 passed/1 skipped (byte-identical failure set),
+  `benes_4x4` PASS, `multiportmmi_8x8` stable-baseline PASS, bare defaults
+  fails identically to the already-parked `n_70` finding (not a regression).
 - **`.agent/execplans/2026-08-19-future-architecture-initiative-stage-characterization.md`
   is complete.** Milestone 0 characterized all five candidate pipeline
   stages with direct source evidence and reframed the initiative's real
@@ -634,24 +658,30 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**Active ExecPlan**:
-`.agent/execplans/2026-08-19-extract-obstacle-map-grid-snapping-interfaces.md`,
-just created, not yet started. Start at its Milestone 0: while scoping
-this plan, found that grid-snapping math is duplicated a *third* time
-(`translation/route_rust.py`'s `_grid_cell_center_um`/`_physical_point_to_grid_cell`,
-independently re-deriving the same formula as the canonical
-`python/photonic_router/static_obstacle_builder.py`'s
-`physical_to_grid`/`grid_cell_center`, mirrored in
-`src/static_obstacle_builder.rs`) -- Milestone 0 must confirm this
-duplication is truly always equivalent (not just same formula, same
-inputs at every call site) before unifying anything. This continues
+**No active ExecPlan right now.** The obstacle-map-building + grid-snapping
+extraction plan above is complete and closed. **Next step** (not yet
+started, no ExecPlan written for it yet): a new ExecPlan for the next stage
+in the Future Architecture Initiative's recommended order -- A* single-net
+search (`src/astar.rs`'s entry points, e.g. `route_single_net`,
+`route_single_net_with_config`, `route_single_net_with_crossing_config`).
+Per the stage-characterization plan's own findings, this stage is already
+close to the target shape (explicit-argument signatures, no `self`/session
+coupling, 97 existing Rust unit tests -- the deepest coverage of any
+stage), but scope the next plan's own Milestone 0 to confirm this directly
+rather than trusting that characterization at face value -- the
+obstacle-map/grid-snapping plan's own experience was that an initial
+"already clean" characterization missed a large formula-level duplication
+that a fuller grep later found, so treat "cleanly separable already"
+claims from the characterization plan as a starting hypothesis to verify,
+not a confirmed fact. Explicitly **do not** extract ripup/repair
+orchestration (`route_many_with_repair_and_commit`) yet -- the
+characterization plan found it needs its own dedicated restructuring pass
+first (god-object session state, zero stage-granular tests, three real
+bugs found in/near it this session). This continues
 `.agent/PROJECT_GOAL.md`'s "Future Architecture Initiative," per the
-repository owner's 2026-08-19 direction, following the recommended
-extraction order from the now-closed stage-characterization plan
-(obstacle map building + grid snapping first -- the lowest-risk,
-best-evidenced starting point). Also follows the repository owner's
-same-day direction to use the Claude+Codex flow for implementation
-slices once a fix or extraction is well-specified -- see
+repository owner's 2026-08-19 direction. Also follows the repository
+owner's same-day direction to use the Claude+Codex flow for
+implementation slices once a fix or extraction is well-specified -- see
 `.agent/CLAUDE_CODEX_FLOW.md`.
 
 The three benchmark findings below are now explicitly **parked, not
