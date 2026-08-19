@@ -6943,45 +6943,41 @@ impl PyPhotonicRouter {
                     format_bbox(&corrected_core_cells),
                 ));
             }
-            let mut allowed_overlap_nets = FxHashSet::default();
-            let mut allowed_overlap_core_keys = FxHashSet::default();
-            for &(x, y) in &corrected_core_cells {
-                let key = pack_xy(x, y);
-                let other_owners: Vec<u64> = self
-                    .obstacle_map
-                    .dynamic_owners_at(x, y)
-                    .into_iter()
-                    .filter(|owner| *owner != net_id)
-                    .collect();
-                if other_owners.is_empty() {
-                    continue;
-                }
-                allowed_overlap_core_keys.insert(key);
-                for owner in other_owners {
-                    allowed_overlap_nets.insert(owner);
-                }
-            }
+            // This branch (no full-straight-offset-bump candidates, i.e. a
+            // diagonal or already-bent baseline) is only ever reached for a
+            // net the caller has already excluded from crossing handling
+            // (`_apply_checked_endpoint_corrections_for_net_ids`/
+            // `_apply_checked_fanout_stub_endpoint_corrections_for_net_ids`
+            // both skip any net_id in `crossing_net_ids` before calling
+            // here), so there is no expected-partner concept to allow for:
+            // any other net occupying this candidate's own corrected core
+            // cells is a genuine, un-anticipated collision, not a legitimate
+            // crossing partner. `commit_route_with_clearance_and_allowed_core_overlap_cells`
+            // exists precisely to allow overlap with an independently-known
+            // partner set (see its own doc comment); previously this call
+            // site built that allow-list by scanning the candidate's own
+            // cells for whoever already occupied them, which self-authorizes
+            // exactly the collision the check exists to catch (found via
+            // multiportmmi_16x16's n_196/n_197 cross_net_waveguide_overlap,
+            // .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md
+            // Milestone 0.5). Use the strict variant instead, matching the
+            // case-4 bump candidate loop below, which never allows overlap.
             let corrected_blocked_cells =
                 inflate_route_cells(&corrected_core_cells, core_radius_cells, width, height);
             let commit_ok = if commit_to_router {
-                self.obstacle_map
-                    .commit_route_with_clearance_and_allowed_core_overlap_cells(
-                        net_id,
-                        &corrected_core_cells,
-                        &corrected_blocked_cells,
-                        clearance_exempt_cells,
-                        &allowed_overlap_nets,
-                        Some(&allowed_overlap_core_keys),
-                    )
-            } else {
-                let mut check_map = self.obstacle_map.clone();
-                check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
+                self.obstacle_map.commit_route_with_clearance_overlap(
                     net_id,
                     &corrected_core_cells,
                     &corrected_blocked_cells,
                     clearance_exempt_cells,
-                    &allowed_overlap_nets,
-                    Some(&allowed_overlap_core_keys),
+                )
+            } else {
+                let mut check_map = self.obstacle_map.clone();
+                check_map.commit_route_with_clearance_overlap(
+                    net_id,
+                    &corrected_core_cells,
+                    &corrected_blocked_cells,
+                    clearance_exempt_cells,
                 )
             };
             if !commit_ok {

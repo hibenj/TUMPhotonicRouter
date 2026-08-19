@@ -10,6 +10,8 @@ from photonic_router.static_obstacle_builder import _load_rust_backend
 from translation.route_rust import (
     _absorbed_terminal_centerline,
     _apply_crossing_aware_endpoint_correction_to_record,
+    _compatible_terminal_direction_sequence,
+    _segment_direction_sequence,
 )
 from translation.route_rust_records import (
     apply_port_endpoint_corrections,
@@ -953,6 +955,40 @@ def test_crossing_aware_endpoint_correction_lengthens_existing_terminal_straight
     assert updated.base_total_length_um == 9.0
 
 
+def test_compatible_terminal_direction_sequence_accepts_extra_segment_at_far_end():
+    # Regression test for the 20aab29 fix: when the baseline's own
+    # port-adjacent segment already matches expected_port_dir, the newly
+    # inserted reconciling segment lands at the far end, not next to the port.
+    baseline = ((0.0, 0.0), (0.0, 5.0), (10.0, 5.0))
+    candidate = ((0.0, 0.0), (0.0, 5.0), (10.0, 5.0), (10.0, 7.0))
+
+    baseline_dirs = _segment_direction_sequence(baseline)
+    candidate_dirs = _segment_direction_sequence(candidate)
+    assert baseline_dirs == ((0.0, 1.0), (1.0, 0.0))
+    assert candidate_dirs == ((0.0, 1.0), (1.0, 0.0), (0.0, 1.0))
+    # candidate_dirs[:-1] reproduces baseline_dirs unchanged, but
+    # candidate_dirs[1:] does not -- a fixed-offset check would miss this.
+    assert candidate_dirs[:-1] == baseline_dirs
+    assert candidate_dirs[1:] != baseline_dirs
+
+    assert _compatible_terminal_direction_sequence(
+        candidate,
+        baseline,
+        expected_port_dir=(0.0, 1.0),
+        allow_extra_at_start=True,
+    )
+
+    # Discriminating case: the port-adjacent segment does not match
+    # expected_port_dir, so this must still be rejected.
+    incompatible = ((0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (15.0, 5.0))
+    assert not _compatible_terminal_direction_sequence(
+        incompatible,
+        baseline,
+        expected_port_dir=(0.0, 1.0),
+        allow_extra_at_start=True,
+    )
+
+
 def test_crossing_free_endpoint_correction_uses_normal_corrected_centerline():
     record = replace(
         _simple_record(),
@@ -1015,6 +1051,49 @@ def test_checked_no_bump_endpoint_correction_rejects_middle_static_contact():
     router.add_static_cells([(5, 5)])
 
     with pytest.raises(RuntimeError, match="static_overlap"):
+        router.route_port_corrected_centerline_checked_and_commit(
+            7,
+            route,
+            0.5,
+            0,
+            0,
+            [],
+            [],
+            source_port_um=(1.2, 1.2),
+            target_port_um=(10.0, 10.0),
+            allow_unchecked_fallback=False,
+        )
+
+
+def test_checked_no_bump_endpoint_correction_rejects_other_net_dynamic_overlap():
+    # Regression test for the src/py_router.rs fix in
+    # .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md
+    # Milestone 0.5: the no-bump-candidate branch of
+    # route_port_corrected_centerline_checked_and_commit_native used to scan
+    # its own corrected candidate's cells for whichever other net already
+    # occupied them and unconditionally allow that overlap, self-authorizing
+    # the exact collision the check exists to catch (this is what produced
+    # multiportmmi_16x16's n_196/n_197 cross_net_waveguide_overlap). Net 7's
+    # corrected diagonal centerline passes through grid cell (5, 5); net 8 is
+    # given that cell first via a route that is never committed for net 7
+    # (route_single_net, not route_single_net_and_commit) so the only
+    # occupant at (5, 5) is the other net, not net 7's own prior geometry.
+    rust_backend = _load_rust_backend()
+    if rust_backend is None:
+        pytest.skip("Rust backend unavailable for endpoint correction API test.")
+
+    grid = rust_backend.GridSpec(32, 32, 1.0, 0.0, 0.0)
+    primitive = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=1.0,
+        bend_radius_cells=1,
+        allow_45_degree_turns=True,
+    )
+    astar = rust_backend.AStarConfig(max_iterations=10_000)
+    router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
+    route = router.route_single_net(rust_backend.State(1, 1, 1), rust_backend.State(9, 9, 1))
+    assert router.commit_route_cells(8, [(5, 5)])
+
+    with pytest.raises(RuntimeError, match="dynamic_overlap"):
         router.route_port_corrected_centerline_checked_and_commit(
             7,
             route,

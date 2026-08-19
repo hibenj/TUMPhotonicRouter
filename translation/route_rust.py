@@ -4597,12 +4597,24 @@ class _RouteNetsRustSession:
                 if print_warnings:
                     print("WARNING: " + message)
                 failed_net_ids.append(net_id)
-                if not self.enable_crossings:
-                    self.route_bookkeeping.records_by_id[net_id] = replace(
-                        record,
-                        corrected_centerline_um=(),
-                        endpoint_correction_error=message,
-                    )
+                # Every net reaching this point was already excluded from
+                # crossing handling above (crossing_net_ids), regardless of
+                # self.enable_crossings, so there is no later pass that will
+                # still process it and no reason to withhold recording this
+                # failure. Withholding it here used to leave
+                # corrected_centerline_um empty with endpoint_correction_error
+                # still None, which made geometry realization's own fallback
+                # (_physical_port_centerline, translation/route_rust_realization.py)
+                # silently re-derive uncorrected, collision-unchecked geometry
+                # instead of surfacing the rejection -- found while confirming
+                # the Milestone 0.5 fix in
+                # .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md
+                # actually took effect end to end.
+                self.route_bookkeeping.records_by_id[net_id] = replace(
+                    record,
+                    corrected_centerline_um=(),
+                    endpoint_correction_error=message,
+                )
                 continue
             centerline = _centerline_tuple(correction.get("centerline"))
             if not centerline:
@@ -4618,12 +4630,11 @@ class _RouteNetsRustSession:
                 if print_warnings:
                     print("WARNING: " + message)
                 failed_net_ids.append(net_id)
-                if not self.enable_crossings:
-                    self.route_bookkeeping.records_by_id[net_id] = replace(
-                        record,
-                        corrected_centerline_um=(),
-                        endpoint_correction_error=message,
-                    )
+                self.route_bookkeeping.records_by_id[net_id] = replace(
+                    record,
+                    corrected_centerline_um=(),
+                    endpoint_correction_error=message,
+                )
                 continue
             if self.collect_timing:
                 self.route_timing_buckets["endpoint_correction"].record_elapsed(
