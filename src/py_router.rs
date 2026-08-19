@@ -2766,7 +2766,7 @@ fn auto_meander_search_config_rs(
 /// previously implicit in each function's own, independently written
 /// control flow rather than named or documented anywhere. See
 /// `PyPhotonicRouter::upfront_collision_crossing_partner_ids`.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CollisionCrossingTryOrder {
     /// Try the plain, non-crossing A* attempt first; a lidar-pure
     /// collision-crossing search (the full, unwindowed partner set) is
@@ -15627,6 +15627,183 @@ mod tests {
         let partners = router.crossing_allowed_partner_set(3);
         assert!(partners.contains(&1));
         assert!(partners.contains(&2));
+    }
+
+    // Milestone 3 of
+    // .agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md:
+    // pins down upfront_collision_crossing_partner_ids and
+    // CollisionCrossingTryOrder's now-consolidated, previously-implicit-and-
+    // divergent behavior directly, instead of relying only on full-benchmark
+    // runs to catch a regression here. Net 1 is committed at (3, 3), inside
+    // the windowed lookup's bounding box for a net 3 search from (5, 5) to
+    // (10, 10) (margin = crossing_half_size_cells.max(0) + bend_radius_cells
+    // = 0 + 1 = 1; window extra_radius_cells = margin*2 + bend_radius_cells
+    // = 3, so the window covers roughly [2, 13] on each axis); net 2 is
+    // committed at (25, 25), well outside that window but still inside the
+    // full, unwindowed obstacle map lidar-pure mode can see.
+    fn crossing_partner_discovery_test_router() -> PyPhotonicRouter {
+        let grid = PyGridSpec::new(32, 32, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+            PyAStarConfig::new(
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                0.0,
+                0,
+                false,
+                false,
+                "library".to_string(),
+                "distance".to_string(),
+                1.0,
+            ),
+        );
+        router.set_collision_crossing_routing(true);
+        assert!(router.obstacle_map.commit_route(1, &[(3, 3)]));
+        assert!(router.obstacle_map.commit_route(2, &[(25, 25)]));
+        router
+    }
+
+    #[test]
+    fn upfront_collision_crossing_partner_ids_plain_first_defers_in_lidar_pure_mode() {
+        let mut router = crossing_partner_discovery_test_router();
+        router.crossing_context.set_config(CrossingConfig {
+            enabled: true,
+            allow_only_expected_pairs: false,
+            ..CrossingConfig::default()
+        });
+
+        let partners = router.upfront_collision_crossing_partner_ids(
+            3,
+            State::new(5, 5, 0),
+            State::new(10, 10, 0),
+            CollisionCrossingTryOrder::PlainFirst,
+        );
+
+        assert!(
+            partners.is_empty(),
+            "PlainFirst must defer the lidar-pure collision-crossing lookup to a \
+             second, later call after the caller's own plain attempt fails, not \
+             compute it upfront"
+        );
+    }
+
+    #[test]
+    fn upfront_collision_crossing_partner_ids_crossing_first_returns_full_map_in_lidar_pure_mode() {
+        let mut router = crossing_partner_discovery_test_router();
+        router.crossing_context.set_config(CrossingConfig {
+            enabled: true,
+            allow_only_expected_pairs: false,
+            ..CrossingConfig::default()
+        });
+
+        let partners = router.upfront_collision_crossing_partner_ids(
+            3,
+            State::new(5, 5, 0),
+            State::new(10, 10, 0),
+            CollisionCrossingTryOrder::CrossingFirst,
+        );
+
+        assert!(
+            partners.contains(&1) && partners.contains(&2),
+            "CrossingFirst must consult the full, unwindowed lidar-pure partner \
+             set immediately, including net 2 well outside the windowed lookup's \
+             bounding box: {partners:?}"
+        );
+    }
+
+    #[test]
+    fn upfront_collision_crossing_partner_ids_uses_declared_pairs_in_expected_pairs_hybrid_mode() {
+        // allow_only_expected_pairs=true with use_collision_crossing_routing=true
+        // (the "collision-crossing mechanics restricted to expected pairs"
+        // hybrid mode Milestone 0 found) is *not* windowed at all: since
+        // lidar_pure_crossing_enabled() is false whenever
+        // allow_only_expected_pairs=true regardless of
+        // use_collision_crossing_routing, this mode always falls through to
+        // the topology-declared expected-pairs set, for both try orders,
+        // with no deferred second stage. Confirmed directly here after this
+        // test's own first draft (assuming a windowed lookup, matching the
+        // non-lidar-pure-but-collision-crossing case's naive reading)
+        // failed against the real implementation -- corrected rather than
+        // adjusted to force a pass, per this repository's own testing
+        // discipline of trusting real failures over first assumptions. Net
+        // 1 is declared as net 3's only expected partner; net 2 is
+        // committed but never declared, so it must not appear even though
+        // both are equally "physically present" in the obstacle map.
+        let mut router = crossing_partner_discovery_test_router();
+        router.crossing_context.set_config(CrossingConfig {
+            enabled: true,
+            allow_only_expected_pairs: true,
+            ..CrossingConfig::default()
+        });
+        router.crossing_context.replace_constraints(vec![CrossingConstraint {
+            net_id: 3,
+            partner_net_id: 1,
+            level: 0,
+            source_depth: 0,
+            target_depth: 0,
+        }]);
+
+        for try_order in [
+            CollisionCrossingTryOrder::PlainFirst,
+            CollisionCrossingTryOrder::CrossingFirst,
+        ] {
+            let partners = router.upfront_collision_crossing_partner_ids(
+                3,
+                State::new(5, 5, 0),
+                State::new(10, 10, 0),
+                try_order,
+            );
+            assert!(
+                partners.contains(&1),
+                "expected net 1 (declared partner) for try_order {try_order:?}: {partners:?}"
+            );
+            assert!(
+                !partners.contains(&2),
+                "did not expect net 2 (committed but not a declared partner) for \
+                 try_order {try_order:?}: {partners:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn upfront_collision_crossing_partner_ids_empty_when_collision_crossing_routing_disabled() {
+        let mut router = crossing_partner_discovery_test_router();
+        router.set_collision_crossing_routing(false);
+        router.crossing_context.set_config(CrossingConfig {
+            enabled: true,
+            allow_only_expected_pairs: false,
+            ..CrossingConfig::default()
+        });
+
+        for try_order in [
+            CollisionCrossingTryOrder::PlainFirst,
+            CollisionCrossingTryOrder::CrossingFirst,
+        ] {
+            let partners = router.upfront_collision_crossing_partner_ids(
+                3,
+                State::new(5, 5, 0),
+                State::new(10, 10, 0),
+                try_order,
+            );
+            assert!(
+                partners.is_empty(),
+                "collision-crossing routing is disabled, so no partner set should \
+                 be computed regardless of try_order {try_order:?}: {partners:?}"
+            );
+        }
     }
 
     #[test]
