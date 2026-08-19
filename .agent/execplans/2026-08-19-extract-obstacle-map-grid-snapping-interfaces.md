@@ -16,7 +16,8 @@ This plan follows the zero-behavior-change discipline already established in thi
 
 ## Progress
 
-- [ ] Not started. This plan was just written; Milestone 0 (confirm the grid-snapping duplication is truly identical, and map every other current call site/consumer of both stages) has not yet begun.
+- [x] Milestone 0 (confirm the grid-snapping duplication, map every consumer): done, see Surprises & Discoveries. Confirmed inventory: 2 formulas (floor-snap, cell-center) plus one genuinely-distinct round-to-nearest variant and one genuinely-distinct no-offset variant, inlined or re-derived across `python/photonic_router/static_obstacle_builder.py`, `translation/route_rust.py`, `translation/route_rust_geometry.py`, `translation/route_rust_records.py` (Python) and `src/static_obstacle_builder.rs`, `src/geometry_realization.rs`, `src/py_router.rs` (Rust) -- 7 files total, no other files in the repository contain either formula (confirmed by exhaustive grep of all remaining `src/*.rs` and `python/photonic_router/*.py`/`translation/*.py` files).
+- [ ] Milestone 1 (design): in progress, see Plan of Work below.
 
 ## Surprises & Discoveries
 
@@ -31,6 +32,10 @@ This plan follows the zero-behavior-change discipline already established in thi
 
 - Decision: scope this plan to obstacle-map-building + grid-snapping only (stage 1+2 from the characterization plan's recommended order), not the other three stages. Rationale: this is the lowest-risk, best-evidenced starting point per that plan's own conclusion, and per `.agent/PLANS.md`'s guidance, tackling one well-bounded stage at a time (rather than all remaining stages in one plan) keeps each plan's Validation and Acceptance bar clean and reviewable.
   Date/Author: 2026-08-19, Claude, following the repository owner's direction to move forward with the Future Architecture Initiative after the ripup/repair ordering question was resolved (see `.agent/REPOSITORY_STATE.md`'s recorded net-ordering idea, which stays parked for the separate future repair-restructuring effort, not part of this plan).
+
+- Decision: pursue **full unification** of the grid-snapping duplication found in Milestone 0 (all ~10+ inlined call sites across 4 Python and 4 Rust locations), not a narrow pass covering only the two already-named canonical functions. The genuinely different round-to-nearest rounding rule (`src/static_obstacle_builder.rs:601`) stays as its own clearly-named, separate function -- it must not be folded into the main floor-based snapping function.
+  Rationale: the repository owner explicitly chose full unification over a narrower first pass when presented with both options and the full scope found. This matches the initiative's actual goal (eliminate real duplication, not just formalize an interface around already-clean code) and the repository's established zero-behavior-change restructuring discipline can absorb a larger mechanical migration safely as long as each call site is verified individually, which Milestone 1/2 must do.
+  Date/Author: 2026-08-19, repository owner (via direct choice on the presented options), recorded here.
 
 ## Outcomes & Retrospective
 
@@ -69,9 +74,24 @@ The three open, deliberately-parked benchmark findings (`multiportmmi_8x8` `n_67
 
 Read `translation/route_rust.py`'s `_physical_point_to_grid_cell` in full (not yet done -- referenced but not read while scoping this plan) and every call site of `_grid_cell_center_um`/`_physical_point_to_grid_cell` (both files), confirming with direct evidence whether they are truly always mathematically equivalent to the canonical `physical_to_grid`/`grid_cell_center` given the same inputs (same origin, same grid size), or whether some call site relies on a subtle difference (e.g. rounding mode, a different origin convention) that would make naive unification a real behavior change. Also confirm there is no third/fourth implementation elsewhere (grep `translation/*.py` and `src/*.rs` broadly, not just the files already found). Record findings in Surprises & Discoveries before proceeding.
 
-### Milestone 1: design the Protocol/trait interfaces
+### Milestone 1: design the interfaces
 
-Not yet specified in detail, per `.agent/PLANS.md`'s guidance against over-specifying before source inspection justifies the design -- Milestone 0 must inform the exact shape (in particular, whether grid-snapping becomes its own small `Protocol`/`trait` separate from the obstacle-map-builder one, or a method on the same interface). Should formalize the existing `build_static_obstacle_map` contract as a Python `Protocol` (e.g. an `ObstacleMapBuilder` protocol with a `build(component, config) -> StaticObstacleMapData` method, with `_build_static_obstacle_map_rust`/`build_static_obstacle_map_python_from_extracted` becoming the two implementations satisfying it) and the Rust side as a `trait` mirroring the same shape, plus a unified grid-snapping call path that removes the `translation/route_rust.py` duplication found in Milestone 0.
+**Obstacle-map-building** genuinely has two swappable implementations today (Rust-accelerated, pure-Python fallback), which is exactly the case `.agent/PROJECT_GOAL.md`'s `Protocol`/`trait` pattern is for: formalize `build_static_obstacle_map`'s existing contract as an explicit Python `Protocol` (e.g. `ObstacleMapBuilder` with a `build(component, config) -> StaticObstacleMapData` method), with `_build_static_obstacle_map_rust`/`build_static_obstacle_map_python_from_extracted` becoming the two implementations satisfying it, and `build_static_obstacle_map` staying as today's default-dispatch factory function (zero behavior change -- this is close to a pure naming/documentation exercise, per the characterization plan's original finding).
+
+**Grid-snapping does not fit the same "swappable implementation" shape** -- there is exactly one correct implementation (floor-division snap, cell-center offset), just hand-duplicated many times rather than genuinely varying. Forcing a `Protocol`/`trait` with only one real implementer would be interface-shaped noise, not the initiative's actual goal. The right shape here is narrower and more mechanical: designate one canonical implementation per language and route every other call site through it.
+
+Concrete design (per the repository owner's 2026-08-19 "full unification" decision):
+
+- **Python canonical functions** (unchanged location/signature): `physical_to_grid(x, y, grid) -> GridCell` and `grid_cell_center(gx, gy, grid) -> Point` in `python/photonic_router/static_obstacle_builder.py:817,826`.
+- **Migrate to call the canonical functions** (removing the inline re-derivations, keeping call-site behavior identical): `translation/route_rust.py`'s inline occurrences at lines 1321-1333 (margin-adjusted -- keep the margin arithmetic, but the floor-division core calls the canonical function), 1418-1419, 1814, 2415-2416, 2436-2437, 5391-5392, 5853-5855 (margin-adjusted, same treatment as 1321-1333).
+- **`_physical_point_to_grid_cell`** (`translation/route_rust_geometry.py:372-387`) keeps its distinct name and its `None`-on-invalid-input guard (real, load-bearing behavior, not incidental) -- but its body becomes a thin wrapper: validate, then delegate to the canonical `physical_to_grid` (which needs a `GridSpec`-shaped argument or an equivalent adapter; exact signature reconciliation is an implementation-time decision, not a design-time one, since `GridSpec` and this function's explicit `origin_x_um`/`origin_y_um`/`grid_size_um` triple carry the same information in different shapes).
+- **`_grid_cell_center_um`** (`translation/route_rust_records.py:61-72`, free function) and the same-named bound method (`translation/route_rust.py:1416-1420`) both become thin delegates to the canonical `grid_cell_center`, for the same reason.
+- **`_grid_point_to_physical_um`** (`translation/route_rust_geometry.py:390-400`) is a genuinely different operation (no cell-center offset) -- **out of scope for this unification**, left as-is.
+- **Rust canonical functions** (unchanged location/signature): `physical_to_grid`/`grid_cell_center` in `src/static_obstacle_builder.rs:457,464`.
+- **Migrate to call the canonical functions**: the bbox-min variant at `src/static_obstacle_builder.rs:628-629` (same file, trivial), and the independent re-derivations in `src/geometry_realization.rs:501-502,3565-3566,4112` and `src/py_router.rs:3757-3758`.
+- **`src/static_obstacle_builder.rs:601`'s round-to-nearest variant stays a separate, distinctly-named function** (e.g. rename if it is currently anonymous/inline to make its distinctness self-documenting) -- it must never be merged into the floor-based canonical function, per Milestone 0's finding that it is a genuinely different rounding rule.
+
+This migration is mechanical (replace inline arithmetic with a call to an existing, already-tested function) but touches ~15 call sites across 7 files, so Milestone 2's implementation must verify each site's inputs genuinely match the canonical function's expected `GridSpec`/origin/grid-size semantics before replacing it -- a call site using a *different* origin or grid size than the canonical `GridSpec` would not be safe to unify blindly. Milestone 2 should re-confirm this per call site as part of implementation, not assume Milestone 1's design survey was exhaustive on this specific point.
 
 ### Milestone 2: implement
 
@@ -113,4 +133,15 @@ Originating plan: `.agent/execplans/2026-08-19-future-architecture-initiative-st
 
 ## Interfaces and Dependencies
 
-To be determined during Milestone 1, once Milestone 0's confirmation of the grid-snapping duplication justifies the exact design, per `.agent/PLANS.md`'s own guidance.
+Per Milestone 1's design (Plan of Work above):
+
+- Python `Protocol` for obstacle-map-building, in `python/photonic_router/static_obstacle_builder.py`:
+
+      class ObstacleMapBuilder(Protocol):
+          def build(
+              self, component: object, config: StaticObstacleMapConfig
+          ) -> StaticObstacleMapData: ...
+
+  `_build_static_obstacle_map_rust` and `build_static_obstacle_map_python_from_extracted` become (or are wrapped by) classes/callables satisfying this; `build_static_obstacle_map` remains the default-dispatch entry point, unchanged in signature and behavior.
+- No new Rust `trait` is introduced for obstacle-map-building in this plan unless Milestone 2's implementation finds a concrete need -- the Rust side (`build_static_obstacle_map_from_geometry`) has exactly one implementation, called from Python via PyO3; the swappable-implementation boundary already lives at the Python dispatch layer described above.
+- No `Protocol`/`trait` for grid-snapping -- per Milestone 1's design, this is a canonicalize-and-migrate mechanical change (one implementation per language, ~15 call sites redirected to it), not an interface-extraction target, since there is nothing to swap.
