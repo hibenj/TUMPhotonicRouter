@@ -2757,6 +2757,32 @@ fn auto_meander_search_config_rs(
     .into())
 }
 
+/// Milestone 2 of
+/// .agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md:
+/// names the one real behavioral difference Milestone 0's divergence audit
+/// found between `route_single_net_and_commit_native` and
+/// `route_single_net_and_commit_repair_native` -- both confirmed
+/// intentional by the repository owner and required to stay different, but
+/// previously implicit in each function's own, independently written
+/// control flow rather than named or documented anywhere. See
+/// `PyPhotonicRouter::upfront_collision_crossing_partner_ids`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CollisionCrossingTryOrder {
+    /// Try the plain, non-crossing A* attempt first; a lidar-pure
+    /// collision-crossing search (the full, unwindowed partner set) is
+    /// only attempted afterward, if that plain attempt fails. Used by
+    /// fresh/native routing, where crossings are the exception, not the
+    /// default outcome, so the cheaper non-crossing case should be tried
+    /// first.
+    PlainFirst,
+    /// Consult collision-crossing partners immediately, before any plain
+    /// fallback. Used by repair, where the very fact that repair is
+    /// running already means normal routing already failed once for this
+    /// net, making congestion (and therefore a needed crossing) more
+    /// likely from the start.
+    CrossingFirst,
+}
+
 impl PyPhotonicRouter {
     fn astar_config(
         &self,
@@ -3415,6 +3441,42 @@ impl PyPhotonicRouter {
             );
         }
         self.crossing_allowed_partner_set(net_id)
+    }
+
+    /// The collision-crossing partner set to use for an *upfront* (not
+    /// deferred) search attempt, given `try_order` and the current mode.
+    ///
+    /// For `PlainFirst` callers in lidar-pure mode, this deliberately
+    /// returns an empty set: the caller is expected to try its own plain
+    /// attempt first and only consult `lidar_pure_full_map_partner_set`
+    /// directly, a second time, if that plain attempt fails (matching
+    /// `route_single_net_and_commit_native`'s existing two-stage
+    /// structure, which this function does not otherwise change). For
+    /// `CrossingFirst` callers in lidar-pure mode, and for both callers in
+    /// the non-lidar-pure "collision-crossing mechanics restricted to
+    /// expected pairs" hybrid mode (`use_collision_crossing_routing=true`
+    /// with `allow_only_expected_pairs=true`), the appropriate partner set
+    /// is returned immediately, since neither of those cases has a
+    /// deferred second stage.
+    fn upfront_collision_crossing_partner_ids(
+        &self,
+        net_id: u64,
+        source: State,
+        target: State,
+        try_order: CollisionCrossingTryOrder,
+    ) -> FxHashSet<u64> {
+        if !self.use_collision_crossing_routing {
+            return FxHashSet::default();
+        }
+        if self.lidar_pure_crossing_enabled() {
+            return match try_order {
+                CollisionCrossingTryOrder::PlainFirst => FxHashSet::default(),
+                CollisionCrossingTryOrder::CrossingFirst => {
+                    self.lidar_pure_full_map_partner_set(net_id)
+                }
+            };
+        }
+        self.crossing_partner_lookup_set_for_route(net_id, source, target)
     }
 
     fn crossing_events_for_route(
@@ -5505,12 +5567,18 @@ impl PyPhotonicRouter {
             && self.crossing_context.config().allow_only_expected_pairs
             && !expected_crossing_partner_ids.is_empty();
         let lidar_pure_crossing = self.lidar_pure_crossing_enabled();
-        let collision_partner_ids = if self.use_collision_crossing_routing && !lidar_pure_crossing
-        {
-            self.crossing_partner_lookup_set_for_route(net_id, source_state, target_state)
-        } else {
-            FxHashSet::default()
-        };
+        // Fresh/native routing: try the plain, non-crossing attempt first
+        // (see the simple-route block below); a lidar-pure collision-crossing
+        // search only happens later, deferred, if that plain attempt fails
+        // (the second, separate `lidar_pure_full_map_partner_set` call further
+        // down). PlainFirst is why this upfront call returns empty in
+        // lidar-pure mode. See `CollisionCrossingTryOrder`'s own doc comment.
+        let collision_partner_ids = self.upfront_collision_crossing_partner_ids(
+            net_id,
+            source_state,
+            target_state,
+            CollisionCrossingTryOrder::PlainFirst,
+        );
         let used_collision_crossing_attempt =
             self.use_collision_crossing_routing && !collision_partner_ids.is_empty();
         let crossing_attempt = if used_collision_crossing_attempt {
@@ -5657,6 +5725,10 @@ impl PyPhotonicRouter {
             }
         }
         let mut lidar_pure_crossing_attempted = false;
+        // The deferred half of PlainFirst (see `upfront_collision_crossing_partner_ids`
+        // above and `CollisionCrossingTryOrder`'s own doc comment): the plain
+        // attempt above has now failed, so it is time to pay for the full,
+        // unwindowed lidar-pure collision-crossing search.
         if lidar_pure_crossing && deferred_crossing_attempt.is_none() {
             let owner_lookup_partner_ids = self.lidar_pure_owner_lookup_partner_set(net_id);
             if !owner_lookup_partner_ids.is_empty() {
@@ -6026,16 +6098,17 @@ impl PyPhotonicRouter {
             && !self.use_collision_crossing_routing
             && self.crossing_context.config().allow_only_expected_pairs
             && !expected_crossing_partner_ids.is_empty();
-        let lidar_pure_crossing = self.lidar_pure_crossing_enabled();
-        let collision_partner_ids = if self.use_collision_crossing_routing {
-            if lidar_pure_crossing {
-                self.lidar_pure_owner_lookup_partner_set(net_id)
-            } else {
-                self.crossing_partner_lookup_set_for_route(net_id, source_state, target_state)
-            }
-        } else {
-            FxHashSet::default()
-        };
+        // Repair: consult collision-crossing partners immediately (see
+        // `CollisionCrossingTryOrder::CrossingFirst`'s own doc comment) --
+        // repair only runs after this net already failed to route normally,
+        // so trying the collision-crossing path first is a reasonable prior
+        // specifically in this context, unlike fresh/native routing above.
+        let collision_partner_ids = self.upfront_collision_crossing_partner_ids(
+            net_id,
+            source_state,
+            target_state,
+            CollisionCrossingTryOrder::CrossingFirst,
+        );
         let used_collision_crossing_attempt =
             self.use_collision_crossing_routing && !collision_partner_ids.is_empty();
         let crossing_attempt = if used_collision_crossing_attempt {
