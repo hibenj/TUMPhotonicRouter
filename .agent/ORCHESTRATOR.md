@@ -36,10 +36,15 @@ fully clean end to end. A third, separate plan,
 is also complete: it fixed the one pre-existing failing Rust unit test
 (`try_route_with_collision_crossings_using_primitives` was accepting a
 route with zero crossing events as a successful collision-crossing
-result) and, in validating that fix, found a second, separate, pre-existing
-native-repair bookkeeping bug that it deliberately left unfixed as an
-explicit, tracked follow-up rather than in-scope work -- see
-`.agent/REPOSITORY_STATE.md`'s "Next Engineering Step" for that follow-up.
+result) and, in validating that fix, found and -- at the repository
+owner's direction -- also fixed a second, separate, pre-existing
+native-repair bookkeeping bug (`restore_saved_source_layer_routes` could
+silently lose a net's route on a partial restore failure). The fixed
+repo still does not route `multiportmmi_8x8` bare CLI defaults cleanly
+end to end -- it now fails honestly and deterministically on a genuinely
+congested cluster of nets instead of silently losing one -- see
+`.agent/REPOSITORY_STATE.md`'s "Next Engineering Step" for that as a new,
+separately tracked candidate.
 All three plans grew out of five prior, now-complete
 plans (`.agent/execplans/2026-08-18-*.md`) that together unified port
 access/keepout sizing, fixed two real dense-port and endpoint-correction

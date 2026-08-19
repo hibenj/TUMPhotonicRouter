@@ -15,12 +15,12 @@ if it is ever needed.
 
 - Date: 2026-08-19
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `3bea008`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
+- Current HEAD: `212d323`. `.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md`
   (all 6 milestones), its follow-up
   `.agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md`
   (all 4 milestones), and
   `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
-  are **all complete**, 15 focused commits across the session. Working tree
+  are **all complete**, 17 focused commits across the session. Working tree
   clean.
 - **Latest plan**: fixed the one pre-existing failing Rust unit test,
   `collision_crossing_route_without_event_is_not_accepted`
@@ -28,19 +28,30 @@ if it is ever needed.
   with zero crossing events as a successful collision-crossing result,
   traced to commit `9e0a927`) -- `cargo test --lib` now `322 passed, 0
   failed`. Fixing it surfaced a second, separate, pre-existing bug in
-  native repair bookkeeping (`restore_saved_source_layer_routes` can fail
-  partway through restoring a layer's saved routes and silently abandons
-  the rest, with no caller detecting or retrying the loss), newly exposed
-  -- not caused -- by the fix (it makes a net's first collision-crossing
-  attempt legitimately fail more often, which exercises the pre-existing
-  buggy repair path more often). Reproduces as `multiportmmi_8x8`
-  `missing_route_record n_68` **under bare CLI defaults only**;
-  `multiportmmi_8x8`'s documented stable-baseline config, `benes_4x4`,
-  `cargo test --lib`, and full `pytest -q` are all confirmed clean/at
-  baseline. Deliberately **not fixed** in this plan -- explicitly recorded
-  as an open decision for the repository owner (fix now vs. track
-  separately), not yet answered. Full root-cause trace in that plan's own
-  Surprises & Discoveries.
+  native repair bookkeeping (`restore_saved_source_layer_routes` could
+  fail partway through restoring a layer's saved routes and silently
+  abandoned the rest, with no caller detecting or retrying the loss),
+  newly exposed -- not caused -- by the fix (it makes a net's first
+  collision-crossing attempt legitimately fail more often, which
+  exercises the pre-existing buggy repair path more often). At the
+  repository owner's explicit direction, **this second bug is also now
+  fixed**, in the same plan: the restore is now best-effort (attempts
+  every saved route instead of aborting on the first failure) and any net
+  it still can't restore gets one fresh single-net route attempt; only if
+  that also fails does the whole batch now fail loudly instead of
+  silently completing with a missing record. Net effect on
+  `multiportmmi_8x8` bare CLI defaults: it no longer silently loses a
+  net's record, but it does not route cleanly either -- it now fails
+  deterministically with a genuine `RuntimeError` (`No route found for
+  n_70`, a congested cluster of nets `67`/`70`/`71` this repository's
+  current repair strategies cannot resolve), which is judged a strict
+  improvement (honest failure replacing silent data loss), not a
+  regression. `multiportmmi_8x8`'s documented stable-baseline config,
+  `benes_4x4`, `cargo test --lib`, and full `pytest -q` are all confirmed
+  clean/at baseline throughout. Making that cluster route cleanly is a
+  new, separately tracked candidate (see "Next Engineering Step"), not
+  part of this plan. Full root-cause trace in that plan's own Surprises &
+  Discoveries.
 - **The follow-up plan is also complete.** It picked up the one residual
   item the restructuring plan left open at the repository owner's
   direction: `multiportmmi_16x16`'s `n_196`/`n_203` were cleanly failing
@@ -555,23 +566,27 @@ Other candidates, deliberately not started yet (parked, not forgotten):
    not a mechanical fix. (`multiportmmi_16x16`'s `n_102` is a *different*,
    likely-unfixable `TOY`-shaped finding, not the same problem -- see
    Worktree State.) Not started.
-2. **New (2026-08-19), awaiting the repository owner's fix-now-vs-track
-   decision**: `restore_saved_source_layer_routes` (`src/py_router.rs`,
-   around line 3000) can fail partway through restoring a native-repair
-   layer's saved routes and silently abandons whichever remaining nets it
-   hadn't gotten to yet -- no caller detects or retries the loss. Newly
-   exposed (not caused) by the `2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
-   fix, which legitimately increases how often the repair path that hits
-   this bug gets exercised. Reproduces as `multiportmmi_8x8`
-   `missing_route_record n_68` under bare CLI defaults only (the
-   documented stable-baseline config, `benes_4x4`, and the full test
-   suites are all unaffected). Full root-cause trace, including why a
-   partial restore silently loses some nets but not others depending on
-   whether their own job index in the outer processing loop has already
-   been passed, is in that plan's own Surprises & Discoveries. Not
-   started -- a real fix needs a design decision (retry the abandoned
-   members individually vs. escalate to a hard failure instead of
-   silently continuing vs. something else), not just a mechanical patch.
+2. **New (2026-08-19)**: `multiportmmi_8x8` under bare CLI defaults still
+   does not route cleanly end to end -- after both bugs in
+   `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
+   were fixed (the zero-crossing-event acceptance bug, and the silent
+   partial-restore data-loss bug it surfaced), the benchmark now fails
+   with an honest, deterministic `RuntimeError`: `No route found for
+   n_70`, whose `recent_errors` show several independent repair
+   strategies (`reroute_victims`, `repair_failed_net`,
+   `pending_straight_ripup`) all failing against the same congested
+   cluster of nets `67`/`70`/`71` (e.g. `Illegal grid crossing: net 70
+   intersects net 67 ... insufficient_straight_margin`, `No legal LiDAR
+   crossing route found`). This is a strict improvement over the prior
+   silent data loss, not a regression -- see that plan's Outcomes &
+   Retrospective for why -- but the underlying congestion is real and
+   unresolved: this repository's current repair strategies cannot find a
+   legal arrangement for this cluster. Making it route cleanly (like the
+   `n_196`/`n_203` follow-up did for a different, earlier finding) would
+   need better repair-strategy capability for this specific case, not a
+   mechanical fix. `multiportmmi_8x8`'s documented stable-baseline config
+   is unaffected. Not started; a good candidate to discuss shape/approach
+   before diving in, same as the `n_32` item above.
 3. Continue the broader Python-and-Rust correctness walkthrough into
    Stages 6-8 (endpoint correction, geometry realization, verification),
    or into a deeper systematic read of `src/astar.rs`/`src/py_router.rs`
