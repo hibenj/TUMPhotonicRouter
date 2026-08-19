@@ -2996,6 +2996,19 @@ impl PyPhotonicRouter {
         saved_routes
     }
 
+    /// Best-effort restore of a source layer's saved routes: attempts every
+    /// entry in `saved_routes`, even after an earlier one fails to
+    /// re-commit, so a single unrestorable net cannot silently strand every
+    /// other net queued behind it in the same layer (see
+    /// .agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md
+    /// for the real, reproduced case this generalizes from -- a prior,
+    /// all-or-nothing version of this function returned `Err` on the first
+    /// failure and abandoned every remaining saved route unattempted).
+    /// Returns the net ids whose saved route could not be re-committed, in
+    /// `layer_indices` order; an empty vec means every saved route was
+    /// restored. Callers must decide what to do about any returned net id
+    /// (for example, attempt a fresh route for it) rather than treat a
+    /// non-empty result as this function having silently succeeded.
     #[allow(clippy::too_many_arguments)]
     fn restore_saved_source_layer_routes(
         &mut self,
@@ -3006,7 +3019,7 @@ impl PyPhotonicRouter {
         commit_radius_cells: Option<i32>,
         core_radius_cells: Option<i32>,
         final_routes: &mut FxHashMap<u64, RouteResult>,
-    ) -> Result<(), String> {
+    ) -> Vec<u64> {
         for index in layer_indices {
             if let Some(job) = jobs.get(*index) {
                 if final_routes.remove(&job.net_id).is_some() {
@@ -3015,6 +3028,7 @@ impl PyPhotonicRouter {
             }
         }
         self.restore_source_layer_static_cleanup(jobs, layer_indices);
+        let mut unrestored_net_ids = Vec::new();
         for (index, route) in saved_routes {
             let Some(job) = jobs.get(index) else {
                 continue;
@@ -3030,16 +3044,14 @@ impl PyPhotonicRouter {
                 job.target_port_um,
                 Some(&job.opened_cell_keys),
             ) {
-                return Err(format!(
-                    "failed to restore source-layer route for net {}",
-                    job.net_id
-                ));
+                unrestored_net_ids.push(job.net_id);
+                continue;
             }
             remove_success_static_cleanup(&mut self.obstacle_map, job);
             final_routes.insert(job.net_id, route);
         }
         self.rebuild_long_straight_congestion_from_routes(final_routes);
-        Ok(())
+        unrestored_net_ids
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -8935,7 +8947,7 @@ impl PyPhotonicRouter {
                                         continue 'route_jobs;
                                     }
                                     Err(error) => {
-                                        let restore_result = self.restore_saved_source_layer_routes(
+                                        let unrestored_net_ids = self.restore_saved_source_layer_routes(
                                             &native_jobs,
                                             &source_layer_indices,
                                             saved_layer_routes,
@@ -8944,11 +8956,94 @@ impl PyPhotonicRouter {
                                             core_radius_cells,
                                             &mut final_routes,
                                         );
-                                        let error = match restore_result {
-                                            Ok(()) => error,
-                                            Err(restore_error) => {
-                                                format!("{error}; restore failed: {restore_error}")
+                                        // The restore above is best-effort: one saved
+                                        // route failing to re-commit no longer aborts
+                                        // restoring the rest of the layer. Any net id
+                                        // still returned here has neither its original
+                                        // route nor any route at all in final_routes --
+                                        // attempt one fresh route for each, the same way
+                                        // this function's own pending_straight/preemptive
+                                        // repair mechanisms already recover a single
+                                        // ripped-up victim, instead of leaving it silently
+                                        // missing from the final output (the real,
+                                        // reproduced bug this generalizes from -- see
+                                        // .agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md).
+                                        let mut still_missing_net_ids = Vec::new();
+                                        for &unrestored_net_id in &unrestored_net_ids {
+                                            let Some(unrestored_job) = job_by_id.get(&unrestored_net_id)
+                                            else {
+                                                still_missing_net_ids.push(unrestored_net_id);
+                                                continue;
+                                            };
+                                            let reroute_start =
+                                                native_batch_timer(collect_native_timing);
+                                            let reroute_result = self.route_single_net_and_commit_native(
+                                                unrestored_job.net_id,
+                                                unrestored_job.source,
+                                                unrestored_job.target,
+                                                block_radius_cells,
+                                                Some(&unrestored_job.opened_cells),
+                                                Some(&unrestored_job.opened_cell_keys),
+                                                commit_radius_cells,
+                                                Some(&unrestored_job.clearance_exempt_cells),
+                                                Some(&unrestored_job.clearance_exempt_cell_keys),
+                                                core_radius_cells,
+                                                unrestored_job.source_port_um,
+                                                unrestored_job.target_port_um,
+                                            );
+                                            timings.repair_failed_net_wall_us +=
+                                                native_batch_elapsed_us(reroute_start);
+                                            match reroute_result {
+                                                Ok(route) => {
+                                                    timings.add_route_result_stats_if(
+                                                        collect_native_timing,
+                                                        &route,
+                                                    );
+                                                    remove_success_static_cleanup(
+                                                        &mut self.obstacle_map,
+                                                        unrestored_job,
+                                                    );
+                                                    attempts.push(NativeRouteAttempt {
+                                                        bucket_name: "source_layer_restore_fallback",
+                                                        net_id: unrestored_net_id,
+                                                        route: Some(route.clone()),
+                                                        failed: false,
+                                                        error: None,
+                                                        repair_round: Some(0),
+                                                        candidate_blockers: Vec::new(),
+                                                        ripup_ids: Vec::new(),
+                                                    });
+                                                    final_routes.insert(unrestored_net_id, route);
+                                                }
+                                                Err(reroute_error) => {
+                                                    attempts.push(NativeRouteAttempt {
+                                                        bucket_name: "source_layer_restore_fallback",
+                                                        net_id: unrestored_net_id,
+                                                        route: None,
+                                                        failed: true,
+                                                        error: Some(reroute_error),
+                                                        repair_round: Some(0),
+                                                        candidate_blockers: Vec::new(),
+                                                        ripup_ids: Vec::new(),
+                                                    });
+                                                    still_missing_net_ids.push(unrestored_net_id);
+                                                }
                                             }
+                                        }
+                                        let error = if unrestored_net_ids.is_empty() {
+                                            error
+                                        } else {
+                                            format!(
+                                                "{error}; source-layer restore could not recommit \
+                                                 net(s) {unrestored_net_ids:?}, fresh reroute {}",
+                                                if still_missing_net_ids.is_empty() {
+                                                    "recovered all of them".to_string()
+                                                } else {
+                                                    format!(
+                                                        "still failed for net(s) {still_missing_net_ids:?}"
+                                                    )
+                                                }
+                                            )
                                         };
                                         push_native_repair_trace(
                                             &mut repair_trace,
@@ -8963,9 +9058,19 @@ impl PyPhotonicRouter {
                                             &[],
                                             None,
                                             None,
-                                            Some(false),
+                                            Some(still_missing_net_ids.is_empty()),
                                             Some(error),
                                         );
+                                        if let Some(&first_missing) = still_missing_net_ids.first() {
+                                            failed_net_id = Some(first_missing);
+                                            failed_error = Some(format!(
+                                                "source-layer repair could not restore or reroute \
+                                                 net(s) {still_missing_net_ids:?} after a failed \
+                                                 center-out attempt for net {}",
+                                                job.net_id
+                                            ));
+                                            break 'route_jobs;
+                                        }
                                     }
                                 }
                             }
