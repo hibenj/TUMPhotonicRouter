@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
 import klayout.db as kdb
@@ -266,6 +267,51 @@ def test_photonic_verifier_reports_unconnected_port_with_crossings_enabled(monke
     assert result.success is False
     assert "target_port_not_connected" in issue_codes
     assert "target_endpoint_mismatch" in issue_codes
+
+
+def test_photonic_verifier_reports_endpoint_correction_fallback_as_warning_only(monkeypatch):
+    # Milestone 4 of the 2026-08-19-restructure-port-endpoint-correction
+    # ExecPlan: RoutedNetRecord.endpoint_correction_fallback_note (added in
+    # Milestone 2) must surface as a visible, but non-fatal, issue -- a
+    # fallback can still produce a valid, in-tolerance route, so it must
+    # not affect error_count or the overall success verdict the way
+    # endpoint_correction_error does.
+    monkeypatch.setattr(
+        photonic_verification_module,
+        "_realized_record_region",
+        lambda *args, **kwargs: _box_region(-500, -500, 20_500, 5_500),
+    )
+
+    record = replace(
+        _routed_record(
+            centerline=((0.0, 0.0), (4.0, 0.0), (8.0, 4.0), (20.0, 5.0)),
+            source_port_center_um=(0.0, 0.0),
+            target_port_center_um=(20.0, 5.0),
+        ),
+        endpoint_correction_fallback_note=(
+            "source prefix: rich correction rejected, used the "
+            "absorbed-terminal solver instead"
+        ),
+    )
+
+    result = verify_photonic_routing(
+        Component(),
+        _schematic_with_one_net(),
+        routed_net_records=[record],
+        route_width_um=1.0,
+        realization_grid_spec=(40, 20, 1.0, -5.0, -5.0),
+        check_endpoint_connectivity=True,
+    )
+
+    assert result.success is True
+    assert result.error_count == 0
+    fallback_issues = [
+        issue for issue in result.issues if issue.code == "endpoint_correction_fallback_used"
+    ]
+    assert len(fallback_issues) == 1
+    assert fallback_issues[0].severity == "warning"
+    assert "absorbed-terminal solver" in fallback_issues[0].message
+    assert result.warning_count == 1
 
 
 def test_photonic_verifier_reports_waveguide_obstacle_overlap():

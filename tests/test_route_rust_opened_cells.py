@@ -1354,6 +1354,27 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
     assert not_yet_precorrected.category is route_rust.EndpointCorrectionCategory.UNRESTRICTED
 
 
+def test_endpoint_correction_crossing_net_ids_propagates_real_failures():
+    # Milestone 2 of the 2026-08-19-restructure-port-endpoint-correction
+    # ExecPlan: confirmed via git history that the old
+    # `except Exception: crossing_net_ids = set()` swallow around this
+    # exact call had never legitimately fired, so it was removed rather
+    # than preserved. This pins down the resulting behavior: a real
+    # failure in router.crossing_events() must propagate, not be silently
+    # treated as "no crossings" (which would have let every net fall
+    # through to the unrestricted corrector as if crossings were off).
+    class _BrokenCrossingEventsRouter:
+        def crossing_events(self):
+            raise RuntimeError("crossing_events backend failure")
+
+    session = object.__new__(route_rust._RouteNetsRustSession)
+    session.enable_crossings = True
+    session.router = _BrokenCrossingEventsRouter()
+
+    with pytest.raises(RuntimeError, match="crossing_events backend failure"):
+        session._endpoint_correction_crossing_net_ids()
+
+
 def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
     monkeypatch,
     tmp_path,
