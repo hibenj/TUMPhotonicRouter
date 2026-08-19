@@ -1267,6 +1267,93 @@ def test_apply_checked_fanout_stub_endpoint_corrections_skips_both_sides_fanout_
     assert corrected_net_ids == []
 
 
+def test_classify_net_for_endpoint_correction_covers_every_category():
+    # Milestone 1 of the 2026-08-19-restructure-port-endpoint-correction
+    # ExecPlan: direct unit coverage of the new shared classification
+    # function, one net per named EndpointCorrectionCategory plus the
+    # missing-record case. crossing_net_ids is passed in explicitly, the
+    # same way both callers (_apply_checked_endpoint_corrections_for_net_ids,
+    # _apply_checked_fanout_stub_endpoint_corrections_for_net_ids) compute
+    # it once via _endpoint_correction_crossing_net_ids and reuse it.
+    plain_net_id = 1
+    crossing_net_id = 2
+    source_stub_net_id = 3
+    target_stub_net_id = 4
+    both_stub_net_id = 5
+    missing_net_id = 6
+
+    def _record(corrected_centerline_um=()):
+        return SimpleNamespace(corrected_centerline_um=corrected_centerline_um)
+
+    session = object.__new__(route_rust._RouteNetsRustSession)
+    session.enable_crossings = True
+    session.fanout_anchor_source_net_ids = {source_stub_net_id, both_stub_net_id}
+    session.fanout_anchor_target_net_ids = {target_stub_net_id, both_stub_net_id}
+    session.fanout_anchor_net_ids = (
+        session.fanout_anchor_source_net_ids | session.fanout_anchor_target_net_ids
+    )
+    session.route_bookkeeping = SimpleNamespace(
+        records_by_id={
+            plain_net_id: _record(),
+            crossing_net_id: _record(),
+            source_stub_net_id: _record(corrected_centerline_um=((0.0, 0.0), (1.0, 0.0))),
+            target_stub_net_id: _record(corrected_centerline_um=((0.0, 0.0), (1.0, 0.0))),
+            both_stub_net_id: _record(corrected_centerline_um=((0.0, 0.0), (1.0, 0.0))),
+        }
+    )
+    session.route_jobs_by_id = {
+        net_id: SimpleNamespace()
+        for net_id in (
+            plain_net_id,
+            crossing_net_id,
+            source_stub_net_id,
+            target_stub_net_id,
+            both_stub_net_id,
+        )
+    }
+    crossing_net_ids = {crossing_net_id}
+
+    def classify(net_id: int):
+        return session._classify_net_for_endpoint_correction(
+            net_id, crossing_net_ids=crossing_net_ids
+        )
+
+    assert classify(missing_net_id) is None
+
+    plain = classify(plain_net_id)
+    assert plain.category is route_rust.EndpointCorrectionCategory.UNRESTRICTED
+    assert not plain.has_crossing
+    assert not plain.source_has_fanout_stub
+    assert not plain.target_has_fanout_stub
+
+    crossing = classify(crossing_net_id)
+    assert crossing.category is route_rust.EndpointCorrectionCategory.CROSSING_AWARE
+    assert crossing.has_crossing
+
+    source_only = classify(source_stub_net_id)
+    assert source_only.category is route_rust.EndpointCorrectionCategory.FANOUT_STUB_SOURCE_ONLY
+    assert source_only.source_has_fanout_stub
+    assert not source_only.target_has_fanout_stub
+
+    target_only = classify(target_stub_net_id)
+    assert target_only.category is route_rust.EndpointCorrectionCategory.FANOUT_STUB_TARGET_ONLY
+    assert not target_only.source_has_fanout_stub
+    assert target_only.target_has_fanout_stub
+
+    both = classify(both_stub_net_id)
+    assert both.category is route_rust.EndpointCorrectionCategory.ALREADY_CORRECTED_NO_OP
+    assert both.source_has_fanout_stub
+    assert both.target_has_fanout_stub
+
+    # A net flagged as a fanout anchor that has *not* yet been given a
+    # corrected centerline falls through to UNRESTRICTED, matching the
+    # real pass 1 today (see _classify_net_for_endpoint_correction's own
+    # docstring) -- not a bug, an explicit, tested edge case.
+    session.route_bookkeeping.records_by_id[source_stub_net_id] = _record()
+    not_yet_precorrected = classify(source_stub_net_id)
+    assert not_yet_precorrected.category is route_rust.EndpointCorrectionCategory.UNRESTRICTED
+
+
 def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
     monkeypatch,
     tmp_path,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import math
 from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, field
@@ -231,6 +232,65 @@ class RouteJob:
     port2: str
     source_port: Port
     target_port: Port
+
+
+class EndpointCorrectionCategory(enum.Enum):
+    """Which of the endpoint-correction passes, if any, treats a given net.
+
+    This names the classification that was previously implicit in three
+    separate, duplicated guard-clause chains across
+    ``_apply_checked_endpoint_corrections_for_net_ids``,
+    ``_apply_checked_fanout_stub_endpoint_corrections_for_net_ids``, and
+    ``_apply_crossing_aware_endpoint_corrections_for_net_ids`` in
+    ``translation/route_rust.py``. See
+    ``.agent/execplans/2026-08-19-restructure-port-endpoint-correction.md``
+    for the full classification table this enum names.
+    """
+
+    ALREADY_CORRECTED_NO_OP = "already_corrected_no_op"
+    """Both the source and target sides are fanout stubs (pre-corrected
+    endpoint adapters) and the net has no crossing. No pass touches this
+    net today: it keeps exactly the centerline the earlier fanout-stub
+    pre-correction stage already gave it."""
+
+    UNRESTRICTED = "unrestricted"
+    """Plain net: no fanout stub on either side, no crossing. Gets the
+    full, unrestricted checked corrector on both ends."""
+
+    FANOUT_STUB_SOURCE_ONLY = "fanout_stub_source_only"
+    """Fanout stub on the source side only, no crossing. Gets the checked
+    corrector on the target side only."""
+
+    FANOUT_STUB_TARGET_ONLY = "fanout_stub_target_only"
+    """Fanout stub on the target side only, no crossing. Gets the checked
+    corrector on the source side only."""
+
+    CROSSING_AWARE = "crossing_aware"
+    """Net is involved in a crossing (regardless of fanout-stub status on
+    either side). Handled entirely by the crossing-aware, splice-based
+    pass instead of the unrestricted checked corrector."""
+
+
+@dataclass(frozen=True)
+class NetEndpointCorrectionClassification:
+    """The result of classifying one net for endpoint correction.
+
+    ``has_crossing`` reflects the same crossing-net-id source
+    ``_apply_checked_endpoint_corrections_for_net_ids`` and
+    ``_apply_checked_fanout_stub_endpoint_corrections_for_net_ids`` already
+    shared (derived from ``router.crossing_events()``). The crossing-aware
+    pass (pass 3) uses a second, independently-derived source
+    (``_current_crossing_points_by_net_id()``) for its own net-id
+    membership test; this dataclass does not merge the two, since they can
+    carry different information (event membership vs. actual crossing
+    points) and Milestone 1 only unifies the identical duplication between
+    passes 1 and 2, not the different concept pass 3 uses.
+    """
+
+    category: EndpointCorrectionCategory
+    has_crossing: bool
+    source_has_fanout_stub: bool
+    target_has_fanout_stub: bool
 
 
 @dataclass(frozen=True)

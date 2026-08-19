@@ -201,7 +201,9 @@ from translation.route_rust_records import (
 )
 from translation.route_rust_types import (
     DEFAULT_MEANDER_MAX_HEIGHT_UM,
+    EndpointCorrectionCategory,
     MeanderInsertionConfig,
+    NetEndpointCorrectionClassification,
     OpticalRouteClearancePolicy,
     RipupRerouteConfig,
     RouteJob,
@@ -4482,6 +4484,120 @@ class _RouteNetsRustSession:
                     f"allow_45_degree_turns={self.allow_45_degree_turns}"
                 )
 
+    def _endpoint_correction_crossing_net_ids(self) -> set[int]:
+        """Net ids involved in any crossing, per `router.crossing_events()`.
+
+        Shared by `_apply_checked_endpoint_corrections_for_net_ids` and
+        `_apply_checked_fanout_stub_endpoint_corrections_for_net_ids`,
+        which previously each re-derived this identical set inline
+        (Milestone 1 of
+        .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md).
+        Not used by `_apply_crossing_aware_endpoint_corrections_for_net_ids`,
+        which uses a separate, independently-derived notion of "has a
+        crossing" (`_current_crossing_points_by_net_id()`) that carries
+        actual crossing points, not just event membership; unifying the
+        two is out of this milestone's additive scope.
+        """
+        crossing_net_ids: set[int] = set()
+        if self.enable_crossings and hasattr(self.router, "crossing_events"):
+            try:
+                for raw_event in cast(Iterable[Any], self.router.crossing_events()):
+                    if not isinstance(raw_event, Mapping):
+                        try:
+                            raw_event = dict(cast(Any, raw_event))
+                        except (TypeError, ValueError):
+                            continue
+                    for key in ("net_id", "partner_net_id"):
+                        try:
+                            crossing_net_ids.add(int(cast(Any, raw_event.get(key))))
+                        except (TypeError, ValueError):
+                            continue
+            except Exception:
+                crossing_net_ids = set()
+        return crossing_net_ids
+
+    def _classify_net_for_endpoint_correction(
+        self,
+        net_id: int,
+        *,
+        crossing_net_ids: set[int],
+    ) -> NetEndpointCorrectionClassification | None:
+        """Classify one net for endpoint-correction dispatch.
+
+        Mirrors, exactly, the per-net guard conditions that were
+        previously inline and duplicated across
+        `_apply_checked_endpoint_corrections_for_net_ids` and
+        `_apply_checked_fanout_stub_endpoint_corrections_for_net_ids`
+        (Milestone 1). Returns `None` only when the net has no record or
+        job at all in this session's bookkeeping, which every caller
+        already treats as "skip" today.
+
+        This only decides which of pass 1 (unrestricted), pass 2
+        (fanout-stub partial), pass 3 (crossing-aware), or no pass at all
+        applies. It deliberately does not also decide whether the
+        resolved source/target ports are usable (`None`/`None`): that
+        check differs between pass 1 (resolves both sides unconditionally)
+        and pass 2 (resolves only the non-stub side, since the stub side
+        is deliberately left as `None`), so each pass still performs its
+        own port-resolution check after using this classification to
+        decide whether it owns the net at all.
+        """
+        net_id = int(net_id)
+        record = self.route_bookkeeping.records_by_id.get(net_id)
+        job = self.route_jobs_by_id.get(net_id)
+        if record is None or job is None:
+            return None
+
+        source_has_fanout_stub = net_id in self.fanout_anchor_source_net_ids
+        target_has_fanout_stub = net_id in self.fanout_anchor_target_net_ids
+        has_crossing = self.enable_crossings and net_id in crossing_net_ids
+
+        if has_crossing:
+            return NetEndpointCorrectionClassification(
+                category=EndpointCorrectionCategory.CROSSING_AWARE,
+                has_crossing=True,
+                source_has_fanout_stub=source_has_fanout_stub,
+                target_has_fanout_stub=target_has_fanout_stub,
+            )
+
+        # Pass 1 skips any fanout-anchor net that has already been given a
+        # corrected centerline by the earlier fanout-stub pre-correction
+        # stage (upstream of all three passes), deferring it to pass 2. A
+        # fanout-anchor net that has *not* yet been given one -- an edge
+        # case, since pre-correction is expected to have already run by
+        # this point -- falls through to UNRESTRICTED below instead, the
+        # same as it does in the real pass 1 today; that is preserved
+        # exactly, not treated as a bug, since Milestone 1 is additive.
+        already_fanout_precorrected = (
+            net_id in self.fanout_anchor_net_ids and bool(record.corrected_centerline_um)
+        )
+        if already_fanout_precorrected:
+            if source_has_fanout_stub and target_has_fanout_stub:
+                category = EndpointCorrectionCategory.ALREADY_CORRECTED_NO_OP
+            elif source_has_fanout_stub:
+                category = EndpointCorrectionCategory.FANOUT_STUB_SOURCE_ONLY
+            elif target_has_fanout_stub:
+                category = EndpointCorrectionCategory.FANOUT_STUB_TARGET_ONLY
+            else:
+                # net_id in fanout_anchor_net_ids is constructed as exactly
+                # the union of the source/target subsets today, so this is
+                # unreachable; if that invariant ever changes, treat it the
+                # same as the no-op category rather than guess silently.
+                category = EndpointCorrectionCategory.ALREADY_CORRECTED_NO_OP
+            return NetEndpointCorrectionClassification(
+                category=category,
+                has_crossing=False,
+                source_has_fanout_stub=source_has_fanout_stub,
+                target_has_fanout_stub=target_has_fanout_stub,
+            )
+
+        return NetEndpointCorrectionClassification(
+            category=EndpointCorrectionCategory.UNRESTRICTED,
+            has_crossing=False,
+            source_has_fanout_stub=source_has_fanout_stub,
+            target_has_fanout_stub=target_has_fanout_stub,
+        )
+
     def _apply_checked_endpoint_corrections_for_net_ids(
         self,
         net_ids: Iterable[int],
@@ -4508,32 +4624,19 @@ class _RouteNetsRustSession:
             ]
         ] = []
         requested_net_ids = [int(net_id) for net_id in net_ids]
-        crossing_net_ids: set[int] = set()
-        if self.enable_crossings and hasattr(self.router, "crossing_events"):
-            try:
-                for raw_event in cast(Iterable[Any], self.router.crossing_events()):
-                    if not isinstance(raw_event, Mapping):
-                        try:
-                            raw_event = dict(cast(Any, raw_event))
-                        except (TypeError, ValueError):
-                            continue
-                    for key in ("net_id", "partner_net_id"):
-                        try:
-                            crossing_net_ids.add(int(cast(Any, raw_event.get(key))))
-                        except (TypeError, ValueError):
-                            continue
-            except Exception:
-                crossing_net_ids = set()
+        crossing_net_ids = self._endpoint_correction_crossing_net_ids()
         t_endpoint_correction_pack_start = self._pipeline_timer_start()
         for net_id in requested_net_ids:
-            record = self.route_bookkeeping.records_by_id.get(net_id)
-            job = self.route_jobs_by_id.get(net_id)
-            if record is None or job is None:
+            classification = self._classify_net_for_endpoint_correction(
+                net_id, crossing_net_ids=crossing_net_ids
+            )
+            if (
+                classification is None
+                or classification.category != EndpointCorrectionCategory.UNRESTRICTED
+            ):
                 continue
-            if int(net_id) in self.fanout_anchor_net_ids and record.corrected_centerline_um:
-                continue
-            if self.enable_crossings and int(net_id) in crossing_net_ids:
-                continue
+            record = self.route_bookkeeping.records_by_id[net_id]
+            job = self.route_jobs_by_id[net_id]
             source_port = self._routing_endpoint_center_um(job, source=True)
             target_port = self._routing_endpoint_center_um(job, source=False)
             if source_port is None and target_port is None:
@@ -4687,42 +4790,30 @@ class _RouteNetsRustSession:
         ] = []
         job_context_by_id: dict[int, tuple[RoutedNetRecord, bool, bool]] = {}
         requested_net_ids = [int(net_id) for net_id in net_ids]
-        crossing_net_ids: set[int] = set()
-        if self.enable_crossings and hasattr(self.router, "crossing_events"):
-            try:
-                for raw_event in cast(Iterable[Any], self.router.crossing_events()):
-                    if not isinstance(raw_event, Mapping):
-                        try:
-                            raw_event = dict(cast(Any, raw_event))
-                        except (TypeError, ValueError):
-                            continue
-                    for key in ("net_id", "partner_net_id"):
-                        try:
-                            crossing_net_ids.add(int(cast(Any, raw_event.get(key))))
-                        except (TypeError, ValueError):
-                            continue
-            except Exception:
-                crossing_net_ids = set()
+        crossing_net_ids = self._endpoint_correction_crossing_net_ids()
         t_endpoint_correction_pack_start = self._pipeline_timer_start()
         for net_id in requested_net_ids:
-            record = self.route_bookkeeping.records_by_id.get(net_id)
-            job = self.route_jobs_by_id.get(net_id)
-            if record is None or job is None or not record.corrected_centerline_um:
-                continue
-            source_has_fanout_stub = int(net_id) in self.fanout_anchor_source_net_ids
-            target_has_fanout_stub = int(net_id) in self.fanout_anchor_target_net_ids
-            if not (source_has_fanout_stub or target_has_fanout_stub):
-                continue
-            if source_has_fanout_stub and target_has_fanout_stub:
-                continue
             # A fanout stub is already a corrected endpoint adapter. When the
             # routed net also contains a crossing, the unrestricted native
             # endpoint corrector may move geometry on the protected side of the
             # crossing before we merge it back into the stubbed centerline. Let
             # the crossing-aware pass splice only the source->first-crossing or
-            # last-crossing->target segment instead.
-            if self.enable_crossings and int(net_id) in crossing_net_ids:
+            # last-crossing->target segment instead -- this pass's
+            # classification puts any crossing net (and any both-sides-stub
+            # net) into a category other than the two this pass owns, so
+            # both exclusions fall out of the single category check below.
+            classification = self._classify_net_for_endpoint_correction(
+                net_id, crossing_net_ids=crossing_net_ids
+            )
+            if classification is None or classification.category not in (
+                EndpointCorrectionCategory.FANOUT_STUB_SOURCE_ONLY,
+                EndpointCorrectionCategory.FANOUT_STUB_TARGET_ONLY,
+            ):
                 continue
+            record = self.route_bookkeeping.records_by_id[net_id]
+            job = self.route_jobs_by_id[net_id]
+            source_has_fanout_stub = classification.source_has_fanout_stub
+            target_has_fanout_stub = classification.target_has_fanout_stub
 
             source_port = (
                 None
