@@ -37,6 +37,52 @@ Milestone 2 complete, 2026-08-20. Diagnosed the exact cause of `tests/test_rust_
 
 This restores a working, focused (not full-benchmark), direct-PyO3-call regression harness for `route_many_with_repair_and_commit` -- the orchestrator itself had zero working test coverage of its own before this fix. Per the repository owner's decision, this plan stops here rather than proceeding to either of the larger restructuring options; extracting the victim-set-expansion logic or a full session-state decomposition remain available as future work, now with this test as a safety net for either.
 
+## Decision Log (continued)
+
+- Decision: proceed with the "extract victim-set-expansion logic" option (2026-08-20, repository owner, after a status/recommendation exchange -- not a formal `AskUserQuestion`, but an explicit "yes" to a stated recommendation naming this specific option over the full-restructuring alternative and over stopping here).
+  Rationale: this is the most direct path to eventually fixing Current Findings item 1 (the `n_67`/`n_70`/`n_71` cluster on `multiportmmi_8x8`, one of the three active-phase benchmarks), with much smaller scope/risk than the full session-state restructuring.
+
+## Milestone 3: extract victim-set-expansion logic (design)
+
+Re-read the target code directly against current source rather than trusting Milestone 0's line-range citation verbatim (line numbers had shifted slightly, from small drift, not any change to this logic itself): the victim-set-expansion block is `src/py_router.rs:10063-10099` inside `route_many_with_repair_and_commit`, building `repair_victim_sets: Vec<(u32, Vec<u64>)>`.
+
+**Finding that makes this extraction cleaner than expected**: this specific block touches zero `self` state -- it reads only local variables (`crossing_repair_enabled: bool`, `probe_realized_crossing_violations: Vec<InvalidCrossingIntersection>`, `candidate_blockers: Vec<u64>`, `max_victims: usize`, `max_rounds: u32`, all already computed earlier in the function) and builds a local `Vec`. It can be extracted as a **pure free function taking no `&self`/`&mut self` at all** -- an even cleaner shape than `enqueue_targeted_illegal_crossing_repair_set` (`src/py_router.rs:1669`, the existing precedent, which does need `&self` for some lookups).
+
+Design:
+
+```rust
+fn compute_repair_victim_sets(
+    crossing_repair_enabled: bool,
+    probe_realized_crossing_violations: &[InvalidCrossingIntersection],
+    candidate_blockers: &[u64],
+    max_victims: usize,
+    max_rounds: u32,
+) -> Vec<(u32, Vec<u64>)> {
+    // exact existing body of src/py_router.rs:10063-10099, unchanged logic,
+    // adapted to slice parameters instead of reading self/outer-scope locals.
+}
+```
+
+Call site (`src/py_router.rs:10063-10099`) replaced with:
+
+```rust
+let repair_victim_sets = compute_repair_victim_sets(
+    crossing_repair_enabled,
+    &probe_realized_crossing_violations,
+    &candidate_blockers,
+    max_victims,
+    max_rounds,
+);
+```
+
+This is a **pure extraction, zero behavior change** -- not a fix for Current Findings item 1 (the missing "fold a victim's own secondary blocker into the ripup set" reasoning stays exactly as absent as it is today). It only gives that reasoning gap a function boundary and, for the first time, direct unit test coverage -- setting up a future fix, not making one.
+
+4 hand-computed test scenarios (exact expected outputs, not guessed) recorded in the Codex task file for Milestone 4.
+
+## Milestone 4: implement (Codex)
+
+Dispatched as a single small, purely-mechanical extraction task with 4 exact test scenarios. See commit for the actual diff and validation.
+
 ## Context and Orientation
 
 **Ripup/repair orchestration** is the routing-pipeline layer that handles what happens when a net can't be routed cleanly on the first attempt: it decides which already-routed nets ("victims") to rip up and retry, attempts repair strategies (dynamic-blocker rip-up, collision-crossing-guided rerouting, targeted illegal-crossing repair), and rolls back cleanly on failure. It sits inside native (Rust) net routing, called once per routing pass from the Python orchestration layer.
