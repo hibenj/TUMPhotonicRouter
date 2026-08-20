@@ -1050,7 +1050,18 @@ def test_checked_no_bump_endpoint_correction_allows_active_endpoint_static_conta
     assert centerline[-1] == pytest.approx((10.0, 10.0))
 
 
-def test_checked_no_bump_endpoint_correction_rejects_middle_static_contact():
+def test_checked_no_bump_endpoint_correction_allows_own_route_middle_static_contact():
+    # A static cell added at (5, 5) after net 7's own diagonal route already
+    # committed through that cell is exempt from the static-overlap check, via
+    # route_port_corrected_centerline_checked_and_commit_native's `old_core_keys`
+    # exclusion (src/py_router.rs:7101-7128) -- any cell already part of the
+    # route's own pre-correction geometry is not treated as a new static
+    # overlap introduced by the correction. This exemption predates this
+    # session (commit 8744da7d, 2026-07-16, "routing: stabilize multiport MMI
+    # crossing flow", validated end-to-end against multiportmmi_8x8 at the
+    # time) -- this test previously asserted the opposite (a RuntimeError)
+    # and had been silently stale since that change; updated here to match
+    # current, intended behavior instead of the pre-2026-07-16 contract.
     rust_backend = _load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
@@ -1058,19 +1069,24 @@ def test_checked_no_bump_endpoint_correction_rejects_middle_static_contact():
     router, route = _checked_no_bump_diagonal_test_router_and_route(rust_backend)
     router.add_static_cells([(5, 5)])
 
-    with pytest.raises(RuntimeError, match="static_overlap"):
-        router.route_port_corrected_centerline_checked_and_commit(
-            7,
-            route,
-            0.5,
-            0,
-            0,
-            [],
-            [],
-            source_port_um=(1.2, 1.2),
-            target_port_um=(10.0, 10.0),
-            allow_unchecked_fallback=False,
-        )
+    result = router.route_port_corrected_centerline_checked_and_commit(
+        7,
+        route,
+        0.5,
+        0,
+        0,
+        [],
+        [],
+        source_port_um=(1.2, 1.2),
+        target_port_um=(10.0, 10.0),
+        allow_unchecked_fallback=False,
+    )
+
+    assert result["committed_bump"] is False
+    assert result["candidate_index"] is None
+    centerline = tuple((float(x), float(y)) for x, y in result["centerline"])
+    assert centerline[0] == pytest.approx((1.2, 1.2))
+    assert centerline[-1] == pytest.approx((10.0, 10.0))
 
 
 def test_checked_no_bump_endpoint_correction_rejects_other_net_dynamic_overlap():
