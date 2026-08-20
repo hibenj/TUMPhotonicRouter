@@ -7912,6 +7912,238 @@ impl PyPhotonicRouter {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn probe_net_for_repair(
+        &mut self,
+        batch: &mut RepairBatchState,
+        job: &NativeRouteJob,
+        order_by_id: &FxHashMap<u64, usize>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        collect_native_timing: bool,
+        trace_native_repair: bool,
+    ) -> Result<ProbeState, ()> {
+        let probe_start = native_batch_timer(collect_native_timing);
+        let probe_result = self.route_single_net_ignore_dynamic_native(
+            job.source,
+            job.target,
+            Some(&job.opened_cells),
+            Some(&job.opened_cell_keys),
+        );
+        let probe_elapsed_us = native_batch_elapsed_us(probe_start);
+        batch.timings.probe_route_wall_us += probe_elapsed_us;
+        let probe_route = match probe_result {
+            Ok(route) => {
+                batch.timings.add_route_result_stats_if(collect_native_timing, &route);
+                batch.attempts.push(NativeRouteAttempt {
+                    bucket_name: "probe_route",
+                    net_id: job.net_id,
+                    route: Some(route.clone()),
+                    failed: false,
+                    error: None,
+                    repair_round: None,
+                    candidate_blockers: Vec::new(),
+                    ripup_ids: Vec::new(),
+                });
+                route
+            }
+            Err(error) => {
+                batch.timings.probe_route_failed_wall_us += probe_elapsed_us;
+                batch.attempts.push(NativeRouteAttempt {
+                    bucket_name: "probe_route",
+                    net_id: job.net_id,
+                    route: None,
+                    failed: true,
+                    error: Some(error.clone()),
+                    repair_round: None,
+                    candidate_blockers: Vec::new(),
+                    ripup_ids: Vec::new(),
+                });
+                batch.failed_net_id = Some(job.net_id);
+                batch.failed_error = Some(error);
+                return Err(());
+            }
+        };
+
+        let victim_selection_start = native_batch_timer(collect_native_timing);
+        let owner_lookup_radius_cells =
+            block_radius_cells.max(commit_radius_cells.unwrap_or(block_radius_cells));
+        let dynamic_probe_owners =
+            self.dynamic_owners_for_native_route(&probe_route, owner_lookup_radius_cells);
+        let mut candidate_blocker_priority: FxHashMap<u64, u8> = FxHashMap::default();
+        let mut add_candidate_blocker = |owner: u64, priority: u8| {
+            if owner == job.net_id || !batch.final_routes.contains_key(&owner) {
+                return;
+            }
+            candidate_blocker_priority
+                .entry(owner)
+                .and_modify(|existing| *existing = (*existing).min(priority))
+                .or_insert(priority);
+        };
+        let crossing_repair_enabled = self.crossing_context.is_enabled();
+        let allowed_crossing_partners: FxHashSet<u64> = if crossing_repair_enabled
+            && self.crossing_context.config().allow_only_expected_pairs
+        {
+            self.crossing_allowed_partner_set(job.net_id)
+                .into_iter()
+                .filter(|partner_id| batch.final_routes.contains_key(partner_id))
+                .collect()
+        } else if crossing_repair_enabled && self.lidar_pure_crossing_enabled() {
+            self.lidar_probe_partner_lookup_set(
+                job.net_id,
+                &probe_route,
+                owner_lookup_radius_cells,
+                &batch.final_routes,
+            )
+        } else {
+            FxHashSet::default()
+        };
+        let probe_crossing_events = if crossing_repair_enabled
+            && !allowed_crossing_partners.is_empty()
+        {
+            self.crossing_events_for_route(job.net_id, &probe_route, &allowed_crossing_partners)
+        } else {
+            Vec::new()
+        };
+        let strict_expected_crossing_probe = crossing_repair_enabled
+            && self.crossing_context.config().allow_only_expected_pairs
+            && !allowed_crossing_partners.is_empty();
+        let probe_crossing_compliant = crossing_repair_enabled
+            && self.crossing_route_satisfies_partner_constraints(
+                job.net_id,
+                &probe_route,
+                &allowed_crossing_partners,
+                &probe_crossing_events,
+                Some(&job.opened_cell_keys),
+            );
+        let probe_realized_crossing_violations = if crossing_repair_enabled {
+            self.crossing_violations_for_route_with_ports(
+                job.net_id,
+                &probe_route,
+                job.source_port_um,
+                job.target_port_um,
+                Some(&job.opened_cell_keys),
+            )
+        } else {
+            Vec::new()
+        };
+        let probe_grid_crossing_violations = if crossing_repair_enabled
+            && !allowed_crossing_partners.is_empty()
+        {
+            self.invalid_crossing_intersections_for_route(
+                job.net_id,
+                &probe_route,
+                &allowed_crossing_partners,
+            )
+        } else {
+            Vec::new()
+        };
+        let allowed_crossing_partner_list: Vec<u64> =
+            allowed_crossing_partners.iter().copied().collect();
+        let probe_repair_keepout_keys = if crossing_repair_enabled {
+            let mut keys = self.crossing_physical_violation_repair_keepout_keys(
+                &probe_realized_crossing_violations,
+                &allowed_crossing_partner_list,
+            );
+            keys.extend(self.crossing_grid_violation_repair_keepout_keys(
+                &probe_grid_crossing_violations,
+                &allowed_crossing_partner_list,
+            ));
+            keys
+        } else {
+            FxHashSet::default()
+        };
+        if crossing_repair_enabled {
+            let legal_crossed_partners =
+                Self::crossing_partner_ids_from_events(&probe_crossing_events);
+            for owner in dynamic_probe_owners {
+                if !legal_crossed_partners.contains(&owner) {
+                    add_candidate_blocker(owner, 0);
+                }
+            }
+            for invalid in &probe_grid_crossing_violations {
+                add_candidate_blocker(invalid.partner_net_id, 1);
+            }
+            for invalid in &probe_realized_crossing_violations {
+                add_candidate_blocker(invalid.partner_net_id, 0);
+            }
+            for partner_id in
+                Self::crossing_partners_with_overlapping_reservations(&probe_crossing_events)
+            {
+                add_candidate_blocker(partner_id, 1);
+            }
+            let reservation_blockers =
+                self.crossing_reservation_blockers(
+                    job.net_id,
+                    &probe_crossing_events,
+                    Some(&job.opened_cell_keys),
+                );
+            for owner in reservation_blockers.dynamic_blockers {
+                add_candidate_blocker(owner, 0);
+            }
+            if reservation_blockers.has_static_blocker {
+                for event in &probe_crossing_events {
+                    add_candidate_blocker(event.partner_net_id, 1);
+                }
+            }
+            if self.crossing_context.config().allow_only_expected_pairs {
+                for partner_id in &allowed_crossing_partners {
+                    if !legal_crossed_partners.contains(partner_id)
+                        && batch.final_routes.contains_key(partner_id)
+                    {
+                        add_candidate_blocker(*partner_id, 2);
+                    }
+                }
+            }
+        } else {
+            for owner in dynamic_probe_owners {
+                add_candidate_blocker(owner, 0);
+            }
+        }
+        let mut candidate_blockers: Vec<u64> =
+            candidate_blocker_priority.keys().copied().collect();
+        candidate_blockers.sort_unstable_by_key(|owner| {
+            (
+                candidate_blocker_priority
+                    .get(owner)
+                    .copied()
+                    .unwrap_or(u8::MAX),
+                order_by_id.get(owner).copied().unwrap_or(usize::MAX),
+            )
+        });
+        let probe = ProbeState {
+            probe_route,
+            crossing_repair_enabled,
+            allowed_crossing_partners,
+            probe_crossing_events,
+            strict_expected_crossing_probe,
+            probe_crossing_compliant,
+            probe_realized_crossing_violations,
+            probe_grid_crossing_violations,
+            probe_repair_keepout_keys,
+            candidate_blockers,
+        };
+        if trace_native_repair {
+            eprintln!(
+                "native_repair_probe net={} allowed_partners={} crossing_events={} grid_violations={} realized_violations={} realized_reasons={:?} keepout_keys={} candidate_blockers={:?}",
+                job.net_id,
+                probe.allowed_crossing_partners.len(),
+                probe.probe_crossing_events.len(),
+                probe.probe_grid_crossing_violations.len(),
+                probe.probe_realized_crossing_violations.len(),
+                probe.probe_realized_crossing_violations
+                    .iter()
+                    .map(|violation| (violation.partner_net_id, violation.reason))
+                    .collect::<Vec<_>>(),
+                probe.probe_repair_keepout_keys.len(),
+                probe.candidate_blockers,
+            );
+        }
+        batch.timings.repair_probe_victim_selection_us +=
+            native_batch_elapsed_us(victim_selection_start);
+        Ok(probe)
+    }
+
 }
 
 #[pymethods]
@@ -9582,224 +9814,18 @@ impl PyPhotonicRouter {
                 }
             }
 
-            let probe_start = native_batch_timer(collect_native_timing);
-            let probe_result = self.route_single_net_ignore_dynamic_native(
-                job.source,
-                job.target,
-                Some(&job.opened_cells),
-                Some(&job.opened_cell_keys),
-            );
-            let probe_elapsed_us = native_batch_elapsed_us(probe_start);
-            batch.timings.probe_route_wall_us += probe_elapsed_us;
-            let probe_route = match probe_result {
-                Ok(route) => {
-                    batch.timings.add_route_result_stats_if(collect_native_timing, &route);
-                    batch.attempts.push(NativeRouteAttempt {
-                        bucket_name: "probe_route",
-                        net_id: job.net_id,
-                        route: Some(route.clone()),
-                        failed: false,
-                        error: None,
-                        repair_round: None,
-                        candidate_blockers: Vec::new(),
-                        ripup_ids: Vec::new(),
-                    });
-                    route
-                }
-                Err(error) => {
-                    batch.timings.probe_route_failed_wall_us += probe_elapsed_us;
-                    batch.attempts.push(NativeRouteAttempt {
-                        bucket_name: "probe_route",
-                        net_id: job.net_id,
-                        route: None,
-                        failed: true,
-                        error: Some(error.clone()),
-                        repair_round: None,
-                        candidate_blockers: Vec::new(),
-                        ripup_ids: Vec::new(),
-                    });
-                    batch.failed_net_id = Some(job.net_id);
-                    batch.failed_error = Some(error);
-                    break;
-                }
+            let mut probe = match self.probe_net_for_repair(
+                &mut batch,
+                job,
+                &order_by_id,
+                block_radius_cells,
+                commit_radius_cells,
+                collect_native_timing,
+                trace_native_repair,
+            ) {
+                Ok(probe) => probe,
+                Err(()) => break 'route_jobs,
             };
-
-            let victim_selection_start = native_batch_timer(collect_native_timing);
-            let owner_lookup_radius_cells =
-                block_radius_cells.max(commit_radius_cells.unwrap_or(block_radius_cells));
-            let dynamic_probe_owners =
-                self.dynamic_owners_for_native_route(&probe_route, owner_lookup_radius_cells);
-            let mut candidate_blocker_priority: FxHashMap<u64, u8> = FxHashMap::default();
-            let mut add_candidate_blocker = |owner: u64, priority: u8| {
-                if owner == job.net_id || !batch.final_routes.contains_key(&owner) {
-                    return;
-                }
-                candidate_blocker_priority
-                    .entry(owner)
-                    .and_modify(|existing| *existing = (*existing).min(priority))
-                    .or_insert(priority);
-            };
-            let crossing_repair_enabled = self.crossing_context.is_enabled();
-            let allowed_crossing_partners: FxHashSet<u64> = if crossing_repair_enabled
-                && self.crossing_context.config().allow_only_expected_pairs
-            {
-                self.crossing_allowed_partner_set(job.net_id)
-                    .into_iter()
-                    .filter(|partner_id| batch.final_routes.contains_key(partner_id))
-                    .collect()
-            } else if crossing_repair_enabled && self.lidar_pure_crossing_enabled() {
-                self.lidar_probe_partner_lookup_set(
-                    job.net_id,
-                    &probe_route,
-                    owner_lookup_radius_cells,
-                    &batch.final_routes,
-                )
-            } else {
-                FxHashSet::default()
-            };
-            let probe_crossing_events = if crossing_repair_enabled
-                && !allowed_crossing_partners.is_empty()
-            {
-                self.crossing_events_for_route(job.net_id, &probe_route, &allowed_crossing_partners)
-            } else {
-                Vec::new()
-            };
-            let strict_expected_crossing_probe = crossing_repair_enabled
-                && self.crossing_context.config().allow_only_expected_pairs
-                && !allowed_crossing_partners.is_empty();
-            let probe_crossing_compliant = crossing_repair_enabled
-                && self.crossing_route_satisfies_partner_constraints(
-                    job.net_id,
-                    &probe_route,
-                    &allowed_crossing_partners,
-                    &probe_crossing_events,
-                    Some(&job.opened_cell_keys),
-                );
-            let probe_realized_crossing_violations = if crossing_repair_enabled {
-                self.crossing_violations_for_route_with_ports(
-                    job.net_id,
-                    &probe_route,
-                    job.source_port_um,
-                    job.target_port_um,
-                    Some(&job.opened_cell_keys),
-                )
-            } else {
-                Vec::new()
-            };
-            let probe_grid_crossing_violations = if crossing_repair_enabled
-                && !allowed_crossing_partners.is_empty()
-            {
-                self.invalid_crossing_intersections_for_route(
-                    job.net_id,
-                    &probe_route,
-                    &allowed_crossing_partners,
-                )
-            } else {
-                Vec::new()
-            };
-            let allowed_crossing_partner_list: Vec<u64> =
-                allowed_crossing_partners.iter().copied().collect();
-            let probe_repair_keepout_keys = if crossing_repair_enabled {
-                let mut keys = self.crossing_physical_violation_repair_keepout_keys(
-                    &probe_realized_crossing_violations,
-                    &allowed_crossing_partner_list,
-                );
-                keys.extend(self.crossing_grid_violation_repair_keepout_keys(
-                    &probe_grid_crossing_violations,
-                    &allowed_crossing_partner_list,
-                ));
-                keys
-            } else {
-                FxHashSet::default()
-            };
-            if crossing_repair_enabled {
-                let legal_crossed_partners =
-                    Self::crossing_partner_ids_from_events(&probe_crossing_events);
-                for owner in dynamic_probe_owners {
-                    if !legal_crossed_partners.contains(&owner) {
-                        add_candidate_blocker(owner, 0);
-                    }
-                }
-                for invalid in &probe_grid_crossing_violations {
-                    add_candidate_blocker(invalid.partner_net_id, 1);
-                }
-                for invalid in &probe_realized_crossing_violations {
-                    add_candidate_blocker(invalid.partner_net_id, 0);
-                }
-                for partner_id in
-                    Self::crossing_partners_with_overlapping_reservations(&probe_crossing_events)
-                {
-                    add_candidate_blocker(partner_id, 1);
-                }
-                let reservation_blockers =
-                    self.crossing_reservation_blockers(
-                        job.net_id,
-                        &probe_crossing_events,
-                        Some(&job.opened_cell_keys),
-                    );
-                for owner in reservation_blockers.dynamic_blockers {
-                    add_candidate_blocker(owner, 0);
-                }
-                if reservation_blockers.has_static_blocker {
-                    for event in &probe_crossing_events {
-                        add_candidate_blocker(event.partner_net_id, 1);
-                    }
-                }
-                if self.crossing_context.config().allow_only_expected_pairs {
-                    for partner_id in &allowed_crossing_partners {
-                        if !legal_crossed_partners.contains(partner_id)
-                            && batch.final_routes.contains_key(partner_id)
-                        {
-                            add_candidate_blocker(*partner_id, 2);
-                        }
-                    }
-                }
-            } else {
-                for owner in dynamic_probe_owners {
-                    add_candidate_blocker(owner, 0);
-                }
-            }
-            let mut candidate_blockers: Vec<u64> =
-                candidate_blocker_priority.keys().copied().collect();
-            candidate_blockers.sort_unstable_by_key(|owner| {
-                (
-                    candidate_blocker_priority
-                        .get(owner)
-                        .copied()
-                        .unwrap_or(u8::MAX),
-                    order_by_id.get(owner).copied().unwrap_or(usize::MAX),
-                )
-            });
-            let mut probe = ProbeState {
-                probe_route,
-                crossing_repair_enabled,
-                allowed_crossing_partners,
-                probe_crossing_events,
-                strict_expected_crossing_probe,
-                probe_crossing_compliant,
-                probe_realized_crossing_violations,
-                probe_grid_crossing_violations,
-                probe_repair_keepout_keys,
-                candidate_blockers,
-            };
-            if trace_native_repair {
-                eprintln!(
-                    "native_repair_probe net={} allowed_partners={} crossing_events={} grid_violations={} realized_violations={} realized_reasons={:?} keepout_keys={} candidate_blockers={:?}",
-                    job.net_id,
-                    probe.allowed_crossing_partners.len(),
-                    probe.probe_crossing_events.len(),
-                    probe.probe_grid_crossing_violations.len(),
-                    probe.probe_realized_crossing_violations.len(),
-                    probe.probe_realized_crossing_violations
-                        .iter()
-                        .map(|violation| (violation.partner_net_id, violation.reason))
-                        .collect::<Vec<_>>(),
-                    probe.probe_repair_keepout_keys.len(),
-                    probe.candidate_blockers,
-                );
-            }
-            batch.timings.repair_probe_victim_selection_us +=
-                native_batch_elapsed_us(victim_selection_start);
             let guided_collision_crossing_enabled =
                 std::env::var_os("PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING").is_some()
                     && std::env::var_os("PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING")
