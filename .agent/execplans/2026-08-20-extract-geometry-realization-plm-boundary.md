@@ -15,6 +15,8 @@ This plan follows the repository owner's standing direction to use the Claude+Co
 ## Progress
 
 - [x] Milestone 0 (full characterization) done, see Surprises & Discoveries. Summary: this is not a symmetric two-file coupling -- `geometry_realization.rs` actually bundles two separable concerns (route-to-polygon realization, and an obstacle-aware "Auto" meander-search layer built on `meander.rs`), and `plm.rs` is a clean third layer on top of the second concern only. `plm.rs` has **no real dependency on realization-proper code** (`RouteResult`/`PrimitiveLibrary`/route-to-polygon conversion) at all -- its one apparent link to that world (`route_to_primitive_centerline`) is used only by a `py_router.rs`-side wrapper `plm.rs` itself never calls. 3 boundary options proposed below for Milestone 1.
+- [x] Milestone 1 (present options) done. Repository owner chose option 1: move the Auto-meander-search layer out of `geometry_realization.rs`, fixing the root-cause misplacement rather than interfacing around it.
+- [ ] Milestone 2 (exhaustive symbol/line-range inventory) in progress.
 
 ## Surprises & Discoveries
 
@@ -39,6 +41,10 @@ This plan follows the repository owner's standing direction to use the Claude+Co
 ## Decision Log
 
 - Decision: characterize the coupling fully before presenting any boundary options, and present options rather than choosing a boundary solo, per the repository owner's explicit direction when asked how to proceed with this stage (2026-08-20): "Characterize first, then show options."
+  Date/Author: 2026-08-20, repository owner (via direct choice on presented options), recorded here.
+
+- Decision: pursue boundary option 1 -- move the Auto-meander-search layer out of `geometry_realization.rs` into its own module, fixing the root-cause misplacement found in Milestone 0, rather than the lower-effort additive-trait-only option or the types-only hybrid.
+  Rationale: repository owner's explicit choice among the three presented options.
   Date/Author: 2026-08-20, repository owner (via direct choice on presented options), recorded here.
 
 ## Outcomes & Retrospective
@@ -88,9 +94,25 @@ Record findings in Surprises & Discoveries. Conclude with 2-3 concrete boundary 
 
 Present Milestone 0's boundary options directly to the repository owner (via `AskUserQuestion` or equivalent) and get an explicit decision before any design or implementation work begins. Record the decision and its rationale in the Decision Log.
 
-### Milestones 2+: not yet specified
+### Milestone 2: exhaustive symbol/line-range inventory for the move
 
-To be added once Milestone 1's decision is known, per `.agent/PLANS.md`'s guidance against over-specifying before source inspection and a settled design justify the next steps. Expected shape, subject to revision: design the interface(s) for whichever stage(s) the chosen boundary implies, implement via Codex once well-specified, broaden test coverage (particularly for `plm.rs`, which currently has none), full validation ladder.
+Milestone 0's characterization identified the Auto-meander-search family (`AutoMeanderConfig`, `AutoMeanderPlanningProfile`, `AutoMeanderSidePolicy`, `AutoRouteAnalyticMeanderPlan`, `cell_count_in_grid_rect`, `plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix`, `DenseOccupancyPrefix`, `SparseCellIndex`) conceptually, but did not exhaustively enumerate every symbol in the region, their precise line ranges, or every internal cross-reference -- a first pass while starting this milestone already found two more symbols in the same region not yet accounted for (`RouteAnalyticMeanderPlan`, a non-"Auto" sibling wrapping `AnalyticMeanderPlan` directly, and `AutoMeanderRejectionDetail`) whose ownership (move with the Auto family, or stay if realization-proper still uses them) is not yet confirmed. Before any code motion, produce a complete, verified manifest: every type/function that should move, its exact current line range, every internal call/reference between "moving" and "staying" code (so the new module's `use` statements and any residual `pub(crate)` visibility needs are known up front), and every external call site (in `src/py_router.rs` and anywhere else) that will need its `use` path updated. This is read-only investigation, safe to dispatch to a fork.
+
+### Milestone 3: design the new module
+
+Once Milestone 2's manifest is complete: decide the new module's name and exact location (a leading candidate, not yet finalized: `src/auto_meander.rs`, sitting next to `meander.rs`, preserving the 3-layer stack `meander.rs` -> new module -> `plm.rs`/`geometry_realization.rs`'s one remaining bridge function), and design the new module's `use` boundary (what it needs from `geometry_realization.rs`, e.g. `GeometryGridSpec`, `GridRect`, `ObstacleMap`, and what `geometry_realization.rs` needs back from it, e.g. `plan_auto_analytic_meander_for_route_depth_sweep_with_prefix`'s dependency on the moved planner). Zero behavior change is the bar -- this is code motion, not a rewrite.
+
+### Milestone 4: implement the move
+
+Dispatch to Codex via `.agent/scripts/codex_task.sh` once Milestone 3's design is precise (exact symbol list, exact new module path, exact `use` statement changes at every call site), per `.agent/CLAUDE_CODEX_FLOW.md`. Given the size (~950 lines, 28 tests, multiple call sites), consider whether this needs splitting into more than one Codex slice (e.g. move types first, then the algorithm, then update call sites) -- decide based on Milestone 3's actual manifest size, not preemptively.
+
+### Milestone 5: broaden test coverage
+
+`plm.rs` currently has zero direct tests (Milestone 0 finding) -- once the Auto-meander layer has a real module boundary, this is the natural point to add focused tests for `plm.rs`'s own candidate/sequence/split/final-request logic in isolation, not just via the 28 relocated Auto-meander tests and the existing full-benchmark PLM regression coverage.
+
+### Milestone 6: broad validation
+
+Full validation ladder: `cargo test --lib`, `PYTHONPATH=. .venv/bin/pytest -q`, `benes_4x4`, `multiportmmi_8x8` under both bare CLI defaults and its documented stable-baseline config, plus a PLM-specific benchmark (`heater_s_mod`, per the existing `test_heater_s_mod_90_degree_plm_regression` test -- already a known pre-existing failure per `.agent/REPOSITORY_STATE.md`, confirm this plan's changes do not alter its failure signature even though fixing it is out of scope). Every verdict read from `build/verification/*.json` directly, per `.agent/WORKFLOW.md`'s Routing Verification Gate.
 
 ## Concrete Steps
 
