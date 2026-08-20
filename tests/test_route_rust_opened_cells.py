@@ -1185,7 +1185,14 @@ def test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor(
     assert "status=ok" in diag_text
     assert "fanout_access_mode=static-stubs" in diag_text
     assert "source_fanout_anchor=True" in diag_text
-    assert "source_dense_port_runway_cells=9" in diag_text
+    # Recalibrated 2026-08-20: this scenario's actual runway-cells value is 6,
+    # not the previously-asserted 9. Confirmed by direct reproduction and
+    # cross-referenced against .agent/execplans/2026-08-18-dense-port-runway-clearance-reach.md,
+    # which recalibrated _dense_source_port_runway_lengths's static-stubs
+    # branch (the exact code path this scenario exercises via
+    # fanout_access_mode="static-stubs") -- this assertion was never updated
+    # for that change.
+    assert "source_dense_port_runway_cells=6" in diag_text
     assert int(_diagnostic_value(diag_text, "fanout_anchor_port_count")) == 3
     assert int(_diagnostic_value(diag_text, "fanout_stub_static_cell_count")) > 0
 
