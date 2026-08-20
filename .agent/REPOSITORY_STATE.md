@@ -20,8 +20,8 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-20
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `f940494`. Working tree clean.
-- Current test baselines: `cargo test --lib` `383 passed, 0 failed`;
+- Current HEAD: `6f9ab35`. Working tree clean.
+- Current test baselines: `cargo test --lib` `387 passed, 0 failed`;
   `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 335 passed, 1 skipped`
   (dropped from the long-standing `21 failed, 325 passed` baseline via
   two 2026-08-20 passes: the batch-repair stale-signature fix, then a
