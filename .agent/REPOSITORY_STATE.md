@@ -20,10 +20,13 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-20
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `61e1e95`. Working tree clean.
+- Current HEAD: `86371c9`. Working tree clean.
 - Current test baselines: `cargo test --lib` `383 passed, 0 failed`;
-  `PYTHONPATH=. .venv/bin/pytest -q` `21 failed, 325 passed, 1 skipped`
-  (failure set has been stable/byte-identical across the last several
+  `PYTHONPATH=. .venv/bin/pytest -q` `20 failed, 326 passed, 1 skipped`
+  (dropped from the long-standing `21 failed, 325 passed` baseline
+  2026-08-20 -- `tests/test_rust_batch_repair.py`'s stale-signature
+  failure was fixed, see Completed ExecPlans; the remaining 20 are
+  otherwise the same set that's been stable across the last several
   plans -- see Current Findings below for what's actually behind it).
 - **Future Architecture Initiative: complete.** `.agent/PROJECT_GOAL.md`'s
   "Future Architecture Initiative" (giving routing-pipeline stages
@@ -47,6 +50,23 @@ now lives only in the referenced ExecPlan and `git log`.)
   restructuring gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-20-ripup-repair-orchestration-restructuring.md` -- first pass
+    at the ripup/repair orchestrator (`route_many_with_repair_and_commit`,
+    `src/py_router.rs`, ~3,065 lines), the code explicitly excluded from
+    the Future Architecture Initiative at every stage. Full characterization
+    (dispatched to a fork, read-only, no-decision instructions) found a
+    different entanglement shape than expected: not closure-heavy, but
+    ~40 named methods all implicitly sharing `PyPhotonicRouter`'s 20-field
+    session state; one piece (the `n_67`/`n_70`/`n_71` victim-set-expansion
+    logic, Current Findings item 1) has zero function boundary at all --
+    the sharpest concrete evidence for why this area needs restructuring.
+    Repository owner chose (via `AskUserQuestion`) the smallest of three
+    presented options: fix the one existing, currently-broken focused
+    integration test (`tests/test_rust_batch_repair.py`, stale 7- vs
+    8-element job-tuple signature) rather than attempt either restructuring
+    option this pass. Done -- pytest baseline dropped from 21 to 20
+    failures. Extracting the victim-set-expansion logic or a full
+    session-state decomposition remain available future work, not started.
   - `2026-08-20-path-length-matching-interface.md` -- closed out the
     Future Architecture Initiative (stage 4 of 4). Characterization found
     PLM splits into an already-clean graph/requirement half and a
@@ -294,22 +314,24 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** The path-length matching interface plan
-above is complete and closed (Milestone 4 broad validation passed with
-zero regressions) -- this closes out the Future Architecture Initiative
-entirely; all 4 recommended stages now have explicit `Protocol`/`trait`
-interfaces. **Next step** (not yet started, no ExecPlan written for it
-yet, no mandated single choice): ripup/repair orchestration
-(`route_many_with_repair_and_commit`, `src/py_router.rs`) is the most
-clearly-motivated candidate -- it was explicitly excluded from the
-initiative at every stage specifically because it needs its own dedicated
-restructuring pass (god-object session state on `PyPhotonicRouter`, zero
-stage-granular tests, three real bugs found in/near it during this
-initiative) before any interface extraction there is well-posed, and the
-three benchmark findings under Current Findings below are parked waiting
-on exactly that restructuring. Start by characterizing its current shape
-the same way each initiative stage was characterized first, not by
-assuming a specific restructuring approach up front.
+**No active ExecPlan right now.** The ripup/repair orchestration plan
+above is complete and closed at the scope the repository owner chose
+(fix the one stale test, stop there) -- see Completed ExecPlans. **Next
+step** (not yet started, no ExecPlan written for it, no mandated single
+choice): the two larger options from that plan's Milestone 1 remain
+available and un-chosen -- (a) extract just the victim-set-expansion
+logic (`src/py_router.rs:10038-10074`, zero function boundary today, root
+cause of Current Findings item 1) into its own named, unit-tested
+function, mirroring the existing `enqueue_targeted_illegal_crossing_repair_set`
+precedent (`src/py_router.rs:1669`); or (b) a full session-state
+restructuring of `route_many_with_repair_and_commit` mirroring
+`_RouteNetsRustSession`'s Python-side pattern in Rust. Either would now
+have a working, non-full-benchmark regression harness
+(`tests/test_rust_batch_repair.py`) to validate against, which did not
+exist before this session. `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`'s
+Surprises & Discoveries has the full characterization either option
+would build on -- re-read it before restarting rather than
+re-characterizing from scratch.
 
 A smaller, optional leftover from the just-closed PLM plan: Option C
 (not chosen) would have decomposed `analyze_meander_insertion_for_requirements`'s
