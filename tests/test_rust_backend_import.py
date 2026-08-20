@@ -237,7 +237,7 @@ def test_collision_crossing_route_rejects_invalid_local_crossing_move():
         + [(x, 7) for x in range(3, 14)]
     )
 
-    with pytest.raises(RuntimeError, match="No route found"):
+    with pytest.raises(RuntimeError, match="No legal LiDAR crossing route found"):
         router.route_single_net_and_commit(
             2,
             backend.State(2, 6, 0),
