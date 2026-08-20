@@ -1677,6 +1677,51 @@ pub(crate) fn extract_axis_aligned_straight_runs(
 mod tests {
     use super::*;
 
+    fn grid() -> GeometryGridSpec {
+        GeometryGridSpec::new(1.0, 0.0, 0.0).unwrap()
+    }
+
+    fn default_config() -> AutoMeanderConfig {
+        AutoMeanderConfig {
+            requested_extra_length_um: 1.0,
+            min_bend_radius_um: 0.2,
+            min_straight_um: 0.1,
+            max_bumps: 2,
+            max_meander_height_um: 20.0,
+            box_depth_um: 1.6,
+            min_segment_length_um: 1.0,
+            endpoint_inset_um: 0.0,
+            clearance_radius_cells: 0,
+            side_policy: AutoMeanderSidePolicy::Both,
+            mode: MeanderPlanningMode::FillBoxMultiBump,
+        }
+    }
+
+    fn straight_centerline() -> Vec<(f64, f64)> {
+        vec![(1.5, 2.5), (5.5, 2.5)]
+    }
+
+    fn plan_centerline_with_map(
+        centerline: &[(f64, f64)],
+        map: &ObstacleMap,
+        config: &AutoMeanderConfig,
+        box_depths_um: &[f64],
+    ) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
+        let prefix = DenseOccupancyPrefix::from_obstacle_map(map, None);
+        plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
+            centerline,
+            &grid(),
+            &prefix,
+            None,
+            None,
+            None,
+            None,
+            None,
+            config,
+            box_depths_um,
+        )
+    }
+
     #[test]
     fn dense_prefix_counts_blocked_cells_in_rectangles() {
         let mut map = ObstacleMap::new(6, 6);
@@ -1707,5 +1752,140 @@ mod tests {
         assert!(blocked.add_static_cell(2, 1));
         let blocked_prefix = DenseOccupancyPrefix::from_obstacle_map(&blocked, None);
         assert!(check_meander_replacement_polygon_free(&replacement, &g, &blocked_prefix).is_err());
+    }
+
+    #[test]
+    fn centerline_depth_sweep_selects_valid_box_on_empty_map() {
+        let map = ObstacleMap::new(20, 20);
+        let cfg = default_config();
+
+        let plan =
+            plan_centerline_with_map(&straight_centerline(), &map, &cfg, &[cfg.box_depth_um])
+                .expect("empty map should support an auto meander");
+
+        assert!(!plan.plan.centerline.is_empty());
+        assert!(!plan.replacement_centerline.is_empty());
+        assert_eq!(plan.selected_run_start_index, 0);
+        assert_eq!(plan.selected_run_end_index, 1);
+        assert_eq!(plan.candidate_runs, 1);
+    }
+
+    #[test]
+    fn centerline_depth_sweep_chooses_right_when_left_box_blocked() {
+        let mut map = ObstacleMap::new(20, 20);
+        for x in 1..=5 {
+            assert!(map.add_static_cell(x, 3));
+        }
+        let cfg = default_config();
+
+        let plan =
+            plan_centerline_with_map(&straight_centerline(), &map, &cfg, &[cfg.box_depth_um])
+                .expect("right side should remain available");
+
+        assert_eq!(plan.plan.side, MeanderSide::Right);
+        assert!(plan.selected_box.max_y_um <= 2.5 + EPS);
+        assert!(plan.rejected_box_blocked >= 1);
+    }
+
+    #[test]
+    fn centerline_depth_sweep_returns_no_candidate_when_both_sides_blocked() {
+        let mut map = ObstacleMap::new(20, 20);
+        for x in 1..=5 {
+            assert!(map.add_static_cell(x, 3));
+            assert!(map.add_static_cell(x, 1));
+        }
+        let cfg = default_config();
+
+        let err = plan_centerline_with_map(&straight_centerline(), &map, &cfg, &[cfg.box_depth_um])
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            GeometryError::NoAutoMeanderCandidate {
+                candidate_runs: 1,
+                rejected_box_blocked: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn centerline_depth_sweep_is_deterministic_for_tie() {
+        let map = ObstacleMap::new(30, 30);
+        let cfg = default_config();
+        let centerline = vec![(2.5, 10.5), (6.5, 10.5), (10.5, 10.5)];
+
+        let first = plan_centerline_with_map(&centerline, &map, &cfg, &[cfg.box_depth_um]).unwrap();
+        let second =
+            plan_centerline_with_map(&centerline, &map, &cfg, &[cfg.box_depth_um]).unwrap();
+
+        assert_eq!(first.selected_segment_index, 0);
+        assert_eq!(first.selected_run_start_index, 0);
+        assert_eq!(first.selected_run_end_index, 2);
+        assert_eq!(first.plan.side, MeanderSide::Left);
+        assert_eq!(first.selected_segment, second.selected_segment);
+        assert_eq!(first.selected_grid_rect, second.selected_grid_rect);
+        assert_eq!(first.plan.side, second.plan.side);
+    }
+
+    #[test]
+    fn centerline_depth_sweep_tries_later_depth_after_shallow_depth_fails() {
+        let map = ObstacleMap::new(20, 20);
+        let cfg = default_config();
+
+        let plan = plan_centerline_with_map(&straight_centerline(), &map, &cfg, &[0.4, 1.6])
+            .expect("second depth should satisfy the analytic footprint");
+
+        assert_eq!(plan.profile.depth_count, 2);
+        assert!((plan.selected_box_depth_um - 1.1433629385640827).abs() < 1.0e-9);
+        assert!(!plan.plan.centerline.is_empty());
+    }
+
+    #[test]
+    fn centerline_probe_reports_feasible_candidate_consistent_with_plan() {
+        let map = ObstacleMap::new(20, 20);
+        let prefix = DenseOccupancyPrefix::from_obstacle_map(&map, None);
+        let cfg = default_config();
+        let centerline = straight_centerline();
+        let plan = plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
+            &centerline,
+            &grid(),
+            &prefix,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &cfg,
+            &[cfg.box_depth_um],
+        )
+        .expect("planner should find the same candidate");
+
+        let probe = probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
+            &centerline,
+            &grid(),
+            &prefix,
+            None,
+            None,
+            &cfg,
+            &[cfg.box_depth_um],
+        )
+        .expect("probe should report feasibility");
+
+        assert!(probe.feasible);
+        assert_eq!(probe.candidate_runs, plan.candidate_runs);
+        assert_eq!(
+            probe.selected_run_start_index,
+            Some(plan.selected_run_start_index)
+        );
+        assert_eq!(
+            probe.selected_run_end_index,
+            Some(plan.selected_run_end_index)
+        );
+        assert_eq!(probe.selected_grid_rect, Some(plan.selected_grid_rect));
+        assert_eq!(
+            probe.selected_box_depth_um,
+            Some(plan.selected_box_depth_um)
+        );
     }
 }
