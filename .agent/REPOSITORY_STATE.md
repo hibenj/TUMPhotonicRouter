@@ -75,12 +75,26 @@ now lives only in the referenced ExecPlan and `git log`.)
     logic, Current Findings item 1) has zero function boundary at all --
     the sharpest concrete evidence for why this area needs restructuring.
     Repository owner chose (via `AskUserQuestion`) the smallest of three
-    presented options: fix the one existing, currently-broken focused
+    presented options first: fix the one existing, currently-broken focused
     integration test (`tests/test_rust_batch_repair.py`, stale 7- vs
-    8-element job-tuple signature) rather than attempt either restructuring
-    option this pass. Done -- pytest baseline dropped from 21 to 20
-    failures. Extracting the victim-set-expansion logic or a full
-    session-state decomposition remain available future work, not started.
+    8-element job-tuple signature) -- pytest baseline dropped from 21 to 20
+    failures. Then proceeded with the next-smallest option: extracted the
+    victim-set-expansion logic itself into `compute_repair_victim_sets`
+    (`src/py_router.rs:1669`), a pure free function (turned out to need
+    zero `self` coupling, cleaner than the initial characterization
+    suggested) with 4 new direct unit tests -- the first Codex dispatch
+    correctly stopped with zero edits on a wrong task-file assumption
+    (`repair_victim_sets` is mutated again later in the function by
+    unrelated repair-queue helpers), re-dispatched with a one-line
+    correction. Byte-identical logic confirmed by diff read; full
+    validation ladder (`cargo test --lib`, the batch-repair integration
+    test, `benes_4x4`, `multiportmmi_8x8`) all clean, `multiportmmi_8x8`
+    still failing with its exact pre-existing signature as expected (a
+    pure extraction, not a fix). A full session-state decomposition of
+    the orchestrator remains available future work, not started; the
+    underlying `n_67`/`n_70`/`n_71` bug itself is still unfixed, but this
+    logic now has test coverage for the first time, making a future fix
+    attempt safer.
   - `2026-08-20-path-length-matching-interface.md` -- closed out the
     Future Architecture Initiative (stage 4 of 4). Characterization found
     PLM splits into an already-clean graph/requirement half and a
@@ -349,23 +363,28 @@ explicitly resumes it.
 ## Next Engineering Step
 
 **No active ExecPlan right now.** The ripup/repair orchestration plan
-above is complete and closed at the scope the repository owner chose
-(fix the one stale test, stop there) -- see Completed ExecPlans. **Next
-step** (not yet started, no ExecPlan written for it, no mandated single
-choice): the two larger options from that plan's Milestone 1 remain
-available and un-chosen -- (a) extract just the victim-set-expansion
-logic (`src/py_router.rs:10038-10074`, zero function boundary today, root
-cause of Current Findings item 1) into its own named, unit-tested
-function, mirroring the existing `enqueue_targeted_illegal_crossing_repair_set`
-precedent (`src/py_router.rs:1669`); or (b) a full session-state
-restructuring of `route_many_with_repair_and_commit` mirroring
-`_RouteNetsRustSession`'s Python-side pattern in Rust. Either would now
+above is complete and closed at the scope the repository owner chose --
+fixed the stale test, then extracted the victim-set-expansion logic into
+`compute_repair_victim_sets` (`src/py_router.rs:1669`) with direct test
+coverage -- see Completed ExecPlans. **Next step** (not yet started, no
+ExecPlan written for it, no mandated single choice): two candidates
+remain, now easier to attempt than before this session:
+(a) **actually fix** the `n_67`/`n_70`/`n_71` bug (Current Findings item
+1) -- `compute_repair_victim_sets` now has a real function boundary and
+4 unit tests to validate a fix against directly, without needing a full
+benchmark run for every iteration; the fix itself (folding a victim's
+own secondary blocker into the ripup set) has not been designed yet; or
+(b) a full session-state restructuring of the rest of
+`route_many_with_repair_and_commit` (still ~3,000 lines, still ~40
+methods implicitly sharing `PyPhotonicRouter`'s session state) mirroring
+`_RouteNetsRustSession`'s Python-side pattern in Rust -- a much larger
+scope than either the test fix or the extraction done so far. Both now
 have a working, non-full-benchmark regression harness
-(`tests/test_rust_batch_repair.py`) to validate against, which did not
-exist before this session. `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`'s
-Surprises & Discoveries has the full characterization either option
-would build on -- re-read it before restarting rather than
-re-characterizing from scratch.
+(`tests/test_rust_batch_repair.py`) to validate against.
+`.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`'s
+Surprises & Discoveries has the full characterization either would build
+on -- re-read it before restarting rather than re-characterizing from
+scratch.
 
 A smaller, optional leftover from the just-closed PLM plan: Option C
 (not chosen) would have decomposed `analyze_meander_insertion_for_requirements`'s
