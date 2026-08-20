@@ -20,14 +20,15 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-20
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `86371c9`. Working tree clean.
+- Current HEAD: `f940494`. Working tree clean.
 - Current test baselines: `cargo test --lib` `383 passed, 0 failed`;
-  `PYTHONPATH=. .venv/bin/pytest -q` `20 failed, 326 passed, 1 skipped`
-  (dropped from the long-standing `21 failed, 325 passed` baseline
-  2026-08-20 -- `tests/test_rust_batch_repair.py`'s stale-signature
-  failure was fixed, see Completed ExecPlans; the remaining 20 are
-  otherwise the same set that's been stable across the last several
-  plans -- see Current Findings below for what's actually behind it).
+  `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 335 passed, 1 skipped`
+  (dropped from the long-standing `21 failed, 325 passed` baseline via
+  two 2026-08-20 passes: the batch-repair stale-signature fix, then a
+  full triage of the remaining 20 -- see Completed ExecPlans'
+  `2026-08-20-pytest-baseline-triage.md` entry. Every one of the
+  remaining 11 failures is now individually documented, not just
+  "the stable baseline" -- see Current Findings below).
 - **Future Architecture Initiative: complete.** `.agent/PROJECT_GOAL.md`'s
   "Future Architecture Initiative" (giving routing-pipeline stages
   explicit `Protocol`/`trait` interfaces), per the recommended order in
@@ -50,6 +51,19 @@ now lives only in the referenced ExecPlan and `git log`.)
   restructuring gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-20-pytest-baseline-triage.md` -- triaged all 20 pytest
+    failures remaining after the batch-repair fix. Fixed 6 stale/mechanical
+    ones directly (missing kwargs, stale error-message text, a stale
+    expected-value literal, a formula input the test never set, an
+    unrelated verification gate reached via fake test data). Investigated
+    and rewrote one test whose expectation was invalidated by a deliberate,
+    already-validated design change over a month ago, not a live bug
+    (confirmed via `git blame`, not assumed). Investigated and documented
+    (not fixed) 6 more as the same benchmark-placement-fact category as the
+    already-documented `TOY` finding -- confirmed via direct reproduction
+    that they fail identically under bare CLI defaults, not just under a
+    stress-test's settings. Net: `21 failed` -> `11 failed`; every
+    remaining failure is now individually explained, not just stable.
   - `2026-08-20-ripup-repair-orchestration-restructuring.md` -- first pass
     at the ripup/repair orchestrator (`route_many_with_repair_and_commit`,
     `src/py_router.rs`, ~3,065 lines), the code explicitly excluded from
@@ -242,6 +256,26 @@ clearance shortage at the target port's immediate approach (a bare corridor
 exists but disappears once ~2 cells of bend-radius clearance is required),
 i.e. a benchmark-placement fact, not a router bug. Do not use `TOY` as a
 smoke test.
+
+**Likely the same category, found 2026-08-20 during a pytest-baseline triage,
+not yet confirmed to TOY's own BFS-analysis depth**: `heater_s`,
+`heater_s_compact`, `mmi_heater_8x4`, and `mmi_heater_8x4_ripup_reroute` all
+fail `RuntimeError: No route found for gc_in_1_to_mmi_a_0_lower_in:
+gc_in_1,o1 -> mmi_a_0,o1` (source=(31,276,0), target=(104,296,0)); `mmi_heater`
+fails the analogous `gc1_to_mmi0_in2: gc_1,o1 -> mmi_0,o1`
+(source=(31,36,0), target=(84,56,0)) -- both are first gc-to-mmi-input
+connections, same shape and naming pattern as TOY's documented case.
+Confirmed these are not an artifact of `test_benchmarks_route_with_astar_only`'s
+stress settings (`enable_simple_routes=False`, `waveguide_clearance_um=0.0`):
+both fail identically under bare `routing_flow.py <benchmark>` CLI defaults
+(no flags). Treated as the same benchmark-placement-fact category as TOY by
+inference (same net-connection shape, same unconditional failure across
+settings), not by redoing TOY's own BFS-level proof for each -- if picked up
+later, get the same depth of geometric confirmation TOY's finding has before
+concluding either way. Affects `tests/test_routing_flow_stats.py::test_benchmarks_route_with_astar_only[heater_s|heater_s_compact|mmi_heater|mmi_heater_8x4|mmi_heater_8x4_ripup_reroute]`
+and `test_routing_flow_routes_single_heater_electrical_metal_end_to_end`
+(6 of the current 11 pytest baseline failures). Do not use these benchmarks
+as smoke tests either, for the same reason as `TOY`.
 
 **Stale, low-priority, not re-verified recently**: `multiportmmi_32x32` is
 not yet stable; route 156/`n_155` was the last known slow/hanging route to
