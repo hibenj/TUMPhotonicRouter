@@ -1052,3 +1052,1010 @@ pub fn plan_registered_geometry_final_requests(
         plan_input_indices,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GRID_WIDTH: i32 = 30;
+    const GRID_HEIGHT: i32 = 30;
+    const DEFAULT_BOX_DEPTHS_UM: &[f64] = &[1.6];
+    const DEFAULT_ENDPOINT_INSETS_UM: &[f64] = &[0.0];
+    const DEFAULT_EFFECTIVE_RADIUS_UM: f64 = 0.2;
+    const DEFAULT_MIN_STRAIGHT_UM: f64 = 0.1;
+    const DEFAULT_MAX_MEANDER_HEIGHT_UM: f64 = 20.0;
+    const DEFAULT_MIN_SEGMENT_LENGTH_UM: f64 = 1.0;
+    const DEFAULT_CLEARANCE_RADIUS_CELLS: i32 = 0;
+
+    struct PlanningFixture {
+        registered_geometries: Vec<RegisteredMeanderGeometry>,
+        registered_open_cells: Vec<FxHashSet<CellKey>>,
+        registered_open_indices: Vec<SparseCellIndex>,
+        base_prefix: DenseOccupancyPrefix,
+        grid: GeometryGridSpec,
+        grid_width: i32,
+        grid_height: i32,
+    }
+
+    fn grid() -> GeometryGridSpec {
+        GeometryGridSpec::new(1.0, 0.0, 0.0).unwrap()
+    }
+
+    fn straight_centerline_at(y_um: f64) -> Vec<(f64, f64)> {
+        vec![(1.5, y_um), (5.5, y_um)]
+    }
+
+    fn registered_geometry(
+        centerline: Vec<(f64, f64)>,
+        registered_open_index: usize,
+    ) -> RegisteredMeanderGeometry {
+        RegisteredMeanderGeometry {
+            centerline,
+            registered_open_index,
+            max_bumps: 2,
+        }
+    }
+
+    fn empty_open_index() -> SparseCellIndex {
+        SparseCellIndex::empty(GRID_HEIGHT)
+    }
+
+    impl PlanningFixture {
+        fn from_map_and_geometries(
+            map: &ObstacleMap,
+            registered_geometries: Vec<RegisteredMeanderGeometry>,
+        ) -> Self {
+            let route_count = registered_geometries
+                .iter()
+                .map(|geometry| geometry.registered_open_index)
+                .max()
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            Self {
+                registered_geometries,
+                registered_open_cells: vec![FxHashSet::default(); route_count],
+                registered_open_indices: (0..route_count).map(|_| empty_open_index()).collect(),
+                base_prefix: DenseOccupancyPrefix::from_obstacle_map(map, None),
+                grid: grid(),
+                grid_width: map.width(),
+                grid_height: map.height(),
+            }
+        }
+
+        fn empty_one() -> Self {
+            let map = ObstacleMap::new(GRID_WIDTH, GRID_HEIGHT);
+            Self::from_map_and_geometries(
+                &map,
+                vec![registered_geometry(straight_centerline_at(2.5), 0)],
+            )
+        }
+    }
+
+    fn assert_string_error<T>(result: Result<T, String>, expected: &str) {
+        match result {
+            Ok(_) => panic!("expected error: {expected}"),
+            Err(err) => assert_eq!(err, expected),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn call_requirement_candidates(
+        fixture: &PlanningFixture,
+        candidate_geometry_indices: &[Vec<usize>],
+        candidate_requested_extra_lengths_um: &[f64],
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+    ) -> Result<RegisteredRequirementResult, String> {
+        plan_registered_geometry_requirement_candidates(
+            candidate_geometry_indices,
+            candidate_requested_extra_lengths_um,
+            &fixture.registered_geometries,
+            &fixture.registered_open_cells,
+            &fixture.registered_open_indices,
+            &fixture.base_prefix,
+            None,
+            &fixture.grid,
+            fixture.grid_width,
+            fixture.grid_height,
+            box_depths_um,
+            endpoint_insets_um,
+            false,
+            DEFAULT_EFFECTIVE_RADIUS_UM,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            AutoMeanderSidePolicy::Both,
+            MeanderPlanningMode::FillBoxMultiBump,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assert_requirement_candidates_error(
+        candidate_geometry_indices: &[Vec<usize>],
+        candidate_requested_extra_lengths_um: &[f64],
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        expected: &str,
+    ) {
+        let fixture = PlanningFixture::empty_one();
+        assert_string_error(
+            call_requirement_candidates(
+                &fixture,
+                candidate_geometry_indices,
+                candidate_requested_extra_lengths_um,
+                box_depths_um,
+                endpoint_insets_um,
+                min_straight_um,
+                max_meander_height_um,
+                min_segment_length_um,
+                clearance_radius_cells,
+            ),
+            expected,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn call_request_sequence(
+        fixture: &PlanningFixture,
+        geometry_indices: &[usize],
+        requested_extra_lengths_um: &[f64],
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+    ) -> Result<RegisteredRequirementResult, String> {
+        plan_registered_geometry_request_sequence(
+            geometry_indices,
+            requested_extra_lengths_um,
+            &fixture.registered_geometries,
+            &fixture.registered_open_cells,
+            &fixture.registered_open_indices,
+            &fixture.base_prefix,
+            None,
+            &fixture.grid,
+            fixture.grid_width,
+            fixture.grid_height,
+            box_depths_um,
+            endpoint_insets_um,
+            false,
+            DEFAULT_EFFECTIVE_RADIUS_UM,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            AutoMeanderSidePolicy::Both,
+            MeanderPlanningMode::FillBoxMultiBump,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assert_request_sequence_error(
+        geometry_indices: &[usize],
+        requested_extra_lengths_um: &[f64],
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        expected: &str,
+    ) {
+        let fixture = PlanningFixture::empty_one();
+        assert_string_error(
+            call_request_sequence(
+                &fixture,
+                geometry_indices,
+                requested_extra_lengths_um,
+                box_depths_um,
+                endpoint_insets_um,
+                min_straight_um,
+                max_meander_height_um,
+                min_segment_length_um,
+                clearance_radius_cells,
+            ),
+            expected,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn call_split_request(
+        fixture: &PlanningFixture,
+        requested_extra_length_um: f64,
+        min_insertable_extra_um: f64,
+        max_parts: usize,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+    ) -> Result<RegisteredRequirementResult, String> {
+        plan_registered_geometry_split_request(
+            0,
+            requested_extra_length_um,
+            min_insertable_extra_um,
+            max_parts,
+            &fixture.registered_geometries,
+            &fixture.registered_open_cells,
+            &fixture.registered_open_indices,
+            &fixture.base_prefix,
+            None,
+            &fixture.grid,
+            fixture.grid_width,
+            fixture.grid_height,
+            box_depths_um,
+            endpoint_insets_um,
+            false,
+            DEFAULT_EFFECTIVE_RADIUS_UM,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            AutoMeanderSidePolicy::Both,
+            MeanderPlanningMode::FillBoxMultiBump,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assert_split_request_error(
+        requested_extra_length_um: f64,
+        min_insertable_extra_um: f64,
+        max_parts: usize,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        expected: &str,
+    ) {
+        let fixture = PlanningFixture::empty_one();
+        assert_string_error(
+            call_split_request(
+                &fixture,
+                requested_extra_length_um,
+                min_insertable_extra_um,
+                max_parts,
+                box_depths_um,
+                endpoint_insets_um,
+                min_straight_um,
+                max_meander_height_um,
+                min_segment_length_um,
+                clearance_radius_cells,
+            ),
+            expected,
+        );
+    }
+
+    fn call_final_requests(
+        fixture: &PlanningFixture,
+        geometry_indices: &[usize],
+        requested_extra_lengths_um: &[f64],
+    ) -> Result<RegisteredFinalPlanningResult, String> {
+        call_final_requests_with_split_config(
+            fixture,
+            geometry_indices,
+            requested_extra_lengths_um,
+            1.0,
+            4,
+        )
+    }
+
+    fn call_final_requests_with_split_config(
+        fixture: &PlanningFixture,
+        geometry_indices: &[usize],
+        requested_extra_lengths_um: &[f64],
+        min_insertable_extra_um: f64,
+        max_split_parts: usize,
+    ) -> Result<RegisteredFinalPlanningResult, String> {
+        plan_registered_geometry_final_requests(
+            geometry_indices,
+            requested_extra_lengths_um,
+            min_insertable_extra_um,
+            max_split_parts,
+            &fixture.registered_geometries,
+            &fixture.registered_open_cells,
+            &fixture.registered_open_indices,
+            &fixture.base_prefix,
+            None,
+            &fixture.grid,
+            fixture.grid_width,
+            fixture.grid_height,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            false,
+            DEFAULT_EFFECTIVE_RADIUS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            AutoMeanderSidePolicy::Both,
+            MeanderPlanningMode::FillBoxMultiBump,
+        )
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_mismatched_candidate_and_length_inputs() {
+        assert_requirement_candidates_error(
+            &[vec![0], vec![0]],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "candidate geometry and requested length inputs must have matching lengths",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_empty_candidate_list() {
+        assert_requirement_candidates_error(
+            &[],
+            &[],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "candidate list must not be empty",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_empty_box_depths() {
+        assert_requirement_candidates_error(
+            &[vec![0]],
+            &[1.0],
+            &[],
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "box_depths_um must not be empty",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_nonpositive_box_depth() {
+        assert_requirement_candidates_error(
+            &[vec![0]],
+            &[1.0],
+            &[0.0],
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "box_depths_um values must be finite and > 0",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_empty_endpoint_insets() {
+        assert_requirement_candidates_error(
+            &[vec![0]],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            &[],
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "endpoint_insets_um must not be empty",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_negative_endpoint_inset() {
+        assert_requirement_candidates_error(
+            &[vec![0]],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            &[-1.0],
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "endpoint_insets_um values must be finite and >= 0",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_nonpositive_requested_length() {
+        assert_requirement_candidates_error(
+            &[vec![0]],
+            &[0.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "candidate requested lengths must be > 0",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_negative_min_straight() {
+        assert_requirement_candidates_error(
+            &[vec![0]],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            -1.0,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "min_straight_um must be >= 0",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_nonpositive_max_meander_height() {
+        assert_requirement_candidates_error(
+            &[vec![0]],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            0.0,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "max_meander_height_um must be > 0",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_nonpositive_min_segment_length() {
+        assert_requirement_candidates_error(
+            &[vec![0]],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            0.0,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "min_segment_length_um must be > 0",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_negative_clearance_radius() {
+        assert_requirement_candidates_error(
+            &[vec![0]],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            -1,
+            "clearance_radius_cells must be >= 0",
+        );
+    }
+
+    #[test]
+    fn requirement_candidates_rejects_empty_candidate_bundle() {
+        assert_requirement_candidates_error(
+            &[vec![]],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "candidate bundles must not be empty",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_mismatched_geometry_and_length_inputs() {
+        assert_request_sequence_error(
+            &[0, 0],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "geometry and requested length inputs must have matching lengths",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_empty_geometry_sequence() {
+        assert_request_sequence_error(
+            &[],
+            &[],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "geometry sequence must not be empty",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_empty_box_depths() {
+        assert_request_sequence_error(
+            &[0],
+            &[1.0],
+            &[],
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "box_depths_um must not be empty",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_nonpositive_box_depth() {
+        assert_request_sequence_error(
+            &[0],
+            &[1.0],
+            &[0.0],
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "box_depths_um values must be finite and > 0",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_empty_endpoint_insets() {
+        assert_request_sequence_error(
+            &[0],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            &[],
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "endpoint_insets_um must not be empty",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_negative_endpoint_inset() {
+        assert_request_sequence_error(
+            &[0],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            &[-1.0],
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "endpoint_insets_um values must be finite and >= 0",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_nonpositive_requested_length() {
+        assert_request_sequence_error(
+            &[0],
+            &[0.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "requested lengths must be > 0",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_negative_min_straight() {
+        assert_request_sequence_error(
+            &[0],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            -1.0,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "min_straight_um must be >= 0",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_nonpositive_max_meander_height() {
+        assert_request_sequence_error(
+            &[0],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            0.0,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "max_meander_height_um must be > 0",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_nonpositive_min_segment_length() {
+        assert_request_sequence_error(
+            &[0],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            0.0,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "min_segment_length_um must be > 0",
+        );
+    }
+
+    #[test]
+    fn request_sequence_rejects_negative_clearance_radius() {
+        assert_request_sequence_error(
+            &[0],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            -1,
+            "clearance_radius_cells must be >= 0",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_nonpositive_requested_extra_length() {
+        assert_split_request_error(
+            0.0,
+            1.0,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "requested extra length must be finite and > 0",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_nonpositive_min_insertable_extra() {
+        assert_split_request_error(
+            4.0,
+            0.0,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "minimum insertable extra length must be finite and > 0",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_max_parts_less_than_two() {
+        assert_split_request_error(
+            4.0,
+            1.0,
+            1,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "max_parts must be >= 2",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_empty_box_depths() {
+        assert_split_request_error(
+            4.0,
+            1.0,
+            4,
+            &[],
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "box_depths_um must not be empty",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_nonpositive_box_depth() {
+        assert_split_request_error(
+            4.0,
+            1.0,
+            4,
+            &[0.0],
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "box_depths_um values must be finite and > 0",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_empty_endpoint_insets() {
+        assert_split_request_error(
+            4.0,
+            1.0,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            &[],
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "endpoint_insets_um must not be empty",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_negative_endpoint_inset() {
+        assert_split_request_error(
+            4.0,
+            1.0,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            &[-1.0],
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "endpoint_insets_um values must be finite and >= 0",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_negative_min_straight() {
+        assert_split_request_error(
+            4.0,
+            1.0,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            -1.0,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "min_straight_um must be >= 0",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_nonpositive_max_meander_height() {
+        assert_split_request_error(
+            4.0,
+            1.0,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            0.0,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "max_meander_height_um must be > 0",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_nonpositive_min_segment_length() {
+        assert_split_request_error(
+            4.0,
+            1.0,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            0.0,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "min_segment_length_um must be > 0",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_negative_clearance_radius() {
+        assert_split_request_error(
+            4.0,
+            1.0,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            -1,
+            "clearance_radius_cells must be >= 0",
+        );
+    }
+
+    #[test]
+    fn split_request_rejects_unsplittable_legal_chunks() {
+        assert_split_request_error(
+            1.0,
+            10.0,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            "requested extra length cannot be split into legal chunks",
+        );
+    }
+
+    #[test]
+    fn final_requests_rejects_mismatched_geometry_and_length_inputs() {
+        let fixture = PlanningFixture::empty_one();
+        assert_string_error(
+            call_final_requests(&fixture, &[0, 0], &[1.0]),
+            "geometry and requested length inputs must have matching lengths",
+        );
+    }
+
+    #[test]
+    fn request_sequence_plans_single_geometry_on_empty_map() {
+        let fixture = PlanningFixture::empty_one();
+        let result = call_request_sequence(
+            &fixture,
+            &[0],
+            &[1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+        )
+        .expect("empty map should support registered sequence planning");
+
+        assert_eq!(result.selected_candidate_index, Some(0));
+        assert_eq!(result.status(), "planned");
+        assert_eq!(result.candidate_results.len(), 1);
+        assert!(!result.candidate_results[0].plans.is_empty());
+    }
+
+    #[test]
+    fn requirement_candidates_falls_back_to_later_feasible_candidate() {
+        let mut map = ObstacleMap::new(GRID_WIDTH, GRID_HEIGHT);
+        for x in 1..=5 {
+            assert!(map.add_static_cell(x, 3));
+            assert!(map.add_static_cell(x, 1));
+        }
+        let fixture = PlanningFixture::from_map_and_geometries(
+            &map,
+            vec![
+                registered_geometry(straight_centerline_at(2.5), 0),
+                registered_geometry(straight_centerline_at(10.5), 1),
+            ],
+        );
+
+        let result = call_requirement_candidates(
+            &fixture,
+            &[vec![0], vec![1]],
+            &[1.0, 1.0],
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+        )
+        .expect("second registered geometry should remain feasible");
+
+        assert_eq!(result.selected_candidate_index, Some(1));
+        assert_eq!(result.candidate_results.len(), 2);
+        assert_eq!(result.candidate_results[0].status(), "no_candidate");
+        assert_eq!(result.candidate_results[1].status(), "planned");
+    }
+
+    #[test]
+    fn split_request_success_reports_part_count_as_selected_candidate_index() {
+        let map = ObstacleMap::new(GRID_WIDTH, GRID_HEIGHT);
+        let fixture = PlanningFixture::from_map_and_geometries(
+            &map,
+            vec![registered_geometry(vec![(1.5, 10.5), (15.5, 10.5)], 0)],
+        );
+        let result = call_split_request(
+            &fixture,
+            2.0,
+            0.5,
+            4,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+        )
+        .expect("empty map should support the first legal split");
+
+        assert_eq!(result.selected_candidate_index, Some(2));
+        assert_eq!(result.candidate_results.len(), 1);
+        assert_eq!(result.candidate_results[0].candidate_index, 2);
+        assert_eq!(result.candidate_results[0].plans.len(), 2);
+    }
+
+    #[test]
+    fn final_requests_empty_input_uses_none_fast_path() {
+        let fixture = PlanningFixture::empty_one();
+        let result = call_final_requests(&fixture, &[], &[])
+            .expect("empty final request input should use the none fast path");
+
+        assert_eq!(result.planning_mode, "none");
+        assert!(result.plan_input_indices.is_empty());
+        assert_eq!(result.result.selected_candidate_index, Some(0));
+        assert_eq!(result.result.candidate_results.len(), 1);
+        assert!(result.result.candidate_results[0].plans.is_empty());
+    }
+
+    #[test]
+    fn final_requests_direct_sequence_success_reports_sequence_mode() {
+        let fixture = PlanningFixture::empty_one();
+        let geometry_indices = [0];
+        let result = call_final_requests(&fixture, &geometry_indices, &[1.0])
+            .expect("empty map should support final request sequence planning");
+
+        assert_eq!(result.planning_mode, "rust_registered_sequence");
+        assert_eq!(
+            result.plan_input_indices,
+            (0..geometry_indices.len()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn final_requests_falls_back_to_split_route_runs_when_direct_sequence_fails() {
+        let map = ObstacleMap::new(GRID_WIDTH, GRID_HEIGHT);
+        let fixture = PlanningFixture::from_map_and_geometries(
+            &map,
+            vec![registered_geometry(vec![(1.5, 10.5), (15.5, 10.5)], 0)],
+        );
+
+        let result = call_final_requests_with_split_config(&fixture, &[0], &[2.0], 0.5, 4)
+            .expect("split fallback should plan two insertable chunks");
+
+        assert_eq!(result.planning_mode, "rust_registered_split_route_runs");
+        assert_eq!(result.plan_input_indices, vec![0, 0]);
+        assert_eq!(result.result.selected_candidate_index, Some(0));
+        assert_eq!(result.result.candidate_results.len(), 1);
+        assert_eq!(result.result.candidate_results[0].plans.len(), 2);
+    }
+}
