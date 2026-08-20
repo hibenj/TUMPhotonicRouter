@@ -1666,6 +1666,53 @@ fn dynamic_commit_error_overlap_owner_ids(error: &str) -> Vec<u64> {
         .collect()
 }
 
+fn compute_repair_victim_sets(
+    crossing_repair_enabled: bool,
+    probe_realized_crossing_violations: &[InvalidCrossingIntersection],
+    candidate_blockers: &[u64],
+    max_victims: usize,
+    max_rounds: u32,
+) -> Vec<(u32, Vec<u64>)> {
+    let mut repair_victim_sets: Vec<(u32, Vec<u64>)> = Vec::new();
+    if crossing_repair_enabled {
+        if !probe_realized_crossing_violations.is_empty() && candidate_blockers.len() > 2 {
+            let single_victim_limit = candidate_blockers.len().min(max_victims);
+            for owner in candidate_blockers.iter().take(single_victim_limit) {
+                repair_victim_sets.push((1, vec![*owner]));
+            }
+            if max_victims >= 2 {
+                let top_pair = vec![candidate_blockers[0], candidate_blockers[1]];
+                if !repair_victim_sets
+                    .iter()
+                    .any(|(_, existing)| existing == &top_pair)
+                {
+                    repair_victim_sets.push((1, top_pair));
+                }
+            }
+        } else {
+            let single_victim_limit = candidate_blockers.len().min(max_victims);
+            for owner in candidate_blockers.iter().take(single_victim_limit) {
+                repair_victim_sets.push((1, vec![*owner]));
+            }
+        }
+    }
+    for round_idx in 1..=max_rounds {
+        let ripup_ids: Vec<u64> = candidate_blockers
+            .iter()
+            .take((max_victims * round_idx as usize).min(candidate_blockers.len()))
+            .copied()
+            .collect();
+        if !ripup_ids.is_empty()
+            && !repair_victim_sets
+                .iter()
+                .any(|(_, existing)| existing == &ripup_ids)
+        {
+            repair_victim_sets.push((round_idx, ripup_ids));
+        }
+    }
+    repair_victim_sets
+}
+
 fn enqueue_targeted_illegal_crossing_repair_set(
     repair_victim_sets: &mut Vec<(u32, Vec<u64>)>,
     candidate_blockers: &mut Vec<u64>,
@@ -10060,43 +10107,13 @@ impl PyPhotonicRouter {
             let round_base_crossing_events = self.crossing_events.clone();
             let round_base_routes = final_routes.clone();
 
-            let mut repair_victim_sets: Vec<(u32, Vec<u64>)> = Vec::new();
-            if crossing_repair_enabled {
-                if !probe_realized_crossing_violations.is_empty() && candidate_blockers.len() > 2 {
-                    let single_victim_limit = candidate_blockers.len().min(max_victims);
-                    for owner in candidate_blockers.iter().take(single_victim_limit) {
-                        repair_victim_sets.push((1, vec![*owner]));
-                    }
-                    if max_victims >= 2 {
-                        let top_pair = vec![candidate_blockers[0], candidate_blockers[1]];
-                        if !repair_victim_sets
-                            .iter()
-                            .any(|(_, existing)| existing == &top_pair)
-                        {
-                            repair_victim_sets.push((1, top_pair));
-                        }
-                    }
-                } else {
-                    let single_victim_limit = candidate_blockers.len().min(max_victims);
-                    for owner in candidate_blockers.iter().take(single_victim_limit) {
-                        repair_victim_sets.push((1, vec![*owner]));
-                    }
-                }
-            }
-            for round_idx in 1..=max_rounds {
-                let ripup_ids: Vec<u64> = candidate_blockers
-                    .iter()
-                    .take((max_victims * round_idx as usize).min(candidate_blockers.len()))
-                    .copied()
-                    .collect();
-                if !ripup_ids.is_empty()
-                    && !repair_victim_sets
-                        .iter()
-                        .any(|(_, existing)| existing == &ripup_ids)
-                {
-                    repair_victim_sets.push((round_idx, ripup_ids));
-                }
-            }
+            let mut repair_victim_sets = compute_repair_victim_sets(
+                crossing_repair_enabled,
+                &probe_realized_crossing_violations,
+                &candidate_blockers,
+                max_victims,
+                max_rounds,
+            );
 
             let prefer_orthogonal_repair = crossing_repair_enabled
                 && !probe_realized_crossing_violations.is_empty()
@@ -14594,6 +14611,15 @@ mod tests {
         }
     }
 
+    fn dummy_invalid_crossing_intersection() -> InvalidCrossingIntersection {
+        InvalidCrossingIntersection {
+            net_id: 1,
+            partner_net_id: 2,
+            point: (0.0, 0.0),
+            reason: "dummy",
+        }
+    }
+
     #[test]
     fn simple_route_and_describe() {
         let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
@@ -14673,6 +14699,50 @@ mod tests {
         .map(|(x, y)| pack_xy(x, y))
         .collect();
         assert_eq!(north, expected_north);
+    }
+
+    #[test]
+    fn compute_repair_victim_sets_disabled_uses_round_expansion_only() {
+        assert_eq!(
+            compute_repair_victim_sets(false, &[], &[10, 20, 30], 2, 2),
+            vec![(1, vec![10, 20]), (2, vec![10, 20, 30])]
+        );
+    }
+
+    #[test]
+    fn compute_repair_victim_sets_enabled_without_violations_adds_singletons() {
+        assert_eq!(
+            compute_repair_victim_sets(true, &[], &[10, 20, 30], 2, 2),
+            vec![
+                (1, vec![10]),
+                (1, vec![20]),
+                (1, vec![10, 20]),
+                (2, vec![10, 20, 30]),
+            ]
+        );
+    }
+
+    #[test]
+    fn compute_repair_victim_sets_enabled_with_realized_violations_adds_top_pair() {
+        let violations = vec![dummy_invalid_crossing_intersection()];
+
+        assert_eq!(
+            compute_repair_victim_sets(true, &violations, &[10, 20, 30, 40], 2, 2),
+            vec![
+                (1, vec![10]),
+                (1, vec![20]),
+                (1, vec![10, 20]),
+                (2, vec![10, 20, 30, 40]),
+            ]
+        );
+    }
+
+    #[test]
+    fn compute_repair_victim_sets_enabled_with_empty_blockers_returns_empty() {
+        assert_eq!(
+            compute_repair_victim_sets(true, &[], &[], 2, 2),
+            Vec::<(u32, Vec<u64>)>::new()
+        );
     }
 
     #[test]
