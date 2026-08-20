@@ -1795,7 +1795,16 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
                         total_length_um=100.0,
                     ),
                 ],
-                realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
+                # None (not a real grid spec) deliberately opts this test out of
+                # routing_flow_verification.py's verify_and_attach_photonic_reports
+                # gate (`if not routed_records or realization_grid_spec is None:
+                # return`) -- that gate is unconditional final-geometry
+                # verification unrelated to path-length matching, and this
+                # test's fake RoutedNetRecords use bare `object()` route_obj
+                # placeholders that a real PyO3 realization call cannot accept.
+                # This test only cares about the PLM-specific layout.info
+                # fields populated independently of that gate.
+                realization_grid_spec=None,
             ),
             path_length_analysis_info={"requirements": [{}]},
             meander_requirements_info=[{"edge": {"net_name": "n0"}, "missing_length_um": 20.0}],
