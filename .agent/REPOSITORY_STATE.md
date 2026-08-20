@@ -64,37 +64,29 @@ now lives only in the referenced ExecPlan and `git log`.)
     that they fail identically under bare CLI defaults, not just under a
     stress-test's settings. Net: `21 failed` -> `11 failed`; every
     remaining failure is now individually explained, not just stable.
-  - `2026-08-20-ripup-repair-orchestration-restructuring.md` -- first pass
-    at the ripup/repair orchestrator (`route_many_with_repair_and_commit`,
+  - `2026-08-20-ripup-repair-orchestration-restructuring.md` -- 3 passes at
+    the ripup/repair orchestrator (`route_many_with_repair_and_commit`,
     `src/py_router.rs`, ~3,065 lines), the code explicitly excluded from
     the Future Architecture Initiative at every stage. Full characterization
     (dispatched to a fork, read-only, no-decision instructions) found a
     different entanglement shape than expected: not closure-heavy, but
     ~40 named methods all implicitly sharing `PyPhotonicRouter`'s 20-field
-    session state; one piece (the `n_67`/`n_70`/`n_71` victim-set-expansion
-    logic, Current Findings item 1) has zero function boundary at all --
-    the sharpest concrete evidence for why this area needs restructuring.
-    Repository owner chose (via `AskUserQuestion`) the smallest of three
-    presented options first: fix the one existing, currently-broken focused
+    session state. Fixed the one existing, currently-broken focused
     integration test (`tests/test_rust_batch_repair.py`, stale 7- vs
-    8-element job-tuple signature) -- pytest baseline dropped from 21 to 20
-    failures. Then proceeded with the next-smallest option: extracted the
-    victim-set-expansion logic itself into `compute_repair_victim_sets`
-    (`src/py_router.rs:1669`), a pure free function (turned out to need
-    zero `self` coupling, cleaner than the initial characterization
-    suggested) with 4 new direct unit tests -- the first Codex dispatch
-    correctly stopped with zero edits on a wrong task-file assumption
-    (`repair_victim_sets` is mutated again later in the function by
-    unrelated repair-queue helpers), re-dispatched with a one-line
-    correction. Byte-identical logic confirmed by diff read; full
-    validation ladder (`cargo test --lib`, the batch-repair integration
-    test, `benes_4x4`, `multiportmmi_8x8`) all clean, `multiportmmi_8x8`
-    still failing with its exact pre-existing signature as expected (a
-    pure extraction, not a fix). A full session-state decomposition of
-    the orchestrator remains available future work, not started; the
-    underlying `n_67`/`n_70`/`n_71` bug itself is still unfixed, but this
-    logic now has test coverage for the first time, making a future fix
-    attempt safer.
+    8-element job-tuple signature). Extracted the victim-set-expansion
+    logic into `compute_repair_victim_sets` (`src/py_router.rs:1669`), a
+    pure free function needing zero `self` coupling, with 4 new direct
+    unit tests. **Then fixed the underlying `n_67`/`n_70`/`n_71` bug
+    itself** (see Resolved Findings) -- found the "capture victim's
+    collision partner, expand ripup set" mechanism a 2026-08-19
+    investigation said was missing already existed and predated that
+    investigation; the real gap was a narrow string-prefix mismatch in
+    two parsing functions, fixed by recognizing a second message prefix.
+    Verified end-to-end (not just unit tests): `multiportmmi_8x8` now
+    routes cleanly under bare CLI defaults for the first time since this
+    bug was documented, `error_count: 0`. Full validation ladder clean,
+    zero regressions anywhere. A full session-state decomposition of the
+    rest of the orchestrator remains available future work, not started.
   - `2026-08-20-path-length-matching-interface.md` -- closed out the
     Future Architecture Initiative (stage 4 of 4). Characterization found
     PLM splits into an already-clean graph/requirement half and a
@@ -216,24 +208,10 @@ slices by default once a change is well-specified.
 
 ## Current Findings (open, tracked, not active work)
 
-All three deliberately parked pending the Future Architecture Initiative
-giving their surrounding code (mostly `route_many_with_repair_and_commit`,
-`src/py_router.rs`, and `_filter_dense_port_opening`,
-`translation/route_rust.py`) a clearer structure to fix them in:
+Two of the original three remain parked, pending a real design decision or
+restructuring; the third (below, in Resolved Findings) is fixed:
 
-1. **`multiportmmi_8x8` bare CLI defaults**: fails with `RuntimeError: No
-   route found for n_70` (`candidate_blockers=[70]`, cluster with `n_67`/
-   `n_71`). Root-caused precisely (`2026-08-19-fix-open-repair-and-dense-port-findings.md`):
-   net 70 routes fine standalone; the failure is repair-time only, when
-   net 71's repair rips net 70 up as a victim, because
-   `route_many_with_repair_and_commit`'s victim-set expansion
-   (`src/py_router.rs:10038-10074`) never folds a victim's own secondary
-   blocker (net 67) into the ripup set. Real fix is architectural
-   (multi-hour, real regression risk) and lives in code the current
-   initiative is about to restructure -- deliberately left unfixed.
-   `multiportmmi_8x8`'s documented stable-baseline config is unaffected
-   (confirmed clean as recently as the grid-snapping plan's Milestone 4).
-2. **`multiportmmi_8x8` dense-port lateral-width allocation** (only
+1. **`multiportmmi_8x8` dense-port lateral-width allocation** (only
    manifests with `--ripup-reroute false`; default repair papers over it):
    `_filter_dense_port_opening` splits a dense port group's available rows
    unevenly; a port landing on the narrow end (2 rows, `o9`/`o11` on
@@ -245,14 +223,38 @@ giving their surrounding code (mostly `route_many_with_repair_and_commit`,
    `multiportmmi_16x16`'s `n_102` looks superficially similar but is a
    *different*, likely-unfixable benchmark-placement problem (tight real
    corridor, not a reservation-logic bug) -- do not conflate the two.
-3. **`multiportmmi_16x16` stable-baseline**: fails with `RuntimeError: No
+2. **`multiportmmi_16x16` stable-baseline**: fails with `RuntimeError: No
    route found for n_50` (`candidate_blockers=[49, 50]`), caused by the
    zero-event-acceptance fix (bisected: clean at `9302efd`, broken at
-   `3bea008`/`HEAD`). Not root-caused to the same depth as finding 1 --
-   deliberately deferred, a diagnostic run was killed after ~10 minutes
-   without completing (16x16-scale iterates far slower than 8x8-scale).
-   If picked up later, get a root-cause trace first, same depth as
-   finding 1, before attempting a fix.
+   `3bea008`/`HEAD`). Not root-caused to the same depth as the now-resolved
+   `n_70` finding was -- deliberately deferred, a diagnostic run was killed
+   after ~10 minutes without completing (16x16-scale iterates far slower
+   than 8x8-scale). Worth checking first (2026-08-20) whether this shares
+   the same "Illegal grid crossing" prefix-recognition gap the `n_70` fix
+   just closed -- not confirmed either way, but cheap to check given that
+   fix's own lesson about re-verifying old negative conclusions before
+   assuming a fresh root-cause trace is needed.
+
+## Resolved Findings
+
+1. **`multiportmmi_8x8` bare CLI defaults, `n_67`/`n_70`/`n_71` cluster --
+   fixed 2026-08-20**, see
+   `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`.
+   Was: `RuntimeError: No route found for n_70` (`candidate_blockers=[70]`),
+   repair-time only -- net 71's repair rips net 70 up as a victim, net 70's
+   reroute then hits an illegal grid crossing against net 67, but net 67
+   was never folded into the ripup set. The "capture victim's collision
+   partner and expand ripup set" mechanism this fix needed
+   (`enqueue_targeted_illegal_crossing_repair_set`) already existed, predating
+   the original 2026-08-19 investigation that concluded a new one was
+   needed -- the real bug was a narrow string-prefix mismatch (two parsing
+   functions only recognized `"Illegal realized crossing"` messages, not
+   the identically-shaped `"Illegal grid crossing"` message net 70's
+   failure actually produces). Fixed by generalizing both to recognize
+   either prefix. Verified end-to-end: `multiportmmi_8x8` bare CLI defaults
+   now routes cleanly, `error_count: 0` on both crossing and photonic
+   verification. Full pytest suite and the `multiportmmi_8x8`
+   stable-baseline config both unaffected.
 
 **Idea saved for the eventual repair rewrite** (not acted on):
 repair's necessity is not just a net-ordering artifact -- confirmed
@@ -363,28 +365,29 @@ explicitly resumes it.
 ## Next Engineering Step
 
 **No active ExecPlan right now.** The ripup/repair orchestration plan
-above is complete and closed at the scope the repository owner chose --
-fixed the stale test, then extracted the victim-set-expansion logic into
-`compute_repair_victim_sets` (`src/py_router.rs:1669`) with direct test
-coverage -- see Completed ExecPlans. **Next step** (not yet started, no
-ExecPlan written for it, no mandated single choice): two candidates
-remain, now easier to attempt than before this session:
-(a) **actually fix** the `n_67`/`n_70`/`n_71` bug (Current Findings item
-1) -- `compute_repair_victim_sets` now has a real function boundary and
-4 unit tests to validate a fix against directly, without needing a full
-benchmark run for every iteration; the fix itself (folding a victim's
-own secondary blocker into the ripup set) has not been designed yet; or
-(b) a full session-state restructuring of the rest of
-`route_many_with_repair_and_commit` (still ~3,000 lines, still ~40
-methods implicitly sharing `PyPhotonicRouter`'s session state) mirroring
-`_RouteNetsRustSession`'s Python-side pattern in Rust -- a much larger
-scope than either the test fix or the extraction done so far. Both now
-have a working, non-full-benchmark regression harness
-(`tests/test_rust_batch_repair.py`) to validate against.
+above is complete and closed -- fixed the stale test, extracted the
+victim-set-expansion logic into `compute_repair_victim_sets`
+(`src/py_router.rs:1669`), then fixed Current Findings' `n_67`/`n_70`/
+`n_71` bug itself (a narrow string-prefix gap, not the "multi-hour
+architectural" fix a prior investigation assumed) -- see Completed
+ExecPlans and Resolved Findings. `multiportmmi_8x8` now routes cleanly
+under bare CLI defaults, which it has never done before this session.
+**Next step** (not yet started, no ExecPlan written for it, no mandated
+single choice): two remaining Current Findings items (dense-port
+lateral-width allocation, `multiportmmi_16x16` `n_50`), or a full
+session-state restructuring of the rest of `route_many_with_repair_and_commit`
+(still ~3,000 lines, still ~40 methods implicitly sharing
+`PyPhotonicRouter`'s session state) mirroring `_RouteNetsRustSession`'s
+Python-side pattern in Rust. Before spending real time on `n_50`, check
+whether it shares the same "Illegal grid crossing" prefix-recognition
+gap the `n_70` fix just closed (see Current Findings item 2's note) --
+directly re-verify with the same `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1`
+diagnostic pattern rather than assuming the old root-cause estimate
+still holds, per this fix's own central lesson.
 `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`'s
-Surprises & Discoveries has the full characterization either would build
-on -- re-read it before restarting rather than re-characterizing from
-scratch.
+Surprises & Discoveries has the full characterization any of these would
+build on -- re-read it before restarting rather than re-characterizing
+from scratch.
 
 A smaller, optional leftover from the just-closed PLM plan: Option C
 (not chosen) would have decomposed `analyze_meander_insertion_for_requirements`'s
