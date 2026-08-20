@@ -35,7 +35,13 @@ EXACT_MEANDER_EPS_UM = 1.0e-6
 GridCell = tuple[int, int]
 
 
-class _RustBackendProtocol(Protocol):
+class MeanderRustBackendLike(Protocol):
+    """Structural type for the loaded Rust backend used by meander planning.
+
+    Implementations are returned by `_load_rust_backend()` or an equivalent loader
+    and expose a `PyPhotonicRouter` constructor returning `MeanderRouterLike`.
+    """
+
     def GridSpec(self, *args: object, **kwargs: object) -> object: ...
     def PrimitiveLibraryConfig(self, *args: object, **kwargs: object) -> object: ...
     def AStarConfig(self, *args: object, **kwargs: object) -> object: ...
@@ -44,10 +50,16 @@ class _RustBackendProtocol(Protocol):
         *args: object,
         **kwargs: object,
     ) -> dict[str, object]: ...
-    def PyPhotonicRouter(self, *args: object, **kwargs: object) -> "_MeanderRouterProtocol": ...
+    def PyPhotonicRouter(self, *args: object, **kwargs: object) -> "MeanderRouterLike": ...
 
 
-class _MeanderRouterProtocol(Protocol):
+class MeanderRouterLike(Protocol):
+    """Structural type for the PyO3 router used by registered-meander planning.
+
+    The four registered-opened auto-config planning methods mirror the
+    `RegisteredMeanderPlanner` trait in `src/plm.rs`.
+    """
+
     def set_static_cells(self, cells: list[GridCell]) -> None: ...
     def add_static_cells(self, cells: list[GridCell]) -> None: ...
     def add_registered_meander_reserved_cells(self, cells: list[GridCell]) -> int: ...
@@ -209,7 +221,7 @@ def _merged_numeric_profiles(
 
 @dataclass
 class _MeanderPlannerContext:
-    router: _MeanderRouterProtocol
+    router: MeanderRouterLike
     by_edge: dict[RoutedEdgeKey, RoutedNetRecord]
     updated: dict[RoutedEdgeKey, RoutedNetRecord]
     registered_open_cell_index_by_edge: dict[RoutedEdgeKey, int]
@@ -1250,7 +1262,7 @@ def _record_route_cells(record: RoutedNetRecord) -> set[GridCell]:
 
 def _record_centerline_for_registration(
     record: RoutedNetRecord,
-    router: _MeanderRouterProtocol,
+    router: MeanderRouterLike,
 ) -> list[tuple[float, float]] | None:
     if record.corrected_centerline_um:
         return [
@@ -1410,7 +1422,7 @@ def _planned_record(
 
 def _build_planner_context(
     *,
-    rust_backend: _RustBackendProtocol,
+    rust_backend: MeanderRustBackendLike,
     routed_net_records: list[RoutedNetRecord],
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool,
@@ -1733,7 +1745,7 @@ def _meander_search_config(
     *,
     config: MeanderInsertionConfig,
     bend_radius_um: float,
-    rust_backend: _RustBackendProtocol | None = None,
+    rust_backend: MeanderRustBackendLike | None = None,
 ) -> _MeanderSearchConfig:
     backend = rust_backend if rust_backend is not None else _load_rust_backend()
     if backend is not None and hasattr(backend, "auto_meander_search_config_rs"):
@@ -2022,7 +2034,7 @@ def _axis_aligned_centerline_run_lengths_um(
 def _plan_and_commit_final_physical_meanders(
     *,
     selection_context: _MeanderPlannerContext,
-    rust_backend: _RustBackendProtocol,
+    rust_backend: MeanderRustBackendLike,
     routed_net_records: list[RoutedNetRecord],
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool,
@@ -2288,7 +2300,7 @@ def analyze_meander_insertion_for_requirements(
     rust_backend = _load_rust_backend()
     if rust_backend is None:
         raise RuntimeError("Rust router backend unavailable for meander analysis.")
-    rust_backend = cast(_RustBackendProtocol, rust_backend)
+    rust_backend = cast(MeanderRustBackendLike, rust_backend)
     grid_size_um_cfg = float(realization_grid_spec[2])
     context = _build_planner_context(
         rust_backend=rust_backend,

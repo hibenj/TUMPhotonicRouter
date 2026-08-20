@@ -1053,6 +1053,319 @@ pub fn plan_registered_geometry_final_requests(
     })
 }
 
+/// Interface for substituting a different registered-meander planning implementation
+/// behind future call sites. `RustRegisteredMeanderPlanner` delegates to the current
+/// free functions, leaving production callers unchanged.
+pub trait RegisteredMeanderPlanner {
+    #[allow(clippy::too_many_arguments)]
+    fn plan_requirement_candidates(
+        &self,
+        candidate_geometry_indices: &[Vec<usize>],
+        candidate_requested_extra_lengths_um: &[f64],
+        registered_geometries: &[RegisteredMeanderGeometry],
+        registered_open_cells: &[FxHashSet<CellKey>],
+        registered_open_indices: &[SparseCellIndex],
+        base_prefix: &DenseOccupancyPrefix,
+        reserved_index: Option<&SparseCellIndex>,
+        grid: &GeometryGridSpec,
+        grid_width: i32,
+        grid_height: i32,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        fixed_endpoint_inset: bool,
+        effective_radius_um: f64,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: AutoMeanderSidePolicy,
+        mode: MeanderPlanningMode,
+    ) -> Result<RegisteredRequirementResult, String>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn plan_request_sequence(
+        &self,
+        geometry_indices: &[usize],
+        requested_extra_lengths_um: &[f64],
+        registered_geometries: &[RegisteredMeanderGeometry],
+        registered_open_cells: &[FxHashSet<CellKey>],
+        registered_open_indices: &[SparseCellIndex],
+        base_prefix: &DenseOccupancyPrefix,
+        reserved_index: Option<&SparseCellIndex>,
+        grid: &GeometryGridSpec,
+        grid_width: i32,
+        grid_height: i32,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        fixed_endpoint_inset: bool,
+        effective_radius_um: f64,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: AutoMeanderSidePolicy,
+        mode: MeanderPlanningMode,
+    ) -> Result<RegisteredRequirementResult, String>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn plan_split_request(
+        &self,
+        geometry_index: usize,
+        requested_extra_length_um: f64,
+        min_insertable_extra_um: f64,
+        max_parts: usize,
+        registered_geometries: &[RegisteredMeanderGeometry],
+        registered_open_cells: &[FxHashSet<CellKey>],
+        registered_open_indices: &[SparseCellIndex],
+        base_prefix: &DenseOccupancyPrefix,
+        reserved_index: Option<&SparseCellIndex>,
+        grid: &GeometryGridSpec,
+        grid_width: i32,
+        grid_height: i32,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        fixed_endpoint_inset: bool,
+        effective_radius_um: f64,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: AutoMeanderSidePolicy,
+        mode: MeanderPlanningMode,
+    ) -> Result<RegisteredRequirementResult, String>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn plan_final_requests(
+        &self,
+        geometry_indices: &[usize],
+        requested_extra_lengths_um: &[f64],
+        min_insertable_extra_um: f64,
+        max_split_parts: usize,
+        registered_geometries: &[RegisteredMeanderGeometry],
+        registered_open_cells: &[FxHashSet<CellKey>],
+        registered_open_indices: &[SparseCellIndex],
+        base_prefix: &DenseOccupancyPrefix,
+        reserved_index: Option<&SparseCellIndex>,
+        grid: &GeometryGridSpec,
+        grid_width: i32,
+        grid_height: i32,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        fixed_endpoint_inset: bool,
+        effective_radius_um: f64,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: AutoMeanderSidePolicy,
+        mode: MeanderPlanningMode,
+    ) -> Result<RegisteredFinalPlanningResult, String>;
+}
+
+pub struct RustRegisteredMeanderPlanner;
+
+impl RegisteredMeanderPlanner for RustRegisteredMeanderPlanner {
+    #[allow(clippy::too_many_arguments)]
+    fn plan_requirement_candidates(
+        &self,
+        candidate_geometry_indices: &[Vec<usize>],
+        candidate_requested_extra_lengths_um: &[f64],
+        registered_geometries: &[RegisteredMeanderGeometry],
+        registered_open_cells: &[FxHashSet<CellKey>],
+        registered_open_indices: &[SparseCellIndex],
+        base_prefix: &DenseOccupancyPrefix,
+        reserved_index: Option<&SparseCellIndex>,
+        grid: &GeometryGridSpec,
+        grid_width: i32,
+        grid_height: i32,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        fixed_endpoint_inset: bool,
+        effective_radius_um: f64,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: AutoMeanderSidePolicy,
+        mode: MeanderPlanningMode,
+    ) -> Result<RegisteredRequirementResult, String> {
+        plan_registered_geometry_requirement_candidates(
+            candidate_geometry_indices,
+            candidate_requested_extra_lengths_um,
+            registered_geometries,
+            registered_open_cells,
+            registered_open_indices,
+            base_prefix,
+            reserved_index,
+            grid,
+            grid_width,
+            grid_height,
+            box_depths_um,
+            endpoint_insets_um,
+            fixed_endpoint_inset,
+            effective_radius_um,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy,
+            mode,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn plan_request_sequence(
+        &self,
+        geometry_indices: &[usize],
+        requested_extra_lengths_um: &[f64],
+        registered_geometries: &[RegisteredMeanderGeometry],
+        registered_open_cells: &[FxHashSet<CellKey>],
+        registered_open_indices: &[SparseCellIndex],
+        base_prefix: &DenseOccupancyPrefix,
+        reserved_index: Option<&SparseCellIndex>,
+        grid: &GeometryGridSpec,
+        grid_width: i32,
+        grid_height: i32,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        fixed_endpoint_inset: bool,
+        effective_radius_um: f64,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: AutoMeanderSidePolicy,
+        mode: MeanderPlanningMode,
+    ) -> Result<RegisteredRequirementResult, String> {
+        plan_registered_geometry_request_sequence(
+            geometry_indices,
+            requested_extra_lengths_um,
+            registered_geometries,
+            registered_open_cells,
+            registered_open_indices,
+            base_prefix,
+            reserved_index,
+            grid,
+            grid_width,
+            grid_height,
+            box_depths_um,
+            endpoint_insets_um,
+            fixed_endpoint_inset,
+            effective_radius_um,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy,
+            mode,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn plan_split_request(
+        &self,
+        geometry_index: usize,
+        requested_extra_length_um: f64,
+        min_insertable_extra_um: f64,
+        max_parts: usize,
+        registered_geometries: &[RegisteredMeanderGeometry],
+        registered_open_cells: &[FxHashSet<CellKey>],
+        registered_open_indices: &[SparseCellIndex],
+        base_prefix: &DenseOccupancyPrefix,
+        reserved_index: Option<&SparseCellIndex>,
+        grid: &GeometryGridSpec,
+        grid_width: i32,
+        grid_height: i32,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        fixed_endpoint_inset: bool,
+        effective_radius_um: f64,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: AutoMeanderSidePolicy,
+        mode: MeanderPlanningMode,
+    ) -> Result<RegisteredRequirementResult, String> {
+        plan_registered_geometry_split_request(
+            geometry_index,
+            requested_extra_length_um,
+            min_insertable_extra_um,
+            max_parts,
+            registered_geometries,
+            registered_open_cells,
+            registered_open_indices,
+            base_prefix,
+            reserved_index,
+            grid,
+            grid_width,
+            grid_height,
+            box_depths_um,
+            endpoint_insets_um,
+            fixed_endpoint_inset,
+            effective_radius_um,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy,
+            mode,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn plan_final_requests(
+        &self,
+        geometry_indices: &[usize],
+        requested_extra_lengths_um: &[f64],
+        min_insertable_extra_um: f64,
+        max_split_parts: usize,
+        registered_geometries: &[RegisteredMeanderGeometry],
+        registered_open_cells: &[FxHashSet<CellKey>],
+        registered_open_indices: &[SparseCellIndex],
+        base_prefix: &DenseOccupancyPrefix,
+        reserved_index: Option<&SparseCellIndex>,
+        grid: &GeometryGridSpec,
+        grid_width: i32,
+        grid_height: i32,
+        box_depths_um: &[f64],
+        endpoint_insets_um: &[f64],
+        fixed_endpoint_inset: bool,
+        effective_radius_um: f64,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: AutoMeanderSidePolicy,
+        mode: MeanderPlanningMode,
+    ) -> Result<RegisteredFinalPlanningResult, String> {
+        plan_registered_geometry_final_requests(
+            geometry_indices,
+            requested_extra_lengths_um,
+            min_insertable_extra_um,
+            max_split_parts,
+            registered_geometries,
+            registered_open_cells,
+            registered_open_indices,
+            base_prefix,
+            reserved_index,
+            grid,
+            grid_width,
+            grid_height,
+            box_depths_um,
+            endpoint_insets_um,
+            fixed_endpoint_inset,
+            effective_radius_um,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            side_policy,
+            mode,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1951,6 +2264,65 @@ mod tests {
         assert_eq!(result.status(), "planned");
         assert_eq!(result.candidate_results.len(), 1);
         assert!(!result.candidate_results[0].plans.is_empty());
+    }
+
+    #[test]
+    fn registered_meander_planner_delegates_request_sequence() {
+        let fixture = PlanningFixture::empty_one();
+        let planner = RustRegisteredMeanderPlanner;
+        let trait_result = planner
+            .plan_request_sequence(
+                &[0],
+                &[1.0],
+                &fixture.registered_geometries,
+                &fixture.registered_open_cells,
+                &fixture.registered_open_indices,
+                &fixture.base_prefix,
+                None,
+                &fixture.grid,
+                fixture.grid_width,
+                fixture.grid_height,
+                DEFAULT_BOX_DEPTHS_UM,
+                DEFAULT_ENDPOINT_INSETS_UM,
+                false,
+                DEFAULT_EFFECTIVE_RADIUS_UM,
+                DEFAULT_MIN_STRAIGHT_UM,
+                DEFAULT_MAX_MEANDER_HEIGHT_UM,
+                DEFAULT_MIN_SEGMENT_LENGTH_UM,
+                DEFAULT_CLEARANCE_RADIUS_CELLS,
+                AutoMeanderSidePolicy::Both,
+                MeanderPlanningMode::FillBoxMultiBump,
+            )
+            .expect("trait planner should match direct registered sequence planning");
+        let direct_result = plan_registered_geometry_request_sequence(
+            &[0],
+            &[1.0],
+            &fixture.registered_geometries,
+            &fixture.registered_open_cells,
+            &fixture.registered_open_indices,
+            &fixture.base_prefix,
+            None,
+            &fixture.grid,
+            fixture.grid_width,
+            fixture.grid_height,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            false,
+            DEFAULT_EFFECTIVE_RADIUS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            AutoMeanderSidePolicy::Both,
+            MeanderPlanningMode::FillBoxMultiBump,
+        )
+        .expect("direct registered sequence planning should succeed");
+
+        assert_eq!(
+            trait_result.selected_candidate_index,
+            direct_result.selected_candidate_index
+        );
+        assert_eq!(trait_result.status(), direct_result.status());
     }
 
     #[test]
