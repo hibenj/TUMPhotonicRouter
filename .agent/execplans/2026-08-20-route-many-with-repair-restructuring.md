@@ -1,0 +1,69 @@
+# Full restructuring of route_many_with_repair_and_commit
+
+## Purpose / Big Picture
+
+This is the last major routing-pipeline component without an explicit structure or real test coverage. Every other stage (obstacle map/grid snapping, A* single-net search, geometry realization, path-length matching) has an explicit `Protocol`/`trait` interface as of the just-closed Future Architecture Initiative; `route_many_with_repair_and_commit` (`src/py_router.rs`, ~3,035 lines) was excluded from that initiative at every stage specifically because it needed its own restructuring pass first. Three real bugs were found in or adjacent to it this session alone (zero-event-acceptance, silent partial-restore data loss, the `n_67`/`n_70`/`n_71` victim-set-expansion gap, the last now fixed -- see `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`).
+
+The repository owner's stated goal is a readable, tested codebase as the prerequisite for algorithm optimization work, not an end in itself. This function is the single remaining blocker to that goal, and -- per the structural survey below -- also contains at least one concrete, measurable optimization opportunity (repeated full-state cloning) that a restructuring would make safe to address, tying the readability goal directly to the eventual optimization goal.
+
+## Progress
+
+- [x] Milestone 0 (structural survey) done, see Surprises & Discoveries. Dispatched to a fork for the read-only investigation (report only, no design/code -- matching this session's established discipline for characterization work on this exact function, after an earlier fork correctly followed the same instruction on a related task). Produced a 13-phase control-flow breakdown and a full local-variable lifetime map across three natural scope tiers (whole-batch, per-net, per-repair-attempt).
+
+## Surprises & Discoveries
+
+- **The function decomposes cleanly into 13 named phases**, each with a clear line range and single responsibility, confirmed by a full line-by-line read (not sampled): (0) job unpacking/indexing, (1) loop entry, (2) preemptive crossing ripup, (3) plain normal-route attempt, (4) lidar pending-straight-victim-hint (source-layer center-out + single-victim ripup), (5) lidar direct-crossing subset attempts, (6) probe + `candidate_blockers` construction, (7) guided collision-crossing, (8) localized crossing keepout retry, (9) commit-if-clean fast path, (10) repair setup (snapshot + `compute_repair_victim_sets`), (11) the adaptive repair-attempt loop (itself sub-phased: reset-from-snapshot, victim reroute, current-net reroute, result tracing), (12) total-failure fallback, (13) result assembly. This is a genuinely different entanglement shape than `route_nets_rust`'s pre-refactor closures -- it is already sequential, already delegates to ~40 named helper methods -- the restructuring problem here is "give this sequential procedure named phase boundaries and explicit state," not "untangle hidden closure captures."
+- **Local variables split cleanly into three lifetime tiers, which is the actual design input for how to group them**: whole-batch scope (survives across every net in the loop: `final_routes`, `attempts`, `repair_trace`, `repair_count`, `failed_net_id`, `failed_error`, `retried_source_layers`, `timings`, plus read-only indices built once), per-net scope (fresh each net, but read/written across multiple of the 13 phases within that net: `probe_route`, `candidate_blockers`, the 7 `round_base_*` snapshot fields, `repair_victim_sets`, 3 learned-keepout maps, `repaired`), and per-repair-attempt scope (fresh each inner-loop iteration, no cross-attempt leakage observed: `victim_reroute_ids`, `route_order`, temporary reservations, `mode_failed`, `repaired_route`).
+- **Two variables have the exact cross-phase mutability trap that correctly blocked the first Codex dispatch on `compute_repair_victim_sets` earlier today** -- `candidate_blockers` (built read-only-looking in Phase 6, but mutated again deep inside Phase 11 via `&mut candidate_blockers` passed to `enqueue_targeted_illegal_crossing_repair_set`) and `repair_victim_sets` itself (already known). Any phase-extraction task touching Phase 6 or Phase 11 must account for this explicitly, or repeat today's exact near-miss.
+- **`retried_source_layers` has a genuinely easy-to-miss lifetime**: it's only touched within Phase 4a's logic, but must persist *across different nets'* loop iterations (a source layer retried while routing one net must not be retried again for a later net sharing that x-coordinate). It reads as phase-local; it is not. A naive "extract Phase 4 into a per-net method" pass would silently break this unless the variable is explicitly threaded from whole-batch scope.
+- **A concrete, measurable optimization target, found as a side effect of the structural read, not gone looking for**: the 7 `round_base_*` fields are re-cloned in full at the top of *every single repair attempt* (Phase 11a), not once per net -- so a net needing 4 repair rounds x 2 victim orderings x 2 reverse-order combinations clones the entire obstacle map, committed-route maps, and crossing-event list up to 16 times. This session's own `multiportmmi_8x8` timing output (from today's `n_70` fix validation) shows `victims=123.6s` dominating a 142s total route phase -- consistent with this being a real, not theoretical, cost. Restructuring this function safely is the prerequisite for changing this to restore-by-diff or clone-on-write, which is itself a first concrete algorithm-optimization win once the structure exists to change it safely.
+- **Phases 11b (victim reroute) and 11c (current-net reroute) are near-duplicated, symmetric code** -- same shape (attempt reroute, on error call the same two `enqueue_*` helpers, same keepout-learning), differing only in which net goes first. A strong candidate for collapsing into one method parameterized by role, rather than maintaining two ~250-line copies -- itself a readability win independent of the state-management restructuring.
+- **No new top-level "session" wrapper is needed the way `_RouteNetsRustSession` was needed for `route_nets_rust`.** That precedent existed because `route_nets_rust` was a free function with ~120 closures needing somewhere to live; this function is already a method on `PyPhotonicRouter` (`&mut self`), which already carries the 20 session-state fields. The entanglement here is in this method's own ~20 call-scoped locals across the three lifetime tiers above, not in a missing `self`.
+
+## Decision Log
+
+(No decision has been made yet on scope/pacing -- see the question below.)
+
+## Outcomes & Retrospective
+
+(To be filled in as this plan's milestones complete.)
+
+## Context and Orientation
+
+`route_many_with_repair_and_commit` (`src/py_router.rs:8723-11758`) is a method on `PyPhotonicRouter` handling batch net routing with rip-up/repair: for each net in a job batch, try to route it cleanly; if blocked, rip up one or more already-routed "victim" nets, reroute the blocked net, then try to reroute the victims elsewhere, with several fallback strategies and a bounded adaptive expansion of which nets to rip up together (`compute_repair_victim_sets`, `enqueue_targeted_illegal_crossing_repair_set`, `enqueue_learned_keepout_repair_retry` -- all already-extracted, already-tested free functions from earlier work this session and 2026-07-02). See the 13-phase breakdown in Surprises & Discoveries for the full control flow, and `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md` for the session-state field inventory, test-coverage findings, and the three prior bugs' exact locations -- all still accurate, not repeated here.
+
+## Plan of Work
+
+### Milestone 0: structural survey (done, see Surprises & Discoveries)
+
+### Milestone 1 (proposed): introduce `RepairBatchState`, pure state-promotion, zero behavior change
+
+Mirrors the single highest-leverage decision from the `route_nets_rust` precedent (`.agent/REPOSITORY_STATE.md`'s own recorded lesson: "the mid-plan restructuring after Milestone 1 -- inserting a dedicated shared-state-promotion milestone before any closure conversion -- was the single highest-leverage decision in this plan"). Introduce a plain struct, `RepairBatchState`, holding exactly the whole-batch-scope locals identified in the survey (`final_routes`, `attempts`, `repair_trace`, `repair_count`, `failed_net_id`, `failed_error`, `retried_source_layers`, `timings`). Construct it once at the top of the function, thread `&mut RepairBatchState` through the existing inline code with zero logic changes -- this milestone does not extract any phase into a separate method yet, it only proves the state grouping is correct by making the existing code compile and behave identically with the new struct in place. Validate against the full benchmark ladder (same rigor as today's `n_70` fix: `cargo test --lib`, the batch-repair integration test, `benes_4x4`, `multiportmmi_8x8` both bare and stable-baseline) before proceeding.
+
+### Milestone 2 (proposed): introduce a per-net scratch struct, same discipline
+
+Same pattern one tier down: a struct (name TBD, e.g. `NetRepairAttemptState`) holding the per-net-scope locals (`probe_route`, `candidate_blockers`, the 7 `round_base_*` fields, `repair_victim_sets`, the 3 learned-keepout maps, `repaired`), constructed fresh each loop iteration, threaded through unchanged. Explicitly test for the two known traps from the survey: `candidate_blockers`'s deep mutation inside Phase 11, and `retried_source_layers` correctly staying in `RepairBatchState` (Milestone 1's struct), not accidentally migrating into this per-net struct where it would silently lose its cross-net persistence.
+
+### Milestones 3+ (not yet specified)
+
+Left deliberately unspecified until Milestones 1-2 land and validate cleanly, matching this repository's own `.agent/PLANS.md` guidance against over-specifying before earlier milestones prove the state grouping is right. Candidates already visible from the survey: extract each of the 13 phases into a named method taking `&mut self` + the two state structs + phase-specific inputs, returning an outcome enum mirroring the existing `continue 'route_jobs`/`break 'route_jobs` control flow; collapse Phases 11b/11c's near-duplicated victim/current-net reroute logic into one role-parameterized method; and, only after the structure exists to make it safe, address the `round_base_*` re-cloning performance cost identified above.
+
+## Concrete Steps
+
+Milestone 0 was read-only source investigation -- no build or benchmark commands. See the geometry-realization plan's Toolchain notes for this machine's Rust toolchain override. Given this is the pipeline's highest-risk code by this session's own repeated characterization, every implementation milestone from here on must run the full validation ladder (`cargo test --lib`, `tests/test_rust_batch_repair.py`, `benes_4x4`, `multiportmmi_8x8` bare + stable-baseline) before being considered complete, per `.agent/WORKFLOW.md`'s Routing Verification Gate -- no milestone here should be self-certified by unit tests alone.
+
+## Validation and Acceptance
+
+Milestone 0 is complete when the phase breakdown and variable lifetime map are direct-evidence-backed (done above). Each later milestone's acceptance criteria is: compiles, passes the full validation ladder above with zero behavior change (byte-identical benchmark verification results, byte-identical pytest baseline), and does not regress on either of the two known traps.
+
+## Idempotence and Recovery
+
+Milestone 0 was entirely read-only and is safe to redo or resume freely; it made no code changes.
+
+## Artifacts and Notes
+
+Originating context: `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md` (this function's first-pass characterization, test-harness fix, victim-set-expansion extraction, and the `n_67`/`n_70`/`n_71` fix -- all still in effect and not repeated here) and `.agent/REPOSITORY_STATE.md`'s Next Engineering Step.
+
+## Interfaces and Dependencies
+
+To be determined as Milestones 1-2 land; no public interface changes are anticipated (this is an internal restructuring of a `PyPhotonicRouter` method, not a new `Protocol`/`trait` boundary the way the Future Architecture Initiative's four stages were).
