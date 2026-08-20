@@ -18,10 +18,10 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-19
+- Date: 2026-08-20
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `d1b7b1c`. Working tree clean.
-- Current test baselines: `cargo test --lib` `334 passed, 0 failed`;
+- Current HEAD: `f0cc23a`. Working tree clean.
+- Current test baselines: `cargo test --lib` `382 passed, 0 failed`;
   `PYTHONPATH=. .venv/bin/pytest -q` `21 failed, 325 passed, 1 skipped`
   (failure set has been stable/byte-identical across the last several
   plans -- see Current Findings below for what's actually behind it).
@@ -33,9 +33,10 @@ now lives only in the referenced ExecPlan and `git log`.)
   `.agent/execplans/2026-08-19-extract-obstacle-map-grid-snapping-interfaces.md`;
   (2) A* single-net search -- **done**, see
   `.agent/execplans/2026-08-19-extract-astar-single-net-search-interface.md`;
-  (3) geometry realization -- **next, not started, needs a design decision
-  before it can proceed autonomously** (see "Next Engineering Step" below);
-  (4) path-length matching. Ripup/repair orchestration
+  (3) geometry realization -- **done**, see
+  `.agent/execplans/2026-08-20-extract-geometry-realization-plm-boundary.md`;
+  (4) path-length matching -- **next, not started** (see "Next Engineering
+  Step" below). Ripup/repair orchestration
   (`route_many_with_repair_and_commit`, `src/py_router.rs`) is explicitly
   excluded from this order -- it needs its own restructuring pass
   (god-object session state, zero stage-granular tests, three real bugs
@@ -44,6 +45,24 @@ now lives only in the referenced ExecPlan and `git log`.)
   this initiative gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-20-extract-geometry-realization-plm-boundary.md` -- resolved
+    the geometry-realization/PLM coupling by moving the Auto-meander-search
+    layer (the actual shared code, ~1,700+ lines across 3 non-contiguous
+    regions) out of `src/geometry_realization.rs` into a new module,
+    `src/auto_meander.rs`; `plm.rs` now depends only on that clean module
+    boundary, not on realization-proper internals. Fixed an accidental
+    `GridRect` name collision found along the way (renamed the moved one to
+    `MeanderGridRect`). Added 48 new direct unit tests for code that
+    previously had none: 6 for the moved centerline-search core plus 1
+    probe-consistency check in `auto_meander.rs`, and 42 for `plm.rs`'s 4
+    public planning functions (validation-error coverage plus
+    candidate/sequence/split/final-request success paths). Full validation
+    ladder run clean: `cargo test --lib` `382 passed, 0 failed`, full
+    `pytest -q` byte-identical to the pre-plan baseline, `benes_4x4` and
+    `multiportmmi_8x8` stable-baseline both `Verdict: PASS`,
+    `multiportmmi_8x8` bare-defaults and `heater_s_mod` PLM regression both
+    still fail with their exact pre-existing, already-documented
+    signatures -- zero regressions anywhere in the ladder.
   - `2026-08-19-extract-astar-single-net-search-interface.md` -- added a
     purely-additive `SingleNetSearch` trait (`src/astar.rs`, 4 methods, one
     per genuine mode) implemented by a new `AStarSingleNetSearch` marker
@@ -253,29 +272,23 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** The A* single-net search extraction plan
-above is complete and closed. **Next step** (not yet started, no ExecPlan
-written for it yet): geometry realization (`src/geometry_realization.rs`),
-the third stage in the recommended order. **Unlike the two extractions
-already done, this one needs a repository-owner check-in before
-proceeding**: the stage-characterization plan found geometry realization is
-coupled at the Rust type level with path-length matching (`src/plm.rs`
-directly imports meander-geometry types from `src/geometry_realization.rs`
--- `AutoMeanderConfig`, `AutoRouteAnalyticMeanderPlan`, etc.), so a
-deliberate decision about where the boundary between the two stages should
-sit is needed before either can extract cleanly -- this is a real design
-tradeoff, not a mechanical characterization step, so present options rather
-than deciding solo, matching how the dense-port lateral-width finding
-(Current Findings item 2) was handled. Start by characterizing the exact
-coupling (which types/functions are shared, whether the boundary is
-natural or arbitrary) and present the tradeoff, not by picking a boundary
-and implementing it.
+**No active ExecPlan right now.** The geometry-realization/PLM boundary plan
+above is complete and closed (Milestone 6 broad validation passed with zero
+regressions). **Next step** (not yet started, no ExecPlan written for it
+yet): path-length matching, the fourth and final stage in the Future
+Architecture Initiative's recommended order. Unlike geometry realization,
+this stage no longer has an open coupling question -- `src/plm.rs` now sits
+cleanly on top of `src/auto_meander.rs`'s module boundary, and `plm.rs`
+itself already has direct unit coverage (42 tests, this session). Start by
+characterizing what a real `Protocol`/`trait` interface for path-length
+matching would look like given that existing boundary, the same
+characterize-first-then-present-options approach used for the geometry
+realization stage.
 
-Path-length matching is the stage after that. Ripup/repair orchestration
-needs its own dedicated restructuring pass before it's extraction-ready --
-consider scoping that as its own plan once the remaining stage extractions
-above are done, since Current Findings items 1 and 2 both live in code
-that restructuring would touch.
+Ripup/repair orchestration needs its own dedicated restructuring pass
+before it's extraction-ready -- consider scoping that as its own plan once
+the remaining stage extractions above are done, since Current Findings
+items 1 and 2 both live in code that restructuring would touch.
 
 Deferred candidates, not in a mandated order, not part of the current
 initiative:
