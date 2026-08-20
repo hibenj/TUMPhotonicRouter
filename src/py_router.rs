@@ -1637,9 +1637,14 @@ fn compress_physical_centerline(points: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
     out
 }
 
+const ILLEGAL_REALIZED_CROSSING_PREFIX: &str = "Illegal realized crossing: net ";
+const ILLEGAL_GRID_CROSSING_PREFIX: &str = "Illegal grid crossing: net ";
+
 fn illegal_crossing_net_ids_from_error(error: &str) -> Vec<u64> {
-    const PREFIX: &str = "Illegal realized crossing: net ";
-    let Some(rest) = error.strip_prefix(PREFIX) else {
+    let rest = error
+        .strip_prefix(ILLEGAL_REALIZED_CROSSING_PREFIX)
+        .or_else(|| error.strip_prefix(ILLEGAL_GRID_CROSSING_PREFIX));
+    let Some(rest) = rest else {
         return Vec::new();
     };
     let Some((first, rest)) = rest.split_once(" intersects net ") else {
@@ -3950,8 +3955,9 @@ impl PyPhotonicRouter {
         error: &str,
         tight_not_perpendicular: bool,
     ) -> FxHashSet<CellKey> {
-        const PREFIX: &str = "Illegal realized crossing: net ";
-        if !error.starts_with(PREFIX) {
+        if !error.starts_with(ILLEGAL_REALIZED_CROSSING_PREFIX)
+            && !error.starts_with(ILLEGAL_GRID_CROSSING_PREFIX)
+        {
             return FxHashSet::default();
         }
         let Some((_, point_and_rest)) = error.split_once(" at (") else {
@@ -14770,6 +14776,64 @@ mod tests {
         assert!(repair_victim_sets
             .iter()
             .any(|(round, ids)| *round == 3 && ids == &vec![36, 31, 33]));
+    }
+
+    #[test]
+    fn illegal_crossing_net_ids_parse_realized_grid_and_unrelated_errors() {
+        assert_eq!(
+            illegal_crossing_net_ids_from_error(
+                "Illegal realized crossing: net 36 intersects net 33 at (0.000, 0.000) (not_perpendicular)",
+            ),
+            vec![36, 33]
+        );
+        assert_eq!(
+            illegal_crossing_net_ids_from_error(
+                "Illegal grid crossing: net 70 intersects net 67 at (1292.500, 326.500) (insufficient_straight_margin)",
+            ),
+            vec![70, 67]
+        );
+        assert_eq!(
+            illegal_crossing_net_ids_from_error("some unrelated error"),
+            Vec::<u64>::new()
+        );
+    }
+
+    #[test]
+    fn grid_crossing_error_creates_repair_keepout() {
+        let router = PyPhotonicRouter::new(
+            PyGridSpec::new(40, 40, 0.5, 0.0, 0.0).unwrap(),
+            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
+            PyAStarConfig::new(
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                0.0,
+                0,
+                false,
+                false,
+                "library".to_string(),
+                "distance".to_string(),
+                1.0,
+            ),
+        );
+
+        let keepout = router.crossing_error_repair_keepout_keys(
+            "Illegal grid crossing: net 70 intersects net 67 at (5.000, 5.000) (insufficient_straight_margin)",
+        );
+
+        assert!(!keepout.is_empty());
+        assert!(keepout.contains(&pack_xy(10, 10)));
     }
 
     #[test]
