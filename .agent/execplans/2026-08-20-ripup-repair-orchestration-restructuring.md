@@ -9,6 +9,8 @@ Two open benchmark findings (`.agent/REPOSITORY_STATE.md` Current Findings items
 ## Progress
 
 - [x] Milestone 0 (full characterization) done, see Surprises & Discoveries. Dispatched to a fork for the read-only investigation (explicitly instructed to characterize only, not decide -- given this repository's own on-the-record lesson about a fork fabricating a decision on a similar prior characterization task, see `.agent/execplans/2026-08-20-extract-geometry-realization-plm-boundary.md`'s Decision Log). Summary: the function is larger than expected (~3,065 lines, bigger than `route_nets_rust` was pre-refactor) but a *different kind* of entangled -- not closure-heavy (7 closures total, 0 `move`), already delegating to ~40 named methods on `self`, but every one of those methods implicitly shares `PyPhotonicRouter`'s 20-field session state through `&mut self` rather than taking/returning plain data. One specific piece -- the victim-set-expansion logic behind the open `n_67`/`n_70`/`n_71` finding -- has literally no function boundary at all (inline in the loop), which is the sharpest, most concrete piece of evidence for why this needs a restructuring pass before any interface work. 3 options proposed below for Milestone 1.
+- [x] Milestone 1 (present options) done (2026-08-20). Repository owner chose, via `AskUserQuestion`: fix the stale `tests/test_rust_batch_repair.py` test first and stop there, rather than either restructuring option.
+- [x] Milestone 2 (fix the stale test) done (2026-08-20, Claude, small localized edit). See Outcomes & Retrospective for the diagnosis and fix. Full-suite re-run: `21 failed, 325 passed, 1 skipped` -> `20 failed, 326 passed, 1 skipped`, exactly one fewer failure, nothing else changed. This plan is complete per the repository owner's chosen scope.
 
 ## Surprises & Discoveries
 
@@ -25,11 +27,15 @@ Two open benchmark findings (`.agent/REPOSITORY_STATE.md` Current Findings items
 
 ## Decision Log
 
-(No decision has been made yet as of Milestone 0's completion.)
+- Decision: pursue the "fix the stale test first" option -- recalibrate `tests/test_rust_batch_repair.py`'s one existing focused integration test so there's a working, non-full-benchmark regression harness before touching anything structural, then stop and reassess -- rather than immediately extracting the victim-set-expansion logic or attempting a full session-state restructuring.
+  Rationale: repository owner's explicit choice, via `AskUserQuestion`, after being shown all three options with tradeoffs, given this is real routing-behavior code with genuine regression risk (unlike the past 4 stages' purely-additive interface work) (2026-08-20).
+  Date/Author: 2026-08-20, repository owner.
 
 ## Outcomes & Retrospective
 
-(To be filled in as this plan's milestones complete.)
+Milestone 2 complete, 2026-08-20. Diagnosed the exact cause of `tests/test_rust_batch_repair.py::test_rust_batch_repair_rips_and_reroutes_dynamic_blocker`'s failure directly (not delegated -- a small, fully-specified, already-diagnosed fix, per `.agent/CLAUDE_CODEX_FLOW.md`'s "small localized edits" exception): `route_many_with_repair_and_commit`'s job-tuple signature (`src/py_router.rs:8673-8682`) is an 8-tuple with a `static_cleanup_cells: Vec<(i32, i32)>` field (6th position, between `clearance_exempt_cells` and `source_port_um`) that the test's two job tuples were missing -- they had 7 elements, not 8, matching the exact `ValueError: expected tuple of length 8, but got tuple of length 7` failure signature. Fixed by adding an empty list (`[]`, meaning "no static cleanup cells for this scenario") as the 6th element of both job tuples. The single test now passes with every one of its detailed assertions intact (repair trace events, victim reroute, route cell geometry) -- this was a stale-signature problem, not evidence the underlying repair behavior had actually broken. Full-suite re-run confirms exactly one fewer failure and nothing else changed: `21 failed, 325 passed, 1 skipped` -> `20 failed, 326 passed, 1 skipped`.
+
+This restores a working, focused (not full-benchmark), direct-PyO3-call regression harness for `route_many_with_repair_and_commit` -- the orchestrator itself had zero working test coverage of its own before this fix. Per the repository owner's decision, this plan stops here rather than proceeding to either of the larger restructuring options; extracting the victim-set-expansion logic or a full session-state decomposition remain available as future work, now with this test as a safety net for either.
 
 ## Context and Orientation
 
@@ -51,9 +57,13 @@ Key files and locations, all confirmed by direct read in Milestone 0:
 
 ### Milestone 0: full characterization (done, see Surprises & Discoveries)
 
-### Milestone 1: present scope/approach options to the repository owner
+### Milestone 1: present scope/approach options to the repository owner (done)
 
-This is a larger, higher-risk area than any of the 4 stages just closed -- explicitly flagged throughout this session's own history as the least separable, most bug-prone code in the pipeline. Present options via `AskUserQuestion` and record the real decision in the Decision Log before any implementation proceeds.
+This is a larger, higher-risk area than any of the 4 stages just closed -- explicitly flagged throughout this session's own history as the least separable, most bug-prone code in the pipeline. Presented via `AskUserQuestion`; repository owner chose to fix the stale test first and stop. See Decision Log.
+
+### Milestone 2: recalibrate the stale test (done)
+
+`tests/test_rust_batch_repair.py::test_rust_batch_repair_rips_and_reroutes_dynamic_blocker` failed with `ValueError: expected tuple of length 8, but got tuple of length 7`. Diagnosed directly against current source (`route_many_with_repair_and_commit`'s job-tuple parameter type, `src/py_router.rs:8673-8682`): an 8th field, `static_cleanup_cells: Vec<(i32, i32)>`, was added at position 6 (between `clearance_exempt_cells` and `source_port_um`) since the test was last updated. Fixed by adding `[]` at that position in both job tuples in the test. See Outcomes & Retrospective for full validation.
 
 ## Concrete Steps
 

@@ -51,8 +51,8 @@ def test_rust_batch_repair_rips_and_reroutes_dynamic_blocker():
     rust_backend, router = _build_lane_repair_router()
     state = rust_backend.State
     jobs = [
-        (1, state(2, 10, 0), state(47, 10, 0), [], [], None, None),
-        (2, state(5, 10, 0), state(44, 10, 0), [], [], None, None),
+        (1, state(2, 10, 0), state(47, 10, 0), [], [], [], None, None),
+        (2, state(5, 10, 0), state(44, 10, 0), [], [], [], None, None),
     ]
 
     result = router.route_many_with_repair_and_commit(
