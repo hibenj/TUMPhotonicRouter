@@ -1031,6 +1031,19 @@ struct RepairAttemptState {
     learned_repair_retry_counts: FxHashMap<Vec<u64>, usize>,
 }
 
+struct ProbeState {
+    probe_route: RouteResult,
+    crossing_repair_enabled: bool,
+    allowed_crossing_partners: FxHashSet<u64>,
+    probe_crossing_events: Vec<CrossingEvent>,
+    strict_expected_crossing_probe: bool,
+    probe_crossing_compliant: bool,
+    probe_realized_crossing_violations: Vec<InvalidCrossingIntersection>,
+    probe_grid_crossing_violations: Vec<InvalidCrossingIntersection>,
+    probe_repair_keepout_keys: FxHashSet<CellKey>,
+    candidate_blockers: Vec<u64>,
+}
+
 struct NativeEndpointCorrection {
     centerline: Vec<(f64, f64)>,
     committed_bump: bool,
@@ -9757,20 +9770,32 @@ impl PyPhotonicRouter {
                     order_by_id.get(owner).copied().unwrap_or(usize::MAX),
                 )
             });
+            let mut probe = ProbeState {
+                probe_route,
+                crossing_repair_enabled,
+                allowed_crossing_partners,
+                probe_crossing_events,
+                strict_expected_crossing_probe,
+                probe_crossing_compliant,
+                probe_realized_crossing_violations,
+                probe_grid_crossing_violations,
+                probe_repair_keepout_keys,
+                candidate_blockers,
+            };
             if trace_native_repair {
                 eprintln!(
                     "native_repair_probe net={} allowed_partners={} crossing_events={} grid_violations={} realized_violations={} realized_reasons={:?} keepout_keys={} candidate_blockers={:?}",
                     job.net_id,
-                    allowed_crossing_partners.len(),
-                    probe_crossing_events.len(),
-                    probe_grid_crossing_violations.len(),
-                    probe_realized_crossing_violations.len(),
-                    probe_realized_crossing_violations
+                    probe.allowed_crossing_partners.len(),
+                    probe.probe_crossing_events.len(),
+                    probe.probe_grid_crossing_violations.len(),
+                    probe.probe_realized_crossing_violations.len(),
+                    probe.probe_realized_crossing_violations
                         .iter()
                         .map(|violation| (violation.partner_net_id, violation.reason))
                         .collect::<Vec<_>>(),
-                    probe_repair_keepout_keys.len(),
-                    candidate_blockers,
+                    probe.probe_repair_keepout_keys.len(),
+                    probe.candidate_blockers,
                 );
             }
             batch.timings.repair_probe_victim_selection_us +=
@@ -9779,18 +9804,18 @@ impl PyPhotonicRouter {
                 std::env::var_os("PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING").is_some()
                     && std::env::var_os("PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING")
                         .is_none();
-            if crossing_repair_enabled
+            if probe.crossing_repair_enabled
                 && self.use_collision_crossing_routing
                 && guided_collision_crossing_enabled
-                && !candidate_blockers.is_empty()
+                && !probe.candidate_blockers.is_empty()
             {
                 let guided_start = native_batch_timer(collect_native_timing);
                 let mut guided_partner_ids = FxHashSet::default();
-                for owner in candidate_blockers
+                for owner in probe.candidate_blockers
                     .iter()
                     .take(max_victims_per_failure.max(1).min(2))
                 {
-                    if allowed_crossing_partners.contains(owner) {
+                    if probe.allowed_crossing_partners.contains(owner) {
                         guided_partner_ids.insert(*owner);
                     }
                 }
@@ -9870,7 +9895,7 @@ impl PyPhotonicRouter {
                                     failed: false,
                                     error: None,
                                     repair_round: Some(0),
-                                    candidate_blockers: candidate_blockers.clone(),
+                                    candidate_blockers: probe.candidate_blockers.clone(),
                                     ripup_ids: Vec::new(),
                                 });
                                 batch.final_routes.insert(job.net_id, route);
@@ -9889,15 +9914,15 @@ impl PyPhotonicRouter {
                     }
                 }
             }
-            let invalid_collision_crossing_candidate = crossing_repair_enabled
+            let invalid_collision_crossing_candidate = probe.crossing_repair_enabled
                 && self.use_collision_crossing_routing
-                && !probe_realized_crossing_violations.is_empty();
-            if crossing_repair_enabled
+                && !probe.probe_realized_crossing_violations.is_empty();
+            if probe.crossing_repair_enabled
                 && !invalid_collision_crossing_candidate
-                && !probe_repair_keepout_keys.is_empty()
-                && !candidate_blockers.is_empty()
+                && !probe.probe_repair_keepout_keys.is_empty()
+                && !probe.candidate_blockers.is_empty()
             {
-                let localized_probe_keepout = probe_repair_keepout_keys.clone();
+                let localized_probe_keepout = probe.probe_repair_keepout_keys.clone();
                 let added_keepout = self.obstacle_map.add_static_keys(&localized_probe_keepout);
                 if trace_native_repair {
                     eprintln!(
@@ -9905,14 +9930,14 @@ impl PyPhotonicRouter {
                         job.net_id,
                         localized_probe_keepout.len(),
                         added_keepout,
-                        candidate_blockers,
+                        probe.candidate_blockers,
                     );
                 }
 
                 let mut local_retry_route: Option<RouteResult> = None;
                 let route_start = native_batch_timer(collect_native_timing);
                 let prefer_orthogonal_local_retry =
-                    !probe_realized_crossing_violations.is_empty();
+                    !probe.probe_realized_crossing_violations.is_empty();
                 let route_result = self
                     .route_single_net_and_commit_native_with_optional_orthogonal_repair_keepout(
                         job.net_id,
@@ -9943,7 +9968,7 @@ impl PyPhotonicRouter {
                             failed: false,
                             error: None,
                             repair_round: Some(0),
-                            candidate_blockers: candidate_blockers.clone(),
+                            candidate_blockers: probe.candidate_blockers.clone(),
                             ripup_ids: Vec::new(),
                         });
                         local_retry_route = Some(route);
@@ -9965,7 +9990,7 @@ impl PyPhotonicRouter {
                             failed: true,
                             error: Some(normal_error),
                             repair_round: Some(0),
-                            candidate_blockers: candidate_blockers.clone(),
+                            candidate_blockers: probe.candidate_blockers.clone(),
                             ripup_ids: Vec::new(),
                         });
                         let repair_start = native_batch_timer(collect_native_timing);
@@ -10002,7 +10027,7 @@ impl PyPhotonicRouter {
                                     failed: false,
                                     error: None,
                                     repair_round: Some(0),
-                                    candidate_blockers: candidate_blockers.clone(),
+                                    candidate_blockers: probe.candidate_blockers.clone(),
                                     ripup_ids: Vec::new(),
                                 });
                                 local_retry_route = Some(route);
@@ -10016,7 +10041,7 @@ impl PyPhotonicRouter {
                                     failed: true,
                                     error: Some(error),
                                     repair_round: Some(0),
-                                    candidate_blockers: candidate_blockers.clone(),
+                                    candidate_blockers: probe.candidate_blockers.clone(),
                                     ripup_ids: Vec::new(),
                                 });
                             }
@@ -10031,16 +10056,16 @@ impl PyPhotonicRouter {
                     continue 'route_jobs;
                 }
             }
-            if candidate_blockers.is_empty() {
-                if probe_crossing_compliant {
+            if probe.candidate_blockers.is_empty() {
+                if probe.probe_crossing_compliant {
                     {
                         let commit_start = native_batch_timer(collect_native_timing);
                         let crossed_partner_ids =
-                            Self::crossing_partner_ids_from_events(&probe_crossing_events);
+                            Self::crossing_partner_ids_from_events(&probe.probe_crossing_events);
                         let allowed_crossing_core_keys =
-                            Self::crossing_reservation_keys_for_events(&probe_crossing_events);
+                            Self::crossing_reservation_keys_for_events(&probe.probe_crossing_events);
                         let (route_cells, core_cells) = self.route_commit_and_core_cells(
-                            &probe_route,
+                            &probe.probe_route,
                             block_radius_cells,
                             commit_radius_cells,
                             Some(&job.clearance_exempt_cells),
@@ -10062,10 +10087,10 @@ impl PyPhotonicRouter {
                             batch.timings.commit_update_dynamic_map_us +=
                                 native_batch_elapsed_us(commit_start);
                             self.remove_crossing_events_for_net(job.net_id);
-                            self.add_crossing_events(probe_crossing_events);
+                            self.add_crossing_events(probe.probe_crossing_events);
                             if let Err(error) = self.remember_committed_route_centerlines_with_ports(
                                 job.net_id,
-                                &probe_route,
+                                &probe.probe_route,
                                 job.source_port_um,
                                 job.target_port_um,
                             ) {
@@ -10078,11 +10103,11 @@ impl PyPhotonicRouter {
                                 job.net_id,
                                 Some(&job.opened_cell_keys),
                             );
-                            self.add_post_commit_guidance_for_route(job.net_id, &probe_route);
+                            self.add_post_commit_guidance_for_route(job.net_id, &probe.probe_route);
                             self.invalidate_meander_base_prefix();
                             if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
                                 job.net_id,
-                                &probe_route,
+                                &probe.probe_route,
                                 job.source_port_um,
                                 job.target_port_um,
                                 Some(&job.opened_cell_keys),
@@ -10092,14 +10117,14 @@ impl PyPhotonicRouter {
                                 batch.failed_error = Some(error);
                                 break;
                             }
-                            batch.final_routes.insert(job.net_id, probe_route);
+                            batch.final_routes.insert(job.net_id, probe.probe_route);
                             continue;
                         }
                         batch.timings.commit_update_dynamic_map_us +=
                             native_batch_elapsed_us(commit_start);
                     }
                 }
-                if strict_expected_crossing_probe {
+                if probe.strict_expected_crossing_probe {
                     batch.failed_net_id = Some(job.net_id);
                     batch.failed_error =
                         Some("Probe route violates expected crossing constraints".to_string());
@@ -10108,7 +10133,7 @@ impl PyPhotonicRouter {
                 let commit_start = native_batch_timer(collect_native_timing);
                 if self.commit_native_route_with_clearance(
                     job.net_id,
-                    &probe_route,
+                    &probe.probe_route,
                     block_radius_cells,
                     commit_radius_cells,
                     &job.clearance_exempt_cells,
@@ -10118,7 +10143,7 @@ impl PyPhotonicRouter {
                     Some(&job.opened_cell_keys),
                 ) {
                     batch.timings.commit_update_dynamic_map_us += native_batch_elapsed_us(commit_start);
-                    batch.final_routes.insert(job.net_id, probe_route);
+                    batch.final_routes.insert(job.net_id, probe.probe_route);
                     continue;
                 }
                 batch.timings.commit_update_dynamic_map_us += native_batch_elapsed_us(commit_start);
@@ -10128,7 +10153,7 @@ impl PyPhotonicRouter {
             }
 
             let history_start = native_batch_timer(collect_native_timing);
-            self.add_history_for_native_route(&probe_route, block_radius_cells, history_increment);
+            self.add_history_for_native_route(&probe.probe_route, block_radius_cells, history_increment);
             batch.timings.history_update_us += native_batch_elapsed_us(history_start);
             let max_rounds = max_rounds.max(1);
             let max_victims = max_victims_per_failure.max(1);
@@ -10144,9 +10169,9 @@ impl PyPhotonicRouter {
                 round_base_crossing_events: self.crossing_events.clone(),
                 round_base_routes: batch.final_routes.clone(),
                 repair_victim_sets: compute_repair_victim_sets(
-                    crossing_repair_enabled,
-                    &probe_realized_crossing_violations,
-                    &candidate_blockers,
+                    probe.crossing_repair_enabled,
+                    &probe.probe_realized_crossing_violations,
+                    &probe.candidate_blockers,
                     max_victims,
                     max_rounds,
                 ),
@@ -10155,9 +10180,9 @@ impl PyPhotonicRouter {
                 learned_repair_retry_counts: FxHashMap::default(),
             };
 
-            let prefer_orthogonal_repair = crossing_repair_enabled
-                && !probe_realized_crossing_violations.is_empty()
-                && (probe_grid_crossing_violations.is_empty() || candidate_blockers.len() > 2);
+            let prefer_orthogonal_repair = probe.crossing_repair_enabled
+                && !probe.probe_realized_crossing_violations.is_empty()
+                && (probe.probe_grid_crossing_violations.is_empty() || probe.candidate_blockers.len() > 2);
             let mut repair_set_index = 0usize;
             while repair_set_index < repair.repair_victim_sets.len() {
                 let active_repair_set_index = repair_set_index;
@@ -10197,7 +10222,7 @@ impl PyPhotonicRouter {
                         job.net_id,
                         Some(round_idx),
                         Some(active_repair_set_index as u64),
-                        &candidate_blockers,
+                        &probe.candidate_blockers,
                         &ripup_ids,
                         &victim_reroute_ids,
                         Some(victim_first),
@@ -10209,12 +10234,12 @@ impl PyPhotonicRouter {
                     let mut victim_first_probe_reservation = FxHashSet::default();
                     let mut temporary_probe_reservation: FxHashSet<CellKey> = if victim_first {
                         let mut conflict_keys = self.crossing_physical_violation_repair_keepout_keys(
-                            &probe_realized_crossing_violations,
+                            &probe.probe_realized_crossing_violations,
                             &ripup_ids,
                         );
                         conflict_keys.extend(
                             self.crossing_grid_violation_repair_keepout_keys(
-                                &probe_grid_crossing_violations,
+                                &probe.probe_grid_crossing_violations,
                                 &ripup_ids,
                             ),
                         );
@@ -10233,7 +10258,7 @@ impl PyPhotonicRouter {
                             }
                         }
                         let probe_keys: FxHashSet<CellKey> =
-                            probe_route.cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
+                            probe.probe_route.cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
                         for old_id in &ripup_ids {
                             if let Some(old_route) = batch.final_routes.get(old_id) {
                                 for (x, y) in &old_route.cells {
@@ -10267,7 +10292,7 @@ impl PyPhotonicRouter {
                         );
                     }
 
-                    let lidar_pure_crossing_repair = crossing_repair_enabled
+                    let lidar_pure_crossing_repair = probe.crossing_repair_enabled
                         && self.use_collision_crossing_routing
                         && !self.crossing_context.config().allow_only_expected_pairs;
                     for old_id in &ripup_ids {
@@ -10339,7 +10364,7 @@ impl PyPhotonicRouter {
                                     job.net_id,
                                     Some(round_idx),
                                     Some(active_repair_set_index as u64),
-                                    &candidate_blockers,
+                                    &probe.candidate_blockers,
                                     &ripup_ids,
                                     &victim_reroute_ids,
                                     Some(victim_first),
@@ -10354,7 +10379,7 @@ impl PyPhotonicRouter {
                                     failed: false,
                                     error: None,
                                     repair_round: Some(round_idx),
-                                    candidate_blockers: candidate_blockers.clone(),
+                                    candidate_blockers: probe.candidate_blockers.clone(),
                                     ripup_ids: ripup_ids.clone(),
                                 });
                                 batch.final_routes.insert(job.net_id, route.clone());
@@ -10363,7 +10388,7 @@ impl PyPhotonicRouter {
                             Err(normal_error) => {
                                 enqueue_targeted_illegal_crossing_repair_set(
                                     &mut repair.repair_victim_sets,
-                                    &mut candidate_blockers,
+                                    &mut probe.candidate_blockers,
                                     &repair.round_base_routes,
                                     job.net_id,
                                     &ripup_ids,
@@ -10405,7 +10430,7 @@ impl PyPhotonicRouter {
                                     job.net_id,
                                     Some(round_idx),
                                     Some(active_repair_set_index as u64),
-                                    &candidate_blockers,
+                                    &probe.candidate_blockers,
                                     &ripup_ids,
                                     &victim_reroute_ids,
                                     Some(victim_first),
@@ -10420,7 +10445,7 @@ impl PyPhotonicRouter {
                                     failed: true,
                                     error: Some(normal_error),
                                     repair_round: Some(round_idx),
-                                    candidate_blockers: candidate_blockers.clone(),
+                                    candidate_blockers: probe.candidate_blockers.clone(),
                                     ripup_ids: ripup_ids.clone(),
                                 });
                                 let repair_start = native_batch_timer(collect_native_timing);
@@ -10461,7 +10486,7 @@ impl PyPhotonicRouter {
                                             job.net_id,
                                             Some(round_idx),
                                             Some(active_repair_set_index as u64),
-                                            &candidate_blockers,
+                                            &probe.candidate_blockers,
                                             &ripup_ids,
                                             &victim_reroute_ids,
                                             Some(victim_first),
@@ -10476,7 +10501,7 @@ impl PyPhotonicRouter {
                                             failed: false,
                                             error: None,
                                             repair_round: Some(round_idx),
-                                            candidate_blockers: candidate_blockers.clone(),
+                                            candidate_blockers: probe.candidate_blockers.clone(),
                                             ripup_ids: ripup_ids.clone(),
                                         });
                                         batch.final_routes.insert(job.net_id, route.clone());
@@ -10485,7 +10510,7 @@ impl PyPhotonicRouter {
                                     Err(error) => {
                                         enqueue_targeted_illegal_crossing_repair_set(
                                             &mut repair.repair_victim_sets,
-                                            &mut candidate_blockers,
+                                            &mut probe.candidate_blockers,
                                             &repair.round_base_routes,
                                             job.net_id,
                                             &ripup_ids,
@@ -10520,7 +10545,7 @@ impl PyPhotonicRouter {
                                             job.net_id,
                                             Some(round_idx),
                                             Some(active_repair_set_index as u64),
-                                            &candidate_blockers,
+                                            &probe.candidate_blockers,
                                             &ripup_ids,
                                             &victim_reroute_ids,
                                             Some(victim_first),
@@ -10535,7 +10560,7 @@ impl PyPhotonicRouter {
                                             failed: true,
                                             error: Some(error),
                                             repair_round: Some(round_idx),
-                                            candidate_blockers: candidate_blockers.clone(),
+                                            candidate_blockers: probe.candidate_blockers.clone(),
                                             ripup_ids: ripup_ids.clone(),
                                         });
                                         mode_failed = true;
@@ -10548,9 +10573,9 @@ impl PyPhotonicRouter {
                     if !mode_failed
                         && !victim_first
                         && temporary_probe_reservation_added
-                        && (candidate_blockers.len() > 2
-                            || (probe_grid_crossing_violations.is_empty()
-                                && !probe_realized_crossing_violations.is_empty()))
+                        && (probe.candidate_blockers.len() > 2
+                            || (probe.probe_grid_crossing_violations.is_empty()
+                                && !probe.probe_realized_crossing_violations.is_empty()))
                     {
                         self.obstacle_map
                             .remove_static_keys(&temporary_probe_reservation);
@@ -10681,7 +10706,7 @@ impl PyPhotonicRouter {
                                                     victim_job.net_id,
                                                     Some(round_idx),
                                                     Some(active_repair_set_index as u64),
-                                                    &candidate_blockers,
+                                                    &probe.candidate_blockers,
                                                     &ripup_ids,
                                                     &victim_reroute_ids,
                                                     Some(victim_first),
@@ -10696,7 +10721,7 @@ impl PyPhotonicRouter {
                                                     failed: false,
                                                     error: None,
                                                     repair_round: Some(round_idx),
-                                                    candidate_blockers: candidate_blockers.clone(),
+                                                    candidate_blockers: probe.candidate_blockers.clone(),
                                                     ripup_ids: ripup_ids.clone(),
                                                 });
                                                 guided_victim_route = Some(route);
@@ -10782,7 +10807,7 @@ impl PyPhotonicRouter {
                                                     victim_job.net_id,
                                                     Some(round_idx),
                                                     Some(active_repair_set_index as u64),
-                                                    &candidate_blockers,
+                                                    &probe.candidate_blockers,
                                                     &ripup_ids,
                                                     &victim_reroute_ids,
                                                     Some(victim_first),
@@ -10797,7 +10822,7 @@ impl PyPhotonicRouter {
                                                     failed: false,
                                                     error: None,
                                                     repair_round: Some(round_idx),
-                                                    candidate_blockers: candidate_blockers.clone(),
+                                                    candidate_blockers: probe.candidate_blockers.clone(),
                                                     ripup_ids: ripup_ids.clone(),
                                                 });
                                                 guided_victim_route = Some(route);
@@ -10815,7 +10840,7 @@ impl PyPhotonicRouter {
                                     }
                                 }
                             }
-                            if crossing_repair_enabled
+                            if probe.crossing_repair_enabled
                                 && self.use_collision_crossing_routing
                                 && guided_collision_crossing_enabled
                                 && !victim_first
@@ -10902,7 +10927,7 @@ impl PyPhotonicRouter {
                                                 victim_job.net_id,
                                                 Some(round_idx),
                                                 Some(active_repair_set_index as u64),
-                                                &candidate_blockers,
+                                                &probe.candidate_blockers,
                                                 &ripup_ids,
                                                 &victim_reroute_ids,
                                                 Some(victim_first),
@@ -10917,7 +10942,7 @@ impl PyPhotonicRouter {
                                                 failed: false,
                                                 error: None,
                                                 repair_round: Some(round_idx),
-                                                candidate_blockers: candidate_blockers.clone(),
+                                                candidate_blockers: probe.candidate_blockers.clone(),
                                                 ripup_ids: ripup_ids.clone(),
                                             });
                                             guided_victim_route = Some(route);
@@ -10981,7 +11006,7 @@ impl PyPhotonicRouter {
                                         victim_job.net_id,
                                         Some(round_idx),
                                         Some(active_repair_set_index as u64),
-                                        &candidate_blockers,
+                                        &probe.candidate_blockers,
                                         &ripup_ids,
                                         &victim_reroute_ids,
                                         Some(victim_first),
@@ -10994,7 +11019,7 @@ impl PyPhotonicRouter {
                                 Err(normal_error) => {
                                     enqueue_targeted_illegal_crossing_repair_set(
                                         &mut repair.repair_victim_sets,
-                                        &mut candidate_blockers,
+                                        &mut probe.candidate_blockers,
                                         &repair.round_base_routes,
                                         victim_job.net_id,
                                         &ripup_ids,
@@ -11042,7 +11067,7 @@ impl PyPhotonicRouter {
                                         victim_job.net_id,
                                         Some(round_idx),
                                         Some(active_repair_set_index as u64),
-                                        &candidate_blockers,
+                                        &probe.candidate_blockers,
                                         &ripup_ids,
                                         &victim_reroute_ids,
                                         Some(victim_first),
@@ -11057,7 +11082,7 @@ impl PyPhotonicRouter {
                                         failed: true,
                                         error: Some(normal_error),
                                         repair_round: Some(round_idx),
-                                        candidate_blockers: candidate_blockers.clone(),
+                                        candidate_blockers: probe.candidate_blockers.clone(),
                                         ripup_ids: ripup_ids.clone(),
                                     });
                                     let repair_start = native_batch_timer(collect_native_timing);
@@ -11098,7 +11123,7 @@ impl PyPhotonicRouter {
                                                 victim_job.net_id,
                                                 Some(round_idx),
                                                 Some(active_repair_set_index as u64),
-                                                &candidate_blockers,
+                                                &probe.candidate_blockers,
                                                 &ripup_ids,
                                                 &victim_reroute_ids,
                                                 Some(victim_first),
@@ -11111,7 +11136,7 @@ impl PyPhotonicRouter {
                                         Err(error) => {
                                             enqueue_targeted_illegal_crossing_repair_set(
                                                 &mut repair.repair_victim_sets,
-                                                &mut candidate_blockers,
+                                                &mut probe.candidate_blockers,
                                                 &repair.round_base_routes,
                                                 victim_job.net_id,
                                                 &ripup_ids,
@@ -11152,7 +11177,7 @@ impl PyPhotonicRouter {
                                                 victim_job.net_id,
                                                 Some(round_idx),
                                                 Some(active_repair_set_index as u64),
-                                                &candidate_blockers,
+                                                &probe.candidate_blockers,
                                                 &ripup_ids,
                                                 &victim_reroute_ids,
                                                 Some(victim_first),
@@ -11167,7 +11192,7 @@ impl PyPhotonicRouter {
                                                 failed: true,
                                                 error: Some(error),
                                                 repair_round: Some(round_idx),
-                                                candidate_blockers: candidate_blockers.clone(),
+                                                candidate_blockers: probe.candidate_blockers.clone(),
                                                 ripup_ids: ripup_ids.clone(),
                                             });
                                             mode_failed = true;
@@ -11183,7 +11208,7 @@ impl PyPhotonicRouter {
                                 failed: false,
                                 error: None,
                                 repair_round: Some(round_idx),
-                                candidate_blockers: candidate_blockers.clone(),
+                                candidate_blockers: probe.candidate_blockers.clone(),
                                 ripup_ids: ripup_ids.clone(),
                             });
                             batch.final_routes.insert(victim_job.net_id, route);
@@ -11238,7 +11263,7 @@ impl PyPhotonicRouter {
                                     job.net_id,
                                     Some(round_idx),
                                     Some(active_repair_set_index as u64),
-                                    &candidate_blockers,
+                                    &probe.candidate_blockers,
                                     &ripup_ids,
                                     &victim_reroute_ids,
                                     Some(victim_first),
@@ -11251,7 +11276,7 @@ impl PyPhotonicRouter {
                             Err(normal_error) => {
                                 enqueue_targeted_illegal_crossing_repair_set(
                                     &mut repair.repair_victim_sets,
-                                    &mut candidate_blockers,
+                                    &mut probe.candidate_blockers,
                                     &repair.round_base_routes,
                                     job.net_id,
                                     &ripup_ids,
@@ -11293,7 +11318,7 @@ impl PyPhotonicRouter {
                                     job.net_id,
                                     Some(round_idx),
                                     Some(active_repair_set_index as u64),
-                                    &candidate_blockers,
+                                    &probe.candidate_blockers,
                                     &ripup_ids,
                                     &victim_reroute_ids,
                                     Some(victim_first),
@@ -11308,7 +11333,7 @@ impl PyPhotonicRouter {
                                     failed: true,
                                     error: Some(normal_error),
                                     repair_round: Some(round_idx),
-                                    candidate_blockers: candidate_blockers.clone(),
+                                    candidate_blockers: probe.candidate_blockers.clone(),
                                     ripup_ids: ripup_ids.clone(),
                                 });
                                 let repair_start = native_batch_timer(collect_native_timing);
@@ -11349,7 +11374,7 @@ impl PyPhotonicRouter {
                                             job.net_id,
                                             Some(round_idx),
                                             Some(active_repair_set_index as u64),
-                                            &candidate_blockers,
+                                            &probe.candidate_blockers,
                                             &ripup_ids,
                                             &victim_reroute_ids,
                                             Some(victim_first),
@@ -11362,7 +11387,7 @@ impl PyPhotonicRouter {
                                     Err(error) => {
                                         enqueue_targeted_illegal_crossing_repair_set(
                                             &mut repair.repair_victim_sets,
-                                            &mut candidate_blockers,
+                                            &mut probe.candidate_blockers,
                                             &repair.round_base_routes,
                                             job.net_id,
                                             &ripup_ids,
@@ -11397,7 +11422,7 @@ impl PyPhotonicRouter {
                                             job.net_id,
                                             Some(round_idx),
                                             Some(active_repair_set_index as u64),
-                                            &candidate_blockers,
+                                            &probe.candidate_blockers,
                                             &ripup_ids,
                                             &victim_reroute_ids,
                                             Some(victim_first),
@@ -11412,7 +11437,7 @@ impl PyPhotonicRouter {
                                             failed: true,
                                             error: Some(error),
                                             repair_round: Some(round_idx),
-                                            candidate_blockers: candidate_blockers.clone(),
+                                            candidate_blockers: probe.candidate_blockers.clone(),
                                             ripup_ids: ripup_ids.clone(),
                                         });
                                         if temporary_probe_reservation_added {
@@ -11431,7 +11456,7 @@ impl PyPhotonicRouter {
                             failed: false,
                             error: None,
                             repair_round: Some(round_idx),
-                            candidate_blockers: candidate_blockers.clone(),
+                            candidate_blockers: probe.candidate_blockers.clone(),
                             ripup_ids: ripup_ids.clone(),
                         });
                         batch.final_routes.insert(job.net_id, route.clone());
@@ -11456,7 +11481,7 @@ impl PyPhotonicRouter {
                         job.net_id,
                         Some(round_idx),
                         Some(active_repair_set_index as u64),
-                        &candidate_blockers,
+                        &probe.candidate_blockers,
                         &ripup_ids,
                         &victim_reroute_ids,
                         Some(victim_first),
@@ -11498,16 +11523,16 @@ impl PyPhotonicRouter {
                 self.invalidate_meander_base_prefix();
                 batch.final_routes = repair.round_base_routes;
                 batch.timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
-                let allow_lidar_pure_probe_commit = crossing_repair_enabled
+                let allow_lidar_pure_probe_commit = probe.crossing_repair_enabled
                     && !self.crossing_context.config().allow_only_expected_pairs
-                    && probe_grid_crossing_violations.is_empty()
-                    && !probe_realized_crossing_violations.is_empty();
+                    && probe.probe_grid_crossing_violations.is_empty()
+                    && !probe.probe_realized_crossing_violations.is_empty();
                 if allow_lidar_pure_probe_commit {
                     let validate_lidar_pure_probe_commit = true;
                     let commit_start = native_batch_timer(collect_native_timing);
                     let commit_result = self.commit_native_route_with_clearance_allowing_core_overlap(
                         job.net_id,
-                        &probe_route,
+                        &probe.probe_route,
                         block_radius_cells,
                         commit_radius_cells,
                         &job.clearance_exempt_cells,
@@ -11515,7 +11540,7 @@ impl PyPhotonicRouter {
                         job.source_port_um,
                         job.target_port_um,
                         Some(&job.opened_cell_keys),
-                        &candidate_blockers,
+                        &probe.candidate_blockers,
                         validate_lidar_pure_probe_commit,
                     );
                     let commit_elapsed_us = native_batch_elapsed_us(commit_start);
@@ -11525,14 +11550,14 @@ impl PyPhotonicRouter {
                             batch.attempts.push(NativeRouteAttempt {
                                 bucket_name: "lidar_pure_probe_commit",
                                 net_id: job.net_id,
-                                route: Some(probe_route.clone()),
+                                route: Some(probe.probe_route.clone()),
                                 failed: false,
                                 error: None,
                                 repair_round: Some(max_rounds),
-                                candidate_blockers: candidate_blockers.clone(),
+                                candidate_blockers: probe.candidate_blockers.clone(),
                                 ripup_ids: Vec::new(),
                             });
-                            batch.final_routes.insert(job.net_id, probe_route);
+                            batch.final_routes.insert(job.net_id, probe.probe_route);
                             batch.repair_count = batch.repair_count.saturating_add(1);
                             continue 'route_jobs;
                         }
@@ -11544,7 +11569,7 @@ impl PyPhotonicRouter {
                                 failed: true,
                                 error: Some(error.clone()),
                                 repair_round: Some(max_rounds),
-                                candidate_blockers: candidate_blockers.clone(),
+                                candidate_blockers: probe.candidate_blockers.clone(),
                                 ripup_ids: Vec::new(),
                             });
                             let mut validation_keepout =
@@ -11577,7 +11602,7 @@ impl PyPhotonicRouter {
                                                 job.source_port_um,
                                                 job.target_port_um,
                                                 Some(&job.opened_cell_keys),
-                                                &candidate_blockers,
+                                                &probe.candidate_blockers,
                                                 true,
                                             ) {
                                                 Ok(true) => Ok(route),
@@ -11629,7 +11654,7 @@ impl PyPhotonicRouter {
                                             failed: false,
                                             error: None,
                                             repair_round: Some(max_rounds),
-                                            candidate_blockers: candidate_blockers.clone(),
+                                            candidate_blockers: probe.candidate_blockers.clone(),
                                             ripup_ids: Vec::new(),
                                         });
                                         batch.final_routes.insert(job.net_id, route);
@@ -11646,7 +11671,7 @@ impl PyPhotonicRouter {
                                             failed: true,
                                             error: Some(retry_error),
                                             repair_round: Some(max_rounds),
-                                            candidate_blockers: candidate_blockers.clone(),
+                                            candidate_blockers: probe.candidate_blockers.clone(),
                                             ripup_ids: Vec::new(),
                                         });
                                     }
@@ -11663,7 +11688,7 @@ impl PyPhotonicRouter {
                     .filter(|attempt| {
                         attempt.repair_round.is_some()
                             && (attempt.net_id == job.net_id
-                                || candidate_blockers.contains(&attempt.net_id))
+                                || probe.candidate_blockers.contains(&attempt.net_id))
                     })
                     .filter_map(|attempt| {
                         attempt.error.as_ref().map(|error| {
@@ -11680,7 +11705,8 @@ impl PyPhotonicRouter {
                     .take(8)
                     .collect();
                 batch.failed_error = Some(format!(
-                    "No repair route found; candidate_blockers={candidate_blockers:?}; recent_errors={recent_errors:?}"
+                    "No repair route found; candidate_blockers={:?}; recent_errors={recent_errors:?}",
+                    probe.candidate_blockers
                 ));
                 break;
             }
