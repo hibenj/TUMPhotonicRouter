@@ -357,6 +357,7 @@ def test_benes_crossing_plan_can_be_loaded_into_router_context():
         node_ranks=NODE_RANKS,
         edge_ranks=EDGE_RANKS,
         crossing_loss=1.25,
+        crossing_search_loss=1.25,
         crossing_half_size_cells=3,
         min_straight_cells_per_crossing=6,
         allow_only_expected_crossings=True,
@@ -405,6 +406,7 @@ def test_benes_crossing_plan_counts_geometric_route_intersections():
         node_ranks=NODE_RANKS,
         edge_ranks=EDGE_RANKS,
         crossing_loss=1.25,
+        crossing_search_loss=1.25,
         crossing_half_size_cells=3,
         min_straight_cells_per_crossing=4,
         allow_only_expected_crossings=True,
@@ -447,10 +449,12 @@ def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
         node_ranks=NODE_RANKS,
         edge_ranks=EDGE_RANKS,
         crossing_loss=1.25,
+        crossing_search_loss=1.25,
         crossing_half_size_cells=3,
         min_straight_cells_per_crossing=6,
         allow_only_expected_crossings=True,
     )
+    info["bend_runout_cells_per_crossing"] = 6
 
     first = router.constraints[0]
     router.core_cells_by_net_id = {}
@@ -493,6 +497,7 @@ def test_benes_crossing_plan_rejects_non_perpendicular_route_intersections():
         node_ranks=NODE_RANKS,
         edge_ranks=EDGE_RANKS,
         crossing_loss=1.25,
+        crossing_search_loss=1.25,
         crossing_half_size_cells=3,
         min_straight_cells_per_crossing=6,
         allow_only_expected_crossings=True,
