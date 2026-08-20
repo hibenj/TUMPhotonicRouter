@@ -17,22 +17,27 @@ use crate::astar::{
     RouteSearchStats, State, TerminalBumpAxis, TerminalBumpGuard,
 };
 use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
+use crate::auto_meander::{
+    cells_in_grid_rect as cells_in_grid_rect_rs,
+    check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
+    meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
+    plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
+    probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
+    AutoMeanderConfig, AutoMeanderPlanningProfile, AutoMeanderSidePolicy, DenseOccupancyPrefix,
+    SparseCellIndex,
+};
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
-    cells_in_grid_rect as cells_in_grid_rect_rs, centerline_length_um as centerline_length_um_rs,
+    centerline_length_um as centerline_length_um_rs,
     centerline_to_port_corrected_centerline_with_options as centerline_to_port_corrected_centerline_with_options_rs,
-    check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
     compress_grid_waypoints as compress_grid_waypoints_rs,
     full_straight_offset_bump_candidates_for_centerline as full_straight_offset_bump_candidates_for_centerline_rs,
     full_straight_offset_bump_candidates as full_straight_offset_bump_candidates_rs,
     generate_waveguide_polygon as generate_waveguide_polygon_rs,
     grid_path_to_centerline as grid_path_to_centerline_rs,
-    meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
-    plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
     plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
     plan_auto_analytic_meander_for_route_depth_sweep_with_prefix as plan_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs,
-    probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
     probe_auto_analytic_meander_for_route_depth_sweep_with_prefix as probe_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs,
     realize_centerline_polygon_with_terminal_tangents as realize_centerline_polygon_with_terminal_tangents_rs,
     realize_route_polygon_from_auto_plan as realize_route_polygon_from_auto_plan_rs,
@@ -46,9 +51,8 @@ use crate::geometry_realization::{
     route_to_port_corrected_centerline_with_options as route_to_port_corrected_centerline_with_options_rs,
     route_to_port_corrected_centerline_with_options_and_collision_check,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
-    splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
-    AutoMeanderConfig, AutoMeanderPlanningProfile, AutoMeanderSidePolicy, DenseOccupancyPrefix,
-    GeometryError, GeometryGridSpec, PortAccess, PortAccessConfig, SparseCellIndex,
+    splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs, GeometryError,
+    GeometryGridSpec, PortAccess, PortAccessConfig,
 };
 use crate::meander::{
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
@@ -2306,7 +2310,7 @@ fn auto_meander_planning_profile_to_py_object(
 
 fn auto_meander_plan_to_py_object(
     py: Python<'_>,
-    plan: &crate::geometry_realization::AutoRouteAnalyticMeanderPlan,
+    plan: &crate::auto_meander::AutoRouteAnalyticMeanderPlan,
     requested_min_bend_radius_um: Option<f64>,
     effective_bend_radius_um: f64,
     primitive_bend_radius_cells: i32,
@@ -2411,7 +2415,7 @@ fn auto_meander_plan_to_py_object(
 
 fn auto_meander_probe_to_py_object(
     py: Python<'_>,
-    probe: &crate::geometry_realization::AutoRouteAnalyticMeanderProbe,
+    probe: &crate::auto_meander::AutoRouteAnalyticMeanderProbe,
 ) -> PyResult<PyObject> {
     let d = PyDict::new_bound(py);
     d.set_item("feasible", probe.feasible)?;

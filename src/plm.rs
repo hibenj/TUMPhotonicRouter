@@ -2,11 +2,12 @@ use std::time::Instant;
 
 use rustc_hash::FxHashSet;
 
-use crate::geometry_realization::{
+use crate::auto_meander::{
     cell_count_in_grid_rect, plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix,
     AutoMeanderConfig, AutoMeanderPlanningProfile, AutoMeanderSidePolicy,
-    AutoRouteAnalyticMeanderPlan, DenseOccupancyPrefix, GeometryGridSpec, SparseCellIndex,
+    AutoRouteAnalyticMeanderPlan, DenseOccupancyPrefix, SparseCellIndex,
 };
+use crate::geometry_realization::GeometryGridSpec;
 use crate::meander::MeanderPlanningMode;
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 

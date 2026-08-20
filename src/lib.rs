@@ -4,6 +4,7 @@
 //! infrastructure. It intentionally does not implement A* yet.
 
 pub mod astar;
+pub mod auto_meander;
 pub mod crossings;
 pub mod geometry_realization;
 pub mod meander;
@@ -28,23 +29,25 @@ pub use astar::{
     route_single_net_with_config, AStarConfig, RouteResult, State,
 };
 pub use crossings::{CrossingConfig, CrossingConstraint, CrossingContext, CrossingPair};
+pub use auto_meander::{
+    cells_in_grid_rect, check_meander_box_free, check_meander_box_free_with_prefix,
+    meander_box_to_grid_rect,
+    probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix, AutoMeanderConfig,
+    AutoMeanderSidePolicy, AutoRouteAnalyticMeanderPlan, AutoRouteAnalyticMeanderProbe,
+    DenseOccupancyPrefix, MeanderGridRect, SparseCellIndex,
+};
 pub use geometry_realization::{
-    build_port_access, build_port_accesses, cells_in_grid_rect, check_meander_box_free,
-    check_meander_box_free_with_prefix, compress_grid_waypoints, compress_route_waypoints,
-    generate_waveguide_polygon, grid_path_to_centerline, meander_box_to_grid_rect,
-    plan_analytic_meander_for_route, plan_auto_analytic_meander_for_route,
-    plan_auto_analytic_meander_for_route_depth_sweep,
-    probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix,
+    build_port_access, build_port_accesses, compress_grid_waypoints, compress_route_waypoints,
+    generate_waveguide_polygon, grid_path_to_centerline, plan_analytic_meander_for_route,
+    plan_auto_analytic_meander_for_route, plan_auto_analytic_meander_for_route_depth_sweep,
     probe_auto_analytic_meander_for_route_depth_sweep_with_prefix, realize_route_polygon,
     realize_route_polygon_from_auto_plan, realize_route_polygon_from_primitives,
     realize_route_polygon_with_analytic_meander,
     realize_route_polygon_with_auto_checked_analytic_meander,
     realize_route_polygon_with_checked_analytic_meander_box,
     realize_route_polygon_with_port_access, route_to_grid_path, route_to_primitive_centerline,
-    snap_centerline_endpoints, AutoMeanderConfig, AutoMeanderSidePolicy,
-    AutoRouteAnalyticMeanderPlan, AutoRouteAnalyticMeanderProbe, DenseOccupancyPrefix,
-    GeometryError, GeometryGridSpec, GridRect, PortAccess, PortAccessConfig, PortAccessError,
-    RouteAnalyticMeanderPlan,
+    snap_centerline_endpoints, GeometryError, GeometryGridSpec, PortAccess, PortAccessConfig,
+    PortAccessError, RouteAnalyticMeanderPlan,
 };
 pub use meander::{
     actual_bend_radius_um_from_cells, bend_radius_cells_from_min_radius, plan_analytic_meander,
