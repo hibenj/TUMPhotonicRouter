@@ -9,6 +9,7 @@ The repository owner's stated goal is a readable, tested codebase as the prerequ
 ## Progress
 
 - [x] Milestone 0 (structural survey) done, see Surprises & Discoveries. Dispatched to a fork for the read-only investigation (report only, no design/code -- matching this session's established discipline for characterization work on this exact function, after an earlier fork correctly followed the same instruction on a related task). Produced a 13-phase control-flow breakdown and a full local-variable lifetime map across three natural scope tiers (whole-batch, per-net, per-repair-attempt).
+- [x] Milestone 1 (`RepairBatchState` promotion, Codex) done (2026-08-20). All 9 whole-batch-scope locals (`final_routes`, `attempts`, `repair_trace`, `repair_count`, `failed_net_id`, `failed_error`, `retried_source_layers`, `timings`, `trace_last_route_start`) grouped into one struct, constructed once, every usage rewritten to `batch.<field>`. **Reviewed by Claude**: full diff read (464 lines), confirmed via targeted greps that every one of the 9 old bare-name declarations was removed (not left as dead/duplicate code) and that every remaining bare occurrence of the 9 names in the function is either the struct-literal's own field name or an unrelated PyO3 dict-key string literal -- no missed usages, no accidental over-matching. Codex reported finding no 10th whole-function-scope variable and confirmed the moved initializers don't depend on intervening code. Validation independently re-run, not just taken from Codex's report: `cargo test --lib` `389 passed, 0 failed` (unchanged count, as expected for zero-behavior-change), `tests/test_rust_batch_repair.py` unchanged. Given the user's chosen pacing (validate the full ladder after each milestone), also rebuilt the Python extension and ran the real benchmarks: `multiportmmi_8x8` bare defaults and `benes_4x4` both clean (`error_count: 0`; `multiportmmi_8x8` photonic verification's 2 warnings are the same pre-existing, unrelated `endpoint_correction_fallback_used` notices seen after today's `n_70` fix, confirming zero behavior change), full `pytest -q` byte-identical to the 11-failure baseline.
 
 ## Surprises & Discoveries
 
@@ -22,7 +23,8 @@ The repository owner's stated goal is a readable, tested codebase as the prerequ
 
 ## Decision Log
 
-(No decision has been made yet on scope/pacing -- see the question below.)
+- Decision: proceed through the milestones autonomously (2026-08-20, via `AskUserQuestion`), validating the full benchmark ladder after each step, stopping to report only on a break or a genuine design fork -- rather than checking in after every milestone or stopping after Milestone 1 alone.
+  Rationale: repository owner's explicit choice, matching the pace of today's smaller ripup/repair work.
 
 ## Outcomes & Retrospective
 
