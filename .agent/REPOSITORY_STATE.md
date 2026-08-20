@@ -20,14 +20,14 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-20
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `f0cc23a`. Working tree clean.
-- Current test baselines: `cargo test --lib` `382 passed, 0 failed`;
+- Current HEAD: `61e1e95`. Working tree clean.
+- Current test baselines: `cargo test --lib` `383 passed, 0 failed`;
   `PYTHONPATH=. .venv/bin/pytest -q` `21 failed, 325 passed, 1 skipped`
   (failure set has been stable/byte-identical across the last several
   plans -- see Current Findings below for what's actually behind it).
-- **Active initiative**: `.agent/PROJECT_GOAL.md`'s "Future Architecture
-  Initiative" (giving routing-pipeline stages explicit `Protocol`/`trait`
-  interfaces). Recommended order, per
+- **Future Architecture Initiative: complete.** `.agent/PROJECT_GOAL.md`'s
+  "Future Architecture Initiative" (giving routing-pipeline stages
+  explicit `Protocol`/`trait` interfaces), per the recommended order in
   `.agent/execplans/2026-08-19-future-architecture-initiative-stage-characterization.md`:
   (1) obstacle map building + grid snapping -- **done**, see
   `.agent/execplans/2026-08-19-extract-obstacle-map-grid-snapping-interfaces.md`;
@@ -35,16 +35,38 @@ now lives only in the referenced ExecPlan and `git log`.)
   `.agent/execplans/2026-08-19-extract-astar-single-net-search-interface.md`;
   (3) geometry realization -- **done**, see
   `.agent/execplans/2026-08-20-extract-geometry-realization-plm-boundary.md`;
-  (4) path-length matching -- **next, not started** (see "Next Engineering
-  Step" below). Ripup/repair orchestration
-  (`route_many_with_repair_and_commit`, `src/py_router.rs`) is explicitly
-  excluded from this order -- it needs its own restructuring pass
-  (god-object session state, zero stage-granular tests, three real bugs
-  found in/near it this session) before interface extraction is well-posed.
-  The three benchmark findings under Current Findings below are parked until
-  this initiative gives their surrounding code a clearer structure.
+  (4) path-length matching -- **done**, see
+  `.agent/execplans/2026-08-20-path-length-matching-interface.md`. All four
+  recommended stages now have explicit interfaces. Ripup/repair
+  orchestration (`route_many_with_repair_and_commit`, `src/py_router.rs`)
+  was explicitly excluded from this initiative throughout -- it needs its
+  own restructuring pass (god-object session state, zero stage-granular
+  tests, three real bugs found in/near it this session) before interface
+  extraction is well-posed; see "Next Engineering Step" below. The three
+  benchmark findings under Current Findings below are parked until that
+  restructuring gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-20-path-length-matching-interface.md` -- closed out the
+    Future Architecture Initiative (stage 4 of 4). Characterization found
+    PLM splits into an already-clean graph/requirement half and a
+    meander-insertion half that already had more interface infrastructure
+    (two private Protocols, a real non-closure session class) than the
+    prior stage-characterization pass credited it with. Repository owner
+    chose (via `AskUserQuestion`) to promote the existing Protocols;
+    mid-design, found the Rust and Python halves were not symmetric (Rust's
+    4 `plm.rs` functions had clean public signatures ready for a direct
+    trait mirror of `astar.rs`'s `SingleNetSearch` pattern; Python's
+    `_MeanderPlannerContext` methods used private internal bookkeeping
+    types with no public-shaped equivalent) -- presented back to the
+    repository owner as its own scoping decision rather than resolved
+    solo. Final result: `src/plm.rs` gained a purely-additive
+    `RegisteredMeanderPlanner` trait + `RustRegisteredMeanderPlanner`
+    marker struct (each method a direct delegation to the existing free
+    function, one new smoke test); `translation/route_rust_meanders.py`'s
+    `_RustBackendProtocol`/`_MeanderRouterProtocol` renamed to public
+    `MeanderRustBackendLike`/`MeanderRouterLike` with real docstrings. Zero
+    behavior change, zero regressions across the full validation ladder.
   - `2026-08-20-extract-geometry-realization-plm-boundary.md` -- resolved
     the geometry-realization/PLM coupling by moving the Auto-meander-search
     layer (the actual shared code, ~1,700+ lines across 3 non-contiguous
@@ -272,35 +294,42 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** The geometry-realization/PLM boundary plan
-above is complete and closed (Milestone 6 broad validation passed with zero
-regressions). **Next step** (not yet started, no ExecPlan written for it
-yet): path-length matching, the fourth and final stage in the Future
-Architecture Initiative's recommended order. Unlike geometry realization,
-this stage no longer has an open coupling question -- `src/plm.rs` now sits
-cleanly on top of `src/auto_meander.rs`'s module boundary, and `plm.rs`
-itself already has direct unit coverage (42 tests, this session). Start by
-characterizing what a real `Protocol`/`trait` interface for path-length
-matching would look like given that existing boundary, the same
-characterize-first-then-present-options approach used for the geometry
-realization stage.
+**No active ExecPlan right now.** The path-length matching interface plan
+above is complete and closed (Milestone 4 broad validation passed with
+zero regressions) -- this closes out the Future Architecture Initiative
+entirely; all 4 recommended stages now have explicit `Protocol`/`trait`
+interfaces. **Next step** (not yet started, no ExecPlan written for it
+yet, no mandated single choice): ripup/repair orchestration
+(`route_many_with_repair_and_commit`, `src/py_router.rs`) is the most
+clearly-motivated candidate -- it was explicitly excluded from the
+initiative at every stage specifically because it needs its own dedicated
+restructuring pass (god-object session state on `PyPhotonicRouter`, zero
+stage-granular tests, three real bugs found in/near it during this
+initiative) before any interface extraction there is well-posed, and the
+three benchmark findings under Current Findings below are parked waiting
+on exactly that restructuring. Start by characterizing its current shape
+the same way each initiative stage was characterized first, not by
+assuming a specific restructuring approach up front.
 
-Ripup/repair orchestration needs its own dedicated restructuring pass
-before it's extraction-ready -- consider scoping that as its own plan once
-the remaining stage extractions above are done, since Current Findings
-items 1 and 2 both live in code that restructuring would touch.
+A smaller, optional leftover from the just-closed PLM plan: Option C
+(not chosen) would have decomposed `analyze_meander_insertion_for_requirements`'s
+795-line body (`translation/route_rust_meanders.py:2263-3057`) into named
+phases alongside the interface work. That readability gap is still open
+if anyone wants to pick it up -- lower-risk and much smaller in scope than
+the ripup/repair restructuring, since the function already takes plain
+arguments and returns a plain tuple (no hidden shared-state
+capture-analysis risk the way `route_nets_rust`'s closures had).
 
-Deferred candidates, not in a mandated order, not part of the current
-initiative:
+Other deferred candidates, not in a mandated order:
 
 1. Phase 3 readability pass for the large Rust files (`src/py_router.rs`,
    `src/astar.rs`, `src/geometry_realization.rs`) -- likely superseded in
    practice by the Future Architecture Initiative's own extraction work,
-   which touches the same files; revisit whether this is still a separate
-   need once that initiative progresses further.
+   which touched the same files; revisit whether this is still a separate
+   need now that the initiative is done.
 2. Continue the Stage 6-8 Python/Rust correctness walkthrough (endpoint
    correction, geometry realization, verification) -- not started, lower
-   priority than the current initiative.
+   priority than the items above.
 3. Resume the crossing-verification-foundation objective (full-run
    stability across all benchmark sizes) -- last known state above in
    Current Findings; stale, not re-verified this session.
