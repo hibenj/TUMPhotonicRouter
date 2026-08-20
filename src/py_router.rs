@@ -1016,6 +1016,21 @@ struct RepairBatchState {
     trace_last_route_start: Option<Instant>,
 }
 
+struct RepairAttemptState {
+    repaired: bool,
+    round_base_map: ObstacleMap,
+    round_base_center_routes: FxHashMap<u64, Vec<(i32, i32)>>,
+    round_base_realized_center_routes: FxHashMap<u64, Vec<(f64, f64)>>,
+    round_base_target_terminal_bump_guards: FxHashMap<u64, TerminalBumpGuard>,
+    round_base_opened_cell_keys: FxHashMap<u64, FxHashSet<CellKey>>,
+    round_base_crossing_events: Vec<CrossingEvent>,
+    round_base_routes: FxHashMap<u64, RouteResult>,
+    repair_victim_sets: Vec<(u32, Vec<u64>)>,
+    learned_repair_keepouts_by_ripup: FxHashMap<Vec<u64>, FxHashSet<CellKey>>,
+    learned_victim_only_keepouts_by_ripup: FxHashMap<Vec<u64>, FxHashSet<CellKey>>,
+    learned_repair_retry_counts: FxHashMap<Vec<u64>, usize>,
+}
+
 struct NativeEndpointCorrection {
     centerline: Vec<(f64, f64)>,
     committed_bump: bool,
@@ -10117,39 +10132,36 @@ impl PyPhotonicRouter {
             batch.timings.history_update_us += native_batch_elapsed_us(history_start);
             let max_rounds = max_rounds.max(1);
             let max_victims = max_victims_per_failure.max(1);
-            let mut repaired = false;
-            let round_base_map = self.obstacle_map.clone();
-            let round_base_center_routes = self.committed_center_routes.clone();
-            let round_base_realized_center_routes = self.committed_realized_center_routes.clone();
-            let round_base_target_terminal_bump_guards =
-                self.committed_target_terminal_bump_guards.clone();
-            let round_base_opened_cell_keys = self.committed_opened_cell_keys.clone();
-            let round_base_crossing_events = self.crossing_events.clone();
-            let round_base_routes = batch.final_routes.clone();
-
-            let mut repair_victim_sets = compute_repair_victim_sets(
-                crossing_repair_enabled,
-                &probe_realized_crossing_violations,
-                &candidate_blockers,
-                max_victims,
-                max_rounds,
-            );
+            let mut repair = RepairAttemptState {
+                repaired: false,
+                round_base_map: self.obstacle_map.clone(),
+                round_base_center_routes: self.committed_center_routes.clone(),
+                round_base_realized_center_routes: self.committed_realized_center_routes.clone(),
+                round_base_target_terminal_bump_guards: self
+                    .committed_target_terminal_bump_guards
+                    .clone(),
+                round_base_opened_cell_keys: self.committed_opened_cell_keys.clone(),
+                round_base_crossing_events: self.crossing_events.clone(),
+                round_base_routes: batch.final_routes.clone(),
+                repair_victim_sets: compute_repair_victim_sets(
+                    crossing_repair_enabled,
+                    &probe_realized_crossing_violations,
+                    &candidate_blockers,
+                    max_victims,
+                    max_rounds,
+                ),
+                learned_repair_keepouts_by_ripup: FxHashMap::default(),
+                learned_victim_only_keepouts_by_ripup: FxHashMap::default(),
+                learned_repair_retry_counts: FxHashMap::default(),
+            };
 
             let prefer_orthogonal_repair = crossing_repair_enabled
                 && !probe_realized_crossing_violations.is_empty()
                 && (probe_grid_crossing_violations.is_empty() || candidate_blockers.len() > 2);
-            let mut learned_repair_keepouts_by_ripup: FxHashMap<Vec<u64>, FxHashSet<CellKey>> =
-                FxHashMap::default();
-            let mut learned_victim_only_keepouts_by_ripup: FxHashMap<
-                Vec<u64>,
-                FxHashSet<CellKey>,
-            > = FxHashMap::default();
-            let mut learned_repair_retry_counts: FxHashMap<Vec<u64>, usize> =
-                FxHashMap::default();
             let mut repair_set_index = 0usize;
-            while repair_set_index < repair_victim_sets.len() {
+            while repair_set_index < repair.repair_victim_sets.len() {
                 let active_repair_set_index = repair_set_index;
-                let (round_idx, ripup_ids) = repair_victim_sets[active_repair_set_index].clone();
+                let (round_idx, ripup_ids) = repair.repair_victim_sets[active_repair_set_index].clone();
                 repair_set_index += 1;
                 for victim_first in [false, true] {
                     for reverse_victim_order in [false, true] {
@@ -10157,16 +10169,16 @@ impl PyPhotonicRouter {
                             continue;
                         }
                     let reset_start = native_batch_timer(collect_native_timing);
-                    self.obstacle_map = round_base_map.clone();
-                    self.committed_center_routes = round_base_center_routes.clone();
+                    self.obstacle_map = repair.round_base_map.clone();
+                    self.committed_center_routes = repair.round_base_center_routes.clone();
                     self.committed_realized_center_routes =
-                        round_base_realized_center_routes.clone();
+                        repair.round_base_realized_center_routes.clone();
                     self.committed_target_terminal_bump_guards =
-                        round_base_target_terminal_bump_guards.clone();
-                    self.committed_opened_cell_keys = round_base_opened_cell_keys.clone();
-                    self.crossing_events = round_base_crossing_events.clone();
+                        repair.round_base_target_terminal_bump_guards.clone();
+                    self.committed_opened_cell_keys = repair.round_base_opened_cell_keys.clone();
+                    self.crossing_events = repair.round_base_crossing_events.clone();
                     self.invalidate_meander_base_prefix();
-                    batch.final_routes = round_base_routes.clone();
+                    batch.final_routes = repair.round_base_routes.clone();
                     batch.timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
                     let mut victim_reroute_ids = ripup_ids.clone();
                     if reverse_victim_order {
@@ -10207,12 +10219,12 @@ impl PyPhotonicRouter {
                             ),
                         );
                         if let Some(learned_keepout) =
-                            learned_repair_keepouts_by_ripup.get(&ripup_ids)
+                            repair.learned_repair_keepouts_by_ripup.get(&ripup_ids)
                         {
                             conflict_keys.extend(learned_keepout.iter().copied());
                         }
                         if let Some(victim_only_keepout) =
-                            learned_victim_only_keepouts_by_ripup.get(&ripup_ids)
+                            repair.learned_victim_only_keepouts_by_ripup.get(&ripup_ids)
                         {
                             for key in victim_only_keepout {
                                 if conflict_keys.insert(*key) {
@@ -10238,7 +10250,7 @@ impl PyPhotonicRouter {
                     } else {
                         let mut conflict_keys = FxHashSet::default();
                         if let Some(learned_keepout) =
-                            learned_repair_keepouts_by_ripup.get(&ripup_ids)
+                            repair.learned_repair_keepouts_by_ripup.get(&ripup_ids)
                         {
                             conflict_keys.extend(learned_keepout.iter().copied());
                         }
@@ -10350,9 +10362,9 @@ impl PyPhotonicRouter {
                             }
                             Err(normal_error) => {
                                 enqueue_targeted_illegal_crossing_repair_set(
-                                    &mut repair_victim_sets,
+                                    &mut repair.repair_victim_sets,
                                     &mut candidate_blockers,
-                                    &round_base_routes,
+                                    &repair.round_base_routes,
                                     job.net_id,
                                     &ripup_ids,
                                     &normal_error,
@@ -10361,7 +10373,7 @@ impl PyPhotonicRouter {
                                     max_victims,
                                 );
                                 let learned_repair_keepout =
-                                    learned_repair_keepouts_by_ripup
+                                    repair.learned_repair_keepouts_by_ripup
                                         .entry(ripup_ids.clone())
                                         .or_default();
                                 if self.remember_local_repair_error_keepout(
@@ -10369,8 +10381,8 @@ impl PyPhotonicRouter {
                                     &normal_error,
                                 ) {
                                     enqueue_learned_keepout_repair_retry(
-                                        &mut repair_victim_sets,
-                                        &mut learned_repair_retry_counts,
+                                        &mut repair.repair_victim_sets,
+                                        &mut repair.learned_repair_retry_counts,
                                         &ripup_ids,
                                         round_idx,
                                         repair_set_index,
@@ -10472,9 +10484,9 @@ impl PyPhotonicRouter {
                                     }
                                     Err(error) => {
                                         enqueue_targeted_illegal_crossing_repair_set(
-                                            &mut repair_victim_sets,
+                                            &mut repair.repair_victim_sets,
                                             &mut candidate_blockers,
-                                            &round_base_routes,
+                                            &repair.round_base_routes,
                                             job.net_id,
                                             &ripup_ids,
                                             &error,
@@ -10483,7 +10495,7 @@ impl PyPhotonicRouter {
                                             max_victims,
                                         );
                                         let learned_repair_keepout =
-                                            learned_repair_keepouts_by_ripup
+                                            repair.learned_repair_keepouts_by_ripup
                                                 .entry(ripup_ids.clone())
                                                 .or_default();
                                         if self.remember_local_repair_error_keepout(
@@ -10491,8 +10503,8 @@ impl PyPhotonicRouter {
                                             &error,
                                         ) {
                                             enqueue_learned_keepout_repair_retry(
-                                                &mut repair_victim_sets,
-                                                &mut learned_repair_retry_counts,
+                                                &mut repair.repair_victim_sets,
+                                                &mut repair.learned_repair_retry_counts,
                                                 &ripup_ids,
                                                 round_idx,
                                                 repair_set_index,
@@ -10547,7 +10559,7 @@ impl PyPhotonicRouter {
 
                     if !mode_failed && !victim_first {
                         if let Some(victim_only_keepout) =
-                            learned_victim_only_keepouts_by_ripup.get(&ripup_ids)
+                            repair.learned_victim_only_keepouts_by_ripup.get(&ripup_ids)
                         {
                             for key in victim_only_keepout {
                                 if !temporary_probe_reservation.contains(key) {
@@ -10600,7 +10612,7 @@ impl PyPhotonicRouter {
                                     None
                                 };
                                 let mut seeded_partner_ids = Self::crossing_partner_ids_for_net(
-                                    &round_base_crossing_events,
+                                    &repair.round_base_crossing_events,
                                     victim_job.net_id,
                                 );
                                 seeded_partner_ids.retain(|partner_id| {
@@ -10981,9 +10993,9 @@ impl PyPhotonicRouter {
                                 }
                                 Err(normal_error) => {
                                     enqueue_targeted_illegal_crossing_repair_set(
-                                        &mut repair_victim_sets,
+                                        &mut repair.repair_victim_sets,
                                         &mut candidate_blockers,
-                                        &round_base_routes,
+                                        &repair.round_base_routes,
                                         victim_job.net_id,
                                         &ripup_ids,
                                         &normal_error,
@@ -10992,11 +11004,11 @@ impl PyPhotonicRouter {
                                         max_victims,
                                     );
                                     let learned_repair_keepout =
-                                        learned_repair_keepouts_by_ripup
+                                        repair.learned_repair_keepouts_by_ripup
                                             .entry(ripup_ids.clone())
                                             .or_default();
                                     let victim_only_keepout =
-                                        learned_victim_only_keepouts_by_ripup
+                                        repair.learned_victim_only_keepouts_by_ripup
                                             .entry(ripup_ids.clone())
                                             .or_default();
                                     if self.remember_victim_repair_error_keepout(
@@ -11006,8 +11018,8 @@ impl PyPhotonicRouter {
                                         job.net_id,
                                     ) {
                                         enqueue_learned_keepout_repair_retry(
-                                            &mut repair_victim_sets,
-                                            &mut learned_repair_retry_counts,
+                                            &mut repair.repair_victim_sets,
+                                            &mut repair.learned_repair_retry_counts,
                                             &ripup_ids,
                                             round_idx,
                                             repair_set_index,
@@ -11098,9 +11110,9 @@ impl PyPhotonicRouter {
                                         }
                                         Err(error) => {
                                             enqueue_targeted_illegal_crossing_repair_set(
-                                                &mut repair_victim_sets,
+                                                &mut repair.repair_victim_sets,
                                                 &mut candidate_blockers,
-                                                &round_base_routes,
+                                                &repair.round_base_routes,
                                                 victim_job.net_id,
                                                 &ripup_ids,
                                                 &error,
@@ -11109,11 +11121,11 @@ impl PyPhotonicRouter {
                                                 max_victims,
                                             );
                                             let learned_repair_keepout =
-                                                learned_repair_keepouts_by_ripup
+                                                repair.learned_repair_keepouts_by_ripup
                                                     .entry(ripup_ids.clone())
                                                     .or_default();
                                             let victim_only_keepout =
-                                                learned_victim_only_keepouts_by_ripup
+                                                repair.learned_victim_only_keepouts_by_ripup
                                                     .entry(ripup_ids.clone())
                                                     .or_default();
                                             if self.remember_victim_repair_error_keepout(
@@ -11123,8 +11135,8 @@ impl PyPhotonicRouter {
                                                 job.net_id,
                                             ) {
                                                 enqueue_learned_keepout_repair_retry(
-                                                    &mut repair_victim_sets,
-                                                    &mut learned_repair_retry_counts,
+                                                    &mut repair.repair_victim_sets,
+                                                    &mut repair.learned_repair_retry_counts,
                                                     &ripup_ids,
                                                     round_idx,
                                                     repair_set_index,
@@ -11238,9 +11250,9 @@ impl PyPhotonicRouter {
                             }
                             Err(normal_error) => {
                                 enqueue_targeted_illegal_crossing_repair_set(
-                                    &mut repair_victim_sets,
+                                    &mut repair.repair_victim_sets,
                                     &mut candidate_blockers,
-                                    &round_base_routes,
+                                    &repair.round_base_routes,
                                     job.net_id,
                                     &ripup_ids,
                                     &normal_error,
@@ -11249,7 +11261,7 @@ impl PyPhotonicRouter {
                                     max_victims,
                                 );
                                 let learned_repair_keepout =
-                                    learned_repair_keepouts_by_ripup
+                                    repair.learned_repair_keepouts_by_ripup
                                         .entry(ripup_ids.clone())
                                         .or_default();
                                 if self.remember_local_repair_error_keepout(
@@ -11257,8 +11269,8 @@ impl PyPhotonicRouter {
                                     &normal_error,
                                 ) {
                                     enqueue_learned_keepout_repair_retry(
-                                        &mut repair_victim_sets,
-                                        &mut learned_repair_retry_counts,
+                                        &mut repair.repair_victim_sets,
+                                        &mut repair.learned_repair_retry_counts,
                                         &ripup_ids,
                                         round_idx,
                                         repair_set_index,
@@ -11349,9 +11361,9 @@ impl PyPhotonicRouter {
                                     }
                                     Err(error) => {
                                         enqueue_targeted_illegal_crossing_repair_set(
-                                            &mut repair_victim_sets,
+                                            &mut repair.repair_victim_sets,
                                             &mut candidate_blockers,
-                                            &round_base_routes,
+                                            &repair.round_base_routes,
                                             job.net_id,
                                             &ripup_ids,
                                             &error,
@@ -11360,7 +11372,7 @@ impl PyPhotonicRouter {
                                             max_victims,
                                         );
                                         let learned_repair_keepout =
-                                            learned_repair_keepouts_by_ripup
+                                            repair.learned_repair_keepouts_by_ripup
                                                 .entry(ripup_ids.clone())
                                                 .or_default();
                                         if self.remember_local_repair_error_keepout(
@@ -11368,8 +11380,8 @@ impl PyPhotonicRouter {
                                             &error,
                                         ) {
                                             enqueue_learned_keepout_repair_retry(
-                                                &mut repair_victim_sets,
-                                                &mut learned_repair_retry_counts,
+                                                &mut repair.repair_victim_sets,
+                                                &mut repair.learned_repair_retry_counts,
                                                 &ripup_ids,
                                                 round_idx,
                                                 repair_set_index,
@@ -11460,31 +11472,31 @@ impl PyPhotonicRouter {
                     );
 
                     if !mode_failed && repaired_route.is_some() {
-                        repaired = true;
+                        repair.repaired = true;
                         batch.repair_count += 1;
                         break;
                     }
                     }
-                    if repaired {
+                    if repair.repaired {
                         break;
                     }
                 }
-                if repaired {
+                if repair.repaired {
                     break;
                 }
             }
 
-            if !repaired {
+            if !repair.repaired {
                 let reset_start = native_batch_timer(collect_native_timing);
-                self.obstacle_map = round_base_map;
-                self.committed_center_routes = round_base_center_routes;
-                self.committed_realized_center_routes = round_base_realized_center_routes;
+                self.obstacle_map = repair.round_base_map;
+                self.committed_center_routes = repair.round_base_center_routes;
+                self.committed_realized_center_routes = repair.round_base_realized_center_routes;
                 self.committed_target_terminal_bump_guards =
-                    round_base_target_terminal_bump_guards;
-                self.committed_opened_cell_keys = round_base_opened_cell_keys;
-                self.crossing_events = round_base_crossing_events;
+                    repair.round_base_target_terminal_bump_guards;
+                self.committed_opened_cell_keys = repair.round_base_opened_cell_keys;
+                self.crossing_events = repair.round_base_crossing_events;
                 self.invalidate_meander_base_prefix();
-                batch.final_routes = round_base_routes;
+                batch.final_routes = repair.round_base_routes;
                 batch.timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
                 let allow_lidar_pure_probe_commit = crossing_repair_enabled
                     && !self.crossing_context.config().allow_only_expected_pairs
