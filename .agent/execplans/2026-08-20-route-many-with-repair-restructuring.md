@@ -125,6 +125,8 @@ The structural re-survey's own note flagged this cluster ("Mode-order-iteration-
 
 **Milestone 3.18 (Phase 4, second sub-mechanism "pending-straight victim repair"), dispatched (2026-08-21)**: completes Phase 4's decomposition begun in Milestone 3.17. Much simpler than its sibling -- a labeled block (`'pending_straight_repair_attempt: { ... }`), no nested fallback loop, no historical-bug comment, a plain two-net rip-up+reroute+restore-on-failure pattern. Plain two-variant outcome (`Routed`/`NotResolved`, no `Result` wrapper -- never stops the batch). The labeled block wrapper itself disappears; both of its `break`s become `return NotResolved`, its one `continue 'route_jobs` becomes `return Routed`.
 
+**Milestone 3.19 (Phase 5, "lidar direct-crossing subset attempts"), dispatched (2026-08-21)**: simpler than Phase 4 -- single gate, single loop, no nested labeled blocks, no historical-bug lineage. `PyResult`-wrapped two-variant outcome (2 confirmed `?` uses), matching Milestone 3.3's shape. The `if !local_partner_ids.is_empty() { ... }` wrapper becomes an early-return guard inside the method, matching Milestones 3.16/3.17's precedent.
+
 ### Milestone 3 (in progress): extract phases into named methods, one at a time
 
 Now that Milestones 1-2 have landed and validated cleanly, this milestone extracts the 13 identified phases into named methods, one at a time, each independently validated against the full ladder before moving to the next -- not a single big-bang extraction.
