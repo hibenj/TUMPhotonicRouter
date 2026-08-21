@@ -9926,6 +9926,70 @@ impl PyPhotonicRouter {
         RerouteCurrentNetAfterVictimsOutcome::Routed
     }
 
+    fn build_repair_mode_reservation(
+        &self,
+        batch: &RepairBatchState,
+        repair: &RepairAttemptState,
+        probe: &ProbeState,
+        ripup_ids: &[u64],
+        victim_first: bool,
+    ) -> (FxHashSet<CellKey>, FxHashSet<CellKey>) {
+        let mut victim_first_probe_reservation = FxHashSet::default();
+        let temporary_probe_reservation: FxHashSet<CellKey> = if victim_first {
+            let mut conflict_keys = self.crossing_physical_violation_repair_keepout_keys(
+                &probe.probe_realized_crossing_violations,
+                ripup_ids,
+            );
+            conflict_keys.extend(self.crossing_grid_violation_repair_keepout_keys(
+                &probe.probe_grid_crossing_violations,
+                ripup_ids,
+            ));
+            if let Some(learned_keepout) =
+                repair.learned_repair_keepouts_by_ripup.get(ripup_ids)
+            {
+                conflict_keys.extend(learned_keepout.iter().copied());
+            }
+            if let Some(victim_only_keepout) = repair
+                .learned_victim_only_keepouts_by_ripup
+                .get(ripup_ids)
+            {
+                for key in victim_only_keepout {
+                    if conflict_keys.insert(*key) {
+                        victim_first_probe_reservation.insert(*key);
+                    }
+                }
+            }
+            let probe_keys: FxHashSet<CellKey> = probe
+                .probe_route
+                .cells
+                .iter()
+                .map(|(x, y)| pack_xy(*x, *y))
+                .collect();
+            for old_id in ripup_ids {
+                if let Some(old_route) = batch.final_routes.get(old_id) {
+                    for (x, y) in &old_route.cells {
+                        let key = pack_xy(*x, *y);
+                        if probe_keys.contains(&key) {
+                            if conflict_keys.insert(key) {
+                                victim_first_probe_reservation.insert(key);
+                            }
+                        }
+                    }
+                }
+            }
+            conflict_keys
+        } else {
+            let mut conflict_keys = FxHashSet::default();
+            if let Some(learned_keepout) =
+                repair.learned_repair_keepouts_by_ripup.get(ripup_ids)
+            {
+                conflict_keys.extend(learned_keepout.iter().copied());
+            }
+            conflict_keys
+        };
+        (victim_first_probe_reservation, temporary_probe_reservation)
+    }
+
 }
 
 #[pymethods]
@@ -11654,56 +11718,14 @@ impl PyPhotonicRouter {
                         reverse_victim_order,
                     );
 
-                    let mut victim_first_probe_reservation = FxHashSet::default();
-                    let temporary_probe_reservation: FxHashSet<CellKey> = if victim_first {
-                        let mut conflict_keys = self.crossing_physical_violation_repair_keepout_keys(
-                            &probe.probe_realized_crossing_violations,
+                    let (victim_first_probe_reservation, temporary_probe_reservation) = self
+                        .build_repair_mode_reservation(
+                            &batch,
+                            &repair,
+                            &probe,
                             &ripup_ids,
+                            victim_first,
                         );
-                        conflict_keys.extend(
-                            self.crossing_grid_violation_repair_keepout_keys(
-                                &probe.probe_grid_crossing_violations,
-                                &ripup_ids,
-                            ),
-                        );
-                        if let Some(learned_keepout) =
-                            repair.learned_repair_keepouts_by_ripup.get(&ripup_ids)
-                        {
-                            conflict_keys.extend(learned_keepout.iter().copied());
-                        }
-                        if let Some(victim_only_keepout) =
-                            repair.learned_victim_only_keepouts_by_ripup.get(&ripup_ids)
-                        {
-                            for key in victim_only_keepout {
-                                if conflict_keys.insert(*key) {
-                                    victim_first_probe_reservation.insert(*key);
-                                }
-                            }
-                        }
-                        let probe_keys: FxHashSet<CellKey> =
-                            probe.probe_route.cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
-                        for old_id in &ripup_ids {
-                            if let Some(old_route) = batch.final_routes.get(old_id) {
-                                for (x, y) in &old_route.cells {
-                                    let key = pack_xy(*x, *y);
-                                    if probe_keys.contains(&key) {
-                                        if conflict_keys.insert(key) {
-                                            victim_first_probe_reservation.insert(key);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        conflict_keys
-                    } else {
-                        let mut conflict_keys = FxHashSet::default();
-                        if let Some(learned_keepout) =
-                            repair.learned_repair_keepouts_by_ripup.get(&ripup_ids)
-                        {
-                            conflict_keys.extend(learned_keepout.iter().copied());
-                        }
-                        conflict_keys
-                    };
                     if trace_native_repair && !temporary_probe_reservation.is_empty() {
                         eprintln!(
                             "native_repair_keepout net={} ripup={:?} victim_first={} reverse={} keys={}",
