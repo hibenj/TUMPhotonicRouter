@@ -10726,6 +10726,221 @@ impl PyPhotonicRouter {
         Ok(LidarDirectCrossingOutcome::NotResolved)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_final_repair_fallback(
+        &mut self,
+        batch: &mut RepairBatchState,
+        repair: RepairAttemptState,
+        probe: ProbeState,
+        job: &NativeRouteJob,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        max_rounds: u32,
+        collect_native_timing: bool,
+    ) -> Result<(), ()> {
+        if repair.repaired {
+            return Ok(());
+        }
+        let reset_start = native_batch_timer(collect_native_timing);
+        self.obstacle_map = repair.round_base_map;
+        self.committed_center_routes = repair.round_base_center_routes;
+        self.committed_realized_center_routes = repair.round_base_realized_center_routes;
+        self.committed_target_terminal_bump_guards =
+            repair.round_base_target_terminal_bump_guards;
+        self.committed_opened_cell_keys = repair.round_base_opened_cell_keys;
+        self.crossing_events = repair.round_base_crossing_events;
+        self.invalidate_meander_base_prefix();
+        batch.final_routes = repair.round_base_routes;
+        batch.timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
+        let allow_lidar_pure_probe_commit = probe.crossing_repair_enabled
+            && !self.crossing_context.config().allow_only_expected_pairs
+            && probe.probe_grid_crossing_violations.is_empty()
+            && !probe.probe_realized_crossing_violations.is_empty();
+        if allow_lidar_pure_probe_commit {
+            let validate_lidar_pure_probe_commit = true;
+            let commit_start = native_batch_timer(collect_native_timing);
+            let commit_result = self.commit_native_route_with_clearance_allowing_core_overlap(
+                job.net_id,
+                &probe.probe_route,
+                block_radius_cells,
+                commit_radius_cells,
+                &job.clearance_exempt_cells,
+                core_radius_cells,
+                job.source_port_um,
+                job.target_port_um,
+                Some(&job.opened_cell_keys),
+                &probe.candidate_blockers,
+                validate_lidar_pure_probe_commit,
+            );
+            let commit_elapsed_us = native_batch_elapsed_us(commit_start);
+            batch.timings.commit_update_dynamic_map_us += commit_elapsed_us;
+            match commit_result {
+                Ok(true) => {
+                    batch.attempts.push(NativeRouteAttempt {
+                        bucket_name: "lidar_pure_probe_commit",
+                        net_id: job.net_id,
+                        route: Some(probe.probe_route.clone()),
+                        failed: false,
+                        error: None,
+                        repair_round: Some(max_rounds),
+                        candidate_blockers: probe.candidate_blockers.clone(),
+                        ripup_ids: Vec::new(),
+                    });
+                    batch.final_routes.insert(job.net_id, probe.probe_route);
+                    batch.repair_count = batch.repair_count.saturating_add(1);
+                    return Ok(());
+                }
+                Err(error) if validate_lidar_pure_probe_commit => {
+                    batch.attempts.push(NativeRouteAttempt {
+                        bucket_name: "lidar_pure_probe_commit",
+                        net_id: job.net_id,
+                        route: None,
+                        failed: true,
+                        error: Some(error.clone()),
+                        repair_round: Some(max_rounds),
+                        candidate_blockers: probe.candidate_blockers.clone(),
+                        ripup_ids: Vec::new(),
+                    });
+                    let mut validation_keepout =
+                        self.crossing_error_repair_keepout_keys_with_options(
+                            &error,
+                            true,
+                        );
+                    if !validation_keepout.is_empty() {
+                        let repair_start = native_batch_timer(collect_native_timing);
+                        let mut repair_result = Err(error.clone());
+                        for _feedback_attempt in 0..12 {
+                            self.obstacle_map.add_static_keys(&validation_keepout);
+                            let probe_result = self.route_single_net_ignore_dynamic_native(
+                                job.source,
+                                job.target,
+                                Some(&job.opened_cells),
+                                Some(&job.opened_cell_keys),
+                            );
+                            self.obstacle_map.remove_static_keys(&validation_keepout);
+
+                            let attempt_result = match probe_result {
+                                Ok(route) => {
+                                    match self.commit_native_route_with_clearance_allowing_core_overlap(
+                                        job.net_id,
+                                        &route,
+                                        block_radius_cells,
+                                        commit_radius_cells,
+                                        &job.clearance_exempt_cells,
+                                        core_radius_cells,
+                                        job.source_port_um,
+                                        job.target_port_um,
+                                        Some(&job.opened_cell_keys),
+                                        &probe.candidate_blockers,
+                                        true,
+                                    ) {
+                                        Ok(true) => Ok(route),
+                                        Ok(false) => Err(
+                                            "Failed to commit validation-feedback route"
+                                                .to_string(),
+                                        ),
+                                        Err(error) => Err(error),
+                                    }
+                                }
+                                Err(error) => Err(error),
+                            };
+
+                            match attempt_result {
+                                Ok(route) => {
+                                    repair_result = Ok(route);
+                                    break;
+                                }
+                                Err(retry_error) => {
+                                    let extra_keepout = self
+                                        .crossing_error_repair_keepout_keys_with_options(
+                                            &retry_error,
+                                            true,
+                                        );
+                                    let mut added_any = false;
+                                    for key in extra_keepout {
+                                        if validation_keepout.insert(key) {
+                                            added_any = true;
+                                        }
+                                    }
+                                    repair_result = Err(retry_error);
+                                    if !added_any {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        let repair_elapsed_us = native_batch_elapsed_us(repair_start);
+                        batch.timings.repair_failed_net_wall_us += repair_elapsed_us;
+                        match repair_result {
+                            Ok(route) => {
+                                batch.timings
+                                    .add_route_result_stats_if(collect_native_timing, &route);
+                                remove_success_static_cleanup(&mut self.obstacle_map, job);
+                                batch.attempts.push(NativeRouteAttempt {
+                                    bucket_name: "repair_failed_net",
+                                    net_id: job.net_id,
+                                    route: Some(route.clone()),
+                                    failed: false,
+                                    error: None,
+                                    repair_round: Some(max_rounds),
+                                    candidate_blockers: probe.candidate_blockers.clone(),
+                                    ripup_ids: Vec::new(),
+                                });
+                                batch.final_routes.insert(job.net_id, route);
+                                batch.repair_count = batch.repair_count.saturating_add(1);
+                                return Ok(());
+                            }
+                            Err(retry_error) => {
+                                batch.timings.repair_failed_net_failed_wall_us +=
+                                    repair_elapsed_us;
+                                batch.attempts.push(NativeRouteAttempt {
+                                    bucket_name: "repair_failed_net",
+                                    net_id: job.net_id,
+                                    route: None,
+                                    failed: true,
+                                    error: Some(retry_error),
+                                    repair_round: Some(max_rounds),
+                                    candidate_blockers: probe.candidate_blockers.clone(),
+                                    ripup_ids: Vec::new(),
+                                });
+                            }
+                        }
+                    }
+                }
+                Ok(false) | Err(_) => {}
+            }
+        }
+        batch.failed_net_id = Some(job.net_id);
+        let recent_errors: Vec<String> = batch.attempts
+            .iter()
+            .rev()
+            .filter(|attempt| {
+                attempt.repair_round.is_some()
+                    && (attempt.net_id == job.net_id
+                        || probe.candidate_blockers.contains(&attempt.net_id))
+            })
+            .filter_map(|attempt| {
+                attempt.error.as_ref().map(|error| {
+                    format!(
+                        "{}:net{}:round{:?}:rip{:?}:{}",
+                        attempt.bucket_name,
+                        attempt.net_id,
+                        attempt.repair_round,
+                        attempt.ripup_ids,
+                        error
+                    )
+                })
+            })
+            .take(8)
+            .collect();
+        batch.failed_error = Some(format!(
+            "No repair route found; candidate_blockers={:?}; recent_errors={recent_errors:?}",
+            probe.candidate_blockers
+        ));
+        Err(())
+    }
+
 }
 
 #[pymethods]
@@ -12124,204 +12339,19 @@ impl PyPhotonicRouter {
                 }
             }
 
-            if !repair.repaired {
-                let reset_start = native_batch_timer(collect_native_timing);
-                self.obstacle_map = repair.round_base_map;
-                self.committed_center_routes = repair.round_base_center_routes;
-                self.committed_realized_center_routes = repair.round_base_realized_center_routes;
-                self.committed_target_terminal_bump_guards =
-                    repair.round_base_target_terminal_bump_guards;
-                self.committed_opened_cell_keys = repair.round_base_opened_cell_keys;
-                self.crossing_events = repair.round_base_crossing_events;
-                self.invalidate_meander_base_prefix();
-                batch.final_routes = repair.round_base_routes;
-                batch.timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
-                let allow_lidar_pure_probe_commit = probe.crossing_repair_enabled
-                    && !self.crossing_context.config().allow_only_expected_pairs
-                    && probe.probe_grid_crossing_violations.is_empty()
-                    && !probe.probe_realized_crossing_violations.is_empty();
-                if allow_lidar_pure_probe_commit {
-                    let validate_lidar_pure_probe_commit = true;
-                    let commit_start = native_batch_timer(collect_native_timing);
-                    let commit_result = self.commit_native_route_with_clearance_allowing_core_overlap(
-                        job.net_id,
-                        &probe.probe_route,
-                        block_radius_cells,
-                        commit_radius_cells,
-                        &job.clearance_exempt_cells,
-                        core_radius_cells,
-                        job.source_port_um,
-                        job.target_port_um,
-                        Some(&job.opened_cell_keys),
-                        &probe.candidate_blockers,
-                        validate_lidar_pure_probe_commit,
-                    );
-                    let commit_elapsed_us = native_batch_elapsed_us(commit_start);
-                    batch.timings.commit_update_dynamic_map_us += commit_elapsed_us;
-                    match commit_result {
-                        Ok(true) => {
-                            batch.attempts.push(NativeRouteAttempt {
-                                bucket_name: "lidar_pure_probe_commit",
-                                net_id: job.net_id,
-                                route: Some(probe.probe_route.clone()),
-                                failed: false,
-                                error: None,
-                                repair_round: Some(max_rounds),
-                                candidate_blockers: probe.candidate_blockers.clone(),
-                                ripup_ids: Vec::new(),
-                            });
-                            batch.final_routes.insert(job.net_id, probe.probe_route);
-                            batch.repair_count = batch.repair_count.saturating_add(1);
-                            continue 'route_jobs;
-                        }
-                        Err(error) if validate_lidar_pure_probe_commit => {
-                            batch.attempts.push(NativeRouteAttempt {
-                                bucket_name: "lidar_pure_probe_commit",
-                                net_id: job.net_id,
-                                route: None,
-                                failed: true,
-                                error: Some(error.clone()),
-                                repair_round: Some(max_rounds),
-                                candidate_blockers: probe.candidate_blockers.clone(),
-                                ripup_ids: Vec::new(),
-                            });
-                            let mut validation_keepout =
-                                self.crossing_error_repair_keepout_keys_with_options(
-                                    &error,
-                                    true,
-                                );
-                            if !validation_keepout.is_empty() {
-                                let repair_start = native_batch_timer(collect_native_timing);
-                                let mut repair_result = Err(error.clone());
-                                for _feedback_attempt in 0..12 {
-                                    self.obstacle_map.add_static_keys(&validation_keepout);
-                                    let probe_result = self.route_single_net_ignore_dynamic_native(
-                                        job.source,
-                                        job.target,
-                                        Some(&job.opened_cells),
-                                        Some(&job.opened_cell_keys),
-                                    );
-                                    self.obstacle_map.remove_static_keys(&validation_keepout);
-
-                                    let attempt_result = match probe_result {
-                                        Ok(route) => {
-                                            match self.commit_native_route_with_clearance_allowing_core_overlap(
-                                                job.net_id,
-                                                &route,
-                                                block_radius_cells,
-                                                commit_radius_cells,
-                                                &job.clearance_exempt_cells,
-                                                core_radius_cells,
-                                                job.source_port_um,
-                                                job.target_port_um,
-                                                Some(&job.opened_cell_keys),
-                                                &probe.candidate_blockers,
-                                                true,
-                                            ) {
-                                                Ok(true) => Ok(route),
-                                                Ok(false) => Err(
-                                                    "Failed to commit validation-feedback route"
-                                                        .to_string(),
-                                                ),
-                                                Err(error) => Err(error),
-                                            }
-                                        }
-                                        Err(error) => Err(error),
-                                    };
-
-                                    match attempt_result {
-                                        Ok(route) => {
-                                            repair_result = Ok(route);
-                                            break;
-                                        }
-                                        Err(retry_error) => {
-                                            let extra_keepout = self
-                                                .crossing_error_repair_keepout_keys_with_options(
-                                                    &retry_error,
-                                                    true,
-                                                );
-                                            let mut added_any = false;
-                                            for key in extra_keepout {
-                                                if validation_keepout.insert(key) {
-                                                    added_any = true;
-                                                }
-                                            }
-                                            repair_result = Err(retry_error);
-                                            if !added_any {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                                let repair_elapsed_us = native_batch_elapsed_us(repair_start);
-                                batch.timings.repair_failed_net_wall_us += repair_elapsed_us;
-                                match repair_result {
-                                    Ok(route) => {
-                                        batch.timings
-                                            .add_route_result_stats_if(collect_native_timing, &route);
-                                        remove_success_static_cleanup(&mut self.obstacle_map, job);
-                                        batch.attempts.push(NativeRouteAttempt {
-                                            bucket_name: "repair_failed_net",
-                                            net_id: job.net_id,
-                                            route: Some(route.clone()),
-                                            failed: false,
-                                            error: None,
-                                            repair_round: Some(max_rounds),
-                                            candidate_blockers: probe.candidate_blockers.clone(),
-                                            ripup_ids: Vec::new(),
-                                        });
-                                        batch.final_routes.insert(job.net_id, route);
-                                        batch.repair_count = batch.repair_count.saturating_add(1);
-                                        continue 'route_jobs;
-                                    }
-                                    Err(retry_error) => {
-                                        batch.timings.repair_failed_net_failed_wall_us +=
-                                            repair_elapsed_us;
-                                        batch.attempts.push(NativeRouteAttempt {
-                                            bucket_name: "repair_failed_net",
-                                            net_id: job.net_id,
-                                            route: None,
-                                            failed: true,
-                                            error: Some(retry_error),
-                                            repair_round: Some(max_rounds),
-                                            candidate_blockers: probe.candidate_blockers.clone(),
-                                            ripup_ids: Vec::new(),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        Ok(false) | Err(_) => {}
-                    }
-                }
-                batch.failed_net_id = Some(job.net_id);
-                let recent_errors: Vec<String> = batch.attempts
-                    .iter()
-                    .rev()
-                    .filter(|attempt| {
-                        attempt.repair_round.is_some()
-                            && (attempt.net_id == job.net_id
-                                || probe.candidate_blockers.contains(&attempt.net_id))
-                    })
-                    .filter_map(|attempt| {
-                        attempt.error.as_ref().map(|error| {
-                            format!(
-                                "{}:net{}:round{:?}:rip{:?}:{}",
-                                attempt.bucket_name,
-                                attempt.net_id,
-                                attempt.repair_round,
-                                attempt.ripup_ids,
-                                error
-                            )
-                        })
-                    })
-                    .take(8)
-                    .collect();
-                batch.failed_error = Some(format!(
-                    "No repair route found; candidate_blockers={:?}; recent_errors={recent_errors:?}",
-                    probe.candidate_blockers
-                ));
-                break;
+            match self.try_final_repair_fallback(
+                &mut batch,
+                repair,
+                probe,
+                job,
+                block_radius_cells,
+                commit_radius_cells,
+                core_radius_cells,
+                max_rounds,
+                collect_native_timing,
+            ) {
+                Ok(()) => continue 'route_jobs,
+                Err(()) => break 'route_jobs,
             }
         }
         if trace_native_progress {
