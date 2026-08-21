@@ -8714,6 +8714,46 @@ impl PyPhotonicRouter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn label_and_trace_repair_mode_start(
+        &self,
+        batch: &mut RepairBatchState,
+        probe: &ProbeState,
+        job: &NativeRouteJob,
+        round_idx: u32,
+        active_repair_set_index: usize,
+        ripup_ids: &[u64],
+        victim_first: bool,
+        reverse_victim_order: bool,
+    ) -> (&'static str, Vec<u64>) {
+        let mut victim_reroute_ids = ripup_ids.to_vec();
+        if reverse_victim_order {
+            victim_reroute_ids.reverse();
+        }
+        let route_order = if victim_first {
+            "victim_first"
+        } else {
+            "current_first"
+        };
+        push_native_repair_trace(
+            &mut batch.repair_trace,
+            "repair_mode_start",
+            Some(route_order),
+            None,
+            job.net_id,
+            Some(round_idx),
+            Some(active_repair_set_index as u64),
+            &probe.candidate_blockers,
+            ripup_ids,
+            &victim_reroute_ids,
+            Some(victim_first),
+            Some(reverse_victim_order),
+            None,
+            None,
+        );
+        (route_order, victim_reroute_ids)
+    }
+
 }
 
 #[pymethods]
@@ -10431,30 +10471,15 @@ impl PyPhotonicRouter {
                             continue;
                         }
                     self.reset_repair_attempt_state_from_round_base(&mut batch, &repair, collect_native_timing);
-                    let mut victim_reroute_ids = ripup_ids.clone();
-                    if reverse_victim_order {
-                        victim_reroute_ids.reverse();
-                    }
-                    let route_order = if victim_first {
-                        "victim_first"
-                    } else {
-                        "current_first"
-                    };
-                    push_native_repair_trace(
-                        &mut batch.repair_trace,
-                        "repair_mode_start",
-                        Some(route_order),
-                        None,
-                        job.net_id,
-                        Some(round_idx),
-                        Some(active_repair_set_index as u64),
-                        &probe.candidate_blockers,
+                    let (route_order, victim_reroute_ids) = self.label_and_trace_repair_mode_start(
+                        &mut batch,
+                        &probe,
+                        job,
+                        round_idx,
+                        active_repair_set_index,
                         &ripup_ids,
-                        &victim_reroute_ids,
-                        Some(victim_first),
-                        Some(reverse_victim_order),
-                        None,
-                        None,
+                        victim_first,
+                        reverse_victim_order,
                     );
 
                     let mut victim_first_probe_reservation = FxHashSet::default();
