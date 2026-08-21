@@ -1044,6 +1044,18 @@ struct ProbeState {
     candidate_blockers: Vec<u64>,
 }
 
+struct RepairModeAttemptState {
+    route_order: &'static str,
+    victim_reroute_ids: Vec<u64>,
+    victim_first_probe_reservation: FxHashSet<CellKey>,
+    temporary_probe_reservation: FxHashSet<CellKey>,
+    temporary_probe_reservation_added: bool,
+    victim_reroute_only_reservation: FxHashSet<CellKey>,
+    victim_reroute_only_reservation_added: bool,
+    mode_failed: bool,
+    repaired_route: Option<RouteResult>,
+}
+
 enum GuidedCrossingOutcome {
     Routed,
     NotResolved,
@@ -10483,7 +10495,7 @@ impl PyPhotonicRouter {
                     );
 
                     let mut victim_first_probe_reservation = FxHashSet::default();
-                    let mut temporary_probe_reservation: FxHashSet<CellKey> = if victim_first {
+                    let temporary_probe_reservation: FxHashSet<CellKey> = if victim_first {
                         let mut conflict_keys = self.crossing_physical_violation_repair_keepout_keys(
                             &probe.probe_realized_crossing_violations,
                             &ripup_ids,
@@ -10555,7 +10567,7 @@ impl PyPhotonicRouter {
                         collect_native_timing,
                     );
 
-                    let mut temporary_probe_reservation_added =
+                    let temporary_probe_reservation_added =
                         if !temporary_probe_reservation.is_empty() {
                             self.obstacle_map
                                 .add_static_keys(&temporary_probe_reservation);
@@ -10563,10 +10575,21 @@ impl PyPhotonicRouter {
                         } else {
                             false
                         };
-                    let mut victim_reroute_only_reservation = FxHashSet::default();
-                    let mut victim_reroute_only_reservation_added = false;
-                    let mut mode_failed = false;
-                    let mut repaired_route: Option<RouteResult> = None;
+                    let victim_reroute_only_reservation = FxHashSet::default();
+                    let victim_reroute_only_reservation_added = false;
+                    let mode_failed = false;
+                    let repaired_route: Option<RouteResult> = None;
+                    let mut mode = RepairModeAttemptState {
+                        route_order,
+                        victim_reroute_ids,
+                        victim_first_probe_reservation,
+                        temporary_probe_reservation,
+                        temporary_probe_reservation_added,
+                        victim_reroute_only_reservation,
+                        victim_reroute_only_reservation_added,
+                        mode_failed,
+                        repaired_route,
+                    };
                     if !victim_first {
                         let route_start = native_batch_timer(collect_native_timing);
                         let route_result = self
@@ -10581,7 +10604,7 @@ impl PyPhotonicRouter {
                             &job.clearance_exempt_cells,
                             &job.clearance_exempt_cell_keys,
                             core_radius_cells,
-                            &temporary_probe_reservation,
+                            &mode.temporary_probe_reservation,
                             job.source_port_um,
                             job.target_port_um,
                             prefer_orthogonal_repair,
@@ -10595,14 +10618,14 @@ impl PyPhotonicRouter {
                                 push_native_repair_trace(
                                     &mut batch.repair_trace,
                                     "current_route",
-                                    Some(route_order),
+                                    Some(mode.route_order),
                                     Some("normal_route"),
                                     job.net_id,
                                     Some(round_idx),
                                     Some(active_repair_set_index as u64),
                                     &probe.candidate_blockers,
                                     &ripup_ids,
-                                    &victim_reroute_ids,
+                                    &mode.victim_reroute_ids,
                                     Some(victim_first),
                                     Some(reverse_victim_order),
                                     Some(true),
@@ -10619,7 +10642,7 @@ impl PyPhotonicRouter {
                                     ripup_ids: ripup_ids.clone(),
                                 });
                                 batch.final_routes.insert(job.net_id, route.clone());
-                                repaired_route = Some(route);
+                                mode.repaired_route = Some(route);
                             }
                             Err(normal_error) => {
                                 enqueue_targeted_illegal_crossing_repair_set(
@@ -10651,7 +10674,7 @@ impl PyPhotonicRouter {
                                 }
                                 let (repair_keepout, extra_repair_keepout) = self
                                     .augmented_crossing_error_repair_keepout(
-                                        &temporary_probe_reservation,
+                                        &mode.temporary_probe_reservation,
                                         &normal_error,
                                     );
                                 if !extra_repair_keepout.is_empty() {
@@ -10661,14 +10684,14 @@ impl PyPhotonicRouter {
                                 push_native_repair_trace(
                                     &mut batch.repair_trace,
                                     "current_route",
-                                    Some(route_order),
+                                    Some(mode.route_order),
                                     Some("normal_route"),
                                     job.net_id,
                                     Some(round_idx),
                                     Some(active_repair_set_index as u64),
                                     &probe.candidate_blockers,
                                     &ripup_ids,
-                                    &victim_reroute_ids,
+                                    &mode.victim_reroute_ids,
                                     Some(victim_first),
                                     Some(reverse_victim_order),
                                     Some(false),
@@ -10717,14 +10740,14 @@ impl PyPhotonicRouter {
                                         push_native_repair_trace(
                                             &mut batch.repair_trace,
                                             "current_route",
-                                            Some(route_order),
+                                            Some(mode.route_order),
                                             Some("repair_fallback"),
                                             job.net_id,
                                             Some(round_idx),
                                             Some(active_repair_set_index as u64),
                                             &probe.candidate_blockers,
                                             &ripup_ids,
-                                            &victim_reroute_ids,
+                                            &mode.victim_reroute_ids,
                                             Some(victim_first),
                                             Some(reverse_victim_order),
                                             Some(true),
@@ -10741,7 +10764,7 @@ impl PyPhotonicRouter {
                                             ripup_ids: ripup_ids.clone(),
                                         });
                                         batch.final_routes.insert(job.net_id, route.clone());
-                                        repaired_route = Some(route);
+                                        mode.repaired_route = Some(route);
                                     }
                                     Err(error) => {
                                         enqueue_targeted_illegal_crossing_repair_set(
@@ -10776,14 +10799,14 @@ impl PyPhotonicRouter {
                                         push_native_repair_trace(
                                             &mut batch.repair_trace,
                                             "current_route",
-                                            Some(route_order),
+                                            Some(mode.route_order),
                                             Some("repair_fallback"),
                                             job.net_id,
                                             Some(round_idx),
                                             Some(active_repair_set_index as u64),
                                             &probe.candidate_blockers,
                                             &ripup_ids,
-                                            &victim_reroute_ids,
+                                            &mode.victim_reroute_ids,
                                             Some(victim_first),
                                             Some(reverse_victim_order),
                                             Some(false),
@@ -10799,53 +10822,53 @@ impl PyPhotonicRouter {
                                             candidate_blockers: probe.candidate_blockers.clone(),
                                             ripup_ids: ripup_ids.clone(),
                                         });
-                                        mode_failed = true;
+                                        mode.mode_failed = true;
                                     }
                                 }
                             }
                         }
                     }
 
-                    if !mode_failed
+                    if !mode.mode_failed
                         && !victim_first
-                        && temporary_probe_reservation_added
+                        && mode.temporary_probe_reservation_added
                         && (probe.candidate_blockers.len() > 2
                             || (probe.probe_grid_crossing_violations.is_empty()
                                 && !probe.probe_realized_crossing_violations.is_empty()))
                     {
                         self.obstacle_map
-                            .remove_static_keys(&temporary_probe_reservation);
-                        temporary_probe_reservation_added = false;
+                            .remove_static_keys(&mode.temporary_probe_reservation);
+                        mode.temporary_probe_reservation_added = false;
                     }
 
-                    if !mode_failed && !victim_first {
+                    if !mode.mode_failed && !victim_first {
                         if let Some(victim_only_keepout) =
                             repair.learned_victim_only_keepouts_by_ripup.get(&ripup_ids)
                         {
                             for key in victim_only_keepout {
-                                if !temporary_probe_reservation.contains(key) {
-                                    victim_reroute_only_reservation.insert(*key);
+                                if !mode.temporary_probe_reservation.contains(key) {
+                                    mode.victim_reroute_only_reservation.insert(*key);
                                 }
                             }
-                            if !victim_reroute_only_reservation.is_empty() {
+                            if !mode.victim_reroute_only_reservation.is_empty() {
                                 self.obstacle_map
-                                    .add_static_keys(&victim_reroute_only_reservation);
-                                victim_reroute_only_reservation_added = true;
+                                    .add_static_keys(&mode.victim_reroute_only_reservation);
+                                mode.victim_reroute_only_reservation_added = true;
                             }
                         }
                     }
 
-                    if !mode_failed {
-                        for old_id in &victim_reroute_ids {
+                    if !mode.mode_failed {
+                        for old_id in &mode.victim_reroute_ids {
                             let Some(victim_job) = job_by_id.get(old_id) else {
-                                mode_failed = true;
+                                mode.mode_failed = true;
                                 break;
                             };
                             let mut guided_victim_route: Option<RouteResult> = None;
                             let mut lidar_crossing_partners_available = false;
                             if lidar_pure_crossing_repair
                                 && !victim_first
-                                && repaired_route.is_some()
+                                && mode.repaired_route.is_some()
                             {
                                 let victim_source_state = State::new(
                                     victim_job.source.x,
@@ -10937,14 +10960,14 @@ impl PyPhotonicRouter {
                                                 push_native_repair_trace(
                                                     &mut batch.repair_trace,
                                                     "victim_reroute",
-                                                    Some(route_order),
+                                                    Some(mode.route_order),
                                                     Some("lidar_seeded_collision_crossing"),
                                                     victim_job.net_id,
                                                     Some(round_idx),
                                                     Some(active_repair_set_index as u64),
                                                     &probe.candidate_blockers,
                                                     &ripup_ids,
-                                                    &victim_reroute_ids,
+                                                    &mode.victim_reroute_ids,
                                                     Some(victim_first),
                                                     Some(reverse_victim_order),
                                                     Some(true),
@@ -11038,14 +11061,14 @@ impl PyPhotonicRouter {
                                                 push_native_repair_trace(
                                                     &mut batch.repair_trace,
                                                     "victim_reroute",
-                                                    Some(route_order),
+                                                    Some(mode.route_order),
                                                     Some("lidar_collision_crossing"),
                                                     victim_job.net_id,
                                                     Some(round_idx),
                                                     Some(active_repair_set_index as u64),
                                                     &probe.candidate_blockers,
                                                     &ripup_ids,
-                                                    &victim_reroute_ids,
+                                                    &mode.victim_reroute_ids,
                                                     Some(victim_first),
                                                     Some(reverse_victim_order),
                                                     Some(true),
@@ -11080,7 +11103,7 @@ impl PyPhotonicRouter {
                                 && self.use_collision_crossing_routing
                                 && guided_collision_crossing_enabled
                                 && !victim_first
-                                && repaired_route.is_some()
+                                && mode.repaired_route.is_some()
                                 && self.committed_center_routes.contains_key(&job.net_id)
                                 && guided_victim_route.is_none()
                             {
@@ -11158,14 +11181,14 @@ impl PyPhotonicRouter {
                                             push_native_repair_trace(
                                                 &mut batch.repair_trace,
                                                 "victim_reroute",
-                                                Some(route_order),
+                                                Some(mode.route_order),
                                                 Some("guided_collision_crossing"),
                                                 victim_job.net_id,
                                                 Some(round_idx),
                                                 Some(active_repair_set_index as u64),
                                                 &probe.candidate_blockers,
                                                 &ripup_ids,
-                                                &victim_reroute_ids,
+                                                &mode.victim_reroute_ids,
                                                 Some(victim_first),
                                                 Some(reverse_victim_order),
                                                 Some(true),
@@ -11206,7 +11229,7 @@ impl PyPhotonicRouter {
                                         victim_job.net_id
                                     );
                                 }
-                                mode_failed = true;
+                                mode.mode_failed = true;
                                 break;
                             }
                             let reroute_start = native_batch_timer(collect_native_timing);
@@ -11222,7 +11245,7 @@ impl PyPhotonicRouter {
                                 &victim_job.clearance_exempt_cells,
                                 &victim_job.clearance_exempt_cell_keys,
                                 core_radius_cells,
-                                &temporary_probe_reservation,
+                                &mode.temporary_probe_reservation,
                                 victim_job.source_port_um,
                                 victim_job.target_port_um,
                                 prefer_orthogonal_repair,
@@ -11237,14 +11260,14 @@ impl PyPhotonicRouter {
                                     push_native_repair_trace(
                                         &mut batch.repair_trace,
                                         "victim_reroute",
-                                        Some(route_order),
+                                        Some(mode.route_order),
                                         Some("normal_route"),
                                         victim_job.net_id,
                                         Some(round_idx),
                                         Some(active_repair_set_index as u64),
                                         &probe.candidate_blockers,
                                         &ripup_ids,
-                                        &victim_reroute_ids,
+                                        &mode.victim_reroute_ids,
                                         Some(victim_first),
                                         Some(reverse_victim_order),
                                         Some(true),
@@ -11288,7 +11311,7 @@ impl PyPhotonicRouter {
                                     }
                                     let (repair_keepout, extra_repair_keepout) = self
                                         .augmented_crossing_error_repair_keepout(
-                                            &temporary_probe_reservation,
+                                            &mode.temporary_probe_reservation,
                                             &normal_error,
                                         );
                                     if !extra_repair_keepout.is_empty() {
@@ -11298,14 +11321,14 @@ impl PyPhotonicRouter {
                                     push_native_repair_trace(
                                         &mut batch.repair_trace,
                                         "victim_reroute",
-                                        Some(route_order),
+                                        Some(mode.route_order),
                                         Some("normal_route"),
                                         victim_job.net_id,
                                         Some(round_idx),
                                         Some(active_repair_set_index as u64),
                                         &probe.candidate_blockers,
                                         &ripup_ids,
-                                        &victim_reroute_ids,
+                                        &mode.victim_reroute_ids,
                                         Some(victim_first),
                                         Some(reverse_victim_order),
                                         Some(false),
@@ -11354,14 +11377,14 @@ impl PyPhotonicRouter {
                                             push_native_repair_trace(
                                                 &mut batch.repair_trace,
                                                 "victim_reroute",
-                                                Some(route_order),
+                                                Some(mode.route_order),
                                                 Some("repair_fallback"),
                                                 victim_job.net_id,
                                                 Some(round_idx),
                                                 Some(active_repair_set_index as u64),
                                                 &probe.candidate_blockers,
                                                 &ripup_ids,
-                                                &victim_reroute_ids,
+                                                &mode.victim_reroute_ids,
                                                 Some(victim_first),
                                                 Some(reverse_victim_order),
                                                 Some(true),
@@ -11408,14 +11431,14 @@ impl PyPhotonicRouter {
                                             push_native_repair_trace(
                                                 &mut batch.repair_trace,
                                                 "victim_reroute",
-                                                Some(route_order),
+                                                Some(mode.route_order),
                                                 Some("repair_fallback"),
                                                 victim_job.net_id,
                                                 Some(round_idx),
                                                 Some(active_repair_set_index as u64),
                                                 &probe.candidate_blockers,
                                                 &ripup_ids,
-                                                &victim_reroute_ids,
+                                                &mode.victim_reroute_ids,
                                                 Some(victim_first),
                                                 Some(reverse_victim_order),
                                                 Some(false),
@@ -11431,7 +11454,7 @@ impl PyPhotonicRouter {
                                                 candidate_blockers: probe.candidate_blockers.clone(),
                                                 ripup_ids: ripup_ids.clone(),
                                             });
-                                            mode_failed = true;
+                                            mode.mode_failed = true;
                                             break;
                                         }
                                     }
@@ -11451,22 +11474,22 @@ impl PyPhotonicRouter {
                         }
                     }
 
-                    if !mode_failed
+                    if !mode.mode_failed
                         && victim_first
-                        && temporary_probe_reservation_added
-                        && !victim_first_probe_reservation.is_empty()
+                        && mode.temporary_probe_reservation_added
+                        && !mode.victim_first_probe_reservation.is_empty()
                     {
                         self.obstacle_map
-                            .remove_static_keys(&victim_first_probe_reservation);
-                        for key in &victim_first_probe_reservation {
-                            temporary_probe_reservation.remove(key);
+                            .remove_static_keys(&mode.victim_first_probe_reservation);
+                        for key in &mode.victim_first_probe_reservation {
+                            mode.temporary_probe_reservation.remove(key);
                         }
-                        if temporary_probe_reservation.is_empty() {
-                            temporary_probe_reservation_added = false;
+                        if mode.temporary_probe_reservation.is_empty() {
+                            mode.temporary_probe_reservation_added = false;
                         }
                     }
 
-                    if !mode_failed && victim_first {
+                    if !mode.mode_failed && victim_first {
                         let route_start = native_batch_timer(collect_native_timing);
                         let normal_result =
                             self.route_single_net_and_commit_native_with_optional_orthogonal_repair_keepout(
@@ -11480,7 +11503,7 @@ impl PyPhotonicRouter {
                             &job.clearance_exempt_cells,
                             &job.clearance_exempt_cell_keys,
                             core_radius_cells,
-                            &temporary_probe_reservation,
+                            &mode.temporary_probe_reservation,
                             job.source_port_um,
                             job.target_port_um,
                             prefer_orthogonal_repair,
@@ -11494,14 +11517,14 @@ impl PyPhotonicRouter {
                                 push_native_repair_trace(
                                     &mut batch.repair_trace,
                                     "current_route",
-                                    Some(route_order),
+                                    Some(mode.route_order),
                                     Some("normal_route"),
                                     job.net_id,
                                     Some(round_idx),
                                     Some(active_repair_set_index as u64),
                                     &probe.candidate_blockers,
                                     &ripup_ids,
-                                    &victim_reroute_ids,
+                                    &mode.victim_reroute_ids,
                                     Some(victim_first),
                                     Some(reverse_victim_order),
                                     Some(true),
@@ -11539,7 +11562,7 @@ impl PyPhotonicRouter {
                                 }
                                 let (repair_keepout, extra_repair_keepout) = self
                                     .augmented_crossing_error_repair_keepout(
-                                        &temporary_probe_reservation,
+                                        &mode.temporary_probe_reservation,
                                         &normal_error,
                                     );
                                 if !extra_repair_keepout.is_empty() {
@@ -11549,14 +11572,14 @@ impl PyPhotonicRouter {
                                 push_native_repair_trace(
                                     &mut batch.repair_trace,
                                     "current_route",
-                                    Some(route_order),
+                                    Some(mode.route_order),
                                     Some("normal_route"),
                                     job.net_id,
                                     Some(round_idx),
                                     Some(active_repair_set_index as u64),
                                     &probe.candidate_blockers,
                                     &ripup_ids,
-                                    &victim_reroute_ids,
+                                    &mode.victim_reroute_ids,
                                     Some(victim_first),
                                     Some(reverse_victim_order),
                                     Some(false),
@@ -11605,14 +11628,14 @@ impl PyPhotonicRouter {
                                         push_native_repair_trace(
                                             &mut batch.repair_trace,
                                             "current_route",
-                                            Some(route_order),
+                                            Some(mode.route_order),
                                             Some("repair_fallback"),
                                             job.net_id,
                                             Some(round_idx),
                                             Some(active_repair_set_index as u64),
                                             &probe.candidate_blockers,
                                             &ripup_ids,
-                                            &victim_reroute_ids,
+                                            &mode.victim_reroute_ids,
                                             Some(victim_first),
                                             Some(reverse_victim_order),
                                             Some(true),
@@ -11653,14 +11676,14 @@ impl PyPhotonicRouter {
                                         push_native_repair_trace(
                                             &mut batch.repair_trace,
                                             "current_route",
-                                            Some(route_order),
+                                            Some(mode.route_order),
                                             Some("repair_fallback"),
                                             job.net_id,
                                             Some(round_idx),
                                             Some(active_repair_set_index as u64),
                                             &probe.candidate_blockers,
                                             &ripup_ids,
-                                            &victim_reroute_ids,
+                                            &mode.victim_reroute_ids,
                                             Some(victim_first),
                                             Some(reverse_victim_order),
                                             Some(false),
@@ -11676,9 +11699,9 @@ impl PyPhotonicRouter {
                                             candidate_blockers: probe.candidate_blockers.clone(),
                                             ripup_ids: ripup_ids.clone(),
                                         });
-                                        if temporary_probe_reservation_added {
+                                        if mode.temporary_probe_reservation_added {
                                             self.obstacle_map
-                                                .remove_static_keys(&temporary_probe_reservation);
+                                                .remove_static_keys(&mode.temporary_probe_reservation);
                                         }
                                         continue;
                                     }
@@ -11696,43 +11719,43 @@ impl PyPhotonicRouter {
                             ripup_ids: ripup_ids.clone(),
                         });
                         batch.final_routes.insert(job.net_id, route.clone());
-                        repaired_route = Some(route);
+                        mode.repaired_route = Some(route);
                     }
 
-                    if victim_reroute_only_reservation_added {
+                    if mode.victim_reroute_only_reservation_added {
                         self.obstacle_map
-                            .remove_static_keys(&victim_reroute_only_reservation);
+                            .remove_static_keys(&mode.victim_reroute_only_reservation);
                     }
 
-                    if temporary_probe_reservation_added {
+                    if mode.temporary_probe_reservation_added {
                         self.obstacle_map
-                            .remove_static_keys(&temporary_probe_reservation);
+                            .remove_static_keys(&mode.temporary_probe_reservation);
                     }
 
                     push_native_repair_trace(
                         &mut batch.repair_trace,
                         "repair_mode_result",
-                        Some(route_order),
+                        Some(mode.route_order),
                         None,
                         job.net_id,
                         Some(round_idx),
                         Some(active_repair_set_index as u64),
                         &probe.candidate_blockers,
                         &ripup_ids,
-                        &victim_reroute_ids,
+                        &mode.victim_reroute_ids,
                         Some(victim_first),
                         Some(reverse_victim_order),
-                        Some(!mode_failed && repaired_route.is_some()),
-                        if mode_failed {
+                        Some(!mode.mode_failed && mode.repaired_route.is_some()),
+                        if mode.mode_failed {
                             Some("mode_failed".to_string())
-                        } else if repaired_route.is_none() {
+                        } else if mode.repaired_route.is_none() {
                             Some("no_repaired_route".to_string())
                         } else {
                             None
                         },
                     );
 
-                    if !mode_failed && repaired_route.is_some() {
+                    if !mode.mode_failed && mode.repaired_route.is_some() {
                         repair.repaired = true;
                         batch.repair_count += 1;
                         break;
