@@ -425,8 +425,51 @@ idea without first re-measuring `reset=` on whatever benchmark
 motivates it. See `.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`'s
 Outcomes & Retrospective and Surprises & Discoveries for the full
 correction. The real cost driving `multiportmmi_8x8`'s routing time is
-`reroute_victims_wall` itself (A* search time, not state management) --
-under active investigation as of 2026-08-21, no findings yet.
+`reroute_victims_wall` itself (A* search time, not state management).
+
+**Investigation findings so far (2026-08-21, via a read-only fork, no code changes made)**:
+1. Confirmed `dense_astar`/`route_search_total` stats are only ever
+   populated inside success arms (~23 `add_route_result_stats_if` call
+   sites in `src/py_router.rs`, every one inside `Ok(route) =>`/
+   `Ok(true) =>`) -- failed searches are structurally invisible to
+   those stats, wall-clock timing is the only thing that sees them.
+2. **Refuted**: genuinely failed final-attempt reroutes are not the
+   cause -- isolated via temporary instrumentation (reverted) to just
+   0.7% of the `reroute_victims_wall` bucket (0.64s of 90.7s on a
+   CLI-matched run with `attempts=174, failures=44`, identical counts
+   to the original run).
+3. **Found, with direct source evidence**: `try_crossing_aware_victim_reroute`
+   (`src/py_router.rs`, Milestone 3.13's own extraction) runs up to
+   **three separate A* search attempts per victim** before ever
+   reaching the plain fallback -- lidar-seeded
+   (`try_route_through_collision_partner_set` with a seeded partner
+   set), lidar-direct (`try_route_with_collision_crossings_with_loss`),
+   and guided (`try_route_through_collision_partner_set` with the
+   current job as sole partner). Each attempt's full wall-clock
+   duration is added to `reroute_victims_wall_us` unconditionally, but
+   `add_route_result_stats_if` (populating `dense_astar`) is only
+   called inside that specific attempt's own nested commit-success arm.
+   So for any victim that ultimately resolves via the plain fallback
+   (the common case), up to 3 prior expensive-but-uncommitted searches
+   may already have run -- real computational work, not just a
+   reporting gap -- fully explaining the ~90s-wall-vs-~9s-stats
+   disparity (the 9s figure is `dense_astar` summed across the *whole*
+   run, all bucket types).
+4. **Not yet isolated**: which of the three preliminary strategies
+   dominates, and whether the cost concentrates on a few hard nets
+   (the "slowest route nets" list in `--debug-timing true` output
+   suggests nets like n_69/n_70/n_66/n_67/n_68 as candidates, not yet
+   confirmed) or spreads broadly. Needs finer per-attempt
+   instrumentation than the current wall-clock buckets provide.
+
+This reframes the optimization question: not "make A* faster" but
+"the router tries up to three crossing-aware strategies serially
+before falling back to plain reroute, and most of that work may be
+thrown away." Whether that's worth changing depends on why those three
+strategies exist (likely: try smarter/lower-loss options before the
+plain fallback) -- reducing them could trade routing quality for
+speed. This tradeoff has not been discussed with the repository owner
+yet; do not implement a reduction without that discussion first.
 
 `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`'s
 and `.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`'s
