@@ -1076,6 +1076,11 @@ enum PlainRouteOutcome {
     NotResolved,
 }
 
+enum VictimPlainRerouteOutcome {
+    Routed,
+    Failed,
+}
+
 struct NativeEndpointCorrection {
     centerline: Vec<(f64, f64)>,
     committed_bump: bool,
@@ -9022,6 +9027,271 @@ impl PyPhotonicRouter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn reroute_victim_with_plain_fallback(
+        &mut self,
+        batch: &mut RepairBatchState,
+        repair: &mut RepairAttemptState,
+        probe: &mut ProbeState,
+        mode: &mut RepairModeAttemptState,
+        job: &NativeRouteJob,
+        victim_job: &NativeRouteJob,
+        round_idx: u32,
+        active_repair_set_index: usize,
+        repair_set_index: usize,
+        ripup_ids: &[u64],
+        victim_first: bool,
+        reverse_victim_order: bool,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        prefer_orthogonal_repair: bool,
+        history_weight: f64,
+        max_rounds: u32,
+        max_victims: usize,
+        collect_native_timing: bool,
+    ) -> VictimPlainRerouteOutcome {
+        let reroute_start = native_batch_timer(collect_native_timing);
+        let reroute_result =
+            self.route_single_net_and_commit_native_with_optional_orthogonal_repair_keepout(
+                victim_job.net_id,
+                victim_job.source,
+                victim_job.target,
+                block_radius_cells,
+                &victim_job.opened_cells,
+                &victim_job.opened_cell_keys,
+                commit_radius_cells,
+                &victim_job.clearance_exempt_cells,
+                &victim_job.clearance_exempt_cell_keys,
+                core_radius_cells,
+                &mode.temporary_probe_reservation,
+                victim_job.source_port_um,
+                victim_job.target_port_um,
+                prefer_orthogonal_repair,
+            );
+        let reroute_elapsed_us = native_batch_elapsed_us(reroute_start);
+        batch.timings.reroute_victims_wall_us += reroute_elapsed_us;
+        let route = match reroute_result {
+            Ok(route) => {
+                batch
+                    .timings
+                    .add_route_result_stats_if(collect_native_timing, &route);
+                remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
+                push_native_repair_trace(
+                    &mut batch.repair_trace,
+                    "victim_reroute",
+                    Some(mode.route_order),
+                    Some("normal_route"),
+                    victim_job.net_id,
+                    Some(round_idx),
+                    Some(active_repair_set_index as u64),
+                    &probe.candidate_blockers,
+                    ripup_ids,
+                    &mode.victim_reroute_ids,
+                    Some(victim_first),
+                    Some(reverse_victim_order),
+                    Some(true),
+                    None,
+                );
+                route
+            }
+            Err(normal_error) => {
+                enqueue_targeted_illegal_crossing_repair_set(
+                    &mut repair.repair_victim_sets,
+                    &mut probe.candidate_blockers,
+                    &repair.round_base_routes,
+                    victim_job.net_id,
+                    ripup_ids,
+                    &normal_error,
+                    round_idx,
+                    max_rounds,
+                    max_victims,
+                );
+                let learned_repair_keepout = repair
+                    .learned_repair_keepouts_by_ripup
+                    .entry(ripup_ids.to_vec())
+                    .or_default();
+                let victim_only_keepout = repair
+                    .learned_victim_only_keepouts_by_ripup
+                    .entry(ripup_ids.to_vec())
+                    .or_default();
+                if self.remember_victim_repair_error_keepout(
+                    learned_repair_keepout,
+                    victim_only_keepout,
+                    &normal_error,
+                    job.net_id,
+                ) {
+                    enqueue_learned_keepout_repair_retry(
+                        &mut repair.repair_victim_sets,
+                        &mut repair.learned_repair_retry_counts,
+                        ripup_ids,
+                        round_idx,
+                        repair_set_index,
+                    );
+                }
+                let (repair_keepout, extra_repair_keepout) = self
+                    .augmented_crossing_error_repair_keepout(
+                        &mode.temporary_probe_reservation,
+                        &normal_error,
+                    );
+                if !extra_repair_keepout.is_empty() {
+                    self.obstacle_map.add_static_keys(&extra_repair_keepout);
+                }
+                batch.timings.reroute_victims_failed_wall_us += reroute_elapsed_us;
+                push_native_repair_trace(
+                    &mut batch.repair_trace,
+                    "victim_reroute",
+                    Some(mode.route_order),
+                    Some("normal_route"),
+                    victim_job.net_id,
+                    Some(round_idx),
+                    Some(active_repair_set_index as u64),
+                    &probe.candidate_blockers,
+                    ripup_ids,
+                    &mode.victim_reroute_ids,
+                    Some(victim_first),
+                    Some(reverse_victim_order),
+                    Some(false),
+                    Some(normal_error.clone()),
+                );
+                batch.attempts.push(NativeRouteAttempt {
+                    bucket_name: "reroute_victims",
+                    net_id: victim_job.net_id,
+                    route: None,
+                    failed: true,
+                    error: Some(normal_error),
+                    repair_round: Some(round_idx),
+                    candidate_blockers: probe.candidate_blockers.clone(),
+                    ripup_ids: ripup_ids.to_vec(),
+                });
+                let repair_start = native_batch_timer(collect_native_timing);
+                let repair_result =
+                    self.route_single_net_and_commit_repair_native_with_repair_keepout(
+                        victim_job.net_id,
+                        victim_job.source,
+                        victim_job.target,
+                        block_radius_cells,
+                        &victim_job.opened_cells,
+                        &victim_job.opened_cell_keys,
+                        history_weight,
+                        commit_radius_cells,
+                        &victim_job.clearance_exempt_cells,
+                        &victim_job.clearance_exempt_cell_keys,
+                        core_radius_cells,
+                        &repair_keepout,
+                        victim_job.source_port_um,
+                        victim_job.target_port_um,
+                    );
+                let repair_elapsed_us = native_batch_elapsed_us(repair_start);
+                if !extra_repair_keepout.is_empty() {
+                    self.obstacle_map.remove_static_keys(&extra_repair_keepout);
+                }
+                batch.timings.reroute_victims_wall_us += repair_elapsed_us;
+                match repair_result {
+                    Ok(route) => {
+                        batch
+                            .timings
+                            .add_route_result_stats_if(collect_native_timing, &route);
+                        remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
+                        push_native_repair_trace(
+                            &mut batch.repair_trace,
+                            "victim_reroute",
+                            Some(mode.route_order),
+                            Some("repair_fallback"),
+                            victim_job.net_id,
+                            Some(round_idx),
+                            Some(active_repair_set_index as u64),
+                            &probe.candidate_blockers,
+                            ripup_ids,
+                            &mode.victim_reroute_ids,
+                            Some(victim_first),
+                            Some(reverse_victim_order),
+                            Some(true),
+                            None,
+                        );
+                        route
+                    }
+                    Err(error) => {
+                        enqueue_targeted_illegal_crossing_repair_set(
+                            &mut repair.repair_victim_sets,
+                            &mut probe.candidate_blockers,
+                            &repair.round_base_routes,
+                            victim_job.net_id,
+                            ripup_ids,
+                            &error,
+                            round_idx,
+                            max_rounds,
+                            max_victims,
+                        );
+                        let learned_repair_keepout = repair
+                            .learned_repair_keepouts_by_ripup
+                            .entry(ripup_ids.to_vec())
+                            .or_default();
+                        let victim_only_keepout = repair
+                            .learned_victim_only_keepouts_by_ripup
+                            .entry(ripup_ids.to_vec())
+                            .or_default();
+                        if self.remember_victim_repair_error_keepout(
+                            learned_repair_keepout,
+                            victim_only_keepout,
+                            &error,
+                            job.net_id,
+                        ) {
+                            enqueue_learned_keepout_repair_retry(
+                                &mut repair.repair_victim_sets,
+                                &mut repair.learned_repair_retry_counts,
+                                ripup_ids,
+                                round_idx,
+                                repair_set_index,
+                            );
+                        }
+                        batch.timings.reroute_victims_failed_wall_us += repair_elapsed_us;
+                        push_native_repair_trace(
+                            &mut batch.repair_trace,
+                            "victim_reroute",
+                            Some(mode.route_order),
+                            Some("repair_fallback"),
+                            victim_job.net_id,
+                            Some(round_idx),
+                            Some(active_repair_set_index as u64),
+                            &probe.candidate_blockers,
+                            ripup_ids,
+                            &mode.victim_reroute_ids,
+                            Some(victim_first),
+                            Some(reverse_victim_order),
+                            Some(false),
+                            Some(error.clone()),
+                        );
+                        batch.attempts.push(NativeRouteAttempt {
+                            bucket_name: "reroute_victims",
+                            net_id: victim_job.net_id,
+                            route: None,
+                            failed: true,
+                            error: Some(error),
+                            repair_round: Some(round_idx),
+                            candidate_blockers: probe.candidate_blockers.clone(),
+                            ripup_ids: ripup_ids.to_vec(),
+                        });
+                        mode.mode_failed = true;
+                        return VictimPlainRerouteOutcome::Failed;
+                    }
+                }
+            }
+        };
+        batch.attempts.push(NativeRouteAttempt {
+            bucket_name: "reroute_victims",
+            net_id: victim_job.net_id,
+            route: Some(route.clone()),
+            failed: false,
+            error: None,
+            repair_round: Some(round_idx),
+            candidate_blockers: probe.candidate_blockers.clone(),
+            ripup_ids: ripup_ids.to_vec(),
+        });
+        batch.final_routes.insert(victim_job.net_id, route);
+        VictimPlainRerouteOutcome::Routed
+    }
+
 }
 
 #[pymethods]
@@ -10900,7 +11170,8 @@ impl PyPhotonicRouter {
                     }
 
                     if !mode.mode_failed {
-                        for old_id in &mode.victim_reroute_ids {
+                        let victim_reroute_ids_snapshot = mode.victim_reroute_ids.clone();
+                        for old_id in &victim_reroute_ids_snapshot {
                             let Some(victim_job) = job_by_id.get(old_id) else {
                                 mode.mode_failed = true;
                                 break;
@@ -11273,245 +11544,31 @@ impl PyPhotonicRouter {
                                 mode.mode_failed = true;
                                 break;
                             }
-                            let reroute_start = native_batch_timer(collect_native_timing);
-                            let reroute_result =
-                                self.route_single_net_and_commit_native_with_optional_orthogonal_repair_keepout(
-                                victim_job.net_id,
-                                victim_job.source,
-                                victim_job.target,
+                            match self.reroute_victim_with_plain_fallback(
+                                &mut batch,
+                                &mut repair,
+                                &mut probe,
+                                &mut mode,
+                                job,
+                                victim_job,
+                                round_idx,
+                                active_repair_set_index,
+                                repair_set_index,
+                                &ripup_ids,
+                                victim_first,
+                                reverse_victim_order,
                                 block_radius_cells,
-                                &victim_job.opened_cells,
-                                &victim_job.opened_cell_keys,
                                 commit_radius_cells,
-                                &victim_job.clearance_exempt_cells,
-                                &victim_job.clearance_exempt_cell_keys,
                                 core_radius_cells,
-                                &mode.temporary_probe_reservation,
-                                victim_job.source_port_um,
-                                victim_job.target_port_um,
                                 prefer_orthogonal_repair,
-                            );
-                            let reroute_elapsed_us = native_batch_elapsed_us(reroute_start);
-                            batch.timings.reroute_victims_wall_us += reroute_elapsed_us;
-                            let route = match reroute_result {
-                                Ok(route) => {
-                                    batch.timings
-                                        .add_route_result_stats_if(collect_native_timing, &route);
-                                    remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
-                                    push_native_repair_trace(
-                                        &mut batch.repair_trace,
-                                        "victim_reroute",
-                                        Some(mode.route_order),
-                                        Some("normal_route"),
-                                        victim_job.net_id,
-                                        Some(round_idx),
-                                        Some(active_repair_set_index as u64),
-                                        &probe.candidate_blockers,
-                                        &ripup_ids,
-                                        &mode.victim_reroute_ids,
-                                        Some(victim_first),
-                                        Some(reverse_victim_order),
-                                        Some(true),
-                                        None,
-                                    );
-                                    route
-                                }
-                                Err(normal_error) => {
-                                    enqueue_targeted_illegal_crossing_repair_set(
-                                        &mut repair.repair_victim_sets,
-                                        &mut probe.candidate_blockers,
-                                        &repair.round_base_routes,
-                                        victim_job.net_id,
-                                        &ripup_ids,
-                                        &normal_error,
-                                        round_idx,
-                                        max_rounds,
-                                        max_victims,
-                                    );
-                                    let learned_repair_keepout =
-                                        repair.learned_repair_keepouts_by_ripup
-                                            .entry(ripup_ids.clone())
-                                            .or_default();
-                                    let victim_only_keepout =
-                                        repair.learned_victim_only_keepouts_by_ripup
-                                            .entry(ripup_ids.clone())
-                                            .or_default();
-                                    if self.remember_victim_repair_error_keepout(
-                                        learned_repair_keepout,
-                                        victim_only_keepout,
-                                        &normal_error,
-                                        job.net_id,
-                                    ) {
-                                        enqueue_learned_keepout_repair_retry(
-                                            &mut repair.repair_victim_sets,
-                                            &mut repair.learned_repair_retry_counts,
-                                            &ripup_ids,
-                                            round_idx,
-                                            repair_set_index,
-                                        );
-                                    }
-                                    let (repair_keepout, extra_repair_keepout) = self
-                                        .augmented_crossing_error_repair_keepout(
-                                            &mode.temporary_probe_reservation,
-                                            &normal_error,
-                                        );
-                                    if !extra_repair_keepout.is_empty() {
-                                        self.obstacle_map.add_static_keys(&extra_repair_keepout);
-                                    }
-                                    batch.timings.reroute_victims_failed_wall_us += reroute_elapsed_us;
-                                    push_native_repair_trace(
-                                        &mut batch.repair_trace,
-                                        "victim_reroute",
-                                        Some(mode.route_order),
-                                        Some("normal_route"),
-                                        victim_job.net_id,
-                                        Some(round_idx),
-                                        Some(active_repair_set_index as u64),
-                                        &probe.candidate_blockers,
-                                        &ripup_ids,
-                                        &mode.victim_reroute_ids,
-                                        Some(victim_first),
-                                        Some(reverse_victim_order),
-                                        Some(false),
-                                        Some(normal_error.clone()),
-                                    );
-                                    batch.attempts.push(NativeRouteAttempt {
-                                        bucket_name: "reroute_victims",
-                                        net_id: victim_job.net_id,
-                                        route: None,
-                                        failed: true,
-                                        error: Some(normal_error),
-                                        repair_round: Some(round_idx),
-                                        candidate_blockers: probe.candidate_blockers.clone(),
-                                        ripup_ids: ripup_ids.clone(),
-                                    });
-                                    let repair_start = native_batch_timer(collect_native_timing);
-                                    let repair_result = self
-                                        .route_single_net_and_commit_repair_native_with_repair_keepout(
-                                            victim_job.net_id,
-                                            victim_job.source,
-                                            victim_job.target,
-                                            block_radius_cells,
-                                            &victim_job.opened_cells,
-                                            &victim_job.opened_cell_keys,
-                                            history_weight,
-                                            commit_radius_cells,
-                                            &victim_job.clearance_exempt_cells,
-                                            &victim_job.clearance_exempt_cell_keys,
-                                            core_radius_cells,
-                                            &repair_keepout,
-                                            victim_job.source_port_um,
-                                            victim_job.target_port_um,
-                                        );
-                                    let repair_elapsed_us = native_batch_elapsed_us(repair_start);
-                                    if !extra_repair_keepout.is_empty() {
-                                        self.obstacle_map.remove_static_keys(&extra_repair_keepout);
-                                    }
-                                    batch.timings.reroute_victims_wall_us += repair_elapsed_us;
-                                    match repair_result {
-                                        Ok(route) => {
-                                            batch.timings.add_route_result_stats_if(
-                                                collect_native_timing,
-                                                &route,
-                                            );
-                                            remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
-                                            push_native_repair_trace(
-                                                &mut batch.repair_trace,
-                                                "victim_reroute",
-                                                Some(mode.route_order),
-                                                Some("repair_fallback"),
-                                                victim_job.net_id,
-                                                Some(round_idx),
-                                                Some(active_repair_set_index as u64),
-                                                &probe.candidate_blockers,
-                                                &ripup_ids,
-                                                &mode.victim_reroute_ids,
-                                                Some(victim_first),
-                                                Some(reverse_victim_order),
-                                                Some(true),
-                                                None,
-                                            );
-                                            route
-                                        }
-                                        Err(error) => {
-                                            enqueue_targeted_illegal_crossing_repair_set(
-                                                &mut repair.repair_victim_sets,
-                                                &mut probe.candidate_blockers,
-                                                &repair.round_base_routes,
-                                                victim_job.net_id,
-                                                &ripup_ids,
-                                                &error,
-                                                round_idx,
-                                                max_rounds,
-                                                max_victims,
-                                            );
-                                            let learned_repair_keepout =
-                                                repair.learned_repair_keepouts_by_ripup
-                                                    .entry(ripup_ids.clone())
-                                                    .or_default();
-                                            let victim_only_keepout =
-                                                repair.learned_victim_only_keepouts_by_ripup
-                                                    .entry(ripup_ids.clone())
-                                                    .or_default();
-                                            if self.remember_victim_repair_error_keepout(
-                                                learned_repair_keepout,
-                                                victim_only_keepout,
-                                                &error,
-                                                job.net_id,
-                                            ) {
-                                                enqueue_learned_keepout_repair_retry(
-                                                    &mut repair.repair_victim_sets,
-                                                    &mut repair.learned_repair_retry_counts,
-                                                    &ripup_ids,
-                                                    round_idx,
-                                                    repair_set_index,
-                                                );
-                                            }
-                                            batch.timings.reroute_victims_failed_wall_us +=
-                                                repair_elapsed_us;
-                                            push_native_repair_trace(
-                                                &mut batch.repair_trace,
-                                                "victim_reroute",
-                                                Some(mode.route_order),
-                                                Some("repair_fallback"),
-                                                victim_job.net_id,
-                                                Some(round_idx),
-                                                Some(active_repair_set_index as u64),
-                                                &probe.candidate_blockers,
-                                                &ripup_ids,
-                                                &mode.victim_reroute_ids,
-                                                Some(victim_first),
-                                                Some(reverse_victim_order),
-                                                Some(false),
-                                                Some(error.clone()),
-                                            );
-                                            batch.attempts.push(NativeRouteAttempt {
-                                                bucket_name: "reroute_victims",
-                                                net_id: victim_job.net_id,
-                                                route: None,
-                                                failed: true,
-                                                error: Some(error),
-                                                repair_round: Some(round_idx),
-                                                candidate_blockers: probe.candidate_blockers.clone(),
-                                                ripup_ids: ripup_ids.clone(),
-                                            });
-                                            mode.mode_failed = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                            };
-                            batch.attempts.push(NativeRouteAttempt {
-                                bucket_name: "reroute_victims",
-                                net_id: victim_job.net_id,
-                                route: Some(route.clone()),
-                                failed: false,
-                                error: None,
-                                repair_round: Some(round_idx),
-                                candidate_blockers: probe.candidate_blockers.clone(),
-                                ripup_ids: ripup_ids.clone(),
-                            });
-                            batch.final_routes.insert(victim_job.net_id, route);
+                                history_weight,
+                                max_rounds,
+                                max_victims,
+                                collect_native_timing,
+                            ) {
+                                VictimPlainRerouteOutcome::Routed => {}
+                                VictimPlainRerouteOutcome::Failed => break,
+                            }
                         }
                     }
 
