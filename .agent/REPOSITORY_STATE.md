@@ -18,9 +18,33 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-20
+- Date: 2026-08-21
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `d298608`. Working tree clean.
+- Current HEAD: `88d52aa`. Working tree clean.
+- **Active ExecPlan**: `.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`
+  -- full restructuring of `route_many_with_repair_and_commit` (`src/py_router.rs`),
+  the last major routing-pipeline component without explicit structure or
+  real test coverage. Milestones 1-3.15 done (2026-08-20/21): whole-batch,
+  per-net, and per-repair-attempt state promoted into 3 named structs
+  (`RepairBatchState`, `RepairAttemptState`, `ProbeState`, plus a 4th,
+  `RepairModeAttemptState`, for the mode-order-iteration scope inside the
+  adaptive repair loop); 13 phases progressively extracted into named
+  methods, including the full ~1,300-line adaptive repair loop (Phase 11)
+  -- both large near-duplicate reroute blocks and the 615-line per-victim
+  loop are now clean named-method calls, with every genuinely different
+  behavior (control-flow shape, borrow-checker requirement, mutable vs.
+  immutable state access) found and preserved exactly, not merged away.
+  Remaining Phase-11 fragments are deliberately left inline (small,
+  sequential, self-explanatory via `mode.*`/`repair.*` field names --
+  extracting further would add indirection without a readability gain).
+  Not yet started: Phases 0, 1, 2, 4, 5, 12, 13 (job unpacking, loop entry,
+  preemptive crossing ripup, two lidar-specific phases, total-failure
+  fallback, result assembly) -- all still inline. Every milestone
+  independently reviewed (full diff read) and validated against the full
+  ladder (`cargo test --lib`, the batch-repair integration test,
+  `multiportmmi_8x8`, `benes_4x4`, full `pytest -q`), byte-identical to
+  baseline throughout, zero behavior change. See that plan's own Progress
+  section for the full per-milestone story.
 - Current test baselines: `cargo test --lib` `389 passed, 0 failed`;
   `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 335 passed, 1 skipped`
   (dropped from the long-standing `21 failed, 325 passed` baseline via
@@ -364,30 +388,33 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** The ripup/repair orchestration plan
-above is complete and closed -- fixed the stale test, extracted the
-victim-set-expansion logic into `compute_repair_victim_sets`
-(`src/py_router.rs:1669`), then fixed Current Findings' `n_67`/`n_70`/
-`n_71` bug itself (a narrow string-prefix gap, not the "multi-hour
-architectural" fix a prior investigation assumed) -- see Completed
-ExecPlans and Resolved Findings. `multiportmmi_8x8` now routes cleanly
-under bare CLI defaults, which it has never done before this session.
-**Next step** (not yet started, no ExecPlan written for it, no mandated
-single choice): two remaining Current Findings items (dense-port
-lateral-width allocation, `multiportmmi_16x16` `n_50`), or a full
-session-state restructuring of the rest of `route_many_with_repair_and_commit`
-(still ~3,000 lines, still ~40 methods implicitly sharing
-`PyPhotonicRouter`'s session state) mirroring `_RouteNetsRustSession`'s
-Python-side pattern in Rust. Before spending real time on `n_50`, check
-whether it shares the same "Illegal grid crossing" prefix-recognition
-gap the `n_70` fix just closed (see Current Findings item 2's note) --
-directly re-verify with the same `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1`
-diagnostic pattern rather than assuming the old root-cause estimate
-still holds, per this fix's own central lesson.
+**Active ExecPlan**: `.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`
+(see Current Snapshot for the current state). The highest-risk, most
+complex part of `route_many_with_repair_and_commit` -- the adaptive
+repair loop (Phase 11) -- is now fully decomposed into named methods
+with explicit outcome types. Two reasonable next directions, no
+mandated single choice:
+1. Continue the same plan into the still-inline top-level phases (0, 1,
+   2, 4, 5, 12, 13) for full completion, or explicitly decide the
+   remaining phases don't need extraction (some may already be small
+   enough to leave alone, matching the judgment already applied to
+   Phase 11's small leftover fragments) and close the plan.
+2. Pick up the two remaining Current Findings items (dense-port
+   lateral-width allocation, `multiportmmi_16x16` `n_50`) -- both were
+   parked pending this restructuring, which has now made the
+   surrounding code substantially easier to reason about. Before
+   spending real time on `n_50`, check whether it shares the same
+   "Illegal grid crossing" prefix-recognition gap the `n_70` fix
+   closed (see Current Findings item 2's note) -- directly re-verify
+   with the same `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1` diagnostic
+   pattern rather than assuming the old root-cause estimate still
+   holds, per that fix's own central lesson.
 `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`'s
-Surprises & Discoveries has the full characterization any of these would
-build on -- re-read it before restarting rather than re-characterizing
-from scratch.
+Surprises & Discoveries has the original full characterization; the
+active plan's own Surprises & Discoveries has the Phase-11-specific
+structural detail (sub-phase boundaries, borrow-checker traps, the two
+near-duplicate blocks' real differences) -- read both before continuing
+rather than re-characterizing from scratch.
 
 A smaller, optional leftover from the just-closed PLM plan: Option C
 (not chosen) would have decomposed `analyze_meander_insertion_for_requirements`'s
