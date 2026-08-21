@@ -8144,6 +8144,48 @@ impl PyPhotonicRouter {
         Ok(probe)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_repair_attempt(
+        &mut self,
+        batch: &mut RepairBatchState,
+        probe: &ProbeState,
+        block_radius_cells: i32,
+        history_increment: u32,
+        max_rounds: u32,
+        max_victims: usize,
+        collect_native_timing: bool,
+    ) -> RepairAttemptState {
+        let history_start = native_batch_timer(collect_native_timing);
+        self.add_history_for_native_route(
+            &probe.probe_route,
+            block_radius_cells,
+            history_increment,
+        );
+        batch.timings.history_update_us += native_batch_elapsed_us(history_start);
+        RepairAttemptState {
+            repaired: false,
+            round_base_map: self.obstacle_map.clone(),
+            round_base_center_routes: self.committed_center_routes.clone(),
+            round_base_realized_center_routes: self.committed_realized_center_routes.clone(),
+            round_base_target_terminal_bump_guards: self
+                .committed_target_terminal_bump_guards
+                .clone(),
+            round_base_opened_cell_keys: self.committed_opened_cell_keys.clone(),
+            round_base_crossing_events: self.crossing_events.clone(),
+            round_base_routes: batch.final_routes.clone(),
+            repair_victim_sets: compute_repair_victim_sets(
+                probe.crossing_repair_enabled,
+                &probe.probe_realized_crossing_violations,
+                &probe.candidate_blockers,
+                max_victims,
+                max_rounds,
+            ),
+            learned_repair_keepouts_by_ripup: FxHashMap::default(),
+            learned_victim_only_keepouts_by_ripup: FxHashMap::default(),
+            learned_repair_retry_counts: FxHashMap::default(),
+        }
+    }
+
 }
 
 #[pymethods]
@@ -10178,33 +10220,17 @@ impl PyPhotonicRouter {
                 break;
             }
 
-            let history_start = native_batch_timer(collect_native_timing);
-            self.add_history_for_native_route(&probe.probe_route, block_radius_cells, history_increment);
-            batch.timings.history_update_us += native_batch_elapsed_us(history_start);
             let max_rounds = max_rounds.max(1);
             let max_victims = max_victims_per_failure.max(1);
-            let mut repair = RepairAttemptState {
-                repaired: false,
-                round_base_map: self.obstacle_map.clone(),
-                round_base_center_routes: self.committed_center_routes.clone(),
-                round_base_realized_center_routes: self.committed_realized_center_routes.clone(),
-                round_base_target_terminal_bump_guards: self
-                    .committed_target_terminal_bump_guards
-                    .clone(),
-                round_base_opened_cell_keys: self.committed_opened_cell_keys.clone(),
-                round_base_crossing_events: self.crossing_events.clone(),
-                round_base_routes: batch.final_routes.clone(),
-                repair_victim_sets: compute_repair_victim_sets(
-                    probe.crossing_repair_enabled,
-                    &probe.probe_realized_crossing_violations,
-                    &probe.candidate_blockers,
-                    max_victims,
-                    max_rounds,
-                ),
-                learned_repair_keepouts_by_ripup: FxHashMap::default(),
-                learned_victim_only_keepouts_by_ripup: FxHashMap::default(),
-                learned_repair_retry_counts: FxHashMap::default(),
-            };
+            let mut repair = self.prepare_repair_attempt(
+                &mut batch,
+                &probe,
+                block_radius_cells,
+                history_increment,
+                max_rounds,
+                max_victims,
+                collect_native_timing,
+            );
 
             let prefer_orthogonal_repair = probe.crossing_repair_enabled
                 && !probe.probe_realized_crossing_violations.is_empty()
