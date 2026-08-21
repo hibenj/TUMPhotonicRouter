@@ -1044,6 +1044,11 @@ struct ProbeState {
     candidate_blockers: Vec<u64>,
 }
 
+enum GuidedCrossingOutcome {
+    Routed,
+    NotResolved,
+}
+
 struct NativeEndpointCorrection {
     centerline: Vec<(f64, f64)>,
     committed_bump: bool,
@@ -8186,6 +8191,133 @@ impl PyPhotonicRouter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_guided_collision_crossing(
+        &mut self,
+        batch: &mut RepairBatchState,
+        probe: &ProbeState,
+        job: &NativeRouteJob,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        max_victims_per_failure: usize,
+        collect_native_timing: bool,
+        trace_native_repair: bool,
+    ) -> PyResult<GuidedCrossingOutcome> {
+        if probe.crossing_repair_enabled
+            && self.use_collision_crossing_routing
+            && std::env::var_os("PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING").is_some()
+            && std::env::var_os("PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING").is_none()
+            && !probe.candidate_blockers.is_empty()
+        {
+            let guided_start = native_batch_timer(collect_native_timing);
+            let mut guided_partner_ids = FxHashSet::default();
+            for owner in probe.candidate_blockers
+                .iter()
+                .take(max_victims_per_failure.max(1).min(2))
+            {
+                if probe.allowed_crossing_partners.contains(owner) {
+                    guided_partner_ids.insert(*owner);
+                }
+            }
+            if !guided_partner_ids.is_empty() {
+                let source_state =
+                    State::new(job.source.x, job.source.y, job.source.angle);
+                let target_state =
+                    State::new(job.target.x, job.target.y, job.target.angle);
+                let opened_search_owned = self.opened_cells_without_dynamic_overlap(
+                    &job.opened_cell_keys,
+                    source_state,
+                    target_state,
+                );
+                let opened_search_ref =
+                    opened_search_owned.as_ref().unwrap_or(&job.opened_cell_keys);
+                let dynamic_clearance_exempt_keys = if block_radius_cells > 0
+                    && !job.clearance_exempt_cells.is_empty()
+                {
+                    Some(&job.clearance_exempt_cell_keys)
+                } else {
+                    None
+                };
+                let mut guided_cfg = self
+                    .astar_config(None, None, None)
+                    .map_err(PyRuntimeError::new_err)?;
+                guided_cfg.require_terminal_straights = false;
+                let guided_result = self.try_route_through_collision_partner_set(
+                    job.net_id,
+                    source_state,
+                    target_state,
+                    opened_search_ref,
+                    &guided_cfg,
+                    block_radius_cells,
+                    dynamic_clearance_exempt_keys,
+                    &guided_partner_ids,
+                    job.source_port_um,
+                    job.target_port_um,
+                    Some(&job.opened_cell_keys),
+                )
+                .map_err(PyRuntimeError::new_err)?;
+                batch.timings.repair_failed_net_wall_us +=
+                    native_batch_elapsed_us(guided_start);
+                if let Some((route, crossing_events)) = guided_result {
+                    let crossed_partner_ids =
+                        Self::crossing_partner_ids_from_events(&crossing_events);
+                    let crossed_partner_vec: Vec<u64> =
+                        crossed_partner_ids.iter().copied().collect();
+                    match self.commit_native_route_with_clearance_allowing_core_overlap(
+                        job.net_id,
+                        &route,
+                        block_radius_cells,
+                        commit_radius_cells,
+                        &job.clearance_exempt_cells,
+                        core_radius_cells,
+                        job.source_port_um,
+                        job.target_port_um,
+                        Some(&job.opened_cell_keys),
+                        &crossed_partner_vec,
+                        true,
+                    ) {
+                        Ok(true) => {
+                            if trace_native_repair {
+                                eprintln!(
+                                    "native_repair_guided_crossing net={} partners={:?} events={} cost={} waypoints={:?}",
+                                    job.net_id,
+                                    crossed_partner_ids,
+                                    crossing_events.len(),
+                                    route.total_cost,
+                                    route.compressed_waypoints,
+                                );
+                            }
+                            batch.timings.add_route_result_stats_if(collect_native_timing, &route);
+                            batch.attempts.push(NativeRouteAttempt {
+                                net_id: job.net_id,
+                                bucket_name: "guided_collision_crossing",
+                                route: Some(route.clone()),
+                                failed: false,
+                                error: None,
+                                repair_round: Some(0),
+                                candidate_blockers: probe.candidate_blockers.clone(),
+                                ripup_ids: Vec::new(),
+                            });
+                            batch.final_routes.insert(job.net_id, route);
+                            return Ok(GuidedCrossingOutcome::Routed);
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            if trace_native_repair {
+                                eprintln!(
+                                    "native_repair_guided_crossing_commit_failed net={} error={}",
+                                    job.net_id, error
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(GuidedCrossingOutcome::NotResolved)
+    }
+
 }
 
 #[pymethods]
@@ -9872,115 +10004,19 @@ impl PyPhotonicRouter {
                 std::env::var_os("PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING").is_some()
                     && std::env::var_os("PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING")
                         .is_none();
-            if probe.crossing_repair_enabled
-                && self.use_collision_crossing_routing
-                && guided_collision_crossing_enabled
-                && !probe.candidate_blockers.is_empty()
-            {
-                let guided_start = native_batch_timer(collect_native_timing);
-                let mut guided_partner_ids = FxHashSet::default();
-                for owner in probe.candidate_blockers
-                    .iter()
-                    .take(max_victims_per_failure.max(1).min(2))
-                {
-                    if probe.allowed_crossing_partners.contains(owner) {
-                        guided_partner_ids.insert(*owner);
-                    }
-                }
-                if !guided_partner_ids.is_empty() {
-                    let source_state =
-                        State::new(job.source.x, job.source.y, job.source.angle);
-                    let target_state =
-                        State::new(job.target.x, job.target.y, job.target.angle);
-                    let opened_search_owned = self.opened_cells_without_dynamic_overlap(
-                        &job.opened_cell_keys,
-                        source_state,
-                        target_state,
-                    );
-                    let opened_search_ref =
-                        opened_search_owned.as_ref().unwrap_or(&job.opened_cell_keys);
-                    let dynamic_clearance_exempt_keys = if block_radius_cells > 0
-                        && !job.clearance_exempt_cells.is_empty()
-                    {
-                        Some(&job.clearance_exempt_cell_keys)
-                    } else {
-                        None
-                    };
-                    let mut guided_cfg = self
-                        .astar_config(None, None, None)
-                        .map_err(PyRuntimeError::new_err)?;
-                    guided_cfg.require_terminal_straights = false;
-                    let guided_result = self.try_route_through_collision_partner_set(
-                        job.net_id,
-                        source_state,
-                        target_state,
-                        opened_search_ref,
-                        &guided_cfg,
-                        block_radius_cells,
-                        dynamic_clearance_exempt_keys,
-                        &guided_partner_ids,
-                        job.source_port_um,
-                        job.target_port_um,
-                        Some(&job.opened_cell_keys),
-                    )
-                    .map_err(PyRuntimeError::new_err)?;
-                    batch.timings.repair_failed_net_wall_us +=
-                        native_batch_elapsed_us(guided_start);
-                    if let Some((route, crossing_events)) = guided_result {
-                        let crossed_partner_ids =
-                            Self::crossing_partner_ids_from_events(&crossing_events);
-                        let crossed_partner_vec: Vec<u64> =
-                            crossed_partner_ids.iter().copied().collect();
-                        match self.commit_native_route_with_clearance_allowing_core_overlap(
-                            job.net_id,
-                            &route,
-                            block_radius_cells,
-                            commit_radius_cells,
-                            &job.clearance_exempt_cells,
-                            core_radius_cells,
-                            job.source_port_um,
-                            job.target_port_um,
-                            Some(&job.opened_cell_keys),
-                            &crossed_partner_vec,
-                            true,
-                        ) {
-                            Ok(true) => {
-                                if trace_native_repair {
-                                    eprintln!(
-                                        "native_repair_guided_crossing net={} partners={:?} events={} cost={} waypoints={:?}",
-                                        job.net_id,
-                                        crossed_partner_ids,
-                                        crossing_events.len(),
-                                        route.total_cost,
-                                        route.compressed_waypoints,
-                                    );
-                                }
-                                batch.timings.add_route_result_stats_if(collect_native_timing, &route);
-                                batch.attempts.push(NativeRouteAttempt {
-                                    net_id: job.net_id,
-                                    bucket_name: "guided_collision_crossing",
-                                    route: Some(route.clone()),
-                                    failed: false,
-                                    error: None,
-                                    repair_round: Some(0),
-                                    candidate_blockers: probe.candidate_blockers.clone(),
-                                    ripup_ids: Vec::new(),
-                                });
-                                batch.final_routes.insert(job.net_id, route);
-                                continue 'route_jobs;
-                            }
-                            Ok(false) => {}
-                            Err(error) => {
-                                if trace_native_repair {
-                                    eprintln!(
-                                        "native_repair_guided_crossing_commit_failed net={} error={}",
-                                        job.net_id, error
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+            match self.try_guided_collision_crossing(
+                &mut batch,
+                &probe,
+                job,
+                block_radius_cells,
+                commit_radius_cells,
+                core_radius_cells,
+                max_victims_per_failure,
+                collect_native_timing,
+                trace_native_repair,
+            )? {
+                GuidedCrossingOutcome::Routed => continue 'route_jobs,
+                GuidedCrossingOutcome::NotResolved => {}
             }
             let invalid_collision_crossing_candidate = probe.crossing_repair_enabled
                 && self.use_collision_crossing_routing
