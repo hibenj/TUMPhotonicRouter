@@ -1091,6 +1091,11 @@ enum PendingStraightRepairOutcome {
     NotResolved,
 }
 
+enum LidarDirectCrossingOutcome {
+    Routed,
+    NotResolved,
+}
+
 enum VictimPlainRerouteOutcome {
     Routed,
     Failed,
@@ -10596,6 +10601,131 @@ impl PyPhotonicRouter {
         return PendingStraightRepairOutcome::Routed;
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_lidar_direct_crossing_subset(
+        &mut self,
+        batch: &mut RepairBatchState,
+        job: &NativeRouteJob,
+        order_by_id: &FxHashMap<u64, usize>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        collect_native_timing: bool,
+        trace_native_repair: bool,
+    ) -> PyResult<LidarDirectCrossingOutcome> {
+        if !self.lidar_pure_crossing_enabled() || !self.use_collision_crossing_routing {
+            return Ok(LidarDirectCrossingOutcome::NotResolved);
+        }
+        let source_state = State::new(job.source.x, job.source.y, job.source.angle);
+        let target_state = State::new(job.target.x, job.target.y, job.target.angle);
+        let mut local_partner_ids =
+            self.crossing_partner_lookup_set_for_route(job.net_id, source_state, target_state);
+        local_partner_ids.retain(|partner_id| batch.final_routes.contains_key(partner_id));
+        if local_partner_ids.is_empty() {
+            return Ok(LidarDirectCrossingOutcome::NotResolved);
+        }
+        let mut local_partner_vec: Vec<u64> =
+            local_partner_ids.iter().copied().collect();
+        local_partner_vec.sort_unstable_by_key(|owner| {
+            order_by_id.get(owner).copied().unwrap_or(usize::MAX)
+        });
+        let opened_search_owned = self.opened_cells_without_dynamic_overlap(
+            &job.opened_cell_keys,
+            source_state,
+            target_state,
+        );
+        let opened_search_ref =
+            opened_search_owned.as_ref().unwrap_or(&job.opened_cell_keys);
+        let dynamic_clearance_exempt_keys = if block_radius_cells > 0
+            && !job.clearance_exempt_cells.is_empty()
+        {
+            Some(&job.clearance_exempt_cell_keys)
+        } else {
+            None
+        };
+        let mut subset_cfg = self
+            .astar_config(None, None, None)
+            .map_err(PyRuntimeError::new_err)?;
+        subset_cfg.require_terminal_straights = true;
+        for partner_id in local_partner_vec {
+            let mut subset_partner_ids = FxHashSet::default();
+            subset_partner_ids.insert(partner_id);
+            let subset_start = native_batch_timer(collect_native_timing);
+            let subset_result = self
+                .try_route_with_collision_crossings(
+                    job.net_id,
+                    source_state,
+                    target_state,
+                    opened_search_ref,
+                    &subset_cfg,
+                    block_radius_cells,
+                    dynamic_clearance_exempt_keys,
+                    &subset_partner_ids,
+                    job.source_port_um,
+                    job.target_port_um,
+                    Some(&job.opened_cell_keys),
+                )
+                .map_err(PyRuntimeError::new_err)?;
+            let subset_elapsed_us = native_batch_elapsed_us(subset_start);
+            batch.timings.repair_failed_net_wall_us += subset_elapsed_us;
+            let Some((route, crossing_events)) = subset_result else {
+                continue;
+            };
+            let crossed_partner_ids =
+                Self::crossing_partner_ids_from_events(&crossing_events);
+            if crossed_partner_ids.is_empty() {
+                continue;
+            }
+            let crossed_partner_vec: Vec<u64> =
+                crossed_partner_ids.iter().copied().collect();
+            match self.commit_native_route_with_clearance_allowing_core_overlap(
+                job.net_id,
+                &route,
+                block_radius_cells,
+                commit_radius_cells,
+                &job.clearance_exempt_cells,
+                core_radius_cells,
+                job.source_port_um,
+                job.target_port_um,
+                Some(&job.opened_cell_keys),
+                &crossed_partner_vec,
+                true,
+            ) {
+                Ok(true) => {
+                    batch.timings.add_route_result_stats_if(collect_native_timing, &route);
+                    if trace_native_repair {
+                        eprintln!(
+                            "native_repair_lidar_direct_crossing net={} crossed={:?}",
+                            job.net_id, crossed_partner_vec
+                        );
+                    }
+                    batch.attempts.push(NativeRouteAttempt {
+                        bucket_name: "lidar_direct_crossing",
+                        net_id: job.net_id,
+                        route: Some(route.clone()),
+                        failed: false,
+                        error: None,
+                        repair_round: None,
+                        candidate_blockers: Vec::new(),
+                        ripup_ids: Vec::new(),
+                    });
+                    batch.final_routes.insert(job.net_id, route);
+                    return Ok(LidarDirectCrossingOutcome::Routed);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    if trace_native_repair {
+                        eprintln!(
+                            "native_repair_lidar_direct_crossing_commit_failed net={} partner={} error={}",
+                            job.net_id, partner_id, error
+                        );
+                    }
+                }
+            }
+        }
+        Ok(LidarDirectCrossingOutcome::NotResolved)
+    }
+
 }
 
 #[pymethods]
@@ -11629,113 +11759,18 @@ impl PyPhotonicRouter {
                 }
             }
 
-            if self.lidar_pure_crossing_enabled() && self.use_collision_crossing_routing {
-                let source_state = State::new(job.source.x, job.source.y, job.source.angle);
-                let target_state = State::new(job.target.x, job.target.y, job.target.angle);
-                let mut local_partner_ids =
-                    self.crossing_partner_lookup_set_for_route(job.net_id, source_state, target_state);
-                local_partner_ids.retain(|partner_id| batch.final_routes.contains_key(partner_id));
-                if !local_partner_ids.is_empty() {
-                    let mut local_partner_vec: Vec<u64> =
-                        local_partner_ids.iter().copied().collect();
-                    local_partner_vec.sort_unstable_by_key(|owner| {
-                        order_by_id.get(owner).copied().unwrap_or(usize::MAX)
-                    });
-                    let opened_search_owned = self.opened_cells_without_dynamic_overlap(
-                        &job.opened_cell_keys,
-                        source_state,
-                        target_state,
-                    );
-                    let opened_search_ref =
-                        opened_search_owned.as_ref().unwrap_or(&job.opened_cell_keys);
-                    let dynamic_clearance_exempt_keys = if block_radius_cells > 0
-                        && !job.clearance_exempt_cells.is_empty()
-                    {
-                        Some(&job.clearance_exempt_cell_keys)
-                    } else {
-                        None
-                    };
-                    let mut subset_cfg = self
-                        .astar_config(None, None, None)
-                        .map_err(PyRuntimeError::new_err)?;
-                    subset_cfg.require_terminal_straights = true;
-                    for partner_id in local_partner_vec {
-                        let mut subset_partner_ids = FxHashSet::default();
-                        subset_partner_ids.insert(partner_id);
-                        let subset_start = native_batch_timer(collect_native_timing);
-                        let subset_result = self
-                            .try_route_with_collision_crossings(
-                                job.net_id,
-                                source_state,
-                                target_state,
-                                opened_search_ref,
-                                &subset_cfg,
-                                block_radius_cells,
-                                dynamic_clearance_exempt_keys,
-                                &subset_partner_ids,
-                                job.source_port_um,
-                                job.target_port_um,
-                                Some(&job.opened_cell_keys),
-                            )
-                            .map_err(PyRuntimeError::new_err)?;
-                        let subset_elapsed_us = native_batch_elapsed_us(subset_start);
-                        batch.timings.repair_failed_net_wall_us += subset_elapsed_us;
-                        let Some((route, crossing_events)) = subset_result else {
-                            continue;
-                        };
-                        let crossed_partner_ids =
-                            Self::crossing_partner_ids_from_events(&crossing_events);
-                        if crossed_partner_ids.is_empty() {
-                            continue;
-                        }
-                        let crossed_partner_vec: Vec<u64> =
-                            crossed_partner_ids.iter().copied().collect();
-                        match self.commit_native_route_with_clearance_allowing_core_overlap(
-                            job.net_id,
-                            &route,
-                            block_radius_cells,
-                            commit_radius_cells,
-                            &job.clearance_exempt_cells,
-                            core_radius_cells,
-                            job.source_port_um,
-                            job.target_port_um,
-                            Some(&job.opened_cell_keys),
-                            &crossed_partner_vec,
-                            true,
-                        ) {
-                            Ok(true) => {
-                                batch.timings.add_route_result_stats_if(collect_native_timing, &route);
-                                if trace_native_repair {
-                                    eprintln!(
-                                        "native_repair_lidar_direct_crossing net={} crossed={:?}",
-                                        job.net_id, crossed_partner_vec
-                                    );
-                                }
-                                batch.attempts.push(NativeRouteAttempt {
-                                    bucket_name: "lidar_direct_crossing",
-                                    net_id: job.net_id,
-                                    route: Some(route.clone()),
-                                    failed: false,
-                                    error: None,
-                                    repair_round: None,
-                                    candidate_blockers: Vec::new(),
-                                    ripup_ids: Vec::new(),
-                                });
-                                batch.final_routes.insert(job.net_id, route);
-                                continue 'route_jobs;
-                            }
-                            Ok(false) => {}
-                            Err(error) => {
-                                if trace_native_repair {
-                                    eprintln!(
-                                        "native_repair_lidar_direct_crossing_commit_failed net={} partner={} error={}",
-                                        job.net_id, partner_id, error
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+            match self.try_lidar_direct_crossing_subset(
+                &mut batch,
+                job,
+                &order_by_id,
+                block_radius_cells,
+                commit_radius_cells,
+                core_radius_cells,
+                collect_native_timing,
+                trace_native_repair,
+            )? {
+                LidarDirectCrossingOutcome::Routed => continue 'route_jobs,
+                LidarDirectCrossingOutcome::NotResolved => {}
             }
 
             let mut probe = match self.probe_net_for_repair(
