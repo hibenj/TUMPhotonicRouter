@@ -20,31 +20,11 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-21
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `88d52aa`. Working tree clean.
-- **Active ExecPlan**: `.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`
-  -- full restructuring of `route_many_with_repair_and_commit` (`src/py_router.rs`),
-  the last major routing-pipeline component without explicit structure or
-  real test coverage. Milestones 1-3.15 done (2026-08-20/21): whole-batch,
-  per-net, and per-repair-attempt state promoted into 3 named structs
-  (`RepairBatchState`, `RepairAttemptState`, `ProbeState`, plus a 4th,
-  `RepairModeAttemptState`, for the mode-order-iteration scope inside the
-  adaptive repair loop); 13 phases progressively extracted into named
-  methods, including the full ~1,300-line adaptive repair loop (Phase 11)
-  -- both large near-duplicate reroute blocks and the 615-line per-victim
-  loop are now clean named-method calls, with every genuinely different
-  behavior (control-flow shape, borrow-checker requirement, mutable vs.
-  immutable state access) found and preserved exactly, not merged away.
-  Remaining Phase-11 fragments are deliberately left inline (small,
-  sequential, self-explanatory via `mode.*`/`repair.*` field names --
-  extracting further would add indirection without a readability gain).
-  Not yet started: Phases 0, 1, 2, 4, 5, 12, 13 (job unpacking, loop entry,
-  preemptive crossing ripup, two lidar-specific phases, total-failure
-  fallback, result assembly) -- all still inline. Every milestone
-  independently reviewed (full diff read) and validated against the full
-  ladder (`cargo test --lib`, the batch-repair integration test,
-  `multiportmmi_8x8`, `benes_4x4`, full `pytest -q`), byte-identical to
-  baseline throughout, zero behavior change. See that plan's own Progress
-  section for the full per-milestone story.
+- Current HEAD: `a8dac59`. Working tree clean.
+- **No active ExecPlan right now.** The `route_many_with_repair_and_commit`
+  restructuring plan (`.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`)
+  is complete -- see Completed ExecPlans below for the summary, and that
+  plan's own Outcomes & Retrospective for full detail.
 - Current test baselines: `cargo test --lib` `389 passed, 0 failed`;
   `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 335 passed, 1 skipped`
   (dropped from the long-standing `21 failed, 325 passed` baseline via
@@ -75,6 +55,31 @@ now lives only in the referenced ExecPlan and `git log`.)
   restructuring gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-20-route-many-with-repair-restructuring.md` -- full structural
+    restructuring of `route_many_with_repair_and_commit`, the last major
+    routing-pipeline component without explicit structure or real test
+    coverage. ~3,035 lines -> 663 lines. Whole-batch, per-net,
+    per-repair-attempt, and per-mode-order-iteration state promoted into 4
+    named structs (`RepairBatchState`, `RepairAttemptState`, `ProbeState`,
+    `RepairModeAttemptState`); every phase from the original 13-phase
+    survey with genuine branching complexity, borrow-checker subtlety, or
+    historical-bug lineage extracted into one of ~30 new named methods with
+    an explicit outcome type (12 new enums). Phases 0, 1, and 13 (job
+    unpacking/indexing, the skip-if-already-routed loop entry, and PyDict
+    result assembly) deliberately left inline throughout -- straightforward
+    sequential bookkeeping, no genuine complexity to name. Every one of 20
+    implementation milestones independently reviewed (full diff read, not a
+    summary) and validated against the full ladder (`cargo test --lib`, the
+    batch-repair integration test, `multiportmmi_8x8`, `benes_4x4`, full
+    `pytest -q`) before commit -- byte-identical to the pre-restructuring
+    baseline throughout, zero behavior change. Two genuinely new
+    Rust-specific traps found and correctly handled along the way: a
+    for-loop-over-a-struct-field's-borrow conflicting with a later
+    `&mut`-of-the-whole-struct need (fixed by snapshotting the field before
+    the loop), and the final phase needing its `RepairAttemptState`/
+    `ProbeState` parameters by value instead of by reference because both
+    are genuinely consumed as their last use in the function. See that
+    plan's own Outcomes & Retrospective for the full story.
   - `2026-08-20-pytest-baseline-triage.md` -- triaged all 20 pytest
     failures remaining after the batch-repair fix. Fixed 6 stale/mechanical
     ones directly (missing kwargs, stale error-message text, a stale
@@ -388,33 +393,36 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**Active ExecPlan**: `.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`
-(see Current Snapshot for the current state). The highest-risk, most
-complex part of `route_many_with_repair_and_commit` -- the adaptive
-repair loop (Phase 11) -- is now fully decomposed into named methods
-with explicit outcome types. Two reasonable next directions, no
-mandated single choice:
-1. Continue the same plan into the still-inline top-level phases (0, 1,
-   2, 4, 5, 12, 13) for full completion, or explicitly decide the
-   remaining phases don't need extraction (some may already be small
-   enough to leave alone, matching the judgment already applied to
-   Phase 11's small leftover fragments) and close the plan.
-2. Pick up the two remaining Current Findings items (dense-port
-   lateral-width allocation, `multiportmmi_16x16` `n_50`) -- both were
-   parked pending this restructuring, which has now made the
-   surrounding code substantially easier to reason about. Before
-   spending real time on `n_50`, check whether it shares the same
-   "Illegal grid crossing" prefix-recognition gap the `n_70` fix
-   closed (see Current Findings item 2's note) -- directly re-verify
-   with the same `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1` diagnostic
-   pattern rather than assuming the old root-cause estimate still
-   holds, per that fix's own central lesson.
+**No active ExecPlan right now.** The `route_many_with_repair_and_commit`
+restructuring is complete (see Completed ExecPlans) -- the single
+remaining blocker to the readability/testing goal is now resolved.
+**Next step** (no mandated single choice): the two remaining Current
+Findings items, both parked pending this exact restructuring, which has
+now made the surrounding code substantially easier to reason about:
+1. `multiportmmi_8x8` dense-port lateral-width allocation -- needs a
+   design decision (how much lateral room a single-direction bend
+   needs, how to redistribute fairly), present options to the
+   repository owner first, do not implement solo.
+2. `multiportmmi_16x16` stable-baseline `n_50` -- before spending real
+   time on it, check whether it shares the same "Illegal grid
+   crossing" prefix-recognition gap the `n_70` fix closed (see Current
+   Findings item 2's note) -- directly re-verify with the same
+   `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1` diagnostic pattern rather
+   than assuming the old root-cause estimate still holds, per that
+   fix's own central lesson.
+
+A concrete algorithm-optimization candidate is also now unblocked (not
+started, no ExecPlan written): the `route_many_with_repair_and_commit`
+restructuring's own Surprises & Discoveries found the 7 `round_base_*`
+fields being re-cloned in full on every repair attempt (up to 16x per
+net) -- a real, measurable cost per that plan's own timing data, now
+safe to address because the function has explicit structure.
+
 `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`'s
-Surprises & Discoveries has the original full characterization; the
-active plan's own Surprises & Discoveries has the Phase-11-specific
-structural detail (sub-phase boundaries, borrow-checker traps, the two
-near-duplicate blocks' real differences) -- read both before continuing
-rather than re-characterizing from scratch.
+and `.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`'s
+own Surprises & Discoveries sections have the full characterization any
+of these would build on -- read both before starting rather than
+re-characterizing from scratch.
 
 A smaller, optional leftover from the just-closed PLM plan: Option C
 (not chosen) would have decomposed `analyze_meander_insertion_for_requirements`'s
