@@ -1081,6 +1081,12 @@ enum VictimPlainRerouteOutcome {
     Failed,
 }
 
+enum CrossingAwareVictimRerouteOutcome {
+    Routed,
+    Blocked,
+    NotAttempted,
+}
+
 struct NativeEndpointCorrection {
     centerline: Vec<(f64, f64)>,
     committed_bump: bool,
@@ -9292,6 +9298,378 @@ impl PyPhotonicRouter {
         VictimPlainRerouteOutcome::Routed
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_crossing_aware_victim_reroute(
+        &mut self,
+        batch: &mut RepairBatchState,
+        repair: &RepairAttemptState,
+        probe: &ProbeState,
+        mode: &mut RepairModeAttemptState,
+        job: &NativeRouteJob,
+        victim_job: &NativeRouteJob,
+        round_idx: u32,
+        active_repair_set_index: usize,
+        ripup_ids: &[u64],
+        victim_first: bool,
+        reverse_victim_order: bool,
+        lidar_pure_crossing_repair: bool,
+        guided_collision_crossing_enabled: bool,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        collect_native_timing: bool,
+        trace_native_repair: bool,
+    ) -> PyResult<CrossingAwareVictimRerouteOutcome> {
+        let mut guided_victim_route: Option<RouteResult> = None;
+        let mut lidar_crossing_partners_available = false;
+        if lidar_pure_crossing_repair && !victim_first && mode.repaired_route.is_some() {
+            let victim_source_state = State::new(
+                victim_job.source.x,
+                victim_job.source.y,
+                victim_job.source.angle,
+            );
+            let victim_target_state = State::new(
+                victim_job.target.x,
+                victim_job.target.y,
+                victim_job.target.angle,
+            );
+            let opened_search_owned = self.opened_cells_without_dynamic_overlap(
+                &victim_job.opened_cell_keys,
+                victim_source_state,
+                victim_target_state,
+            );
+            let opened_search_ref = opened_search_owned
+                .as_ref()
+                .unwrap_or(&victim_job.opened_cell_keys);
+            let dynamic_clearance_exempt_keys =
+                if block_radius_cells > 0 && !victim_job.clearance_exempt_cells.is_empty() {
+                    Some(&victim_job.clearance_exempt_cell_keys)
+                } else {
+                    None
+                };
+            let mut seeded_partner_ids = Self::crossing_partner_ids_for_net(
+                &repair.round_base_crossing_events,
+                victim_job.net_id,
+            );
+            seeded_partner_ids.retain(|partner_id| {
+                *partner_id != victim_job.net_id
+                    && !ripup_ids.contains(partner_id)
+                    && self.committed_center_routes.contains_key(partner_id)
+            });
+            if self.committed_center_routes.contains_key(&job.net_id) {
+                seeded_partner_ids.insert(job.net_id);
+            }
+            if seeded_partner_ids.len() > 1 {
+                let mut seeded_cfg = self
+                    .astar_config(None, None, Some(0.0))
+                    .map_err(PyRuntimeError::new_err)?;
+                seeded_cfg.require_terminal_straights = false;
+                let seeded_start = native_batch_timer(collect_native_timing);
+                let seeded_result = self
+                    .try_route_through_collision_partner_set(
+                        victim_job.net_id,
+                        victim_source_state,
+                        victim_target_state,
+                        opened_search_ref,
+                        &seeded_cfg,
+                        block_radius_cells,
+                        dynamic_clearance_exempt_keys,
+                        &seeded_partner_ids,
+                        victim_job.source_port_um,
+                        victim_job.target_port_um,
+                        Some(&victim_job.opened_cell_keys),
+                    )
+                    .map_err(PyRuntimeError::new_err)?;
+                batch.timings.reroute_victims_wall_us +=
+                    native_batch_elapsed_us(seeded_start);
+                if let Some((route, crossing_events)) = seeded_result {
+                    let crossed_partner_ids =
+                        Self::crossing_partner_ids_from_events(&crossing_events);
+                    let crossed_partner_vec: Vec<u64> =
+                        crossed_partner_ids.iter().copied().collect();
+                    match self.commit_native_route_with_clearance_allowing_core_overlap(
+                        victim_job.net_id,
+                        &route,
+                        block_radius_cells,
+                        commit_radius_cells,
+                        &victim_job.clearance_exempt_cells,
+                        core_radius_cells,
+                        victim_job.source_port_um,
+                        victim_job.target_port_um,
+                        Some(&victim_job.opened_cell_keys),
+                        &crossed_partner_vec,
+                        true,
+                    ) {
+                        Ok(true) => {
+                            batch
+                                .timings
+                                .add_route_result_stats_if(collect_native_timing, &route);
+                            push_native_repair_trace(
+                                &mut batch.repair_trace,
+                                "victim_reroute",
+                                Some(mode.route_order),
+                                Some("lidar_seeded_collision_crossing"),
+                                victim_job.net_id,
+                                Some(round_idx),
+                                Some(active_repair_set_index as u64),
+                                &probe.candidate_blockers,
+                                ripup_ids,
+                                &mode.victim_reroute_ids,
+                                Some(victim_first),
+                                Some(reverse_victim_order),
+                                Some(true),
+                                None,
+                            );
+                            batch.attempts.push(NativeRouteAttempt {
+                                bucket_name: "reroute_victims",
+                                net_id: victim_job.net_id,
+                                route: Some(route.clone()),
+                                failed: false,
+                                error: None,
+                                repair_round: Some(round_idx),
+                                candidate_blockers: probe.candidate_blockers.clone(),
+                                ripup_ids: ripup_ids.to_vec(),
+                            });
+                            guided_victim_route = Some(route);
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            if trace_native_repair {
+                                eprintln!(
+                                    "native_repair_lidar_seeded_crossing_commit_failed net={} error={}",
+                                    victim_job.net_id, error
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            let collision_partner_ids = self.crossing_partner_lookup_set_for_route(
+                victim_job.net_id,
+                victim_source_state,
+                victim_target_state,
+            );
+            lidar_crossing_partners_available = !collision_partner_ids.is_empty();
+            if guided_victim_route.is_none() && lidar_crossing_partners_available {
+                let mut crossing_cfg = self
+                    .astar_config(None, None, Some(0.0))
+                    .map_err(PyRuntimeError::new_err)?;
+                crossing_cfg.require_terminal_straights = false;
+                let crossing_start = native_batch_timer(collect_native_timing);
+                let crossing_result = self
+                    .try_route_with_collision_crossings_with_loss(
+                        victim_job.net_id,
+                        victim_source_state,
+                        victim_target_state,
+                        opened_search_ref,
+                        &crossing_cfg,
+                        block_radius_cells,
+                        dynamic_clearance_exempt_keys,
+                        &collision_partner_ids,
+                        victim_job.source_port_um,
+                        victim_job.target_port_um,
+                        Some(&victim_job.opened_cell_keys),
+                        Some(0.0),
+                    )
+                    .map_err(PyRuntimeError::new_err)?;
+                batch.timings.reroute_victims_wall_us +=
+                    native_batch_elapsed_us(crossing_start);
+                if let Some((route, crossing_events)) = crossing_result {
+                    let crossed_partner_ids =
+                        Self::crossing_partner_ids_from_events(&crossing_events);
+                    let crossed_partner_vec: Vec<u64> =
+                        crossed_partner_ids.iter().copied().collect();
+                    match self.commit_native_route_with_clearance_allowing_core_overlap(
+                        victim_job.net_id,
+                        &route,
+                        block_radius_cells,
+                        commit_radius_cells,
+                        &victim_job.clearance_exempt_cells,
+                        core_radius_cells,
+                        victim_job.source_port_um,
+                        victim_job.target_port_um,
+                        Some(&victim_job.opened_cell_keys),
+                        &crossed_partner_vec,
+                        true,
+                    ) {
+                        Ok(true) => {
+                            batch
+                                .timings
+                                .add_route_result_stats_if(collect_native_timing, &route);
+                            push_native_repair_trace(
+                                &mut batch.repair_trace,
+                                "victim_reroute",
+                                Some(mode.route_order),
+                                Some("lidar_collision_crossing"),
+                                victim_job.net_id,
+                                Some(round_idx),
+                                Some(active_repair_set_index as u64),
+                                &probe.candidate_blockers,
+                                ripup_ids,
+                                &mode.victim_reroute_ids,
+                                Some(victim_first),
+                                Some(reverse_victim_order),
+                                Some(true),
+                                None,
+                            );
+                            batch.attempts.push(NativeRouteAttempt {
+                                bucket_name: "reroute_victims",
+                                net_id: victim_job.net_id,
+                                route: Some(route.clone()),
+                                failed: false,
+                                error: None,
+                                repair_round: Some(round_idx),
+                                candidate_blockers: probe.candidate_blockers.clone(),
+                                ripup_ids: ripup_ids.to_vec(),
+                            });
+                            guided_victim_route = Some(route);
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            if trace_native_repair {
+                                eprintln!(
+                                    "native_repair_lidar_crossing_commit_failed net={} error={}",
+                                    victim_job.net_id, error
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if probe.crossing_repair_enabled
+            && self.use_collision_crossing_routing
+            && guided_collision_crossing_enabled
+            && !victim_first
+            && mode.repaired_route.is_some()
+            && self.committed_center_routes.contains_key(&job.net_id)
+            && guided_victim_route.is_none()
+        {
+            let mut guided_partner_ids = FxHashSet::default();
+            guided_partner_ids.insert(job.net_id);
+            let victim_source_state = State::new(
+                victim_job.source.x,
+                victim_job.source.y,
+                victim_job.source.angle,
+            );
+            let victim_target_state = State::new(
+                victim_job.target.x,
+                victim_job.target.y,
+                victim_job.target.angle,
+            );
+            let opened_search_owned = self.opened_cells_without_dynamic_overlap(
+                &victim_job.opened_cell_keys,
+                victim_source_state,
+                victim_target_state,
+            );
+            let opened_search_ref = opened_search_owned
+                .as_ref()
+                .unwrap_or(&victim_job.opened_cell_keys);
+            let dynamic_clearance_exempt_keys =
+                if block_radius_cells > 0 && !victim_job.clearance_exempt_cells.is_empty() {
+                    Some(&victim_job.clearance_exempt_cell_keys)
+                } else {
+                    None
+                };
+            let mut guided_cfg = self
+                .astar_config(None, None, None)
+                .map_err(PyRuntimeError::new_err)?;
+            guided_cfg.require_terminal_straights = false;
+            let guided_start = native_batch_timer(collect_native_timing);
+            let guided_result = self
+                .try_route_through_collision_partner_set(
+                    victim_job.net_id,
+                    victim_source_state,
+                    victim_target_state,
+                    opened_search_ref,
+                    &guided_cfg,
+                    block_radius_cells,
+                    dynamic_clearance_exempt_keys,
+                    &guided_partner_ids,
+                    victim_job.source_port_um,
+                    victim_job.target_port_um,
+                    Some(&victim_job.opened_cell_keys),
+                )
+                .map_err(PyRuntimeError::new_err)?;
+            batch.timings.reroute_victims_wall_us += native_batch_elapsed_us(guided_start);
+            if let Some((route, crossing_events)) = guided_result {
+                let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
+                let crossed_partner_vec: Vec<u64> =
+                    crossed_partner_ids.iter().copied().collect();
+                match self.commit_native_route_with_clearance_allowing_core_overlap(
+                    victim_job.net_id,
+                    &route,
+                    block_radius_cells,
+                    commit_radius_cells,
+                    &victim_job.clearance_exempt_cells,
+                    core_radius_cells,
+                    victim_job.source_port_um,
+                    victim_job.target_port_um,
+                    Some(&victim_job.opened_cell_keys),
+                    &crossed_partner_vec,
+                    true,
+                ) {
+                    Ok(true) => {
+                        batch
+                            .timings
+                            .add_route_result_stats_if(collect_native_timing, &route);
+                        push_native_repair_trace(
+                            &mut batch.repair_trace,
+                            "victim_reroute",
+                            Some(mode.route_order),
+                            Some("guided_collision_crossing"),
+                            victim_job.net_id,
+                            Some(round_idx),
+                            Some(active_repair_set_index as u64),
+                            &probe.candidate_blockers,
+                            ripup_ids,
+                            &mode.victim_reroute_ids,
+                            Some(victim_first),
+                            Some(reverse_victim_order),
+                            Some(true),
+                            None,
+                        );
+                        batch.attempts.push(NativeRouteAttempt {
+                            bucket_name: "reroute_victims",
+                            net_id: victim_job.net_id,
+                            route: Some(route.clone()),
+                            failed: false,
+                            error: None,
+                            repair_round: Some(round_idx),
+                            candidate_blockers: probe.candidate_blockers.clone(),
+                            ripup_ids: ripup_ids.to_vec(),
+                        });
+                        guided_victim_route = Some(route);
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        if trace_native_repair {
+                            eprintln!(
+                                "native_repair_guided_victim_crossing_commit_failed net={} partner={} error={}",
+                                victim_job.net_id, job.net_id, error
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(route) = guided_victim_route {
+            batch.final_routes.insert(victim_job.net_id, route.clone());
+            return Ok(CrossingAwareVictimRerouteOutcome::Routed);
+        }
+        if lidar_crossing_partners_available {
+            if trace_native_repair {
+                eprintln!(
+                    "native_repair_lidar_crossing_blocked_plain_victim_fallback net={} partners_available=true",
+                    victim_job.net_id
+                );
+            }
+            mode.mode_failed = true;
+            return Ok(CrossingAwareVictimRerouteOutcome::Blocked);
+        }
+        Ok(CrossingAwareVictimRerouteOutcome::NotAttempted)
+    }
+
 }
 
 #[pymethods]
@@ -11176,373 +11554,29 @@ impl PyPhotonicRouter {
                                 mode.mode_failed = true;
                                 break;
                             };
-                            let mut guided_victim_route: Option<RouteResult> = None;
-                            let mut lidar_crossing_partners_available = false;
-                            if lidar_pure_crossing_repair
-                                && !victim_first
-                                && mode.repaired_route.is_some()
-                            {
-                                let victim_source_state = State::new(
-                                    victim_job.source.x,
-                                    victim_job.source.y,
-                                    victim_job.source.angle,
-                                );
-                                let victim_target_state = State::new(
-                                    victim_job.target.x,
-                                    victim_job.target.y,
-                                    victim_job.target.angle,
-                                );
-                                let opened_search_owned = self.opened_cells_without_dynamic_overlap(
-                                    &victim_job.opened_cell_keys,
-                                    victim_source_state,
-                                    victim_target_state,
-                                );
-                                let opened_search_ref = opened_search_owned
-                                    .as_ref()
-                                    .unwrap_or(&victim_job.opened_cell_keys);
-                                let dynamic_clearance_exempt_keys = if block_radius_cells > 0
-                                    && !victim_job.clearance_exempt_cells.is_empty()
-                                {
-                                    Some(&victim_job.clearance_exempt_cell_keys)
-                                } else {
-                                    None
-                                };
-                                let mut seeded_partner_ids = Self::crossing_partner_ids_for_net(
-                                    &repair.round_base_crossing_events,
-                                    victim_job.net_id,
-                                );
-                                seeded_partner_ids.retain(|partner_id| {
-                                    *partner_id != victim_job.net_id
-                                        && !ripup_ids.contains(partner_id)
-                                        && self.committed_center_routes.contains_key(partner_id)
-                                });
-                                if self.committed_center_routes.contains_key(&job.net_id) {
-                                    seeded_partner_ids.insert(job.net_id);
-                                }
-                                if seeded_partner_ids.len() > 1 {
-                                    let mut seeded_cfg = self
-                                        .astar_config(None, None, Some(0.0))
-                                        .map_err(PyRuntimeError::new_err)?;
-                                    seeded_cfg.require_terminal_straights = false;
-                                    let seeded_start =
-                                        native_batch_timer(collect_native_timing);
-                                    let seeded_result =
-                                        self.try_route_through_collision_partner_set(
-                                            victim_job.net_id,
-                                            victim_source_state,
-                                            victim_target_state,
-                                            opened_search_ref,
-                                            &seeded_cfg,
-                                            block_radius_cells,
-                                            dynamic_clearance_exempt_keys,
-                                            &seeded_partner_ids,
-                                            victim_job.source_port_um,
-                                            victim_job.target_port_um,
-                                            Some(&victim_job.opened_cell_keys),
-                                        )
-                                        .map_err(PyRuntimeError::new_err)?;
-                                    batch.timings.reroute_victims_wall_us +=
-                                        native_batch_elapsed_us(seeded_start);
-                                    if let Some((route, crossing_events)) = seeded_result {
-                                        let crossed_partner_ids =
-                                            Self::crossing_partner_ids_from_events(
-                                                &crossing_events,
-                                            );
-                                        let crossed_partner_vec: Vec<u64> =
-                                            crossed_partner_ids.iter().copied().collect();
-                                        match self
-                                            .commit_native_route_with_clearance_allowing_core_overlap(
-                                                victim_job.net_id,
-                                                &route,
-                                                block_radius_cells,
-                                                commit_radius_cells,
-                                                &victim_job.clearance_exempt_cells,
-                                                core_radius_cells,
-                                                victim_job.source_port_um,
-                                                victim_job.target_port_um,
-                                                Some(&victim_job.opened_cell_keys),
-                                                &crossed_partner_vec,
-                                                true,
-                                            ) {
-                                            Ok(true) => {
-                                                batch.timings.add_route_result_stats_if(
-                                                    collect_native_timing,
-                                                    &route,
-                                                );
-                                                push_native_repair_trace(
-                                                    &mut batch.repair_trace,
-                                                    "victim_reroute",
-                                                    Some(mode.route_order),
-                                                    Some("lidar_seeded_collision_crossing"),
-                                                    victim_job.net_id,
-                                                    Some(round_idx),
-                                                    Some(active_repair_set_index as u64),
-                                                    &probe.candidate_blockers,
-                                                    &ripup_ids,
-                                                    &mode.victim_reroute_ids,
-                                                    Some(victim_first),
-                                                    Some(reverse_victim_order),
-                                                    Some(true),
-                                                    None,
-                                                );
-                                                batch.attempts.push(NativeRouteAttempt {
-                                                    bucket_name: "reroute_victims",
-                                                    net_id: victim_job.net_id,
-                                                    route: Some(route.clone()),
-                                                    failed: false,
-                                                    error: None,
-                                                    repair_round: Some(round_idx),
-                                                    candidate_blockers: probe.candidate_blockers.clone(),
-                                                    ripup_ids: ripup_ids.clone(),
-                                                });
-                                                guided_victim_route = Some(route);
-                                            }
-                                            Ok(false) => {}
-                                            Err(error) => {
-                                                if trace_native_repair {
-                                                    eprintln!(
-                                                        "native_repair_lidar_seeded_crossing_commit_failed net={} error={}",
-                                                        victim_job.net_id, error
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                let collision_partner_ids =
-                                    self.crossing_partner_lookup_set_for_route(
-                                        victim_job.net_id,
-                                        victim_source_state,
-                                        victim_target_state,
-                                    );
-                                lidar_crossing_partners_available =
-                                    !collision_partner_ids.is_empty();
-                                if guided_victim_route.is_none()
-                                    && lidar_crossing_partners_available
-                                {
-                                    let mut crossing_cfg = self
-                                        .astar_config(None, None, Some(0.0))
-                                        .map_err(PyRuntimeError::new_err)?;
-                                    crossing_cfg.require_terminal_straights = false;
-                                    let crossing_start =
-                                        native_batch_timer(collect_native_timing);
-                                    let crossing_result =
-                                        self.try_route_with_collision_crossings_with_loss(
-                                        victim_job.net_id,
-                                        victim_source_state,
-                                        victim_target_state,
-                                        opened_search_ref,
-                                        &crossing_cfg,
-                                        block_radius_cells,
-                                        dynamic_clearance_exempt_keys,
-                                        &collision_partner_ids,
-                                        victim_job.source_port_um,
-                                        victim_job.target_port_um,
-                                        Some(&victim_job.opened_cell_keys),
-                                        Some(0.0),
-                                    )
-                                    .map_err(PyRuntimeError::new_err)?;
-                                    batch.timings.reroute_victims_wall_us +=
-                                        native_batch_elapsed_us(crossing_start);
-                                    if let Some((route, crossing_events)) = crossing_result {
-                                        let crossed_partner_ids =
-                                            Self::crossing_partner_ids_from_events(
-                                                &crossing_events,
-                                            );
-                                        let crossed_partner_vec: Vec<u64> =
-                                            crossed_partner_ids.iter().copied().collect();
-                                        match self
-                                            .commit_native_route_with_clearance_allowing_core_overlap(
-                                                victim_job.net_id,
-                                                &route,
-                                                block_radius_cells,
-                                                commit_radius_cells,
-                                                &victim_job.clearance_exempt_cells,
-                                                core_radius_cells,
-                                                victim_job.source_port_um,
-                                                victim_job.target_port_um,
-                                                Some(&victim_job.opened_cell_keys),
-                                                &crossed_partner_vec,
-                                                true,
-                                            ) {
-                                            Ok(true) => {
-                                                batch.timings.add_route_result_stats_if(
-                                                    collect_native_timing,
-                                                    &route,
-                                                );
-                                                push_native_repair_trace(
-                                                    &mut batch.repair_trace,
-                                                    "victim_reroute",
-                                                    Some(mode.route_order),
-                                                    Some("lidar_collision_crossing"),
-                                                    victim_job.net_id,
-                                                    Some(round_idx),
-                                                    Some(active_repair_set_index as u64),
-                                                    &probe.candidate_blockers,
-                                                    &ripup_ids,
-                                                    &mode.victim_reroute_ids,
-                                                    Some(victim_first),
-                                                    Some(reverse_victim_order),
-                                                    Some(true),
-                                                    None,
-                                                );
-                                                batch.attempts.push(NativeRouteAttempt {
-                                                    bucket_name: "reroute_victims",
-                                                    net_id: victim_job.net_id,
-                                                    route: Some(route.clone()),
-                                                    failed: false,
-                                                    error: None,
-                                                    repair_round: Some(round_idx),
-                                                    candidate_blockers: probe.candidate_blockers.clone(),
-                                                    ripup_ids: ripup_ids.clone(),
-                                                });
-                                                guided_victim_route = Some(route);
-                                            }
-                                            Ok(false) => {}
-                                            Err(error) => {
-                                                if trace_native_repair {
-                                                    eprintln!(
-                                                        "native_repair_lidar_crossing_commit_failed net={} error={}",
-                                                        victim_job.net_id, error
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if probe.crossing_repair_enabled
-                                && self.use_collision_crossing_routing
-                                && guided_collision_crossing_enabled
-                                && !victim_first
-                                && mode.repaired_route.is_some()
-                                && self.committed_center_routes.contains_key(&job.net_id)
-                                && guided_victim_route.is_none()
-                            {
-                                let mut guided_partner_ids = FxHashSet::default();
-                                guided_partner_ids.insert(job.net_id);
-                                let victim_source_state = State::new(
-                                    victim_job.source.x,
-                                    victim_job.source.y,
-                                    victim_job.source.angle,
-                                );
-                                let victim_target_state = State::new(
-                                    victim_job.target.x,
-                                    victim_job.target.y,
-                                    victim_job.target.angle,
-                                );
-                                let opened_search_owned = self.opened_cells_without_dynamic_overlap(
-                                    &victim_job.opened_cell_keys,
-                                    victim_source_state,
-                                    victim_target_state,
-                                );
-                                let opened_search_ref = opened_search_owned
-                                    .as_ref()
-                                    .unwrap_or(&victim_job.opened_cell_keys);
-                                let dynamic_clearance_exempt_keys = if block_radius_cells > 0
-                                    && !victim_job.clearance_exempt_cells.is_empty()
-                                {
-                                    Some(&victim_job.clearance_exempt_cell_keys)
-                                } else {
-                                    None
-                                };
-                                let mut guided_cfg = self
-                                    .astar_config(None, None, None)
-                                    .map_err(PyRuntimeError::new_err)?;
-                                guided_cfg.require_terminal_straights = false;
-                                let guided_start = native_batch_timer(collect_native_timing);
-                                let guided_result = self.try_route_through_collision_partner_set(
-                                    victim_job.net_id,
-                                    victim_source_state,
-                                    victim_target_state,
-                                    opened_search_ref,
-                                    &guided_cfg,
-                                    block_radius_cells,
-                                    dynamic_clearance_exempt_keys,
-                                    &guided_partner_ids,
-                                    victim_job.source_port_um,
-                                    victim_job.target_port_um,
-                                    Some(&victim_job.opened_cell_keys),
-                                )
-                                .map_err(PyRuntimeError::new_err)?;
-                                batch.timings.reroute_victims_wall_us +=
-                                    native_batch_elapsed_us(guided_start);
-                                if let Some((route, crossing_events)) = guided_result {
-                                    let crossed_partner_ids =
-                                        Self::crossing_partner_ids_from_events(&crossing_events);
-                                    let crossed_partner_vec: Vec<u64> =
-                                        crossed_partner_ids.iter().copied().collect();
-                                    match self.commit_native_route_with_clearance_allowing_core_overlap(
-                                        victim_job.net_id,
-                                        &route,
-                                        block_radius_cells,
-                                        commit_radius_cells,
-                                        &victim_job.clearance_exempt_cells,
-                                        core_radius_cells,
-                                        victim_job.source_port_um,
-                                        victim_job.target_port_um,
-                                        Some(&victim_job.opened_cell_keys),
-                                        &crossed_partner_vec,
-                                        true,
-                                    ) {
-                                        Ok(true) => {
-                                            batch.timings.add_route_result_stats_if(
-                                                collect_native_timing,
-                                                &route,
-                                            );
-                                            push_native_repair_trace(
-                                                &mut batch.repair_trace,
-                                                "victim_reroute",
-                                                Some(mode.route_order),
-                                                Some("guided_collision_crossing"),
-                                                victim_job.net_id,
-                                                Some(round_idx),
-                                                Some(active_repair_set_index as u64),
-                                                &probe.candidate_blockers,
-                                                &ripup_ids,
-                                                &mode.victim_reroute_ids,
-                                                Some(victim_first),
-                                                Some(reverse_victim_order),
-                                                Some(true),
-                                                None,
-                                            );
-                                            batch.attempts.push(NativeRouteAttempt {
-                                                bucket_name: "reroute_victims",
-                                                net_id: victim_job.net_id,
-                                                route: Some(route.clone()),
-                                                failed: false,
-                                                error: None,
-                                                repair_round: Some(round_idx),
-                                                candidate_blockers: probe.candidate_blockers.clone(),
-                                                ripup_ids: ripup_ids.clone(),
-                                            });
-                                            guided_victim_route = Some(route);
-                                        }
-                                        Ok(false) => {}
-                                        Err(error) => {
-                                            if trace_native_repair {
-                                                eprintln!(
-                                                    "native_repair_guided_victim_crossing_commit_failed net={} partner={} error={}",
-                                                    victim_job.net_id, job.net_id, error
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if let Some(route) = guided_victim_route {
-                                batch.final_routes.insert(victim_job.net_id, route.clone());
-                                continue;
-                            }
-                            if lidar_crossing_partners_available {
-                                if trace_native_repair {
-                                    eprintln!(
-                                        "native_repair_lidar_crossing_blocked_plain_victim_fallback net={} partners_available=true",
-                                        victim_job.net_id
-                                    );
-                                }
-                                mode.mode_failed = true;
-                                break;
+                            match self.try_crossing_aware_victim_reroute(
+                                &mut batch,
+                                &repair,
+                                &probe,
+                                &mut mode,
+                                job,
+                                victim_job,
+                                round_idx,
+                                active_repair_set_index,
+                                &ripup_ids,
+                                victim_first,
+                                reverse_victim_order,
+                                lidar_pure_crossing_repair,
+                                guided_collision_crossing_enabled,
+                                block_radius_cells,
+                                commit_radius_cells,
+                                core_radius_cells,
+                                collect_native_timing,
+                                trace_native_repair,
+                            )? {
+                                CrossingAwareVictimRerouteOutcome::Routed => continue,
+                                CrossingAwareVictimRerouteOutcome::Blocked => break,
+                                CrossingAwareVictimRerouteOutcome::NotAttempted => {}
                             }
                             match self.reroute_victim_with_plain_fallback(
                                 &mut batch,
