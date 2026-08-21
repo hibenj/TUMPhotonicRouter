@@ -8681,6 +8681,39 @@ impl PyPhotonicRouter {
         batch.timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
     }
 
+    fn ripup_repair_set_victims(
+        &mut self,
+        batch: &mut RepairBatchState,
+        ripup_ids: &[u64],
+        lidar_pure_crossing_repair: bool,
+        block_radius_cells: i32,
+        history_increment: u32,
+        collect_native_timing: bool,
+    ) {
+        for old_id in ripup_ids {
+            if let Some(old_route) = batch.final_routes.get(old_id).cloned() {
+                if !lidar_pure_crossing_repair {
+                    let history_start = native_batch_timer(collect_native_timing);
+                    self.add_history_for_native_route(
+                        &old_route,
+                        block_radius_cells,
+                        history_increment,
+                    );
+                    batch.timings.history_update_us += native_batch_elapsed_us(history_start);
+                }
+            }
+            let ripup_start = native_batch_timer(collect_native_timing);
+            self.remove_crossing_events_for_net(*old_id);
+            self.obstacle_map.ripup_route(*old_id);
+            self.committed_center_routes.remove(old_id);
+            self.committed_realized_center_routes.remove(old_id);
+            self.committed_target_terminal_bump_guards.remove(old_id);
+            self.committed_opened_cell_keys.remove(old_id);
+            batch.timings.ripup_us += native_batch_elapsed_us(ripup_start);
+            batch.final_routes.remove(old_id);
+        }
+    }
+
 }
 
 #[pymethods]
@@ -10488,29 +10521,14 @@ impl PyPhotonicRouter {
                     let lidar_pure_crossing_repair = probe.crossing_repair_enabled
                         && self.use_collision_crossing_routing
                         && !self.crossing_context.config().allow_only_expected_pairs;
-                    for old_id in &ripup_ids {
-                        if let Some(old_route) = batch.final_routes.get(old_id).cloned() {
-                            if !lidar_pure_crossing_repair {
-                                let history_start = native_batch_timer(collect_native_timing);
-                                self.add_history_for_native_route(
-                                    &old_route,
-                                    block_radius_cells,
-                                    history_increment,
-                                );
-                                batch.timings.history_update_us +=
-                                    native_batch_elapsed_us(history_start);
-                            }
-                        }
-                        let ripup_start = native_batch_timer(collect_native_timing);
-                        self.remove_crossing_events_for_net(*old_id);
-                        self.obstacle_map.ripup_route(*old_id);
-                        self.committed_center_routes.remove(old_id);
-                        self.committed_realized_center_routes.remove(old_id);
-                        self.committed_target_terminal_bump_guards.remove(old_id);
-                        self.committed_opened_cell_keys.remove(old_id);
-                        batch.timings.ripup_us += native_batch_elapsed_us(ripup_start);
-                        batch.final_routes.remove(old_id);
-                    }
+                    self.ripup_repair_set_victims(
+                        &mut batch,
+                        &ripup_ids,
+                        lidar_pure_crossing_repair,
+                        block_radius_cells,
+                        history_increment,
+                        collect_native_timing,
+                    );
 
                     let mut temporary_probe_reservation_added =
                         if !temporary_probe_reservation.is_empty() {
