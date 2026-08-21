@@ -411,12 +411,22 @@ now made the surrounding code substantially easier to reason about:
    than assuming the old root-cause estimate still holds, per that
    fix's own central lesson.
 
-A concrete algorithm-optimization candidate is also now unblocked (not
-started, no ExecPlan written): the `route_many_with_repair_and_commit`
-restructuring's own Surprises & Discoveries found the 7 `round_base_*`
-fields being re-cloned in full on every repair attempt (up to 16x per
-net) -- a real, measurable cost per that plan's own timing data, now
-safe to address because the function has explicit structure.
+**Correction (2026-08-21): the `round_base_*` re-cloning "optimization
+candidate" this section previously named is not real -- retracted.**
+It was based on misreading `multiportmmi_8x8`'s `native repair
+profile:` debug-timing line: `victims=` (`reroute_victims_wall`, A*
+search-and-commit wall time) was mistaken for the actual clone cost, a
+separate bucket, `reset=` (`repair_state_reset`). A fresh
+`--debug-timing true` run on the fully-restructured function (HEAD
+`a8dac59`) shows `reset=0.0045s` against `victims=96.0845s` out of a
+110s routing phase -- the clone/reset cost is about 21,000x smaller
+than the number cited as evidence for it. Do not restart this specific
+idea without first re-measuring `reset=` on whatever benchmark
+motivates it. See `.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`'s
+Outcomes & Retrospective and Surprises & Discoveries for the full
+correction. The real cost driving `multiportmmi_8x8`'s routing time is
+`reroute_victims_wall` itself (A* search time, not state management) --
+under active investigation as of 2026-08-21, no findings yet.
 
 `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`'s
 and `.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`'s
