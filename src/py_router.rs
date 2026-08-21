@@ -8662,6 +8662,25 @@ impl PyPhotonicRouter {
         }
     }
 
+    fn reset_repair_attempt_state_from_round_base(
+        &mut self,
+        batch: &mut RepairBatchState,
+        repair: &RepairAttemptState,
+        collect_native_timing: bool,
+    ) {
+        let reset_start = native_batch_timer(collect_native_timing);
+        self.obstacle_map = repair.round_base_map.clone();
+        self.committed_center_routes = repair.round_base_center_routes.clone();
+        self.committed_realized_center_routes = repair.round_base_realized_center_routes.clone();
+        self.committed_target_terminal_bump_guards =
+            repair.round_base_target_terminal_bump_guards.clone();
+        self.committed_opened_cell_keys = repair.round_base_opened_cell_keys.clone();
+        self.crossing_events = repair.round_base_crossing_events.clone();
+        self.invalidate_meander_base_prefix();
+        batch.final_routes = repair.round_base_routes.clone();
+        batch.timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
+    }
+
 }
 
 #[pymethods]
@@ -10378,18 +10397,7 @@ impl PyPhotonicRouter {
                         if reverse_victim_order && ripup_ids.len() <= 1 {
                             continue;
                         }
-                    let reset_start = native_batch_timer(collect_native_timing);
-                    self.obstacle_map = repair.round_base_map.clone();
-                    self.committed_center_routes = repair.round_base_center_routes.clone();
-                    self.committed_realized_center_routes =
-                        repair.round_base_realized_center_routes.clone();
-                    self.committed_target_terminal_bump_guards =
-                        repair.round_base_target_terminal_bump_guards.clone();
-                    self.committed_opened_cell_keys = repair.round_base_opened_cell_keys.clone();
-                    self.crossing_events = repair.round_base_crossing_events.clone();
-                    self.invalidate_meander_base_prefix();
-                    batch.final_routes = repair.round_base_routes.clone();
-                    batch.timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
+                    self.reset_repair_attempt_state_from_round_base(&mut batch, &repair, collect_native_timing);
                     let mut victim_reroute_ids = ripup_ids.clone();
                     if reverse_victim_order {
                         victim_reroute_ids.reverse();
