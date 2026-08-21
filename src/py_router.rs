@@ -1059,6 +1059,11 @@ enum CommitIfCleanOutcome {
     NotResolved,
 }
 
+enum PlainRouteOutcome {
+    Routed,
+    NotResolved,
+}
+
 struct NativeEndpointCorrection {
     centerline: Vec<(f64, f64)>,
     committed_bump: bool,
@@ -8596,6 +8601,67 @@ impl PyPhotonicRouter {
         Ok(CommitIfCleanOutcome::NotResolved)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_plain_normal_route(
+        &mut self,
+        batch: &mut RepairBatchState,
+        job: &NativeRouteJob,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        collect_native_timing: bool,
+    ) -> PlainRouteOutcome {
+        let route_start = native_batch_timer(collect_native_timing);
+        let route_result = self.route_single_net_and_commit_native(
+            job.net_id,
+            job.source,
+            job.target,
+            block_radius_cells,
+            Some(&job.opened_cells),
+            Some(&job.opened_cell_keys),
+            commit_radius_cells,
+            Some(&job.clearance_exempt_cells),
+            Some(&job.clearance_exempt_cell_keys),
+            core_radius_cells,
+            job.source_port_um,
+            job.target_port_um,
+        );
+        let route_elapsed_us = native_batch_elapsed_us(route_start);
+        batch.timings.normal_route_wall_us += route_elapsed_us;
+        match route_result {
+            Ok(route) => {
+                batch.timings.add_route_result_stats_if(collect_native_timing, &route);
+                remove_success_static_cleanup(&mut self.obstacle_map, job);
+                batch.attempts.push(NativeRouteAttempt {
+                    bucket_name: "normal_route",
+                    net_id: job.net_id,
+                    route: Some(route.clone()),
+                    failed: false,
+                    error: None,
+                    repair_round: None,
+                    candidate_blockers: Vec::new(),
+                    ripup_ids: Vec::new(),
+                });
+                batch.final_routes.insert(job.net_id, route);
+                PlainRouteOutcome::Routed
+            }
+            Err(error) => {
+                batch.timings.normal_route_failed_wall_us += route_elapsed_us;
+                batch.attempts.push(NativeRouteAttempt {
+                    bucket_name: "normal_route",
+                    net_id: job.net_id,
+                    route: None,
+                    failed: true,
+                    error: Some(error.clone()),
+                    repair_round: None,
+                    candidate_blockers: Vec::new(),
+                    ripup_ids: Vec::new(),
+                });
+                PlainRouteOutcome::NotResolved
+            }
+        }
+    }
+
 }
 
 #[pymethods]
@@ -9755,53 +9821,16 @@ impl PyPhotonicRouter {
                 self.invalidate_meander_base_prefix();
             }
 
-            let route_start = native_batch_timer(collect_native_timing);
-            let route_result = self.route_single_net_and_commit_native(
-                job.net_id,
-                job.source,
-                job.target,
+            match self.try_plain_normal_route(
+                &mut batch,
+                job,
                 block_radius_cells,
-                Some(&job.opened_cells),
-                Some(&job.opened_cell_keys),
                 commit_radius_cells,
-                Some(&job.clearance_exempt_cells),
-                Some(&job.clearance_exempt_cell_keys),
                 core_radius_cells,
-                job.source_port_um,
-                job.target_port_um,
-            );
-            let route_elapsed_us = native_batch_elapsed_us(route_start);
-            batch.timings.normal_route_wall_us += route_elapsed_us;
-            match route_result {
-                Ok(route) => {
-                    batch.timings.add_route_result_stats_if(collect_native_timing, &route);
-                    remove_success_static_cleanup(&mut self.obstacle_map, job);
-                    batch.attempts.push(NativeRouteAttempt {
-                        bucket_name: "normal_route",
-                        net_id: job.net_id,
-                        route: Some(route.clone()),
-                        failed: false,
-                        error: None,
-                        repair_round: None,
-                        candidate_blockers: Vec::new(),
-                        ripup_ids: Vec::new(),
-                    });
-                    batch.final_routes.insert(job.net_id, route);
-                    continue;
-                }
-                Err(error) => {
-                    batch.timings.normal_route_failed_wall_us += route_elapsed_us;
-                    batch.attempts.push(NativeRouteAttempt {
-                        bucket_name: "normal_route",
-                        net_id: job.net_id,
-                        route: None,
-                        failed: true,
-                        error: Some(error.clone()),
-                        repair_round: None,
-                        candidate_blockers: Vec::new(),
-                        ripup_ids: Vec::new(),
-                    });
-                }
+                collect_native_timing,
+            ) {
+                PlainRouteOutcome::Routed => continue 'route_jobs,
+                PlainRouteOutcome::NotResolved => {}
             }
 
             if self.lidar_pure_crossing_enabled() && self.use_collision_crossing_routing {
