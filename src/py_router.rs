@@ -1081,6 +1081,11 @@ enum PreemptiveCrossingRipupOutcome {
     NotResolved,
 }
 
+enum SourceLayerCenterOutOutcome {
+    Routed,
+    NotAttempted,
+}
+
 enum VictimPlainRerouteOutcome {
     Routed,
     Failed,
@@ -10209,6 +10214,211 @@ impl PyPhotonicRouter {
         PreemptiveCrossingRipupOutcome::NotResolved
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_source_layer_center_out_repair(
+        &mut self,
+        batch: &mut RepairBatchState,
+        native_jobs: &[NativeRouteJob],
+        job_by_id: &FxHashMap<u64, NativeRouteJob>,
+        job: &NativeRouteJob,
+        job_index: usize,
+        hint: &PendingStraightVictimHint,
+        source_layer_indices_by_x: &FxHashMap<i32, Vec<usize>>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        collect_native_timing: bool,
+        trace_native_repair: bool,
+    ) -> Result<SourceLayerCenterOutOutcome, ()> {
+        let source_layer_indices = source_layer_indices_by_x
+            .get(&job.source.x)
+            .cloned()
+            .unwrap_or_default();
+        if source_layer_indices.len() < SOURCE_LAYER_CENTER_OUT_MIN_JOBS
+            || batch.retried_source_layers.contains(&job.source.x)
+        {
+            return Ok(SourceLayerCenterOutOutcome::NotAttempted);
+        }
+        batch.retried_source_layers.insert(job.source.x);
+        if trace_native_repair {
+            eprintln!(
+                "native_repair_source_layer_center_out_start source_x={} layer_size={} trigger_index={} trigger_net={} victim={} count={}",
+                job.source.x,
+                source_layer_indices.len(),
+                job_index + 1,
+                job.net_id,
+                hint.victim_net_id,
+                hint.count
+            );
+        }
+        let saved_layer_routes = self.rollback_source_layer_routes_for_retry(
+            native_jobs,
+            &source_layer_indices,
+            &mut batch.final_routes,
+        );
+        match self.try_route_source_layer_center_out_native(
+            native_jobs,
+            &source_layer_indices,
+            job.source.x,
+            block_radius_cells,
+            commit_radius_cells,
+            core_radius_cells,
+            collect_native_timing,
+            &mut batch.timings,
+            &mut batch.final_routes,
+            &mut batch.attempts,
+            trace_native_repair,
+        ) {
+            Ok(routed_net_ids) => {
+                push_native_repair_trace(
+                    &mut batch.repair_trace,
+                    "source_layer_center_out",
+                    Some("center_out"),
+                    Some("reroute_layer"),
+                    job.net_id,
+                    Some(0),
+                    None,
+                    &[hint.victim_net_id],
+                    &[],
+                    &routed_net_ids,
+                    None,
+                    None,
+                    Some(true),
+                    None,
+                );
+                batch.repair_count = batch.repair_count.saturating_add(1);
+                return Ok(SourceLayerCenterOutOutcome::Routed);
+            }
+            Err(error) => {
+                let unrestored_net_ids = self.restore_saved_source_layer_routes(
+                    native_jobs,
+                    &source_layer_indices,
+                    saved_layer_routes,
+                    block_radius_cells,
+                    commit_radius_cells,
+                    core_radius_cells,
+                    &mut batch.final_routes,
+                );
+                // The restore above is best-effort: one saved
+                // route failing to re-commit no longer aborts
+                // restoring the rest of the layer. Any net id
+                // still returned here has neither its original
+                // route nor any route at all in final_routes --
+                // attempt one fresh route for each, the same way
+                // this function's own pending_straight/preemptive
+                // repair mechanisms already recover a single
+                // ripped-up victim, instead of leaving it silently
+                // missing from the final output (the real,
+                // reproduced bug this generalizes from -- see
+                // .agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md).
+                let mut still_missing_net_ids = Vec::new();
+                for &unrestored_net_id in &unrestored_net_ids {
+                    let Some(unrestored_job) = job_by_id.get(&unrestored_net_id)
+                    else {
+                        still_missing_net_ids.push(unrestored_net_id);
+                        continue;
+                    };
+                    let reroute_start =
+                        native_batch_timer(collect_native_timing);
+                    let reroute_result = self.route_single_net_and_commit_native(
+                        unrestored_job.net_id,
+                        unrestored_job.source,
+                        unrestored_job.target,
+                        block_radius_cells,
+                        Some(&unrestored_job.opened_cells),
+                        Some(&unrestored_job.opened_cell_keys),
+                        commit_radius_cells,
+                        Some(&unrestored_job.clearance_exempt_cells),
+                        Some(&unrestored_job.clearance_exempt_cell_keys),
+                        core_radius_cells,
+                        unrestored_job.source_port_um,
+                        unrestored_job.target_port_um,
+                    );
+                    batch.timings.repair_failed_net_wall_us +=
+                        native_batch_elapsed_us(reroute_start);
+                    match reroute_result {
+                        Ok(route) => {
+                            batch.timings.add_route_result_stats_if(
+                                collect_native_timing,
+                                &route,
+                            );
+                            remove_success_static_cleanup(
+                                &mut self.obstacle_map,
+                                unrestored_job,
+                            );
+                            batch.attempts.push(NativeRouteAttempt {
+                                bucket_name: "source_layer_restore_fallback",
+                                net_id: unrestored_net_id,
+                                route: Some(route.clone()),
+                                failed: false,
+                                error: None,
+                                repair_round: Some(0),
+                                candidate_blockers: Vec::new(),
+                                ripup_ids: Vec::new(),
+                            });
+                            batch.final_routes.insert(unrestored_net_id, route);
+                        }
+                        Err(reroute_error) => {
+                            batch.attempts.push(NativeRouteAttempt {
+                                bucket_name: "source_layer_restore_fallback",
+                                net_id: unrestored_net_id,
+                                route: None,
+                                failed: true,
+                                error: Some(reroute_error),
+                                repair_round: Some(0),
+                                candidate_blockers: Vec::new(),
+                                ripup_ids: Vec::new(),
+                            });
+                            still_missing_net_ids.push(unrestored_net_id);
+                        }
+                    }
+                }
+                let error = if unrestored_net_ids.is_empty() {
+                    error
+                } else {
+                    format!(
+                        "{error}; source-layer restore could not recommit \
+                         net(s) {unrestored_net_ids:?}, fresh reroute {}",
+                        if still_missing_net_ids.is_empty() {
+                            "recovered all of them".to_string()
+                        } else {
+                            format!(
+                                "still failed for net(s) {still_missing_net_ids:?}"
+                            )
+                        }
+                    )
+                };
+                push_native_repair_trace(
+                    &mut batch.repair_trace,
+                    "source_layer_center_out",
+                    Some("center_out"),
+                    Some("reroute_layer"),
+                    job.net_id,
+                    Some(0),
+                    None,
+                    &[hint.victim_net_id],
+                    &[],
+                    &[],
+                    None,
+                    None,
+                    Some(still_missing_net_ids.is_empty()),
+                    Some(error),
+                );
+                if let Some(&first_missing) = still_missing_net_ids.first() {
+                    batch.failed_net_id = Some(first_missing);
+                    batch.failed_error = Some(format!(
+                        "source-layer repair could not restore or reroute \
+                         net(s) {still_missing_net_ids:?} after a failed \
+                         center-out attempt for net {}",
+                        job.net_id
+                    ));
+                    return Err(());
+                }
+            }
+        }
+        Ok(SourceLayerCenterOutOutcome::NotAttempted)
+    }
+
 }
 
 #[pymethods]
@@ -11205,190 +11415,23 @@ impl PyPhotonicRouter {
                 if let Some(hint) = self.pending_straight_victim_hint_for(job.net_id) {
                     if hint.victim_net_id != job.net_id && batch.final_routes.contains_key(&hint.victim_net_id) {
                         if let Some(victim_job) = job_by_id.get(&hint.victim_net_id) {
-                            let source_layer_indices = source_layer_indices_by_x
-                                .get(&job.source.x)
-                                .cloned()
-                                .unwrap_or_default();
-                            if source_layer_indices.len() >= SOURCE_LAYER_CENTER_OUT_MIN_JOBS
-                                && !batch.retried_source_layers.contains(&job.source.x)
-                            {
-                                batch.retried_source_layers.insert(job.source.x);
-                                if trace_native_repair {
-                                    eprintln!(
-                                        "native_repair_source_layer_center_out_start source_x={} layer_size={} trigger_index={} trigger_net={} victim={} count={}",
-                                        job.source.x,
-                                        source_layer_indices.len(),
-                                        job_index + 1,
-                                        job.net_id,
-                                        hint.victim_net_id,
-                                        hint.count
-                                    );
-                                }
-                                let saved_layer_routes = self.rollback_source_layer_routes_for_retry(
-                                    &native_jobs,
-                                    &source_layer_indices,
-                                    &mut batch.final_routes,
-                                );
-                                match self.try_route_source_layer_center_out_native(
-                                    &native_jobs,
-                                    &source_layer_indices,
-                                    job.source.x,
-                                    block_radius_cells,
-                                    commit_radius_cells,
-                                    core_radius_cells,
-                                    collect_native_timing,
-                                    &mut batch.timings,
-                                    &mut batch.final_routes,
-                                    &mut batch.attempts,
-                                    trace_native_repair,
-                                ) {
-                                    Ok(routed_net_ids) => {
-                                        push_native_repair_trace(
-                                            &mut batch.repair_trace,
-                                            "source_layer_center_out",
-                                            Some("center_out"),
-                                            Some("reroute_layer"),
-                                            job.net_id,
-                                            Some(0),
-                                            None,
-                                            &[hint.victim_net_id],
-                                            &[],
-                                            &routed_net_ids,
-                                            None,
-                                            None,
-                                            Some(true),
-                                            None,
-                                        );
-                                        batch.repair_count = batch.repair_count.saturating_add(1);
-                                        continue 'route_jobs;
-                                    }
-                                    Err(error) => {
-                                        let unrestored_net_ids = self.restore_saved_source_layer_routes(
-                                            &native_jobs,
-                                            &source_layer_indices,
-                                            saved_layer_routes,
-                                            block_radius_cells,
-                                            commit_radius_cells,
-                                            core_radius_cells,
-                                            &mut batch.final_routes,
-                                        );
-                                        // The restore above is best-effort: one saved
-                                        // route failing to re-commit no longer aborts
-                                        // restoring the rest of the layer. Any net id
-                                        // still returned here has neither its original
-                                        // route nor any route at all in final_routes --
-                                        // attempt one fresh route for each, the same way
-                                        // this function's own pending_straight/preemptive
-                                        // repair mechanisms already recover a single
-                                        // ripped-up victim, instead of leaving it silently
-                                        // missing from the final output (the real,
-                                        // reproduced bug this generalizes from -- see
-                                        // .agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md).
-                                        let mut still_missing_net_ids = Vec::new();
-                                        for &unrestored_net_id in &unrestored_net_ids {
-                                            let Some(unrestored_job) = job_by_id.get(&unrestored_net_id)
-                                            else {
-                                                still_missing_net_ids.push(unrestored_net_id);
-                                                continue;
-                                            };
-                                            let reroute_start =
-                                                native_batch_timer(collect_native_timing);
-                                            let reroute_result = self.route_single_net_and_commit_native(
-                                                unrestored_job.net_id,
-                                                unrestored_job.source,
-                                                unrestored_job.target,
-                                                block_radius_cells,
-                                                Some(&unrestored_job.opened_cells),
-                                                Some(&unrestored_job.opened_cell_keys),
-                                                commit_radius_cells,
-                                                Some(&unrestored_job.clearance_exempt_cells),
-                                                Some(&unrestored_job.clearance_exempt_cell_keys),
-                                                core_radius_cells,
-                                                unrestored_job.source_port_um,
-                                                unrestored_job.target_port_um,
-                                            );
-                                            batch.timings.repair_failed_net_wall_us +=
-                                                native_batch_elapsed_us(reroute_start);
-                                            match reroute_result {
-                                                Ok(route) => {
-                                                    batch.timings.add_route_result_stats_if(
-                                                        collect_native_timing,
-                                                        &route,
-                                                    );
-                                                    remove_success_static_cleanup(
-                                                        &mut self.obstacle_map,
-                                                        unrestored_job,
-                                                    );
-                                                    batch.attempts.push(NativeRouteAttempt {
-                                                        bucket_name: "source_layer_restore_fallback",
-                                                        net_id: unrestored_net_id,
-                                                        route: Some(route.clone()),
-                                                        failed: false,
-                                                        error: None,
-                                                        repair_round: Some(0),
-                                                        candidate_blockers: Vec::new(),
-                                                        ripup_ids: Vec::new(),
-                                                    });
-                                                    batch.final_routes.insert(unrestored_net_id, route);
-                                                }
-                                                Err(reroute_error) => {
-                                                    batch.attempts.push(NativeRouteAttempt {
-                                                        bucket_name: "source_layer_restore_fallback",
-                                                        net_id: unrestored_net_id,
-                                                        route: None,
-                                                        failed: true,
-                                                        error: Some(reroute_error),
-                                                        repair_round: Some(0),
-                                                        candidate_blockers: Vec::new(),
-                                                        ripup_ids: Vec::new(),
-                                                    });
-                                                    still_missing_net_ids.push(unrestored_net_id);
-                                                }
-                                            }
-                                        }
-                                        let error = if unrestored_net_ids.is_empty() {
-                                            error
-                                        } else {
-                                            format!(
-                                                "{error}; source-layer restore could not recommit \
-                                                 net(s) {unrestored_net_ids:?}, fresh reroute {}",
-                                                if still_missing_net_ids.is_empty() {
-                                                    "recovered all of them".to_string()
-                                                } else {
-                                                    format!(
-                                                        "still failed for net(s) {still_missing_net_ids:?}"
-                                                    )
-                                                }
-                                            )
-                                        };
-                                        push_native_repair_trace(
-                                            &mut batch.repair_trace,
-                                            "source_layer_center_out",
-                                            Some("center_out"),
-                                            Some("reroute_layer"),
-                                            job.net_id,
-                                            Some(0),
-                                            None,
-                                            &[hint.victim_net_id],
-                                            &[],
-                                            &[],
-                                            None,
-                                            None,
-                                            Some(still_missing_net_ids.is_empty()),
-                                            Some(error),
-                                        );
-                                        if let Some(&first_missing) = still_missing_net_ids.first() {
-                                            batch.failed_net_id = Some(first_missing);
-                                            batch.failed_error = Some(format!(
-                                                "source-layer repair could not restore or reroute \
-                                                 net(s) {still_missing_net_ids:?} after a failed \
-                                                 center-out attempt for net {}",
-                                                job.net_id
-                                            ));
-                                            break 'route_jobs;
-                                        }
-                                    }
-                                }
+                            match self.try_source_layer_center_out_repair(
+                                &mut batch,
+                                &native_jobs,
+                                &job_by_id,
+                                job,
+                                job_index,
+                                &hint,
+                                &source_layer_indices_by_x,
+                                block_radius_cells,
+                                commit_radius_cells,
+                                core_radius_cells,
+                                collect_native_timing,
+                                trace_native_repair,
+                            ) {
+                                Ok(SourceLayerCenterOutOutcome::Routed) => continue 'route_jobs,
+                                Ok(SourceLayerCenterOutOutcome::NotAttempted) => {}
+                                Err(()) => break 'route_jobs,
                             }
                             'pending_straight_repair_attempt: {
                             let base_map = self.obstacle_map.clone();
