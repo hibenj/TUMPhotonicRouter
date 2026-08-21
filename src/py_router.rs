@@ -1049,6 +1049,16 @@ enum GuidedCrossingOutcome {
     NotResolved,
 }
 
+enum LocalizedKeepoutOutcome {
+    Routed,
+    NotResolved,
+}
+
+enum CommitIfCleanOutcome {
+    Routed,
+    NotResolved,
+}
+
 struct NativeEndpointCorrection {
     centerline: Vec<(f64, f64)>,
     committed_bump: bool,
@@ -8318,6 +8328,274 @@ impl PyPhotonicRouter {
         Ok(GuidedCrossingOutcome::NotResolved)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn try_localized_crossing_keepout_retry(
+        &mut self,
+        batch: &mut RepairBatchState,
+        probe: &ProbeState,
+        job: &NativeRouteJob,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        history_weight: f64,
+        collect_native_timing: bool,
+        trace_native_repair: bool,
+    ) -> LocalizedKeepoutOutcome {
+        let invalid_collision_crossing_candidate = probe.crossing_repair_enabled
+            && self.use_collision_crossing_routing
+            && !probe.probe_realized_crossing_violations.is_empty();
+        if probe.crossing_repair_enabled
+            && !invalid_collision_crossing_candidate
+            && !probe.probe_repair_keepout_keys.is_empty()
+            && !probe.candidate_blockers.is_empty()
+        {
+            let localized_probe_keepout = probe.probe_repair_keepout_keys.clone();
+            let added_keepout = self.obstacle_map.add_static_keys(&localized_probe_keepout);
+            if trace_native_repair {
+                eprintln!(
+                    "native_repair_local_keepout net={} keys={} added={} candidate_blockers={:?}",
+                    job.net_id,
+                    localized_probe_keepout.len(),
+                    added_keepout,
+                    probe.candidate_blockers,
+                );
+            }
+
+            let mut local_retry_route: Option<RouteResult> = None;
+            let route_start = native_batch_timer(collect_native_timing);
+            let prefer_orthogonal_local_retry =
+                !probe.probe_realized_crossing_violations.is_empty();
+            let route_result = self
+                .route_single_net_and_commit_native_with_optional_orthogonal_repair_keepout(
+                    job.net_id,
+                    job.source,
+                    job.target,
+                    block_radius_cells,
+                    &job.opened_cells,
+                    &job.opened_cell_keys,
+                    commit_radius_cells,
+                    &job.clearance_exempt_cells,
+                    &job.clearance_exempt_cell_keys,
+                    core_radius_cells,
+                    &localized_probe_keepout,
+                    job.source_port_um,
+                    job.target_port_um,
+                    prefer_orthogonal_local_retry,
+                );
+            let route_elapsed_us = native_batch_elapsed_us(route_start);
+            batch.timings.repair_failed_net_wall_us += route_elapsed_us;
+            match route_result {
+                Ok(route) => {
+                    batch.timings.add_route_result_stats_if(collect_native_timing, &route);
+                    remove_success_static_cleanup(&mut self.obstacle_map, job);
+                    batch.attempts.push(NativeRouteAttempt {
+                        bucket_name: "localized_crossing_keepout",
+                        net_id: job.net_id,
+                        route: Some(route.clone()),
+                        failed: false,
+                        error: None,
+                        repair_round: Some(0),
+                        candidate_blockers: probe.candidate_blockers.clone(),
+                        ripup_ids: Vec::new(),
+                    });
+                    local_retry_route = Some(route);
+                }
+                Err(normal_error) => {
+                    let (repair_keepout, extra_repair_keepout) = self
+                        .augmented_crossing_error_repair_keepout(
+                            &localized_probe_keepout,
+                            &normal_error,
+                        );
+                    if !extra_repair_keepout.is_empty() {
+                        self.obstacle_map.add_static_keys(&extra_repair_keepout);
+                    }
+                    batch.timings.repair_failed_net_failed_wall_us += route_elapsed_us;
+                    batch.attempts.push(NativeRouteAttempt {
+                        bucket_name: "localized_crossing_keepout",
+                        net_id: job.net_id,
+                        route: None,
+                        failed: true,
+                        error: Some(normal_error),
+                        repair_round: Some(0),
+                        candidate_blockers: probe.candidate_blockers.clone(),
+                        ripup_ids: Vec::new(),
+                    });
+                    let repair_start = native_batch_timer(collect_native_timing);
+                    let repair_result =
+                        self.route_single_net_and_commit_repair_native_with_repair_keepout(
+                            job.net_id,
+                            job.source,
+                            job.target,
+                            block_radius_cells,
+                            &job.opened_cells,
+                            &job.opened_cell_keys,
+                            history_weight,
+                            commit_radius_cells,
+                            &job.clearance_exempt_cells,
+                            &job.clearance_exempt_cell_keys,
+                            core_radius_cells,
+                            &repair_keepout,
+                            job.source_port_um,
+                            job.target_port_um,
+                        );
+                    let repair_elapsed_us = native_batch_elapsed_us(repair_start);
+                    if !extra_repair_keepout.is_empty() {
+                        self.obstacle_map.remove_static_keys(&extra_repair_keepout);
+                    }
+                    batch.timings.repair_failed_net_wall_us += repair_elapsed_us;
+                    match repair_result {
+                        Ok(route) => {
+                            batch.timings.add_route_result_stats_if(collect_native_timing, &route);
+                            remove_success_static_cleanup(&mut self.obstacle_map, job);
+                            batch.attempts.push(NativeRouteAttempt {
+                                bucket_name: "localized_crossing_keepout",
+                                net_id: job.net_id,
+                                route: Some(route.clone()),
+                                failed: false,
+                                error: None,
+                                repair_round: Some(0),
+                                candidate_blockers: probe.candidate_blockers.clone(),
+                                ripup_ids: Vec::new(),
+                            });
+                            local_retry_route = Some(route);
+                        }
+                        Err(error) => {
+                            batch.timings.repair_failed_net_failed_wall_us += repair_elapsed_us;
+                            batch.attempts.push(NativeRouteAttempt {
+                                bucket_name: "localized_crossing_keepout",
+                                net_id: job.net_id,
+                                route: None,
+                                failed: true,
+                                error: Some(error),
+                                repair_round: Some(0),
+                                candidate_blockers: probe.candidate_blockers.clone(),
+                                ripup_ids: Vec::new(),
+                            });
+                        }
+                    }
+                }
+            }
+            self.obstacle_map
+                .remove_static_keys(&localized_probe_keepout);
+            if let Some(route) = local_retry_route {
+                batch.final_routes.insert(job.net_id, route);
+                batch.repair_count = batch.repair_count.saturating_add(1);
+                return LocalizedKeepoutOutcome::Routed;
+            }
+        }
+        LocalizedKeepoutOutcome::NotResolved
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_commit_clean_probe(
+        &mut self,
+        batch: &mut RepairBatchState,
+        probe: &ProbeState,
+        job: &NativeRouteJob,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        collect_native_timing: bool,
+    ) -> Result<CommitIfCleanOutcome, ()> {
+        if probe.candidate_blockers.is_empty() {
+            if probe.probe_crossing_compliant {
+                {
+                    let commit_start = native_batch_timer(collect_native_timing);
+                    let crossed_partner_ids =
+                        Self::crossing_partner_ids_from_events(&probe.probe_crossing_events);
+                    let allowed_crossing_core_keys =
+                        Self::crossing_reservation_keys_for_events(&probe.probe_crossing_events);
+                    let (route_cells, core_cells) = self.route_commit_and_core_cells(
+                        &probe.probe_route,
+                        block_radius_cells,
+                        commit_radius_cells,
+                        Some(&job.clearance_exempt_cells),
+                        core_radius_cells,
+                        job.source_port_um,
+                        job.target_port_um,
+                    );
+                    if self
+                        .obstacle_map
+                        .commit_route_with_clearance_and_allowed_core_overlap_cells(
+                            job.net_id,
+                            &core_cells,
+                            &route_cells,
+                            &job.clearance_exempt_cells,
+                            &crossed_partner_ids,
+                            Some(&allowed_crossing_core_keys),
+                        )
+                    {
+                        batch.timings.commit_update_dynamic_map_us +=
+                            native_batch_elapsed_us(commit_start);
+                        self.remove_crossing_events_for_net(job.net_id);
+                        self.add_crossing_events(probe.probe_crossing_events.clone());
+                        if let Err(error) = self.remember_committed_route_centerlines_with_ports(
+                            job.net_id,
+                            &probe.probe_route,
+                            job.source_port_um,
+                            job.target_port_um,
+                        ) {
+                            self.rollback_committed_route(job.net_id);
+                            batch.failed_net_id = Some(job.net_id);
+                            batch.failed_error = Some(error);
+                            return Err(());
+                        }
+                        self.remember_committed_route_opened_cells(
+                            job.net_id,
+                            Some(&job.opened_cell_keys),
+                        );
+                        self.add_post_commit_guidance_for_route(job.net_id, &probe.probe_route);
+                        self.invalidate_meander_base_prefix();
+                        if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
+                            job.net_id,
+                            &probe.probe_route,
+                            job.source_port_um,
+                            job.target_port_um,
+                            Some(&job.opened_cell_keys),
+                        ) {
+                            self.rollback_committed_route(job.net_id);
+                            batch.failed_net_id = Some(job.net_id);
+                            batch.failed_error = Some(error);
+                            return Err(());
+                        }
+                        batch.final_routes.insert(job.net_id, probe.probe_route.clone());
+                        return Ok(CommitIfCleanOutcome::Routed);
+                    }
+                    batch.timings.commit_update_dynamic_map_us +=
+                        native_batch_elapsed_us(commit_start);
+                }
+            }
+            if probe.strict_expected_crossing_probe {
+                batch.failed_net_id = Some(job.net_id);
+                batch.failed_error =
+                    Some("Probe route violates expected crossing constraints".to_string());
+                return Err(());
+            }
+            let commit_start = native_batch_timer(collect_native_timing);
+            if self.commit_native_route_with_clearance(
+                job.net_id,
+                &probe.probe_route,
+                block_radius_cells,
+                commit_radius_cells,
+                &job.clearance_exempt_cells,
+                core_radius_cells,
+                job.source_port_um,
+                job.target_port_um,
+                Some(&job.opened_cell_keys),
+            ) {
+                batch.timings.commit_update_dynamic_map_us += native_batch_elapsed_us(commit_start);
+                batch.final_routes.insert(job.net_id, probe.probe_route.clone());
+                return Ok(CommitIfCleanOutcome::Routed);
+            }
+            batch.timings.commit_update_dynamic_map_us += native_batch_elapsed_us(commit_start);
+            batch.failed_net_id = Some(job.net_id);
+            batch.failed_error = Some("Failed to commit static-only probe route".to_string());
+            return Err(());
+        }
+
+        Ok(CommitIfCleanOutcome::NotResolved)
+    }
+
 }
 
 #[pymethods]
@@ -10018,242 +10296,32 @@ impl PyPhotonicRouter {
                 GuidedCrossingOutcome::Routed => continue 'route_jobs,
                 GuidedCrossingOutcome::NotResolved => {}
             }
-            let invalid_collision_crossing_candidate = probe.crossing_repair_enabled
-                && self.use_collision_crossing_routing
-                && !probe.probe_realized_crossing_violations.is_empty();
-            if probe.crossing_repair_enabled
-                && !invalid_collision_crossing_candidate
-                && !probe.probe_repair_keepout_keys.is_empty()
-                && !probe.candidate_blockers.is_empty()
-            {
-                let localized_probe_keepout = probe.probe_repair_keepout_keys.clone();
-                let added_keepout = self.obstacle_map.add_static_keys(&localized_probe_keepout);
-                if trace_native_repair {
-                    eprintln!(
-                        "native_repair_local_keepout net={} keys={} added={} candidate_blockers={:?}",
-                        job.net_id,
-                        localized_probe_keepout.len(),
-                        added_keepout,
-                        probe.candidate_blockers,
-                    );
-                }
-
-                let mut local_retry_route: Option<RouteResult> = None;
-                let route_start = native_batch_timer(collect_native_timing);
-                let prefer_orthogonal_local_retry =
-                    !probe.probe_realized_crossing_violations.is_empty();
-                let route_result = self
-                    .route_single_net_and_commit_native_with_optional_orthogonal_repair_keepout(
-                        job.net_id,
-                        job.source,
-                        job.target,
-                        block_radius_cells,
-                        &job.opened_cells,
-                        &job.opened_cell_keys,
-                        commit_radius_cells,
-                        &job.clearance_exempt_cells,
-                        &job.clearance_exempt_cell_keys,
-                        core_radius_cells,
-                        &localized_probe_keepout,
-                        job.source_port_um,
-                        job.target_port_um,
-                        prefer_orthogonal_local_retry,
-                    );
-                let route_elapsed_us = native_batch_elapsed_us(route_start);
-                batch.timings.repair_failed_net_wall_us += route_elapsed_us;
-                match route_result {
-                    Ok(route) => {
-                        batch.timings.add_route_result_stats_if(collect_native_timing, &route);
-                        remove_success_static_cleanup(&mut self.obstacle_map, job);
-                        batch.attempts.push(NativeRouteAttempt {
-                            bucket_name: "localized_crossing_keepout",
-                            net_id: job.net_id,
-                            route: Some(route.clone()),
-                            failed: false,
-                            error: None,
-                            repair_round: Some(0),
-                            candidate_blockers: probe.candidate_blockers.clone(),
-                            ripup_ids: Vec::new(),
-                        });
-                        local_retry_route = Some(route);
-                    }
-                    Err(normal_error) => {
-                        let (repair_keepout, extra_repair_keepout) = self
-                            .augmented_crossing_error_repair_keepout(
-                                &localized_probe_keepout,
-                                &normal_error,
-                            );
-                        if !extra_repair_keepout.is_empty() {
-                            self.obstacle_map.add_static_keys(&extra_repair_keepout);
-                        }
-                        batch.timings.repair_failed_net_failed_wall_us += route_elapsed_us;
-                        batch.attempts.push(NativeRouteAttempt {
-                            bucket_name: "localized_crossing_keepout",
-                            net_id: job.net_id,
-                            route: None,
-                            failed: true,
-                            error: Some(normal_error),
-                            repair_round: Some(0),
-                            candidate_blockers: probe.candidate_blockers.clone(),
-                            ripup_ids: Vec::new(),
-                        });
-                        let repair_start = native_batch_timer(collect_native_timing);
-                        let repair_result =
-                            self.route_single_net_and_commit_repair_native_with_repair_keepout(
-                                job.net_id,
-                                job.source,
-                                job.target,
-                                block_radius_cells,
-                                &job.opened_cells,
-                                &job.opened_cell_keys,
-                                history_weight,
-                                commit_radius_cells,
-                                &job.clearance_exempt_cells,
-                                &job.clearance_exempt_cell_keys,
-                                core_radius_cells,
-                                &repair_keepout,
-                                job.source_port_um,
-                                job.target_port_um,
-                            );
-                        let repair_elapsed_us = native_batch_elapsed_us(repair_start);
-                        if !extra_repair_keepout.is_empty() {
-                            self.obstacle_map.remove_static_keys(&extra_repair_keepout);
-                        }
-                        batch.timings.repair_failed_net_wall_us += repair_elapsed_us;
-                        match repair_result {
-                            Ok(route) => {
-                                batch.timings.add_route_result_stats_if(collect_native_timing, &route);
-                                remove_success_static_cleanup(&mut self.obstacle_map, job);
-                                batch.attempts.push(NativeRouteAttempt {
-                                    bucket_name: "localized_crossing_keepout",
-                                    net_id: job.net_id,
-                                    route: Some(route.clone()),
-                                    failed: false,
-                                    error: None,
-                                    repair_round: Some(0),
-                                    candidate_blockers: probe.candidate_blockers.clone(),
-                                    ripup_ids: Vec::new(),
-                                });
-                                local_retry_route = Some(route);
-                            }
-                            Err(error) => {
-                                batch.timings.repair_failed_net_failed_wall_us += repair_elapsed_us;
-                                batch.attempts.push(NativeRouteAttempt {
-                                    bucket_name: "localized_crossing_keepout",
-                                    net_id: job.net_id,
-                                    route: None,
-                                    failed: true,
-                                    error: Some(error),
-                                    repair_round: Some(0),
-                                    candidate_blockers: probe.candidate_blockers.clone(),
-                                    ripup_ids: Vec::new(),
-                                });
-                            }
-                        }
-                    }
-                }
-                self.obstacle_map
-                    .remove_static_keys(&localized_probe_keepout);
-                if let Some(route) = local_retry_route {
-                    batch.final_routes.insert(job.net_id, route);
-                    batch.repair_count = batch.repair_count.saturating_add(1);
-                    continue 'route_jobs;
-                }
+            match self.try_localized_crossing_keepout_retry(
+                &mut batch,
+                &probe,
+                job,
+                block_radius_cells,
+                commit_radius_cells,
+                core_radius_cells,
+                history_weight,
+                collect_native_timing,
+                trace_native_repair,
+            ) {
+                LocalizedKeepoutOutcome::Routed => continue 'route_jobs,
+                LocalizedKeepoutOutcome::NotResolved => {}
             }
-            if probe.candidate_blockers.is_empty() {
-                if probe.probe_crossing_compliant {
-                    {
-                        let commit_start = native_batch_timer(collect_native_timing);
-                        let crossed_partner_ids =
-                            Self::crossing_partner_ids_from_events(&probe.probe_crossing_events);
-                        let allowed_crossing_core_keys =
-                            Self::crossing_reservation_keys_for_events(&probe.probe_crossing_events);
-                        let (route_cells, core_cells) = self.route_commit_and_core_cells(
-                            &probe.probe_route,
-                            block_radius_cells,
-                            commit_radius_cells,
-                            Some(&job.clearance_exempt_cells),
-                            core_radius_cells,
-                            job.source_port_um,
-                            job.target_port_um,
-                        );
-                        if self
-                            .obstacle_map
-                            .commit_route_with_clearance_and_allowed_core_overlap_cells(
-                                job.net_id,
-                                &core_cells,
-                                &route_cells,
-                                &job.clearance_exempt_cells,
-                                &crossed_partner_ids,
-                                Some(&allowed_crossing_core_keys),
-                            )
-                        {
-                            batch.timings.commit_update_dynamic_map_us +=
-                                native_batch_elapsed_us(commit_start);
-                            self.remove_crossing_events_for_net(job.net_id);
-                            self.add_crossing_events(probe.probe_crossing_events);
-                            if let Err(error) = self.remember_committed_route_centerlines_with_ports(
-                                job.net_id,
-                                &probe.probe_route,
-                                job.source_port_um,
-                                job.target_port_um,
-                            ) {
-                                self.rollback_committed_route(job.net_id);
-                                batch.failed_net_id = Some(job.net_id);
-                                batch.failed_error = Some(error);
-                                break;
-                            }
-                            self.remember_committed_route_opened_cells(
-                                job.net_id,
-                                Some(&job.opened_cell_keys),
-                            );
-                            self.add_post_commit_guidance_for_route(job.net_id, &probe.probe_route);
-                            self.invalidate_meander_base_prefix();
-                            if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
-                                job.net_id,
-                                &probe.probe_route,
-                                job.source_port_um,
-                                job.target_port_um,
-                                Some(&job.opened_cell_keys),
-                            ) {
-                                self.rollback_committed_route(job.net_id);
-                                batch.failed_net_id = Some(job.net_id);
-                                batch.failed_error = Some(error);
-                                break;
-                            }
-                            batch.final_routes.insert(job.net_id, probe.probe_route);
-                            continue;
-                        }
-                        batch.timings.commit_update_dynamic_map_us +=
-                            native_batch_elapsed_us(commit_start);
-                    }
-                }
-                if probe.strict_expected_crossing_probe {
-                    batch.failed_net_id = Some(job.net_id);
-                    batch.failed_error =
-                        Some("Probe route violates expected crossing constraints".to_string());
-                    break;
-                }
-                let commit_start = native_batch_timer(collect_native_timing);
-                if self.commit_native_route_with_clearance(
-                    job.net_id,
-                    &probe.probe_route,
-                    block_radius_cells,
-                    commit_radius_cells,
-                    &job.clearance_exempt_cells,
-                    core_radius_cells,
-                    job.source_port_um,
-                    job.target_port_um,
-                    Some(&job.opened_cell_keys),
-                ) {
-                    batch.timings.commit_update_dynamic_map_us += native_batch_elapsed_us(commit_start);
-                    batch.final_routes.insert(job.net_id, probe.probe_route);
-                    continue;
-                }
-                batch.timings.commit_update_dynamic_map_us += native_batch_elapsed_us(commit_start);
-                batch.failed_net_id = Some(job.net_id);
-                batch.failed_error = Some("Failed to commit static-only probe route".to_string());
-                break;
+            match self.try_commit_clean_probe(
+                &mut batch,
+                &probe,
+                job,
+                block_radius_cells,
+                commit_radius_cells,
+                core_radius_cells,
+                collect_native_timing,
+            ) {
+                Ok(CommitIfCleanOutcome::Routed) => continue 'route_jobs,
+                Ok(CommitIfCleanOutcome::NotResolved) => {}
+                Err(()) => break 'route_jobs,
             }
 
             let max_rounds = max_rounds.max(1);
