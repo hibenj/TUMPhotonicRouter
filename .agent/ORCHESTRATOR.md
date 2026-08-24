@@ -19,6 +19,27 @@ read:
 7. The active ExecPlan under `.agent/execplans/`
 
 **Active ExecPlan**:
+`.agent/execplans/2026-08-24-modular-routing-strategies.md`
+(start at Milestone 0). The repository owner's direction (2026-08-24, via
+direct chat instruction): the restructured routing pipeline is
+behavior-correct but not yet genuinely readable or modular -- decompose
+the ~1070-line Python-to-Rust seam (`_RouteNetsRustSession.run()`) into
+named phases, finish wiring the already-scaffolded-but-unused
+`SingleNetSearch` Rust trait into production so single-net search
+strategies (JPS4, simple routes, windowed A*) are swappable through one
+interface instead of duplicated per route variant, and characterize
+whether the 18 historically-accumulated `try_*` repair methods in
+`route_many_with_repair_and_commit` can become a small set of general,
+swappable repair-strategy primitives -- presenting design options to the
+repository owner before implementing that last part, per that plan's own
+Decision Log. This plan explicitly precedes any further benchmark-finding
+bug-fixing (the parked `multiportmmi_8x8` n_67/n_70/n_71-successor and
+`multiportmmi_16x16` n_50 findings, both in `.agent/REPOSITORY_STATE.md`'s
+Current Findings) -- the repository owner's stated reasoning is that
+those findings live inside the exact code this plan will restructure, so
+fixing them now risks being redone or invalidated shortly after.
+
+Superseded pointer, kept for context:
 `.agent/execplans/2026-08-19-fix-open-repair-and-dense-port-findings.md`
 (start at Milestone 0). The repository owner's direction (2026-08-19):
 fix the open, previously-parked benchmark findings first, then move on

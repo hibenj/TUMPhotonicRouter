@@ -6300,7 +6300,16 @@ class _RouteNetsRustSession:
         )
         return illegal
 
-    def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
+    def _build_static_obstacle_context(self) -> tuple[Any, dict[str, Any], Path | None]:
+        """Build the static obstacle map, resolve grid/crossing sizing, export debug artifacts if enabled, and validate the Rust backend.
+
+        Sets `self.grid`, `self.resolved_crossing_half_size_cells`, `self.debug_path`,
+        `self.diagnostics_enabled`, and `self.route_svgs`. Prints the "Routing N nets..."
+        header. Returns the obstacle map, the crossing-device info dict
+        `_resolve_crossing_half_size_cells` produces (consumed later when building
+        `self.crossing_plan_info`), and the debug obstacle SVG path (or `None` if debug
+        output is disabled).
+        """
         t_obstacle_start = self._pipeline_timer_start()
         self.resolved_obstacle_config = _resolve_obstacle_config(
             self.obstacle_config,
@@ -6359,6 +6368,19 @@ class _RouteNetsRustSession:
                 "Rebuild/install the Rust extension with the class-based API."
             )
 
+        return obstacle_map, crossing_device_info, obstacle_svg
+
+    def _configure_router_and_grid(self, obstacle_map: Any) -> None:
+        """Build the Rust grid/primitive/A* configs, construct `self.router`, and extract raw static geometry.
+
+        Tunes `self.astar_cfg` (JPS4, heuristic mode/weight, bend weight, heap tie-breaker,
+        proactive congestion, routing-window sizing) based on `self.allow_45_degree_turns`,
+        `self.crossing_mode`, and related settings, resolves `self.clearance_policy` and the
+        block/commit/core radii, constructs `self.router` (`PyPhotonicRouter`), and extracts
+        `self.raw_static_cells`/`self.raw_static_rects_for_openings`/
+        `self.heater_opening_rects_for_openings` from `obstacle_map` for later phases to
+        consume when computing port openings and keepouts.
+        """
         t_router_setup_start = self._pipeline_timer_start()
         self.origin_x_um, self.origin_y_um = _grid_origin_xy(self.grid)
         grid_spec = self.rust_backend.GridSpec(
@@ -6502,6 +6524,23 @@ class _RouteNetsRustSession:
         self.heater_opening_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
         self.raw_static_cells_by_y: dict[int, set[int]] | None = None
 
+    def _build_route_jobs_and_fanout_clustering(
+        self, nets: Mapping[str, Any]
+    ) -> tuple[
+        list[RouteJob],
+        dict[str, set[str]],
+        dict[str, int],
+    ]:
+        """Build the per-net `RouteJob` list from the schematic netlist and compute fanout/dense-port clustering.
+
+        Populates `self.endpoint_ports_by_spec`, `self.source_port_specs_by_instance`
+        (and its angle-keyed variant), `self.fanout_anchor_by_port_spec` and the related
+        fanout-stub cell sets, and `self.dense_source_cluster_specs_by_port_spec` (which
+        source ports on a dense multi-port instance share a lateral cluster). Returns the
+        route jobs plus two locals the next phase (port-opening/footprint computation)
+        still needs: `endpoint_port_specs_by_instance` and
+        `dense_port_runway_length_by_spec` (the merged source+target runway-length map).
+        """
         route_jobs: list[RouteJob] = []
         self.endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = {}
         endpoint_port_specs_by_instance: dict[str, set[str]] = {}
@@ -6509,7 +6548,6 @@ class _RouteNetsRustSession:
         self.port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
         self.port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
         self.port_access_rule_by_spec: dict[str, str | None] = {}
-        port_rule_extra_open_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
         next_net_id = 1
         t_route_job_build_start = self._pipeline_timer_start()
         for net_name, bundle in nets.items():
@@ -6629,6 +6667,31 @@ class _RouteNetsRustSession:
                 for port_spec in cluster_specs:
                     self.dense_source_cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
 
+        return route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec
+
+    def _build_crossing_plan_and_port_footprints(
+        self,
+        route_jobs: list[RouteJob],
+        endpoint_port_specs_by_instance: dict[str, set[str]],
+        dense_port_runway_length_by_spec: dict[str, int],
+        obstacle_map: Any,
+        crossing_device_info: dict[str, Any],
+    ) -> tuple[list[RouteJob], dict[str, set[tuple[int, int]]]]:
+        """Build `self.crossing_plan_info`, batch port-opening/footprint and foreign-keepout cells, and assign dense-port lane geometry.
+
+        Enables collision-crossing routing on `self.router` if configured. Populates
+        `self.port_access_cells_by_spec`/`self.port_access_candidate_cells_by_spec`/
+        `self.port_runway_cells_by_spec` (one raw footprint per port, from the single
+        unified sizing computation), `self.foreign_port_keepout_cells_by_spec`,
+        `self.dense_port_lateral_windows`/`self.dense_port_lateral_owner_groups` (lateral
+        room allocated to each port in a dense multi-port group sharing a facing angle),
+        and `self.port_state_lane_offsets` (grid-lane spreading for endpoints that would
+        otherwise share the exact same source/target cell and angle). Returns `route_jobs`
+        (unchanged by this phase, passed straight through) and
+        `foreign_port_keepout_cells_by_instance`, which the next phase needs to build the
+        static-cell handoff to Rust.
+        """
+        port_rule_extra_open_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
         t_crossing_context_start = self._pipeline_timer_start()
         self.crossing_plan_info = _build_crossing_plan_info(
             rust_backend=self.rust_backend,
@@ -6922,6 +6985,31 @@ class _RouteNetsRustSession:
                     )
                 lane_index += 1
 
+        return route_jobs, foreign_port_keepout_cells_by_instance
+
+    def _finalize_route_jobs_and_static_handoff(
+        self,
+        route_jobs: list[RouteJob],
+        foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]],
+        obstacle_map: Any,
+    ) -> tuple[list[RouteJob], float]:
+        """Order route jobs, hand static/keepout geometry off to Rust, apply debug-limit slicing, and prepare repair/timing bookkeeping.
+
+        Applies `self._dense_source_fanout_route_order`, aggregates static keepout cells
+        (port runways, foreign-port keepouts, fanout stubs) and hands them to the Rust
+        router via `set_static_rects`/`set_static_cells`/`add_static_cells`, applies
+        `debug_stop_after_route_index`/`PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT` slicing to
+        produce the final `route_jobs` for this run (also recording the pre-slicing job
+        list as `self.full_route_jobs_by_route_index`), builds `self.repair_config`,
+        `self.route_jobs_by_id`, `self.route_order`, and `self.route_bookkeeping`,
+        initializes the route-search stats/timing-bucket attributes, and precomputes
+        `self.batch_clearance_exempt_cells_by_id` via a batched Rust call. Returns the
+        final, post-slicing `route_jobs` list used for dispatch, and `t_astar_start`
+        (the `time.perf_counter()` reading taken before the precompute steps in this
+        method, not after it returns) so the caller's post-dispatch `astar_elapsed_s`
+        measurement still covers this method's own precompute time, exactly as it did
+        before this method existed as a separate call.
+        """
         route_jobs = self._dense_source_fanout_route_order(route_jobs)
 
         port_runway_static_cells: set[tuple[int, int]] = set()
@@ -7098,18 +7186,26 @@ class _RouteNetsRustSession:
             float(self.origin_y_um),
         )
 
-        self._dispatch_native_routing(route_jobs)
+        return route_jobs, t_astar_start
 
+    def _finalize_routing_results(
+        self, route_jobs: list[RouteJob], t_astar_start: float
+    ) -> tuple[list[RoutedNetRecord], float]:
+        """Apply checked endpoint corrections, assemble routed-net records, and print the debug timing breakdown.
+
+        Computes `astar_elapsed_s` from `t_astar_start` (see
+        `_finalize_route_jobs_and_static_handoff`'s docstring for why that reading was
+        taken before this method's caller's own precompute work, not at native-dispatch
+        time). Applies checked endpoint corrections if `self.enable_checked_endpoint_correction`,
+        assembles `routed_net_records` from `self.route_bookkeeping` and raises
+        `RuntimeError` if any duplicate net record was produced, then — only if
+        `self.debug_timing and self.verbose_route_diagnostics` — prints the per-bucket A*
+        timing breakdown. Returns the assembled records and `astar_elapsed_s` for the
+        final verification/realization phases.
+        """
         astar_elapsed_s = 0.0
         if self.collect_timing:
             astar_elapsed_s = time.perf_counter() - t_astar_start
-
-
-
-
-
-
-
 
         if self.enable_checked_endpoint_correction:
             self._apply_all_endpoint_corrections_for_net_ids(
@@ -7204,23 +7300,66 @@ class _RouteNetsRustSession:
                     )
                 print(line)
 
+        return routed_net_records, astar_elapsed_s
 
+    def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
+        obstacle_map, crossing_device_info, obstacle_svg = self._build_static_obstacle_context()
+        nets = self.schematic.netlist.routes
+        self._configure_router_and_grid(obstacle_map)
+        route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec = (
+            self._build_route_jobs_and_fanout_clustering(nets)
+        )
+        route_jobs, foreign_port_keepout_cells_by_instance = self._build_crossing_plan_and_port_footprints(
+            route_jobs,
+            endpoint_port_specs_by_instance,
+            dense_port_runway_length_by_spec,
+            obstacle_map,
+            crossing_device_info,
+        )
+        route_jobs, t_astar_start = self._finalize_route_jobs_and_static_handoff(
+            route_jobs,
+            foreign_port_keepout_cells_by_instance,
+            obstacle_map,
+        )
 
+        self._dispatch_native_routing(route_jobs)
 
+        routed_net_records, astar_elapsed_s = self._finalize_routing_results(route_jobs, t_astar_start)
 
+        routed_net_records, illegal_realized_crossings = self._repair_and_verify_final_geometry(
+            routed_net_records
+        )
 
+        debug_artifacts = self._realize_and_assemble_debug_artifacts(
+            route_jobs,
+            routed_net_records,
+            illegal_realized_crossings,
+            obstacle_map,
+            obstacle_svg,
+            astar_elapsed_s,
+        )
+        return self.routed_layout, debug_artifacts
 
+    def _repair_and_verify_final_geometry(
+        self, routed_net_records: list[RoutedNetRecord]
+    ) -> tuple[list[RoutedNetRecord], list[dict[str, object]]]:
+        """Run the final crossing-legality and photonic-verification repair loops before geometry realization.
 
-
-
-
-
-
-
-
-
-
-
+        Crossing legality is still checked internally because the router owns the
+        crossing event model and can repair/reroute before final realization. The full
+        photonic probe verification is intentionally diagnostic: it was useful while
+        chasing endpoint-correction and crossing-model mismatches, but the normal flow
+        skips this expensive pass unless `self.enable_internal_photonic_probe_verification`
+        asks for it. The external Python verifier in `routing_flow.py` remains the final
+        GDS/layout-level gate. Repairs up to `final_crossing_repair_round_limit=12` rounds
+        of illegal realized crossings; if crossings are clean and internal photonic-probe
+        verification is enabled, additionally repairs up to 8 rounds of photonic issues
+        (each round itself re-running the crossing-repair loop), dumping failure artifacts
+        and raising `RuntimeError` if geometry cannot be made legal within those bounds.
+        Returns the possibly-updated `routed_net_records` and the final
+        `illegal_realized_crossings` list (empty if geometry is clean) for the realization
+        phase that follows.
+        """
         self.photonic_probe_index = 0
         self.last_photonic_probe_layout: Component | None = None
         self.last_photonic_probe_records: list[RoutedNetRecord] = []
@@ -7296,6 +7435,28 @@ class _RouteNetsRustSession:
             "final_verification_block",
             t_final_verification_block_start,
         )
+        return routed_net_records, illegal_realized_crossings
+
+    def _realize_and_assemble_debug_artifacts(
+        self,
+        route_jobs: list[RouteJob],
+        routed_net_records: list[RoutedNetRecord],
+        illegal_realized_crossings: list[dict[str, object]],
+        obstacle_map: Any,
+        obstacle_svg: Path | None,
+        astar_elapsed_s: float,
+    ) -> RustRouteDebugArtifacts:
+        """Realize final geometry (unless deferred), guard against any still-illegal crossing, and assemble debug artifacts.
+
+        Performs direct geometry realization (`realize_routed_net_records`,
+        `_place_realized_crossing_components`) unless `self.defer_realization` is set,
+        writes crossing debug artifacts, raises a final `RuntimeError` if
+        `illegal_realized_crossings` is still non-empty after the repair loops in
+        `_repair_and_verify_final_geometry` (a second, separate guard from that method's
+        own mid-loop failure raise — this one covers the case where realization proceeds
+        with the same list unexpectedly still populated), then assembles and returns the
+        debug artifacts bundle.
+        """
         if not illegal_realized_crossings and not self.defer_realization:
             t_direct_realization_start = self._pipeline_timer_start()
             realize_routed_net_records(
@@ -7367,7 +7528,7 @@ class _RouteNetsRustSession:
                 debug_artifacts,
                 route_nets_timings_s=dict(self.route_nets_timings_s),
             )
-        return self.routed_layout, debug_artifacts
+        return debug_artifacts
 
 
 def route_nets_rust(
