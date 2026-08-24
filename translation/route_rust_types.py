@@ -219,24 +219,6 @@ class RoutedNetRecord:
     base_total_length_um: float | None = None
     corrected_centerline_um: tuple[tuple[float, float], ...] = ()
     endpoint_correction_error: str | None = None
-    endpoint_correction_fallback_note: str | None = None
-    """Set only by the crossing-aware endpoint-correction path when it had
-    to fall back from the primary, checked correction strategy to a
-    weaker one (absorbing the offset into an existing terminal segment,
-    or, weaker still, leaving that terminal region uncorrected) to
-    produce a result at all. `None` means either no crossing-aware
-    correction ran for this net, or it ran and its primary strategy
-    succeeded outright. This is deliberately a separate field from
-    `endpoint_correction_error`: a fallback can still produce a valid,
-    in-tolerance route, so it must not flip the same failure signal that
-    downstream tooling already treats as a hard error -- it exists so a
-    fallback is visible in structured evidence even when it happens to
-    succeed, instead of only being discoverable after the fact via a
-    geometric audit (Milestone 2 of
-    .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md,
-    generalizing the exact `2026-08-18` bug where such a fallback silently
-    produced a wrong answer with nothing recording that a fallback had
-    even been attempted)."""
 
 
 @dataclass(frozen=True)

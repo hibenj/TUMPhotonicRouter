@@ -125,39 +125,22 @@ from translation.route_rust_crossing_plan import (
     _write_insertion_loss_report,
 )
 from translation.route_rust_endpoint_correction import (
-    _absorbed_terminal_centerline,
-    _angle_index_to_unit,
     _apply_crossing_aware_endpoint_correction_to_record,
     _apply_crossing_aware_endpoint_corrections_to_debug_artifacts,
     _apply_endpoint_corrections_to_debug_artifacts,
     _build_realization_router,
     _centerline_between_cut_points,
-    _centerline_from_start_dirs_lengths,
     _centerline_index_near_point,
     _centerline_intersects_crossing_footprint_specs,
     _centerline_length_um,
-    _centerline_lengths_and_dirs,
     _closest_centerline_projection,
-    _compatible_terminal_direction_sequence,
-    _corrected_prefix_to_crossing,
-    _corrected_suffix_from_crossing,
     _crossing_endpoint_splice_parts,
     _dedupe_centerline,
     _foreign_crossing_footprint_specs,
     _insert_centerline_cut_point,
-    _is_axis_or_diagonal_direction,
     _legal_crossing_points_by_net_id,
     _merge_terminal_corrected_route_centerline,
     _primitive_centerline_for_record,
-    _route_endpoint_unit,
-    _same_direction,
-    _same_segment_direction_sequence,
-    _segment_direction_sequence,
-    _solve_terminal_length_adjustments,
-    _spliced_crossing_endpoint_centerline,
-    _terminal_anchor_matches,
-    _terminal_segment_matches_direction,
-    _unit_from_orientation_deg,
 )
 from translation.route_rust_debug_artifacts import (
     _as_point_list,
@@ -5362,9 +5345,11 @@ class _RouteNetsRustSession:
         classification calls for -- see `_classify_net_for_endpoint_correction`
         and `_apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids`
         above); every net involved in a crossing instead gets the separate,
-        splice-based crossing-aware corrector, whose fallback strategies
-        are now visible via `RoutedNetRecord.endpoint_correction_fallback_note`
-        (Milestone 2). Replaces `run()`'s three separate, independently-ordered
+        checked, per-segment crossing-aware corrector, which either succeeds
+        or fails honestly with `RoutedNetRecord.endpoint_correction_error`
+        set -- there is no unchecked fallback strategy (see
+        .agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md).
+        Replaces `run()`'s three separate, independently-ordered
         calls with one (Milestone 3 of
         .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md).
 
