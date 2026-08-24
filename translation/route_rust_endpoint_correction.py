@@ -1481,7 +1481,29 @@ def _apply_crossing_aware_endpoint_correction_to_record(
     fallback_notes: list[str] = []
     for use_source, use_target in candidate_modes:
         candidate, candidate_notes = _candidate(use_source=use_source, use_target=use_target)
-        accepts = len(candidate) >= 2 and _realization_accepts(candidate)
+        # A candidate must actually reach the real port it claims to
+        # correct, not merely realize as a valid waveguide shape --
+        # otherwise this tier can silently accept disconnected geometry
+        # that the checked, per-segment tier above already correctly
+        # rejects for the same reason (see
+        # .agent/execplans/2026-08-24-crossing-cost-function-soundness.md's
+        # Milestone 2 write-up for the traced n_67 case this closes).
+        source_ok = not correct_source or _terminal_anchor_matches(
+            candidate,
+            record.source_port_center_um,
+            at_start=True,
+        )
+        target_ok = not correct_target or _terminal_anchor_matches(
+            candidate,
+            record.target_port_center_um,
+            at_start=False,
+        )
+        accepts = (
+            len(candidate) >= 2
+            and source_ok
+            and target_ok
+            and _realization_accepts(candidate)
+        )
         if trace_endpoint:
             print(
                 "endpoint_trace "
@@ -1493,6 +1515,7 @@ def _apply_crossing_aware_endpoint_correction_to_record(
                 f"end={candidate[-1] if candidate else None} "
                 f"source={record.source_port_center_um} "
                 f"target={record.target_port_center_um} "
+                f"source_ok={source_ok} target_ok={target_ok} "
                 f"accepts={accepts}"
             )
         if accepts:
