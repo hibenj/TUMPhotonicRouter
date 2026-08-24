@@ -18,31 +18,28 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**Active ExecPlan**:
-`.agent/execplans/2026-08-24-modular-routing-strategies.md`
-(Milestones 0-3 complete and committed; start at Milestone 4 -- Phase C
-characterization of `route_many_with_repair_and_commit`'s 18 `try_*`
-methods, gated by a Milestone 5 repository-owner decision before any
-implementation). The repository owner's direction (2026-08-24, via
-direct chat instruction): the restructured routing pipeline is
-behavior-correct but not yet genuinely readable or modular -- decompose
-the ~1070-line Python-to-Rust seam (`_RouteNetsRustSession.run()`) into
-named phases, finish wiring the already-scaffolded-but-unused
-`SingleNetSearch` Rust trait into production so single-net search
-strategies (JPS4, simple routes, windowed A*) are swappable through one
-interface instead of duplicated per route variant, and characterize
-whether the 18 historically-accumulated `try_*` repair methods in
-`route_many_with_repair_and_commit` can become a small set of general,
-swappable repair-strategy primitives -- presenting design options to the
-repository owner before implementing that last part, per that plan's own
-Decision Log. This plan explicitly precedes any further benchmark-finding
-bug-fixing (the parked `multiportmmi_8x8` n_67/n_70/n_71-successor and
-`multiportmmi_16x16` n_50 findings, both in `.agent/REPOSITORY_STATE.md`'s
-Current Findings) -- the repository owner's stated reasoning is that
-those findings live inside the exact code this plan will restructure, so
-fixing them now risks being redone or invalidated shortly after.
+**No active ExecPlan right now.** `.agent/REPOSITORY_STATE.md`'s "Next
+Engineering Step" is the source of truth for what to pick up next; do not
+assume one without reading it.
 
-Superseded pointer, kept for context:
+`.agent/execplans/2026-08-24-modular-routing-strategies.md` is complete
+(all 8 milestones, 2026-08-24): `_RouteNetsRustSession.run()`
+(`translation/route_rust.py`) went from a ~1070-line single method to a
+37-line ordered sequence of 8 named, documented phase calls; the
+windowed-bounds-expansion retry loop duplicated across all four
+`src/astar.rs` single-net search wrapper functions is now one shared
+generic helper, implemented by Codex and reviewed line-by-line before
+acceptance; all 18 `try_*` repair methods in
+`route_many_with_repair_and_commit` are individually documented, and the
+one pair confirmed to share real structure is now one method instead of
+two, per the repository owner's own choice among concrete options Claude
+presented (not a full cross-18-method abstraction, which the evidence did
+not support). Read that plan's own Outcomes & Retrospective for the full
+detail, including a recurring lesson worth reading before starting the
+next plan: nearly every milestone's design stage overturned or refined
+something an earlier stage of that *same plan* had assumed.
+
+Prior pointer, kept for context:
 `.agent/execplans/2026-08-19-fix-open-repair-and-dense-port-findings.md`
 (start at Milestone 0). The repository owner's direction (2026-08-19):
 fix the open, previously-parked benchmark findings first, then move on

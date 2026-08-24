@@ -20,42 +20,22 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-24
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `f189d11`. Working tree clean, all work committed (one
-  commit per milestone, per repository owner's direction: `cefcfc3` the
-  n_50 investigation, `8202f16` plan draft + Milestones 0-1, `70a3c62`
-  Milestone 2's design, `f189d11` Milestone 3's implementation).
-- **Active ExecPlan (2026-08-24)**:
-  `.agent/execplans/2026-08-24-modular-routing-strategies.md`. Phases A and
-  B complete (Milestones 0-3): `_RouteNetsRustSession.run()`
-  (`translation/route_rust.py`) went from a ~1070-line single method to a
-  37-line ordered sequence of 8 named, documented phase calls; the
-  windowed-bounds-expansion retry loop duplicated across all four
-  `src/astar.rs` single-net search wrapper functions is now one shared
-  generic helper, `run_windowed_single_net_search`, implemented by Codex
-  (Milestone 3's dispatch, per the repository owner's direction) and
-  reviewed line-by-line before acceptance. Full validation ladder clean
-  and byte-identical to baseline throughout every milestone (`pytest -q`
-  `11 failed, 335 passed, 1 skipped`, same failure set; `cargo test --lib`
-  `389 passed, 0 failed`; `benes_4x4` and `multiportmmi_8x8` both configs
-  clean; `multiportmmi_16x16` stable-baseline reproduces the exact
-  pre-existing `n_50` failure, not a regression); Milestone 3's hot-path
-  timing comparison found no material regression (back-to-back controlled
-  runs, ~46.3s vs ~46.8s average, within normal variance).
-  **Next: Milestone 4** (Phase C, the highest-risk phase) -- characterize
-  all 18 `try_*` repair methods in `route_many_with_repair_and_commit`
-  (`src/py_router.rs`) and add a doc comment to each; Milestone 5 must then
-  present concrete design options to the repository owner before any
-  repair-strategy generalization is implemented (Milestone 6) -- do not
-  skip that gate. A scope correction was also made while preparing
-  Milestone 3: wiring `SingleNetSearch`'s trait methods into
-  `src/py_router.rs`'s 8 direct call sites (a separate, real, not-yet-
-  characterized piece of work) was deferred out of Milestone 3, not
-  bundled into it -- see the plan's Interfaces section for the reasoning.
-- **No active ExecPlan right now.** The `route_many_with_repair_and_commit`
-  restructuring plan (`.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`)
-  is complete -- see Completed ExecPlans below for the summary, and that
-  plan's own Outcomes & Retrospective for full detail.
-- Current test baselines: `cargo test --lib` `389 passed, 0 failed`;
+- Current HEAD: `aa13828`. Working tree clean, all work committed (one
+  commit per milestone group, per repository owner's direction: `cefcfc3`
+  the n_50 investigation, `8202f16` plan draft + Milestones 0-1, `70a3c62`
+  Milestone 2's design, `f189d11` Milestone 3 via Codex, `fb7442f` state
+  sync, `00946a1` Milestone 4, `788dd6e` Milestone 6, `aa13828`
+  Milestone 7).
+- **No active ExecPlan right now.** The modular-routing-strategies plan
+  (`.agent/execplans/2026-08-24-modular-routing-strategies.md`) is
+  complete, all 8 milestones -- see Completed ExecPlans below for the
+  summary, and that plan's own Outcomes & Retrospective for full detail
+  (including a recurring lesson worth reading: nearly every milestone's
+  design stage overturned or refined something an earlier stage of this
+  *same plan* had assumed, not just something an older plan had assumed).
+- Current test baselines: `cargo test --lib` `393 passed, 0 failed` (389 +
+  4 new direct tests for `run_windowed_single_net_search`, added this
+  plan's Milestone 7);
   `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 335 passed, 1 skipped`
   (dropped from the long-standing `21 failed, 325 passed` baseline via
   two 2026-08-20 passes: the batch-repair stale-signature fix, then a
@@ -85,6 +65,40 @@ now lives only in the referenced ExecPlan and `git log`.)
   restructuring gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-24-modular-routing-strategies.md` -- made the restructured
+    routing pipeline genuinely modular, not just readable-in-isolation, in
+    three phases by risk. Phase A: `_RouteNetsRustSession.run()`
+    (`translation/route_rust.py`) went from a ~1070-line single method to a
+    37-line ordered sequence of 8 named, documented phase calls (7 new
+    private methods); 3 real self-inflicted editing mistakes and 1 stale
+    "expected to fail" claim were caught by validating after every single
+    sub-extraction, not batching. Phase B: the windowed-bounds-expansion
+    retry loop duplicated across all 4 `src/astar.rs` single-net search
+    wrapper functions (confirmed 4, not 3 as first assumed, and one is a
+    mathematically exact special case of another) is now one shared
+    generic helper, `run_windowed_single_net_search`, implemented by Codex
+    against a fully-specified task and reviewed line-by-line before
+    acceptance; an initial hot-path timing regression turned out to be
+    system noise from comparing runs at different points in the session,
+    not a real effect (confirmed via a controlled back-to-back comparison).
+    Phase C: characterized and documented all 18 `try_*` repair methods in
+    `route_many_with_repair_and_commit` (trigger, variation, historical
+    motivation, call graph); presented the repository owner with concrete
+    design options (a full cross-18-method `RepairStrategy` abstraction, a
+    narrow single-pair unification, or stopping after characterization) --
+    the owner chose the narrow option, confirming Claude's own evidence-
+    based recommendation, since the 18 methods vary along genuinely
+    different axes not cheaply unifiable. Implemented that one pair's
+    unification directly (not via Codex, a recorded exception: the design
+    surfaced a real behavioral difference -- one method updates routing
+    history before ripping up its victim, the other doesn't -- that the
+    prior characterization's summary-level read had missed, needing
+    subtler correctness reasoning than a task file could cheaply capture).
+    Full validation ladder clean and byte-identical to baseline throughout
+    every one of 8 milestones. Deliberately out of scope, left for a future
+    plan: wiring `SingleNetSearch`'s trait methods into `src/py_router.rs`'s
+    8 direct call sites; the other 16 of the 18 repair methods;
+    `run_routing_flow`'s ~40-parameter signature.
   - `2026-08-20-route-many-with-repair-restructuring.md` -- full structural
     restructuring of `route_many_with_repair_and_commit`, the last major
     routing-pipeline component without explicit structure or real test
@@ -443,12 +457,9 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** The `route_many_with_repair_and_commit`
-restructuring is complete (see Completed ExecPlans) -- the single
-remaining blocker to the readability/testing goal is now resolved.
-**Next step** (no mandated single choice): the two remaining Current
-Findings items, both parked pending this exact restructuring, which has
-now made the surrounding code substantially easier to reason about:
+**No active ExecPlan right now.** Both the `route_many_with_repair_and_commit`
+restructuring and the modular-routing-strategies plan are complete (see
+Completed ExecPlans). **Next step** (no mandated single choice):
 1. `multiportmmi_8x8` dense-port lateral-width allocation -- needs a
    design decision (how much lateral room a single-direction bend
    needs, how to redistribute fairly), present options to the
@@ -459,6 +470,22 @@ now made the surrounding code substantially easier to reason about:
    repair-exhaustion problem. Next step, if picked up, is root-causing it
    to the same depth as `n_70` (corridor-clearance BFS probe, exact
    geometric reason nets 49/50/51 have no legal arrangement).
+3. Wire `SingleNetSearch`'s trait methods into `src/py_router.rs`'s 8
+   direct call sites to the four `src/astar.rs` single-net search
+   wrapper functions -- deliberately deferred out of the
+   modular-routing-strategies plan's Milestone 3 as separate,
+   not-yet-characterized work (see that plan's Interfaces section).
+4. The other 16 of the 18 `try_*` repair methods in
+   `route_many_with_repair_and_commit` -- the repository owner explicitly
+   chose not to generalize these further right now (Milestone 5 of the
+   same plan); each is individually documented with a `///` doc comment
+   if picked up later.
+5. `run_routing_flow`'s ~40-keyword-parameter signature
+   (`routing_flow.py:753`) -- a real design smell (a config object would
+   likely be cleaner), noted during the same plan's drafting but never
+   discussed with the repository owner beyond that note; touches this
+   repository's public API surface, a different kind of risk than the
+   internal-only refactors done so far.
 
 **Correction (2026-08-21): the `round_base_*` re-cloning "optimization
 candidate" this section previously named is not real -- retracted.**
