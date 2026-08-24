@@ -523,15 +523,14 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now, by explicit repository owner instruction
-(2026-08-24): "finish the current plan, then park the rest."**
-`.agent/execplans/2026-08-24-crossing-cost-function-soundness.md` is now
-complete (all 3 milestones). Do not automatically start any of the
-candidates below -- the repository owner will choose what to pick up
-next. **Next step candidates** (no mandated single choice):
+**Active ExecPlan: `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`**
+(written 2026-08-24, chosen by the repository owner as the next objective
+after `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md`
+closed). Start there; the rest of this list is preserved for context and
+for whatever gets picked up after it.
 
-1. **Endpoint-correction cascade** (new candidate, 2026-08-24, not yet
-   an ExecPlan). `_apply_crossing_aware_endpoint_correction_to_record`
+1. **Endpoint-correction cascade** -- now `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`,
+   the active plan. `_apply_crossing_aware_endpoint_correction_to_record`
    (`translation/route_rust_endpoint_correction.py`) is a multi-tier
    fallback cascade (a checked per-segment tier, then an unchecked
    rich-correction-plus-splice tier tried across 4 candidate modes, that

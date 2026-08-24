@@ -18,10 +18,20 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**No active ExecPlan right now, by explicit repository owner instruction
-(2026-08-24): "finish the current plan, then park the rest."** Do not
-automatically start any of the candidates below; the repository owner will
-choose what to pick up next.
+**Active ExecPlan:** `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`
+(written 2026-08-24, not yet started). Chosen by the repository owner as the
+next objective after `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md`
+closed. Investigates and fixes the crossing-aware endpoint-correction
+subsystem (`_apply_crossing_aware_endpoint_correction_to_record` and its
+multi-tier fallback cascade in `translation/route_rust_endpoint_correction.py`),
+which that prior plan's own validation surfaced as a real source of
+illegal/degraded geometry (`n_67` blocked, `n_68`'s fallback warning, an
+11-net y-overshoot measurement, and two repository-owner screenshots of
+visible GDS defects not yet mapped to root causes). Starts with a read-only
+Milestone 1 root-causing five specific open questions before any design
+decision is made -- see that plan's own Context and Orientation for the full
+list. Do not skip ahead to implementation before Milestone 1's evidence is
+recorded.
 
 `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md` is
 complete (all 3 milestones, 2026-08-24). Fixed two confirmed logical-
