@@ -414,8 +414,15 @@ as smoke tests either, for the same reason as `TOY`.
 
 **Stale, low-priority, not re-verified recently**: `multiportmmi_32x32` is
 not yet stable; route 156/`n_155` was the last known slow/hanging route to
-investigate. `benes_8x8`/`benes_16x16` were last confirmed stable
-2026-08-18; not re-checked since.
+investigate.
+
+**Re-verified clean, 2026-08-24** (no regression since 2026-08-18 despite
+substantial restructuring in between): `benes_8x8` (`PYTHONPATH=. .venv/bin/python routing_flow.py benes_8x8`,
+22.2s, both verifications `error_count=0, warning_count=0`) and
+`benes_16x16` (same command with `benes_16x16`, both verifications
+`error_count=0, warning_count=0`) -- `benes_16x16` takes 252.9s (~4.2
+minutes), a concrete data point for future performance work at this
+scale, ahead of any planned `multiportmmi_32x32` work.
 
 ## Recent Session Notes (durable process lessons)
 

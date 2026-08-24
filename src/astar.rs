@@ -4560,6 +4560,12 @@ fn route_single_net_with_bounds_crossing(
             let primitive_crossing = &crossing_metadata[primitive_idx];
             stats.generated_neighbors += 1;
             stats.primitive_generated_by_class[primitive_class] += 1;
+            if config.require_terminal_straights
+                && state == source
+                && !primitive_class_is_straight(primitive_class)
+            {
+                continue;
+            }
             let pending_initial_run =
                 primitive_initial_straight_run_distance(primitive, state.angle);
             let pending_completed_by_primitive = key.pending_after_crossing_cells > 0
@@ -4616,6 +4622,14 @@ fn route_single_net_with_bounds_crossing(
             let next_x = state.x.checked_add(primitive.dx)?;
             let next_y = state.y.checked_add(primitive.dy)?;
             let next_angle = primitive.end_angle % 8;
+            if config.require_terminal_straights
+                && (next_x - target.x).abs() <= target_tolerance
+                && (next_y - target.y).abs() <= target_tolerance
+                && accepted_target_angles[next_angle as usize]
+                && !primitive_class_is_straight(primitive_class)
+            {
+                continue;
+            }
             if !bounds.contains(next_x, next_y) {
                 stats.window_rejects += 1;
                 stats.primitive_bounds_rejects_by_class[primitive_class] += 1;
@@ -8049,6 +8063,63 @@ mod tests {
                 require_terminal_straights: true,
                 ..AStarConfig::default()
             },
+        )
+        .expect("route should exist with straight launch and landing");
+
+        let first_primitive = library
+            .get_primitives_for_angle(result.states[0].angle)
+            .iter()
+            .find(|p| p.id == result.primitives[0])
+            .expect("first primitive should exist");
+        let last_start_angle = result.states[result.states.len() - 2].angle;
+        let last_primitive = library
+            .get_primitives_for_angle(last_start_angle)
+            .iter()
+            .find(|p| p.id == *result.primitives.last().unwrap())
+            .expect("last primitive should exist");
+
+        assert!(matches!(
+            first_primitive.geometry,
+            PrimitiveGeometry::Straight { .. }
+        ));
+        assert!(matches!(
+            last_primitive.geometry,
+            PrimitiveGeometry::Straight { .. }
+        ));
+    }
+
+    #[test]
+    fn terminal_straight_requirement_rejects_immediate_port_bends_in_crossing_kernel() {
+        let map = ObstacleMap::new(16, 16);
+        let library = primitive_library();
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: vec![CrossingSearchPartner {
+                net_id: 2,
+                waypoints: vec![(12, 12), (14, 12)],
+                target_terminal_bump_guard: None,
+            }],
+            min_straight_cells: 2,
+            crossing_half_size_cells: 0,
+            bend_runout_cells: 0,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let result = route_single_net_with_crossing_config(
+            &map,
+            &library,
+            State::new(1, 1, 0),
+            State::new(3, 3, 2),
+            None,
+            &AStarConfig {
+                enable_simple_routes: false,
+                require_terminal_straights: true,
+                ..AStarConfig::default()
+            },
+            0,
+            None,
+            &crossing,
         )
         .expect("route should exist with straight launch and landing");
 

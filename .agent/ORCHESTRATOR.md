@@ -18,9 +18,23 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**No active ExecPlan right now.** `.agent/REPOSITORY_STATE.md`'s "Next
-Engineering Step" is the source of truth for what to pick up next; do not
-assume one without reading it.
+**Active ExecPlan:** `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md`
+(written 2026-08-24, not yet started). Fixes two confirmed logical-soundness
+gaps found while investigating a repository-owner-reported visual anomaly
+(90-degree-only bends on `n_7`/`n_8` in `multiportmmi_8x8` stable-baseline):
+(1) `bend_weight`/`heuristic_weight` silently vary by `crossing_mode` even for
+nets with zero actual crossing events, instead of crossing-awareness only
+changing crossing-legality reasoning and crossing cost; (2)
+`require_terminal_straights` is honored by the plain A* search kernel but
+silently ignored by the crossing-aware kernel, even though several call sites
+explicitly opt into it expecting it to apply. See that plan's Decision Log for
+the repository owner's own words authorizing this scope.
+
+A second plan is independently in progress and not blocked by the one above:
+`.agent/execplans/2026-08-24-stabilize-16x16-benchmarks.md` (Milestone 0 done,
+Milestone 1 -- root-causing `multiportmmi_16x16`'s `n_50` repair-exhaustion
+failure -- in progress, paused mid-investigation). Either plan may be resumed
+first; re-run the full validation ladder after both are complete.
 
 `.agent/execplans/2026-08-24-wire-single-net-search-trait-into-production.md`
 is complete (all 3 milestones, 2026-08-24): every production single-net
