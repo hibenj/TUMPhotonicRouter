@@ -20,47 +20,37 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-24
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `034b489` (docs-only since `a8dac59`). Working tree clean.
+- Current HEAD: `f189d11`. Working tree clean, all work committed (one
+  commit per milestone, per repository owner's direction: `cefcfc3` the
+  n_50 investigation, `8202f16` plan draft + Milestones 0-1, `70a3c62`
+  Milestone 2's design, `f189d11` Milestone 3's implementation).
 - **Active ExecPlan (2026-08-24)**:
-  `.agent/execplans/2026-08-24-modular-routing-strategies.md`. Milestone 0
-  and all of Milestone 1 (Phase A: decompose `_RouteNetsRustSession.run()`)
-  complete and validated; work is **uncommitted** in the working tree as of
-  this note. `run()` (`translation/route_rust.py`) went from a ~1070-line
-  single method to a 37-line ordered sequence of 8 named phase calls (7 new
-  private methods, each with a docstring, plus the pre-existing
-  `_dispatch_native_routing`). Three real bugs were found and fixed during
-  extraction, all caught by validation (an `ast.parse` syntax check,
-  `pyflakes`, or the full pytest/benchmark ladder) before being mistaken for
-  progress -- see the plan's own Progress section for each. Full validation
-  ladder clean and byte-identical to the pre-Milestone-1 baseline throughout
-  (`pytest -q` `11 failed, 335 passed, 1 skipped`, same failure set;
-  `benes_4x4`, `multiportmmi_8x8` bare and stable-baseline all clean;
-  `multiportmmi_16x16` stable-baseline reproduces the exact pre-existing
-  `n_50` failure, not a regression). Next: Milestone 2 (design the
-  single-net search strategy unification behind the existing, currently
-  production-unused `SingleNetSearch` Rust trait). Repository owner's
-  direction, given
-  after reviewing a readability assessment of the restructured code:
-  the restructuring made `route_many_with_repair_and_commit` and the
-  Future Architecture Initiative's stage interfaces readable *in
-  isolation*, but two real gaps remain, confirmed via direct code
-  reading, not assumption: (1) `_RouteNetsRustSession.run()`
-  (`translation/route_rust.py:6303-7372`, ~1070 lines) has no internal
-  phase boundaries between obstacle-map building and dispatch to Rust;
-  (2) the 18 `try_*` repair methods in `route_many_with_repair_and_commit`
-  are individually well-named but each is a bespoke response to a
-  historical bug, not a general, swappable strategy -- and a similar gap
-  exists one layer down, where `src/astar.rs`'s single-net search has
-  three variants (plain/dynamic-expansion/collision-crossing) that each
-  reimplement the same windowed-search loop, behind an already-added but
-  production-unused `SingleNetSearch` trait. This plan sequences fixing
-  all three by risk: Python seam decomposition first (pure refactor),
-  then wiring `SingleNetSearch` into production (finishes existing
-  scaffolding), then characterizing and -- only after presenting options
-  to the repository owner -- possibly generalizing the repair strategies
-  (the highest-risk piece, deliberately last). This explicitly precedes
-  further work on the two parked Current Findings below, since both live
-  inside the code this plan will restructure.
+  `.agent/execplans/2026-08-24-modular-routing-strategies.md`. Phases A and
+  B complete (Milestones 0-3): `_RouteNetsRustSession.run()`
+  (`translation/route_rust.py`) went from a ~1070-line single method to a
+  37-line ordered sequence of 8 named, documented phase calls; the
+  windowed-bounds-expansion retry loop duplicated across all four
+  `src/astar.rs` single-net search wrapper functions is now one shared
+  generic helper, `run_windowed_single_net_search`, implemented by Codex
+  (Milestone 3's dispatch, per the repository owner's direction) and
+  reviewed line-by-line before acceptance. Full validation ladder clean
+  and byte-identical to baseline throughout every milestone (`pytest -q`
+  `11 failed, 335 passed, 1 skipped`, same failure set; `cargo test --lib`
+  `389 passed, 0 failed`; `benes_4x4` and `multiportmmi_8x8` both configs
+  clean; `multiportmmi_16x16` stable-baseline reproduces the exact
+  pre-existing `n_50` failure, not a regression); Milestone 3's hot-path
+  timing comparison found no material regression (back-to-back controlled
+  runs, ~46.3s vs ~46.8s average, within normal variance).
+  **Next: Milestone 4** (Phase C, the highest-risk phase) -- characterize
+  all 18 `try_*` repair methods in `route_many_with_repair_and_commit`
+  (`src/py_router.rs`) and add a doc comment to each; Milestone 5 must then
+  present concrete design options to the repository owner before any
+  repair-strategy generalization is implemented (Milestone 6) -- do not
+  skip that gate. A scope correction was also made while preparing
+  Milestone 3: wiring `SingleNetSearch`'s trait methods into
+  `src/py_router.rs`'s 8 direct call sites (a separate, real, not-yet-
+  characterized piece of work) was deferred out of Milestone 3, not
+  bundled into it -- see the plan's Interfaces section for the reasoning.
 - **No active ExecPlan right now.** The `route_many_with_repair_and_commit`
   restructuring plan (`.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`)
   is complete -- see Completed ExecPlans below for the summary, and that

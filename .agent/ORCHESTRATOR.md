@@ -20,7 +20,10 @@ read:
 
 **Active ExecPlan**:
 `.agent/execplans/2026-08-24-modular-routing-strategies.md`
-(start at Milestone 0). The repository owner's direction (2026-08-24, via
+(Milestones 0-3 complete and committed; start at Milestone 4 -- Phase C
+characterization of `route_many_with_repair_and_commit`'s 18 `try_*`
+methods, gated by a Milestone 5 repository-owner decision before any
+implementation). The repository owner's direction (2026-08-24, via
 direct chat instruction): the restructured routing pipeline is
 behavior-correct but not yet genuinely readable or modular -- decompose
 the ~1070-line Python-to-Rust seam (`_RouteNetsRustSession.run()`) into
