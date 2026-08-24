@@ -18,23 +18,35 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**Active ExecPlan:** `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md`
-(written 2026-08-24, not yet started). Fixes two confirmed logical-soundness
-gaps found while investigating a repository-owner-reported visual anomaly
-(90-degree-only bends on `n_7`/`n_8` in `multiportmmi_8x8` stable-baseline):
-(1) `bend_weight`/`heuristic_weight` silently vary by `crossing_mode` even for
-nets with zero actual crossing events, instead of crossing-awareness only
-changing crossing-legality reasoning and crossing cost; (2)
-`require_terminal_straights` is honored by the plain A* search kernel but
-silently ignored by the crossing-aware kernel, even though several call sites
-explicitly opt into it expecting it to apply. See that plan's Decision Log for
-the repository owner's own words authorizing this scope.
+**No active ExecPlan right now, by explicit repository owner instruction
+(2026-08-24): "finish the current plan, then park the rest."** Do not
+automatically start any of the candidates below; the repository owner will
+choose what to pick up next.
 
-A second plan is independently in progress and not blocked by the one above:
-`.agent/execplans/2026-08-24-stabilize-16x16-benchmarks.md` (Milestone 0 done,
-Milestone 1 -- root-causing `multiportmmi_16x16`'s `n_50` repair-exhaustion
-failure -- in progress, paused mid-investigation). Either plan may be resumed
-first; re-run the full validation ladder after both are complete.
+`.agent/execplans/2026-08-24-crossing-cost-function-soundness.md` is
+complete (all 3 milestones, 2026-08-24). Fixed two confirmed logical-
+soundness gaps found while investigating a repository-owner-reported visual
+anomaly (90-degree-only bends on `n_7`/`n_8` in `multiportmmi_8x8` stable-
+baseline): (1) `bend_weight`/`heuristic_weight` no longer silently vary by
+`crossing_mode`; (2) `require_terminal_straights` is now honored by the
+crossing-aware kernel too, not just the plain one. Along the way, validating
+those fixes surfaced and fixed a real, pre-existing illegal-geometry-
+acceptance bug in the endpoint-correction cascade (commit `2755a22`), and
+caught a methodology mistake (both this plan's own timing investigation and
+an earlier `stabilize-16x16-benchmarks` claim had used the wrong, non-
+representative bare-defaults config for `benes_8x8`/`benes_16x16` -- caught
+by the repository owner, corrected in both plans and `REPOSITORY_STATE.md`).
+Two things remain open, deliberately, per repository owner instruction: see
+that plan's own Outcomes & Retrospective, and `REPOSITORY_STATE.md`'s Next
+Engineering Step for the endpoint-correction-cascade and `n_49`/`n_50`
+candidates this work surfaced.
+
+`.agent/execplans/2026-08-24-stabilize-16x16-benchmarks.md` remains paused
+mid-Milestone-1 (root-causing `multiportmmi_16x16`'s repair-exhaustion
+failure) from earlier the same day -- not resumed. Note before resuming: the
+failure signature moved from `n_50` to `n_49` while validating the plan
+above; see that plan's own Milestone 0 correction note for the exact new
+error text.
 
 `.agent/execplans/2026-08-24-wire-single-net-search-trait-into-production.md`
 is complete (all 3 milestones, 2026-08-24): every production single-net

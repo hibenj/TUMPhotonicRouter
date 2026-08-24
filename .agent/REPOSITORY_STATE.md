@@ -20,30 +20,22 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-24
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `77677d7`. Working tree clean (one uncommitted docs-only
-  close-out edit to this file and `.agent/ORCHESTRATOR.md` pending as
-  this note is written). All code work committed, one commit per
-  milestone group, per repository owner's direction: `cefcfc3` the n_50
-  investigation, `8202f16` plan draft + Milestones 0-1, `70a3c62`
-  Milestone 2's design, `f189d11` Milestone 3 via Codex, `fb7442f` state
-  sync, `00946a1` Milestone 4, `788dd6e` Milestone 6, `aa13828`
-  Milestone 7, `0063736` plan close-out, `77677d7` the follow-up
-  SingleNetSearch wiring plan's Milestones 0-2.
-- **No active ExecPlan right now.** Both the modular-routing-strategies
-  plan and its direct follow-up,
-  `.agent/execplans/2026-08-24-wire-single-net-search-trait-into-production.md`
-  (wiring `SingleNetSearch` into all 12 of `src/py_router.rs`'s
-  production single-net search call sites -- the "deferred, not yet
-  characterized" item the first plan left open), are complete -- see
-  Completed ExecPlans below for both summaries. The second plan's own
-  Outcomes & Retrospective is worth reading for a concrete confirmation
-  of the "characterization needs active re-verification" lesson: its own
-  Milestone 0 found 12 call sites where the first plan's own deferred-work
-  note had estimated 8, because that estimate never actually re-grepped
-  three sibling "discard the stats" functions it hadn't characterized.
-- Current test baselines: `cargo test --lib` `393 passed, 0 failed` (389 +
-  4 new direct tests for `run_windowed_single_net_search`, added during
-  the modular-routing-strategies plan's Milestone 7);
+- Current HEAD: `2755a22`, plus this docs-only close-out commit. All code
+  work committed, one commit per milestone/fix, per repository owner's
+  direction: `8a0309a` Milestone 1 (`require_terminal_straights` in the
+  crossing kernel), `c1b8d78` Milestone 2 (weight unification +
+  `crossing_loss` retune), `2755a22` the endpoint-correction anchor-match
+  fix found while validating Milestone 3.
+- **No active ExecPlan right now, by explicit repository owner
+  instruction ("finish the current plan, then park the rest").**
+  `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md` is
+  complete (all 3 milestones) -- see Completed ExecPlans below. Do not
+  automatically start the next candidate; see Next Engineering Step.
+  `stabilize-16x16-benchmarks.md` remains paused mid-Milestone-1 from
+  earlier the same day, with a new fact it will need to account for when
+  resumed (the `n_50` failure signature moved to `n_49`; see Next
+  Engineering Step).
+- Current test baselines: `cargo test --lib` `394 passed, 0 failed`;
   `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 335 passed, 1 skipped`
   (dropped from the long-standing `21 failed, 325 passed` baseline via
   two 2026-08-20 passes: the batch-repair stale-signature fix, then a
@@ -73,6 +65,28 @@ now lives only in the referenced ExecPlan and `git log`.)
   restructuring gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-24-crossing-cost-function-soundness.md` -- three milestones,
+    all a direct response to the repository owner's own architectural
+    question ("why should crossing-aware A* even behave differently --
+    shouldn't it only include crossings and stuff like that?"): (1)
+    `require_terminal_straights` is now honored by the crossing-aware
+    search kernel, not just the plain one (`src/astar.rs`); (2)
+    `bend_weight`/`heuristic_weight` no longer vary with `crossing_mode`
+    -- crossing-awareness now only changes crossing-legality reasoning
+    and `crossing_loss` (re-tuned `50.0` -> `200.0`, empirically
+    validated against real crossing counts), not unrelated cost tuning;
+    (3) full validation ladder run, one real illegal-geometry-acceptance
+    bug found and fixed along the way (a missing port-anchor check in
+    the endpoint-correction cascade, commit `2755a22`) that was not part
+    of the plan's original scope. Two things remain open by explicit
+    repository owner instruction ("keep the fix, document n_67 as
+    blocked, move on" then "finish the current plan, then park the
+    rest"): `multiportmmi_8x8` bare-defaults' `n_67` now fails endpoint
+    correction honestly instead of silently producing bad geometry, and
+    the endpoint-correction subsystem's deeper structural issues are
+    recorded as a Next Engineering Step candidate, not yet a written
+    plan. See that plan's own Surprises & Discoveries, Decision Log, and
+    Outcomes & Retrospective for the full evidence trail.
   - `2026-08-24-wire-single-net-search-trait-into-production.md` -- closed
     the one item the modular-routing-strategies plan below deliberately
     deferred: `src/py_router.rs`'s production code called the
@@ -416,13 +430,32 @@ as smoke tests either, for the same reason as `TOY`.
 not yet stable; route 156/`n_155` was the last known slow/hanging route to
 investigate.
 
-**Re-verified clean, 2026-08-24** (no regression since 2026-08-18 despite
-substantial restructuring in between): `benes_8x8` (`PYTHONPATH=. .venv/bin/python routing_flow.py benes_8x8`,
+**Correction (2026-08-24, later the same day)**: the "Re-verified clean,
+2026-08-24" entry immediately above used the wrong configuration. Both
+`benes_8x8` and `benes_16x16` document their own "Stable crossing-router
+baseline" in their benchmark files (`benchmarks/benes_8x8.py:23-25`,
+`benchmarks/benes_16x16.py:23-25`): `--crossings true --crossing-mode
+lidar-pure`. The bare-defaults command recorded above does not supply
+this (`enable_crossings=False` by default) and is not representative --
+caught directly by the repository owner ("i mean benes 16x16 clearly has
+a lot of crossings"). Re-verified with the correct configuration as part
+of `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md`'s
+Milestone 3: `benes_8x8` (`PYTHONPATH=. .venv/bin/python routing_flow.py
+benes_8x8 --crossings true --crossing-mode lidar-pure`, `25.2s`, both
+verifications `error_count=0, warning_count=0`) and `benes_16x16` (same
+command with `benes_16x16`, `392.4s`, both verifications `error_count=0,
+warning_count=0`). No regression relative to 2026-08-18 either way, but
+the `252.9s` figure below should not be treated as a valid baseline for
+this configuration -- `392.4s` is the first real timing recorded for the
+correct, crossing-enabled configuration.
+
+**Re-verified clean, 2026-08-24, superseded by the correction above**
+(kept for the record, not for reuse): `benes_8x8` (`PYTHONPATH=. .venv/bin/python routing_flow.py benes_8x8`,
 22.2s, both verifications `error_count=0, warning_count=0`) and
 `benes_16x16` (same command with `benes_16x16`, both verifications
 `error_count=0, warning_count=0`) -- `benes_16x16` takes 252.9s (~4.2
-minutes), a concrete data point for future performance work at this
-scale, ahead of any planned `multiportmmi_32x32` work.
+minutes). This was run bare-defaults, not the documented stable-baseline
+configuration; see the correction above.
 
 ## Recent Session Notes (durable process lessons)
 
@@ -490,31 +523,81 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** The `route_many_with_repair_and_commit`
-restructuring, the modular-routing-strategies plan, and its
-SingleNetSearch-wiring follow-up are all complete (see Completed
-ExecPlans). **Next step** (no mandated single choice):
-1. `multiportmmi_8x8` dense-port lateral-width allocation -- needs a
+**No active ExecPlan right now, by explicit repository owner instruction
+(2026-08-24): "finish the current plan, then park the rest."**
+`.agent/execplans/2026-08-24-crossing-cost-function-soundness.md` is now
+complete (all 3 milestones). Do not automatically start any of the
+candidates below -- the repository owner will choose what to pick up
+next. **Next step candidates** (no mandated single choice):
+
+1. **Endpoint-correction cascade** (new candidate, 2026-08-24, not yet
+   an ExecPlan). `_apply_crossing_aware_endpoint_correction_to_record`
+   (`translation/route_rust_endpoint_correction.py`) is a multi-tier
+   fallback cascade (a checked per-segment tier, then an unchecked
+   rich-correction-plus-splice tier tried across 4 candidate modes, that
+   tier itself falling back through an "absorbed-terminal" solver to a
+   raw, uncorrected baseline), called from three separately-evolved
+   pipeline call sites (`_finalize_routing_results`,
+   `_repair_final_illegal_crossings`, `_repair_final_photonic_issues`,
+   all in `translation/route_rust.py`). One real bug in this cascade was
+   found and fixed this session (a missing port-anchor check in the
+   unchecked tier, `translation/route_rust_endpoint_correction.py`,
+   commit `2755a22`) -- but the cascade's deeper structure is unresolved
+   and produces real, visible symptoms: `multiportmmi_8x8` bare-defaults'
+   `n_67` is now a documented, understood, currently-blocked endpoint-
+   correction failure (see the ExecPlan's Surprises & Discoveries for the
+   full trace); a scratch diagnostic found 11 of 111 routed nets in the
+   same benchmark overshoot their own source/target port y-range by more
+   than 5 micrometers; and the repository owner independently
+   screenshotted two visible symptoms from `build/routed_multiportmmi_8x8.gds`
+   -- a bowtie/hourglass geometry pinch where a route crosses a component
+   footprint, and a spurious route loop near heater components -- both
+   plausibly connected to this same cascade. The repository owner's own
+   proposed direction: a crossing net's port-to-first-crossing and
+   last-crossing-to-port segments should use exactly the same checked
+   correction logic a crossing-free net already uses, with no separate
+   weaker cascade; the checked, per-segment tier already partially
+   implements this but currently fails to cover every case (a too-short
+   segment when a crossing sits very close to a port, and an unexplained
+   native-corrector rejection on a longer segment that was not root-
+   caused). Full context: `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md`'s
+   Surprises & Discoveries and Decision Log.
+2. `multiportmmi_16x16` stable-baseline repair-exhaustion failure --
+   still open, but the specific net changed (2026-08-24, found while
+   validating the crossing-cost-function-soundness plan above): the
+   failure signature moved from `n_50` (`candidate_blockers=[49, 50]`,
+   the finding `.agent/execplans/2026-08-24-stabilize-16x16-benchmarks.md`
+   was investigating) to `n_49` (`candidate_blockers=[49]`, a different
+   `recent_errors` trace -- see that ExecPlan for the exact text). Not
+   root-caused further per the repository owner's "park the rest"
+   instruction; whoever resumes that plan's paused Milestone 1 needs to
+   re-establish which net (or both) is the actual root blocker before
+   continuing the `n_70`-style investigation it already started.
+3. `multiportmmi_8x8` dense-port lateral-width allocation -- needs a
    design decision (how much lateral room a single-direction bend
    needs, how to redistribute fairly), present options to the
    repository owner first, do not implement solo.
-2. `multiportmmi_16x16` stable-baseline `n_50` -- the "does it share the
-   `n_70` prefix-recognition gap" question is now answered (2026-08-24,
-   see Current Findings item 2): no, it's a separate, still-unsolved
-   repair-exhaustion problem. Next step, if picked up, is root-causing it
-   to the same depth as `n_70` (corridor-clearance BFS probe, exact
-   geometric reason nets 49/50/51 have no legal arrangement).
-3. The other 16 of the 18 `try_*` repair methods in
+4. The other 16 of the 18 `try_*` repair methods in
    `route_many_with_repair_and_commit` -- the repository owner explicitly
    chose not to generalize these further right now (Milestone 5 of the
    same plan); each is individually documented with a `///` doc comment
    if picked up later.
-4. `run_routing_flow`'s ~40-keyword-parameter signature
+5. `run_routing_flow`'s ~40-keyword-parameter signature
    (`routing_flow.py:753`) -- a real design smell (a config object would
    likely be cleaner), noted during the same plan's drafting but never
    discussed with the repository owner beyond that note; touches this
    repository's public API surface, a different kind of risk than the
    internal-only refactors done so far.
+6. A functional-verification test suite -- the repository owner proposed
+   (2026-08-24) small, edge-case-targeted regression tests that can be
+   rerun on demand and eventually gated in CI (e.g. GitHub Actions), as a
+   durable verification pass rather than the current ad-hoc pattern of
+   manually running a benchmark and inspecting a GDS/screenshot. Agreed
+   in principle as the right next investment (matches this repository's
+   own stated priority: a readable, tested, well-structured repo, not
+   just passing benchmarks), explicitly deferred to its own properly-
+   scoped ExecPlan once the queue above clears, not folded into any
+   single item above.
 
 **Correction (2026-08-21): the `round_base_*` re-cloning "optimization
 candidate" this section previously named is not real -- retracted.**
