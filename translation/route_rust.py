@@ -6422,22 +6422,15 @@ class _RouteNetsRustSession:
             and hasattr(self.astar_cfg, "max_iterations")
         ):
             self.astar_cfg.max_iterations = min(int(self.astar_cfg.max_iterations), 50_000)
-        if collision_crossing_mode and hasattr(self.astar_cfg, "heuristic_weight"):
-            collision_heuristic_weight = os.environ.get(
-                "PHOTONIC_ROUTER_COLLISION_HEURISTIC_WEIGHT"
-            )
-            self.astar_cfg.heuristic_weight = (
-                float(collision_heuristic_weight)
-                if collision_heuristic_weight
-                else 1.0
-            )
-        elif self.allow_45_degree_turns and hasattr(self.astar_cfg, "heuristic_weight"):
+        if self.allow_45_degree_turns and hasattr(self.astar_cfg, "heuristic_weight"):
             self.astar_cfg.heuristic_weight = max(float(self.astar_cfg.heuristic_weight), 1.25)
-        if collision_crossing_mode and hasattr(self.astar_cfg, "bend_weight"):
-            self.astar_cfg.bend_weight = float(self.astar_cfg.bend_weight)
-        elif self.allow_45_degree_turns and hasattr(self.astar_cfg, "bend_weight"):
-            # LiDAR heavily penalizes bends relative to propagation. Matching that
-            # scale keeps 45-degree A* from spending work on short zig-zag variants.
+        if self.allow_45_degree_turns and hasattr(self.astar_cfg, "bend_weight"):
+            # A bend costs bend_weight per angle-eighth of turn (see
+            # src/primitives.rs's bend_cost field); boosting it keeps 45-degree
+            # A* from spending work on short zig-zag variants. This applies
+            # uniformly regardless of crossing_mode -- crossing-awareness only
+            # changes whether/what a *crossing* costs (see crossing_loss,
+            # translation/route_rust_crossing_plan.py), not how bends are priced.
             self.astar_cfg.bend_weight = max(float(self.astar_cfg.bend_weight), 12.0)
         effective_heap_tie_breaker = str(self.heap_tie_breaker)
         if self.allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":

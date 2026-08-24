@@ -46,7 +46,7 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
     ),
     [
         (False, "window", 31, 0, 0),
-        # attempts=42 (not 31), failures=8 (not 0), repairs=1 (not 0): fixing
+        # attempts=39 (not 31), failures=8 (not 0), repairs=0: fixing
         # try_route_with_collision_crossings_using_primitives's
         # "collision_crossing_route_without_event_is_not_accepted" bug (a route
         # with zero crossing events against its requested partner was being
@@ -57,18 +57,23 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
         # through to a second, plain-A* attempt (route_attempts) that still
         # routes it cleanly -- exactly the "a failed local collision-crossing
         # attempt must not make the whole net unroutable" fallback this
-        # function's own caller already documents and relies on. One net's
-        # plain-A* fallback also needed one rip-up/repair round to clear a
-        # dynamic blocker (repair_count), which the routing flow already
-        # supports and which still ends in a fully clean result (still
-        # success=True, error_count=0, 31/31 routed) -- only these internal
-        # attempt/failure/repair counters legitimately changed, and their
-        # prior values of 0 were themselves a symptom of the bug (every
-        # collision-crossing attempt vacuously "succeeded" on the first try,
-        # so no attempt ever needed a fallback), not evidence of cleaner
-        # routing. See
+        # function's own caller already documents and relies on. See
         # .agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md.
-        (True, "lidar-pure", 42, 8, 1),
+        #
+        # route_attempts dropped from 42 to 39 and repair_count from 1 to 0
+        # after .agent/execplans/2026-08-24-crossing-cost-function-soundness.md's
+        # Milestone 2, which stopped resetting bend_weight/heuristic_weight to
+        # their un-tuned defaults for nets routed under collision/lidar-pure
+        # crossing mode. Previously, the plain-A* fallback attempt described
+        # above ran with the un-boosted bend_weight, so one net's fallback
+        # needed one rip-up/repair round to clean up a zig-zag path before
+        # settling; with the corrected, uniformly-tuned bend_weight that
+        # fallback now finds a clean route directly, needing three fewer total
+        # attempts and zero repair rounds. route_failures (8) is unchanged --
+        # it counts the first, collision-crossing attempt described above,
+        # which this plan's Milestone 2 does not touch. The result is still
+        # fully clean (success=True, error_count=0, 31/31 routed) either way.
+        (True, "lidar-pure", 39, 8, 0),
     ],
 )
 def test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary(
