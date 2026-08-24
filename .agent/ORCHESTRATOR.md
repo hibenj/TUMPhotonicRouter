@@ -18,20 +18,22 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**Active ExecPlan**:
+**No active ExecPlan right now.** `.agent/REPOSITORY_STATE.md`'s "Next
+Engineering Step" is the source of truth for what to pick up next; do not
+assume one without reading it.
+
 `.agent/execplans/2026-08-24-wire-single-net-search-trait-into-production.md`
-(Milestone 0 done; start at Milestone 1). Repository owner's direction
-(2026-08-24, via direct chat instruction, after Claude recommended this
-as the lowest-risk next step among the modular-routing-strategies plan's
-own deferred candidates): wire the `SingleNetSearch` trait (added by an
-earlier initiative, unified internally by the modular-routing-strategies
-plan, but never called from production) into all of `src/py_router.rs`'s
-production single-net search call sites -- 12 sites across 9 methods,
-confirmed by direct census, not the "8" the deferring plan estimated.
-This does not add a second search algorithm; it makes the one existing
-implementation (`AStarSingleNetSearch`) the thing production code
-actually calls through, so a future second implementation only needs to
-change one seam, not 12 call sites.
+is complete (all 3 milestones, 2026-08-24): every production single-net
+search call site in `src/py_router.rs` -- 12 sites across 9 methods,
+confirmed by direct census, not the "8" the modular-routing-strategies
+plan had estimated while deferring this exact work -- now goes through
+the `SingleNetSearch` trait via `AStarSingleNetSearch` instead of calling
+the underlying free functions directly. Dispatched to Codex as a single
+task with the exact substitution spelled out per site (Milestone 1's own
+direct read of all 12 sites found zero argument-shape discrepancies);
+zero review findings on the returned diff, the cleanest Codex dispatch of
+either plan this session needed. Does not add a second search algorithm
+-- none exists yet, none was invented just to prove the point.
 
 `.agent/execplans/2026-08-24-modular-routing-strategies.md` is complete
 (all 8 milestones, 2026-08-24): `_RouteNetsRustSession.run()`

@@ -20,22 +20,30 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-24
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `aa13828`. Working tree clean, all work committed (one
-  commit per milestone group, per repository owner's direction: `cefcfc3`
-  the n_50 investigation, `8202f16` plan draft + Milestones 0-1, `70a3c62`
+- Current HEAD: `77677d7`. Working tree clean (one uncommitted docs-only
+  close-out edit to this file and `.agent/ORCHESTRATOR.md` pending as
+  this note is written). All code work committed, one commit per
+  milestone group, per repository owner's direction: `cefcfc3` the n_50
+  investigation, `8202f16` plan draft + Milestones 0-1, `70a3c62`
   Milestone 2's design, `f189d11` Milestone 3 via Codex, `fb7442f` state
   sync, `00946a1` Milestone 4, `788dd6e` Milestone 6, `aa13828`
-  Milestone 7).
-- **No active ExecPlan right now.** The modular-routing-strategies plan
-  (`.agent/execplans/2026-08-24-modular-routing-strategies.md`) is
-  complete, all 8 milestones -- see Completed ExecPlans below for the
-  summary, and that plan's own Outcomes & Retrospective for full detail
-  (including a recurring lesson worth reading: nearly every milestone's
-  design stage overturned or refined something an earlier stage of this
-  *same plan* had assumed, not just something an older plan had assumed).
+  Milestone 7, `0063736` plan close-out, `77677d7` the follow-up
+  SingleNetSearch wiring plan's Milestones 0-2.
+- **No active ExecPlan right now.** Both the modular-routing-strategies
+  plan and its direct follow-up,
+  `.agent/execplans/2026-08-24-wire-single-net-search-trait-into-production.md`
+  (wiring `SingleNetSearch` into all 12 of `src/py_router.rs`'s
+  production single-net search call sites -- the "deferred, not yet
+  characterized" item the first plan left open), are complete -- see
+  Completed ExecPlans below for both summaries. The second plan's own
+  Outcomes & Retrospective is worth reading for a concrete confirmation
+  of the "characterization needs active re-verification" lesson: its own
+  Milestone 0 found 12 call sites where the first plan's own deferred-work
+  note had estimated 8, because that estimate never actually re-grepped
+  three sibling "discard the stats" functions it hadn't characterized.
 - Current test baselines: `cargo test --lib` `393 passed, 0 failed` (389 +
-  4 new direct tests for `run_windowed_single_net_search`, added this
-  plan's Milestone 7);
+  4 new direct tests for `run_windowed_single_net_search`, added during
+  the modular-routing-strategies plan's Milestone 7);
   `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 335 passed, 1 skipped`
   (dropped from the long-standing `21 failed, 325 passed` baseline via
   two 2026-08-20 passes: the batch-repair stale-signature fix, then a
@@ -65,6 +73,24 @@ now lives only in the referenced ExecPlan and `git log`.)
   restructuring gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-24-wire-single-net-search-trait-into-production.md` -- closed
+    the one item the modular-routing-strategies plan below deliberately
+    deferred: `src/py_router.rs`'s production code called the
+    `SingleNetSearch` trait's four free functions (and 3 sibling
+    "discard the stats" convenience wrappers) directly, never through the
+    trait itself. Census found 12 real call sites across 9 methods (the
+    deferring plan's own "8" estimate had missed the 3 convenience
+    wrappers entirely). Every site's arguments were confirmed by direct
+    read to match its trait method exactly before any code moved;
+    dispatched to Codex as a single, fully-specified task (12 exact
+    substitutions spelled out site by site) and reviewed line-by-line
+    before acceptance -- zero review findings, the cleanest Codex
+    dispatch either plan this session needed. Does not add a second
+    search algorithm (none exists yet, none was invented to prove the
+    point) -- makes the existing one the thing production code actually
+    calls through, so a future second implementation changes one seam
+    instead of 12 call sites. Full validation ladder clean and
+    byte-identical to baseline throughout.
   - `2026-08-24-modular-routing-strategies.md` -- made the restructured
     routing pipeline genuinely modular, not just readable-in-isolation, in
     three phases by risk. Phase A: `_RouteNetsRustSession.run()`
@@ -457,9 +483,10 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No active ExecPlan right now.** Both the `route_many_with_repair_and_commit`
-restructuring and the modular-routing-strategies plan are complete (see
-Completed ExecPlans). **Next step** (no mandated single choice):
+**No active ExecPlan right now.** The `route_many_with_repair_and_commit`
+restructuring, the modular-routing-strategies plan, and its
+SingleNetSearch-wiring follow-up are all complete (see Completed
+ExecPlans). **Next step** (no mandated single choice):
 1. `multiportmmi_8x8` dense-port lateral-width allocation -- needs a
    design decision (how much lateral room a single-direction bend
    needs, how to redistribute fairly), present options to the
@@ -470,17 +497,12 @@ Completed ExecPlans). **Next step** (no mandated single choice):
    repair-exhaustion problem. Next step, if picked up, is root-causing it
    to the same depth as `n_70` (corridor-clearance BFS probe, exact
    geometric reason nets 49/50/51 have no legal arrangement).
-3. Wire `SingleNetSearch`'s trait methods into `src/py_router.rs`'s 8
-   direct call sites to the four `src/astar.rs` single-net search
-   wrapper functions -- deliberately deferred out of the
-   modular-routing-strategies plan's Milestone 3 as separate,
-   not-yet-characterized work (see that plan's Interfaces section).
-4. The other 16 of the 18 `try_*` repair methods in
+3. The other 16 of the 18 `try_*` repair methods in
    `route_many_with_repair_and_commit` -- the repository owner explicitly
    chose not to generalize these further right now (Milestone 5 of the
    same plan); each is individually documented with a `///` doc comment
    if picked up later.
-5. `run_routing_flow`'s ~40-keyword-parameter signature
+4. `run_routing_flow`'s ~40-keyword-parameter signature
    (`routing_flow.py:753`) -- a real design smell (a config object would
    likely be cleaner), noted during the same plan's drafting but never
    discussed with the repository owner beyond that note; touches this
