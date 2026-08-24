@@ -7133,6 +7133,152 @@ mod tests {
         assert_route_search_stats_equivalent(&trait_stats, &direct_stats);
     }
 
+    fn stub_route_result(source: State, target: State) -> RouteResult {
+        RouteResult {
+            states: vec![source, target],
+            primitives: Vec::new(),
+            cells: Vec::new(),
+            compressed_waypoints: Vec::new(),
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target: target,
+            reached_target: target,
+            stats: RouteSearchStats::default(),
+        }
+    }
+
+    #[test]
+    fn windowed_single_net_search_without_window_calls_try_bounds_once_with_none() {
+        let map = ObstacleMap::new(12, 5);
+        let source = State::new(1, 2, 0);
+        let target = State::new(8, 2, 0);
+        let config = AStarConfig {
+            use_routing_window: false,
+            ..AStarConfig::default()
+        };
+        let mut stats = RouteSearchStats::default();
+        let mut calls: Vec<Option<RoutingBounds>> = Vec::new();
+
+        let result = run_windowed_single_net_search(
+            &map,
+            source,
+            target,
+            &config,
+            &mut stats,
+            |_obstacle_map, bounds, _stats| {
+                calls.push(bounds);
+                Some(stub_route_result(source, target))
+            },
+        );
+
+        assert!(result.is_some());
+        assert_eq!(calls, vec![None]);
+        assert_eq!(stats.window_attempts, 0);
+        assert!(!stats.used_full_grid_fallback);
+    }
+
+    #[test]
+    fn windowed_single_net_search_returns_on_first_windowed_success() {
+        let map = ObstacleMap::new(12, 5);
+        let source = State::new(1, 2, 0);
+        let target = State::new(8, 2, 0);
+        let config = AStarConfig {
+            use_routing_window: true,
+            routing_window_max_expansions: 3,
+            ..AStarConfig::default()
+        };
+        let mut stats = RouteSearchStats::default();
+        let mut call_count = 0;
+
+        let result = run_windowed_single_net_search(
+            &map,
+            source,
+            target,
+            &config,
+            &mut stats,
+            |_obstacle_map, bounds, _stats| {
+                call_count += 1;
+                assert!(bounds.is_some(), "windowed attempts must pass Some(bounds)");
+                Some(stub_route_result(source, target))
+            },
+        );
+
+        assert!(result.is_some());
+        assert_eq!(call_count, 1);
+        assert_eq!(stats.window_attempts, 1);
+        assert!(!stats.used_full_grid_fallback);
+    }
+
+    #[test]
+    fn windowed_single_net_search_falls_back_to_full_grid_when_expansions_exhausted() {
+        let map = ObstacleMap::new(12, 5);
+        let source = State::new(1, 2, 0);
+        let target = State::new(8, 2, 0);
+        let config = AStarConfig {
+            use_routing_window: true,
+            routing_window_max_expansions: 1,
+            routing_window_fallback_full_grid: true,
+            ..AStarConfig::default()
+        };
+        let mut stats = RouteSearchStats::default();
+        let mut calls: Vec<Option<RoutingBounds>> = Vec::new();
+
+        let result = run_windowed_single_net_search(
+            &map,
+            source,
+            target,
+            &config,
+            &mut stats,
+            |_obstacle_map, bounds, _stats| {
+                calls.push(bounds);
+                None
+            },
+        );
+
+        // The first windowed attempt is never skipped by the last-bounds dedup
+        // (there is no prior bounds to compare against), and the full-grid
+        // fallback always fires one final unconditional attempt with
+        // bounds=None regardless of how many windowed attempts were actually
+        // distinct -- so at least 2 calls are guaranteed, with the last one
+        // being the full-grid attempt, independent of this test's specific
+        // map/config geometry.
+        assert!(result.is_none());
+        assert!(calls.len() >= 2, "expected at least a windowed attempt and a full-grid fallback attempt, got {calls:?}");
+        assert_eq!(calls.last(), Some(&None), "the final attempt must be the full-grid fallback (bounds=None)");
+        assert!(stats.used_full_grid_fallback);
+    }
+
+    #[test]
+    fn windowed_single_net_search_gives_up_without_full_grid_fallback() {
+        let map = ObstacleMap::new(12, 5);
+        let source = State::new(1, 2, 0);
+        let target = State::new(8, 2, 0);
+        let config = AStarConfig {
+            use_routing_window: true,
+            routing_window_max_expansions: 1,
+            routing_window_fallback_full_grid: false,
+            ..AStarConfig::default()
+        };
+        let mut stats = RouteSearchStats::default();
+        let mut calls: Vec<Option<RoutingBounds>> = Vec::new();
+
+        let result = run_windowed_single_net_search(
+            &map,
+            source,
+            target,
+            &config,
+            &mut stats,
+            |_obstacle_map, bounds, _stats| {
+                calls.push(bounds);
+                None
+            },
+        );
+
+        assert!(result.is_none());
+        assert!(calls.iter().all(Option::is_some), "no full-grid fallback attempt should occur when routing_window_fallback_full_grid is false, got {calls:?}");
+        assert!(!stats.used_full_grid_fallback);
+    }
+
     #[test]
     fn single_net_search_trait_matches_dynamic_expansion_free_function() {
         let mut map = ObstacleMap::new(12, 5);
