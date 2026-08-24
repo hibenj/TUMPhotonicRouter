@@ -7,14 +7,10 @@ use pyo3::types::{PyDict, PyList};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::astar::{
-    export_route_svg_with_port_open_cells,
-    route_single_net_with_collision_crossing_config_with_stats, route_single_net_with_config,
-    route_single_net_with_config_reporting_stats, route_single_net_with_crossing_config,
-    route_single_net_with_dynamic_expansion_config,
-    route_single_net_with_dynamic_expansion_config_reporting_stats, try_simple_route_with_config,
-    try_simple_route_with_dynamic_expansion_config, AStarConfig, CrossingSearchConfig,
-    CrossingSearchPartner, HeapTieBreaker, HeuristicMode, PrimitiveOrdering, RouteResult,
-    RouteSearchStats, State, TerminalBumpAxis, TerminalBumpGuard,
+    export_route_svg_with_port_open_cells, try_simple_route_with_config,
+    try_simple_route_with_dynamic_expansion_config, AStarConfig, AStarSingleNetSearch,
+    CrossingSearchConfig, CrossingSearchPartner, HeapTieBreaker, HeuristicMode, PrimitiveOrdering,
+    RouteResult, RouteSearchStats, SingleNetSearch, State, TerminalBumpAxis, TerminalBumpGuard,
 };
 use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
 use crate::auto_meander::{
@@ -4577,7 +4573,7 @@ impl PyPhotonicRouter {
                 self.trace_committed_partner_centerline_compare(net_id, partner.net_id);
             }
         }
-        let (route_result, failed_stats) = route_single_net_with_collision_crossing_config_with_stats(
+        let (route_result, failed_stats) = AStarSingleNetSearch.search_with_collision_crossing(
             &self.obstacle_map,
             primitives,
             source,
@@ -4783,7 +4779,7 @@ impl PyPhotonicRouter {
         let mut guided_keepout = FxHashSet::default();
         const MAX_GUIDED_CROSSING_VALIDATION_RETRIES: usize = 4;
         for retry_idx in 0..=MAX_GUIDED_CROSSING_VALIDATION_RETRIES {
-            let Some(result) = route_single_net_with_crossing_config(
+            let Some(result) = AStarSingleNetSearch.search_with_crossing_config(
                 &search_map,
                 &self.primitives,
                 source,
@@ -5629,7 +5625,7 @@ impl PyPhotonicRouter {
                     crossing_candidate_keys.len()
                 );
             }
-            if let Some(result) = route_single_net_with_crossing_config(
+            if let Some(result) = AStarSingleNetSearch.search_with_crossing_config(
                 &search_map,
                 &self.primitives,
                 source,
@@ -5668,7 +5664,7 @@ impl PyPhotonicRouter {
         if trace_crossing {
             eprintln!("crossing-search broad-phase net={}", net_id);
         }
-        let result = route_single_net_with_crossing_config(
+        let result = AStarSingleNetSearch.search_with_crossing_config(
             &search_map,
             &self.primitives,
             source,
@@ -6073,7 +6069,7 @@ impl PyPhotonicRouter {
         let mut opened_dynamic_obstacle_map;
         let mut fallback_search_stats = RouteSearchStats::default();
         let mut result = if block_radius_cells > 0 || zero_radius_overlay {
-            route_single_net_with_dynamic_expansion_config_reporting_stats(
+            AStarSingleNetSearch.search_with_dynamic_expansion(
                 &self.obstacle_map,
                 &self.primitives,
                 source_state,
@@ -6093,7 +6089,7 @@ impl PyPhotonicRouter {
             } else {
                 &self.obstacle_map
             };
-            route_single_net_with_config_reporting_stats(
+            AStarSingleNetSearch.search(
                 search_obstacle_map,
                 &self.primitives,
                 source_state,
@@ -6439,8 +6435,9 @@ impl PyPhotonicRouter {
         let zero_radius_overlay =
             block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some() && !cfg.enable_jps4;
         let mut opened_dynamic_obstacle_map;
+        let mut discarded_stats = RouteSearchStats::default();
         let mut result = if block_radius_cells > 0 || zero_radius_overlay {
-            route_single_net_with_dynamic_expansion_config(
+            AStarSingleNetSearch.search_with_dynamic_expansion(
                 &self.obstacle_map,
                 &self.primitives,
                 source_state,
@@ -6449,6 +6446,7 @@ impl PyPhotonicRouter {
                 &cfg,
                 block_radius_cells.max(0),
                 dynamic_clearance_exempt_keys,
+                &mut discarded_stats,
             )
         } else {
             let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
@@ -6459,13 +6457,14 @@ impl PyPhotonicRouter {
             } else {
                 &self.obstacle_map
             };
-            route_single_net_with_config(
+            AStarSingleNetSearch.search(
                 search_obstacle_map,
                 &self.primitives,
                 source_state,
                 target_state,
                 Some(opened_search_ref),
                 &cfg,
+                &mut discarded_stats,
             )
         }
         .ok_or_else(|| "No route found".to_string())?;
@@ -6823,13 +6822,15 @@ impl PyPhotonicRouter {
         cfg.enable_simple_routes = false;
         cfg.enable_jps4 = false;
         let orthogonal_primitives = self.orthogonal_repair_primitives();
-        let route = route_single_net_with_config(
+        let mut discarded_stats = RouteSearchStats::default();
+        let route = AStarSingleNetSearch.search(
             &self.obstacle_map,
             &orthogonal_primitives,
             State::new(source.x, source.y, source.angle),
             State::new(target.x, target.y, target.angle),
             Some(opened_keys_for_route),
             &cfg,
+            &mut discarded_stats,
         )
         .ok_or_else(|| "No route found".to_string())?;
         if self.commit_native_route_with_clearance(
@@ -6925,13 +6926,15 @@ impl PyPhotonicRouter {
         cfg.require_terminal_straights = true;
         let mut static_only_obstacle_map = self.obstacle_map.clone();
         static_only_obstacle_map.clear_dynamic();
-        route_single_net_with_config(
+        let mut discarded_stats = RouteSearchStats::default();
+        AStarSingleNetSearch.search(
             &static_only_obstacle_map,
             &self.primitives,
             State::new(source.x, source.y, source.angle),
             State::new(target.x, target.y, target.angle),
             Some(opened_ref),
             &cfg,
+            &mut discarded_stats,
         )
         .ok_or_else(|| "No route found".to_string())
     }
@@ -11666,13 +11669,15 @@ impl PyPhotonicRouter {
         let cfg = self
             .astar_config(None, None, None)
             .map_err(PyValueError::new_err)?;
-        let result = route_single_net_with_config(
+        let mut discarded_stats = RouteSearchStats::default();
+        let result = AStarSingleNetSearch.search(
             &self.obstacle_map,
             &self.primitives,
             State::new(source.x, source.y, source.angle),
             State::new(target.x, target.y, target.angle),
             Some(opened_ref),
             &cfg,
+            &mut discarded_stats,
         )
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
         Py::new(py, convert_result(py, &self.primitives, &result)?)
@@ -14633,13 +14638,15 @@ impl PyPhotonicRouter {
             .astar_config(None, None, None)
             .map_err(PyValueError::new_err)?;
 
-        let result = route_single_net_with_config(
+        let mut discarded_stats = RouteSearchStats::default();
+        let result = AStarSingleNetSearch.search(
             &self.obstacle_map,
             &self.primitives,
             State::new(source.x, source.y, source.angle),
             State::new(target.x, target.y, target.angle),
             opened_ref,
             &cfg,
+            &mut discarded_stats,
         )
         .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
 
