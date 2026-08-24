@@ -3269,6 +3269,10 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Low-level native routing primitive for one net within a source-layer
+    /// center-out repair pass. Called only from
+    /// [`Self::try_source_layer_center_out_repair`], never directly from
+    /// `route_many_with_repair_and_commit`'s own loop.
     fn try_route_source_layer_center_out_native(
         &mut self,
         jobs: &[NativeRouteJob],
@@ -4317,6 +4321,12 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Top of a 3-level default-argument chain
+    /// (`try_route_with_collision_crossings` ->
+    /// [`Self::try_route_with_collision_crossings_with_loss`] ->
+    /// [`Self::try_route_with_collision_crossings_using_primitives`]) --
+    /// a shared low-level lidar-pure collision-crossing search primitive,
+    /// not an independent repair strategy in its own right.
     fn try_route_with_collision_crossings(
         &self,
         net_id: u64,
@@ -4348,6 +4358,10 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Middle of the 3-level collision-crossing search chain (see
+    /// [`Self::try_route_with_collision_crossings`]); adds loss/config
+    /// resolution before delegating to
+    /// [`Self::try_route_with_collision_crossings_using_primitives`].
     fn try_route_with_collision_crossings_with_loss(
         &self,
         net_id: u64,
@@ -4451,6 +4465,9 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Bottom of the 3-level collision-crossing search chain (see
+    /// [`Self::try_route_with_collision_crossings`]) -- the actual A* call
+    /// site for lidar-pure collision-crossing routing.
     fn try_route_with_collision_crossings_using_primitives(
         &self,
         primitives: &PrimitiveLibrary,
@@ -4680,6 +4697,12 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Shared low-level search primitive: routes through a caller-supplied
+    /// set of collision-crossing partner nets. Used by
+    /// [`Self::try_guided_collision_crossing`] (guided/2-partner case) and
+    /// by [`Self::try_crossing_aware_victim_reroute`]'s "seeded" and
+    /// "guided" per-victim attempts (see that method's own doc comment) --
+    /// not an independent top-level repair strategy itself.
     fn try_route_through_collision_partner_set(
         &self,
         net_id: u64,
@@ -5499,6 +5522,14 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Shared low-level search primitive for the "window" (topology
+    /// expected-partner) crossing mode -- the sibling of
+    /// [`Self::try_route_through_collision_partner_set`] for nets whose
+    /// crossing partners come from `crossing_allowed_partner_set` rather
+    /// than lidar-pure collision detection. Not part of the
+    /// `route_many_with_repair_and_commit` main loop's own call chain;
+    /// called from the native route/repair entry points that resolve
+    /// crossing mode before dispatching into repair.
     fn try_route_through_expected_crossing_partner(
         &self,
         net_id: u64,
@@ -8255,6 +8286,13 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Takes up to 2 of the failure probe's `candidate_blockers` that are
+    /// also allowed crossing partners and retries through
+    /// [`Self::try_route_through_collision_partner_set`] with
+    /// `require_terminal_straights=false`. Gated by
+    /// `PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING` (and not
+    /// `..._DISABLE_...`), collision-crossing routing enabled, and a
+    /// non-empty candidate-blocker list from the probe.
     fn try_guided_collision_crossing(
         &mut self,
         batch: &mut RepairBatchState,
@@ -8382,6 +8420,12 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Temporarily adds the failure probe's computed keepout cells as
+    /// static obstacles, retries plain-with-orthogonal-preference then
+    /// repair-native-with-keepout, then removes the keepout regardless of
+    /// outcome. Triggered when the probe found a repairable (not
+    /// invalid-collision) crossing conflict with a non-empty keepout and
+    /// candidate-blocker set.
     fn try_localized_crossing_keepout_retry(
         &mut self,
         batch: &mut RepairBatchState,
@@ -8540,6 +8584,11 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// The cheapest possible resolution: when the failure probe found zero
+    /// conflicting nets (`candidate_blockers.is_empty()`), commits the
+    /// already-computed probe route directly instead of searching again.
+    /// Not really a "repair strategy" -- a fast path for the common case
+    /// where the probe route was already legal.
     fn try_commit_clean_probe(
         &mut self,
         batch: &mut RepairBatchState,
@@ -8650,6 +8699,10 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// The baseline attempt: routes the net directly via
+    /// `route_single_net_and_commit_native`, with no victims, no keepouts,
+    /// and no repair. Every other `try_*` method in this file exists
+    /// because this one failed.
     fn try_plain_normal_route(
         &mut self,
         batch: &mut RepairBatchState,
@@ -8803,6 +8856,15 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Reroutes the current net with a temporary reservation before any
+    /// victim is touched (only when `!victim_first` in the round/victim-
+    /// order loop). On failure, calls
+    /// `enqueue_targeted_illegal_crossing_repair_set` to fold the new
+    /// failure's blocking net into the ripup set -- this is the exact
+    /// mechanism the n_67/n_70/n_71 fix
+    /// (`.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`)
+    /// patched a string-prefix-matching bug in -- then falls back to
+    /// `route_single_net_and_commit_repair_native_with_repair_keepout`.
     fn try_reroute_current_net_before_victims(
         &mut self,
         batch: &mut RepairBatchState,
@@ -9324,6 +9386,19 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// For each victim (when lidar-pure collision-crossing repair is
+    /// enabled, victims are rerouted after the current net, and a repaired
+    /// route exists), tries up to 3 A* search strategies in order before
+    /// falling back to a plain reroute: a "seeded" partner-set search using
+    /// crossing partners from the round-base committed events, a direct
+    /// [`Self::try_route_with_collision_crossings_with_loss`] call, and a
+    /// "guided" partner-set search using only the current job as sole
+    /// partner. **This is the confirmed dominant cost in the
+    /// `reroute_victims_wall` timing bucket** (see
+    /// `.agent/REPOSITORY_STATE.md`'s "Investigation findings" note) --
+    /// most of that bucket's wall-clock time is these up-to-3 preliminary
+    /// searches, not the eventual committed route. Any future change here
+    /// carries real performance risk, not just correctness risk.
     fn try_crossing_aware_victim_reroute(
         &mut self,
         batch: &mut RepairBatchState,
@@ -9696,6 +9771,9 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Mirror of [`Self::try_reroute_current_net_before_victims`], run when
+    /// `victim_first` is set in the round/victim-order loop -- reroutes the
+    /// current net after victims have already been processed.
     fn try_reroute_current_net_after_victims(
         &mut self,
         batch: &mut RepairBatchState,
@@ -10011,6 +10089,15 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Speculative pre-route ripup: before any route attempt, scans nearby
+    /// already-routed nets in the current net's bounding box as candidate
+    /// victims, snapshots state, rips one candidate, routes the current
+    /// net, then reroutes the victim (plain, then repair-native fallback),
+    /// restoring the snapshot and trying the next candidate on failure.
+    /// Gated by `PHOTONIC_ROUTER_PREEMPTIVE_CROSSING_RIPUP` (default off);
+    /// no specific historical bug motivates this method as its own step --
+    /// it is a speculative optimization, not a response to a documented
+    /// failure.
     fn try_preemptive_crossing_ripup(
         &mut self,
         batch: &mut RepairBatchState,
@@ -10225,6 +10312,17 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Reroutes an entire source-x grid column of nets in center-out order
+    /// (via [`Self::try_route_source_layer_center_out_native`]), not a
+    /// single net or victim -- the coarsest-grained repair strategy in this
+    /// file. Triggered only when lidar-pure collision-crossing routing is
+    /// enabled, a `pending_straight_victim_hint_for` hint names an
+    /// already-routed victim on this column, the column has enough jobs,
+    /// and this column has not already been retried this batch
+    /// (`batch.retried_source_layers`). Generalizes the "do not silently
+    /// lose a net on partial restore" lesson from
+    /// `.agent/execplans/2026-08-19-fix-collision-crossing-zero-event-acceptance.md`
+    /// to this coarser repair granularity.
     fn try_source_layer_center_out_repair(
         &mut self,
         batch: &mut RepairBatchState,
@@ -10430,6 +10528,14 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Single-victim rip/reroute-both repair, structurally identical to
+    /// [`Self::try_preemptive_crossing_ripup`] (same snapshot/rip/reroute-
+    /// current/reroute-victim/restore shape) but selects its victim from
+    /// the accumulated pending-straight-failure hint (`hint.count` against
+    /// `pending_straight_ripup_threshold()`) instead of a bounding-box
+    /// scan. Tried as [`Self::try_source_layer_center_out_repair`]'s
+    /// fallback when that method's own gate applies but it does not
+    /// resolve the net.
     fn try_pending_straight_victim_repair(
         &mut self,
         batch: &mut RepairBatchState,
@@ -10602,6 +10708,12 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Attempts to route the net directly through one already-committed
+    /// crossing-partner net at a time (ordered by net index), requiring
+    /// terminal straights, committing only if the resulting crossing is
+    /// legal -- no ripup involved. Delegates to
+    /// [`Self::try_route_with_collision_crossings`]. Gated on lidar-pure
+    /// collision-crossing routing being enabled.
     fn try_lidar_direct_crossing_subset(
         &mut self,
         batch: &mut RepairBatchState,
@@ -10727,6 +10839,19 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Last resort when every other strategy in this file has failed
+    /// (`!repair.repaired`): resets to round-base state, and -- only if
+    /// collision-crossing repair is enabled, not restricted to expected
+    /// pairs, and the probe found realized (not grid) violations --
+    /// attempts committing the original probe route despite its violations
+    /// anyway, retrying up to 12 rounds against validation feedback via
+    /// `crossing_error_repair_keepout_keys_with_options`. If this also
+    /// fails, constructs the final
+    /// `"No repair route found; candidate_blockers=...; recent_errors=..."`
+    /// error text -- the literal source of every `RuntimeError` this
+    /// repository's n_70 and n_50 investigations have parsed; any future
+    /// redesign touching this method's error format must update
+    /// `illegal_crossing_net_ids_from_error` and its siblings in lockstep.
     fn try_final_repair_fallback(
         &mut self,
         batch: &mut RepairBatchState,
