@@ -10098,6 +10098,229 @@ impl PyPhotonicRouter {
     /// no specific historical bug motivates this method as its own step --
     /// it is a speculative optimization, not a response to a documented
     /// failure.
+    /// Shared single-victim "rip up, reroute the current net, reroute the
+    /// victim (plain then repair-native fallback)" attempt, extracted
+    /// (Milestone 6 of `.agent/execplans/2026-08-24-modular-routing-strategies.md`)
+    /// from what were two near-duplicate ~200-line method bodies:
+    /// [`Self::try_preemptive_crossing_ripup`] (which calls this once per
+    /// candidate victim in a loop, trying the next candidate on failure)
+    /// and [`Self::try_pending_straight_victim_repair`] (which calls this
+    /// exactly once, for its single hinted victim). Snapshots `self`/
+    /// `batch` state at entry and restores it on any failure, so repeated
+    /// calls in a loop are safe -- each call leaves state exactly as it
+    /// found it unless it returns `true`. `bucket_name` controls the
+    /// `NativeRouteAttempt.bucket_name` recorded for both the current-net
+    /// and victim route attempts (kept distinct per caller: this is an
+    /// observable diagnostic string, not merged even though the two
+    /// callers are otherwise unified). `add_history_for_victim` controls
+    /// whether `add_history_for_native_route` runs before ripping up the
+    /// victim -- a real behavioral difference between the two original
+    /// methods (`try_preemptive_crossing_ripup` did this,
+    /// `try_pending_straight_victim_repair` did not), preserved here as a
+    /// parameter rather than silently applied to both or dropped from
+    /// either. Returns `true` if both the current net and the victim were
+    /// successfully rerouted and committed (`batch.repair_count` bumped,
+    /// two `NativeRouteAttempt`s pushed), `false` if any step failed (state
+    /// fully restored, one failing `NativeRouteAttempt` pushed).
+    #[allow(clippy::too_many_arguments)]
+    fn try_ripup_single_victim_and_reroute(
+        &mut self,
+        batch: &mut RepairBatchState,
+        job: &NativeRouteJob,
+        victim_job: &NativeRouteJob,
+        bucket_name: &'static str,
+        add_history_for_victim: bool,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        history_weight: f64,
+        history_increment: u32,
+        collect_native_timing: bool,
+    ) -> bool {
+        let victim_id = victim_job.net_id;
+        let base_map = self.obstacle_map.clone();
+        let base_center_routes = self.committed_center_routes.clone();
+        let base_realized_center_routes = self.committed_realized_center_routes.clone();
+        let base_target_terminal_bump_guards =
+            self.committed_target_terminal_bump_guards.clone();
+        let base_opened_cell_keys = self.committed_opened_cell_keys.clone();
+        let base_crossing_events = self.crossing_events.clone();
+        let base_routes = batch.final_routes.clone();
+
+        if add_history_for_victim {
+            if let Some(old_route) = batch.final_routes.get(&victim_id).cloned() {
+                let history_start = native_batch_timer(collect_native_timing);
+                self.add_history_for_native_route(
+                    &old_route,
+                    block_radius_cells,
+                    history_increment,
+                );
+                batch.timings.history_update_us += native_batch_elapsed_us(history_start);
+            }
+        }
+        let ripup_start = native_batch_timer(collect_native_timing);
+        self.remove_crossing_events_for_net(victim_id);
+        self.obstacle_map.ripup_route(victim_id);
+        self.committed_center_routes.remove(&victim_id);
+        self.committed_realized_center_routes.remove(&victim_id);
+        self.committed_target_terminal_bump_guards
+            .remove(&victim_id);
+        self.committed_opened_cell_keys.remove(&victim_id);
+        batch.final_routes.remove(&victim_id);
+        batch.timings.ripup_us += native_batch_elapsed_us(ripup_start);
+
+        let route_start = native_batch_timer(collect_native_timing);
+        let route_result = self.route_single_net_and_commit_native(
+            job.net_id,
+            job.source,
+            job.target,
+            block_radius_cells,
+            Some(&job.opened_cells),
+            Some(&job.opened_cell_keys),
+            commit_radius_cells,
+            Some(&job.clearance_exempt_cells),
+            Some(&job.clearance_exempt_cell_keys),
+            core_radius_cells,
+            job.source_port_um,
+            job.target_port_um,
+        );
+        let route_elapsed_us = native_batch_elapsed_us(route_start);
+        batch.timings.repair_failed_net_wall_us += route_elapsed_us;
+        let current_route = match route_result {
+            Ok(route) => {
+                batch.timings.add_route_result_stats_if(collect_native_timing, &route);
+                remove_success_static_cleanup(&mut self.obstacle_map, job);
+                route
+            }
+            Err(error) => {
+                batch.timings.repair_failed_net_failed_wall_us += route_elapsed_us;
+                batch.attempts.push(NativeRouteAttempt {
+                    bucket_name,
+                    net_id: job.net_id,
+                    route: None,
+                    failed: true,
+                    error: Some(error),
+                    repair_round: Some(0),
+                    candidate_blockers: vec![victim_id],
+                    ripup_ids: vec![victim_id],
+                });
+                self.obstacle_map = base_map;
+                self.committed_center_routes = base_center_routes;
+                self.committed_realized_center_routes = base_realized_center_routes;
+                self.committed_target_terminal_bump_guards = base_target_terminal_bump_guards;
+                self.committed_opened_cell_keys = base_opened_cell_keys;
+                self.crossing_events = base_crossing_events;
+                batch.final_routes = base_routes;
+                self.invalidate_meander_base_prefix();
+                return false;
+            }
+        };
+
+        let reroute_start = native_batch_timer(collect_native_timing);
+        let reroute_result = self.route_single_net_and_commit_native(
+            victim_job.net_id,
+            victim_job.source,
+            victim_job.target,
+            block_radius_cells,
+            Some(&victim_job.opened_cells),
+            Some(&victim_job.opened_cell_keys),
+            commit_radius_cells,
+            Some(&victim_job.clearance_exempt_cells),
+            Some(&victim_job.clearance_exempt_cell_keys),
+            core_radius_cells,
+            victim_job.source_port_um,
+            victim_job.target_port_um,
+        );
+        let reroute_elapsed_us = native_batch_elapsed_us(reroute_start);
+        batch.timings.reroute_victims_wall_us += reroute_elapsed_us;
+        let victim_route = match reroute_result {
+            Ok(route) => {
+                batch.timings.add_route_result_stats_if(collect_native_timing, &route);
+                remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
+                route
+            }
+            Err(normal_error) => {
+                batch.timings.reroute_victims_failed_wall_us += reroute_elapsed_us;
+                let repair_start = native_batch_timer(collect_native_timing);
+                let repair_result = self.route_single_net_and_commit_repair_native(
+                    victim_job.net_id,
+                    victim_job.source,
+                    victim_job.target,
+                    block_radius_cells,
+                    Some(&victim_job.opened_cells),
+                    Some(&victim_job.opened_cell_keys),
+                    history_weight,
+                    commit_radius_cells,
+                    Some(&victim_job.clearance_exempt_cells),
+                    Some(&victim_job.clearance_exempt_cell_keys),
+                    core_radius_cells,
+                    victim_job.source_port_um,
+                    victim_job.target_port_um,
+                );
+                let repair_elapsed_us = native_batch_elapsed_us(repair_start);
+                batch.timings.reroute_victims_wall_us += repair_elapsed_us;
+                match repair_result {
+                    Ok(route) => {
+                        batch.timings
+                            .add_route_result_stats_if(collect_native_timing, &route);
+                        remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
+                        route
+                    }
+                    Err(error) => {
+                        batch.timings.reroute_victims_failed_wall_us += repair_elapsed_us;
+                        batch.attempts.push(NativeRouteAttempt {
+                            bucket_name,
+                            net_id: victim_job.net_id,
+                            route: None,
+                            failed: true,
+                            error: Some(format!(
+                                "{normal_error}; repair fallback: {error}"
+                            )),
+                            repair_round: Some(0),
+                            candidate_blockers: vec![victim_id],
+                            ripup_ids: vec![victim_id],
+                        });
+                        self.obstacle_map = base_map;
+                        self.committed_center_routes = base_center_routes;
+                        self.committed_realized_center_routes = base_realized_center_routes;
+                        self.committed_target_terminal_bump_guards =
+                            base_target_terminal_bump_guards;
+                        self.committed_opened_cell_keys = base_opened_cell_keys;
+                        self.crossing_events = base_crossing_events;
+                        batch.final_routes = base_routes;
+                        self.invalidate_meander_base_prefix();
+                        return false;
+                    }
+                }
+            }
+        };
+
+        batch.attempts.push(NativeRouteAttempt {
+            bucket_name,
+            net_id: job.net_id,
+            route: Some(current_route.clone()),
+            failed: false,
+            error: None,
+            repair_round: Some(0),
+            candidate_blockers: vec![victim_id],
+            ripup_ids: vec![victim_id],
+        });
+        batch.attempts.push(NativeRouteAttempt {
+            bucket_name,
+            net_id: victim_job.net_id,
+            route: Some(victim_route.clone()),
+            failed: false,
+            error: None,
+            repair_round: Some(0),
+            candidate_blockers: vec![victim_id],
+            ripup_ids: vec![victim_id],
+        });
+        batch.final_routes.insert(job.net_id, current_route);
+        batch.final_routes.insert(victim_job.net_id, victim_route);
+        batch.repair_count = batch.repair_count.saturating_add(1);
+        true
+    }
+
     fn try_preemptive_crossing_ripup(
         &mut self,
         batch: &mut RepairBatchState,
@@ -10116,198 +10339,26 @@ impl PyPhotonicRouter {
         } else {
             Vec::new()
         };
-        if preemptive_crossing_victims.is_empty() {
-            return PreemptiveCrossingRipupOutcome::NotResolved;
-        }
-
-        let base_map = self.obstacle_map.clone();
-        let base_center_routes = self.committed_center_routes.clone();
-        let base_realized_center_routes = self.committed_realized_center_routes.clone();
-        let base_target_terminal_bump_guards =
-            self.committed_target_terminal_bump_guards.clone();
-        let base_opened_cell_keys = self.committed_opened_cell_keys.clone();
-        let base_crossing_events = self.crossing_events.clone();
-        let base_routes = batch.final_routes.clone();
-
         for victim_id in preemptive_crossing_victims {
             let Some(victim_job) = job_by_id.get(&victim_id) else {
                 continue;
             };
-
-            self.obstacle_map = base_map.clone();
-            self.committed_center_routes = base_center_routes.clone();
-            self.committed_realized_center_routes = base_realized_center_routes.clone();
-            self.committed_target_terminal_bump_guards =
-                base_target_terminal_bump_guards.clone();
-            self.committed_opened_cell_keys = base_opened_cell_keys.clone();
-            self.crossing_events = base_crossing_events.clone();
-            batch.final_routes = base_routes.clone();
-            self.invalidate_meander_base_prefix();
-
-            if let Some(old_route) = batch.final_routes.get(&victim_id).cloned() {
-                let history_start = native_batch_timer(collect_native_timing);
-                self.add_history_for_native_route(
-                    &old_route,
-                    block_radius_cells,
-                    history_increment,
-                );
-                batch.timings.history_update_us += native_batch_elapsed_us(history_start);
+            if self.try_ripup_single_victim_and_reroute(
+                batch,
+                job,
+                victim_job,
+                "preemptive_crossing_ripup",
+                true,
+                block_radius_cells,
+                commit_radius_cells,
+                core_radius_cells,
+                history_weight,
+                history_increment,
+                collect_native_timing,
+            ) {
+                return PreemptiveCrossingRipupOutcome::Routed;
             }
-            let ripup_start = native_batch_timer(collect_native_timing);
-            self.remove_crossing_events_for_net(victim_id);
-            self.obstacle_map.ripup_route(victim_id);
-            self.committed_center_routes.remove(&victim_id);
-            self.committed_realized_center_routes.remove(&victim_id);
-            self.committed_target_terminal_bump_guards
-                .remove(&victim_id);
-            self.committed_opened_cell_keys.remove(&victim_id);
-            batch.final_routes.remove(&victim_id);
-            batch.timings.ripup_us += native_batch_elapsed_us(ripup_start);
-
-            let route_start = native_batch_timer(collect_native_timing);
-            let route_result = self.route_single_net_and_commit_native(
-                job.net_id,
-                job.source,
-                job.target,
-                block_radius_cells,
-                Some(&job.opened_cells),
-                Some(&job.opened_cell_keys),
-                commit_radius_cells,
-                Some(&job.clearance_exempt_cells),
-                Some(&job.clearance_exempt_cell_keys),
-                core_radius_cells,
-                job.source_port_um,
-                job.target_port_um,
-            );
-            let route_elapsed_us = native_batch_elapsed_us(route_start);
-            batch.timings.repair_failed_net_wall_us += route_elapsed_us;
-            let current_route = match route_result {
-                Ok(route) => {
-                    batch.timings.add_route_result_stats_if(collect_native_timing, &route);
-                    remove_success_static_cleanup(&mut self.obstacle_map, job);
-                    route
-                }
-                Err(error) => {
-                    batch.timings.repair_failed_net_failed_wall_us += route_elapsed_us;
-                    batch.attempts.push(NativeRouteAttempt {
-                        bucket_name: "preemptive_crossing_ripup",
-                        net_id: job.net_id,
-                        route: None,
-                        failed: true,
-                        error: Some(error),
-                        repair_round: Some(0),
-                        candidate_blockers: vec![victim_id],
-                        ripup_ids: vec![victim_id],
-                    });
-                    continue;
-                }
-            };
-
-            let reroute_start = native_batch_timer(collect_native_timing);
-            let reroute_result = self.route_single_net_and_commit_native(
-                victim_job.net_id,
-                victim_job.source,
-                victim_job.target,
-                block_radius_cells,
-                Some(&victim_job.opened_cells),
-                Some(&victim_job.opened_cell_keys),
-                commit_radius_cells,
-                Some(&victim_job.clearance_exempt_cells),
-                Some(&victim_job.clearance_exempt_cell_keys),
-                core_radius_cells,
-                victim_job.source_port_um,
-                victim_job.target_port_um,
-            );
-            let reroute_elapsed_us = native_batch_elapsed_us(reroute_start);
-            batch.timings.reroute_victims_wall_us += reroute_elapsed_us;
-            let victim_route = match reroute_result {
-                Ok(route) => {
-                    batch.timings.add_route_result_stats_if(collect_native_timing, &route);
-                    remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
-                    route
-                }
-                Err(normal_error) => {
-                    batch.timings.reroute_victims_failed_wall_us += reroute_elapsed_us;
-                    let repair_start = native_batch_timer(collect_native_timing);
-                    let repair_result = self.route_single_net_and_commit_repair_native(
-                        victim_job.net_id,
-                        victim_job.source,
-                        victim_job.target,
-                        block_radius_cells,
-                        Some(&victim_job.opened_cells),
-                        Some(&victim_job.opened_cell_keys),
-                        history_weight,
-                        commit_radius_cells,
-                        Some(&victim_job.clearance_exempt_cells),
-                        Some(&victim_job.clearance_exempt_cell_keys),
-                        core_radius_cells,
-                        victim_job.source_port_um,
-                        victim_job.target_port_um,
-                    );
-                    let repair_elapsed_us = native_batch_elapsed_us(repair_start);
-                    batch.timings.reroute_victims_wall_us += repair_elapsed_us;
-                    match repair_result {
-                        Ok(route) => {
-                            batch.timings
-                                .add_route_result_stats_if(collect_native_timing, &route);
-                            remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
-                            route
-                        }
-                        Err(error) => {
-                            batch.timings.reroute_victims_failed_wall_us += repair_elapsed_us;
-                            batch.attempts.push(NativeRouteAttempt {
-                                bucket_name: "preemptive_crossing_ripup",
-                                net_id: victim_job.net_id,
-                                route: None,
-                                failed: true,
-                                error: Some(format!(
-                                    "{normal_error}; repair fallback: {error}"
-                                )),
-                                repair_round: Some(0),
-                                candidate_blockers: vec![victim_id],
-                                ripup_ids: vec![victim_id],
-                            });
-                            continue;
-                        }
-                    }
-                }
-            };
-
-            batch.attempts.push(NativeRouteAttempt {
-                bucket_name: "preemptive_crossing_ripup",
-                net_id: job.net_id,
-                route: Some(current_route.clone()),
-                failed: false,
-                error: None,
-                repair_round: Some(0),
-                candidate_blockers: vec![victim_id],
-                ripup_ids: vec![victim_id],
-            });
-            batch.attempts.push(NativeRouteAttempt {
-                bucket_name: "preemptive_crossing_ripup",
-                net_id: victim_job.net_id,
-                route: Some(victim_route.clone()),
-                failed: false,
-                error: None,
-                repair_round: Some(0),
-                candidate_blockers: vec![victim_id],
-                ripup_ids: vec![victim_id],
-            });
-            batch.final_routes.insert(job.net_id, current_route);
-            batch.final_routes.insert(victim_job.net_id, victim_route);
-            batch.repair_count = batch.repair_count.saturating_add(1);
-            return PreemptiveCrossingRipupOutcome::Routed;
         }
-
-        self.obstacle_map = base_map;
-        self.committed_center_routes = base_center_routes;
-        self.committed_realized_center_routes = base_realized_center_routes;
-        self.committed_target_terminal_bump_guards = base_target_terminal_bump_guards;
-        self.committed_opened_cell_keys = base_opened_cell_keys;
-        self.crossing_events = base_crossing_events;
-        batch.final_routes = base_routes;
-        self.invalidate_meander_base_prefix();
-
         PreemptiveCrossingRipupOutcome::NotResolved
     }
 
@@ -10548,163 +10599,29 @@ impl PyPhotonicRouter {
         collect_native_timing: bool,
         trace_native_repair: bool,
     ) -> PendingStraightRepairOutcome {
-        let base_map = self.obstacle_map.clone();
-        let base_center_routes = self.committed_center_routes.clone();
-        let base_realized_center_routes =
-            self.committed_realized_center_routes.clone();
-        let base_target_terminal_bump_guards =
-            self.committed_target_terminal_bump_guards.clone();
-        let base_opened_cell_keys = self.committed_opened_cell_keys.clone();
-        let base_crossing_events = self.crossing_events.clone();
-        let base_routes = batch.final_routes.clone();
-
         if trace_native_repair {
             eprintln!(
                 "native_repair_pending_straight_start net={} victim={} count={}",
                 job.net_id, hint.victim_net_id, hint.count
             );
         }
-
-        let ripup_start = native_batch_timer(collect_native_timing);
-        self.remove_crossing_events_for_net(hint.victim_net_id);
-        self.obstacle_map.ripup_route(hint.victim_net_id);
-        self.committed_center_routes.remove(&hint.victim_net_id);
-        self.committed_realized_center_routes.remove(&hint.victim_net_id);
-        self.committed_target_terminal_bump_guards
-            .remove(&hint.victim_net_id);
-        self.committed_opened_cell_keys.remove(&hint.victim_net_id);
-        batch.final_routes.remove(&hint.victim_net_id);
-        self.invalidate_meander_base_prefix();
-        batch.timings.ripup_us += native_batch_elapsed_us(ripup_start);
-
-        let current_start = native_batch_timer(collect_native_timing);
-        let current_result = self.route_single_net_and_commit_native(
-            job.net_id,
-            job.source,
-            job.target,
+        if self.try_ripup_single_victim_and_reroute(
+            batch,
+            job,
+            victim_job,
+            "pending_straight_ripup",
+            false,
             block_radius_cells,
-            Some(&job.opened_cells),
-            Some(&job.opened_cell_keys),
             commit_radius_cells,
-            Some(&job.clearance_exempt_cells),
-            Some(&job.clearance_exempt_cell_keys),
             core_radius_cells,
-            job.source_port_um,
-            job.target_port_um,
-        );
-        let current_elapsed_us = native_batch_elapsed_us(current_start);
-        batch.timings.repair_failed_net_wall_us += current_elapsed_us;
-        let current_route = match current_result {
-            Ok(route) => {
-                batch.timings.add_route_result_stats_if(
-                    collect_native_timing,
-                    &route,
-                );
-                remove_success_static_cleanup(&mut self.obstacle_map, job);
-                route
-            }
-            Err(error) => {
-                batch.timings.repair_failed_net_failed_wall_us += current_elapsed_us;
-                batch.attempts.push(NativeRouteAttempt {
-                    bucket_name: "pending_straight_ripup",
-                    net_id: job.net_id,
-                    route: None,
-                    failed: true,
-                    error: Some(error),
-                    repair_round: Some(0),
-                    candidate_blockers: vec![hint.victim_net_id],
-                    ripup_ids: vec![hint.victim_net_id],
-                });
-                self.obstacle_map = base_map;
-                self.committed_center_routes = base_center_routes;
-                self.committed_realized_center_routes =
-                    base_realized_center_routes;
-                self.committed_target_terminal_bump_guards =
-                    base_target_terminal_bump_guards;
-                self.committed_opened_cell_keys = base_opened_cell_keys;
-                self.crossing_events = base_crossing_events;
-                batch.final_routes = base_routes;
-                self.invalidate_meander_base_prefix();
-                return PendingStraightRepairOutcome::NotResolved;
-            }
-        };
-
-        let victim_start = native_batch_timer(collect_native_timing);
-        let victim_result = self.route_single_net_and_commit_native(
-            victim_job.net_id,
-            victim_job.source,
-            victim_job.target,
-            block_radius_cells,
-            Some(&victim_job.opened_cells),
-            Some(&victim_job.opened_cell_keys),
-            commit_radius_cells,
-            Some(&victim_job.clearance_exempt_cells),
-            Some(&victim_job.clearance_exempt_cell_keys),
-            core_radius_cells,
-            victim_job.source_port_um,
-            victim_job.target_port_um,
-        );
-        let victim_elapsed_us = native_batch_elapsed_us(victim_start);
-        batch.timings.reroute_victims_wall_us += victim_elapsed_us;
-        let victim_route = match victim_result {
-            Ok(route) => {
-                batch.timings.add_route_result_stats_if(
-                    collect_native_timing,
-                    &route,
-                );
-                remove_success_static_cleanup(&mut self.obstacle_map, victim_job);
-                route
-            }
-            Err(error) => {
-                batch.timings.reroute_victims_failed_wall_us += victim_elapsed_us;
-                batch.attempts.push(NativeRouteAttempt {
-                    bucket_name: "pending_straight_ripup",
-                    net_id: victim_job.net_id,
-                    route: None,
-                    failed: true,
-                    error: Some(error),
-                    repair_round: Some(0),
-                    candidate_blockers: vec![hint.victim_net_id],
-                    ripup_ids: vec![hint.victim_net_id],
-                });
-                self.obstacle_map = base_map;
-                self.committed_center_routes = base_center_routes;
-                self.committed_realized_center_routes =
-                    base_realized_center_routes;
-                self.committed_target_terminal_bump_guards =
-                    base_target_terminal_bump_guards;
-                self.committed_opened_cell_keys = base_opened_cell_keys;
-                self.crossing_events = base_crossing_events;
-                batch.final_routes = base_routes;
-                self.invalidate_meander_base_prefix();
-                return PendingStraightRepairOutcome::NotResolved;
-            }
-        };
-
-        batch.attempts.push(NativeRouteAttempt {
-            bucket_name: "pending_straight_ripup",
-            net_id: job.net_id,
-            route: Some(current_route.clone()),
-            failed: false,
-            error: None,
-            repair_round: Some(0),
-            candidate_blockers: vec![hint.victim_net_id],
-            ripup_ids: vec![hint.victim_net_id],
-        });
-        batch.attempts.push(NativeRouteAttempt {
-            bucket_name: "pending_straight_ripup",
-            net_id: victim_job.net_id,
-            route: Some(victim_route.clone()),
-            failed: false,
-            error: None,
-            repair_round: Some(0),
-            candidate_blockers: vec![hint.victim_net_id],
-            ripup_ids: vec![hint.victim_net_id],
-        });
-        batch.final_routes.insert(job.net_id, current_route);
-        batch.final_routes.insert(victim_job.net_id, victim_route);
-        batch.repair_count = batch.repair_count.saturating_add(1);
-        return PendingStraightRepairOutcome::Routed;
+            0.0,
+            0,
+            collect_native_timing,
+        ) {
+            PendingStraightRepairOutcome::Routed
+        } else {
+            PendingStraightRepairOutcome::NotResolved
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
