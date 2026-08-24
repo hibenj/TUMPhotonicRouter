@@ -18,9 +18,9 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-21
+- Date: 2026-08-24
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `a8dac59`. Working tree clean.
+- Current HEAD: `034b489` (docs-only since `a8dac59`). Working tree clean.
 - **No active ExecPlan right now.** The `route_many_with_repair_and_commit`
   restructuring plan (`.agent/execplans/2026-08-20-route-many-with-repair-restructuring.md`)
   is complete -- see Completed ExecPlans below for the summary, and that
@@ -256,13 +256,33 @@ restructuring; the third (below, in Resolved Findings) is fixed:
    route found for n_50` (`candidate_blockers=[49, 50]`), caused by the
    zero-event-acceptance fix (bisected: clean at `9302efd`, broken at
    `3bea008`/`HEAD`). Not root-caused to the same depth as the now-resolved
-   `n_70` finding was -- deliberately deferred, a diagnostic run was killed
-   after ~10 minutes without completing (16x16-scale iterates far slower
-   than 8x8-scale). Worth checking first (2026-08-20) whether this shares
-   the same "Illegal grid crossing" prefix-recognition gap the `n_70` fix
-   just closed -- not confirmed either way, but cheap to check given that
-   fix's own lesson about re-verifying old negative conclusions before
-   assuming a fresh root-cause trace is needed.
+   `n_70` finding was.
+   **Checked 2026-08-24, ruled out**: this does *not* share the `n_70`
+   prefix-recognition gap. Direct reproduction on current `HEAD` (`034b489`,
+   `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1`, the documented stable-baseline
+   command below) shows the failure trace uses only the
+   `"Illegal realized crossing"` prefix throughout -- `"Illegal grid
+   crossing"` (the message `n_70` needed) never appears -- and the
+   victim-set-expansion mechanism the `n_70` fix relies on
+   (`enqueue_targeted_illegal_crossing_repair_set`) is already working
+   correctly here: `native_repair_keepout net=51 ripup=[49, 50]` is tried
+   in both `victim_first`/`reverse` orderings, i.e. net 50's collision
+   partner (net 49) is already correctly folded into net 51's ripup set.
+   Every combination still fails (`not_perpendicular` crossing between
+   nets 50/51, `No legal LiDAR crossing route found` otherwise) --
+   confirming this is a genuine, separate repair-exhaustion/geometry
+   problem, not a string-matching bug. Error signature is otherwise
+   essentially byte-identical to the 2026-08-19 trace recorded in
+   `.agent/execplans/2026-08-19-fix-open-repair-and-dense-port-findings.md`'s
+   Finding 2. Root-causing to `n_70`'s depth (why no legal arrangement
+   exists among nets 49/50/51, corridor-clearance evidence, etc.) is still
+   not done -- this session only closed the "does it share the known fixed
+   bug" question, not the underlying finding.
+   Reproduction command (from repo root, `.venv/bin/python`):
+   `rm -rf build/routes build/verification && PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT="0.05" PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES="90" PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1 PYTHONPATH=. .venv/bin/python routing_flow.py multiportmmi_16x16 --crossings true --crossing-mode lidar-pure --fanout-access-mode static-stubs --routing-window-scale 0.35 --foreign-port-keepout-cells 0`
+   (completes in under 2 minutes without `--attempt-diagnostics`; the
+   ~10-minute-and-killed prior attempt was the heavier
+   `--attempt-diagnostics` variant, not this one).
 
 ## Resolved Findings
 
@@ -403,13 +423,12 @@ now made the surrounding code substantially easier to reason about:
    design decision (how much lateral room a single-direction bend
    needs, how to redistribute fairly), present options to the
    repository owner first, do not implement solo.
-2. `multiportmmi_16x16` stable-baseline `n_50` -- before spending real
-   time on it, check whether it shares the same "Illegal grid
-   crossing" prefix-recognition gap the `n_70` fix closed (see Current
-   Findings item 2's note) -- directly re-verify with the same
-   `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1` diagnostic pattern rather
-   than assuming the old root-cause estimate still holds, per that
-   fix's own central lesson.
+2. `multiportmmi_16x16` stable-baseline `n_50` -- the "does it share the
+   `n_70` prefix-recognition gap" question is now answered (2026-08-24,
+   see Current Findings item 2): no, it's a separate, still-unsolved
+   repair-exhaustion problem. Next step, if picked up, is root-causing it
+   to the same depth as `n_70` (corridor-clearance BFS probe, exact
+   geometric reason nets 49/50/51 have no legal arrangement).
 
 **Correction (2026-08-21): the `round_base_*` re-cloning "optimization
 candidate" this section previously named is not real -- retracted.**
