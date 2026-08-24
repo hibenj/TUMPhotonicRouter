@@ -2122,92 +2122,28 @@ pub fn route_single_net_with_config_reporting_stats(
         ));
     }
 
-    if !config.use_routing_window {
-        let route = route_single_net_with_bounds(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            config,
-            None,
-            &mut stats,
-        )
-        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
-        *out_stats = stats.clone();
-        return route;
-    }
-
-    let mut last_bounds: Option<RoutingBounds> = None;
-    for expansion_idx in 0..=config.routing_window_max_expansions {
-        let Some(bounds) =
-            compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)
-        else {
-            *out_stats = stats.clone();
-            return None;
-        };
-        if last_bounds == Some(bounds) {
-            continue;
-        }
-        last_bounds = Some(bounds);
-        stats.window_attempts += 1;
-        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(bounds));
-        stats.last_window_min_x = bounds.min_x;
-        stats.last_window_max_x = bounds.max_x;
-        stats.last_window_min_y = bounds.min_y;
-        stats.last_window_max_y = bounds.max_y;
-        stats.last_window_area_cells = window_area(bounds);
-
-        if let Some(route) = route_single_net_with_bounds(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            config,
-            Some(bounds),
-            &mut stats,
-        ) {
-            *out_stats = stats.clone();
-            return Some(with_route_search_total_time(
-                route,
-                route_search_total_start.as_ref(),
-            ));
-        }
-    }
-
-    if config.routing_window_fallback_full_grid {
-        stats.window_attempts += 1;
-        stats.used_full_grid_fallback = true;
-        let full_bounds = RoutingBounds {
-            min_x: 0,
-            max_x: obstacle_map.width() - 1,
-            min_y: 0,
-            max_y: obstacle_map.height() - 1,
-        };
-        stats.last_window_min_x = full_bounds.min_x;
-        stats.last_window_max_x = full_bounds.max_x;
-        stats.last_window_min_y = full_bounds.min_y;
-        stats.last_window_max_y = full_bounds.max_y;
-        stats.last_window_area_cells = window_area(full_bounds);
-        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        let route = route_single_net_with_bounds(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            config,
-            None,
-            &mut stats,
-        )
-        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
-        *out_stats = stats.clone();
-        return route;
-    }
-
+    let route = run_windowed_single_net_search(
+        obstacle_map,
+        source,
+        target,
+        config,
+        &mut stats,
+        |obstacle_map, bounds, stats| {
+            route_single_net_with_bounds(
+                obstacle_map,
+                primitives,
+                source,
+                target,
+                Some(&anchor_open_cells),
+                config,
+                bounds,
+                stats,
+            )
+        },
+    )
+    .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
     *out_stats = stats.clone();
-    None
+    route
 }
 
 pub fn route_single_net_with_dynamic_expansion_config(
@@ -2283,98 +2219,30 @@ pub fn route_single_net_with_dynamic_expansion_config_reporting_stats(
         stats.jps4_fallbacks += 1;
     }
 
-    if !config.use_routing_window {
-        let route = route_single_net_with_bounds_dynamic_expansion(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            config,
-            None,
-            &mut stats,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-        )
-        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
-        *out_stats = stats.clone();
-        return route;
-    }
-
-    let mut last_bounds: Option<RoutingBounds> = None;
-    for expansion_idx in 0..=config.routing_window_max_expansions {
-        let Some(bounds) =
-            compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)
-        else {
-            *out_stats = stats.clone();
-            return None;
-        };
-        if last_bounds == Some(bounds) {
-            continue;
-        }
-        last_bounds = Some(bounds);
-        stats.window_attempts += 1;
-        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(bounds));
-        stats.last_window_min_x = bounds.min_x;
-        stats.last_window_max_x = bounds.max_x;
-        stats.last_window_min_y = bounds.min_y;
-        stats.last_window_max_y = bounds.max_y;
-        stats.last_window_area_cells = window_area(bounds);
-
-        if let Some(route) = route_single_net_with_bounds_dynamic_expansion(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            config,
-            Some(bounds),
-            &mut stats,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-        ) {
-            *out_stats = stats.clone();
-            return Some(with_route_search_total_time(
-                route,
-                route_search_total_start.as_ref(),
-            ));
-        }
-    }
-
-    if config.routing_window_fallback_full_grid {
-        stats.window_attempts += 1;
-        stats.used_full_grid_fallback = true;
-        let full_bounds = RoutingBounds {
-            min_x: 0,
-            max_x: obstacle_map.width() - 1,
-            min_y: 0,
-            max_y: obstacle_map.height() - 1,
-        };
-        stats.last_window_min_x = full_bounds.min_x;
-        stats.last_window_max_x = full_bounds.max_x;
-        stats.last_window_min_y = full_bounds.min_y;
-        stats.last_window_max_y = full_bounds.max_y;
-        stats.last_window_area_cells = window_area(full_bounds);
-        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        let route = route_single_net_with_bounds_dynamic_expansion(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            config,
-            None,
-            &mut stats,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-        )
-        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
-        *out_stats = stats.clone();
-        return route;
-    }
-
+    let route = run_windowed_single_net_search(
+        obstacle_map,
+        source,
+        target,
+        config,
+        &mut stats,
+        |obstacle_map, bounds, stats| {
+            route_single_net_with_bounds_dynamic_expansion(
+                obstacle_map,
+                primitives,
+                source,
+                target,
+                Some(&anchor_open_cells),
+                config,
+                bounds,
+                stats,
+                dynamic_expansion_radius_cells,
+                dynamic_clearance_exempt_cells,
+            )
+        },
+    )
+    .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
     *out_stats = stats.clone();
-    None
+    route
 }
 
 pub fn route_single_net_with_collision_crossing_config(
@@ -2461,100 +2329,31 @@ pub fn route_single_net_with_collision_crossing_config_with_stats(
         stats.jps4_fallbacks += 1;
     }
 
-    if !config.use_routing_window {
-        let result = route_single_net_with_bounds_crossing(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            Some(&reservation_anchor_open_cells),
-            config,
-            None,
-            &mut stats,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-            crossing,
-        )
-        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
-        return (result, stats);
-    }
-
-    let mut last_bounds: Option<RoutingBounds> = None;
-    for expansion_idx in 0..=config.routing_window_max_expansions {
-        let Some(bounds) = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx) else {
-            return (None, stats);
-        };
-        if last_bounds == Some(bounds) {
-            continue;
-        }
-        last_bounds = Some(bounds);
-        stats.window_attempts += 1;
-        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(bounds));
-        stats.last_window_min_x = bounds.min_x;
-        stats.last_window_max_x = bounds.max_x;
-        stats.last_window_min_y = bounds.min_y;
-        stats.last_window_max_y = bounds.max_y;
-        stats.last_window_area_cells = window_area(bounds);
-
-        if let Some(route) = route_single_net_with_bounds_crossing(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            Some(&reservation_anchor_open_cells),
-            config,
-            Some(bounds),
-            &mut stats,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-            crossing,
-        ) {
-            return (
-                Some(with_route_search_total_time(
-                    route,
-                    route_search_total_start.as_ref(),
-                )),
+    let result = run_windowed_single_net_search(
+        obstacle_map,
+        source,
+        target,
+        config,
+        &mut stats,
+        |obstacle_map, bounds, stats| {
+            route_single_net_with_bounds_crossing(
+                obstacle_map,
+                primitives,
+                source,
+                target,
+                Some(&anchor_open_cells),
+                Some(&reservation_anchor_open_cells),
+                config,
+                bounds,
                 stats,
-            );
-        }
-    }
-
-    if config.routing_window_fallback_full_grid {
-        stats.window_attempts += 1;
-        stats.used_full_grid_fallback = true;
-        let full_bounds = RoutingBounds {
-            min_x: 0,
-            max_x: obstacle_map.width() - 1,
-            min_y: 0,
-            max_y: obstacle_map.height() - 1,
-        };
-        stats.last_window_min_x = full_bounds.min_x;
-        stats.last_window_max_x = full_bounds.max_x;
-        stats.last_window_min_y = full_bounds.min_y;
-        stats.last_window_max_y = full_bounds.max_y;
-        stats.last_window_area_cells = window_area(full_bounds);
-        stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        let result = route_single_net_with_bounds_crossing(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            Some(&reservation_anchor_open_cells),
-            config,
-            None,
-            &mut stats,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-            crossing,
-        )
-        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
-        return (result, stats);
-    }
-
-    (None, stats)
+                dynamic_expansion_radius_cells,
+                dynamic_clearance_exempt_cells,
+                crossing,
+            )
+        },
+    )
+    .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+    (result, stats)
 }
 
 pub fn route_single_net_with_crossing_config(
@@ -2608,22 +2407,45 @@ pub fn route_single_net_with_crossing_config(
         stats.jps4_fallbacks += 1;
     }
 
+    run_windowed_single_net_search(
+        obstacle_map,
+        source,
+        target,
+        config,
+        &mut stats,
+        |obstacle_map, bounds, stats| {
+            route_single_net_with_bounds_crossing(
+                obstacle_map,
+                primitives,
+                source,
+                target,
+                Some(&anchor_open_cells),
+                Some(&anchor_open_cells),
+                config,
+                bounds,
+                stats,
+                dynamic_expansion_radius_cells,
+                dynamic_clearance_exempt_cells,
+                crossing,
+            )
+        },
+    )
+    .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()))
+}
+
+fn run_windowed_single_net_search<F>(
+    obstacle_map: &ObstacleMap,
+    source: State,
+    target: State,
+    config: &AStarConfig,
+    stats: &mut RouteSearchStats,
+    mut try_bounds: F,
+) -> Option<RouteResult>
+where
+    F: FnMut(&ObstacleMap, Option<RoutingBounds>, &mut RouteSearchStats) -> Option<RouteResult>,
+{
     if !config.use_routing_window {
-        return route_single_net_with_bounds_crossing(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            Some(&anchor_open_cells),
-            config,
-            None,
-            &mut stats,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-            crossing,
-        )
-        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        return try_bounds(obstacle_map, None, stats);
     }
 
     let mut last_bounds: Option<RoutingBounds> = None;
@@ -2641,24 +2463,8 @@ pub fn route_single_net_with_crossing_config(
         stats.last_window_max_y = bounds.max_y;
         stats.last_window_area_cells = window_area(bounds);
 
-        if let Some(route) = route_single_net_with_bounds_crossing(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            Some(&anchor_open_cells),
-            config,
-            Some(bounds),
-            &mut stats,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-            crossing,
-        ) {
-            return Some(with_route_search_total_time(
-                route,
-                route_search_total_start.as_ref(),
-            ));
+        if let Some(route) = try_bounds(obstacle_map, Some(bounds), stats) {
+            return Some(route);
         }
     }
 
@@ -2677,21 +2483,7 @@ pub fn route_single_net_with_crossing_config(
         stats.last_window_max_y = full_bounds.max_y;
         stats.last_window_area_cells = window_area(full_bounds);
         stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        return route_single_net_with_bounds_crossing(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            Some(&anchor_open_cells),
-            Some(&anchor_open_cells),
-            config,
-            None,
-            &mut stats,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-            crossing,
-        )
-        .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+        return try_bounds(obstacle_map, None, stats);
     }
 
     None
