@@ -523,11 +523,32 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**Active ExecPlan: `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`**
-(written 2026-08-24, chosen by the repository owner as the next objective
-after `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md`
-closed). Start there; the rest of this list is preserved for context and
-for whatever gets picked up after it.
+**Two ExecPlans exist, neither actively being driven by an agent right now
+(2026-08-25) -- the repository owner is walking through the codebase
+manually and directing next steps turn by turn.**
+
+`.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`
+(written 2026-08-24) is paused mid-Milestone-4 (accepted the tier-2
+removal's larger-than-measured consequence -- 5 nets newly fail in
+`multiportmmi_8x8` stable-baseline, not the 1 originally measured, see
+that plan's own Surprises & Discoveries) at the repository owner's direct
+request, to read through the pipeline starting at `routing_flow.py`
+before deciding what (if anything) to do next in that plan.
+
+`.agent/execplans/2026-08-25-python-rust-linting-and-coding-standards.md`
+(written 2026-08-25) is a new, independent initiative: adopt `ruff`/`mypy`
+for Python and `cargo clippy`/`cargo fmt` for Rust, add a short project
+coding-standards document, and wire GitHub Actions CI -- prompted by the
+repository owner's own review of `routing_flow.py` surfacing real issues
+(a ~40-parameter function signature, import-time side effects) plus a
+look at the sibling `fiction` repository's mature tooling setup for
+concrete inspiration. Not started; a baseline scoping pass already found
+509 ruff findings, 235 clippy warnings, 137 `cargo fmt` diff blocks, and
+246 mypy errors (many from the untyped PyO3 boundary) -- see that plan's
+own Surprises & Discoveries for the exact commands and numbers.
+
+The rest of this list is preserved for context and for whatever gets
+picked up next.
 
 1. **Endpoint-correction cascade** -- now `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`,
    the active plan. `_apply_crossing_aware_endpoint_correction_to_record`

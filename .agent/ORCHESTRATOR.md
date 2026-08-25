@@ -18,20 +18,28 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**Active ExecPlan:** `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`
-(written 2026-08-24, not yet started). Chosen by the repository owner as the
-next objective after `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md`
-closed. Investigates and fixes the crossing-aware endpoint-correction
-subsystem (`_apply_crossing_aware_endpoint_correction_to_record` and its
-multi-tier fallback cascade in `translation/route_rust_endpoint_correction.py`),
-which that prior plan's own validation surfaced as a real source of
-illegal/degraded geometry (`n_67` blocked, `n_68`'s fallback warning, an
-11-net y-overshoot measurement, and two repository-owner screenshots of
-visible GDS defects not yet mapped to root causes). Starts with a read-only
-Milestone 1 root-causing five specific open questions before any design
-decision is made -- see that plan's own Context and Orientation for the full
-list. Do not skip ahead to implementation before Milestone 1's evidence is
-recorded.
+**No single active ExecPlan right now (2026-08-25) -- the repository owner
+is directing work turn by turn, not delegating to an autonomous
+orchestration loop.** Two plans exist; do not resume either
+automatically without the repository owner's direction.
+
+`.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`
+(written 2026-08-24) is paused mid-Milestone-4. Milestone 3 (removing the
+unchecked endpoint-correction fallback cascade) is implemented and
+committed; validating it found a larger real-world consequence than
+Milestone 2's own measurement predicted (5 nets newly fail in
+`multiportmmi_8x8` stable-baseline, not 1), which the repository owner
+has accepted for now. Paused at their direct request to read through the
+routing pipeline manually, starting at `routing_flow.py`, before deciding
+whether/how to continue this plan's Milestone 4.
+
+`.agent/execplans/2026-08-25-python-rust-linting-and-coding-standards.md`
+(written 2026-08-25) is a new, independent initiative -- Python/Rust
+linting and formatting tooling, a short coding-standards document, and
+GitHub Actions CI -- not started. See that plan's own Surprises &
+Discoveries for the baseline scoping numbers (509 ruff findings, 235
+clippy warnings, 137 `cargo fmt` diff blocks, 246 mypy errors) before
+assuming any rule set can be turned on and enforced immediately.
 
 `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md` is
 complete (all 3 milestones, 2026-08-24). Fixed two confirmed logical-
