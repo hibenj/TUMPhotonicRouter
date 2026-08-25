@@ -2417,87 +2417,59 @@ class _RouteNetsRustSession:
             as_target=as_target,
         )
 
-    def _dense_source_fanout_route_order(self, jobs: list[RouteJob]) -> list[RouteJob]:
-        """Route consecutive dense source fanouts with inversion-aware extremes."""
+    def _topological_net_route_order(self, jobs: list[RouteJob]) -> list[RouteJob]:
+        """Route nets in topological order (source-instance depth), tiebroken by declaration order.
 
-        def should_reorder_source(instance_name: str) -> bool:
-            return self._is_dense_source_fanout_instance(instance_name)
+        Depth is derived directly from this batch's own net graph (`inst1 ->
+        inst2` edges across `jobs`), not from any benchmark's optional
+        `NODE_DEPTHS` metadata (`self.node_depths`) or the crossing-plan
+        topology analysis in `route_rust_crossing_plan.py`. Net ordering
+        needs a depth signal unconditionally, for every benchmark and every
+        crossing mode: `self.node_depths` is `{}` (not derived) for every
+        benchmark that does not hardcode `NODE_DEPTHS`, and the crossing-plan
+        topology metadata is deliberately withheld entirely in `lidar-pure`
+        mode (`_build_crossing_plan_info`'s own early return, protecting the
+        router-discovered crossing path from topology-precomputed hints) --
+        neither is a usable ordering signal in general. A net's depth is its
+        source instance's depth (how many hops from a true source, an
+        instance with no incoming net in this batch); nets sharing a source
+        instance share a depth and so keep their relative declaration order,
+        matching LiDAR's own `Nets.__lt__` (`comp_dist` primary key,
+        declaration order tiebreak).
+        """
+        incoming: dict[str, set[str]] = {}
+        all_nodes: set[str] = set()
+        for job in jobs:
+            all_nodes.add(job.inst1)
+            all_nodes.add(job.inst2)
+            incoming.setdefault(job.inst2, set()).add(job.inst1)
 
-        def order_single_run(run: list[RouteJob]) -> list[RouteJob]:
-            if len(run) <= 1:
-                return list(run)
-            order_override = os.environ.get("PHOTONIC_ROUTER_DENSE_FANOUT_ORDER", "")
-            if order_override in ("", "original"):
-                return list(run)
-            if order_override in ("inversion-aware-extremes", "legacy"):
-                pass
-            elif order_override not in (
-                "target-ascending",
-                "target-descending",
-                "second-target-lane-first",
-            ):
-                return list(run)
-            if order_override == "target-ascending":
-                return sorted(
-                    run,
-                    key=lambda route_job: (
-                        float(route_job.target_port.center[1]),
-                        int(route_job.route_index),
-                    ),
-                )
-            if order_override == "target-descending":
-                return sorted(
-                    run,
-                    key=lambda route_job: (
-                        -float(route_job.target_port.center[1]),
-                        int(route_job.route_index),
-                    ),
-                )
-            if order_override == "second-target-lane-first":
-                by_target_lane = sorted(
-                    run,
-                    key=lambda route_job: (
-                        float(route_job.target_port.center[1]),
-                        int(route_job.route_index),
-                    ),
-                )
-                first_job = by_target_lane[min(1, len(by_target_lane) - 1)]
-                return [first_job, *(route_job for route_job in run if route_job != first_job)]
-            target_lanes = [float(route_job.target_port.center[1]) for route_job in run]
-            first_lane = float(run[0].target_port.center[1])
-            first_lane_rank = sorted(target_lanes).index(first_lane)
-            if first_lane_rank >= len(run) // 2:
-                median_target_lane = sorted(target_lanes)[len(target_lanes) // 2]
-                return sorted(
-                    run,
-                    key=lambda route_job: (
-                        -abs(float(route_job.target_port.center[1]) - median_target_lane),
-                        float(route_job.target_port.center[1]),
-                        int(route_job.route_index),
-                    ),
-                )
-            return [run[0], run[-1], *run[1:-1]]
+        depth_by_node: dict[str, int] = {}
 
-        ordered_jobs: list[RouteJob] = []
-        index = 0
-        while index < len(jobs):
-            job = jobs[index]
-            if not should_reorder_source(job.inst1):
-                ordered_jobs.append(job)
-                index += 1
-                continue
+        def resolve_depth(node: str, visiting: set[str]) -> int:
+            if node in depth_by_node:
+                return depth_by_node[node]
+            sources = incoming.get(node)
+            if not sources or node in visiting:
+                # No incoming edges (a true source), or a cycle in the net
+                # graph -- a real photonic netlist's signal flow is a DAG,
+                # so a cycle should not happen, but treat a cycle member as
+                # depth 0 rather than recursing forever.
+                depth_by_node[node] = 0
+                return 0
+            visiting.add(node)
+            depth = 1 + max(resolve_depth(source, visiting) for source in sources)
+            visiting.discard(node)
+            depth_by_node[node] = depth
+            return depth
 
-            run_end = index + 1
-            while (
-                run_end < len(jobs)
-                and jobs[run_end].inst1 == job.inst1
-                and should_reorder_source(jobs[run_end].inst1)
-            ):
-                run_end += 1
+        for node in all_nodes:
+            resolve_depth(node, set())
 
-            ordered_jobs.extend(order_single_run(jobs[index:run_end]))
-            index = run_end
-        return ordered_jobs
+        return sorted(
+            jobs,
+            key=lambda route_job: (depth_by_node[route_job.inst1], int(route_job.route_index)),
+        )
 
     def _timing_start(self) -> float:
         return time.perf_counter() if self.collect_timing else 0.0
@@ -6891,7 +6863,13 @@ class _RouteNetsRustSession:
     ) -> tuple[list[RouteJob], float]:
         """Order route jobs, hand static/keepout geometry off to Rust, apply debug-limit slicing, and prepare repair/timing bookkeeping.
 
-        Applies `self._dense_source_fanout_route_order`, aggregates static keepout cells
+        Applies `self._topological_net_route_order` when repair is enabled
+        (reordering only helps a negotiation loop that can recover from a
+        bad order; with repair disabled -- e.g. `test_benchmarks_route_with_astar_only`,
+        which isolates plain A* on purpose -- a net that ends up later in a
+        changed order can collide irrecoverably with an already-committed
+        net that plain A* has no way to rip up, so declaration order is left
+        untouched in that mode), aggregates static keepout cells
         (port runways, foreign-port keepouts, fanout stubs) and hands them to the Rust
         router via `set_static_rects`/`set_static_cells`/`add_static_cells`, applies
         `debug_stop_after_route_index`/`PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT` slicing to
@@ -6906,7 +6884,9 @@ class _RouteNetsRustSession:
         measurement still covers this method's own precompute time, exactly as it did
         before this method existed as a separate call.
         """
-        route_jobs = self._dense_source_fanout_route_order(route_jobs)
+        repair_enabled = (self.ripup_reroute_config or RipupRerouteConfig()).enabled
+        if repair_enabled:
+            route_jobs = self._topological_net_route_order(route_jobs)
 
         port_runway_static_cells: set[tuple[int, int]] = set()
         for cells in self.port_runway_cells_by_spec.values():
