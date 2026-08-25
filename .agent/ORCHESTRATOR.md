@@ -20,27 +20,46 @@ read:
 
 **No single active ExecPlan right now (2026-08-25) -- the repository owner
 is directing work turn by turn, not delegating to an autonomous
-orchestration loop.** Three plans exist; do not resume any of them
+orchestration loop.** Several plans exist; do not resume any of them
 automatically without the repository owner's direction.
 
+`.agent/execplans/2026-08-25-negotiated-repair-engine.md` (written
+2026-08-25) is the newest and, per the repository owner's own direction,
+the current focus: replace `route_many_with_repair_and_commit`'s
+17-method repair dispatch chain with a small number of general,
+composable mechanisms built around a real negotiated-congestion
+algorithm (topological net ordering, systematic per-commit history
+cost, one global iterate-until-converged loop, distance/cost-based
+conflict resolution) instead of hand-tuned special cases. This grew
+directly out of the kernel-unification plan below finding that none of
+the 17 methods are dead code, which the repository owner correctly
+pointed out is a correctness bar, not a design bar -- "just becaus[e]
+all these strategies are somewhat called doesnt mean the[y] are really
+necessary or that the behaviour is kinda 'wild'." Milestone 1 (read-only
+investigation, including a close read of a sibling reference
+implementation at `/home/benjamin/Documents/Repositories/working/LiDAR`
+-- the likely research-paper ancestor of this repository's own
+"lidar-pure" terminology) is complete; read that plan's own Surprises &
+Discoveries for the full evidence-backed comparison between the two
+algorithms before resuming.
+
 `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
-(written 2026-08-25) is the newest and, per the repository owner's own
-direction, the most significant: unify the two duplicate ~600-900 line
-A* search kernels in `src/astar.rs` into one, with crossing-legality
-checking as a collision-triggered, pluggable hook rather than a second
-implementation, and reduce `route_many_with_repair_and_commit`'s
-19-strategy pre-repair dispatch chain (`src/py_router.rs:11833`,
-including at least one strategy gated behind an undocumented
-environment variable) down to the repository owner's own target: simple
-routes first, one swappable search kernel, a standalone rip-up/reroute
-module. Not started -- Milestone 1 is a read-only characterization pass.
-This grew directly out of the repository owner manually walking through
-`routing_flow.py` and the routing pipeline with the assistant and
-repeatedly finding undocumented, historically-accumulated special-case
-behavior (the topology-precomputed-crossing-plan leak fixed in commit
-`5958db3`, the 9-strategy pre-repair chain, the env-var-gated guided-
-crossing strategy) -- read that plan's own Purpose for the precise
-target architecture the repository owner specified directly.
+(written 2026-08-25) is complete through Milestone 5 of 6: the two
+duplicate ~600-900 line A* search kernels in `src/astar.rs` are unified
+into one, with crossing-legality checking as a collision-triggered,
+pluggable hook; every production call site migrated; the old kernels
+deleted with zero remaining references, validated byte-identical
+against the full benchmark ladder (a real bug -- `straight_run_cells`
+not tracked for Tier-1 states -- was found and fixed by that same
+ladder, not by a unit test). Milestone 5 investigated the 19-strategy
+(now 17) pre-repair dispatch chain and found most of it load-bearing,
+not duplication -- only 2 undocumented, off-by-default, no-rationale
+experiments (`try_guided_collision_crossing`, `try_preemptive_crossing_ripup`)
+were actually deletable, and were deleted after the repository owner
+reviewed the git-history evidence directly. Only Milestone 6 (final
+validation ladder, `REPOSITORY_STATE.md` update, retrospective) remains
+open, superseded in immediate priority by the negotiated-repair-engine
+plan above, which grew out of this plan's own Milestone 5 finding.
 
 `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`
 (written 2026-08-24) is paused mid-Milestone-4. Milestone 3 (removing the
