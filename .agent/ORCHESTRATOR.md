@@ -20,8 +20,27 @@ read:
 
 **No single active ExecPlan right now (2026-08-25) -- the repository owner
 is directing work turn by turn, not delegating to an autonomous
-orchestration loop.** Two plans exist; do not resume either
+orchestration loop.** Three plans exist; do not resume any of them
 automatically without the repository owner's direction.
+
+`.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
+(written 2026-08-25) is the newest and, per the repository owner's own
+direction, the most significant: unify the two duplicate ~600-900 line
+A* search kernels in `src/astar.rs` into one, with crossing-legality
+checking as a collision-triggered, pluggable hook rather than a second
+implementation, and reduce `route_many_with_repair_and_commit`'s
+19-strategy pre-repair dispatch chain (`src/py_router.rs:11833`,
+including at least one strategy gated behind an undocumented
+environment variable) down to the repository owner's own target: simple
+routes first, one swappable search kernel, a standalone rip-up/reroute
+module. Not started -- Milestone 1 is a read-only characterization pass.
+This grew directly out of the repository owner manually walking through
+`routing_flow.py` and the routing pipeline with the assistant and
+repeatedly finding undocumented, historically-accumulated special-case
+behavior (the topology-precomputed-crossing-plan leak fixed in commit
+`5958db3`, the 9-strategy pre-repair chain, the env-var-gated guided-
+crossing strategy) -- read that plan's own Purpose for the precise
+target architecture the repository owner specified directly.
 
 `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`
 (written 2026-08-24) is paused mid-Milestone-4. Milestone 3 (removing the
@@ -31,7 +50,8 @@ Milestone 2's own measurement predicted (5 nets newly fail in
 `multiportmmi_8x8` stable-baseline, not 1), which the repository owner
 has accepted for now. Paused at their direct request to read through the
 routing pipeline manually, starting at `routing_flow.py`, before deciding
-whether/how to continue this plan's Milestone 4.
+whether/how to continue this plan's Milestone 4 -- that manual walkthrough
+is what produced the new kernel-unification plan above.
 
 `.agent/execplans/2026-08-25-python-rust-linting-and-coding-standards.md`
 (written 2026-08-25) is paused after Milestone 2 at the repository

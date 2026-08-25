@@ -523,9 +523,29 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**Two ExecPlans exist, neither actively being driven by an agent right now
+**Three ExecPlans exist, none actively being driven by an agent right now
 (2026-08-25) -- the repository owner is walking through the codebase
 manually and directing next steps turn by turn.**
+
+`.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
+(written 2026-08-25) is the newest, and per the repository owner's own
+direction the most significant of the three. Grew directly out of a
+manual, line-by-line walkthrough of the routing pipeline with the
+assistant, which repeatedly found undocumented, historically-
+accumulated special-case behavior: a topology-precomputed-crossing-plan
+leak into the "lidar-pure" baseline (fixed, commit `5958db3`), and,
+still open, a 19-strategy pre-repair dispatch chain in
+`route_many_with_repair_and_commit` (`src/py_router.rs:11833`) --
+including one strategy gated behind an undocumented environment
+variable, `PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING` -- sitting
+on top of two separately-implemented, ~600-900 line A* search kernels
+in `src/astar.rs` that have already drifted apart twice this session in
+ways that caused real bugs. The repository owner's own target
+architecture (recorded verbatim in that plan's Purpose): one swappable
+A* kernel where crossing-legality is a collision-triggered, pluggable
+hook instead of a duplicate implementation, and rip-up/reroute as its
+own clean, standalone module. Not started -- Milestone 1 is read-only
+characterization of both kernels and all 19 `try_*` methods.
 
 `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`
 (written 2026-08-24) is paused mid-Milestone-4 (accepted the tier-2
