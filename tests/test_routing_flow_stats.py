@@ -165,6 +165,7 @@ def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
         schematic=SimpleNamespace(),
         route_jobs=[],
         enable_crossings=True,
+        crossing_mode="window",
         node_depths=None,
         node_ranks=None,
         edge_ranks=None,

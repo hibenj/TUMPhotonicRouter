@@ -6574,6 +6574,7 @@ class _RouteNetsRustSession:
             schematic=self.schematic,
             route_jobs=route_jobs,
             enable_crossings=self.enable_crossings,
+            crossing_mode=self.crossing_mode,
             node_depths=self.node_depths,
             node_ranks=self.node_ranks,
             edge_ranks=self.edge_ranks,

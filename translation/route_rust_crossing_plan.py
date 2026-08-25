@@ -144,6 +144,7 @@ def _build_crossing_plan_info(
     schematic: Schematic,
     route_jobs: list[RouteJob],
     enable_crossings: bool,
+    crossing_mode: str,
     node_depths: dict[str, int] | None,
     node_ranks: dict[str, int] | None,
     edge_ranks: dict[str, dict[str, int]] | None,
@@ -199,6 +200,24 @@ def _build_crossing_plan_info(
             allow_only_expected_pairs=bool(allow_only_expected_crossings),
         )
     )
+
+    if crossing_mode == "lidar-pure":
+        # "lidar-pure" is the router-discovered crossing path: A* explores
+        # and decides, live, whether a collision it finds can legally
+        # become a crossing -- it must not be informed by a precomputed
+        # topology plan at all, not even for reporting purposes that later
+        # code might accidentally start relying on. See
+        # .agent/ORCHESTRATOR.md's own standing rule ("Protect the current
+        # lidar-pure / router-discovered crossing path from topology-
+        # precomputed crossing hints") and the 2026-08-25 investigation
+        # that found this plan's constraints reaching the router
+        # unconditionally, biasing post-commit search cost via
+        # net_has_crossing_requirements() / add_crossing_spacing_history_for_route()
+        # in src/py_router.rs even in this mode. "window" and "collision"
+        # modes are unaffected -- expected-pair matching against this same
+        # topology plan is their actual, intended design, not a leak.
+        info["reason"] = "lidar_pure_mode_ignores_topology_plan"
+        return info
 
     if node_depths is None or node_ranks is None or edge_ranks is None:
         info["reason"] = "missing_topology_metadata"
