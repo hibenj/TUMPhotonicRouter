@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 from gdsfactory.component import Component
 import klayout.db as kdb
+from shapely.geometry import LineString, Point
 
 from translation.route_rust_realization import realize_routed_net_records
 from translation.route_rust_types import RoutedNetRecord
@@ -250,6 +251,10 @@ def verify_photonic_routing(
         dbu=dbu,
         min_overlap_area_um2=float(min_crossing_component_overlap_area_um2),
     )
+    self_intersecting_route_count = _verify_self_intersecting_routes(
+        issues,
+        record_by_key.values(),
+    )
 
     return PhotonicVerificationResult(
         issues=tuple(issues),
@@ -261,6 +266,7 @@ def verify_photonic_routing(
             "waveguide_obstacle_overlap_count": obstacle_overlap_count,
             "crossing_component_route_overlap_count": (crossing_component_route_overlap_count),
             "crossing_component_overlap_count": crossing_component_overlap_count,
+            "self_intersecting_route_count": self_intersecting_route_count,
         },
     )
 
@@ -715,6 +721,108 @@ def _verify_crossing_component_overlaps(
                 )
             )
     return overlap_count
+
+
+def _verify_self_intersecting_routes(
+    issues: list[PhotonicVerificationIssue],
+    records: Iterable[RoutedNetRecord],
+) -> int:
+    """A single net's own realized centerline must not cross itself.
+
+    Complements the router-side rejection (`src/astar.rs`'s
+    `polyline_self_intersects`, applied to the raw grid-cell search
+    result before it can ever be committed) as defense in depth: this
+    checks the *final*, post-endpoint-correction physical centerline, so
+    it also catches a self-crossing introduced downstream of the search
+    (e.g. by endpoint correction's own centerline splicing), not just one
+    produced by the search itself. Found necessary by a real bug: a net
+    negotiating several closely-spaced crossings produced a route whose
+    own path looped back and crossed itself, which no existing check
+    (cross-*net* overlap, obstacle overlap, crossing-component overlap)
+    was positioned to catch, since all of them compare a route against
+    something else, never against its own earlier segments. See
+    `.agent/execplans/2026-08-25-negotiated-repair-engine.md`.
+    """
+    self_intersecting_route_count = 0
+    for record in records:
+        centerline = record.corrected_centerline_um
+        if not centerline:
+            continue
+        offending_point = _polyline_self_intersects_um(centerline)
+        if offending_point is None:
+            continue
+        self_intersecting_route_count += 1
+        issues.append(
+            PhotonicVerificationIssue(
+                code="self_intersecting_route",
+                message=f"Route for net {record.net_name!r} crosses its own path.",
+                net_name=record.net_name,
+                details={
+                    "net_id": record.net_id,
+                    "intersection_point_um": offending_point,
+                    "centerline_point_count": len(centerline),
+                },
+            )
+        )
+    return self_intersecting_route_count
+
+
+def _polyline_self_intersects_um(
+    points: tuple[tuple[float, float], ...],
+    *,
+    tolerance_um: float = 1.0e-6,
+) -> tuple[float, float] | None:
+    """Returns the first offending intersection point, or `None` if this
+    physical-unit polyline does not cross itself.
+
+    Mirrors `src/astar.rs`'s `polyline_self_intersects`/`segments_intersect`
+    semantics exactly, at float precision: permissive on a simple shared-
+    vertex touch between two non-adjacent segments (e.g. a one-cell
+    overshoot-and-return to satisfy a required terminal heading is *not*
+    flagged -- see that Rust function's own doc comment for why), but
+    rejects a genuine transversal crossing, a T-junction into a
+    previously-drawn segment's interior, or a collinear overlap spanning
+    more than a single point. Keeping this in sync with the Rust version
+    by hand (rather than exposing the Rust check to Python) is an accepted
+    tradeoff: the input domains differ enough (exact grid-cell integers
+    pre-correction here vs. physical float coordinates post-correction)
+    that sharing one implementation would need its own float-tolerance
+    design anyway.
+    """
+    if len(points) < 4:
+        return None
+    for i in range(len(points) - 1):
+        p1, q1 = points[i], points[i + 1]
+        segment_a = LineString([p1, q1])
+        if segment_a.length <= tolerance_um:
+            continue
+        for j in range(i + 2, len(points) - 1):
+            p2, q2 = points[j], points[j + 1]
+            segment_b = LineString([p2, q2])
+            if segment_b.length <= tolerance_um:
+                continue
+            intersection = segment_a.intersection(segment_b)
+            if intersection.is_empty:
+                continue
+            if isinstance(intersection, Point):
+                point = (intersection.x, intersection.y)
+                touches_a_endpoint = any(
+                    math.hypot(point[0] - ep[0], point[1] - ep[1]) <= tolerance_um
+                    for ep in (p1, q1)
+                )
+                touches_b_endpoint = any(
+                    math.hypot(point[0] - ep[0], point[1] - ep[1]) <= tolerance_um
+                    for ep in (p2, q2)
+                )
+                if touches_a_endpoint and touches_b_endpoint:
+                    continue
+                return point
+            # Not a single point (a MultiPoint, an overlapping LineString,
+            # or a GeometryCollection): a genuine overlap spanning more
+            # than one shared vertex.
+            centroid = intersection.centroid
+            return (centroid.x, centroid.y)
+    return None
 
 
 def _crossing_footprints_from_metadata(

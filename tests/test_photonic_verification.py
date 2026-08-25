@@ -17,6 +17,8 @@ from translation.photonic_verification import (
     _verify_cross_net_route_overlaps,
     _verify_record_coverage,
     _verify_route_obstacle_overlaps,
+    _verify_self_intersecting_routes,
+    _polyline_self_intersects_um,
     verify_photonic_routing,
 )
 from translation.route_rust_types import RoutedNetRecord
@@ -496,3 +498,97 @@ def test_photonic_verifier_reports_crossing_component_overlap():
     assert [issue.code for issue in issues] == ["crossing_component_overlap"]
     assert issues[0].details["overlap_area_um2"] == 4.0
     assert issues[0].details["overlap_bbox_um"] == (2.0, 2.0, 4.0, 4.0)
+
+
+def test_polyline_self_intersects_um_accepts_simple_paths():
+
+    assert _polyline_self_intersects_um(()) is None
+    assert _polyline_self_intersects_um(((0.0, 0.0),)) is None
+    assert _polyline_self_intersects_um(((0.0, 0.0), (5.0, 0.0), (5.0, 5.0))) is None
+    assert (
+        _polyline_self_intersects_um(
+            ((0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (8.0, 4.0), (8.0, 8.0))
+        )
+        is None
+    )
+
+
+def test_polyline_self_intersects_um_rejects_a_genuine_crossing():
+
+    point = _polyline_self_intersects_um(
+        ((0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0))
+    )
+    assert point is not None
+    assert point == (5.0, 5.0)
+
+
+def test_polyline_self_intersects_um_rejects_collinear_overlap():
+
+    point = _polyline_self_intersects_um(
+        (
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 5.0),
+            (5.0, 5.0),
+            (5.0, 0.0),
+            (2.0, 0.0),
+        )
+    )
+    assert point is not None
+
+
+def test_polyline_self_intersects_um_accepts_a_terminal_heading_overshoot_and_return():
+
+    # Mirrors the exact real regression this same permissiveness fixed on
+    # the Rust side (src/astar.rs's polyline_self_intersects): a one-cell
+    # overshoot-and-return to satisfy a required terminal heading revisits
+    # an exact earlier vertex, which must not be flagged.
+    assert (
+        _polyline_self_intersects_um(
+            (
+                (2.0, 10.0),
+                (2.0, 14.0),
+                (47.0, 14.0),
+                (47.0, 10.0),
+                (46.0, 10.0),
+                (47.0, 10.0),
+            )
+        )
+        is None
+    )
+
+
+def test_photonic_verifier_reports_self_intersecting_route():
+    issues: list[PhotonicVerificationIssue] = []
+
+    record = _routed_record(
+        net_name="n_31",
+        centerline=(
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (10.0, 0.0),
+            (0.0, 10.0),
+        ),
+    )
+
+    count = _verify_self_intersecting_routes(issues, [record])
+
+    assert count == 1
+    assert [issue.code for issue in issues] == ["self_intersecting_route"]
+    assert issues[0].net_name == "n_31"
+    assert issues[0].severity == "error"
+    assert issues[0].details["intersection_point_um"] == (5.0, 5.0)
+
+
+def test_photonic_verifier_allows_clean_route_with_no_self_intersection():
+    issues: list[PhotonicVerificationIssue] = []
+
+    record = _routed_record(
+        net_name="n1",
+        centerline=((0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (10.0, 5.0)),
+    )
+
+    count = _verify_self_intersecting_routes(issues, [record])
+
+    assert count == 0
+    assert issues == []
