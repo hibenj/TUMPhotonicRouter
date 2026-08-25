@@ -734,6 +734,19 @@ pub struct PyPhotonicRouter {
     last_pending_straight_victim: RefCell<Option<PendingStraightVictimHint>>,
     long_straight_congestion_cells: FxHashMap<CellKey, u32>,
     long_straight_congestion_records: Vec<LongStraightCongestionRecord>,
+    // Set once at the top of `route_many_with_repair_and_commit` from that
+    // call's own `history_increment`/`block_radius_cells` arguments, reset
+    // to 0 (a no-op amount) when the batch finishes. Read unconditionally by
+    // every successful-commit chokepoint
+    // (`commit_native_route_with_clearance_internal`,
+    // `commit_native_route_with_clearance_allowing_core_overlap`) so every
+    // committed route -- not just 3 narrow repair call sites -- accumulates
+    // history cost, matching LiDAR's `registar_net`/`updateHistoryMap`
+    // (`drgridroute.py:443`/`703`, unconditional on every successful
+    // commit). See `.agent/execplans/2026-08-25-negotiated-repair-engine.md`
+    // Milestone 4.
+    commit_history_increment: u32,
+    commit_history_block_radius_cells: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -3116,6 +3129,32 @@ impl PyPhotonicRouter {
     fn add_post_commit_guidance_for_route(&mut self, net_id: u64, route: &RouteResult) {
         self.add_crossing_spacing_history_for_route(net_id, route);
         self.add_long_straight_congestion_for_route(net_id, route);
+        self.add_repair_history_for_route(route);
+    }
+
+    /// Systematic negotiated-congestion history cost: every successfully
+    /// committed route penalizes the cells it used, unconditionally,
+    /// matching LiDAR's `registar_net`/`updateHistoryMap`
+    /// (`drgridroute.py:443`/`703`). Replaces the previous mechanism of
+    /// penalizing a losing net's route right before ripping it up (3 narrow
+    /// call sites, only reachable mid-repair) -- that penalized *losers*,
+    /// discouraging an immediate identical retry; this penalizes *every*
+    /// user of a cell, discouraging future congestion on an already-popular
+    /// corridor regardless of who used it, which is the actual PathFinder-
+    /// family negotiated-congestion signal. `commit_history_increment` is 0
+    /// (a no-op) outside `route_many_with_repair_and_commit`, so a plain
+    /// commit made via `route_many_normal_and_commit` or a single-net
+    /// diagnostic call never accumulates history. See
+    /// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 4.
+    fn add_repair_history_for_route(&mut self, route: &RouteResult) {
+        if self.commit_history_increment == 0 {
+            return;
+        }
+        self.add_history_for_native_route(
+            route,
+            self.commit_history_block_radius_cells,
+            self.commit_history_increment,
+        );
     }
 
     fn restore_source_layer_static_cleanup(
@@ -8160,19 +8199,9 @@ impl PyPhotonicRouter {
         &mut self,
         batch: &mut RepairBatchState,
         probe: &ProbeState,
-        block_radius_cells: i32,
-        history_increment: u32,
         max_rounds: u32,
         max_victims: usize,
-        collect_native_timing: bool,
     ) -> RepairAttemptState {
-        let history_start = native_batch_timer(collect_native_timing);
-        self.add_history_for_native_route(
-            &probe.probe_route,
-            block_radius_cells,
-            history_increment,
-        );
-        batch.timings.history_update_us += native_batch_elapsed_us(history_start);
         RepairAttemptState {
             repaired: false,
             round_base_map: self.obstacle_map.clone(),
@@ -8574,23 +8603,9 @@ impl PyPhotonicRouter {
         &mut self,
         batch: &mut RepairBatchState,
         ripup_ids: &[u64],
-        lidar_pure_crossing_repair: bool,
-        block_radius_cells: i32,
-        history_increment: u32,
         collect_native_timing: bool,
     ) {
         for old_id in ripup_ids {
-            if let Some(old_route) = batch.final_routes.get(old_id).cloned() {
-                if !lidar_pure_crossing_repair {
-                    let history_start = native_batch_timer(collect_native_timing);
-                    self.add_history_for_native_route(
-                        &old_route,
-                        block_radius_cells,
-                        history_increment,
-                    );
-                    batch.timings.history_update_us += native_batch_elapsed_us(history_start);
-                }
-            }
             let ripup_start = native_batch_timer(collect_native_timing);
             self.remove_crossing_events_for_net(*old_id);
             self.obstacle_map.ripup_route(*old_id);
@@ -9884,10 +9899,14 @@ impl PyPhotonicRouter {
     /// repeated calls in a loop are safe -- each call leaves state exactly
     /// as it found it unless it returns `true`. `bucket_name` controls the
     /// `NativeRouteAttempt.bucket_name` recorded for both the current-net
-    /// and victim route attempts. `add_history_for_victim` controls whether
-    /// `add_history_for_native_route` runs before ripping up the victim,
-    /// kept as a parameter rather than hardcoded since the deleted caller
-    /// needed it `true` while the surviving one needs it `false`. Returns
+    /// and victim route attempts. History cost for the ripped-up victim's
+    /// vacated cells is no longer applied here explicitly (removed
+    /// `add_history_for_victim` parameter, dead in practice since the
+    /// deleted caller was its only `true` user) -- history now accrues
+    /// systematically on every successful commit via
+    /// `add_post_commit_guidance_for_route`/`add_repair_history_for_route`,
+    /// see `.agent/execplans/2026-08-25-negotiated-repair-engine.md`
+    /// Milestone 4. Returns
     /// `true` if both the current net and the victim were successfully
     /// rerouted and committed (`batch.repair_count` bumped, two
     /// `NativeRouteAttempt`s pushed), `false` if any step failed (state
@@ -9899,12 +9918,10 @@ impl PyPhotonicRouter {
         job: &NativeRouteJob,
         victim_job: &NativeRouteJob,
         bucket_name: &'static str,
-        add_history_for_victim: bool,
         block_radius_cells: i32,
         commit_radius_cells: Option<i32>,
         core_radius_cells: Option<i32>,
         history_weight: f64,
-        history_increment: u32,
         collect_native_timing: bool,
     ) -> bool {
         let victim_id = victim_job.net_id;
@@ -9916,17 +9933,6 @@ impl PyPhotonicRouter {
         let base_crossing_events = self.crossing_events.clone();
         let base_routes = batch.final_routes.clone();
 
-        if add_history_for_victim {
-            if let Some(old_route) = batch.final_routes.get(&victim_id).cloned() {
-                let history_start = native_batch_timer(collect_native_timing);
-                self.add_history_for_native_route(
-                    &old_route,
-                    block_radius_cells,
-                    history_increment,
-                );
-                batch.timings.history_update_us += native_batch_elapsed_us(history_start);
-            }
-        }
         let ripup_start = native_batch_timer(collect_native_timing);
         self.remove_crossing_events_for_net(victim_id);
         self.obstacle_map.ripup_route(victim_id);
@@ -10333,12 +10339,10 @@ impl PyPhotonicRouter {
             job,
             victim_job,
             "pending_straight_ripup",
-            false,
             block_radius_cells,
             commit_radius_cells,
             core_radius_cells,
             0.0,
-            0,
             collect_native_timing,
         ) {
             PendingStraightRepairOutcome::Routed
@@ -10800,6 +10804,8 @@ impl PyPhotonicRouter {
             last_pending_straight_victim: RefCell::new(None),
             long_straight_congestion_cells: FxHashMap::default(),
             long_straight_congestion_records: Vec::new(),
+            commit_history_increment: 0,
+            commit_history_block_radius_cells: 0,
         }
     }
 
@@ -11452,6 +11458,13 @@ impl PyPhotonicRouter {
         self.obstacle_map.clear_congestion();
         self.long_straight_congestion_cells.clear();
         self.long_straight_congestion_records.clear();
+        // No repair batch is running (this is the plain-routing-only entry
+        // point `test_benchmarks_route_with_astar_only` and friends use), so
+        // no commit here should accumulate history cost, even if a prior
+        // `route_many_with_repair_and_commit` call left these non-zero on
+        // this router instance.
+        self.commit_history_increment = 0;
+        self.commit_history_block_radius_cells = 0;
         let collect_native_timing = self.astar_cfg.collect_detailed_timing;
         let mut timings = NativeBatchTimings::default();
         let unpack_start = native_batch_timer(collect_native_timing);
@@ -11576,6 +11589,8 @@ impl PyPhotonicRouter {
         self.obstacle_map.clear_congestion();
         self.long_straight_congestion_cells.clear();
         self.long_straight_congestion_records.clear();
+        self.commit_history_increment = history_increment;
+        self.commit_history_block_radius_cells = block_radius_cells;
         let collect_native_timing = self.astar_cfg.collect_detailed_timing;
         let mut batch = RepairBatchState {
             final_routes: FxHashMap::default(),
@@ -11790,15 +11805,7 @@ impl PyPhotonicRouter {
 
             let max_rounds = max_rounds.max(1);
             let max_victims = max_victims_per_failure.max(1);
-            let mut repair = self.prepare_repair_attempt(
-                &mut batch,
-                &probe,
-                block_radius_cells,
-                history_increment,
-                max_rounds,
-                max_victims,
-                collect_native_timing,
-            );
+            let mut repair = self.prepare_repair_attempt(&mut batch, &probe, max_rounds, max_victims);
 
             let prefer_orthogonal_repair = probe.crossing_repair_enabled
                 && !probe.probe_realized_crossing_violations.is_empty()
@@ -11854,14 +11861,7 @@ impl PyPhotonicRouter {
                         let lidar_pure_crossing_repair = probe.crossing_repair_enabled
                             && self.use_collision_crossing_routing
                             && !self.crossing_context.config().allow_only_expected_pairs;
-                        self.ripup_repair_set_victims(
-                            &mut batch,
-                            &ripup_ids,
-                            lidar_pure_crossing_repair,
-                            block_radius_cells,
-                            history_increment,
-                            collect_native_timing,
-                        );
+                        self.ripup_repair_set_victims(&mut batch, &ripup_ids, collect_native_timing);
 
                         let temporary_probe_reservation_added =
                             if !temporary_probe_reservation.is_empty() {
