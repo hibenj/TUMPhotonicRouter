@@ -34,12 +34,15 @@ routing pipeline manually, starting at `routing_flow.py`, before deciding
 whether/how to continue this plan's Milestone 4.
 
 `.agent/execplans/2026-08-25-python-rust-linting-and-coding-standards.md`
-(written 2026-08-25) is a new, independent initiative -- Python/Rust
-linting and formatting tooling, a short coding-standards document, and
-GitHub Actions CI -- not started. See that plan's own Surprises &
-Discoveries for the baseline scoping numbers (509 ruff findings, 235
-clippy warnings, 137 `cargo fmt` diff blocks, 246 mypy errors) before
-assuming any rule set can be turned on and enforced immediately.
+(written 2026-08-25) is paused after Milestone 2 at the repository
+owner's direct instruction, deliberately not completed further:
+Milestones 1-2 (tool/config decisions, the coding-standards document,
+one repository-wide formatting-only pass) are done and committed;
+Milestones 3-5 (safe auto-fixes, hand-fixing or justified-suppressing
+the remaining ~800 lint findings, blocking CI) are deferred, not
+abandoned, in favor of functional/edge-case test coverage -- see that
+plan's own Decision Log for the owner's exact words and `.agent/CODING_STANDARDS.md`
+for what Milestone 1 produced.
 
 `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md` is
 complete (all 3 milestones, 2026-08-24). Fixed two confirmed logical-
