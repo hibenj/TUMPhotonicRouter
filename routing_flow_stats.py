@@ -106,12 +106,8 @@ class RoutingFlowStats:
             "crossing_reject_wrong_order": self.crossing_reject_wrong_order,
             "crossing_reject_unexpected_owner": self.crossing_reject_unexpected_owner,
             "crossing_reject_unmatched_owner": self.crossing_reject_unmatched_owner,
-            "crossing_reject_unmatched_centerline": (
-                self.crossing_reject_unmatched_centerline
-            ),
-            "crossing_reject_unmatched_footprint": (
-                self.crossing_reject_unmatched_footprint
-            ),
+            "crossing_reject_unmatched_centerline": (self.crossing_reject_unmatched_centerline),
+            "crossing_reject_unmatched_footprint": (self.crossing_reject_unmatched_footprint),
             "crossing_reject_unmatched_route_centerline": (
                 self.crossing_reject_unmatched_route_centerline
             ),
@@ -171,9 +167,7 @@ def populate_route_stats(
     if blocked_count > 0:
         stats.blocked_cells = blocked_count
         stats.raw_blocked_cells = blocked_count
-        port_open_count = int(
-            getattr(debug_artifacts, "static_port_open_count", 0) or 0
-        )
+        port_open_count = int(getattr(debug_artifacts, "static_port_open_count", 0) or 0)
         stats.port_open_cells = port_open_count
     stats.astar_time_s = float(route_summary.astar_elapsed_s)
     stats.route_attempts = int(route_summary.route_attempts)
@@ -184,18 +178,12 @@ def populate_route_stats(
     stats.generated_neighbors = int(route_summary.generated_neighbors)
     stats.heap_pushes = int(route_summary.heap_pushes)
     stats.heap_pops = int(route_summary.heap_pops)
-    stats.skipped_duplicate_heap_entries = int(
-        route_summary.skipped_duplicate_heap_entries
-    )
-    stats.stale_generation_heap_entries = int(
-        route_summary.stale_generation_heap_entries
-    )
+    stats.skipped_duplicate_heap_entries = int(route_summary.skipped_duplicate_heap_entries)
+    stats.stale_generation_heap_entries = int(route_summary.stale_generation_heap_entries)
     stats.closed_heap_entries = int(route_summary.closed_heap_entries)
     stats.max_heap_size = int(route_summary.max_heap_size)
     stats.dense_search_states = int(route_summary.dense_search_states)
-    stats.dense_search_storage_bytes = int(
-        route_summary.dense_search_storage_bytes
-    )
+    stats.dense_search_storage_bytes = int(route_summary.dense_search_storage_bytes)
     stats.best_cost_updates = int(route_summary.best_cost_updates)
     stats.parent_updates = int(route_summary.parent_updates)
     stats.obstacle_clearance_checks = int(route_summary.obstacle_clearance_checks)
@@ -203,20 +191,12 @@ def populate_route_stats(
     stats.footprint_rect_checks = int(route_summary.footprint_rect_checks)
     stats.crossing_candidate_checks = int(route_summary.crossing_candidate_checks)
     stats.crossing_accepted = int(route_summary.crossing_accepted)
-    stats.crossing_reject_non_straight = int(
-        route_summary.crossing_reject_non_straight
-    )
-    stats.crossing_reject_not_perpendicular = int(
-        route_summary.crossing_reject_not_perpendicular
-    )
+    stats.crossing_reject_non_straight = int(route_summary.crossing_reject_non_straight)
+    stats.crossing_reject_not_perpendicular = int(route_summary.crossing_reject_not_perpendicular)
     stats.crossing_reject_margin = int(route_summary.crossing_reject_margin)
     stats.crossing_reject_wrong_order = int(route_summary.crossing_reject_wrong_order)
-    stats.crossing_reject_unexpected_owner = int(
-        route_summary.crossing_reject_unexpected_owner
-    )
-    stats.crossing_reject_unmatched_owner = int(
-        route_summary.crossing_reject_unmatched_owner
-    )
+    stats.crossing_reject_unexpected_owner = int(route_summary.crossing_reject_unexpected_owner)
+    stats.crossing_reject_unmatched_owner = int(route_summary.crossing_reject_unmatched_owner)
     stats.crossing_reject_unmatched_centerline = int(
         route_summary.crossing_reject_unmatched_centerline
     )
@@ -229,33 +209,19 @@ def populate_route_stats(
     stats.crossing_reject_unmatched_route_footprint = int(
         route_summary.crossing_reject_unmatched_route_footprint
     )
-    stats.crossing_reject_pending_straight = int(
-        route_summary.crossing_reject_pending_straight
-    )
+    stats.crossing_reject_pending_straight = int(route_summary.crossing_reject_pending_straight)
     stats.full_grid_fallbacks = int(route_summary.full_grid_fallbacks)
     stats.neighbor_generation_time_s = (
         float(route_summary.neighbor_generation_time_us) / 1_000_000.0
     )
-    stats.heap_operation_time_s = (
-        float(route_summary.heap_operation_time_us) / 1_000_000.0
-    )
-    stats.legality_check_time_s = (
-        float(route_summary.legality_check_time_us) / 1_000_000.0
-    )
-    stats.reconstruction_time_s = (
-        float(route_summary.reconstruction_time_us) / 1_000_000.0
-    )
-    stats.search_loop_time_s = (
-        float(route_summary.search_loop_time_us) / 1_000_000.0
-    )
+    stats.heap_operation_time_s = float(route_summary.heap_operation_time_us) / 1_000_000.0
+    stats.legality_check_time_s = float(route_summary.legality_check_time_us) / 1_000_000.0
+    stats.reconstruction_time_s = float(route_summary.reconstruction_time_us) / 1_000_000.0
+    stats.search_loop_time_s = float(route_summary.search_loop_time_us) / 1_000_000.0
     stats.obstacle_map_prepare_time_s = (
         float(route_summary.obstacle_map_prepare_time_us) / 1_000_000.0
     )
-    stats.simple_route_time_s = (
-        float(route_summary.simple_route_time_us) / 1_000_000.0
-    )
-    stats.commit_prepare_time_s = (
-        float(route_summary.commit_prepare_time_us) / 1_000_000.0
-    )
+    stats.simple_route_time_s = float(route_summary.simple_route_time_us) / 1_000_000.0
+    stats.commit_prepare_time_s = float(route_summary.commit_prepare_time_us) / 1_000_000.0
     stats.commit_time_s = float(route_summary.commit_time_us) / 1_000_000.0
     stats.route_attempt_records = route_attempt_records

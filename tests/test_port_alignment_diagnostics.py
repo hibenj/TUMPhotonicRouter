@@ -19,8 +19,7 @@ from translation.route_rust_types import RoutedNetRecord
 
 def _centerline_length_um(centerline: tuple[tuple[float, float], ...]) -> float:
     return sum(
-        math.hypot(p1[0] - p0[0], p1[1] - p0[1])
-        for p0, p1 in zip(centerline, centerline[1:])
+        math.hypot(p1[0] - p0[0], p1[1] - p0[1]) for p0, p1 in zip(centerline, centerline[1:])
     )
 
 
@@ -191,17 +190,14 @@ def test_mmi_heater_pass0_characterizes_current_port_alignment():
     assert second.base_total_length_um == pytest.approx(149.5)
     assert first.total_length_um == pytest.approx(140.40331156954753)
     assert second.total_length_um == pytest.approx(140.9033115695475)
-    assert (
-        second.total_length_um - first.total_length_um
-    ) == pytest.approx(0.5)
+    assert (second.total_length_um - first.total_length_um) == pytest.approx(0.5)
     assert len(first.corrected_centerline_um) >= 2
     assert len(second.corrected_centerline_um) >= 2
     assert first.endpoint_correction_error is None
     assert second.endpoint_correction_error is None
 
     diagnostics_by_name = {
-        str(entry["net_name"]): entry
-        for entry in artifacts.port_alignment_diagnostics
+        str(entry["net_name"]): entry for entry in artifacts.port_alignment_diagnostics
     }
     assert set(diagnostics_by_name) == set(records_by_name)
     for entry in diagnostics_by_name.values():
@@ -444,9 +440,7 @@ def test_checked_case4_bump_rejects_static_without_active_port_opening():
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
     router, route = _checked_case4_test_router_and_route(rust_backend)
-    router.add_static_cells(
-        [(x, y) for x in range(2, 22) for y in range(0, 4)]
-    )
+    router.add_static_cells([(x, y) for x in range(2, 22) for y in range(0, 4)])
 
     with pytest.raises(RuntimeError, match="static_overlap"):
         router.route_port_corrected_centerline_checked_and_commit(

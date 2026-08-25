@@ -37,9 +37,7 @@ def test_clements_8x8_layout_matches_lidar_macro_placements() -> None:
             expected_orientation = float(pin["pin_orient"])
             if orientation == "FN":
                 expected_x = float(width) - expected_x
-                expected_orientation = [180.0, 90.0, 0.0, 270.0][
-                    int(expected_orientation // 90.0)
-                ]
+                expected_orientation = [180.0, 90.0, 0.0, 270.0][int(expected_orientation // 90.0)]
             elif orientation != "N":
                 continue
 

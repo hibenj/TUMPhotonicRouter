@@ -151,11 +151,7 @@ def _pad_side_boundary_cells(
     config: ElectricalRoutingConfig,
 ) -> frozenset[GridCell]:
     y = obstacle_map.grid.height - 1 if config.pad_side == "top" else 0
-    return frozenset(
-        (x, y)
-        for x in range(obstacle_map.grid.width)
-        if (x, y) not in blocked
-    )
+    return frozenset((x, y) for x in range(obstacle_map.grid.width) if (x, y) not in blocked)
 
 
 def _distance_field_to_targets(
@@ -262,8 +258,7 @@ def _extract_bundles(
     config: ElectricalRoutingConfig,
 ) -> tuple[EscapeBundle, ...]:
     core_cells_by_route = {
-        route: _route_core_cells(route, obstacle_map, terminal_cells, config)
-        for route in routes
+        route: _route_core_cells(route, obstacle_map, terminal_cells, config) for route in routes
     }
     route_graph: dict[EscapeTopologyRoute, set[EscapeTopologyRoute]] = {
         route: set() for route in routes
@@ -294,17 +289,11 @@ def _extract_bundles(
 
         component_routes = tuple(sorted(component, key=_route_sort_key))
         bundle_cells = frozenset(
-            cell
-            for route in component_routes
-            for cell in core_cells_by_route[route]
+            cell for route in component_routes for cell in core_cells_by_route[route]
         )
-        shared_cells = frozenset(
-            cell for cell in bundle_cells if cell_usage.get(cell, 0) > 1
-        )
+        shared_cells = frozenset(cell for cell in bundle_cells if cell_usage.get(cell, 0) > 1)
         exit_xs = tuple(
-            route.exit_cell[0]
-            for route in component_routes
-            if route.exit_cell is not None
+            route.exit_cell[0] for route in component_routes if route.exit_cell is not None
         )
         exit_interval = (
             min(exit_xs, default=0),
@@ -468,10 +457,7 @@ def _bundle_route_side_from_routes(
     obstacle_map: ElectricalObstacleMap,
 ) -> str:
     terminal_grid_x = _median(
-        tuple(
-            _terminal_grid_x(route.terminal, obstacle_map)
-            for route in routes
-        )
+        tuple(_terminal_grid_x(route.terminal, obstacle_map) for route in routes)
     )
     exit_mid = (exit_interval[0] + exit_interval[1]) / 2.0
     return "left" if exit_mid <= terminal_grid_x else "right"
@@ -490,9 +476,7 @@ def _route_core_cells(
     else:
         boundary_y = 0
     return frozenset(
-        cell
-        for cell in route.path
-        if cell not in terminal_cells and cell[1] != boundary_y
+        cell for cell in route.path if cell not in terminal_cells and cell[1] != boundary_y
     )
 
 
@@ -584,10 +568,7 @@ def _in_bounds(cell: GridCell, width: int, height: int) -> bool:
 def _individual_terminal_open_cells(
     obstacle_map: ElectricalObstacleMap,
 ) -> dict[str, frozenset[GridCell]]:
-    return (
-        obstacle_map.individual_terminal_open_cells
-        or obstacle_map.terminal_open_cells
-    )
+    return obstacle_map.individual_terminal_open_cells or obstacle_map.terminal_open_cells
 
 
 def _terminal_open_cells(

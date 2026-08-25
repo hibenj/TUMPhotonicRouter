@@ -17,10 +17,11 @@ from typing import Dict
 @dataclass(frozen=True)
 class PrimitiveMetadata:
     """Metadata for a routed primitive."""
-    start_angle: int      # 0-7 (East, NE, N, NW, W, SW, S, SE)
-    end_angle: int        # 0-7
-    length_um: float      # physical length
-    bend_cost: float      # A* cost contribution
+
+    start_angle: int  # 0-7 (East, NE, N, NW, W, SW, S, SE)
+    end_angle: int  # 0-7
+    length_um: float  # physical length
+    bend_cost: float  # A* cost contribution
 
 
 class PrimitiveLibrary:
@@ -143,6 +144,7 @@ class PrimitiveLibrary:
     def _approx_bend_length(radius: float, angle_deg: float) -> float:
         """Approximate arc length of a bend in micrometers."""
         import math
+
         angle_rad = math.radians(angle_deg)
         return radius * angle_rad
 
@@ -175,4 +177,3 @@ def reset_primitive_library() -> None:
     """Reset the global primitive library (for testing)."""
     global _instance
     _instance = None
-

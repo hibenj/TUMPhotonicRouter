@@ -1,4 +1,4 @@
-﻿"""LiDAR multiport MMI 8x8 benchmark.
+"""LiDAR multiport MMI 8x8 benchmark.
 
 This benchmark mirrors the LiDAR ``multiportmmi_8x8`` netlist and placement
 YAML so both routers can be run against the same topology.

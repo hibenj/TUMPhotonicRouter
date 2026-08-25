@@ -8,12 +8,12 @@ from translation import route_rust
 def test_failed_route_log_extracts_illegal_crossing_root_causes() -> None:
     terminal_error = (
         "No repair route found; candidate_blockers=[36, 31]; recent_errors=["
-        "\"repair_failed_net:net33:roundSome(4):rip[]:Illegal realized "
+        '"repair_failed_net:net33:roundSome(4):rip[]:Illegal realized '
         "crossing: net 33 intersects net 36 at (1491.500, 571.125) "
-        "(not_perpendicular)\", "
-        "\"lidar_pure_probe_commit:net33:roundSome(4):rip[]:Illegal realized "
+        '(not_perpendicular)", '
+        '"lidar_pure_probe_commit:net33:roundSome(4):rip[]:Illegal realized '
         "crossing: net 33 intersects net 36 at (1491.500, 571.125) "
-        "(not_perpendicular)\"]"
+        '(not_perpendicular)"]'
     )
     later_attempt_error = (
         "Illegal realized crossing: net 36 intersects net 33 at "

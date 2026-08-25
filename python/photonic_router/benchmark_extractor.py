@@ -109,10 +109,7 @@ def _polygon_points_um(polygon: Any, dbu: float) -> Polygon:
         dpolygon = polygon.to_dtype(dbu)
         return [(float(point.x), float(point.y)) for point in dpolygon.each_point_hull()]
 
-    return [
-        (float(point.x) * dbu, float(point.y) * dbu)
-        for point in polygon.each_point_hull()
-    ]
+    return [(float(point.x) * dbu, float(point.y) * dbu) for point in polygon.each_point_hull()]
 
 
 def _extract_ports(component: Any) -> List[Port]:

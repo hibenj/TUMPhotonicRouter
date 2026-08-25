@@ -149,10 +149,7 @@ def test_collision_crossing_route_uses_local_dynamic_intersection():
         backend.State(8, 10, 2),
         block_radius_cells=0,
     )
-    router.add_static_cells(
-        [(x, 5) for x in range(3, 14)]
-        + [(x, 7) for x in range(3, 14)]
-    )
+    router.add_static_cells([(x, 5) for x in range(3, 14)] + [(x, 7) for x in range(3, 14)])
 
     route = router.route_single_net_and_commit(
         2,
@@ -183,10 +180,7 @@ def test_collision_crossing_route_reserves_crossing_footprint():
         backend.State(8, 11, 2),
         block_radius_cells=0,
     )
-    router.add_static_cells(
-        [(x, 3) for x in range(3, 14)]
-        + [(x, 9) for x in range(3, 14)]
-    )
+    router.add_static_cells([(x, 3) for x in range(3, 14)] + [(x, 9) for x in range(3, 14)])
 
     route = router.route_single_net_and_commit(
         2,
@@ -196,11 +190,7 @@ def test_collision_crossing_route_reserves_crossing_footprint():
     )
 
     static_cells = {tuple(cell) for cell in router.raw_static_obstacle_cells()}
-    expected_reserved = {
-        (x, y)
-        for x in range(6, 11)
-        for y in range(4, 9)
-    }
+    expected_reserved = {(x, y) for x in range(6, 11) for y in range(4, 9)}
     assert expected_reserved <= static_cells
     events = router.crossing_events()
     assert len(events) == 1
@@ -232,10 +222,7 @@ def test_collision_crossing_route_rejects_invalid_local_crossing_move():
         backend.State(8, 7, 2),
         block_radius_cells=0,
     )
-    router.add_static_cells(
-        [(x, 5) for x in range(3, 14)]
-        + [(x, 7) for x in range(3, 14)]
-    )
+    router.add_static_cells([(x, 5) for x in range(3, 14)] + [(x, 7) for x in range(3, 14)])
 
     with pytest.raises(RuntimeError, match="No legal LiDAR crossing route found"):
         router.route_single_net_and_commit(

@@ -115,9 +115,7 @@ def terminal_access_path(
         fallback_width_um,
         join_point,
     )
-    adapter_points = _dedupe_points(
-        _manhattan_adapter_points(contact, anchor, join_point)
-    )
+    adapter_points = _dedupe_points(_manhattan_adapter_points(contact, anchor, join_point))
     return TerminalAccessPath(
         contact_center=contact,
         contact_bbox=contact_bbox,
@@ -134,10 +132,7 @@ def terminal_contact_bboxes(
     """Return physical port contact boxes for a logical terminal."""
 
     if terminal.ports:
-        return tuple(
-            port_contact_bbox(port, fallback_width_um)
-            for port in terminal.ports
-        )
+        return tuple(port_contact_bbox(port, fallback_width_um) for port in terminal.ports)
     return (_fallback_terminal_bbox(terminal, fallback_width_um),)
 
 

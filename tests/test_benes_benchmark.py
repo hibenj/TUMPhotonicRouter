@@ -162,8 +162,7 @@ def test_benes_8x8_topology_shape_is_available_for_next_benchmark():
     assert len(metadata["interstage_edges"]) == 32
     assert len(metadata["crossings"]) == 16
     crossing_counts = {
-        stage: len(crossings)
-        for stage, crossings in metadata["crossings_by_stage"].items()
+        stage: len(crossings) for stage, crossings in metadata["crossings_by_stage"].items()
     }
     assert crossing_counts == {
         0: 6,
@@ -207,8 +206,7 @@ def test_larger_benes_topology_shapes_are_available_for_stress_benchmarks():
         assert len(metadata["interstage_edges"]) == expected["interstage_edges"]
         assert len(metadata["crossings"]) == expected["crossings"]
         assert {
-            stage: len(crossings)
-            for stage, crossings in metadata["crossings_by_stage"].items()
+            stage: len(crossings) for stage, crossings in metadata["crossings_by_stage"].items()
         } == expected["crossings_by_stage"]
 
 
@@ -298,12 +296,10 @@ def test_topology_analysis_uses_benes_edge_ranks_for_crossing_oracle():
     )
 
     crossing_pairs = {
-        (crossing.edge_a.net_name, crossing.edge_b.net_name)
-        for crossing in result.crossings
+        (crossing.edge_a.net_name, crossing.edge_b.net_name) for crossing in result.crossings
     }
     expected_pairs = {
-        (str(crossing["edge_a"]), str(crossing["edge_b"]))
-        for crossing in EXPECTED_CROSSINGS
+        (str(crossing["edge_a"]), str(crossing["edge_b"])) for crossing in EXPECTED_CROSSINGS
     }
     assert crossing_pairs == expected_pairs
     assert len(result.crossings_by_depth()[(1, 2)]) == 1
@@ -547,12 +543,10 @@ def test_topology_analysis_matches_8x8_benes_crossing_oracle():
     )
 
     crossing_pairs = {
-        (crossing.edge_a.net_name, crossing.edge_b.net_name)
-        for crossing in result.crossings
+        (crossing.edge_a.net_name, crossing.edge_b.net_name) for crossing in result.crossings
     }
     expected_pairs = {
-        (str(crossing["edge_a"]), str(crossing["edge_b"]))
-        for crossing in EXPECTED_CROSSINGS_8X8
+        (str(crossing["edge_a"]), str(crossing["edge_b"])) for crossing in EXPECTED_CROSSINGS_8X8
     }
     assert crossing_pairs == expected_pairs
 
@@ -567,11 +561,7 @@ def test_crossing_plan_orders_8x8_benes_events_by_stage():
     plan = build_crossing_plan(topology)
 
     assert len(plan.events) == 16
-    assert {
-        key: len(stage.events)
-        for key, stage in plan.stages.items()
-        if stage.events
-    } == {
+    assert {key: len(stage.events) for key, stage in plan.stages.items() if stage.events} == {
         (1, 2): 6,
         (2, 3): 2,
         (3, 4): 2,

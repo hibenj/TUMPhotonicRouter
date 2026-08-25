@@ -220,14 +220,17 @@ def _collinear_segment_overlap_with_params(
     a1: tuple[float, float],
     b0: tuple[float, float],
     b1: tuple[float, float],
-) -> tuple[
-    tuple[float, float],
-    tuple[float, float],
-    float,
-    float,
-    float,
-    float,
-] | None:
+) -> (
+    tuple[
+        tuple[float, float],
+        tuple[float, float],
+        float,
+        float,
+        float,
+        float,
+    ]
+    | None
+):
     ax = a1[0] - a0[0]
     ay = a1[1] - a0[1]
     bx = b1[0] - b0[0]
@@ -361,11 +364,11 @@ def _record_centerline_um(
         return ()
     return _compress_centerline(
         tuple(
-        (
-            float(origin_x_um) + float(x) * float(grid_size_um),
-            float(origin_y_um) + float(y) * float(grid_size_um),
-        )
-        for x, y in waypoints
+            (
+                float(origin_x_um) + float(x) * float(grid_size_um),
+                float(origin_y_um) + float(y) * float(grid_size_um),
+            )
+            for x, y in waypoints
         )
     )
 
@@ -408,11 +411,7 @@ def _grid_cell_neighborhood(
 ) -> set[tuple[int, int]]:
     cx, cy = int(cell[0]), int(cell[1])
     r = max(0, int(radius))
-    return {
-        (cx + dx, cy + dy)
-        for dx in range(-r, r + 1)
-        for dy in range(-r, r + 1)
-    }
+    return {(cx + dx, cy + dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1)}
 
 
 def _point_distance_um(
@@ -430,10 +429,9 @@ def _point_near_route_endpoint(
 ) -> bool:
     if not centerline:
         return False
-    return (
-        _point_distance_um(point, centerline[0]) <= float(tolerance_um)
-        or _point_distance_um(point, centerline[-1]) <= float(tolerance_um)
-    )
+    return _point_distance_um(point, centerline[0]) <= float(tolerance_um) or _point_distance_um(
+        point, centerline[-1]
+    ) <= float(tolerance_um)
 
 
 def _point_route_endpoint_distance_um(
@@ -596,12 +594,8 @@ def _same_undirected_segment(
             and abs(float(point_a[1]) - float(point_b[1])) <= eps
         )
 
-    return (
-        same_point(segment_a[0], segment_b[0])
-        and same_point(segment_a[1], segment_b[1])
-    ) or (
-        same_point(segment_a[0], segment_b[1])
-        and same_point(segment_a[1], segment_b[0])
+    return (same_point(segment_a[0], segment_b[0]) and same_point(segment_a[1], segment_b[1])) or (
+        same_point(segment_a[0], segment_b[1]) and same_point(segment_a[1], segment_b[0])
     )
 
 
@@ -665,12 +659,8 @@ def _crossing_footprint_blockers(
     axis_u: tuple[float, float],
     axis_v: tuple[float, float],
     half_extent_um: float,
-    segments_by_net_id: Mapping[
-        int, tuple[tuple[tuple[float, float], tuple[float, float]], ...]
-    ],
-    allowed_segments: Mapping[
-        int, tuple[tuple[tuple[float, float], tuple[float, float]], ...]
-    ],
+    segments_by_net_id: Mapping[int, tuple[tuple[tuple[float, float], tuple[float, float]], ...]],
+    allowed_segments: Mapping[int, tuple[tuple[tuple[float, float], tuple[float, float]], ...]],
     net_names: Mapping[int, str],
 ) -> list[dict[str, object]]:
     blockers: list[dict[str, object]] = []

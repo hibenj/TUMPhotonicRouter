@@ -25,18 +25,24 @@ def test_physical_point_to_grid_cell_preserves_floor_snap_and_invalid_guards():
         origin_y_um=-3.0,
     ) == (-1, -1)
 
-    assert _physical_point_to_grid_cell(
-        (0.0, 0.0),
-        grid_size_um=0.0,
-        origin_x_um=0.0,
-        origin_y_um=0.0,
-    ) is None
-    assert _physical_point_to_grid_cell(
-        (float("nan"), 0.0),
-        grid_size_um=1.0,
-        origin_x_um=0.0,
-        origin_y_um=0.0,
-    ) is None
+    assert (
+        _physical_point_to_grid_cell(
+            (0.0, 0.0),
+            grid_size_um=0.0,
+            origin_x_um=0.0,
+            origin_y_um=0.0,
+        )
+        is None
+    )
+    assert (
+        _physical_point_to_grid_cell(
+            (float("nan"), 0.0),
+            grid_size_um=1.0,
+            origin_x_um=0.0,
+            origin_y_um=0.0,
+        )
+        is None
+    )
 
 
 def test_grid_cell_center_um_preserves_none_and_negative_origin_cases():
@@ -52,12 +58,15 @@ def test_grid_cell_center_um_preserves_none_and_negative_origin_cases():
         origin_x_um=-5.0,
         origin_y_um=-3.0,
     ) == (0.0, 2.0)
-    assert _grid_cell_center_um(
-        None,
-        grid_size_um=2.0,
-        origin_x_um=-5.0,
-        origin_y_um=-3.0,
-    ) is None
+    assert (
+        _grid_cell_center_um(
+            None,
+            grid_size_um=2.0,
+            origin_x_um=-5.0,
+            origin_y_um=-3.0,
+        )
+        is None
+    )
 
 
 def test_rust_routed_layout_uses_waveguide_geometry():
@@ -96,8 +105,7 @@ def test_toy_ten_um_bend_radius_does_not_backtrack_on_one_cell_short_s_bend():
     )
 
     records_by_name = {
-        record.net_name: record
-        for record in result.debug_artifacts.routed_net_records
+        record.net_name: record for record in result.debug_artifacts.routed_net_records
     }
     for net_name in ("gc1_to_mmi_in2", "mmi_out2_to_gc3"):
         record = records_by_name[net_name]

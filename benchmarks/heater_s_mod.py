@@ -103,8 +103,7 @@ def build_schematic() -> Schematic:
     path_offset_y = 40
     gc_pitch_um = 127.0
     gc_y_positions = [
-        ((2 * LANE_COUNT - 1) / 2 - gc_idx) * gc_pitch_um
-        for gc_idx in range(2 * LANE_COUNT)
+        ((2 * LANE_COUNT - 1) / 2 - gc_idx) * gc_pitch_um for gc_idx in range(2 * LANE_COUNT)
     ]
     lane_centers_y = [
         (gc_y_positions[2 * lane_idx] + gc_y_positions[2 * lane_idx + 1]) / 2
@@ -113,18 +112,14 @@ def build_schematic() -> Schematic:
     mmi_lower_input_offset_y = -0.625
     mmi_upper_input_offset_y = 0.625
     extra_center_y = lane_centers_y[1] + path_offset_y - mmi_lower_input_offset_y
-    extra_mmi2_center_y = (
-        extra_center_y + mmi_lower_input_offset_y - mmi_upper_input_offset_y
-    )
+    extra_mmi2_center_y = extra_center_y + mmi_lower_input_offset_y - mmi_upper_input_offset_y
     extra_heater1_y = extra_mmi2_center_y - path_offset_y
     extra_mmi3_center_y = extra_mmi2_center_y
     extra_mmi4_center_y = lane_centers_y[2] + path_offset_y - mmi_lower_input_offset_y
     extra_heater2_y = extra_mmi4_center_y + path_offset_y
     extra_mmi5_center_y = extra_mmi4_center_y
     extra_mmi8_center_y = lane_centers_y[3] + path_offset_y - mmi_lower_input_offset_y
-    extra_mmi6_center_y = (
-        extra_mmi5_center_y + mmi_lower_input_offset_y - mmi_upper_input_offset_y
-    )
+    extra_mmi6_center_y = extra_mmi5_center_y + mmi_lower_input_offset_y - mmi_upper_input_offset_y
     extra_heater3_y = extra_mmi6_center_y - path_offset_y
     extra_heater4_y = extra_mmi8_center_y + path_offset_y
 

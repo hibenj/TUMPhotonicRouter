@@ -99,10 +99,7 @@ def verify_electrical_routing(
                 obstacle_map,
                 config,
             ),
-            *(
-                _TaggedRect(bbox, "pad")
-                for bbox in pad_bboxes_by_net.get("common_bus", ())
-            ),
+            *(_TaggedRect(bbox, "pad") for bbox in pad_bboxes_by_net.get("common_bus", ())),
         )
     )
     common_bus_rects = tuple(tagged.bbox for tagged in common_bus_tagged_rects)
@@ -144,10 +141,7 @@ def verify_electrical_routing(
             route_tagged_rects = _clean_tagged_rects(
                 (
                     *_detailed_route_tagged_rects(route, obstacle_map, config),
-                    *(
-                        _TaggedRect(bbox, "pad")
-                        for bbox in pad_bboxes_by_net.get(route_net_id, ())
-                    ),
+                    *(_TaggedRect(bbox, "pad") for bbox in pad_bboxes_by_net.get(route_net_id, ())),
                 )
             )
             route_rects = tuple(tagged.bbox for tagged in route_tagged_rects)
@@ -273,18 +267,14 @@ def _common_bus_allowed_cells(
 ) -> set[GridCell]:
     allowed: set[GridCell] = set(common_bus.bus.cells)
     for route in common_bus.routes:
-        allowed.update(
-            _common_bus_terminal_open_cells(obstacle_map).get(route.terminal.id, ())
-        )
+        allowed.update(_common_bus_terminal_open_cells(obstacle_map).get(route.terminal.id, ()))
         allowed.update(
             _terminal_contact_cells(
                 route.terminal,
                 obstacle_map,
                 config.terminal_contact_width_um,
                 route_start_um=(
-                    _grid_cell_center_um(route.path[0], obstacle_map)
-                    if route.path
-                    else None
+                    _grid_cell_center_um(route.path[0], obstacle_map) if route.path else None
                 ),
                 access=_common_bus_access(obstacle_map, route.terminal),
             )
@@ -314,19 +304,13 @@ def _common_bus_allowed_physical_bboxes(
 def _common_bus_terminal_open_cells(
     obstacle_map: ElectricalObstacleMap,
 ) -> dict[str, frozenset[GridCell]]:
-    return (
-        obstacle_map.common_bus_terminal_open_cells
-        or obstacle_map.terminal_open_cells
-    )
+    return obstacle_map.common_bus_terminal_open_cells or obstacle_map.terminal_open_cells
 
 
 def _individual_terminal_open_cells(
     obstacle_map: ElectricalObstacleMap,
 ) -> dict[str, frozenset[GridCell]]:
-    return (
-        obstacle_map.individual_terminal_open_cells
-        or obstacle_map.terminal_open_cells
-    )
+    return obstacle_map.individual_terminal_open_cells or obstacle_map.terminal_open_cells
 
 
 def _common_bus_access(
@@ -349,10 +333,7 @@ def _pad_bboxes_by_net(pad_plan: PadPlan | None) -> dict[str, tuple[BBox, ...]]:
     bboxes_by_net: dict[str, list[BBox]] = {}
     for assignment in pad_plan.assignments:
         bboxes_by_net.setdefault(assignment.net_id, []).append(assignment.slot.bbox)
-    return {
-        net_id: tuple(bboxes)
-        for net_id, bboxes in bboxes_by_net.items()
-    }
+    return {net_id: tuple(bboxes) for net_id, bboxes in bboxes_by_net.items()}
 
 
 def _common_bus_centerline_points(
@@ -362,15 +343,9 @@ def _common_bus_centerline_points(
 ) -> tuple[tuple[float, float], ...]:
     points: list[tuple[float, float]] = []
     for route in common_bus.routes:
-        points.extend(
-            _grid_cell_center_um(cell, obstacle_map)
-            for cell in route.path
-        )
+        points.extend(_grid_cell_center_um(cell, obstacle_map) for cell in route.path)
     if common_bus_escape is not None and common_bus_escape.success:
-        points.extend(
-            _grid_cell_center_um(cell, obstacle_map)
-            for cell in common_bus_escape.path
-        )
+        points.extend(_grid_cell_center_um(cell, obstacle_map) for cell in common_bus_escape.path)
     return tuple(points)
 
 
@@ -378,10 +353,7 @@ def _detailed_route_centerline_points(
     route: DetailedBundleRoute,
     obstacle_map: ElectricalObstacleMap,
 ) -> tuple[tuple[float, float], ...]:
-    return tuple(
-        _grid_point_to_um(point, obstacle_map)
-        for point in route.offset_path
-    )
+    return tuple(_grid_point_to_um(point, obstacle_map) for point in route.offset_path)
 
 
 def _verify_common_bus_terminal_contacts(
@@ -450,9 +422,7 @@ def _verify_terminal_contact(
     route: TerminalBusRoute | None = None,
 ) -> None:
     terminal_bboxes = terminal_contact_bboxes(terminal, fallback_width_um=0.0)
-    contacted_bboxes = tuple(
-        bbox for bbox in terminal_bboxes if _any_rect_intersects(rects, bbox)
-    )
+    contacted_bboxes = tuple(bbox for bbox in terminal_bboxes if _any_rect_intersects(rects, bbox))
     if contacted_bboxes:
         return
     details: dict[str, Any] = {
@@ -466,10 +436,7 @@ def _verify_terminal_contact(
     issues.append(
         ElectricalVerificationIssue(
             code="missing_terminal_contact",
-            message=(
-                "Routed metal does not physically touch heater terminal "
-                f"{terminal.id}."
-            ),
+            message=(f"Routed metal does not physically touch heater terminal {terminal.id}."),
             net_id=net_id,
             details=details,
         )
@@ -589,9 +556,7 @@ def _verify_cross_net_overlaps(
             issues.append(
                 ElectricalVerificationIssue(
                     code="cross_net_metal_overlap",
-                    message=(
-                        f"Metal for {left.net_id} overlaps metal for {right.net_id}."
-                    ),
+                    message=(f"Metal for {left.net_id} overlaps metal for {right.net_id}."),
                     net_id=left.net_id,
                     details={
                         "other_net_id": right.net_id,
@@ -646,14 +611,8 @@ def _quality_metrics(
 ) -> dict[str, Any]:
     rects_by_net = {net.net_id: net.rects for net in net_geometries}
     all_rects = tuple(rect for net in net_geometries for rect in net.rects)
-    same_net_duplicate_rects = sum(
-        _duplicate_rect_count(net.rects)
-        for net in net_geometries
-    )
-    same_net_overlap_pairs = sum(
-        _rect_overlap_pair_count(net.rects)
-        for net in net_geometries
-    )
+    same_net_duplicate_rects = sum(_duplicate_rect_count(net.rects) for net in net_geometries)
+    same_net_overlap_pairs = sum(_rect_overlap_pair_count(net.rects) for net in net_geometries)
     same_net_overlap_pairs_by_source = Counter[str]()
     same_net_intentional_overlap_pairs_by_reason = Counter[str]()
     same_net_redundant_overlap_pairs_by_source = Counter[str]()
@@ -662,12 +621,8 @@ def _quality_metrics(
         classification = _classify_same_net_overlap_pairs(net)
         same_net_intentional_overlap_pairs_by_reason.update(classification["intentional"])
         same_net_redundant_overlap_pairs_by_source.update(classification["redundant"])
-    same_net_intentional_overlap_pairs = sum(
-        same_net_intentional_overlap_pairs_by_reason.values()
-    )
-    same_net_redundant_overlap_pairs = sum(
-        same_net_redundant_overlap_pairs_by_source.values()
-    )
+    same_net_intentional_overlap_pairs = sum(same_net_intentional_overlap_pairs_by_reason.values())
+    same_net_redundant_overlap_pairs = sum(same_net_redundant_overlap_pairs_by_source.values())
     area_overcount_by_reason: dict[str, float] = {}
     area_overcount_by_source: dict[str, float] = {}
     redundant_area_overcount_by_source: dict[str, float] = {}
@@ -680,13 +635,9 @@ def _quality_metrics(
             area_attribution["redundant_by_source"],
         )
     raw_area_by_net = {
-        net.net_id: sum(_rect_area(rect) for rect in net.rects)
-        for net in net_geometries
+        net.net_id: sum(_rect_area(rect) for rect in net.rects) for net in net_geometries
     }
-    union_area_by_net = {
-        net.net_id: union_rect_area(net.rects)
-        for net in net_geometries
-    }
+    union_area_by_net = {net.net_id: union_rect_area(net.rects) for net in net_geometries}
     raw_area = sum(raw_area_by_net.values())
     union_area = sum(union_area_by_net.values())
     area_overcount = raw_area - union_area
@@ -696,29 +647,16 @@ def _quality_metrics(
     return {
         "net_count": len(net_geometries),
         "rect_count": len(all_rects),
-        "rect_count_by_net": {
-            net_id: len(rects)
-            for net_id, rects in sorted(rects_by_net.items())
-        },
+        "rect_count_by_net": {net_id: len(rects) for net_id, rects in sorted(rects_by_net.items())},
         "raw_metal_area_um2": raw_area,
         "raw_metal_area_by_net_um2": dict(sorted(raw_area_by_net.items())),
         "union_metal_area_um2": union_area,
         "union_metal_area_by_net_um2": dict(sorted(union_area_by_net.items())),
         "metal_area_overcount_um2": area_overcount,
-        "metal_area_overcount_ratio": (
-            area_overcount / raw_area
-            if raw_area > 0.0
-            else 0.0
-        ),
-        "metal_area_overcount_by_reason_um2": dict(
-            sorted(area_overcount_by_reason.items())
-        ),
-        "metal_area_overcount_by_source_um2": dict(
-            sorted(area_overcount_by_source.items())
-        ),
-        "metal_redundant_area_overcount_um2": sum(
-            redundant_area_overcount_by_source.values()
-        ),
+        "metal_area_overcount_ratio": (area_overcount / raw_area if raw_area > 0.0 else 0.0),
+        "metal_area_overcount_by_reason_um2": dict(sorted(area_overcount_by_reason.items())),
+        "metal_area_overcount_by_source_um2": dict(sorted(area_overcount_by_source.items())),
+        "metal_redundant_area_overcount_um2": sum(redundant_area_overcount_by_source.values()),
         "metal_redundant_area_overcount_by_source_um2": dict(
             sorted(redundant_area_overcount_by_source.items())
         ),
@@ -738,13 +676,9 @@ def _quality_metrics(
         "cross_net_min_spacing_um": min_spacing,
         "required_cross_net_clearance_um": max(0.0, config.obstacle_clearance_um),
         "centerline_length_um": sum(
-            _polyline_length(net.centerline_points_um)
-            for net in net_geometries
+            _polyline_length(net.centerline_points_um) for net in net_geometries
         ),
-        "bend_count": sum(
-            _bend_count(net.centerline_points_um)
-            for net in net_geometries
-        ),
+        "bend_count": sum(_bend_count(net.centerline_points_um) for net in net_geometries),
         "pad_channel_height_um": _pad_channel_height_um(
             pad_plan,
             obstacle_map,
@@ -782,26 +716,19 @@ def _route_start_metrics(
             )
     route_count_by_purpose = Counter(str(record["purpose"]) for record in records)
     exact_count_by_purpose = Counter(
-        str(record["purpose"])
-        for record in records
-        if bool(record["used_access_anchor"])
+        str(record["purpose"]) for record in records if bool(record["used_access_anchor"])
     )
     biased_count_by_purpose = Counter(
         str(record["purpose"])
         for record in records
-        if record["access_anchor_cell"] is not None
-        and not bool(record["used_access_anchor"])
+        if record["access_anchor_cell"] is not None and not bool(record["used_access_anchor"])
     )
     return {
-        "port_access_route_start_count_by_purpose": dict(
-            sorted(route_count_by_purpose.items())
-        ),
+        "port_access_route_start_count_by_purpose": dict(sorted(route_count_by_purpose.items())),
         "port_access_exact_anchor_route_count_by_purpose": dict(
             sorted(exact_count_by_purpose.items())
         ),
-        "port_access_biased_route_count_by_purpose": dict(
-            sorted(biased_count_by_purpose.items())
-        ),
+        "port_access_biased_route_count_by_purpose": dict(sorted(biased_count_by_purpose.items())),
         "port_access_route_start_records": sorted(
             records,
             key=lambda record: (
@@ -815,12 +742,8 @@ def _route_start_metrics(
 def _port_access_metrics(obstacle_map: ElectricalObstacleMap) -> dict[str, Any]:
     accesses = tuple(_all_port_accesses(obstacle_map))
     blocked = set(obstacle_map.blocked_cells)
-    blocked_anchors = tuple(
-        access for access in accesses if access.anchor_cell in blocked
-    )
-    missing_contact_accesses = tuple(
-        access for access in accesses if not access.contact_bbox
-    )
+    blocked_anchors = tuple(access for access in accesses if access.anchor_cell in blocked)
+    missing_contact_accesses = tuple(access for access in accesses if not access.contact_bbox)
     access_count_by_purpose = Counter(access.purpose for access in accesses)
     return {
         "port_access_count": len(accesses),
@@ -885,10 +808,7 @@ def _tagged_grid_wire_rects(
     *,
     start_clip_bbox: BBox | None = None,
 ) -> tuple[_TaggedRect, ...]:
-    points = tuple(
-        _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
-        for cell in path
-    )
+    points = tuple(_grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map) for cell in path)
     if start_clip_bbox is not None:
         points = clip_manhattan_path_start_at_bbox(points, start_clip_bbox)
     return _tagged_point_wire_rects(points, width_um, source)
@@ -952,8 +872,7 @@ def _terminal_grid_route_access(
     access: ElectricalPortAccess | None = None,
 ) -> Any:
     points_um = tuple(
-        _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
-        for cell in path
+        _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map) for cell in path
     )
     if entry_clip_bbox is not None:
         points_um = clip_manhattan_path_at_first_bbox_entry(points_um, entry_clip_bbox)
@@ -1083,9 +1002,7 @@ def _drop_union_redundant_tagged_rects(
     index = 0
     while index < len(kept):
         without_candidate = tuple(
-            tagged.bbox
-            for other_index, tagged in enumerate(kept)
-            if other_index != index
+            tagged.bbox for other_index, tagged in enumerate(kept) if other_index != index
         )
         if _same_area(
             union_rect_area(tagged.bbox for tagged in kept),
@@ -1230,9 +1147,7 @@ def _rect_overlap_pair_counts_by_source(net: _NetGeometry) -> Counter[str]:
             overlap = _rect_intersection(left, right)
             if overlap is None or _rect_area(overlap) <= 0.0:
                 continue
-            source_pair = "/".join(
-                sorted((net.rect_sources[index], net.rect_sources[right_index]))
-            )
+            source_pair = "/".join(sorted((net.rect_sources[index], net.rect_sources[right_index])))
             counts[source_pair] += 1
     return counts
 
@@ -1279,10 +1194,7 @@ def _area_overcount_attribution(
             covering = tuple(
                 index
                 for index, rect in enumerate(net.rects)
-                if rect[0] < right
-                and rect[2] > left
-                and rect[1] < top
-                and rect[3] > bottom
+                if rect[0] < right and rect[2] > left and rect[1] < top and rect[3] > bottom
             )
             cover_count = len(covering)
             if cover_count < 2:
@@ -1344,8 +1256,7 @@ def _intentional_overlap_reason(source_pair: tuple[str, str]) -> str:
 
 def _polyline_length(points: tuple[tuple[float, float], ...]) -> float:
     return sum(
-        abs(end[0] - start[0]) + abs(end[1] - start[1])
-        for start, end in zip(points, points[1:])
+        abs(end[0] - start[0]) + abs(end[1] - start[1]) for start, end in zip(points, points[1:])
     )
 
 
@@ -1383,9 +1294,7 @@ def _pad_channel_height_um(
     if pad_plan is None or not pad_plan.assigned_slots:
         return None
     channel_slots = tuple(
-        assignment.slot
-        for assignment in pad_plan.assignments
-        if assignment.kind == "individual"
+        assignment.slot for assignment in pad_plan.assignments if assignment.kind == "individual"
     )
     if not channel_slots:
         channel_slots = pad_plan.assigned_slots
@@ -1436,8 +1345,5 @@ def _rect_area(rect: BBox) -> float:
 
 def _rect_intersects(left: BBox, right: BBox) -> bool:
     return not (
-        left[2] < right[0]
-        or right[2] < left[0]
-        or left[3] < right[1]
-        or right[3] < left[1]
+        left[2] < right[0] or right[2] < left[0] or left[3] < right[1] or right[3] < left[1]
     )

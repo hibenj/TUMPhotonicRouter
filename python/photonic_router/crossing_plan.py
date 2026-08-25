@@ -68,10 +68,7 @@ class CrossingStagePlan:
 
     def to_text(self, *, include_orders: bool = True) -> str:
         lines = [
-            (
-                f"stage {self.source_depth}->{self.target_depth}: "
-                f"{len(self.events)} crossing(s)"
-            )
+            (f"stage {self.source_depth}->{self.target_depth}: {len(self.events)} crossing(s)")
         ]
         if include_orders:
             initial = ", ".join(edge.net_name for edge in self.initial_edge_order)
@@ -95,9 +92,7 @@ class CrossingPlan:
     @property
     def events(self) -> tuple[CrossingEvent, ...]:
         return tuple(
-            event
-            for stage_key in sorted(self.stages)
-            for event in self.stages[stage_key].events
+            event for stage_key in sorted(self.stages) for event in self.stages[stage_key].events
         )
 
     def events_for_edge(self, edge_key: RoutedEdgeKey) -> tuple[CrossingEvent, ...]:
@@ -116,12 +111,7 @@ class CrossingPlan:
         include_empty_stages: bool = False,
         include_orders: bool = True,
     ) -> str:
-        lines = [
-            (
-                "CrossingPlan: "
-                f"{len(self.events)} crossing(s), {len(self.stages)} stage(s)"
-            )
-        ]
+        lines = [(f"CrossingPlan: {len(self.events)} crossing(s), {len(self.stages)} stage(s)")]
         for stage_key in sorted(self.stages):
             stage = self.stages[stage_key]
             if not include_empty_stages and not stage.events:
@@ -148,7 +138,9 @@ def build_crossing_plan(topology: TopologyAnalysisResult) -> CrossingPlan:
             events_by_edge_mut.setdefault(event.edge_b, []).append(event)
 
     events_by_edge = {
-        edge_key: tuple(sorted(events, key=lambda event: (event.source_depth, event.level, event.order_index)))
+        edge_key: tuple(
+            sorted(events, key=lambda event: (event.source_depth, event.level, event.order_index))
+        )
         for edge_key, events in events_by_edge_mut.items()
     }
     return CrossingPlan(
@@ -163,9 +155,7 @@ def _edge_ranks_by_stage(
 ) -> dict[tuple[int, int], list[TopologyEdgeRank]]:
     by_stage: dict[tuple[int, int], list[TopologyEdgeRank]] = {}
     for edge_rank in topology.edge_ranks.values():
-        by_stage.setdefault((edge_rank.source_depth, edge_rank.target_depth), []).append(
-            edge_rank
-        )
+        by_stage.setdefault((edge_rank.source_depth, edge_rank.target_depth), []).append(edge_rank)
     return by_stage
 
 
@@ -176,14 +166,22 @@ def _build_stage_plan(
     source_depth, target_depth = stage_key
     ordered_by_source = sorted(
         edge_ranks,
-        key=lambda edge_rank: (edge_rank.source_rank, edge_rank.target_rank, edge_rank.edge_key.net_name),
+        key=lambda edge_rank: (
+            edge_rank.source_rank,
+            edge_rank.target_rank,
+            edge_rank.edge_key.net_name,
+        ),
     )
     initial_order = tuple(edge_rank.edge_key for edge_rank in ordered_by_source)
     final_order = tuple(
         edge_rank.edge_key
         for edge_rank in sorted(
             edge_ranks,
-            key=lambda edge_rank: (edge_rank.target_rank, edge_rank.source_rank, edge_rank.edge_key.net_name),
+            key=lambda edge_rank: (
+                edge_rank.target_rank,
+                edge_rank.source_rank,
+                edge_rank.edge_key.net_name,
+            ),
         )
     )
     current = list(initial_order)

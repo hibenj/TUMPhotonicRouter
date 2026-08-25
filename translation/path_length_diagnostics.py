@@ -38,8 +38,7 @@ def node_timing_to_dict(timing: NodeTiming) -> dict[str, object]:
         "input_arrival_um": float(timing.input_arrival_um),
         "output_arrival_um": float(timing.output_arrival_um),
         "incoming_edges": [
-            _incoming_edge_timing_to_dict(edge_timing)
-            for edge_timing in timing.incoming_edges
+            _incoming_edge_timing_to_dict(edge_timing) for edge_timing in timing.incoming_edges
         ],
     }
 
@@ -78,8 +77,8 @@ def matching_group_diagnostics_to_info(
     tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
 ) -> list[dict[str, object]]:
     results = _meander_results(meander_report)
-    inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge = (
-        _meander_result_maps(results)
+    inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge = _meander_result_maps(
+        results
     )
 
     adjusted_missing_by_edge: dict[tuple[str, str, str, str, str], float] = {}
@@ -167,8 +166,8 @@ def output_matching_diagnostics_to_info(
         return []
 
     results = _meander_results(meander_report)
-    inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge = (
-        _meander_result_maps(results)
+    inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge = _meander_result_maps(
+        results
     )
     raw_outputs = output_matching_info.get("outputs", [])
     if not isinstance(raw_outputs, list):
@@ -312,7 +311,9 @@ def path_length_acceptance_summary(
         "passed": not failed_groups,
         "tolerance_um": float(tolerance_um),
         "failed_group_count": len(failed_groups),
-        "failed_edge_count": sum(_list_length(group.get("failures", [])) for group in failed_groups),
+        "failed_edge_count": sum(
+            _list_length(group.get("failures", [])) for group in failed_groups
+        ),
         "max_physical_residual_um": float(max_physical_residual),
         "max_accepted_unmatched_um": float(max_accepted_unmatched),
         "max_disregarded_residual_um": float(max_disregarded_residual),
@@ -363,20 +364,16 @@ def analysis_to_info_dict(analysis: PathLengthAnalysisResult) -> dict[str, objec
     return {
         "topological_order": list(analysis.topological_order),
         "node_arrival_um": {
-            str(node): float(arrival)
-            for node, arrival in analysis.node_arrival_um.items()
+            str(node): float(arrival) for node, arrival in analysis.node_arrival_um.items()
         },
         "node_arrival_input_um": {
-            str(node): float(arrival)
-            for node, arrival in analysis.node_arrival_input_um.items()
+            str(node): float(arrival) for node, arrival in analysis.node_arrival_input_um.items()
         },
         "node_arrival_output_um": {
-            str(node): float(arrival)
-            for node, arrival in analysis.node_arrival_output_um.items()
+            str(node): float(arrival) for node, arrival in analysis.node_arrival_output_um.items()
         },
         "node_timings_um": {
-            str(node): node_timing_to_dict(timing)
-            for node, timing in analysis.node_timings.items()
+            str(node): node_timing_to_dict(timing) for node, timing in analysis.node_timings.items()
         },
         "edge_missing_lengths_um": [
             {

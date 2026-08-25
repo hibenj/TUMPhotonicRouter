@@ -73,9 +73,7 @@ def build_electrical_obstacle_map(
         )
         common_bus_terminal_open_cells[terminal.id] = frozenset(common_bus_cells)
         individual_terminal_open_cells[terminal.id] = frozenset(individual_cells)
-        terminal_open_cells[terminal.id] = frozenset(
-            set(common_bus_cells) | set(individual_cells)
-        )
+        terminal_open_cells[terminal.id] = frozenset(set(common_bus_cells) | set(individual_cells))
 
     cleared_cells = set(bus_cells)
     for cells in terminal_open_cells.values():
@@ -105,10 +103,7 @@ def build_electrical_obstacle_map(
         die_bbox=die_bbox,
         layout_bbox=all_geometry.bbox,
         raw_obstacle_bboxes=tuple(
-            dict.fromkeys(
-                _polygon_bbox(polygon)
-                for polygon in static_obstacles.benchmark.polygons
-            )
+            dict.fromkeys(_polygon_bbox(polygon) for polygon in static_obstacles.benchmark.polygons)
         ),
         common_bus_terminal_open_cells=common_bus_terminal_open_cells,
         individual_terminal_open_cells=individual_terminal_open_cells,

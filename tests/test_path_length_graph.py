@@ -96,9 +96,7 @@ def test_planner_context_uses_static_handle_when_registration_fast_path_is_unava
 
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
-        PrimitiveLibraryConfig = staticmethod(
-            lambda *args, **kwargs: ("primitive", args, kwargs)
-        )
+        PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 
@@ -147,9 +145,7 @@ def test_planner_context_avoids_python_route_cell_bookkeeping_without_registrati
 
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
-        PrimitiveLibraryConfig = staticmethod(
-            lambda *args, **kwargs: ("primitive", args, kwargs)
-        )
+        PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 
@@ -488,10 +484,7 @@ def test_group_lifted_requirements_raise_sub_bump_deficit_to_reachable_target():
         result,
         minimum_insertable_extra_um=25.0,
     )
-    required_by_edge = {
-        req.edge_key: req.missing_length_um
-        for req in requirements
-    }
+    required_by_edge = {req.edge_key: req.missing_length_um for req in requirements}
 
     assert required_by_edge[short_edge] == pytest.approx(25.5)
     assert required_by_edge[long_edge] == pytest.approx(25.0)
@@ -554,9 +547,7 @@ def test_group_lifted_requirements_do_not_raise_already_reachable_deficits():
         minimum_insertable_extra_um=25.0,
     )
 
-    assert requirements == [
-        MissingLengthRequirement(edge_key=short_edge, missing_length_um=30.0)
-    ]
+    assert requirements == [MissingLengthRequirement(edge_key=short_edge, missing_length_um=30.0)]
     assert groups[0]["target_lift_um"] == pytest.approx(0.0)
     assert groups[0]["edges_requiring_meander"] == 1
 
@@ -1191,7 +1182,12 @@ def _build_two_stage_schematic_for_convergence() -> _SchematicLike:
 
     class _Netlist:
         def __init__(self):
-            self.instances = {"input_a": object(), "input_b": object(), "gate_x": object(), "gate_z": object()}
+            self.instances = {
+                "input_a": object(),
+                "input_b": object(),
+                "gate_x": object(),
+                "gate_z": object(),
+            }
             self.routes = {
                 "a_to_x": _Bundle({"input_a,o1": "gate_x,i0"}),
                 "b_to_z": _Bundle({"input_b,o1": "gate_z,i1"}),
@@ -1336,10 +1332,7 @@ def _build_schematic_from_links(
     class _Netlist:
         def __init__(self):
             self.instances = {name: object() for name in instances}
-            self.routes = {
-                net_name: _Bundle(links)
-                for net_name, links in links_by_net.items()
-            }
+            self.routes = {net_name: _Bundle(links) for net_name, links in links_by_net.items()}
 
     class _Schematic:
         def __init__(self):
@@ -1397,9 +1390,7 @@ def test_output_matching_requirements_align_one_input_outputs_after_existing_del
         ],
     )
 
-    assert requirements == [
-        MissingLengthRequirement(edge_key=edge_short, missing_length_um=15.0)
-    ]
+    assert requirements == [MissingLengthRequirement(edge_key=edge_short, missing_length_um=15.0)]
     assert info["target_output_arrival_um"] == pytest.approx(100.0)
     assert info["output_count"] == 2
 
@@ -1416,9 +1407,7 @@ def test_merge_missing_length_requirements_adds_independent_requirements_per_edg
         [MissingLengthRequirement(edge_key=edge, missing_length_um=5.0)],
     )
 
-    assert merged == [
-        MissingLengthRequirement(edge_key=edge, missing_length_um=25.0)
-    ]
+    assert merged == [MissingLengthRequirement(edge_key=edge, missing_length_um=25.0)]
 
 
 def test_delay_candidates_include_transparent_heater_upstream_edge():
@@ -1578,9 +1567,7 @@ def test_delay_candidates_include_common_mode_bundle_only_for_shared_deficit():
         edge_out0,
         edge_out1,
     )
-    assert [candidate.reason for candidate in candidates[edge_out1]] == [
-        "direct_edge"
-    ]
+    assert [candidate.reason for candidate in candidates[edge_out1]] == ["direct_edge"]
 
 
 def test_delay_candidates_recursively_push_common_delay_through_heater_and_mmi():
@@ -1701,8 +1688,7 @@ def test_delay_candidates_recursively_push_common_delay_through_heater_and_mmi()
 
     candidates = build_requirement_delay_candidates(analysis, [req0, req1])
     candidate_edges_by_reason = {
-        candidate.reason: candidate.edge_keys
-        for candidate in candidates[edge_out0]
+        candidate.reason: candidate.edge_keys for candidate in candidates[edge_out0]
     }
 
     assert candidate_edges_by_reason["common_mode_upstream_bundle"] == (
@@ -1771,6 +1757,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
         },
     )
     monkeypatch.setattr(routing_flow, "layout_from_schematic", lambda _: _Layout())
+
     def _fake_route_match_and_realize(*args: object, **kwargs: object) -> RouteRustPipelineResult:
         captured.update(kwargs)
         return RouteRustPipelineResult(
@@ -2025,9 +2012,7 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
 
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
-        PrimitiveLibraryConfig = staticmethod(
-            lambda *args, **kwargs: ("primitive", args, kwargs)
-        )
+        PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 
@@ -2242,9 +2227,7 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
 
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
-        PrimitiveLibraryConfig = staticmethod(
-            lambda *args, **kwargs: ("primitive", args, kwargs)
-        )
+        PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 
@@ -2376,9 +2359,7 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
 
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
-        PrimitiveLibraryConfig = staticmethod(
-            lambda *args, **kwargs: ("primitive", args, kwargs)
-        )
+        PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 
@@ -2630,19 +2611,17 @@ def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
         "side_policy": "both",
         "planning_mode": "fill_box_multi_bump",
     }
-    registered_result = (
-        router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
-            [geometry_indices],
-            [kwargs["requested_extra_length_um"]],
-            min_bend_radius_um=kwargs["min_bend_radius_um"],
-            min_straight_um=kwargs["min_straight_um"],
-            max_meander_height_um=kwargs["max_meander_height_um"],
-            min_segment_length_um=kwargs["min_segment_length_um"],
-            auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
-            clearance_radius_cells=kwargs["clearance_radius_cells"],
-            side_policy=kwargs["side_policy"],
-            planning_mode=kwargs["planning_mode"],
-        )
+    registered_result = router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+        [geometry_indices],
+        [kwargs["requested_extra_length_um"]],
+        min_bend_radius_um=kwargs["min_bend_radius_um"],
+        min_straight_um=kwargs["min_straight_um"],
+        max_meander_height_um=kwargs["max_meander_height_um"],
+        min_segment_length_um=kwargs["min_segment_length_um"],
+        auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
+        clearance_radius_cells=kwargs["clearance_radius_cells"],
+        side_policy=kwargs["side_policy"],
+        planning_mode=kwargs["planning_mode"],
     )
     legacy = router.plan_auto_analytic_meander_for_centerline_depth_sweep(
         centerline,
@@ -2668,19 +2647,17 @@ def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
         selected_rect[2],
         selected_rect[3],
     )
-    shifted_result = (
-        router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
-            [geometry_indices],
-            [kwargs["requested_extra_length_um"]],
-            min_bend_radius_um=kwargs["min_bend_radius_um"],
-            min_straight_um=kwargs["min_straight_um"],
-            max_meander_height_um=kwargs["max_meander_height_um"],
-            min_segment_length_um=kwargs["min_segment_length_um"],
-            auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
-            clearance_radius_cells=kwargs["clearance_radius_cells"],
-            side_policy=kwargs["side_policy"],
-            planning_mode=kwargs["planning_mode"],
-        )
+    shifted_result = router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+        [geometry_indices],
+        [kwargs["requested_extra_length_um"]],
+        min_bend_radius_um=kwargs["min_bend_radius_um"],
+        min_straight_um=kwargs["min_straight_um"],
+        max_meander_height_um=kwargs["max_meander_height_um"],
+        min_segment_length_um=kwargs["min_segment_length_um"],
+        auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
+        clearance_radius_cells=kwargs["clearance_radius_cells"],
+        side_policy=kwargs["side_policy"],
+        planning_mode=kwargs["planning_mode"],
     )
 
     assert shifted_result["status"] == "planned"
@@ -2792,9 +2769,7 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
 
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
-        PrimitiveLibraryConfig = staticmethod(
-            lambda *args, **kwargs: ("primitive", args, kwargs)
-        )
+        PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 

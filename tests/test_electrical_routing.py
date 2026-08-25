@@ -266,9 +266,7 @@ def test_terminal_access_path_trims_snapped_points_inside_terminal():
         side_key="l",
         center=(50.0, 50.0),
         bbox=(38.0, 38.0, 62.0, 62.0),
-        ports=(
-            ElectricalPortRef("l_e2", (50.0, 60.0), 90.0, 4.0, (49, 0)),
-        ),
+        ports=(ElectricalPortRef("l_e2", (50.0, 60.0), 90.0, 4.0, (49, 0)),),
         layer=(49, 0),
     )
 
@@ -317,9 +315,7 @@ def test_build_terminal_port_access_skips_blocked_candidate_cell():
         side_key="t",
         center=(23.0, 24.0),
         bbox=(18.0, 18.0, 28.0, 28.0),
-        ports=(
-            ElectricalPortRef("top", (23.0, 29.0), 90.0, 4.0, (49, 0)),
-        ),
+        ports=(ElectricalPortRef("top", (23.0, 29.0), 90.0, 4.0, (49, 0)),),
         layer=(49, 0),
     )
 
@@ -536,14 +532,10 @@ def test_verifier_includes_assigned_pad_rectangles_in_cross_net_overlap():
     )
 
     cross_net_issues = [
-        issue for issue in verification.issues
-        if issue.code == "cross_net_metal_overlap"
+        issue for issue in verification.issues if issue.code == "cross_net_metal_overlap"
     ]
     assert cross_net_issues
-    assert any(
-        issue.details["other_net_id"] == "individual:heater_0"
-        for issue in cross_net_issues
-    )
+    assert any(issue.details["other_net_id"] == "individual:heater_0" for issue in cross_net_issues)
 
 
 def test_verifier_flags_raw_physical_obstacle_overlap_outside_port_contact():
@@ -650,9 +642,7 @@ def test_obstacle_map_uses_role_specific_terminal_openings():
     terminal = groups[0].terminal_a
     all_port_cells: set[tuple[int, int]] = set()
     for point in terminal_contact_seed_points(terminal):
-        all_port_cells.update(
-            disk_cells(point, config.terminal_open_radius_um, obstacle_map.grid)
-        )
+        all_port_cells.update(disk_cells(point, config.terminal_open_radius_um, obstacle_map.grid))
     common_cells = obstacle_map.common_bus_terminal_open_cells[terminal.id]
     individual_cells = obstacle_map.individual_terminal_open_cells[terminal.id]
 
@@ -713,11 +703,7 @@ def test_common_bus_rail_and_pad_escape_use_bus_width_only():
         config.bus_width_um
     )
 
-    bus_escape_segments = [
-        tagged.bbox
-        for tagged in tagged_rects
-        if tagged.source == "bus_escape"
-    ]
+    bus_escape_segments = [tagged.bbox for tagged in tagged_rects if tagged.source == "bus_escape"]
     assert bus_escape_segments
     bus_assignment = result.pad_plan.common_bus_assignment
     assert bus_assignment is not None
@@ -730,9 +716,7 @@ def test_common_bus_rail_and_pad_escape_use_bus_width_only():
     assert len(escape_path) > 2
     assert escape_path[0] in result.common_bus.bus.cells
     first_y = escape_path[0][1]
-    horizontal_prefix = [
-        cell for cell in escape_path if cell[1] == first_y
-    ]
+    horizontal_prefix = [cell for cell in escape_path if cell[1] == first_y]
     assert len(horizontal_prefix) > 1
     if config.common_bus_pad_position == "right":
         assert horizontal_prefix[-1][0] > horizontal_prefix[0][0]
@@ -747,35 +731,18 @@ def test_common_bus_rail_and_pad_escape_use_bus_width_only():
     assert bus_connection_cells
     origin_x, _ = result.obstacle_map.grid.origin
     grid_pitch = result.obstacle_map.grid.grid_size_um
-    connection_xs = [
-        origin_x + (cell[0] + 0.5) * grid_pitch
-        for cell in bus_connection_cells
-    ]
+    connection_xs = [origin_x + (cell[0] + 0.5) * grid_pitch for cell in bus_connection_cells]
     half_overlap_um = max(grid_pitch / 2.0, config.wire_width_um / 2.0)
-    assert result.common_bus.bus.bbox[0] == pytest.approx(
-        min(connection_xs) - half_overlap_um
-    )
-    assert result.common_bus.bus.bbox[2] == pytest.approx(
-        max(connection_xs) + half_overlap_um
-    )
-    bus_route_segments = [
-        tagged.bbox
-        for tagged in tagged_rects
-        if tagged.source == "bus_route"
-    ]
+    assert result.common_bus.bus.bbox[0] == pytest.approx(min(connection_xs) - half_overlap_um)
+    assert result.common_bus.bus.bbox[2] == pytest.approx(max(connection_xs) + half_overlap_um)
+    bus_route_segments = [tagged.bbox for tagged in tagged_rects if tagged.source == "bus_route"]
     assert bus_route_segments
     for xmin, ymin, xmax, ymax in bus_route_segments:
         assert min(xmax - xmin, ymax - ymin) <= config.wire_width_um
     if result.common_bus.bus_side == "bottom":
-        assert all(
-            ymin >= result.common_bus.bus.bbox[1]
-            for _, ymin, _, _ in bus_route_segments
-        )
+        assert all(ymin >= result.common_bus.bus.bbox[1] for _, ymin, _, _ in bus_route_segments)
     else:
-        assert all(
-            ymax <= result.common_bus.bus.bbox[3]
-            for _, _, _, ymax in bus_route_segments
-        )
+        assert all(ymax <= result.common_bus.bus.bbox[3] for _, _, _, ymax in bus_route_segments)
 
 
 def test_electrical_routing_is_noop_without_heater_terminals(tmp_path):
@@ -802,10 +769,7 @@ def test_electrical_routing_is_noop_without_heater_terminals(tmp_path):
     assert result.verification is None
     assert result.debug_artifacts == {}
     assert result.routed_component is not None
-    assert (
-        _polygon_bboxes_by_layer(result.routed_component, config.metal_layer)
-        == before_metal
-    )
+    assert _polygon_bboxes_by_layer(result.routed_component, config.metal_layer) == before_metal
     assert config.pad_marker_layer is not None
     assert not _polygon_bboxes_by_layer(result.routed_component, config.pad_marker_layer)
     assert "electrical_metal_realization" not in result.routed_component.info
@@ -1106,7 +1070,9 @@ def test_pad_plan_allows_empty_pitch_slots_and_keeps_individual_order():
     assert individual_xs == sorted(individual_xs)
     assert slot_xs == sorted(slot_xs)
     assert pad_plan.common_bus_assignment == assignments[-1]
-    assert pad_plan.common_bus_assignment.slot.index == max(slot.index for slot in pad_plan.slots) - 1
+    assert (
+        pad_plan.common_bus_assignment.slot.index == max(slot.index for slot in pad_plan.slots) - 1
+    )
     assert pad_plan.empty_slots
     assert 0 in {slot.index for slot in pad_plan.empty_slots}
     assert max(slot.index for slot in pad_plan.slots) in {
@@ -1162,8 +1128,7 @@ def test_auto_pad_origin_compacts_row_toward_escape_topology():
     )
     for assignment in automatic_individual:
         assert assignment.slot.center[0] == (
-            automatic.pad_plan.origin_x_um
-            + assignment.slot.index * automatic.pad_plan.pitch_um
+            automatic.pad_plan.origin_x_um + assignment.slot.index * automatic.pad_plan.pitch_um
         )
 
     def exit_distance(result):
@@ -1200,19 +1165,16 @@ def test_auto_pad_channel_height_uses_widest_topology_bundle():
         bundle.required_tracks for bundle in result.individual_topology.bundles
     )
     track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
-    compact_channel_height_um = (
-        widest_bundle_tracks * track_pitch_um + config.wire_width_um
-    )
-    global_channel_height_um = (
-        individual_route_count * track_pitch_um + config.wire_width_um
-    )
+    compact_channel_height_um = widest_bundle_tracks * track_pitch_um + config.wire_width_um
+    global_channel_height_um = individual_route_count * track_pitch_um + config.wire_width_um
 
     assert result.verification.metrics["pad_channel_height_um"] == pytest.approx(
         compact_channel_height_um
     )
     assert compact_channel_height_um < global_channel_height_um
-    assert result.verification.metrics["cross_net_min_spacing_um"] >= (
-        result.verification.metrics["required_cross_net_clearance_um"]
+    assert (
+        result.verification.metrics["cross_net_min_spacing_um"]
+        >= (result.verification.metrics["required_cross_net_clearance_um"])
     )
     assert result.verification.metrics["centerline_length_um"] < 30_000.0
 
@@ -1236,9 +1198,7 @@ def test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps():
     )
 
     individual_assignments = [
-        assignment
-        for assignment in result.pad_plan.assignments
-        if assignment.kind == "individual"
+        assignment for assignment in result.pad_plan.assignments if assignment.kind == "individual"
     ]
     assignments_by_bundle = {}
     for assignment in individual_assignments:
@@ -1247,7 +1207,9 @@ def test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps():
     for bundle in result.individual_topology.bundles:
         bundle_assignments = assignments_by_bundle[bundle.bundle_id]
         slot_indices = [assignment.slot.index for assignment in bundle_assignments]
-        assert slot_indices == list(range(slot_indices[0], slot_indices[0] + bundle.required_tracks))
+        assert slot_indices == list(
+            range(slot_indices[0], slot_indices[0] + bundle.required_tracks)
+        )
         assert [assignment.topology_rank for assignment in bundle_assignments] == list(
             range(bundle.required_tracks)
         )
@@ -1349,9 +1311,7 @@ def test_individual_topology_groups_escape_corridors_before_pad_assignment():
     ]
 
     individual_assignments = [
-        assignment
-        for assignment in result.pad_plan.assignments
-        if assignment.kind == "individual"
+        assignment for assignment in result.pad_plan.assignments if assignment.kind == "individual"
     ]
     first_bundle_assignments = [
         assignment
@@ -1407,7 +1367,9 @@ def test_detailed_bundle_router_assigns_spaced_offsets_from_topology():
     assert detailed.track_pitch_cells == 2
 
     first_bundle_routes = [
-        route for route in detailed.routes if route.bundle_id == result.individual_topology.bundles[0].bundle_id
+        route
+        for route in detailed.routes
+        if route.bundle_id == result.individual_topology.bundles[0].bundle_id
     ]
     assert [route.rank for route in first_bundle_routes] == [0, 1, 2, 3]
     assert [route.offset_um for route in first_bundle_routes] == [-120.0, -80.0, -40.0, 0.0]
@@ -1417,7 +1379,9 @@ def test_detailed_bundle_router_assigns_spaced_offsets_from_topology():
         terminal.id for terminal in result.individual_topology.bundles[0].ordered_terminals
     ]
     right_bundle_routes = [
-        route for route in detailed.routes if route.bundle_id == result.individual_topology.bundles[1].bundle_id
+        route
+        for route in detailed.routes
+        if route.bundle_id == result.individual_topology.bundles[1].bundle_id
     ]
     assert [route.terminal.id for route in right_bundle_routes] == [
         terminal.id for terminal in result.individual_topology.bundles[1].ordered_terminals
@@ -1447,10 +1411,7 @@ def test_detailed_bundle_router_assigns_spaced_offsets_from_topology():
         assert route.bundle_track_path[-1][1] == route.pad_stub_path[1][1]
         assert max(point[1] for point in route.bundle_track_path) <= route.pad_stub_path[1][1]
         assert not set(route.path).intersection(other_terminal_cells)
-        offset_cells = {
-            (round(x - 0.5), round(y - 0.5))
-            for x, y in route.offset_path
-        }
+        offset_cells = {(round(x - 0.5), round(y - 0.5)) for x, y in route.offset_path}
         hard_blocked = set(result.obstacle_map.blocked_cells)
         hard_blocked.update(result.common_bus.tree_cells)
         hard_blocked.update(result.common_bus_escape.path)
@@ -1535,9 +1496,7 @@ def test_metal_realization_creates_assigned_pads_but_not_empty_slots():
     marker_region = _polygon_region_by_layer(routed_component, config.pad_marker_layer)
 
     assert result.pad_plan.assignments
-    assigned_bboxes = tuple(
-        assignment.slot.bbox for assignment in result.pad_plan.assignments
-    )
+    assigned_bboxes = tuple(assignment.slot.bbox for assignment in result.pad_plan.assignments)
     for assignment in result.pad_plan.assignments:
         assert _region_covers_bbox(metal_region, assignment.slot.bbox)
         assert _region_covers_bbox(marker_region, assignment.slot.bbox)
@@ -1757,8 +1716,7 @@ def test_common_bus_escape_reaches_assigned_common_bus_pad_slot():
         if tagged.source == "bus_escape"
     ]
     assert any(
-        rect[0] == pytest.approx(pad_bbox[0])
-        and rect[2] == pytest.approx(pad_bbox[2])
+        rect[0] == pytest.approx(pad_bbox[0]) and rect[2] == pytest.approx(pad_bbox[2])
         for rect in bus_escape_rects
     )
 

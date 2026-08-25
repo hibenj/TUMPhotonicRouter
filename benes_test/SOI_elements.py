@@ -31,10 +31,10 @@ def _get_bbox(c: gf.Component):
 
 @gf.cell
 def switch(
-        ring_component: gf.Component,
-        gap: float = 0.225,
-        x: float = 0.0,
-        y: float = 0.0,
+    ring_component: gf.Component,
+    gap: float = 0.225,
+    x: float = 0.0,
+    y: float = 0.0,
 ) -> gf.Component:
     """Builds one switch (two asymmetric rings) as a reusable component.
 
@@ -155,10 +155,22 @@ def add_two_edge_ports(c: gf.Component, width: float = 1.0, layer=(1, 0)):
     xmid = 0.5 * (xmin + xmax) - 0.5
     ymid = 0.5 * (ymin + ymax)
 
-    c.add_port(name="W", center=(xmin - 0.2, ymid), width=width, orientation=180,
-               layer=layer, port_type="optical")
-    c.add_port(name="E", center=(xmax - 0.2, ymid), width=width, orientation=0,
-               layer=layer, port_type="optical")
+    c.add_port(
+        name="W",
+        center=(xmin - 0.2, ymid),
+        width=width,
+        orientation=180,
+        layer=layer,
+        port_type="optical",
+    )
+    c.add_port(
+        name="E",
+        center=(xmax - 0.2, ymid),
+        width=width,
+        orientation=0,
+        layer=layer,
+        port_type="optical",
+    )
 
 
 import gdsfactory as gf
@@ -188,6 +200,7 @@ def dual_ring_switch(ring: gf.Component) -> gf.Component:
 
     return c
 
+
 def connect_inputs(c, input_refs, switch_refs, cross_section="strip"):
     """
     Connects input grating couplers to the first-stage switches.
@@ -214,6 +227,7 @@ def connect_inputs(c, input_refs, switch_refs, cross_section="strip"):
             cross_section=cross_section,
         )
 
+
 def connect_outputs(c, output_refs, switch_refs, elements, cross_section="strip"):
     """
     Connects the last-stage switches to the output grating couplers.
@@ -238,17 +252,19 @@ def connect_outputs(c, output_refs, switch_refs, elements, cross_section="strip"
             cross_section=cross_section,
         )
 
+
 def _init_port_usage(switch_refs):
     """Make a usage map: {(stage, elem): {'left': {'o1':False,'o4':False},
-                                          'right':{'o2':False,'o3':False}}}"""
+    'right':{'o2':False,'o3':False}}}"""
     usage = {}
     for s, stage in enumerate(switch_refs):
         for e, _ in enumerate(stage):
             usage[(s, e)] = {
-                "left":  {"o1": False, "o4": False},
+                "left": {"o1": False, "o4": False},
                 "right": {"o2": False, "o3": False},
             }
     return usage
+
 
 def _take_port(cref, usage, key, side, prefer):
     """
@@ -261,9 +277,8 @@ def _take_port(cref, usage, key, side, prefer):
         if not usage[key][side][pname]:
             usage[key][side][pname] = True
             return cref.ports[pname]
-    raise RuntimeError(
-        f"No free {side} ports remaining on switch {key}; tried {prefer}."
-    )
+    raise RuntimeError(f"No free {side} ports remaining on switch {key}; tried {prefer}.")
+
 
 def connect_stages(c, switch_refs, connections, cross_section="strip"):
     """
@@ -296,7 +311,7 @@ def connect_stages(c, switch_refs, connections, cross_section="strip"):
 
             # First link (prefer o2 on src-right, o1 on dst-left)
             p_src_1 = _take_port(src_ref, usage, src_key, "right", ["o2", "o3"])
-            p_dst_1 = _take_port(dstA_ref, usage, dstA_key, "left",  ["o1", "o4"])
+            p_dst_1 = _take_port(dstA_ref, usage, dstA_key, "left", ["o1", "o4"])
             routes.append(
                 gf.routing.route_single(
                     c, p_src_1, p_dst_1, port_type="optical", cross_section=cross_section
@@ -305,24 +320,25 @@ def connect_stages(c, switch_refs, connections, cross_section="strip"):
 
             # Second link (next available on each side)
             p_src_2 = _take_port(src_ref, usage, src_key, "right", ["o2", "o3"])
-            p_dst_2 = _take_port(dstB_ref, usage, dstB_key, "left",  ["o1", "o4"])
+            p_dst_2 = _take_port(dstB_ref, usage, dstB_key, "left", ["o1", "o4"])
             routes.append(
                 gf.routing.route_single(
                     c, p_src_2, p_dst_2, port_type="optical", cross_section=cross_section
                 )
             )
-            #break
-        #break
+            # break
+        # break
     return routes
+
 
 @gf.cell
 def benes_array(
-        n: int,
-        switch_component: gf.Component,
-        grating_coupler:  gf.Component,
-        x_min_gap: float = 0.0,
-        y_min_gap: float = 1.0,
-        waveguide_width: float = 0.5,
+    n: int,
+    switch_component: gf.Component,
+    grating_coupler: gf.Component,
+    x_min_gap: float = 0.0,
+    y_min_gap: float = 1.0,
+    waveguide_width: float = 0.5,
 ) -> gf.Component:
     """
     Builds a rectangular array of switch components for an n-bit Benes network.
@@ -345,8 +361,8 @@ def benes_array(
     # print(f"stages = {params['stages']}")
     # print(f"elements per stage = {params['elements']}\n")
 
-    stages = params['stages']
-    elements = params['elements']
+    stages = params["stages"]
+    elements = params["elements"]
 
     # Measure switch geometry
     sw_w, sw_h = _get_bbox_dims(switch_component)
@@ -375,7 +391,7 @@ def benes_array(
                 gc_ref = c << grating_coupler
                 gc_ref.rotate(90)
                 (x_gc), (y_gc) = _get_bbox_dims(gc_ref)
-                gc_ref.move((x-x_gc, ymax-(waveguide_width/2)))
+                gc_ref.move((x - x_gc, ymax - (waveguide_width / 2)))
                 input_refs.append(gc_ref)
                 gc_ref = c << grating_coupler
                 gc_ref.rotate(90)
@@ -399,7 +415,7 @@ def benes_array(
     connect_inputs(c, input_refs, switch_refs, cross_section="strip")
     connect_outputs(c, output_refs, switch_refs, elements, cross_section="strip")
 
-    connect_stages(c, switch_refs, params['connections'])
+    connect_stages(c, switch_refs, params["connections"])
 
     # gf.routing.route_bundle(
     #     c,
@@ -409,7 +425,6 @@ def benes_array(
     #     cross_section="strip",
     #     sort_ports=False  # Don't sort to preserve our connection pattern
     # )
-
 
     return c
 
@@ -421,7 +436,8 @@ if __name__ == "__main__":
     # GDS-Datei importieren
     gc = gf.read.import_gds(
         "/home/benjamin/Documents/Repositories/cda.cit.tum.gitlab/photonics/Projects/Carleton_collaboration/PDK/NanoSOI_PDK_v74/tech/libraries/ANT_PDK_Silicon_v74.gds",
-        cellname="GratingCoupler_TM_Oxide_8degrees")
+        cellname="GratingCoupler_TM_Oxide_8degrees",
+    )
 
     # ring = gf.read.import_gds(
     # "/home/benjamin/Documents/Repositories/cda.cit.tum.gitlab/photonics/Projects/Carleton_collaboration/PDK/NanoSOI_PDK_v74/tech/libraries/ANT_PDK_Silicon_v74.gds",
@@ -429,7 +445,8 @@ if __name__ == "__main__":
 
     ring = gf.read.import_gds(
         "/home/benjamin/Documents/Repositories/cda.cit.tum.gitlab/photonics/Projects/Carleton_collaboration/Custom_Elements/Ring.gds",
-        cellname="TOP")
+        cellname="TOP",
+    )
 
     gc = gf.add_ports.add_ports_from_markers_inside(gc, pin_layer="PORT", port_layer="WG")
     ring = gf.add_ports.add_ports_from_markers_inside(ring, pin_layer="PORT", port_layer="WG")
@@ -445,18 +462,25 @@ if __name__ == "__main__":
         else:
             port.center = (x - 0.05, y)
 
-    #gc.pprint_ports()
-    #ring.pprint_ports()
+    # gc.pprint_ports()
+    # ring.pprint_ports()
 
     top = gf.Component("demo")
-    #gc1 = top << gc
-    #gc1.rotate(90)
-    #gc1.move((-80, 21.2))  # place it at x=50
+    # gc1 = top << gc
+    # gc1.rotate(90)
+    # gc1.move((-80, 21.2))  # place it at x=50
 
     sw = switch(ring, gap=0.225)
-    #sw.pprint_ports()
+    # sw.pprint_ports()
 
-    array = benes_array(n=2, switch_component=sw, grating_coupler=gc, x_min_gap = 40.0, y_min_gap=40.0, waveguide_width=0.5)
+    array = benes_array(
+        n=2,
+        switch_component=sw,
+        grating_coupler=gc,
+        x_min_gap=40.0,
+        y_min_gap=40.0,
+        waveguide_width=0.5,
+    )
     ar1 = top << array
     # ar1.move((80, -21.2))
 

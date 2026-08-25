@@ -7,6 +7,7 @@ from enum import Enum
 from graphlib import TopologicalSorter
 from typing import Any, Iterable, Mapping, Protocol
 
+
 class SchematicLike(Protocol):
     netlist: Any
 
@@ -176,9 +177,7 @@ class PathLengthGraphAnnotations:
                     edge_missing[edge_key] = missing
                     routed_length_um = self.edge_lengths_um.get(edge_key)
                     if routed_length_um is None:
-                        raise ValueError(
-                            f"Missing routed length for edge {edge_key.net_name}"
-                        )
+                        raise ValueError(f"Missing routed length for edge {edge_key.net_name}")
                     incoming_timings.append(
                         NodeIncomingEdgeTiming(
                             edge_key=edge_key,

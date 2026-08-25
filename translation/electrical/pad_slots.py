@@ -189,9 +189,7 @@ def _pad_intervals(
     for item in individual_items:
         terminal, bundle_id, _ = item
         if current_items and bundle_id != current_bundle_id:
-            intervals.append(
-                _make_interval(tuple(current_items), preferred_x_by_terminal_id)
-            )
+            intervals.append(_make_interval(tuple(current_items), preferred_x_by_terminal_id))
             current_items = []
         current_items.append(item)
         current_bundle_id = bundle_id
@@ -205,8 +203,7 @@ def _make_interval(
     preferred_x_by_terminal_id: dict[str, float],
 ) -> _PadInterval:
     preferred_values = tuple(
-        preferred_x_by_terminal_id.get(terminal.id, terminal.center[0])
-        for terminal, _, _ in items
+        preferred_x_by_terminal_id.get(terminal.id, terminal.center[0]) for terminal, _, _ in items
     )
     return _PadInterval(items=items, preferred_x_um=_median_float(preferred_values))
 
@@ -233,11 +230,7 @@ def _assign_interval_indices(
     previous_end = first_assignment_index - 1 - config.pad_empty_slots_between_assignments
     assigned_indices: list[int] = []
     for interval, preferred_start in zip(intervals, preferred_starts):
-        shifted_start = (
-            preferred_start
-            - min_preferred_start
-            + first_assignment_index
-        )
+        shifted_start = preferred_start - min_preferred_start + first_assignment_index
         start_index = max(
             shifted_start,
             previous_end + config.pad_empty_slots_between_assignments + 1,
@@ -341,11 +334,7 @@ def _make_slot(
     side: Side | None = None,
 ) -> PadSlot:
     slot_side = config.pad_side if side is None else side
-    center_x = (
-        origin_x + index * config.pad_pitch_um
-        if center_x_um is None
-        else center_x_um
-    )
+    center_x = origin_x + index * config.pad_pitch_um if center_x_um is None else center_x_um
     half_width = (config.bondpad_width_um if width_um is None else width_um) / 2.0
     half_length = (config.bondpad_length_um if length_um is None else length_um) / 2.0
     _, layout_ymin, _, layout_ymax = obstacle_map.layout_bbox

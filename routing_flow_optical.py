@@ -94,9 +94,7 @@ def run_photonic_routing_stage(
             enable_crossings=config.enable_crossings,
             crossing_mode=config.crossing_mode,
             crossing_half_size_cells=int(config.crossing_half_size_cells),
-            min_straight_cells_per_crossing=int(
-                config.min_straight_cells_per_crossing
-            ),
+            min_straight_cells_per_crossing=int(config.min_straight_cells_per_crossing),
             foreign_port_keepout_cells=int(config.foreign_port_keepout_cells),
             fanout_access_mode=config.fanout_access_mode,
             node_depths=metadata.get("node_depths"),
@@ -117,9 +115,7 @@ def run_photonic_routing_stage(
             heuristic_mode=config.heuristic_mode,
             heap_tie_breaker=config.heap_tie_breaker,
             proactive_congestion_weight=float(config.proactive_congestion_weight),
-            proactive_congestion_radius_cells=int(
-                config.proactive_congestion_radius_cells
-            ),
+            proactive_congestion_radius_cells=int(config.proactive_congestion_radius_cells),
             max_iterations=config.max_iterations,
             routing_window_scale=config.routing_window_scale,
             collect_route_stats=config.collect_route_stats,

@@ -50,9 +50,7 @@ class TopologyAnalysisResult:
     def crossings_by_depth(self) -> dict[tuple[int, int], list[TopologyCrossing]]:
         grouped: dict[tuple[int, int], list[TopologyCrossing]] = {}
         for crossing in self.crossings:
-            grouped.setdefault((crossing.source_depth, crossing.target_depth), []).append(
-                crossing
-            )
+            grouped.setdefault((crossing.source_depth, crossing.target_depth), []).append(crossing)
         return grouped
 
 
@@ -130,8 +128,7 @@ def _derive_node_depths(
             depths[node_name] = 0
             continue
         depths[node_name] = 1 + max(
-            depths.get(edges[edge_key].source.instance, 0)
-            for edge_key in incoming
+            depths.get(edges[edge_key].source.instance, 0) for edge_key in incoming
         )
     return depths
 
@@ -227,12 +224,10 @@ def _derive_missing_edge_ranks_from_ports(
     ranked_edges: dict[RoutedEdgeKey, TopologyEdgeRank] = {}
     for (source_depth, target_depth), records in endpoint_records.items():
         source_order = _rank_endpoints(
-            (edge_key, source_pos)
-            for edge_key, source_pos, _target_pos in records
+            (edge_key, source_pos) for edge_key, source_pos, _target_pos in records
         )
         target_order = _rank_endpoints(
-            (edge_key, target_pos)
-            for edge_key, _source_pos, target_pos in records
+            (edge_key, target_pos) for edge_key, _source_pos, target_pos in records
         )
         for edge_key, _source_pos, _target_pos in records:
             ranked_edges[edge_key] = TopologyEdgeRank(
@@ -296,9 +291,7 @@ def _find_rank_inversions(
 ) -> list[TopologyCrossing]:
     by_depth: dict[tuple[int, int], list[TopologyEdgeRank]] = {}
     for edge_rank in edge_ranks.values():
-        by_depth.setdefault((edge_rank.source_depth, edge_rank.target_depth), []).append(
-            edge_rank
-        )
+        by_depth.setdefault((edge_rank.source_depth, edge_rank.target_depth), []).append(edge_rank)
 
     crossings: list[TopologyCrossing] = []
     for (source_depth, target_depth), group in by_depth.items():

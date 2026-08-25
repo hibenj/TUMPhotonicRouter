@@ -91,9 +91,7 @@ class RouteCostTerms:
     def search_guidance_penalty(self) -> float:
         if self.total_search_cost is not None:
             return max(0.0, float(self.total_search_cost) - self.total_physical_insertion_loss)
-        return float(
-            self.history_cost + self.congestion_cost + self.other_search_guidance_cost
-        )
+        return float(self.history_cost + self.congestion_cost + self.other_search_guidance_cost)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -388,9 +386,7 @@ def _component_placement_issues(
                         },
                     )
                 )
-        expected_rotation = (
-            None if shared_cluster_match else _crossing_axis_rotation_deg(crossing)
-        )
+        expected_rotation = None if shared_cluster_match else _crossing_axis_rotation_deg(crossing)
         actual_rotation = _as_float_or_none(match.get("rotation_deg"))
         if expected_rotation is not None and actual_rotation is None:
             issues.append(
@@ -564,15 +560,11 @@ def _build_metrics(
         "total_physical_insertion_loss": sum(
             cost.total_physical_insertion_loss for cost in cost_list
         ),
-        "total_search_guidance_penalty": sum(
-            cost.search_guidance_penalty for cost in cost_list
-        ),
+        "total_search_guidance_penalty": sum(cost.search_guidance_penalty for cost in cost_list),
     }
     metrics.update(component_metrics)
     total_search_costs = [
-        float(cost.total_search_cost)
-        for cost in cost_list
-        if cost.total_search_cost is not None
+        float(cost.total_search_cost) for cost in cost_list if cost.total_search_cost is not None
     ]
     if total_search_costs:
         metrics["total_search_cost"] = sum(total_search_costs)
@@ -582,12 +574,8 @@ def _build_metrics(
     final_photonic_repair_attempts = tuple(
         _iter_mappings(plan_info.get("final_photonic_repair_attempts"))
     )
-    metrics["final_crossing_repair_attempt_count"] = len(
-        final_crossing_repair_attempts
-    )
-    metrics["final_photonic_repair_attempt_count"] = len(
-        final_photonic_repair_attempts
-    )
+    metrics["final_crossing_repair_attempt_count"] = len(final_crossing_repair_attempts)
+    metrics["final_photonic_repair_attempt_count"] = len(final_photonic_repair_attempts)
     metrics["final_crossing_repair_success_count"] = sum(
         1
         for attempt in final_crossing_repair_attempts
@@ -683,9 +671,7 @@ def _axis_angle_error_deg(actual_deg: float, expected_deg: float) -> float:
 
 
 def _crossing_message(crossing: CrossingRecord) -> str:
-    names = " x ".join(
-        name for name in (crossing.net_name_a, crossing.net_name_b) if name
-    )
+    names = " x ".join(name for name in (crossing.net_name_a, crossing.net_name_b) if name)
     suffix = f" for {names}" if names else ""
     reason = f": {crossing.reason}" if crossing.reason else ""
     return f"Illegal realized crossing{suffix}{reason}."
@@ -704,12 +690,8 @@ def _coerce_cost_terms(item: RouteCostTerms | Mapping[str, object]) -> RouteCost
         total_search_cost=_as_float_or_none(item.get("total_search_cost")),
         history_cost=_as_float(item.get("history_cost"), 0.0),
         congestion_cost=_as_float(item.get("congestion_cost"), 0.0),
-        other_search_guidance_cost=_as_float(
-            item.get("other_search_guidance_cost"), 0.0
-        ),
-        physical_insertion_loss=_as_float_or_none(
-            item.get("physical_insertion_loss")
-        ),
+        other_search_guidance_cost=_as_float(item.get("other_search_guidance_cost"), 0.0),
+        physical_insertion_loss=_as_float_or_none(item.get("physical_insertion_loss")),
     )
 
 

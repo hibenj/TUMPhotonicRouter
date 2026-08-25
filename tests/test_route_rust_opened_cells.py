@@ -69,14 +69,11 @@ def _make_dummy_layout() -> Component:
 
 def _diagnostic_value(text: str, key: str) -> str:
     prefix = f"{key}="
-    return next(line[len(prefix):] for line in text.splitlines() if line.startswith(prefix))
+    return next(line[len(prefix) :] for line in text.splitlines() if line.startswith(prefix))
 
 
 def _diagnostic_opened_cells(text: str) -> set[tuple[int, int]]:
-    return {
-        (int(x), int(y))
-        for x, y in ast.literal_eval(_diagnostic_value(text, "opened_cells"))
-    }
+    return {(int(x), int(y)) for x, y in ast.literal_eval(_diagnostic_value(text, "opened_cells"))}
 
 
 def _corridor_session(width: int, height: int, bend_radius_cells: int = 2):
@@ -361,21 +358,24 @@ def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
     diag_text = diag_path.read_text(encoding="utf-8")
 
     overlap_line = next(
-        line for line in diag_text.splitlines()
+        line
+        for line in diag_text.splitlines()
         if line.startswith("opened_candidate_static_overlap_count=")
     )
     overlap_count = int(overlap_line.split("=", 1)[1])
     assert overlap_count > 0
 
     route_static_overlap_line = next(
-        line for line in diag_text.splitlines()
+        line
+        for line in diag_text.splitlines()
         if line.startswith("route_static_blocked_overlap_count=")
     )
     route_static_overlap_count = int(route_static_overlap_line.split("=", 1)[1])
     assert route_static_overlap_count == 0
 
     route_opened_static_line = next(
-        line for line in diag_text.splitlines()
+        line
+        for line in diag_text.splitlines()
         if line.startswith("route_overlap_effective_opened_static_count=")
     )
     route_opened_static_count = int(route_opened_static_line.split("=", 1)[1])
@@ -557,9 +557,7 @@ def test_route_nets_rust_does_not_apply_heater_rule_to_electrical_port(
     )
 
     diag_text = (
-        tmp_path
-        / "routes"
-        / "heater_electrical_opening_electrical_endpoint_net_diagnostics.txt"
+        tmp_path / "routes" / "heater_electrical_opening_electrical_endpoint_net_diagnostics.txt"
     ).read_text(encoding="utf-8")
 
     assert _diagnostic_value(diag_text, "source_access_rule") == "None"
@@ -650,14 +648,14 @@ def test_route_nets_rust_does_not_open_dynamic_geometry(monkeypatch, tmp_path):
     diag_text = diag_path.read_text(encoding="utf-8")
 
     route_dynamic_line = next(
-        line for line in diag_text.splitlines()
-        if line.startswith("route_dynamic_overlap_count=")
+        line for line in diag_text.splitlines() if line.startswith("route_dynamic_overlap_count=")
     )
     route_dynamic_overlap_count = int(route_dynamic_line.split("=", 1)[1])
     assert route_dynamic_overlap_count == 0
 
     route_opened_dynamic_line = next(
-        line for line in diag_text.splitlines()
+        line
+        for line in diag_text.splitlines()
         if line.startswith("route_overlap_effective_opened_dynamic_count=")
     )
     route_opened_dynamic_count = int(route_opened_dynamic_line.split("=", 1)[1])
@@ -758,7 +756,11 @@ def test_route_nets_rust_route_to_blocked_port_with_opened_cells(monkeypatch, tm
         defer_realization=True,
     )
 
-    diag_path = tmp_path / "routes" / "strict_mode_blocked_port_blocked_port_with_opened_cells_diagnostics.txt"
+    diag_path = (
+        tmp_path
+        / "routes"
+        / "strict_mode_blocked_port_blocked_port_with_opened_cells_diagnostics.txt"
+    )
     diag_text = diag_path.read_text(encoding="utf-8")
     assert "status=ok" in diag_text
     assert "route_static_blocked_overlap_count=1" in diag_text
@@ -767,12 +769,7 @@ def test_route_nets_rust_route_to_blocked_port_with_opened_cells(monkeypatch, tm
 
 def test_route_nets_rust_foreign_port_keepout_blocks_unrelated_net(monkeypatch, tmp_path):
     corridor_y = 10
-    blocked_cells = {
-        (x, y)
-        for x in range(30)
-        for y in range(21)
-        if y != corridor_y
-    }
+    blocked_cells = {(x, y) for x in range(30) for y in range(21) if y != corridor_y}
 
     def fake_build_static_obstacle_map(_component, config=None):
         _ = config
@@ -832,12 +829,7 @@ def test_route_nets_rust_foreign_port_keepout_does_not_open_sibling_port(
     tmp_path,
 ):
     corridor_y = 10
-    blocked_cells = {
-        (x, y)
-        for x in range(30)
-        for y in range(21)
-        if y != corridor_y
-    }
+    blocked_cells = {(x, y) for x in range(30) for y in range(21) if y != corridor_y}
 
     def fake_build_static_obstacle_map(_component, config=None):
         _ = config
@@ -898,12 +890,7 @@ def test_route_nets_rust_dense_same_instance_keepout_does_not_open_raw_static_si
 ):
     corridor_y = 10
     sibling_static_cell = (14, corridor_y)
-    blocked_cells = {
-        (x, y)
-        for x in range(30)
-        for y in range(21)
-        if y != corridor_y
-    }
+    blocked_cells = {(x, y) for x in range(30) for y in range(21) if y != corridor_y}
     blocked_cells.add(sibling_static_cell)
 
     def fake_build_static_obstacle_map(_component, config=None):
@@ -962,9 +949,7 @@ def test_route_nets_rust_dense_same_instance_keepout_does_not_open_raw_static_si
         )
 
     diag_path = (
-        tmp_path
-        / "routes"
-        / "dense_same_instance_raw_static_closed_to_active_port_diagnostics.txt"
+        tmp_path / "routes" / "dense_same_instance_raw_static_closed_to_active_port_diagnostics.txt"
     )
     diag_text = diag_path.read_text(encoding="utf-8")
     opened_cells = _diagnostic_opened_cells(diag_text)
@@ -978,12 +963,7 @@ def test_route_nets_rust_foreign_port_keepout_uses_unified_self_opening_for_same
     tmp_path,
 ):
     corridor_y = 10
-    blocked_cells = {
-        (x, y)
-        for x in range(30)
-        for y in range(21)
-        if y != corridor_y
-    }
+    blocked_cells = {(x, y) for x in range(30) for y in range(21) if y != corridor_y}
 
     def fake_build_static_obstacle_map(_component, config=None):
         _ = config
@@ -1047,10 +1027,7 @@ def test_route_nets_rust_removes_foreign_keepout_after_port_is_routed(
     routed_lane_y = 10
     released_lane_y = 12
     blocked_cells = {
-        (x, y)
-        for x in range(30)
-        for y in range(21)
-        if y not in {routed_lane_y, released_lane_y}
+        (x, y) for x in range(30) for y in range(21) if y not in {routed_lane_y, released_lane_y}
     }
 
     def fake_build_static_obstacle_map(_component, config=None):
@@ -1078,9 +1055,7 @@ def test_route_nets_rust_removes_foreign_keepout_after_port_is_routed(
         netlist=_DummyNetlist(
             routes={
                 "connect_mid": _DummyBundle(links={"left_a,o1": "mid,o1"}),
-                "through_released_keepout": _DummyBundle(
-                    links={"left_b,o1": "right_b,o1"}
-                ),
+                "through_released_keepout": _DummyBundle(links={"left_b,o1": "right_b,o1"}),
             }
         )
     )
@@ -1106,9 +1081,7 @@ def test_route_nets_rust_removes_foreign_keepout_after_port_is_routed(
     )
 
     diag_path = (
-        tmp_path
-        / "routes"
-        / "foreign_keepout_cleanup_through_released_keepout_diagnostics.txt"
+        tmp_path / "routes" / "foreign_keepout_cleanup_through_released_keepout_diagnostics.txt"
     )
     diag_text = diag_path.read_text(encoding="utf-8")
     assert "status=ok" in diag_text
@@ -1256,9 +1229,7 @@ def test_apply_checked_fanout_stub_endpoint_corrections_skips_both_sides_fanout_
     session.fanout_anchor_target_net_ids = {net_id}
     session.enable_crossings = False
     session.router = SimpleNamespace(
-        apply_checked_endpoint_corrections=_unexpected_call(
-            "apply_checked_endpoint_corrections"
-        ),
+        apply_checked_endpoint_corrections=_unexpected_call("apply_checked_endpoint_corrections"),
     )
     session.route_bookkeeping = SimpleNamespace(records_by_id={net_id: record})
     session.route_jobs_by_id = {net_id: job}
@@ -1440,18 +1411,16 @@ def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
         defer_realization=True,
     )
 
-    diag_path = (
-        tmp_path
-        / "routes"
-        / "same_instance_sibling_lane_to_active_port_diagnostics.txt"
-    )
+    diag_path = tmp_path / "routes" / "same_instance_sibling_lane_to_active_port_diagnostics.txt"
     diag_text = diag_path.read_text(encoding="utf-8")
     opened_cells = _diagnostic_opened_cells(diag_text)
     assert "status=ok" in diag_text
     assert (29, 14) not in opened_cells
 
 
-def test_route_nets_rust_clear_port_opening_flag_controls_global_crossing_blocking(monkeypatch, tmp_path):
+def test_route_nets_rust_clear_port_opening_flag_controls_global_crossing_blocking(
+    monkeypatch, tmp_path
+):
     def blocked_cells_for_corridor(remove_middle: bool) -> set[tuple[int, int]]:
         blocked = set()
         for x in range(2, 27):

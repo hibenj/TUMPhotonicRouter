@@ -87,6 +87,7 @@ If Rust builds start failing with `link.exe not found`,
 **Import Pattern** (critical):
 ```python
 import photonic_router._rust as rust_backend  # Bindings from maturin
+
 rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 ```
 
@@ -147,6 +148,7 @@ Produces:
 1. Create `benchmarks/MY_DESIGN.py`:
 ```python
 from gdsfactory.schematic import Schematic, Instance, Placement
+
 
 def build_schematic() -> Schematic:
     schematic = Schematic()

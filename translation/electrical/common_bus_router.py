@@ -107,7 +107,9 @@ def route_common_bus(
                     obstacle_map,
                     config,
                 ),
-                _candidate_target_distance(candidate, median_x, local_target_x_by_group, obstacle_map, config),
+                _candidate_target_distance(
+                    candidate, median_x, local_target_x_by_group, obstacle_map, config
+                ),
                 candidate.cost,
                 candidate.group.heater_id,
                 candidate.terminal.side_key,
@@ -179,13 +181,15 @@ def _route_local_trunks(
             key=lambda group: _group_center(group)[0],
         )
         group_pair = (left_pair, right_pair)
-        target_grid_x = int(round(
-            (
-                local_target_x_by_group.get(group_pair[0].heater_id, 0.0)
-                + local_target_x_by_group.get(group_pair[1].heater_id, 0.0)
+        target_grid_x = int(
+            round(
+                (
+                    local_target_x_by_group.get(group_pair[0].heater_id, 0.0)
+                    + local_target_x_by_group.get(group_pair[1].heater_id, 0.0)
+                )
+                / 2.0
             )
-            / 2.0
-        ))
+        )
         pair_routes = _build_local_trunk_pair_routes(
             group_pair,
             target_grid_x,
@@ -275,7 +279,10 @@ def _build_local_trunk_pair_routes(
         terminal = min(
             group.terminals,
             key=lambda candidate: (
-                abs(physical_to_grid(candidate.center[0], candidate.center[1], obstacle_map.grid)[0] - target_grid_x),
+                abs(
+                    physical_to_grid(candidate.center[0], candidate.center[1], obstacle_map.grid)[0]
+                    - target_grid_x
+                ),
                 candidate.side_key,
                 candidate.id,
             ),
@@ -373,10 +380,7 @@ def _path_hits_blockers(
     allowed: set[GridCell],
     forbidden: set[GridCell] | frozenset[GridCell] = frozenset(),
 ) -> bool:
-    return any(
-        (cell in blocked and cell not in allowed) or cell in forbidden
-        for cell in path
-    )
+    return any((cell in blocked and cell not in allowed) or cell in forbidden for cell in path)
 
 
 def _local_pair_target_grid_x_by_group(
@@ -389,10 +393,7 @@ def _local_pair_target_grid_x_by_group(
     if config.common_bus_terminal_selection != "local_pair_median_x_biased":
         return {group.heater_id: fallback_x for group in terminal_groups}
 
-    group_centers = {
-        group.heater_id: _group_center(group)
-        for group in terminal_groups
-    }
+    group_centers = {group.heater_id: _group_center(group) for group in terminal_groups}
     target_by_group: dict[str, float] = {}
     max_gap = config.common_bus_local_pair_max_gap_um
     y_tol = config.common_bus_local_pair_y_tolerance_um
@@ -501,8 +502,7 @@ def _candidate_distance_to_target_x(
 def _all_terminal_cells(obstacle_map: ElectricalObstacleMap) -> frozenset[GridCell]:
     cells: set[GridCell] = set()
     terminal_open_cells = (
-        obstacle_map.common_bus_terminal_open_cells
-        or obstacle_map.terminal_open_cells
+        obstacle_map.common_bus_terminal_open_cells or obstacle_map.terminal_open_cells
     )
     for terminal_cells in terminal_open_cells.values():
         cells.update(terminal_cells)

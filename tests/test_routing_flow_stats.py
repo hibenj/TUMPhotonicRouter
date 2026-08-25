@@ -59,15 +59,10 @@ def test_default_bend_radius_is_ten_um_on_routing_grid():
 
 def test_path_length_meander_height_defaults_are_centralized():
     assert DEFAULT_MEANDER_MAX_HEIGHT_UM == 80.0
-    assert (
-        MeanderInsertionConfig().max_meander_height_um
-        == DEFAULT_MEANDER_MAX_HEIGHT_UM
-    )
+    assert MeanderInsertionConfig().max_meander_height_um == DEFAULT_MEANDER_MAX_HEIGHT_UM
     assert SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM == DEFAULT_MEANDER_MAX_HEIGHT_UM
     assert (
-        inspect.signature(run_routing_flow)
-        .parameters["path_length_meander_height_um"]
-        .default
+        inspect.signature(run_routing_flow).parameters["path_length_meander_height_um"].default
         == DEFAULT_MEANDER_MAX_HEIGHT_UM
     )
     assert (
@@ -86,9 +81,7 @@ def test_electrical_width_defaults_are_centralized():
     assert DEFAULT_BONDPAD_WIDTH_UM == 80.0
     assert DEFAULT_COMMON_BUS_BONDPAD_WIDTH_UM == DEFAULT_BUS_WIDTH_UM
     assert DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM == DEFAULT_BUS_WIDTH_UM
-    assert DEFAULT_PAD_PITCH_UM == (
-        config.bondpad_width_um + config.bondpad_spacing_um
-    )
+    assert DEFAULT_PAD_PITCH_UM == (config.bondpad_width_um + config.bondpad_spacing_um)
     assert config.wire_width_um == DEFAULT_WIRE_WIDTH_UM
     assert config.bus_width_um == DEFAULT_BUS_WIDTH_UM
     assert config.bondpad_width_um == DEFAULT_BONDPAD_WIDTH_UM
@@ -186,9 +179,7 @@ def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
         DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
     )
     assert info["crossing_loss"] == pytest.approx(0.0)
-    assert info["crossing_search_loss"] == pytest.approx(
-        DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
-    )
+    assert info["crossing_search_loss"] == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
     assert SCRIPT_ELECTRICAL_BUS_WIDTH_UM == DEFAULT_BUS_WIDTH_UM
     assert SCRIPT_ELECTRICAL_PAD_PITCH_UM == DEFAULT_PAD_PITCH_UM
 
@@ -263,9 +254,9 @@ def test_route_match_uses_rust_batch_path_when_repair_disabled():
     assert summary.route_failures == 0
     assert summary.repair_count == 0
     assert len(result.debug_artifacts.route_attempt_records) == 4
-    assert {
-        record.bucket_name for record in result.debug_artifacts.route_attempt_records
-    } == {"normal_route"}
+    assert {record.bucket_name for record in result.debug_artifacts.route_attempt_records} == {
+        "normal_route"
+    }
 
 
 @pytest.mark.parametrize(
@@ -340,9 +331,7 @@ def _route_heater_s_mod_for_regression(waveguide_clearance_um: float):
 
 @pytest.mark.parametrize("waveguide_clearance_um", [3.0, 0.0])
 def test_heater_s_mod_90_degree_plm_regression(waveguide_clearance_um):
-    schematic, unrouted_layout, result = _route_heater_s_mod_for_regression(
-        waveguide_clearance_um
-    )
+    schematic, unrouted_layout, result = _route_heater_s_mod_for_regression(waveguide_clearance_um)
     route_summary = result.debug_artifacts.route_search_summary
 
     assert route_summary.route_count == 81
@@ -690,7 +679,9 @@ def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_p
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
     monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
-    monkeypatch.setattr(routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize)
+    monkeypatch.setattr(
+        routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize
+    )
 
     routed = run_routing_flow(
         "FAKE",
@@ -713,9 +704,7 @@ def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_p
     assert payload["metrics"]["matched_crossing_component_count"] == 1
     assert payload["metrics"]["realized_crossing_component_count"] == 1
     assert payload["issues"] == []
-    assert payload["route_costs"][0]["total_physical_insertion_loss"] == pytest.approx(
-        0.17
-    )
+    assert payload["route_costs"][0]["total_physical_insertion_loss"] == pytest.approx(0.17)
 
 
 def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_path):
@@ -797,7 +786,9 @@ def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_pa
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
     monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
-    monkeypatch.setattr(routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize)
+    monkeypatch.setattr(
+        routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize
+    )
 
     with pytest.raises(RuntimeError, match="Crossing verification failed"):
         run_routing_flow(
@@ -919,7 +910,9 @@ def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
     monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
-    monkeypatch.setattr(routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize)
+    monkeypatch.setattr(
+        routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize
+    )
     monkeypatch.setattr(
         routing_flow_verification,
         "verify_photonic_routing",
@@ -1046,7 +1039,9 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
     monkeypatch.setattr(routing_flow, "layout_from_schematic", fake_layout_from_schematic)
     monkeypatch.setattr(routing_flow_optical, "load_benchmark_metadata", fake_load_metadata)
-    monkeypatch.setattr(routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize)
+    monkeypatch.setattr(
+        routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize
+    )
 
     stats = RoutingFlowStats()
     run_routing_flow(

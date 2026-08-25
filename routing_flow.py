@@ -116,9 +116,7 @@ def _parse_bool_flag(value: str) -> bool:
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run the photonic routing flow for a benchmark."
-    )
+    parser = argparse.ArgumentParser(description="Run the photonic routing flow for a benchmark.")
     parser.add_argument(
         "benchmark",
         nargs="?",
@@ -476,8 +474,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=("top", "bottom"),
         default=SCRIPT_ELECTRICAL_PAD_SIDE,
         help=(
-            "Side used for electrical bondpad placement "
-            f"(default: {SCRIPT_ELECTRICAL_PAD_SIDE})."
+            f"Side used for electrical bondpad placement (default: {SCRIPT_ELECTRICAL_PAD_SIDE})."
         ),
     )
     parser.add_argument(
@@ -485,10 +482,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=SCRIPT_ELECTRICAL_GRID_PITCH_UM,
         metavar="UM",
-        help=(
-            "Electrical routing grid pitch "
-            f"(default: {SCRIPT_ELECTRICAL_GRID_PITCH_UM})."
-        ),
+        help=(f"Electrical routing grid pitch (default: {SCRIPT_ELECTRICAL_GRID_PITCH_UM})."),
     )
     parser.add_argument(
         "--electrical-obstacle-clearance-um",
@@ -506,8 +500,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=SCRIPT_ELECTRICAL_WIRE_WIDTH_UM,
         metavar="UM",
         help=(
-            "Electrical individual route wire width "
-            f"(default: {SCRIPT_ELECTRICAL_WIRE_WIDTH_UM})."
+            f"Electrical individual route wire width (default: {SCRIPT_ELECTRICAL_WIRE_WIDTH_UM})."
         ),
     )
     parser.add_argument(
@@ -515,10 +508,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=SCRIPT_ELECTRICAL_BUS_WIDTH_UM,
         metavar="UM",
-        help=(
-            "Electrical common bus route width "
-            f"(default: {SCRIPT_ELECTRICAL_BUS_WIDTH_UM})."
-        ),
+        help=(f"Electrical common bus route width (default: {SCRIPT_ELECTRICAL_BUS_WIDTH_UM})."),
     )
     parser.add_argument(
         "--electrical-terminal-contact-width-um",
@@ -535,10 +525,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=SCRIPT_ELECTRICAL_PAD_PITCH_UM,
         metavar="UM",
-        help=(
-            "Electrical bondpad pitch "
-            f"(default: {SCRIPT_ELECTRICAL_PAD_PITCH_UM})."
-        ),
+        help=(f"Electrical bondpad pitch (default: {SCRIPT_ELECTRICAL_PAD_PITCH_UM})."),
     )
     parser.add_argument(
         "--enable-jps4",
@@ -675,8 +662,7 @@ def load_benchmark(benchmark_name: str) -> Schematic:
 
         if not isinstance(schematic, Schematic):
             raise TypeError(
-                f"Expected Schematic from {benchmark_name}.build_schematic(), "
-                f"got {type(schematic)}"
+                f"Expected Schematic from {benchmark_name}.build_schematic(), got {type(schematic)}"
             )
 
         return schematic
@@ -741,13 +727,13 @@ def _layout_from_schematic_stage(
 
 
 def _print_flow_header(benchmark_name: str) -> None:
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Routing Flow: {benchmark_name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 def _print_flow_footer() -> None:
-    print(f"\n{'='*60}\n")
+    print(f"\n{'=' * 60}\n")
 
 
 def run_routing_flow(

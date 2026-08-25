@@ -145,9 +145,7 @@ def benes_connection_pattern(size: int) -> tuple[tuple[tuple[int, int], ...], ..
     address_bits = int(log2(size))
     stage_count = 2 * address_bits - 1
     switches_per_stage = size // 2
-    connections: list[list[tuple[int, int]]] = [
-        [] for _ in range(stage_count - 1)
-    ]
+    connections: list[list[tuple[int, int]]] = [[] for _ in range(stage_count - 1)]
 
     forward_stage_count = (stage_count - 1) // 2
     for stage in range(forward_stage_count):
@@ -194,14 +192,10 @@ def _iter_interstage_edges(size: int) -> tuple[BenesLayerEdge, ...]:
                 incoming_count_by_switch[target_switch] += 1
 
                 source_port = (
-                    SWITCH_TOP_OUTPUT_PORT
-                    if output_index == 0
-                    else SWITCH_BOTTOM_OUTPUT_PORT
+                    SWITCH_TOP_OUTPUT_PORT if output_index == 0 else SWITCH_BOTTOM_OUTPUT_PORT
                 )
                 target_port = (
-                    SWITCH_TOP_INPUT_PORT
-                    if target_input_index == 0
-                    else SWITCH_BOTTOM_INPUT_PORT
+                    SWITCH_TOP_INPUT_PORT if target_input_index == 0 else SWITCH_BOTTOM_INPUT_PORT
                 )
                 source_rank = 2 * source_switch + output_index
                 target_rank = 2 * target_switch + target_input_index
@@ -319,12 +313,8 @@ def benes_node_types(size: int) -> dict[str, str]:
     metadata = benes_topology_metadata(size)
     stage_count = int(metadata["stage_count"])
     switches_per_stage = int(metadata["switches_per_stage"])
-    node_types = {
-        input_name(index): "input"
-        for index in range(size)
-    } | {
-        output_name(index): "output"
-        for index in range(size)
+    node_types = {input_name(index): "input" for index in range(size)} | {
+        output_name(index): "output" for index in range(size)
     }
     for stage in range(stage_count):
         for switch_index in range(switches_per_stage):
@@ -336,12 +326,8 @@ def benes_internal_delays_um(size: int) -> dict[str, float | str]:
     metadata = benes_topology_metadata(size)
     stage_count = int(metadata["stage_count"])
     switches_per_stage = int(metadata["switches_per_stage"])
-    internal_delays: dict[str, float | str] = {
-        input_name(index): 0.0
-        for index in range(size)
-    } | {
-        output_name(index): 0.0
-        for index in range(size)
+    internal_delays: dict[str, float | str] = {input_name(index): 0.0 for index in range(size)} | {
+        output_name(index): 0.0 for index in range(size)
     }
     for stage in range(stage_count):
         for switch_index in range(switches_per_stage):
@@ -405,9 +391,7 @@ def build_benes_schematic(
 
     for index in range(size):
         switch_index = index // 2
-        target_port = (
-            SWITCH_TOP_INPUT_PORT if index % 2 == 0 else SWITCH_BOTTOM_INPUT_PORT
-        )
+        target_port = SWITCH_TOP_INPUT_PORT if index % 2 == 0 else SWITCH_BOTTOM_INPUT_PORT
         schematic.add_net(
             Net(
                 p1=f"{input_name(index)},{IO_PORT}",
@@ -428,9 +412,7 @@ def build_benes_schematic(
     last_stage = stage_count - 1
     for index in range(size):
         switch_index = index // 2
-        source_port = (
-            SWITCH_TOP_OUTPUT_PORT if index % 2 == 0 else SWITCH_BOTTOM_OUTPUT_PORT
-        )
+        source_port = SWITCH_TOP_OUTPUT_PORT if index % 2 == 0 else SWITCH_BOTTOM_OUTPUT_PORT
         schematic.add_net(
             Net(
                 p1=f"{switch_name(last_stage, switch_index)},{source_port}",

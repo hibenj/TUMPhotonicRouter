@@ -221,11 +221,7 @@ def _shared_crossing_component_clusters(
     clusters_by_root: dict[int, set[int]] = {}
     for index in shared_indices:
         clusters_by_root.setdefault(find(index), set()).add(index)
-    return {
-        index: set(cluster)
-        for cluster in clusters_by_root.values()
-        for index in cluster
-    }
+    return {index: set(cluster) for cluster in clusters_by_root.values() for index in cluster}
 
 
 def _crossing_footprint_polygon_metadata(
@@ -263,16 +259,12 @@ def _place_realized_crossing_components(
     if component is None:
         crossing_plan_info["realized_crossing_components"] = []
         crossing_plan_info["realized_crossing_component_count"] = 0
-        crossing_plan_info["realized_crossing_component_error"] = (
-            "crossing_component_unavailable"
-        )
+        crossing_plan_info["realized_crossing_component_error"] = "crossing_component_unavailable"
         return []
 
     component_size = _bbox_size_um(component)
     component_bbox_um = (
-        [float(component_size[0]), float(component_size[1])]
-        if component_size is not None
-        else None
+        [float(component_size[0]), float(component_size[1])] if component_size is not None else None
     )
     component_name = str(component.name)
     placements: list[dict[str, object]] = []
@@ -283,13 +275,9 @@ def _place_realized_crossing_components(
     ):
         raw_crossings = ()
     raw_crossing_list = [
-        raw_crossing
-        for raw_crossing in raw_crossings
-        if isinstance(raw_crossing, Mapping)
+        raw_crossing for raw_crossing in raw_crossings if isinstance(raw_crossing, Mapping)
     ]
-    shared_clusters_by_index = _shared_crossing_component_clusters(
-        raw_crossing_list
-    )
+    shared_clusters_by_index = _shared_crossing_component_clusters(raw_crossing_list)
 
     for index, raw_crossing in enumerate(raw_crossing_list):
         classification = str(raw_crossing.get("classification", "") or "")
@@ -439,9 +427,7 @@ def _legal_crossing_component_footprints_for_verification(
         (str, bytes, bytearray),
     ):
         components = [
-            dict(component)
-            for component in raw_components
-            if isinstance(component, Mapping)
+            dict(component) for component in raw_components if isinstance(component, Mapping)
         ]
         if components:
             return tuple(components)

@@ -92,9 +92,7 @@ def route_detailed_bundles(
         for assignment in pad_plan.assignments
     }
     all_assigned_pad_cells = (
-        set().union(*assigned_pad_cells_by_slot.values())
-        if assigned_pad_cells_by_slot
-        else set()
+        set().union(*assigned_pad_cells_by_slot.values()) if assigned_pad_cells_by_slot else set()
     )
 
     for bundle in topology.bundles:
@@ -166,18 +164,16 @@ def route_detailed_bundles(
             )
             route_prefix, source_stub_path, bundle_track_tail, pad_stub_start = (
                 _route_prefix_to_pad_stub_start(
-                source_point=source_point,
-                bundle_track_path=bundle_track_path,
-                pad_lane=pad_lane,
-                pad_side=config.pad_side,
-            )
+                    source_point=source_point,
+                    bundle_track_path=bundle_track_path,
+                    pad_lane=pad_lane,
+                    pad_side=config.pad_side,
+                )
             )
             pad_stub_blocked = set(hard_blocked)
             pad_stub_blocked.update(all_terminal_cells)
             pad_stub_blocked.update(committed_footprint_cells)
-            pad_stub_blocked.update(
-                all_assigned_pad_cells.difference(target_cells)
-            )
+            pad_stub_blocked.update(all_assigned_pad_cells.difference(target_cells))
             pad_stub_path = _route_pad_stub_path(
                 start=pad_stub_start,
                 target_cells=target_cells,
@@ -220,14 +216,14 @@ def route_detailed_bundles(
                 offset_um=offset_um,
                 offset_axis=_offset_axis(bundle),
                 offset_path=detailed_path,
-                        source_stub_path=source_stub_path,
-                        bundle_track_path=bundle_track_tail,
-                        pad_stub_path=pad_stub_path,
-                        access_anchor_cell=topology_route.access_anchor_cell,
-                        route_start_cell=topology_route.route_start_cell,
-                        used_access_anchor=topology_route.used_access_anchor,
-                        success=True,
-                    )
+                source_stub_path=source_stub_path,
+                bundle_track_path=bundle_track_tail,
+                pad_stub_path=pad_stub_path,
+                access_anchor_cell=topology_route.access_anchor_cell,
+                route_start_cell=topology_route.route_start_cell,
+                used_access_anchor=topology_route.used_access_anchor,
+                success=True,
+            )
             routes.append(route)
             committed_cells.update(path)
             committed_footprint_cells.update(
@@ -255,12 +251,16 @@ def route_detailed_bundles(
             continue
         failed_routes.append(
             DetailedBundleRoute(
-                bundle_id=assignment.topology_bundle_id if assignment.topology_bundle_id is not None else -1,
+                bundle_id=assignment.topology_bundle_id
+                if assignment.topology_bundle_id is not None
+                else -1,
                 rank=assignment.topology_rank if assignment.topology_rank is not None else -1,
                 terminal=terminal,
                 pad_assignment=assignment,
                 path=(),
-                target_cells=frozenset(target_cells_by_slot.get(assignment.slot.index, frozenset())),
+                target_cells=frozenset(
+                    target_cells_by_slot.get(assignment.slot.index, frozenset())
+                ),
                 track_cell=None,
                 lane_cell=None,
                 offset_um=0.0,
@@ -285,8 +285,7 @@ def _route_order_for_bundle(
     route_side: RouteSide,
 ) -> tuple[tuple[int, ElectricalTerminal], ...]:
     ranked_terminals: tuple[tuple[int, ElectricalTerminal], ...] = tuple(
-        (rank, terminal)
-        for rank, terminal in enumerate(bundle.ordered_terminals)
+        (rank, terminal) for rank, terminal in enumerate(bundle.ordered_terminals)
     )
     if route_side == "right":
         return tuple(reversed(ranked_terminals))
@@ -304,9 +303,7 @@ def _pad_lane_rank_maps(
     config: ElectricalRoutingConfig,
 ) -> tuple[dict[int, int], dict[int, int]]:
     individual_assignments = tuple(
-        assignment
-        for assignment in pad_plan.assignments
-        if assignment.kind == "individual"
+        assignment for assignment in pad_plan.assignments if assignment.kind == "individual"
     )
     if not individual_assignments:
         return {}, {}
@@ -389,7 +386,9 @@ def _target_cell(target_cells: frozenset[GridCell], config: ElectricalRoutingCon
     else:
         edge_y = max(y for _, y in target_cells)
     center_x = round((min(x for x, _ in target_cells) + max(x for x, _ in target_cells)) / 2.0)
-    return min(target_cells, key=lambda cell: (abs(cell[1] - edge_y), abs(cell[0] - center_x), cell))
+    return min(
+        target_cells, key=lambda cell: (abs(cell[1] - edge_y), abs(cell[0] - center_x), cell)
+    )
 
 
 def _cell_center(cell: GridCell) -> tuple[float, float]:
@@ -639,9 +638,7 @@ def _pad_stub_neighbors(
     config: ElectricalRoutingConfig,
 ) -> tuple[tuple[DirectionIndex, GridCell], ...]:
     x, y = cell
-    target_x = round(
-        (min(tx for tx, _ in targets) + max(tx for tx, _ in targets)) / 2.0
-    )
+    target_x = round((min(tx for tx, _ in targets) + max(tx for tx, _ in targets)) / 2.0)
     preferred_x_step = 1 if target_x >= x else -1
     preferred_y_step = 1 if config.pad_side == "top" else -1
     ordered_directions = (
@@ -1203,7 +1200,11 @@ def _representative_lane_cell(
 ) -> GridCell | None:
     if not path or not target_cells:
         return None
-    target_y = min(y for _, y in target_cells) if config.pad_side == "top" else max(y for _, y in target_cells)
+    target_y = (
+        min(y for _, y in target_cells)
+        if config.pad_side == "top"
+        else max(y for _, y in target_cells)
+    )
     return min(path, key=lambda cell: (abs(cell[1] - target_y), cell))
 
 
@@ -1233,10 +1234,7 @@ def _median(values: tuple[int, ...]) -> float:
 def _individual_terminal_open_cells(
     obstacle_map: ElectricalObstacleMap,
 ) -> dict[str, frozenset[GridCell]]:
-    return (
-        obstacle_map.individual_terminal_open_cells
-        or obstacle_map.terminal_open_cells
-    )
+    return obstacle_map.individual_terminal_open_cells or obstacle_map.terminal_open_cells
 
 
 def _terminal_open_cells(

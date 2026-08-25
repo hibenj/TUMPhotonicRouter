@@ -85,9 +85,7 @@ def choose_route_start_cell(
     """Choose a legal route start, preferring explicit access metadata."""
 
     candidates = {
-        cell
-        for cell in opened_cells
-        if _in_bounds(cell, grid) and cell not in blocked_cells
+        cell for cell in opened_cells if _in_bounds(cell, grid) and cell not in blocked_cells
     }
     access_anchor = access.anchor_cell if access is not None else None
     if access_anchor is not None and _in_bounds(access_anchor, grid):
@@ -100,11 +98,7 @@ def choose_route_start_cell(
     def key(cell: GridCell) -> tuple[object, ...]:
         access_rank = 0 if cell == access_anchor else 1
         bias = bias_key(cell) if bias_key is not None else ()
-        fallback_rank = (
-            _manhattan(cell, fallback_cell)
-            if fallback_cell is not None
-            else 0
-        )
+        fallback_rank = _manhattan(cell, fallback_cell) if fallback_cell is not None else 0
         if prefer_access_anchor:
             return (access_rank, *bias, fallback_rank, cell[0], cell[1])
         return (*bias, access_rank, fallback_rank, cell[0], cell[1])
@@ -128,9 +122,7 @@ def ordered_route_start_cells(
     """Return legal route start candidates in the shared access order."""
 
     candidates = {
-        cell
-        for cell in opened_cells
-        if _in_bounds(cell, grid) and cell not in blocked_cells
+        cell for cell in opened_cells if _in_bounds(cell, grid) and cell not in blocked_cells
     }
     access_anchor = access.anchor_cell if access is not None else None
     if access_anchor is not None and _in_bounds(access_anchor, grid):
@@ -141,11 +133,7 @@ def ordered_route_start_cells(
     def key(cell: GridCell) -> tuple[object, ...]:
         access_rank = 0 if cell == access_anchor else 1
         bias = bias_key(cell) if bias_key is not None else ()
-        fallback_rank = (
-            _manhattan(cell, fallback_cell)
-            if fallback_cell is not None
-            else 0
-        )
+        fallback_rank = _manhattan(cell, fallback_cell) if fallback_cell is not None else 0
         if prefer_access_anchor:
             return (access_rank, *bias, fallback_rank, cell[0], cell[1])
         return (*bias, access_rank, fallback_rank, cell[0], cell[1])
@@ -219,9 +207,7 @@ def select_anchor_cell(
         cast(GridSpec, grid),
     )
     legal_cells = tuple(
-        cell
-        for cell in opened_cells
-        if _in_bounds(cell, grid) and cell not in blocked_cells
+        cell for cell in opened_cells if _in_bounds(cell, grid) and cell not in blocked_cells
     )
     if legal_cells:
         return min(legal_cells, key=lambda cell: _anchor_cell_key(cell, seed_cell, side))
@@ -303,7 +289,6 @@ def _fallback_contact_bbox(point: Point, width_um: float) -> tuple[float, float,
 
 
 def _in_bounds(cell: GridCell, grid: object) -> bool:
-    return (
-        0 <= cell[0] < int(getattr(grid, "width"))
-        and 0 <= cell[1] < int(getattr(grid, "height"))
+    return 0 <= cell[0] < int(getattr(grid, "width")) and 0 <= cell[1] < int(
+        getattr(grid, "height")
     )

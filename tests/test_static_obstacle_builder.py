@@ -68,10 +68,7 @@ def _static_obstacle_data_for_single_rect(
 def should_show_svg_popup() -> bool:
     """Open debug SVGs for IDE runs or when explicitly requested."""
 
-    return (
-        os.environ.get("SHOW_SVG") == "1"
-        or os.environ.get("PYCHARM_HOSTED") == "1"
-    )
+    return os.environ.get("SHOW_SVG") == "1" or os.environ.get("PYCHARM_HOSTED") == "1"
 
 
 def test_static_obstacle_map_config_defaults_are_strict_bounding_boxes():
@@ -367,7 +364,17 @@ def test_build_static_obstacle_map_bounding_box_mode_conservative_for_triangle()
         ),
     )
 
-    assert data.blocked_cells == {(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1), (0, 2), (1, 2), (2, 2)}
+    assert data.blocked_cells == {
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (0, 2),
+        (1, 2),
+        (2, 2),
+    }
 
 
 def test_build_static_obstacle_map_bounding_box_mode_clearance_expands_bbox():
@@ -438,9 +445,7 @@ def test_perpendicular_heater_clearance_materializes_expanded_cells_when_input_c
 
     result = _apply_perpendicular_heater_clearance(data, clearance_um=1.0)
 
-    expected_rects = (
-        _expand_rect_perpendicular_to_long_axis(data.raw_static_rects[0], 1),
-    )
+    expected_rects = (_expand_rect_perpendicular_to_long_axis(data.raw_static_rects[0], 1),)
     assert result.blocked_static_rects == expected_rects
     assert result.blocked_cells == set(_materialize_grid_rects(expected_rects, data.grid))
     assert result.blocked_cells == {

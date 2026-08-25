@@ -4,15 +4,14 @@ This is a baseline router using gdsfactory's route_single for simple Manhattan r
 Later, this will be replaced by a custom router with grid-based routing, obstacles,
 rip-up and reroute, etc.
 """
+
 from gdsfactory.component import Component
 from gdsfactory.routing import route_single
 from gdsfactory.schematic import Schematic
 from gdsfactory.typings import Port
 
 
-def get_port_from_instance(
-    component: Component, instance_name: str, port_name: str
-) -> Port:
+def get_port_from_instance(component: Component, instance_name: str, port_name: str) -> Port:
     """Extract a physical port from an instance in a component.
 
     The ports are already transformed (rotated, mirrored, translated) when accessed
@@ -81,8 +80,7 @@ def print_instance_ports(component: Component, instance_name: str) -> None:
     for port in inst.ports:
         center = tuple(port.center)
         print(
-            f"{port.name:<10} {str(center):<35} "
-            f"{str(port.orientation):<10} {str(port.width):<10}"
+            f"{port.name:<10} {str(center):<35} {str(port.orientation):<10} {str(port.width):<10}"
         )
 
 
@@ -179,9 +177,3 @@ def route_nets_gds(
         #     )
 
     return routed_layout
-
-
-
-
-
-

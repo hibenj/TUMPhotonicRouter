@@ -28,14 +28,13 @@ pub use astar::{
     export_route_svg, export_route_svg_with_port_open_cells, route_single_net,
     route_single_net_with_config, AStarConfig, RouteResult, State,
 };
-pub use crossings::{CrossingConfig, CrossingConstraint, CrossingContext, CrossingPair};
 pub use auto_meander::{
     cells_in_grid_rect, check_meander_box_free, check_meander_box_free_with_prefix,
-    meander_box_to_grid_rect,
-    probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix, AutoMeanderConfig,
-    AutoMeanderSidePolicy, AutoRouteAnalyticMeanderPlan, AutoRouteAnalyticMeanderProbe,
-    DenseOccupancyPrefix, MeanderGridRect, SparseCellIndex,
+    meander_box_to_grid_rect, probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix,
+    AutoMeanderConfig, AutoMeanderSidePolicy, AutoRouteAnalyticMeanderPlan,
+    AutoRouteAnalyticMeanderProbe, DenseOccupancyPrefix, MeanderGridRect, SparseCellIndex,
 };
+pub use crossings::{CrossingConfig, CrossingConstraint, CrossingContext, CrossingPair};
 pub use geometry_realization::{
     build_port_access, build_port_accesses, compress_grid_waypoints, compress_route_waypoints,
     generate_waveguide_polygon, grid_path_to_centerline, plan_analytic_meander_for_route,

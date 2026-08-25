@@ -35,6 +35,7 @@ class _DebugGrid(Protocol):
     grid_size_um: float
     origin: tuple[float, float]
 
+
 _INDIVIDUAL_ROUTE_PALETTE = (
     "#006d77",
     "#ef476f",
@@ -266,10 +267,7 @@ def electrical_metal_snapshot_svg(
             stroke="#7b2cbf" if access.purpose == "common_bus" else "#0081a7",
             stroke_width=0.6,
             opacity=0.9,
-            title=(
-                f"{access.purpose} access {access.terminal_id} "
-                f"anchor={access.anchor_cell}"
-            ),
+            title=(f"{access.purpose} access {access.terminal_id} anchor={access.anchor_cell}"),
         )
     for polygon in sorted(metal_polygons):
         _append_snapshot_polygon(
@@ -379,7 +377,9 @@ def electrical_debug_svg(
             )
 
     if common_bus_escape is not None:
-        _append_cells(parts, grid.height, common_bus_escape.target_cells, fill="#8ab4f8", opacity=0.7)
+        _append_cells(
+            parts, grid.height, common_bus_escape.target_cells, fill="#8ab4f8", opacity=0.7
+        )
         _append_cells(parts, grid.height, common_bus_escape.path, fill="#a142f4", opacity=0.95)
 
     if detailed_bundle_routes is not None:
@@ -450,7 +450,9 @@ def electrical_debug_svg(
                 )
 
     elif individual_topology is not None:
-        _append_cells(parts, grid.height, individual_topology.shared_cells, fill="#5f0f40", opacity=0.24)
+        _append_cells(
+            parts, grid.height, individual_topology.shared_cells, fill="#5f0f40", opacity=0.24
+        )
         routes_by_terminal_id = {route.terminal.id: route for route in individual_topology.routes}
         for bundle in individual_topology.bundles:
             color = _INDIVIDUAL_ROUTE_PALETTE[bundle.bundle_id % len(_INDIVIDUAL_ROUTE_PALETTE)]
@@ -531,7 +533,7 @@ def electrical_debug_svg(
             parts.append(
                 f'<text x="{gx + 0.5}" y="{svg_y + 0.5}" font-size="2" '
                 f'text-anchor="middle" dominant-baseline="middle" fill="#000">'
-                f'{escape(label)}</text>'
+                f"{escape(label)}</text>"
             )
 
     parts.append("</svg>")
@@ -686,10 +688,7 @@ def _append_snapshot_polygon(
 ) -> None:
     if len(polygon) < 3:
         return
-    points = " ".join(
-        f"{x - ctx.xmin:.6g},{ctx.ymax - y:.6g}"
-        for x, y in polygon
-    )
+    points = " ".join(f"{x - ctx.xmin:.6g},{ctx.ymax - y:.6g}" for x, y in polygon)
     parts.append(
         f'<polygon points="{points}" fill="{fill}" opacity="{opacity:.6g}" '
         f'stroke="{stroke}" stroke-width="{stroke_width:.6g}" '
@@ -709,10 +708,7 @@ def _append_snapshot_polyline(
 ) -> None:
     if len(points_um) < 2:
         return
-    points = " ".join(
-        f"{x - ctx.xmin:.6g},{ctx.ymax - y:.6g}"
-        for x, y in points_um
-    )
+    points = " ".join(f"{x - ctx.xmin:.6g},{ctx.ymax - y:.6g}" for x, y in points_um)
     parts.append(
         f'<polyline points="{points}" fill="none" stroke="{stroke}" '
         f'stroke-width="{stroke_width:.6g}" opacity="{opacity:.6g}" '
@@ -732,8 +728,7 @@ def _append_cells(
     for gx, gy in sorted(cells):
         svg_y = grid_height - gy - 1
         parts.append(
-            f'<rect x="{gx}" y="{svg_y}" width="1" height="1" '
-            f'fill="{fill}" opacity="{opacity}" />'
+            f'<rect x="{gx}" y="{svg_y}" width="1" height="1" fill="{fill}" opacity="{opacity}" />'
         )
 
 
@@ -777,7 +772,7 @@ def _append_physical_text(
     parts.append(
         f'<text x="{x:.6g}" y="{y:.6g}" font-size="{font_size}" '
         f'text-anchor="middle" dominant-baseline="middle" fill="{fill}">'
-        f'{escape(label)}</text>'
+        f"{escape(label)}</text>"
     )
 
 
@@ -815,8 +810,7 @@ def _append_route_polyline(
         return
     offset_x, offset_y = offset
     points = " ".join(
-        f"{gx + 0.5 + offset_x:.3f},{grid_height - gy - 0.5 + offset_y:.3f}"
-        for gx, gy in cells
+        f"{gx + 0.5 + offset_x:.3f},{grid_height - gy - 0.5 + offset_y:.3f}" for gx, gy in cells
     )
     dash_attr = f' stroke-dasharray="{dasharray}"' if dasharray is not None else ""
     parts.append(
@@ -840,10 +834,7 @@ def _append_point_polyline(
 ) -> None:
     if not points_grid:
         return
-    points = " ".join(
-        f"{x:.3f},{grid_height - y:.3f}"
-        for x, y in points_grid
-    )
+    points = " ".join(f"{x:.3f},{grid_height - y:.3f}" for x, y in points_grid)
     parts.append(
         f'<polyline points="{points}" fill="none" stroke="{stroke}" '
         f'stroke-width="{stroke_width}" opacity="{opacity}" '

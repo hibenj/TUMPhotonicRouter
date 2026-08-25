@@ -84,9 +84,7 @@ def _alignment_entry(
     entry: dict[str, object] = {
         "port_center_um": list(port_center_um) if port_center_um is not None else None,
         "route_cell": list(route_cell) if route_cell is not None else None,
-        "route_grid_center_um": (
-            list(route_center_um) if route_center_um is not None else None
-        ),
+        "route_grid_center_um": (list(route_center_um) if route_center_um is not None else None),
         "port_orientation_deg": orientation_deg,
         "mu_x_um": None,
         "mu_y_um": None,
@@ -243,11 +241,9 @@ class EndpointCorrectionRouter(Protocol):
         source_port_um: tuple[float, float] | None = None,
         target_port_um: tuple[float, float] | None = None,
         allow_unchecked_bumps: bool = True,
-    ) -> object:
-        ...
+    ) -> object: ...
 
-    def centerline_length_um(self, centerline: list[tuple[float, float]]) -> float:
-        ...
+    def centerline_length_um(self, centerline: list[tuple[float, float]]) -> float: ...
 
 
 def apply_port_endpoint_corrections(
@@ -354,9 +350,7 @@ class RouteBookkeeping:
             target_port_center_um=_port_center_um(job.target_port),
             source_port_orientation_deg=_port_orientation_deg(job.source_port),
             target_port_orientation_deg=_port_orientation_deg(job.target_port),
-            base_total_length_um=(
-                route_total_length_um if corrected_centerline_um else None
-            ),
+            base_total_length_um=(route_total_length_um if corrected_centerline_um else None),
             corrected_centerline_um=corrected_centerline_um,
         )
         self.lengths_by_id[job.net_id] = total_length_um

@@ -48,9 +48,7 @@ class PhotonicVerificationResult:
     def raise_for_errors(self) -> None:
         if self.success:
             return
-        formatted = "\n".join(
-            f"- {issue.code}: {issue.message}" for issue in self.issues[:10]
-        )
+        formatted = "\n".join(f"- {issue.code}: {issue.message}" for issue in self.issues[:10])
         suffix = "" if len(self.issues) <= 10 else f"\n... {len(self.issues) - 10} more"
         raise AssertionError(f"Photonic verification failed:\n{formatted}{suffix}")
 
@@ -93,7 +91,9 @@ def verify_photonic_routing(
         Iterable[Iterable[tuple[float, float]]],
     ]
     | None = None,
-    crossing_component_footprints_um: Iterable[Mapping[str, object] | Iterable[tuple[float, float]]] = (),
+    crossing_component_footprints_um: Iterable[
+        Mapping[str, object] | Iterable[tuple[float, float]]
+    ] = (),
     check_route_coverage: bool = True,
     min_route_overlap_area_um2: float = 2.0,
     min_obstacle_overlap_area_um2: float = 2.0,
@@ -218,9 +218,7 @@ def verify_photonic_routing(
         legal_overlap_regions_by_net_id_pair=legal_route_overlap_regions_by_pair,
         min_overlap_area_um2=float(min_route_overlap_area_um2),
     )
-    normalized_obstacle_layers = tuple(
-        _normalize_layer(layer) for layer in obstacle_layers
-    )
+    normalized_obstacle_layers = tuple(_normalize_layer(layer) for layer in obstacle_layers)
     normalized_route_layer = _normalize_layer(route_layer)
     obstacle_overlap_count = _verify_route_obstacle_overlaps(
         issues,
@@ -261,9 +259,7 @@ def verify_photonic_routing(
             "unique_routed_record_count": len(set(actual_keys)),
             "cross_net_waveguide_overlap_count": cross_net_overlap_count,
             "waveguide_obstacle_overlap_count": obstacle_overlap_count,
-            "crossing_component_route_overlap_count": (
-                crossing_component_route_overlap_count
-            ),
+            "crossing_component_route_overlap_count": (crossing_component_route_overlap_count),
             "crossing_component_overlap_count": crossing_component_overlap_count,
         },
     )
@@ -304,9 +300,7 @@ def _verify_record_coverage(
     actual_keys: list[RouteKey],
 ) -> None:
     actual_key_set = set(actual_keys)
-    duplicate_keys = sorted(
-        key for key in actual_key_set if actual_keys.count(key) > 1
-    )
+    duplicate_keys = sorted(key for key in actual_key_set if actual_keys.count(key) > 1)
     for key in sorted(expected_keys - actual_key_set):
         issues.append(
             PhotonicVerificationIssue(
@@ -504,7 +498,7 @@ def _verify_cross_net_route_overlaps(
     for index, (left_key, left_region) in enumerate(items):
         if left_region.is_empty():
             continue
-        for right_key, right_region in items[index + 1:]:
+        for right_key, right_region in items[index + 1 :]:
             if right_region.is_empty():
                 continue
             allowed_region = legal_overlap_region
@@ -531,10 +525,7 @@ def _verify_cross_net_route_overlaps(
             issues.append(
                 PhotonicVerificationIssue(
                     code="cross_net_waveguide_overlap",
-                    message=(
-                        f"Waveguide for {left_key[0]} overlaps waveguide for "
-                        f"{right_key[0]}."
-                    ),
+                    message=(f"Waveguide for {left_key[0]} overlaps waveguide for {right_key[0]}."),
                     net_name=left_key[0],
                     details={
                         "other_net_name": right_key[0],
@@ -648,8 +639,7 @@ def _verify_crossing_component_route_overlaps(
                 PhotonicVerificationIssue(
                     code="crossing_component_route_overlap",
                     message=(
-                        f"Waveguide for {key[0]} overlaps a realized crossing "
-                        "component footprint."
+                        f"Waveguide for {key[0]} overlaps a realized crossing component footprint."
                     ),
                     net_name=key[0],
                     details={

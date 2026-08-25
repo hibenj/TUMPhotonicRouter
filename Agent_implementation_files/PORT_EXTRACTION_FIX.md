@@ -31,25 +31,25 @@ The fixed implementation follows the reference pattern from the gdsfactory docum
 def get_port_from_instance(component, instance_name, port_name):
     # 1. Get the instance reference
     inst = find_instance_by_name(component, instance_name)
-    
+
     # 2. Get the base component (unplaced, untransformed)
     base_component = inst.cell
     base_port = base_component.ports[port_name]
-    
+
     # 3. Extract transformation matrix
     transformation = inst.transformation
-    
+
     # 4. Apply transformation to port center
     transformed_center = transformation.apply(base_port.center)
-    
+
     # 5. Apply transformation to orientation
     port_orientation = base_port.orientation
-    if hasattr(transformation, 'angle'):
+    if hasattr(transformation, "angle"):
         port_orientation = (port_orientation + transformation.angle) % 360
-    if hasattr(transformation, 'mirror'):
+    if hasattr(transformation, "mirror"):
         if transformation.mirror:
             port_orientation = (180 - port_orientation) % 360
-    
+
     # 6. Return transformed port
     return copy_port_with_new_coords(base_port, transformed_center, port_orientation)
 ```

@@ -27,10 +27,7 @@ def wire_rects_for_points(
     if len(points) == 1:
         return (_point_rect(points[0], half_width),)
     rects: list[BBox] = []
-    directions = tuple(
-        _point_direction(start, end)
-        for start, end in zip(points, points[1:])
-    )
+    directions = tuple(_point_direction(start, end) for start, end in zip(points, points[1:]))
     for index, (start, end) in enumerate(zip(points, points[1:])):
         trim_end = (
             trim_bends
@@ -142,11 +139,7 @@ def disjoint_union_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
     for left, right in zip(x_edges, x_edges[1:]):
         if right <= left:
             continue
-        intervals = [
-            (rect[1], rect[3])
-            for rect in compact
-            if rect[0] < right and rect[2] > left
-        ]
+        intervals = [(rect[1], rect[3]) for rect in compact if rect[0] < right and rect[2] > left]
         for bottom, top in _merged_intervals(intervals):
             strips.append((left, bottom, right, top))
     return _merge_adjacent_x_strips(tuple(strips))
@@ -160,9 +153,7 @@ def union_rect_area(rects: Iterable[BBox]) -> float:
     """Return the exact area of the union of axis-aligned rectangles."""
 
     normalized = tuple(
-        normalized_rect
-        for rect in rects
-        if (normalized_rect := _normalize_rect(rect)) is not None
+        normalized_rect for rect in rects if (normalized_rect := _normalize_rect(rect)) is not None
     )
     if not normalized:
         return 0.0
@@ -172,9 +163,7 @@ def union_rect_area(rects: Iterable[BBox]) -> float:
         if right <= left:
             continue
         intervals = [
-            (rect[1], rect[3])
-            for rect in normalized
-            if rect[0] < right and rect[2] > left
+            (rect[1], rect[3]) for rect in normalized if rect[0] < right and rect[2] > left
         ]
         if not intervals:
             continue
@@ -199,9 +188,7 @@ def _drop_union_redundant_rects(rects: tuple[BBox, ...]) -> tuple[BBox, ...]:
     index = 0
     while index < len(kept):
         without_candidate = tuple(
-            rect
-            for other_index, rect in enumerate(kept)
-            if other_index != index
+            rect for other_index, rect in enumerate(kept) if other_index != index
         )
         if _same_area(
             union_rect_area(kept),
@@ -224,11 +211,7 @@ def _merged_interval_length(intervals: Iterable[tuple[float, float]]) -> float:
 def _merged_intervals(
     intervals: Iterable[tuple[float, float]],
 ) -> tuple[tuple[float, float], ...]:
-    sorted_intervals = sorted(
-        (start, end)
-        for start, end in intervals
-        if end > start
-    )
+    sorted_intervals = sorted((start, end) for start, end in intervals if end > start)
     if not sorted_intervals:
         return ()
     merged: list[tuple[float, float]] = []

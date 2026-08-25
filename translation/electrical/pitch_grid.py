@@ -26,13 +26,13 @@ def bbox_to_grid_cells(bbox: BBox, grid: GridSpec) -> frozenset[GridCell]:
     if gx_min > gx_max or gy_min > gy_max:
         return frozenset()
     return frozenset(
-        (gx, gy)
-        for gx in range(gx_min, gx_max + 1)
-        for gy in range(gy_min, gy_max + 1)
+        (gx, gy) for gx in range(gx_min, gx_max + 1) for gy in range(gy_min, gy_max + 1)
     )
 
 
-def disk_cells(center: tuple[float, float], radius_um: float, grid: GridSpec) -> frozenset[GridCell]:
+def disk_cells(
+    center: tuple[float, float], radius_um: float, grid: GridSpec
+) -> frozenset[GridCell]:
     """Return a clipped Chebyshev disk around a physical point."""
 
     gx, gy = physical_to_grid(center[0], center[1], grid)

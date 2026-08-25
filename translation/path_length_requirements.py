@@ -113,23 +113,15 @@ def compute_group_lifted_requirements(
                 edge_timing.edge_key.source.instance,
                 0.0,
             )
-            edge_arrivals.append(
-                (edge_timing, source_output + float(edge_timing.routed_length_um))
-            )
+            edge_arrivals.append((edge_timing, source_output + float(edge_timing.routed_length_um)))
         base_target = max(arrival for _, arrival in edge_arrivals)
-        base_missing = [
-            max(0.0, base_target - arrival)
-            for _, arrival in edge_arrivals
-        ]
+        base_missing = [max(0.0, base_target - arrival) for _, arrival in edge_arrivals]
         has_sub_bump_deficit = any(
-            tolerance_um < missing < min_insertable - tolerance_um
-            for missing in base_missing
+            tolerance_um < missing < min_insertable - tolerance_um for missing in base_missing
         )
         lift_um = min_insertable if has_sub_bump_deficit else 0.0
         adjusted_target = base_target + lift_um
-        adjusted_output_arrivals[node_name] = adjusted_target + float(
-            timing.internal_delay_um
-        )
+        adjusted_output_arrivals[node_name] = adjusted_target + float(timing.internal_delay_um)
 
         if len(edge_arrivals) < 2:
             continue
@@ -220,9 +212,7 @@ def compute_output_matching_requirements(
         existing_requirements,
     )
     output_timings = [
-        timing
-        for timing in analysis.node_timings.values()
-        if timing.node_type == NodeType.OUTPUT
+        timing for timing in analysis.node_timings.values() if timing.node_type == NodeType.OUTPUT
     ]
     output_arrivals = {
         timing.node_name: float(adjusted_output_arrivals.get(timing.node_name, 0.0))
@@ -291,9 +281,7 @@ def _requirement_delays_by_edge(
 ) -> dict[RoutedEdgeKey, float]:
     delays: dict[RoutedEdgeKey, float] = {}
     for req in requirements:
-        delays[req.edge_key] = delays.get(req.edge_key, 0.0) + float(
-            req.missing_length_um
-        )
+        delays[req.edge_key] = delays.get(req.edge_key, 0.0) + float(req.missing_length_um)
     return delays
 
 

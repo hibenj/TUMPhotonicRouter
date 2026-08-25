@@ -882,7 +882,10 @@ impl ObstacleMap {
         if !self.in_bounds(x, y) {
             return 0;
         }
-        self.congestion_cost.get(&pack_xy(x, y)).copied().unwrap_or(0)
+        self.congestion_cost
+            .get(&pack_xy(x, y))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Clear all soft congestion penalties.

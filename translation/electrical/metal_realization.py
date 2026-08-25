@@ -112,8 +112,7 @@ def realize_electrical_metal(
             pad_marker_rects.append(assignment.slot.bbox)
 
     rects_by_net = {
-        net_id: list(disjoint_union_rects(rects))
-        for net_id, rects in rects_by_net.items()
+        net_id: list(disjoint_union_rects(rects)) for net_id, rects in rects_by_net.items()
     }
     polygon_count_by_net: dict[str, int] = {}
     for net_id in sorted(rects_by_net):
@@ -134,8 +133,7 @@ def realize_electrical_metal(
         for net_id, rects in sorted(rects_by_net.items())
     }
     union_area_by_net = {
-        net_id: union_rect_area(rects)
-        for net_id, rects in sorted(rects_by_net.items())
+        net_id: union_rect_area(rects) for net_id, rects in sorted(rects_by_net.items())
     }
     raw_area = sum(raw_area_by_net.values())
     union_area = sum(union_area_by_net.values())
@@ -146,10 +144,7 @@ def realize_electrical_metal(
         "raw_metal_area_um2": raw_area,
         "union_metal_area_um2": union_area,
         "metal_area_overcount_um2": raw_area - union_area,
-        "rect_count_by_net": {
-            net_id: len(rects)
-            for net_id, rects in sorted(rects_by_net.items())
-        },
+        "rect_count_by_net": {net_id: len(rects) for net_id, rects in sorted(rects_by_net.items())},
         "raw_metal_area_by_net_um2": raw_area_by_net,
         "union_metal_area_by_net_um2": union_area_by_net,
         "polygon_count_by_net": dict(sorted(polygon_count_by_net.items())),
@@ -172,10 +167,7 @@ def _append_terminal_grid_route(
     entry_clip_bbox: BBox | None = None,
     access: ElectricalPortAccess | None = None,
 ) -> None:
-    points = tuple(
-        _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
-        for cell in path
-    )
+    points = tuple(_grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map) for cell in path)
     if entry_clip_bbox is not None:
         points = clip_manhattan_path_at_first_bbox_entry(points, entry_clip_bbox)
     _append_terminal_um_route(
@@ -267,8 +259,7 @@ def _append_grid_wire_path(
     start_clip_bbox: BBox | None = None,
 ) -> None:
     points_um = tuple(
-        _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
-        for cell in path
+        _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map) for cell in path
     )
     if start_clip_bbox is not None:
         points_um = clip_manhattan_path_start_at_bbox(points_um, start_clip_bbox)
@@ -328,8 +319,7 @@ def _merge_rects(rects: list[BBox]) -> tuple[tuple[tuple[float, float], ...], ..
     polygons: list[tuple[tuple[float, float], ...]] = []
     for polygon in region.merged().each():
         hull = tuple(
-            (_dbu_to_um(point.x), _dbu_to_um(point.y))
-            for point in polygon.each_point_hull()
+            (_dbu_to_um(point.x), _dbu_to_um(point.y)) for point in polygon.each_point_hull()
         )
         if len(hull) >= 3:
             polygons.append(hull)

@@ -66,9 +66,7 @@ class ElectricalRoutingConfig:
         "path_cost",
         "median_x_biased",
         "local_pair_median_x_biased",
-    ] = (
-        "local_pair_median_x_biased"
-    )
+    ] = "local_pair_median_x_biased"
     common_bus_median_bias_weight: float = 1.0
     common_bus_local_pair_y_tolerance_um: float = 30.0
     common_bus_local_pair_max_gap_um: float = 800.0
@@ -89,17 +87,12 @@ class ElectricalRoutingConfig:
             raise ValueError("wire_width_um must be positive")
         if self.bondpad_width_um <= 0 or self.bondpad_length_um <= 0:
             raise ValueError("bondpad dimensions must be positive")
-        if (
-            self.common_bus_bondpad_width_um <= 0
-            or self.common_bus_bondpad_length_um <= 0
-        ):
+        if self.common_bus_bondpad_width_um <= 0 or self.common_bus_bondpad_length_um <= 0:
             raise ValueError("common bus bondpad dimensions must be positive")
         if self.bondpad_spacing_um < 0:
             raise ValueError("bondpad_spacing_um must be non-negative")
         if self.pad_pitch_um < self.bondpad_width_um + self.bondpad_spacing_um:
-            raise ValueError(
-                "pad_pitch_um must be at least bondpad_width_um + bondpad_spacing_um"
-            )
+            raise ValueError("pad_pitch_um must be at least bondpad_width_um + bondpad_spacing_um")
         if self.pad_offset_um < 0:
             raise ValueError("pad_offset_um must be non-negative")
         if self.pad_access_depth_um <= 0:
@@ -122,8 +115,7 @@ class ElectricalRoutingConfig:
             raise ValueError("bus_width_um must be positive")
         if self.common_bus_routing_strategy not in {"greedy_tree", "local_trunk_then_greedy"}:
             raise ValueError(
-                "common_bus_routing_strategy must be 'greedy_tree' or "
-                "'local_trunk_then_greedy'"
+                "common_bus_routing_strategy must be 'greedy_tree' or 'local_trunk_then_greedy'"
             )
         if self.common_bus_terminal_selection not in {
             "path_cost",
@@ -224,18 +216,10 @@ class ElectricalObstacleMap:
     die_bbox: BBox
     layout_bbox: BBox
     raw_obstacle_bboxes: tuple[BBox, ...] = ()
-    common_bus_terminal_open_cells: dict[str, frozenset[GridCell]] = field(
-        default_factory=dict
-    )
-    individual_terminal_open_cells: dict[str, frozenset[GridCell]] = field(
-        default_factory=dict
-    )
-    common_bus_port_accesses: dict[str, ElectricalPortAccess] = field(
-        default_factory=dict
-    )
-    individual_port_accesses: dict[str, ElectricalPortAccess] = field(
-        default_factory=dict
-    )
+    common_bus_terminal_open_cells: dict[str, frozenset[GridCell]] = field(default_factory=dict)
+    individual_terminal_open_cells: dict[str, frozenset[GridCell]] = field(default_factory=dict)
+    common_bus_port_accesses: dict[str, ElectricalPortAccess] = field(default_factory=dict)
+    individual_port_accesses: dict[str, ElectricalPortAccess] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

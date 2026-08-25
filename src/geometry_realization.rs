@@ -10,16 +10,16 @@ use std::time::Instant;
 use rustc_hash::FxHashSet;
 
 use crate::astar::{RouteResult, State};
+#[cfg(test)]
+use crate::auto_meander::{
+    cells_in_grid_rect, extract_axis_aligned_straight_runs, meander_box_to_grid_rect,
+    AutoMeanderSidePolicy,
+};
 use crate::auto_meander::{
     check_meander_box_free, plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix,
     probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix, AutoMeanderConfig,
     AutoMeanderRejectionDetail, AutoRouteAnalyticMeanderPlan, AutoRouteAnalyticMeanderProbe,
     DenseOccupancyPrefix, MeanderGridRect, SparseCellIndex,
-};
-#[cfg(test)]
-use crate::auto_meander::{
-    cells_in_grid_rect, extract_axis_aligned_straight_runs, meander_box_to_grid_rect,
-    AutoMeanderSidePolicy,
 };
 use crate::meander::{
     plan_analytic_meander, AnalyticMeanderConfig, AnalyticMeanderPlan, MeanderBox,
@@ -4324,7 +4324,11 @@ mod tests {
             p.start_angle == 0 && p.end_angle == 0 && p.dx == 4 && p.dy == 0
         });
         let route = RouteResult {
-            states: vec![State::new(1, 2, 0), State::new(5, 2, 0), State::new(9, 2, 0)],
+            states: vec![
+                State::new(1, 2, 0),
+                State::new(5, 2, 0),
+                State::new(9, 2, 0),
+            ],
             primitives: vec![straight_east, straight_east],
             cells: vec![],
             compressed_waypoints: vec![],
@@ -5660,8 +5664,6 @@ mod tests {
             )
         ));
     }
-
-
 
     #[test]
     fn meander_box_converts_to_expected_grid_rect() {

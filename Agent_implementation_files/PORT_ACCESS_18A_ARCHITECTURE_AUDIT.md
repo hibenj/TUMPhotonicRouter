@@ -118,6 +118,7 @@ neutral enough to support both metal and photonic:
 from dataclasses import dataclass
 from typing import Literal
 
+
 @dataclass(frozen=True)
 class RoutingPortAccess:
     domain: Literal["electrical", "photonic"]

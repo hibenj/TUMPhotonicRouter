@@ -37,12 +37,7 @@ def _build_lane_repair_router():
     for y in range(10, 15):
         open_cells.add((2, y))
         open_cells.add((47, y))
-    static_cells = [
-        (x, y)
-        for x in range(width)
-        for y in range(height)
-        if (x, y) not in open_cells
-    ]
+    static_cells = [(x, y) for x in range(width) for y in range(height) if (x, y) not in open_cells]
     router.set_static_cells(static_cells)
     return rust_backend, router
 

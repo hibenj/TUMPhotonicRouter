@@ -135,14 +135,15 @@ Create `benchmarks/MY_DESIGN.py`:
 ```python
 from gdsfactory.schematic import Instance, Placement, Schematic
 
+
 def build_schematic() -> Schematic:
     schematic = Schematic()
-    
+
     # Add your instances and placements here
     instance = Instance(component="my_component")
     placement = Placement(x=0, y=0)
     schematic.add_instance("my_inst", instance, placement)
-    
+
     return schematic
 ```
 

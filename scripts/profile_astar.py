@@ -149,22 +149,14 @@ def _vertical_wall_with_gap(
     gap_min: int,
     gap_max: int,
 ) -> tuple[tuple[int, int], ...]:
-    return tuple(
-        (x, y)
-        for y in range(y_min, y_max + 1)
-        if not gap_min <= y <= gap_max
-    )
+    return tuple((x, y) for y in range(y_min, y_max + 1) if not gap_min <= y <= gap_max)
 
 
 def _slalom_walls() -> tuple[tuple[int, int], ...]:
     cells: list[tuple[int, int]] = []
     for x in (45, 75, 105, 135):
         gap_min, gap_max = (12, 20) if x in (45, 105) else (50, 58)
-        cells.extend(
-            (x, y)
-            for y in range(4, 68)
-            if not gap_min <= y <= gap_max
-        )
+        cells.extend((x, y) for y in range(4, 68) if not gap_min <= y <= gap_max)
     return tuple(cells)
 
 
@@ -186,11 +178,7 @@ def _rect_cells(
     x_max: int,
     y_max: int,
 ) -> tuple[tuple[int, int], ...]:
-    return tuple(
-        (x, y)
-        for x in range(x_min, x_max + 1)
-        for y in range(y_min, y_max + 1)
-    )
+    return tuple((x, y) for x in range(x_min, x_max + 1) for y in range(y_min, y_max + 1))
 
 
 def _object_port_state(
@@ -319,12 +307,7 @@ def _scenario_catalog() -> dict[str, AStarScenario]:
             height=48,
             source=(8, 24, 0),
             target=(170, 24, 0),
-            static_cells=tuple(
-                (x, y)
-                for y in range(48)
-                if y != 24
-                for x in range(180)
-            ),
+            static_cells=tuple((x, y) for y in range(48) if y != 24 for x in range(180)),
             enable_simple_routes=False,
             require_target_angle=False,
             use_routing_window=False,
@@ -504,7 +487,8 @@ def run_scenario(
         "rect_rejects": _route_stat(last_route, "primitive_footprint_rect_rejects"),
         "dense_cells": _route_stat(last_route, "dense_grid_cells"),
         "dense_build_s": float(_route_stat(last_route, "dense_grid_build_time_us")) / 1_000_000.0,
-        "neighbor_generation_s": float(_route_stat(last_route, "neighbor_generation_time_us")) / 1_000_000.0,
+        "neighbor_generation_s": float(_route_stat(last_route, "neighbor_generation_time_us"))
+        / 1_000_000.0,
         "heap_operation_s": float(_route_stat(last_route, "heap_operation_time_us")) / 1_000_000.0,
         "legality_check_s": float(_route_stat(last_route, "legality_check_time_us")) / 1_000_000.0,
         "reconstruction_s": float(_route_stat(last_route, "reconstruction_time_us")) / 1_000_000.0,
@@ -571,13 +555,15 @@ def _check_baseline(
             )
 
         expected_target = expected.get("target")
-        if expected_target is not None and _object_to_list(row["target"]) != _object_to_list(expected_target):
-            failures.append(
-                f"{name}: target changed from {expected_target} to {row['target']}"
-            )
+        if expected_target is not None and _object_to_list(row["target"]) != _object_to_list(
+            expected_target
+        ):
+            failures.append(f"{name}: target changed from {expected_target} to {row['target']}")
 
         expected_reached = expected.get("reached_target", expected_target)
-        if expected_reached is not None and _object_to_list(row["reached_target"]) != _object_to_list(expected_reached):
+        if expected_reached is not None and _object_to_list(
+            row["reached_target"]
+        ) != _object_to_list(expected_reached):
             failures.append(
                 f"{name}: reached target {row['reached_target']} != expected {expected_reached}"
             )
@@ -628,15 +614,15 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 closed_heap_entries=row.get("closed_heap_entries", 0),
                 max_heap_size=row.get("max_heap_size", 0),
                 dense_search_states=row.get("dense_search_states", 0),
-                dense_search_storage_mib=_format_mib(
-                    row.get("dense_search_storage_bytes", 0)
-                ),
+                dense_search_storage_mib=_format_mib(row.get("dense_search_storage_bytes", 0)),
                 best_cost_updates=row.get("best_cost_updates", 0),
                 parent_updates=row.get("parent_updates", 0),
                 obstacle_clearance_checks=row["obstacle_clearance_checks"],
                 footprint_checks=row["footprint_checks"],
                 dense_build_s=_format_seconds(_object_to_float(row["dense_build_s"])),
-                neighbor_generation_s=_format_seconds(_object_to_float(row["neighbor_generation_s"])),
+                neighbor_generation_s=_format_seconds(
+                    _object_to_float(row["neighbor_generation_s"])
+                ),
                 heap_operation_s=_format_seconds(_object_to_float(row["heap_operation_s"])),
                 legality_check_s=_format_seconds(_object_to_float(row["legality_check_s"])),
                 reconstruction_s=_format_seconds(_object_to_float(row["reconstruction_s"])),
@@ -895,9 +881,7 @@ def main() -> int:
     args = _parse_args()
     rust_backend_obj = _load_rust_backend()
     if rust_backend_obj is None:
-        raise RuntimeError(
-            "Rust router backend is not available. Build it with `maturin develop`."
-        )
+        raise RuntimeError("Rust router backend is not available. Build it with `maturin develop`.")
     rust_backend = cast(RustBackend, rust_backend_obj)
 
     catalog = _scenario_catalog()
@@ -923,14 +907,10 @@ def main() -> int:
         return 0
 
     if args.enable_jps4:
-        catalog = {
-            name: replace(scenario, enable_jps4=True)
-            for name, scenario in catalog.items()
-        }
+        catalog = {name: replace(scenario, enable_jps4=True) for name, scenario in catalog.items()}
     if args.use_indexed_heap:
         catalog = {
-            name: replace(scenario, use_indexed_heap=True)
-            for name, scenario in catalog.items()
+            name: replace(scenario, use_indexed_heap=True) for name, scenario in catalog.items()
         }
     if args.primitive_ordering != "library":
         catalog = {

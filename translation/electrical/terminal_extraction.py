@@ -32,7 +32,9 @@ def extract_heater_terminal_pairs(
     groups: list[TerminalPairGroup] = []
     for instance in sorted(getattr(component, "insts", []), key=lambda inst: str(inst.name)):
         instance_name = str(getattr(instance, "name", "") or "")
-        component_name = schematic_components.get(instance_name) or _instance_component_name(instance)
+        component_name = schematic_components.get(instance_name) or _instance_component_name(
+            instance
+        )
         if not _is_heater_instance(instance_name, component_name, config):
             continue
 
@@ -93,10 +95,7 @@ def _is_heater_instance(
 ) -> bool:
     if any(instance_name.startswith(prefix) for prefix in config.heater_instance_prefixes):
         return True
-    return any(
-        fnmatchcase(component_name, pattern)
-        for pattern in config.heater_component_patterns
-    )
+    return any(fnmatchcase(component_name, pattern) for pattern in config.heater_component_patterns)
 
 
 def _is_electrical_port(port: Any) -> bool:

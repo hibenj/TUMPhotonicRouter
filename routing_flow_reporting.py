@@ -57,9 +57,7 @@ def _format_slowest_route_attempt_lines(
     *,
     limit: int = 8,
 ) -> list[str]:
-    timed_records = [
-        record for record in records if _route_attempt_duration_s(record) > 0.0
-    ]
+    timed_records = [record for record in records if _route_attempt_duration_s(record) > 0.0]
     if not timed_records:
         return []
 
@@ -170,9 +168,7 @@ def _format_slowest_route_net_lines(
     for group in slowest:
         buckets = group.get("buckets", set())
         bucket_text = (
-            "/".join(sorted(buckets))
-            if isinstance(buckets, set) and buckets
-            else "<unknown>"
+            "/".join(sorted(buckets)) if isinstance(buckets, set) and buckets else "<unknown>"
         )
         parts = [
             f"route[{_route_attempt_int(group, 'route_index')}]",
@@ -221,18 +217,12 @@ def report_partial_debug_artifacts(
     obstacle_dir = build_dir / "static_obstacles"
     routes_dir = build_dir / "routes"
     electrical_dir = build_dir / "electrical"
-    obstacle_svgs = (
-        sorted(obstacle_dir.glob(f"{prefix}_*.svg")) if obstacle_dir.exists() else []
-    )
+    obstacle_svgs = sorted(obstacle_dir.glob(f"{prefix}_*.svg")) if obstacle_dir.exists() else []
     route_svgs = sorted(routes_dir.glob(f"{prefix}_*.svg")) if routes_dir.exists() else []
     electrical_svgs = (
-        sorted(electrical_dir.glob(f"{prefix}_*.svg"))
-        if electrical_dir.exists()
-        else []
+        sorted(electrical_dir.glob(f"{prefix}_*.svg")) if electrical_dir.exists() else []
     )
-    failed_logs = (
-        sorted(routes_dir.glob(f"{prefix}_*_FAILED.txt")) if routes_dir.exists() else []
-    )
+    failed_logs = sorted(routes_dir.glob(f"{prefix}_*_FAILED.txt")) if routes_dir.exists() else []
 
     print("      - Partial debug artifacts:")
     print(f"        static obstacle SVGs: {len(obstacle_svgs)}")
@@ -266,26 +256,18 @@ def report_optical_timing(
     plm_analysis_time = float(timings.get("path_length_analysis", 0.0))
     plm_obstacle_time = float(timings.get("meander_obstacle_map", 0.0))
     plm_planning_time = float(timings.get("meander_planning", 0.0))
-    route_endpoint_correction_time = float(
-        timings.get("route_endpoint_correction", 0.0)
-    )
+    route_endpoint_correction_time = float(timings.get("route_endpoint_correction", 0.0))
     realization_time = float(timings.get("route_realization", 0.0))
     plm_total = plm_analysis_time + plm_obstacle_time + plm_planning_time
     known_substage_time = (
-        route_nets_time
-        + route_endpoint_correction_time
-        + plm_total
-        + realization_time
+        route_nets_time + route_endpoint_correction_time + plm_total + realization_time
     )
     overhead_time = max(0.0, route_time_s - known_substage_time)
     print(
         "      - Optical routing stage time "
         f"(net routing + PLM + realization): {route_time_s:.4f} s"
     )
-    print(
-        "        - net routing phase "
-        f"(obstacles + A* + repairs): {route_nets_time:.4f} s"
-    )
+    print(f"        - net routing phase (obstacles + A* + repairs): {route_nets_time:.4f} s")
     _report_route_nets_subtimings(timings, route_nets_time)
     print(
         "          route search: "
@@ -296,9 +278,7 @@ def report_optical_timing(
         f"{int(route_summary.route_count)}, "
         f"repairs={int(route_summary.repair_count)}"
     )
-    endpoint_correction_time_s = float(
-        getattr(route_summary, "endpoint_correction_time_s", 0.0)
-    )
+    endpoint_correction_time_s = float(getattr(route_summary, "endpoint_correction_time_s", 0.0))
     if endpoint_correction_time_s > 0.0:
         print(
             "          endpoint correction: "
@@ -349,10 +329,7 @@ def report_optical_timing(
             f"meander_planning={plm_planning_time:.4f}s)"
         )
     if route_endpoint_correction_time > 0.0:
-        print(
-            "        - route endpoint correction phase: "
-            f"{route_endpoint_correction_time:.4f} s"
-        )
+        print(f"        - route endpoint correction phase: {route_endpoint_correction_time:.4f} s")
     print(f"        - route realization phase: {realization_time:.4f} s")
     if overhead_time > 1.0e-3:
         print(f"        - stage overhead/reporting: {overhead_time:.4f} s")
@@ -426,12 +403,8 @@ def _report_native_repair_timings(route_nets_subtimings: dict[str, float]) -> No
     native_repair_total_s = sum(native_repair_timings.values())
     if native_repair_total_s <= 0.0:
         return
-    native_search_s = float(
-        route_nets_subtimings.get("native_batch_route_search_total", 0.0)
-    )
-    native_dense_astar_s = float(
-        route_nets_subtimings.get("native_batch_dense_astar", 0.0)
-    )
+    native_search_s = float(route_nets_subtimings.get("native_batch_route_search_total", 0.0))
+    native_dense_astar_s = float(route_nets_subtimings.get("native_batch_dense_astar", 0.0))
     print(
         "          native repair profile: "
         f"ripup={native_repair_timings['ripup']:.4f}s, "

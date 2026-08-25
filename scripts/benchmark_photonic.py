@@ -47,9 +47,7 @@ CROSSING_SMOKE_BENCHMARKS = (
     "benes_16x16",
     "benes_32x32",
 )
-DEFAULT_PERF_BASELINE_PATH = (
-    PROJECT_ROOT / "tests" / "baselines" / "photonic_perf_baseline.json"
-)
+DEFAULT_PERF_BASELINE_PATH = PROJECT_ROOT / "tests" / "baselines" / "photonic_perf_baseline.json"
 DEFAULT_PERF_METRIC = "route_nets_s"
 DEFAULT_PERF_RELATIVE_TOLERANCE = 0.10
 DEFAULT_PERF_ABSOLUTE_TOLERANCE_S = 0.05
@@ -273,9 +271,7 @@ def _rust_extension_info() -> dict[str, object]:
             "release_like": False,
             "reason": f"could not stat extension: {exc}",
         }
-    release_like = (
-        size_bytes <= RELEASE_EXTENSION_MAX_BYTES and "target/debug" not in str(path)
-    )
+    release_like = size_bytes <= RELEASE_EXTENSION_MAX_BYTES and "target/debug" not in str(path)
     return {
         "path": str(path),
         "size_bytes": int(size_bytes),
@@ -289,9 +285,7 @@ def _ensure_release_extension() -> None:
     if info["release_like"]:
         return
     size = info.get("size_bytes")
-    size_text = (
-        "unknown size" if size is None else f"{int(size) / (1024 * 1024):.1f} MiB"
-    )
+    size_text = "unknown size" if size is None else f"{int(size) / (1024 * 1024):.1f} MiB"
     raise SystemExit(
         "Performance smoke requires a release Rust extension. "
         f"Imported: {info.get('path') or 'unavailable'} ({size_text}). "
@@ -404,9 +398,7 @@ def _format_candidate_profile(value: object) -> str:
     for reason, raw_profile in sorted(
         value.items(),
         key=lambda item: (
-            -_numeric_float(item[1].get("elapsed_s"))
-            if isinstance(item[1], Mapping)
-            else 0.0
+            -_numeric_float(item[1].get("elapsed_s")) if isinstance(item[1], Mapping) else 0.0
         ),
     ):
         if not isinstance(raw_profile, Mapping):
@@ -631,9 +623,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
                 stats.net_count = len(schematic.netlist.routes)
 
     layout_info_raw = getattr(routed_layout, "info", {}) if routed_layout is not None else {}
-    layout_info: SupportsGet = (
-        layout_info_raw if _supports_get(layout_info_raw) else EMPTY_INFO
-    )
+    layout_info: SupportsGet = layout_info_raw if _supports_get(layout_info_raw) else EMPTY_INFO
     meander_report = layout_info.get("meander_insertion_report", {})
     if not isinstance(meander_report, Mapping):
         meander_report = {}
@@ -666,8 +656,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "nets": stats.net_count,
         "grid": (
             f"{stats.static_grid_width}x{stats.static_grid_height}"
-            if stats.static_grid_width is not None
-            and stats.static_grid_height is not None
+            if stats.static_grid_width is not None and stats.static_grid_height is not None
             else ""
         ),
         "total_s": stats.total_time_s,
@@ -679,9 +668,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "meander_obstacle_map_s": stats.step_times_s.get("meander_obstacle_map"),
         "meander_planning_s": stats.step_times_s.get("meander_planning"),
         "route_realization_s": stats.step_times_s.get("route_realization"),
-        "route_endpoint_correction_s": stats.step_times_s.get(
-            "route_endpoint_correction"
-        ),
+        "route_endpoint_correction_s": stats.step_times_s.get("route_endpoint_correction"),
         **route_nets_timing_fields,
         "astar_s": stats.astar_time_s,
         "meander_requirements": _list_length(layout_info.get("meander_requirements", [])),
@@ -692,9 +679,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "path_length_groups_over_tolerance": _count_groups_over_tolerance(
             matching_group_diagnostics
         ),
-        "path_length_lifted_group_count": _count_lifted_groups(
-            matching_group_diagnostics
-        ),
+        "path_length_lifted_group_count": _count_lifted_groups(matching_group_diagnostics),
         "path_length_max_target_lift_um": _max_group_float(
             matching_group_diagnostics,
             "target_lift_um",
@@ -763,9 +748,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "slowest_meander_candidate_runs": slowest_meander.get("candidate_runs"),
         "slowest_meander_candidate_intervals": slowest_meander.get("candidate_intervals"),
         "slowest_meander_rejected_box_blocked": slowest_meander.get("rejected_box_blocked"),
-        "slowest_meander_rejected_planning_failed": slowest_meander.get(
-            "rejected_planning_failed"
-        ),
+        "slowest_meander_rejected_planning_failed": slowest_meander.get("rejected_planning_failed"),
         "slowest_meander_rejected_exact_length_mismatch": slowest_meander.get(
             "rejected_exact_length_mismatch"
         ),
@@ -796,12 +779,8 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "crossing_reject_wrong_order": stats.crossing_reject_wrong_order,
         "crossing_reject_unexpected_owner": stats.crossing_reject_unexpected_owner,
         "crossing_reject_unmatched_owner": stats.crossing_reject_unmatched_owner,
-        "crossing_reject_unmatched_centerline": (
-            stats.crossing_reject_unmatched_centerline
-        ),
-        "crossing_reject_unmatched_footprint": (
-            stats.crossing_reject_unmatched_footprint
-        ),
+        "crossing_reject_unmatched_centerline": (stats.crossing_reject_unmatched_centerline),
+        "crossing_reject_unmatched_footprint": (stats.crossing_reject_unmatched_footprint),
         "crossing_reject_unmatched_route_centerline": (
             stats.crossing_reject_unmatched_route_centerline
         ),
@@ -831,10 +810,7 @@ def _preset_worker_args(benchmark: str, args: argparse.Namespace) -> argparse.Na
         worker_args.include_heater_obstacles = True
         return worker_args
 
-    if (
-        args.preset == "crossing-smoke"
-        or benchmark in PERF_SMOKE_CROSSING_BENCHMARKS
-    ):
+    if args.preset == "crossing-smoke" or benchmark in PERF_SMOKE_CROSSING_BENCHMARKS:
         worker_args.allow_45_degree_turns = True
         worker_args.crossings = True
         worker_args.include_heater_obstacles = True
@@ -979,9 +955,7 @@ def _median_float(values: Iterable[object]) -> float | None:
     return float(statistics.median(filtered))
 
 
-def _aggregate_repeat_rows(
-    samples: list[dict[str, object]], metric: str
-) -> dict[str, object]:
+def _aggregate_repeat_rows(samples: list[dict[str, object]], metric: str) -> dict[str, object]:
     if not samples:
         raise ValueError("expected at least one benchmark sample")
     if len(samples) == 1:
@@ -1006,9 +980,7 @@ def _aggregate_repeat_rows(
             row[field] = median_value
 
     metric_samples = [
-        value
-        for sample in samples
-        if (value := _as_float(sample.get(metric))) is not None
+        value for sample in samples if (value := _as_float(sample.get(metric))) is not None
     ]
     row["repeat_runs"] = len(samples)
     row["perf_metric"] = metric
@@ -1033,11 +1005,7 @@ def _rows_by_benchmark(payload: object) -> dict[str, Mapping[str, object]]:
     if isinstance(payload, Mapping):
         benchmarks = payload.get("benchmarks")
         if isinstance(benchmarks, Mapping):
-            return {
-                str(name): row
-                for name, row in benchmarks.items()
-                if isinstance(row, Mapping)
-            }
+            return {str(name): row for name, row in benchmarks.items() if isinstance(row, Mapping)}
     if isinstance(payload, list):
         return {
             str(row["benchmark"]): row
@@ -1074,20 +1042,12 @@ def _perf_baseline_payload(
             "generated_neighbors": row.get("generated_neighbors"),
             "crossing_candidate_checks": row.get("crossing_candidate_checks", 0),
             "crossing_accepted": row.get("crossing_accepted", 0),
-            "crossing_reject_non_straight": row.get(
-                "crossing_reject_non_straight", 0
-            ),
-            "crossing_reject_not_perpendicular": row.get(
-                "crossing_reject_not_perpendicular", 0
-            ),
+            "crossing_reject_non_straight": row.get("crossing_reject_non_straight", 0),
+            "crossing_reject_not_perpendicular": row.get("crossing_reject_not_perpendicular", 0),
             "crossing_reject_margin": row.get("crossing_reject_margin", 0),
             "crossing_reject_wrong_order": row.get("crossing_reject_wrong_order", 0),
-            "crossing_reject_unexpected_owner": row.get(
-                "crossing_reject_unexpected_owner", 0
-            ),
-            "crossing_reject_unmatched_owner": row.get(
-                "crossing_reject_unmatched_owner", 0
-            ),
+            "crossing_reject_unexpected_owner": row.get("crossing_reject_unexpected_owner", 0),
+            "crossing_reject_unmatched_owner": row.get("crossing_reject_unmatched_owner", 0),
             "crossing_reject_unmatched_centerline": row.get(
                 "crossing_reject_unmatched_centerline", 0
             ),
@@ -1100,9 +1060,7 @@ def _perf_baseline_payload(
             "crossing_reject_unmatched_route_footprint": row.get(
                 "crossing_reject_unmatched_route_footprint", 0
             ),
-            "crossing_reject_pending_straight": row.get(
-                "crossing_reject_pending_straight", 0
-            ),
+            "crossing_reject_pending_straight": row.get("crossing_reject_pending_straight", 0),
             "repeat_runs": row.get("repeat_runs", 1),
         }
         benchmarks[name] = compact
@@ -1139,9 +1097,7 @@ def _perf_baseline_violations(
     counter_relative_tolerance: float,
 ) -> list[dict[str, object]]:
     current_by_benchmark = {
-        str(row.get("benchmark", "")): row
-        for row in current_rows
-        if str(row.get("benchmark", ""))
+        str(row.get("benchmark", "")): row for row in current_rows if str(row.get("benchmark", ""))
     }
     baseline_by_benchmark = _rows_by_benchmark(baseline_payload)
     violations: list[dict[str, object]] = []
@@ -1242,9 +1198,7 @@ def _attach_perf_baseline_violations(
 ) -> None:
     by_benchmark: dict[str, list[dict[str, object]]] = {}
     for violation in violations:
-        by_benchmark.setdefault(str(violation.get("benchmark", "")), []).append(
-            violation
-        )
+        by_benchmark.setdefault(str(violation.get("benchmark", "")), []).append(violation)
     for row in rows:
         row_violations = by_benchmark.get(str(row.get("benchmark", "")), [])
         if row_violations:
@@ -1373,14 +1327,10 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 heap_pushes=_format_int(row["heap_pushes"]),
                 heap_pops=_format_int(row["heap_pops"]),
                 dup_skips=_format_int(row["duplicate_heap_skips"]),
-                stale_generation_heap_entries=_format_int(
-                    row["stale_generation_heap_entries"]
-                ),
+                stale_generation_heap_entries=_format_int(row["stale_generation_heap_entries"]),
                 closed_heap_entries=_format_int(row["closed_heap_entries"]),
                 max_heap_size=_format_int(row["max_heap_size"]),
-                dense_search_storage_mib=_format_mib(
-                    row["dense_search_storage_bytes"]
-                ),
+                dense_search_storage_mib=_format_mib(row["dense_search_storage_bytes"]),
                 obstacle_checks=_format_int(row["obstacle_clearance_checks"]),
                 footprint_rect_checks=_format_int(row["footprint_rect_checks"]),
                 fallbacks=_format_int(row["full_grid_fallbacks"]),
@@ -1404,8 +1354,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         row
         for row in rows
         if any(
-            _as_float(row.get(f"route_nets_{key}_s")) is not None
-            for key in ROUTE_NETS_TIMING_KEYS
+            _as_float(row.get(f"route_nets_{key}_s")) is not None for key in ROUTE_NETS_TIMING_KEYS
         )
     ]
     if route_split_rows:
@@ -1446,12 +1395,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
             endpoint_s = sum(route_nets_time(row, key) for key in endpoint_keys)
             artifact_s = sum(route_nets_time(row, key) for key in artifact_keys)
             known_s = (
-                obstacle_map_s
-                + prep_s
-                + native_batch_s
-                + batch_post_s
-                + endpoint_s
-                + artifact_s
+                obstacle_map_s + prep_s + native_batch_s + batch_post_s + endpoint_s + artifact_s
             )
             route_nets_s = _numeric_float(row.get("route_nets_s"))
             other_s = max(0.0, route_nets_s - known_s)
@@ -1522,26 +1466,16 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         for row in native_split_rows:
             unpack_s = native_batch_time(row, "route_job_unpack")
             route_wall_s = sum(native_batch_time(row, key) for key in route_wall_keys)
-            failed_route_wall_s = sum(
-                native_batch_time(row, key) for key in failed_route_wall_keys
-            )
+            failed_route_wall_s = sum(native_batch_time(row, key) for key in failed_route_wall_keys)
             search_total_s = native_batch_time(row, "route_search_total")
             simple_s = native_batch_time(row, "simple_route_candidate")
             dense_s = native_batch_time(row, "dense_astar")
             commit_build_s = native_batch_time(row, "commit_cell_build")
             commit_s = native_batch_time(row, "commit_update_dynamic_map")
-            repair_book_s = sum(
-                native_batch_time(row, key) for key in repair_bookkeeping_keys
-            )
+            repair_book_s = sum(native_batch_time(row, key) for key in repair_bookkeeping_keys)
             result_obj_s = native_batch_time(row, "route_result_construction")
             py_return_s = native_batch_time(row, "python_return_dict")
-            known_s = (
-                unpack_s
-                + route_wall_s
-                + repair_book_s
-                + result_obj_s
-                + py_return_s
-            )
+            known_s = unpack_s + route_wall_s + repair_book_s + result_obj_s + py_return_s
             native_total_s = _numeric_float(row.get("route_nets_native_route_batch_s"))
             other_native_s = max(0.0, native_total_s - known_s)
             lines.append(
@@ -1561,9 +1495,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     other_native_s=_format_seconds(other_native_s),
                 )
             )
-    repeated_rows = [
-        row for row in rows if int(row.get("repeat_runs", 1) or 1) > 1
-    ]
+    repeated_rows = [row for row in rows if int(row.get("repeat_runs", 1) or 1) > 1]
     if repeated_rows:
         metric = str(getattr(args, "perf_metric", DEFAULT_PERF_METRIC))
         lines.extend(
@@ -1586,14 +1518,10 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     median=_format_seconds(_record_seconds(row, metric)),
                     minimum=_format_seconds(_record_seconds(row, "perf_metric_min")),
                     maximum=_format_seconds(_record_seconds(row, "perf_metric_max")),
-                    samples=", ".join(
-                        _format_seconds(_as_float(value)) for value in sample_values
-                    ),
+                    samples=", ".join(_format_seconds(_as_float(value)) for value in sample_values),
                 )
             )
-    violation_rows = [
-        row for row in rows if row.get("perf_baseline_violations")
-    ]
+    violation_rows = [row for row in rows if row.get("perf_baseline_violations")]
     if violation_rows:
         lines.extend(
             [
@@ -1643,21 +1571,15 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 "| {benchmark} | {groups} | {groups_needing} | {lifted_groups} | {max_lift} | {min_bump} | {raw_requirements} | {groups_over} | {max_accepted} | {max_physical} | {max_disregarded} | {requirements} | {planner_calls} | {requested} | {inserted} | {disregarded} | {unmatched} | {analysis_s} | {obstacle_s} | {planning_s} | {realization_s} | {statuses} |".format(
                     benchmark=row["benchmark"],
                     groups=_format_int(row.get("path_length_group_count")),
-                    groups_needing=_format_int(
-                        row.get("path_length_groups_with_requirements")
-                    ),
-                    lifted_groups=_format_int(
-                        row.get("path_length_lifted_group_count")
-                    ),
+                    groups_needing=_format_int(row.get("path_length_groups_with_requirements")),
+                    lifted_groups=_format_int(row.get("path_length_lifted_group_count")),
                     max_lift=_format_seconds(
                         _record_seconds(row, "path_length_max_target_lift_um")
                     ),
                     min_bump=_format_seconds(
                         _record_seconds(row, "path_length_min_insertable_extra_um")
                     ),
-                    raw_requirements=_format_int(
-                        row.get("path_length_raw_requirements")
-                    ),
+                    raw_requirements=_format_int(row.get("path_length_raw_requirements")),
                     groups_over=_format_int(row.get("path_length_groups_over_tolerance")),
                     max_accepted=_format_seconds(
                         _record_seconds(row, "path_length_max_accepted_unmatched_um")
@@ -1670,30 +1592,14 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     ),
                     requirements=_format_int(row.get("meander_requirements")),
                     planner_calls=_format_int(row.get("meander_planner_calls")),
-                    requested=_format_seconds(
-                        _record_seconds(row, "meander_requested_um")
-                    ),
-                    inserted=_format_seconds(
-                        _record_seconds(row, "meander_inserted_um")
-                    ),
-                    disregarded=_format_seconds(
-                        _record_seconds(row, "meander_disregarded_um")
-                    ),
-                    unmatched=_format_seconds(
-                        _record_seconds(row, "meander_unmatched_um")
-                    ),
-                    analysis_s=_format_seconds(
-                        _record_seconds(row, "path_length_analysis_s")
-                    ),
-                    obstacle_s=_format_seconds(
-                        _record_seconds(row, "meander_obstacle_map_s")
-                    ),
-                    planning_s=_format_seconds(
-                        _record_seconds(row, "meander_planning_s")
-                    ),
-                    realization_s=_format_seconds(
-                        _record_seconds(row, "route_realization_s")
-                    ),
+                    requested=_format_seconds(_record_seconds(row, "meander_requested_um")),
+                    inserted=_format_seconds(_record_seconds(row, "meander_inserted_um")),
+                    disregarded=_format_seconds(_record_seconds(row, "meander_disregarded_um")),
+                    unmatched=_format_seconds(_record_seconds(row, "meander_unmatched_um")),
+                    analysis_s=_format_seconds(_record_seconds(row, "path_length_analysis_s")),
+                    obstacle_s=_format_seconds(_record_seconds(row, "meander_obstacle_map_s")),
+                    planning_s=_format_seconds(_record_seconds(row, "meander_planning_s")),
+                    realization_s=_format_seconds(_record_seconds(row, "route_realization_s")),
                     statuses=_format_status_counts(row.get("meander_status_counts")),
                 )
             )
@@ -1720,15 +1626,9 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     "plan_fail={plan_fail} exact_mismatch={exact_mismatch}"
                 ).format(
                     runs=_format_int(row.get("slowest_meander_candidate_runs")),
-                    intervals=_format_int(
-                        row.get("slowest_meander_candidate_intervals")
-                    ),
-                    blocked=_format_int(
-                        row.get("slowest_meander_rejected_box_blocked")
-                    ),
-                    plan_fail=_format_int(
-                        row.get("slowest_meander_rejected_planning_failed")
-                    ),
+                    intervals=_format_int(row.get("slowest_meander_candidate_intervals")),
+                    blocked=_format_int(row.get("slowest_meander_rejected_box_blocked")),
+                    plan_fail=_format_int(row.get("slowest_meander_rejected_planning_failed")),
                     exact_mismatch=_format_int(
                         row.get("slowest_meander_rejected_exact_length_mismatch")
                     ),
@@ -1740,21 +1640,15 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                             _record_seconds(row, "meander_planner_elapsed_s")
                         ),
                         candidate_runs=_format_int(row.get("meander_candidate_runs")),
-                        candidate_intervals=_format_int(
-                            row.get("meander_candidate_intervals")
-                        ),
+                        candidate_intervals=_format_int(row.get("meander_candidate_intervals")),
                         blocked=_format_int(row.get("meander_rejected_box_blocked")),
-                        plan_fail=_format_int(
-                            row.get("meander_rejected_planning_failed")
-                        ),
+                        plan_fail=_format_int(row.get("meander_rejected_planning_failed")),
                         exact_mismatch=_format_int(
                             row.get("meander_rejected_exact_length_mismatch")
                         ),
                         too_short=_format_int(row.get("meander_rejected_too_short")),
                         max_runs=_format_int(row.get("meander_max_candidate_runs")),
-                        max_intervals=_format_int(
-                            row.get("meander_max_candidate_intervals")
-                        ),
+                        max_intervals=_format_int(row.get("meander_max_candidate_intervals")),
                         slowest_s=_format_seconds(
                             _record_seconds(row, "slowest_meander_planning_s")
                         ),
@@ -1773,8 +1667,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         (
             record
             for record in all_attempts
-            if not bool(record.get("used_simple_route", False))
-            or bool(record.get("failed", False))
+            if not bool(record.get("used_simple_route", False)) or bool(record.get("failed", False))
         ),
         key=_attempt_seconds,
         reverse=True,
@@ -1819,9 +1712,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     ),
                     closed_heap_entries=_format_int(record.get("closed_heap_entries")),
                     max_heap_size=_format_int(record.get("max_heap_size")),
-                    dense_search_storage_mib=_format_mib(
-                        record.get("dense_search_storage_bytes")
-                    ),
+                    dense_search_storage_mib=_format_mib(record.get("dense_search_storage_bytes")),
                     rect_checks=_format_int(record.get("footprint_rect_checks")),
                     dense_build_s=_format_seconds(
                         _record_seconds(record, "dense_grid_build_time_s")
@@ -1830,11 +1721,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 )
             )
     crossing_attempts = sorted(
-        (
-            record
-            for record in all_attempts
-            if _format_crossing_summary(record)
-        ),
+        (record for record in all_attempts if _format_crossing_summary(record)),
         key=lambda record: (
             _crossing_reject_total(record),
             int(record.get("crossing_accepted", 0) or 0),
@@ -1868,9 +1755,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 )
             )
     if slow_attempts:
-        diagnostic_attempts = [
-            record for record in slow_attempts if _record_diagnostics(record)
-        ]
+        diagnostic_attempts = [record for record in slow_attempts if _record_diagnostics(record)]
         if diagnostic_attempts:
             lines.extend(
                 [
@@ -1929,9 +1814,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     dynamic_density=_format_percent(
                         _diagnostic_float(diagnostics, "window_dynamic_density")
                     ),
-                    dynamic_before=_format_int(
-                        diagnostics.get("committed_dynamic_cells_before")
-                    ),
+                    dynamic_before=_format_int(diagnostics.get("committed_dynamic_cells_before")),
                     blockers=_format_int(diagnostics.get("candidate_blocker_count")),
                     victims=_format_int(diagnostics.get("ripup_victim_count")),
                 )
@@ -2048,12 +1931,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--min-straight-cells-per-crossing", type=int, default=2)
     parser.add_argument("--ripup-reroute", action="store_true")
     parser.add_argument("--ripup-max-rounds", type=int, default=SCRIPT_RIPUP_MAX_ROUNDS)
-    parser.add_argument(
-        "--ripup-max-victims", type=int, default=SCRIPT_RIPUP_MAX_VICTIMS
-    )
-    parser.add_argument(
-        "--ripup-history-weight", type=float, default=SCRIPT_RIPUP_HISTORY_WEIGHT
-    )
+    parser.add_argument("--ripup-max-victims", type=int, default=SCRIPT_RIPUP_MAX_VICTIMS)
+    parser.add_argument("--ripup-history-weight", type=float, default=SCRIPT_RIPUP_HISTORY_WEIGHT)
     parser.add_argument(
         "--ripup-history-increment", type=int, default=SCRIPT_RIPUP_HISTORY_INCREMENT
     )
@@ -2126,27 +2005,29 @@ def _apply_preset_defaults(args: argparse.Namespace) -> None:
 
     if not args.benchmarks:
         args.benchmarks = list(
-            CROSSING_SMOKE_BENCHMARKS
-            if args.preset == "crossing-smoke"
-            else PERF_SMOKE_BENCHMARKS
+            CROSSING_SMOKE_BENCHMARKS if args.preset == "crossing-smoke" else PERF_SMOKE_BENCHMARKS
         )
     if args.output is None:
-        args.output = PROJECT_ROOT / "build" / (
-            "crossing_smoke.md"
-            if args.preset == "crossing-smoke"
-            else "perf_smoke.md"
+        args.output = (
+            PROJECT_ROOT
+            / "build"
+            / ("crossing_smoke.md" if args.preset == "crossing-smoke" else "perf_smoke.md")
         )
     if args.write_perf_baseline is None:
-        args.write_perf_baseline = PROJECT_ROOT / "build" / (
-            "crossing_smoke.json"
-            if args.preset == "crossing-smoke"
-            else "perf_smoke.json"
+        args.write_perf_baseline = (
+            PROJECT_ROOT
+            / "build"
+            / ("crossing_smoke.json" if args.preset == "crossing-smoke" else "perf_smoke.json")
         )
     if args.attempt_output is None:
-        args.attempt_output = PROJECT_ROOT / "build" / (
-            "crossing_smoke_attempts.json"
-            if args.preset == "crossing-smoke"
-            else "perf_smoke_attempts.json"
+        args.attempt_output = (
+            PROJECT_ROOT
+            / "build"
+            / (
+                "crossing_smoke_attempts.json"
+                if args.preset == "crossing-smoke"
+                else "perf_smoke_attempts.json"
+            )
         )
     args.require_release = True
     args.attempt_diagnostics = True

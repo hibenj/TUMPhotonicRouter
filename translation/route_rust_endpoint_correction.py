@@ -184,13 +184,16 @@ def _crossing_endpoint_splice_parts(
     *,
     baseline: tuple[tuple[float, float], ...],
     crossing_points: list[tuple[float, float]],
-) -> tuple[
-    tuple[tuple[float, float], ...],
-    tuple[tuple[float, float], ...],
-    tuple[tuple[float, float], ...],
-    tuple[float, float],
-    tuple[float, float],
-] | None:
+) -> (
+    tuple[
+        tuple[tuple[float, float], ...],
+        tuple[tuple[float, float], ...],
+        tuple[tuple[float, float], ...],
+        tuple[float, float],
+        tuple[float, float],
+    ]
+    | None
+):
     if len(baseline) < 2 or not crossing_points:
         return None
 
@@ -327,9 +330,7 @@ def _foreign_crossing_footprint_specs(
         (str, bytes, bytearray),
     ):
         return ()
-    specs: list[
-        tuple[tuple[float, float], tuple[float, float], tuple[float, float], float]
-    ] = []
+    specs: list[tuple[tuple[float, float], tuple[float, float], tuple[float, float], float]] = []
     for raw_crossing in raw_crossings:
         if not isinstance(raw_crossing, Mapping):
             continue
@@ -435,11 +436,14 @@ def _merge_terminal_corrected_route_centerline(
         centerline: tuple[tuple[float, float], ...],
         point: tuple[float, float],
     ) -> tuple[tuple[float, float], ...]:
-        if _centerline_index_near_point(
-            centerline,
-            point,
-            tolerance_um=stitch_tolerance_um,
-        ) is not None:
+        if (
+            _centerline_index_near_point(
+                centerline,
+                point,
+                tolerance_um=stitch_tolerance_um,
+            )
+            is not None
+        ):
             return centerline
         projection = _closest_centerline_projection(centerline, point)
         if projection is None:
@@ -523,20 +527,14 @@ def _apply_crossing_aware_endpoint_correction_to_record(
         ).split(",")
         if item.strip()
     }
-    trace_endpoint = (
-        record.net_name in trace_endpoint_nets
-        or (
-            record.net_id is not None
-            and str(int(record.net_id)) in trace_endpoint_nets
-        )
+    trace_endpoint = record.net_name in trace_endpoint_nets or (
+        record.net_id is not None and str(int(record.net_id)) in trace_endpoint_nets
     )
 
     if not crossing_points:
         if record.corrected_centerline_um and not correct_source and not correct_target:
             return record
-        if record.corrected_centerline_um and (
-            not correct_source or not correct_target
-        ):
+        if record.corrected_centerline_um and (not correct_source or not correct_target):
             route_baseline = _primitive_centerline_for_record(
                 record,
                 router=router,
@@ -583,9 +581,7 @@ def _apply_crossing_aware_endpoint_correction_to_record(
                     centerline_length = getattr(router, "centerline_length_um", None)
                     if centerline_length is not None:
                         try:
-                            corrected_total_length_um = float(
-                                centerline_length(list(centerline))
-                            )
+                            corrected_total_length_um = float(centerline_length(list(centerline)))
                         except Exception:
                             corrected_total_length_um = _centerline_length_um(centerline)
                     else:
@@ -773,27 +769,18 @@ def _apply_crossing_aware_endpoint_correction_to_record(
                 middle,
                 checked_suffix if checked_suffix else baseline_suffix,
             )
-            source_ok = (
-                not correct_source
-                or _terminal_anchor_matches(
-                    candidate,
-                    record.source_port_center_um,
-                    at_start=True,
-                )
+            source_ok = not correct_source or _terminal_anchor_matches(
+                candidate,
+                record.source_port_center_um,
+                at_start=True,
             )
-            target_ok = (
-                not correct_target
-                or _terminal_anchor_matches(
-                    candidate,
-                    record.target_port_center_um,
-                    at_start=False,
-                )
+            target_ok = not correct_target or _terminal_anchor_matches(
+                candidate,
+                record.target_port_center_um,
+                at_start=False,
             )
             accepts = (
-                len(candidate) >= 2
-                and source_ok
-                and target_ok
-                and _realization_accepts(candidate)
+                len(candidate) >= 2 and source_ok and target_ok and _realization_accepts(candidate)
             )
             if trace_endpoint:
                 print(
@@ -891,20 +878,10 @@ def _apply_crossing_aware_endpoint_corrections_to_debug_artifacts(
     records: list[RoutedNetRecord] = []
     for record in debug_artifacts.routed_net_records:
         net_id = int(record.net_id) if record.net_id is not None else None
-        source_has_fanout_stub = (
-            net_id is not None and net_id in fanout_anchor_source_net_ids
-        )
-        target_has_fanout_stub = (
-            net_id is not None and net_id in fanout_anchor_target_net_ids
-        )
-        record_has_fanout_stub = (
-            net_id is not None and net_id in fanout_anchor_net_ids
-        )
-        crossing_points = (
-            crossing_points_by_net_id.get(net_id, [])
-            if net_id is not None
-            else []
-        )
+        source_has_fanout_stub = net_id is not None and net_id in fanout_anchor_source_net_ids
+        target_has_fanout_stub = net_id is not None and net_id in fanout_anchor_target_net_ids
+        record_has_fanout_stub = net_id is not None and net_id in fanout_anchor_net_ids
+        crossing_points = crossing_points_by_net_id.get(net_id, []) if net_id is not None else []
         records.append(
             _apply_crossing_aware_endpoint_correction_to_record(
                 record,

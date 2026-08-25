@@ -184,22 +184,13 @@ def _trim_common_bus_to_connections(
 
     provisional_bus_cells = obstacle_map.bus.cells
     connection_cells = {
-        cell
-        for route in common_bus.routes
-        for cell in route.path
-        if cell in provisional_bus_cells
+        cell for route in common_bus.routes for cell in route.path if cell in provisional_bus_cells
     }
     if not connection_cells:
         return obstacle_map, common_bus
 
-    min_x_um = min(
-        _grid_cell_center_um(cell, obstacle_map)[0]
-        for cell in connection_cells
-    )
-    max_x_um = max(
-        _grid_cell_center_um(cell, obstacle_map)[0]
-        for cell in connection_cells
-    )
+    min_x_um = min(_grid_cell_center_um(cell, obstacle_map)[0] for cell in connection_cells)
+    max_x_um = max(_grid_cell_center_um(cell, obstacle_map)[0] for cell in connection_cells)
     half_overlap_um = max(
         obstacle_map.grid.grid_size_um / 2.0,
         config.wire_width_um / 2.0,
@@ -217,9 +208,8 @@ def _trim_common_bus_to_connections(
         bbox=trimmed_bbox,
         cells=frozenset(trimmed_bus_cells),
     )
-    trimmed_tree_cells = (
-        set(common_bus.tree_cells).difference(provisional_bus_cells)
-        | set(trimmed_bus_cells)
+    trimmed_tree_cells = set(common_bus.tree_cells).difference(provisional_bus_cells) | set(
+        trimmed_bus_cells
     )
     trimmed_obstacle_map = replace(obstacle_map, bus=trimmed_bus)
     trimmed_common_bus = replace(

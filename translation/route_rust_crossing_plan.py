@@ -29,6 +29,7 @@ def _ensure_dir(path: Path) -> None:
 DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM = 200.0
 COLLISION_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_LOSS_UM"
 
+
 def _routed_records_by_net_id(
     records: Iterable[RoutedNetRecord],
 ) -> dict[int, RoutedNetRecord]:
@@ -450,9 +451,7 @@ def _augment_crossing_plan_with_realized_overlaps(
 
     core_cells_by_net_id: dict[int, set[tuple[int, int]]] = {}
     for raw_net_id, raw_cells in router.all_net_core_cells():
-        core_cells_by_net_id[int(raw_net_id)] = {
-            (int(cell[0]), int(cell[1])) for cell in raw_cells
-        }
+        core_cells_by_net_id[int(raw_net_id)] = {(int(cell[0]), int(cell[1])) for cell in raw_cells}
 
     actual_crossings: list[dict[str, object]] = []
     unrealized_expected: list[dict[str, object]] = []
@@ -466,8 +465,7 @@ def _augment_crossing_plan_with_realized_overlaps(
         net_id_a = int(cast(int, event["net_id_a"]))
         net_id_b = int(cast(int, event["net_id_b"]))
         overlap = sorted(
-            core_cells_by_net_id.get(net_id_a, set())
-            & core_cells_by_net_id.get(net_id_b, set())
+            core_cells_by_net_id.get(net_id_a, set()) & core_cells_by_net_id.get(net_id_b, set())
         )
         geometric_crossing = None
         if routed_records_by_net_id is not None:
@@ -494,12 +492,8 @@ def _augment_crossing_plan_with_realized_overlaps(
             record["point"] = geometric_crossing["point"]
             record["segment_a"] = geometric_crossing["segment_a"]
             record["segment_b"] = geometric_crossing["segment_b"]
-            record["segment_a_margin_cells"] = geometric_crossing[
-                "segment_a_margin_cells"
-            ]
-            record["segment_b_margin_cells"] = geometric_crossing[
-                "segment_b_margin_cells"
-            ]
+            record["segment_a_margin_cells"] = geometric_crossing["segment_a_margin_cells"]
+            record["segment_b_margin_cells"] = geometric_crossing["segment_b_margin_cells"]
             margin_a = float(geometric_crossing["segment_a_margin_cells"])
             margin_b = float(geometric_crossing["segment_b_margin_cells"])
             record["valid_crossing_geometry"] = (
@@ -592,8 +586,7 @@ def _write_crossing_debug_artifacts(
                 details.append(f"margin_b={crossing.get('segment_b_margin_cells')}")
             lines.append(
                 "  - "
-                f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} "
-                + " ".join(details)
+                f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} " + " ".join(details)
             )
     if crossing_plan_info.get("illegal_realized_crossing_count", 0):
         lines.append("illegal_realized_crossings:")
@@ -611,4 +604,3 @@ def _write_crossing_debug_artifacts(
                 f"required={crossing.get('required_margin_um')}"
             )
     txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-

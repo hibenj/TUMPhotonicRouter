@@ -114,9 +114,7 @@ def parse_debug_svg_selector(
             return False, None
         return True, indices
 
-    raise TypeError(
-        "debug_svgs must be a bool, int, range, sequence of ints, or selector string"
-    )
+    raise TypeError("debug_svgs must be a bool, int, range, sequence of ints, or selector string")
 
 
 def resolve_legacy_display_options(

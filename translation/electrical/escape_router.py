@@ -113,13 +113,10 @@ def _endpoint_dogleg_to_targets(
         if pad_position == "left"
         else max(x for x, _ in common_bus.bus.cells)
     )
-    endpoint_cells = tuple(
-        cell for cell in common_bus.bus.cells if cell[0] == endpoint_x
-    )
+    endpoint_cells = tuple(cell for cell in common_bus.bus.cells if cell[0] == endpoint_x)
     target = _choose_dogleg_target(targets, pad_side)
     bus_center_y = (
-        min(y for _, y in common_bus.bus.cells)
-        + max(y for _, y in common_bus.bus.cells)
+        min(y for _, y in common_bus.bus.cells) + max(y for _, y in common_bus.bus.cells)
     ) / 2.0
     start = min(
         endpoint_cells,
@@ -212,7 +209,9 @@ def _neighbors(cell: GridCell, *, pad_side: str) -> tuple[GridCell, GridCell, Gr
     return ((x, y - 1), (x - 1, y), (x + 1, y), (x, y + 1))
 
 
-def _target_distance_key(cell: GridCell, targets: frozenset[GridCell], pad_side: str) -> tuple[int, int, int]:
+def _target_distance_key(
+    cell: GridCell, targets: frozenset[GridCell], pad_side: str
+) -> tuple[int, int, int]:
     x, y = cell
     if pad_side == "top":
         primary = max(target_y for _, target_y in targets) - y

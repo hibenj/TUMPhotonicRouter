@@ -193,9 +193,7 @@ def test_report_flags_misaligned_crossing_component_rotation():
     )
 
     assert report.success is False
-    assert [issue.code for issue in report.issues] == [
-        "crossing_component_rotation_mismatch"
-    ]
+    assert [issue.code for issue in report.issues] == ["crossing_component_rotation_mismatch"]
 
 
 def test_report_rejects_degraded_non_perpendicular_component_crossing():

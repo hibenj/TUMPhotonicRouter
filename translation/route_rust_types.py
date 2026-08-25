@@ -187,9 +187,7 @@ class RustRouteDebugArtifacts:
     route_svgs: list[Path]
     routed_edge_lengths_um: dict[RoutedEdgeKey, float]
     routed_net_records: list["RoutedNetRecord"] = field(default_factory=list)
-    route_search_summary: "RouteSearchSummary" = field(
-        default_factory=lambda: RouteSearchSummary()
-    )
+    route_search_summary: "RouteSearchSummary" = field(default_factory=lambda: RouteSearchSummary())
     route_attempt_records: list["RouteAttemptRecord"] = field(default_factory=list)
     static_blocked_cells: tuple[tuple[int, int], ...] = ()
     static_obstacle_count: int = 0
@@ -538,9 +536,7 @@ class RouteTimingBucket:
         self.crossing_reject_not_perpendicular += _get_route_int_stat(
             route_obj, "crossing_reject_not_perpendicular"
         )
-        self.crossing_reject_margin += _get_route_int_stat(
-            route_obj, "crossing_reject_margin"
-        )
+        self.crossing_reject_margin += _get_route_int_stat(route_obj, "crossing_reject_margin")
         self.crossing_reject_wrong_order += _get_route_int_stat(
             route_obj, "crossing_reject_wrong_order"
         )
@@ -762,19 +758,11 @@ class RouteAttemptRecord:
             "last_window_max_y": self.last_window_max_y,
             "last_window_area_cells": self.last_window_area_cells,
             "primitive_generated_by_class": dict(self.primitive_generated_by_class),
-            "primitive_bounds_rejects_by_class": dict(
-                self.primitive_bounds_rejects_by_class
-            ),
-            "primitive_closed_rejects_by_class": dict(
-                self.primitive_closed_rejects_by_class
-            ),
+            "primitive_bounds_rejects_by_class": dict(self.primitive_bounds_rejects_by_class),
+            "primitive_closed_rejects_by_class": dict(self.primitive_closed_rejects_by_class),
             "primitive_cost_pruned_by_class": dict(self.primitive_cost_pruned_by_class),
-            "primitive_footprint_checks_by_class": dict(
-                self.primitive_footprint_checks_by_class
-            ),
-            "primitive_footprint_rejects_by_class": dict(
-                self.primitive_footprint_rejects_by_class
-            ),
+            "primitive_footprint_checks_by_class": dict(self.primitive_footprint_checks_by_class),
+            "primitive_footprint_rejects_by_class": dict(self.primitive_footprint_rejects_by_class),
             "primitive_accepted_by_class": dict(self.primitive_accepted_by_class),
             "footprint_checks": self.footprint_checks,
             "footprint_rect_checks": self.footprint_rect_checks,
@@ -789,45 +777,33 @@ class RouteAttemptRecord:
             "crossing_hotpath_partner_segment_bbox_rejects": self.crossing_hotpath_partner_segment_bbox_rejects,
             "crossing_hotpath_intersection_hits": self.crossing_hotpath_intersection_hits,
             "crossing_hotpath_total_time_s": self.crossing_hotpath_total_time_us / 1_000_000.0,
-            "crossing_hotpath_owner_scan_time_s": self.crossing_hotpath_owner_scan_time_us / 1_000_000.0,
+            "crossing_hotpath_owner_scan_time_s": self.crossing_hotpath_owner_scan_time_us
+            / 1_000_000.0,
             "crossing_hotpath_segment_time_s": self.crossing_hotpath_segment_time_us / 1_000_000.0,
-            "crossing_hotpath_reservation_time_s": self.crossing_hotpath_reservation_time_us / 1_000_000.0,
+            "crossing_hotpath_reservation_time_s": self.crossing_hotpath_reservation_time_us
+            / 1_000_000.0,
             "crossing_candidate_checks": self.crossing_candidate_checks,
             "crossing_accepted": self.crossing_accepted,
             "crossing_reject_non_straight": self.crossing_reject_non_straight,
-            "crossing_reject_not_perpendicular": (
-                self.crossing_reject_not_perpendicular
-            ),
+            "crossing_reject_not_perpendicular": (self.crossing_reject_not_perpendicular),
             "crossing_reject_margin": self.crossing_reject_margin,
             "crossing_reject_wrong_order": self.crossing_reject_wrong_order,
-            "crossing_reject_unexpected_owner": (
-                self.crossing_reject_unexpected_owner
-            ),
+            "crossing_reject_unexpected_owner": (self.crossing_reject_unexpected_owner),
             "crossing_reject_unmatched_owner": self.crossing_reject_unmatched_owner,
-            "crossing_reject_unmatched_centerline": (
-                self.crossing_reject_unmatched_centerline
-            ),
-            "crossing_reject_unmatched_footprint": (
-                self.crossing_reject_unmatched_footprint
-            ),
+            "crossing_reject_unmatched_centerline": (self.crossing_reject_unmatched_centerline),
+            "crossing_reject_unmatched_footprint": (self.crossing_reject_unmatched_footprint),
             "crossing_reject_unmatched_route_centerline": (
                 self.crossing_reject_unmatched_route_centerline
             ),
             "crossing_reject_unmatched_route_footprint": (
                 self.crossing_reject_unmatched_route_footprint
             ),
-            "crossing_reject_pending_straight": (
-                self.crossing_reject_pending_straight
-            ),
-            "route_search_total_time_s": (
-                self.route_search_total_time_us / 1_000_000.0
-            ),
+            "crossing_reject_pending_straight": (self.crossing_reject_pending_straight),
+            "route_search_total_time_s": (self.route_search_total_time_us / 1_000_000.0),
             "dense_grid_build_time_s": self.dense_grid_build_time_us / 1_000_000.0,
             "dense_grid_cells": self.dense_grid_cells,
             "search_loop_time_s": self.search_loop_time_us / 1_000_000.0,
-            "obstacle_map_prepare_time_s": (
-                self.obstacle_map_prepare_time_us / 1_000_000.0
-            ),
+            "obstacle_map_prepare_time_s": (self.obstacle_map_prepare_time_us / 1_000_000.0),
             "simple_route_time_s": self.simple_route_time_us / 1_000_000.0,
             "commit_prepare_time_s": self.commit_prepare_time_us / 1_000_000.0,
             "commit_time_s": self.commit_time_us / 1_000_000.0,
@@ -944,9 +920,7 @@ def route_attempt_record_from_route(
             route_obj,
             "primitive_footprint_rect_checks",
         ),
-        crossing_hotpath_no_contact=_get_route_int_stat(
-            route_obj, "crossing_hotpath_no_contact"
-        ),
+        crossing_hotpath_no_contact=_get_route_int_stat(route_obj, "crossing_hotpath_no_contact"),
         crossing_hotpath_contact_checks=_get_route_int_stat(
             route_obj, "crossing_hotpath_contact_checks"
         ),
@@ -986,20 +960,14 @@ def route_attempt_record_from_route(
         crossing_hotpath_reservation_time_us=_get_route_int_stat(
             route_obj, "crossing_hotpath_reservation_time_us"
         ),
-        crossing_candidate_checks=_get_route_int_stat(
-            route_obj, "crossing_candidate_checks"
-        ),
+        crossing_candidate_checks=_get_route_int_stat(route_obj, "crossing_candidate_checks"),
         crossing_accepted=_get_route_int_stat(route_obj, "crossing_accepted"),
-        crossing_reject_non_straight=_get_route_int_stat(
-            route_obj, "crossing_reject_non_straight"
-        ),
+        crossing_reject_non_straight=_get_route_int_stat(route_obj, "crossing_reject_non_straight"),
         crossing_reject_not_perpendicular=_get_route_int_stat(
             route_obj, "crossing_reject_not_perpendicular"
         ),
         crossing_reject_margin=_get_route_int_stat(route_obj, "crossing_reject_margin"),
-        crossing_reject_wrong_order=_get_route_int_stat(
-            route_obj, "crossing_reject_wrong_order"
-        ),
+        crossing_reject_wrong_order=_get_route_int_stat(route_obj, "crossing_reject_wrong_order"),
         crossing_reject_unexpected_owner=_get_route_int_stat(
             route_obj, "crossing_reject_unexpected_owner"
         ),
@@ -1067,9 +1035,7 @@ def route_attempt_record_from_route(
             "reconstruction_time_us",
         ),
         max_window_area_cells=_get_route_int_stat(route_obj, "max_window_area_cells"),
-        used_full_grid_fallback=bool(
-            getattr(route_obj, "used_full_grid_fallback", False)
-        ),
+        used_full_grid_fallback=bool(getattr(route_obj, "used_full_grid_fallback", False)),
         diagnostics=dict(diagnostics or {}),
     )
 
@@ -1182,6 +1148,7 @@ def summarize_route_search(
         for bucket_name, bucket in route_timing_buckets.items()
         if bucket_name not in non_route_bucket_names
     ]
+
     def sum_bucket_counters(attr: str) -> dict[str, int]:
         counters = _empty_primitive_counter_dict()
         for bucket in buckets:
@@ -1220,21 +1187,13 @@ def summarize_route_search(
         closed_heap_entries=sum(bucket.closed_heap_entries for bucket in buckets),
         max_heap_size=max((bucket.max_heap_size for bucket in buckets), default=0),
         dense_search_states=sum(bucket.dense_search_states for bucket in buckets),
-        dense_search_storage_bytes=sum(
-            bucket.dense_search_storage_bytes for bucket in buckets
-        ),
+        dense_search_storage_bytes=sum(bucket.dense_search_storage_bytes for bucket in buckets),
         best_cost_updates=sum(bucket.best_cost_updates for bucket in buckets),
         parent_updates=sum(bucket.parent_updates for bucket in buckets),
-        obstacle_clearance_checks=sum(
-            bucket.obstacle_clearance_checks for bucket in buckets
-        ),
+        obstacle_clearance_checks=sum(bucket.obstacle_clearance_checks for bucket in buckets),
         primitive_generated_by_class=sum_bucket_counters("primitive_generated_by_class"),
-        primitive_bounds_rejects_by_class=sum_bucket_counters(
-            "primitive_bounds_rejects_by_class"
-        ),
-        primitive_closed_rejects_by_class=sum_bucket_counters(
-            "primitive_closed_rejects_by_class"
-        ),
+        primitive_bounds_rejects_by_class=sum_bucket_counters("primitive_bounds_rejects_by_class"),
+        primitive_closed_rejects_by_class=sum_bucket_counters("primitive_closed_rejects_by_class"),
         primitive_cost_pruned_by_class=sum_bucket_counters("primitive_cost_pruned_by_class"),
         primitive_footprint_checks_by_class=sum_bucket_counters(
             "primitive_footprint_checks_by_class"
@@ -1247,9 +1206,7 @@ def summarize_route_search(
         footprint_rejects=sum(bucket.footprint_rejects for bucket in buckets),
         footprint_rect_checks=sum(bucket.footprint_rect_checks for bucket in buckets),
         footprint_rect_rejects=sum(bucket.footprint_rect_rejects for bucket in buckets),
-        crossing_hotpath_no_contact=sum(
-            bucket.crossing_hotpath_no_contact for bucket in buckets
-        ),
+        crossing_hotpath_no_contact=sum(bucket.crossing_hotpath_no_contact for bucket in buckets),
         crossing_hotpath_contact_checks=sum(
             bucket.crossing_hotpath_contact_checks for bucket in buckets
         ),
@@ -1289,20 +1246,14 @@ def summarize_route_search(
         crossing_hotpath_reservation_time_us=sum(
             bucket.crossing_hotpath_reservation_time_us for bucket in buckets
         ),
-        crossing_candidate_checks=sum(
-            bucket.crossing_candidate_checks for bucket in buckets
-        ),
+        crossing_candidate_checks=sum(bucket.crossing_candidate_checks for bucket in buckets),
         crossing_accepted=sum(bucket.crossing_accepted for bucket in buckets),
-        crossing_reject_non_straight=sum(
-            bucket.crossing_reject_non_straight for bucket in buckets
-        ),
+        crossing_reject_non_straight=sum(bucket.crossing_reject_non_straight for bucket in buckets),
         crossing_reject_not_perpendicular=sum(
             bucket.crossing_reject_not_perpendicular for bucket in buckets
         ),
         crossing_reject_margin=sum(bucket.crossing_reject_margin for bucket in buckets),
-        crossing_reject_wrong_order=sum(
-            bucket.crossing_reject_wrong_order for bucket in buckets
-        ),
+        crossing_reject_wrong_order=sum(bucket.crossing_reject_wrong_order for bucket in buckets),
         crossing_reject_unexpected_owner=sum(
             bucket.crossing_reject_unexpected_owner for bucket in buckets
         ),
@@ -1324,21 +1275,15 @@ def summarize_route_search(
         crossing_reject_pending_straight=sum(
             bucket.crossing_reject_pending_straight for bucket in buckets
         ),
-        route_search_total_time_us=sum(
-            bucket.route_search_total_time_us for bucket in buckets
-        ),
+        route_search_total_time_us=sum(bucket.route_search_total_time_us for bucket in buckets),
         dense_grid_build_time_us=sum(bucket.dense_grid_build_time_us for bucket in buckets),
         dense_grid_cells=sum(bucket.dense_grid_cells for bucket in buckets),
         search_loop_time_us=sum(bucket.search_loop_time_us for bucket in buckets),
-        obstacle_map_prepare_time_us=sum(
-            bucket.obstacle_map_prepare_time_us for bucket in buckets
-        ),
+        obstacle_map_prepare_time_us=sum(bucket.obstacle_map_prepare_time_us for bucket in buckets),
         simple_route_time_us=sum(bucket.simple_route_time_us for bucket in buckets),
         commit_prepare_time_us=sum(bucket.commit_prepare_time_us for bucket in buckets),
         commit_time_us=sum(bucket.commit_time_us for bucket in buckets),
-        neighbor_generation_time_us=sum(
-            bucket.neighbor_generation_time_us for bucket in buckets
-        ),
+        neighbor_generation_time_us=sum(bucket.neighbor_generation_time_us for bucket in buckets),
         heap_operation_time_us=sum(bucket.heap_operation_time_us for bucket in buckets),
         legality_check_time_us=sum(bucket.legality_check_time_us for bucket in buckets),
         reconstruction_time_us=sum(bucket.reconstruction_time_us for bucket in buckets),

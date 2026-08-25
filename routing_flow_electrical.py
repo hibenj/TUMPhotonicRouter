@@ -42,9 +42,7 @@ def run_electrical_routing_step(
     )
     t_electrical_end = time.perf_counter()
     if stats is not None:
-        stats.step_times_s["electrical_routing"] = (
-            t_electrical_end - t_electrical_start
-        )
+        stats.step_times_s["electrical_routing"] = t_electrical_end - t_electrical_start
     if current_electrical_result.routed_component is None:
         raise RuntimeError(_electrical_failure_summary(current_electrical_result))
     electrical_summary = electrical_summary_from_result(
@@ -52,15 +50,9 @@ def run_electrical_routing_step(
         electrical_config,
     )
     if stats is not None:
-        stats.electrical_terminal_groups = int(
-            electrical_summary["terminal_group_count"]
-        )
-        stats.electrical_pad_assignments = int(
-            electrical_summary["pad_assignment_count"]
-        )
-        stats.electrical_detailed_routes = int(
-            electrical_summary["detailed_route_count"]
-        )
+        stats.electrical_terminal_groups = int(electrical_summary["terminal_group_count"])
+        stats.electrical_pad_assignments = int(electrical_summary["pad_assignment_count"])
+        stats.electrical_detailed_routes = int(electrical_summary["detailed_route_count"])
         stats.electrical_failed_detailed_routes = int(
             electrical_summary["failed_detailed_route_count"]
         )
@@ -82,10 +74,7 @@ def run_electrical_routing_step(
         f"pads={electrical_pad_count}"
     )
     if debug_timing:
-        print(
-            "      - Electrical routing time: "
-            f"{t_electrical_end - t_electrical_start:.4f} s"
-        )
+        print(f"      - Electrical routing time: {t_electrical_end - t_electrical_start:.4f} s")
     if debug_svgs_enabled:
         for name, path in current_electrical_result.debug_artifacts.items():
             print(f"      - Electrical {name}: {path}")
@@ -164,13 +153,9 @@ def electrical_summary_from_result(
             len(result.pad_plan.assignments) if result.pad_plan is not None else 0
         ),
         "common_bus_escape_success": (
-            result.common_bus_escape.success
-            if result.common_bus_escape is not None
-            else None
+            result.common_bus_escape.success if result.common_bus_escape is not None else None
         ),
-        "detailed_route_count": (
-            len(detailed_routes.routes) if detailed_routes is not None else 0
-        ),
+        "detailed_route_count": (len(detailed_routes.routes) if detailed_routes is not None else 0),
         "failed_detailed_route_count": len(failed_detailed_routes),
         "failed_detailed_routes": tuple(
             {
@@ -185,11 +170,7 @@ def electrical_summary_from_result(
             verification.warning_count if verification is not None else 0
         ),
         "verification_issue_counts": dict(sorted(issue_counts.items())),
-        "verification_metrics": (
-            dict(verification.metrics)
-            if verification is not None
-            else {}
-        ),
+        "verification_metrics": (dict(verification.metrics) if verification is not None else {}),
         "realization_metrics": realization_metrics,
         "verification_issues": (
             tuple(

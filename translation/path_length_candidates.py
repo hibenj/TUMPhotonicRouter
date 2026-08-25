@@ -34,8 +34,7 @@ def delay_candidate_to_dict(candidate: DelayInsertionCandidate) -> dict[str, obj
         "extra_length_um": float(candidate.extra_length_um),
         "reason": candidate.reason,
         "affected_requirement_edges": [
-            edge_key_to_dict(edge_key)
-            for edge_key in candidate.affected_requirement_edge_keys
+            edge_key_to_dict(edge_key) for edge_key in candidate.affected_requirement_edge_keys
         ],
     }
 
@@ -70,12 +69,10 @@ def analysis_edge_maps(
     analysis: PathLengthAnalysisResult,
 ) -> tuple[dict[str, list[RoutedEdgeKey]], dict[str, list[RoutedEdgeKey]]]:
     incoming_by_node: dict[str, list[RoutedEdgeKey]] = {
-        node_name: []
-        for node_name in analysis.node_timings
+        node_name: [] for node_name in analysis.node_timings
     }
     outgoing_by_node: dict[str, list[RoutedEdgeKey]] = {
-        node_name: []
-        for node_name in analysis.node_timings
+        node_name: [] for node_name in analysis.node_timings
     }
     for timing in analysis.node_timings.values():
         for edge_timing in timing.incoming_edges:
@@ -101,10 +98,7 @@ def build_requirement_delay_candidates(
     transparent serial elements and complete common-mode MMI output bundles.
     """
     incoming_by_node, outgoing_by_node = analysis_edge_maps(analysis)
-    missing_by_edge = {
-        req.edge_key: float(req.missing_length_um)
-        for req in requirements
-    }
+    missing_by_edge = {req.edge_key: float(req.missing_length_um) for req in requirements}
     candidates: dict[RoutedEdgeKey, list[DelayInsertionCandidate]] = {}
 
     def _edge_tuple_identity(
@@ -220,8 +214,7 @@ def build_requirement_delay_candidates(
         source_incoming = incoming_by_node.get(source_instance, [])
         if source_instance.startswith(common_mode_prefixes) and len(source_incoming) >= 2:
             common_delay = min(
-                missing_by_edge.get(outgoing_edge, 0.0)
-                for outgoing_edge in source_outgoing
+                missing_by_edge.get(outgoing_edge, 0.0) for outgoing_edge in source_outgoing
             )
             if common_delay > tolerance_um and requested <= common_delay + tolerance_um:
                 affected_edges = tuple(
@@ -284,8 +277,7 @@ def build_requirement_delay_candidates(
                 ):
                     continue
                 next_edges = tuple(
-                    incoming[0] if i == index else edge
-                    for i, edge in enumerate(current_edges)
+                    incoming[0] if i == index else edge for i, edge in enumerate(current_edges)
                 )
                 queue.append(
                     (

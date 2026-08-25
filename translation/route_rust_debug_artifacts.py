@@ -109,17 +109,11 @@ def _write_centerline_probe_svg(
     grid_step = 2.0
     gx = math.floor(min_x / grid_step) * grid_step
     while gx <= max_x:
-        parts.append(
-            f'<path d="M {sx(gx):.6g} 0 V {height:.6g}" '
-            'fill="none" />'
-        )
+        parts.append(f'<path d="M {sx(gx):.6g} 0 V {height:.6g}" fill="none" />')
         gx += grid_step
     gy = math.floor(min_y / grid_step) * grid_step
     while gy <= max_y:
-        parts.append(
-            f'<path d="M 0 {sy(gy):.6g} H {width:.6g}" '
-            'fill="none" />'
-        )
+        parts.append(f'<path d="M 0 {sy(gy):.6g} H {width:.6g}" fill="none" />')
         gy += grid_step
     parts.append("</g>")
 
@@ -252,10 +246,12 @@ def _dump_photonic_probe_failure_artifacts(
                 list[tuple[float, float]], item.get("corrected_centerline_um", [])
             ),
         }
-    focus_bbox = overlap_bboxes[0] if overlap_bboxes else _centerline_bbox_um(
-        line
-        for lines in svg_centerlines.values()
-        for line in lines.values()
+    focus_bbox = (
+        overlap_bboxes[0]
+        if overlap_bboxes
+        else _centerline_bbox_um(
+            line for lines in svg_centerlines.values() for line in lines.values()
+        )
     )
     if focus_bbox is not None:
         svg_path = probe_dir / f"{stem}_centerlines.svg"

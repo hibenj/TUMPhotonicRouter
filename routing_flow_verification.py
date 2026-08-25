@@ -80,9 +80,7 @@ def verify_and_attach_photonic_reports(
         allow_45_degree_turns=bool(
             getattr(debug_artifacts, "realization_allow_45_degree_turns", True)
         ),
-        bend_radius_cells=int(
-            getattr(debug_artifacts, "realization_bend_radius_cells", 4)
-        ),
+        bend_radius_cells=int(getattr(debug_artifacts, "realization_bend_radius_cells", 4)),
         legal_overlap_polygons_by_net_id_pair_um=(
             _legal_crossing_overlap_polygons(crossing_plan_info)
             if isinstance(crossing_plan_info, Mapping)
@@ -253,9 +251,7 @@ def _legal_crossing_component_footprints(
     raw_components = crossing_plan_info.get("realized_crossing_components", ())
     if isinstance(raw_components, (list, tuple)):
         components = [
-            dict(component)
-            for component in raw_components
-            if isinstance(component, Mapping)
+            dict(component) for component in raw_components if isinstance(component, Mapping)
         ]
         if components:
             return tuple(components)

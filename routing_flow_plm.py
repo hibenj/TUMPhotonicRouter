@@ -15,9 +15,7 @@ def attach_and_report_path_length_matching(
 
     meander_report_info = getattr(route_result, "meander_insertion_report_info", None)
     routed_layout.info["path_length_analysis"] = route_result.path_length_analysis_info
-    routed_layout.info["meander_requirements"] = (
-        route_result.meander_requirements_info or []
-    )
+    routed_layout.info["meander_requirements"] = route_result.meander_requirements_info or []
     if meander_report_info is not None:
         routed_layout.info["meander_insertion_report"] = meander_report_info
     print(
@@ -285,9 +283,7 @@ def _report_candidate_profile(report: dict[object, object]) -> None:
     sorted_profile = sorted(
         candidate_profile.items(),
         key=lambda item: (
-            -float(item[1].get("elapsed_s", 0.0))
-            if isinstance(item[1], dict)
-            else 0.0
+            -float(item[1].get("elapsed_s", 0.0)) if isinstance(item[1], dict) else 0.0
         ),
     )
     for reason, raw_profile in sorted_profile:

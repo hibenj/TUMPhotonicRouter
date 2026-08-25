@@ -10,7 +10,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Protocol, Sequence, Set, Tuple, runtime_checkable
 
-from photonic_router.benchmark_extractor import BBox, ExtractedBenchmark, Point, Polygon, extract_benchmark
+from photonic_router.benchmark_extractor import (
+    BBox,
+    ExtractedBenchmark,
+    Point,
+    Polygon,
+    extract_benchmark,
+)
 from photonic_router.routing_layers import HEATER_METAL_OBSTACLE_LAYERS
 
 GridCell = Tuple[int, int]
@@ -45,9 +51,7 @@ class StaticObstacleMapConfig:
     chip_add_x_um: float = 0.0
     chip_add_y_um: float = 0.0
     obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = None
-    heater_obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = (
-        HEATER_METAL_OBSTACLE_LAYERS
-    )
+    heater_obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = HEATER_METAL_OBSTACLE_LAYERS
 
 
 @dataclass(frozen=True)
@@ -267,8 +271,7 @@ def _apply_perpendicular_heater_clearance(
         )
 
     blocked_rects = tuple(
-        _expand_rect_perpendicular_to_long_axis(rect, radius)
-        for rect in raw_rects
+        _expand_rect_perpendicular_to_long_axis(rect, radius) for rect in raw_rects
     )
     blocked_cells = set(_materialize_grid_rects(blocked_rects, data.grid))
     return StaticObstacleMapData(
@@ -325,9 +328,7 @@ def _merge_static_obstacle_data(
         raw_blocked_cells=raw_blocked_cells,
         blocked_cells=blocked_cells,
         port_open_cells=port_open_cells,
-        raw_static_rects=tuple(
-            rect for data in data_items for rect in data.raw_static_rects
-        ),
+        raw_static_rects=tuple(rect for data in data_items for rect in data.raw_static_rects),
         blocked_static_rects=tuple(
             rect for data in data_items for rect in data.blocked_static_rects
         ),
@@ -348,7 +349,9 @@ def _merge_rust_static_cell_handles(
     blocked_cells: Set[GridCell],
     rust_backend: Any | None,
 ) -> Any | None:
-    handle_cls = getattr(rust_backend, "PyStaticCellSet", None) if rust_backend is not None else None
+    handle_cls = (
+        getattr(rust_backend, "PyStaticCellSet", None) if rust_backend is not None else None
+    )
     if handle_cls is None:
         return None
     handle = None
@@ -586,9 +589,7 @@ def _build_static_obstacle_map_rust(
         float(die_bbox_raw[3]),
     )
     blocked_cells = (
-        set(map(tuple, result.get("blocked_cells", ())))
-        if config.materialize_cell_sets
-        else set()
+        set(map(tuple, result.get("blocked_cells", ()))) if config.materialize_cell_sets else set()
     )
     port_open_cells = (
         set(map(tuple, result.get("port_open_cells", ())))
@@ -890,11 +891,7 @@ def polygon_to_bbox_cells(polygon: Polygon, grid: GridSpec) -> Set[GridCell]:
     if rect is None:
         return set()
     gx_min, gy_min, gx_max, gy_max = rect
-    return {
-        (gx, gy)
-        for gx in range(gx_min, gx_max + 1)
-        for gy in range(gy_min, gy_max + 1)
-    }
+    return {(gx, gy) for gx in range(gx_min, gx_max + 1) for gy in range(gy_min, gy_max + 1)}
 
 
 def polygon_to_grid_rect(polygon: Polygon, grid: GridSpec) -> GridRect | None:
@@ -994,8 +991,7 @@ def build_port_open_cells(
     """Generate temporary opening cells around every extracted port."""
 
     base_cells = [
-        physical_to_grid(port.position[0], port.position[1], grid)
-        for port in benchmark.ports
+        physical_to_grid(port.position[0], port.position[1], grid) for port in benchmark.ports
     ]
     return inflate_cells(base_cells, grid.width, grid.height, radius, metric="chebyshev")
 

@@ -5,6 +5,7 @@ from gdsfactory.cross_section import CrossSection, Section
 from gdsfactory.samples.pdk.fab_c import LAYER
 from sax.models import grating_coupler
 
+
 def _get_bbox_dims(component: gf.Component):
     """Returns (width, height) of a component in microns based on its bbox."""
     bb = component.bbox() if callable(getattr(component, "bbox", None)) else component.bbox
@@ -13,6 +14,7 @@ def _get_bbox_dims(component: gf.Component):
     except Exception:
         xmin, ymin, xmax, ymax = component.xmin, component.ymin, component.xmax, component.ymax
     return float(xmax - xmin), float(ymax - ymin)
+
 
 def _get_bbox(c: gf.Component):
     """Returns ((xmin, ymin), (xmax, ymax)) regardless of bbox being a method or property."""
@@ -27,12 +29,14 @@ def _get_bbox(c: gf.Component):
         return (xmin, ymin), (xmax, ymax)
     return (float(xmin), float(ymin)), (float(xmax), float(ymax))
 
+
 def _get_bbox_center(component: gf.Component):
     """Return the (x_center, y_center) of a component based on its bbox."""
     (xmin, ymin), (xmax, ymax) = _get_bbox(component)
     x_center = (xmin + xmax) / 2
     y_center = (ymin + ymax) / 2
     return x_center, y_center
+
 
 def rotate_and_align(ref, angle):
     # bbox before rotation
@@ -49,6 +53,7 @@ def rotate_and_align(ref, angle):
     dy = ymin_before - ymin_after
 
     ref.move((dx, dy))
+
 
 import gdsfactory as gf
 
@@ -115,6 +120,7 @@ def add_ports_nesw(comp: gf.Component, width: float = 0.5, layer=(1, 0)):
 
     return comp
 
+
 def add_ports_edges(comp: gf.Component, width: float = 0.5, layer=(1, 0)):
     (xmin, ymin), (xmax, ymax) = _get_bbox(comp)
     w, h = _get_bbox_dims(comp)
@@ -164,10 +170,7 @@ def add_ports_edges(comp: gf.Component, width: float = 0.5, layer=(1, 0)):
 
 
 @gf.cell
-def switch(
-        ring_component: gf.Component,
-        gap: float = 0.25
-) -> gf.Component:
+def switch(ring_component: gf.Component, gap: float = 0.25) -> gf.Component:
     """Builds one switch (two asymmetric rings) as a reusable component.
 
     Args:
@@ -180,7 +183,7 @@ def switch(
     r2 = c << ring_component
     rotate_and_align(r2, 180)
     (x_dim), (y_dim) = _get_bbox_dims(ring)
-    r1.movey(-(y_dim+gap))
+    r1.movey(-(y_dim + gap))
     print(y_dim)
 
     num_ports = 0
@@ -272,10 +275,22 @@ def add_two_edge_ports(c: gf.Component, width: float = 1.0, layer=(1, 0)):
     xmid = 0.5 * (xmin + xmax) - 0.5
     ymid = 0.5 * (ymin + ymax)
 
-    c.add_port(name="W", center=(xmin - 0.2, ymid), width=width, orientation=180,
-               layer=layer, port_type="optical")
-    c.add_port(name="E", center=(xmax - 0.2, ymid), width=width, orientation=0,
-               layer=layer, port_type="optical")
+    c.add_port(
+        name="W",
+        center=(xmin - 0.2, ymid),
+        width=width,
+        orientation=180,
+        layer=layer,
+        port_type="optical",
+    )
+    c.add_port(
+        name="E",
+        center=(xmax - 0.2, ymid),
+        width=width,
+        orientation=0,
+        layer=layer,
+        port_type="optical",
+    )
 
 
 import gdsfactory as gf
@@ -360,7 +375,7 @@ def connect_outputs(c, output_refs, switch_refs, elements, cross_section="strip"
 
 def _init_port_usage_switch(switch_refs):
     """Make a usage map: {(stage, elem): {'left': {'o1':False,'o4':False},
-                                          'right':{'o2':False,'o3':False}}}"""
+    'right':{'o2':False,'o3':False}}}"""
     usage = {}
     for s, stage in enumerate(switch_refs):
         for e, _ in enumerate(stage):
@@ -370,9 +385,10 @@ def _init_port_usage_switch(switch_refs):
             }
     return usage
 
+
 def _init_port_usage_cross(cross_refs):
     """Make a usage map: {(stage, elem): {'left': {'s':False,'w':False},
-                                          'right':{'n':False,'e':False}}}"""
+    'right':{'n':False,'e':False}}}"""
     usage = {}
     for s, stage in enumerate(cross_refs):
         for e, _ in enumerate(stage):
@@ -381,6 +397,7 @@ def _init_port_usage_cross(cross_refs):
                 "right": {"s": False, "e": False},
             }
     return usage
+
 
 def _take_cross_port(ref, usage, key, side, candidates):
     """Return the first available port from 'candidates' on the given side."""
@@ -402,9 +419,7 @@ def _take_switch_port(cref, usage, key, side, prefer):
         if not usage[key][side][pname]:
             usage[key][side][pname] = True
             return cref.ports[pname]
-    raise RuntimeError(
-        f"No free {side} ports remaining on switch {key}; tried {prefer}."
-    )
+    raise RuntimeError(f"No free {side} ports remaining on switch {key}; tried {prefer}.")
 
 
 def count_crossings(connections):
@@ -445,14 +460,10 @@ def count_crossings(connections):
                 for k in reversed(range(pos + 1, max_pos + 1)):
                     for j, (prev_edge, stage_val) in enumerate(penalty[k]):
                         layer_val = max(stage_val, local_cross)
-                        stage_crossings.append(
-                            ((src_idx, pos), prev_edge, layer_val)
-                        )
+                        stage_crossings.append(((src_idx, pos), prev_edge, layer_val))
 
                         # count occurrences immediately
-                        crossings_per_layer[layer_val] = (
-                                crossings_per_layer.get(layer_val, 0) + 1
-                        )
+                        crossings_per_layer[layer_val] = crossings_per_layer.get(layer_val, 0) + 1
 
                         affected_edges.add(prev_edge)
                         affected_edges.add((src_idx, pos))
@@ -472,11 +483,13 @@ def count_crossings(connections):
         all_edges = {(src_idx, pos) for src_idx, (a, b) in enumerate(stage) for pos in (a, b)}
         unaffected_edges = sorted(all_edges - affected_edges)
 
-        results_per_stage.append({
-            "crossings": stage_crossings,
-            "unaffected": unaffected_edges,
-            "crossings_per_layer": dict(sorted(crossings_per_layer.items())),
-        })
+        results_per_stage.append(
+            {
+                "crossings": stage_crossings,
+                "unaffected": unaffected_edges,
+                "crossings_per_layer": dict(sorted(crossings_per_layer.items())),
+            }
+        )
 
     return total_crossings, results_per_stage
 
@@ -542,12 +555,18 @@ def connect_stages(c, switch_refs, cross_refs, connections, cross_ctns, cross_se
                         cross_key = (x, i)
 
                         if cross_ref_prev == 0:
-                            p_src = _take_switch_port(src_ref, usage_switch, src_key, "right", ["o2", "o3"])
+                            p_src = _take_switch_port(
+                                src_ref, usage_switch, src_key, "right", ["o2", "o3"]
+                            )
                         else:
-                            p_src = _take_cross_port(cross_ref_prev, usage_cross, cross_key_prev, "right", ["s", "e"])
+                            p_src = _take_cross_port(
+                                cross_ref_prev, usage_cross, cross_key_prev, "right", ["s", "e"]
+                            )
 
                         # Destination (cross_ref) and its y
-                        p_dst = _take_cross_port(cross_ref, usage_cross, cross_key, "left", ["n", "w"])
+                        p_dst = _take_cross_port(
+                            cross_ref, usage_cross, cross_key, "left", ["n", "w"]
+                        )
                         _, y_curr = _get_bbox_center(cross_ref)
 
                         # print("p_src:", p_src)
@@ -565,8 +584,11 @@ def connect_stages(c, switch_refs, cross_refs, connections, cross_ctns, cross_se
 
                         routes.append(
                             gf.routing.route_single(
-                                c, p_src, p_dst,
-                                port_type="optical", cross_section=cross_section,
+                                c,
+                                p_src,
+                                p_dst,
+                                port_type="optical",
+                                cross_section=cross_section,
                             )
                         )
 
@@ -584,14 +606,22 @@ def connect_stages(c, switch_refs, cross_refs, connections, cross_ctns, cross_se
 
                 # Connect final crossing → destination switch
                 if cross_ref_prev != 0:
-                    p_src_last = _take_cross_port(cross_ref_prev, usage_cross, cross_key_prev, "right", ["s", "e"])
-                    p_dst_last = _take_switch_port(dst_ref, usage_switch, dst_key, "left", ["o1", "o4"])
+                    p_src_last = _take_cross_port(
+                        cross_ref_prev, usage_cross, cross_key_prev, "right", ["s", "e"]
+                    )
+                    p_dst_last = _take_switch_port(
+                        dst_ref, usage_switch, dst_key, "left", ["o1", "o4"]
+                    )
 
                     routes.append(
                         gf.routing.route_single(
-                            c, p_src_last, p_dst_last,
-                            port_type="optical", cross_section=cross_section,
-                            auto_taper=True, allow_width_mismatch=True,
+                            c,
+                            p_src_last,
+                            p_dst_last,
+                            port_type="optical",
+                            cross_section=cross_section,
+                            auto_taper=True,
+                            allow_width_mismatch=True,
                         )
                     )
 
@@ -606,13 +636,19 @@ def connect_stages(c, switch_refs, cross_refs, connections, cross_ctns, cross_se
 
                         if cross_ref_prev == 0:
                             print("Switch source")
-                            p_src = _take_switch_port(src_ref, usage_switch, src_key, "right", ["o2", "o3"])
+                            p_src = _take_switch_port(
+                                src_ref, usage_switch, src_key, "right", ["o2", "o3"]
+                            )
                         else:
                             print("Crossing source")
-                            p_src = _take_cross_port(cross_ref_prev, usage_cross, cross_key_prev, "right", ["s", "e"])
+                            p_src = _take_cross_port(
+                                cross_ref_prev, usage_cross, cross_key_prev, "right", ["s", "e"]
+                            )
 
                         # Destination (cross_ref) and its y
-                        p_dst = _take_cross_port(cross_ref, usage_cross, cross_key, "left", ["n", "w"])
+                        p_dst = _take_cross_port(
+                            cross_ref, usage_cross, cross_key, "left", ["n", "w"]
+                        )
                         _, y_curr = _get_bbox_center(cross_ref)
 
                         # print("p_src:", p_src)
@@ -662,7 +698,9 @@ def connect_stages(c, switch_refs, cross_refs, connections, cross_ctns, cross_se
                                 print(f"Try {i + 1}: steps={steps}")
 
                                 route = gf.routing.route_single(
-                                    c, p_src, p_dst,
+                                    c,
+                                    p_src,
+                                    p_dst,
                                     port_type="optical",
                                     cross_section=cross_section,
                                     steps=steps,
@@ -686,14 +724,22 @@ def connect_stages(c, switch_refs, cross_refs, connections, cross_ctns, cross_se
 
                 # Connect final crossing → destination switch
                 if cross_ref_prev != 0:
-                    p_src_last = _take_cross_port(cross_ref_prev, usage_cross, cross_key_prev, "right", ["s", "e"])
-                    p_dst_last = _take_switch_port(dst_ref, usage_switch, dst_key, "left", ["o1", "o4"])
+                    p_src_last = _take_cross_port(
+                        cross_ref_prev, usage_cross, cross_key_prev, "right", ["s", "e"]
+                    )
+                    p_dst_last = _take_switch_port(
+                        dst_ref, usage_switch, dst_key, "left", ["o1", "o4"]
+                    )
 
                     routes.append(
                         gf.routing.route_single(
-                            c, p_src_last, p_dst_last,
-                            port_type="optical", cross_section=cross_section,
-                            auto_taper=True, allow_width_mismatch=True,
+                            c,
+                            p_src_last,
+                            p_dst_last,
+                            port_type="optical",
+                            cross_section=cross_section,
+                            auto_taper=True,
+                            allow_width_mismatch=True,
                         )
                     )
 
@@ -727,13 +773,13 @@ def connect_stages(c, switch_refs, cross_refs, connections, cross_ctns, cross_se
 
 @gf.cell
 def benes_array(
-        n: int,
-        switch_component: gf.Component,
-        grating_coupler: gf.Component,
-        crossing: gf.Component,
-        x_layer_gap: float = 0.0,
-        y_min_gap: float = 1.0,
-        waveguide_width: float = 0.5,
+    n: int,
+    switch_component: gf.Component,
+    grating_coupler: gf.Component,
+    crossing: gf.Component,
+    x_layer_gap: float = 0.0,
+    y_min_gap: float = 1.0,
+    waveguide_width: float = 0.5,
 ) -> gf.Component:
     """
     Builds a rectangular array of switch components for an n-bit Benes network.
@@ -756,8 +802,8 @@ def benes_array(
     # print(f"stages = {params['stages']}")
     # print(f"elements per stage = {params['elements']}\n")
 
-    stages = params['stages']
-    elements = params['elements']
+    stages = params["stages"]
+    elements = params["elements"]
 
     # Measure switch geometry
     sw_w, sw_h = _get_bbox_dims(switch_component)
@@ -767,7 +813,7 @@ def benes_array(
     # Horizontal pitch = width (touching side by side)
     x_pitch = sw_w + x_layer_gap
 
-    connections = params['connections']
+    connections = params["connections"]
 
     num_cross, cross_ctns = count_crossings(connections)
 
@@ -849,7 +895,7 @@ def benes_array(
             x_shift_step = 200.0  # µm, adjust as needed
 
             for layer, count in sorted(cpl.items()):
-                layer_count += (count - 1)
+                layer_count += count - 1
 
                 # compute X for crossings, including stage base and layer offset
                 x_cross = ((stage + layer + 1) * x_pitch + x_crossings) + x_shift_step * layer_count
@@ -950,7 +996,8 @@ if __name__ == "__main__":
     # GDS-Datei importieren
     gc = gf.read.import_gds(
         "/home/benjamin/Documents/Repositories/cda.cit.tum.gitlab/photonics/Projects/Carleton_collaboration/PDK/NanoSOI_PDK_v74/tech/libraries/ANT_PDK_Silicon_v74.gds",
-        cellname="GratingCoupler_TM_Oxide_8degrees")
+        cellname="GratingCoupler_TM_Oxide_8degrees",
+    )
 
     ring = gdsfactory.components.ring_single()
     ring_single_heater = gdsfactory.components.ring_single_heater()
@@ -958,15 +1005,16 @@ if __name__ == "__main__":
 
     cross = gf.read.import_gds(
         "/home/benjamin/Documents/Repositories/cda.cit.tum.gitlab/photonics/Projects/Carleton_collaboration/Custom_Elements/Wg_crossing_flt.gds",
-        cellname="PATHS")
+        cellname="PATHS",
+    )
 
     gc = gf.add_ports.add_ports_from_markers_inside(gc, pin_layer="PORT", port_layer="WG")
     cross = add_ports_nesw(cross, width=0.45)
-    #cross.rotate(45)
+    # cross.rotate(45)
 
-    #gc.pprint_ports()
+    # gc.pprint_ports()
     ring.pprint_ports()
-    #cross.pprint_ports()
+    # cross.pprint_ports()
 
     for port in gc.ports:
         x, y = port.center

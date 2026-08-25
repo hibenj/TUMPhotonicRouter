@@ -220,8 +220,6 @@ def insert_meanders_for_requirements(*args: Any, **kwargs: Any):
     return _meander_impl.insert_meanders_for_requirements(*args, **kwargs)
 
 
-
-
 def route_match_and_realize(
     unrouted_layout: Component,
     schematic: Schematic,
@@ -306,9 +304,7 @@ def route_match_and_realize(
         verbose_route_diagnostics=verbose_route_diagnostics,
         collect_route_stats=collect_route_stats,
         collect_attempt_diagnostics=collect_attempt_diagnostics,
-        enable_internal_photonic_probe_verification=(
-            enable_internal_photonic_probe_verification
-        ),
+        enable_internal_photonic_probe_verification=(enable_internal_photonic_probe_verification),
         include_heater_obstacles=include_heater_obstacles,
         ripup_reroute_config=ripup_reroute_config,
         enable_crossings=enable_crossings,
@@ -405,23 +401,15 @@ def route_match_and_realize(
             analysis,
             requirements,
         )
-        analysis_info["raw_requirements"] = [
-            requirement_to_dict(req)
-            for req in raw_requirements
-        ]
+        analysis_info["raw_requirements"] = [requirement_to_dict(req) for req in raw_requirements]
         analysis_info["lifted_requirements"] = [
-            requirement_to_dict(req)
-            for req in lifted_requirements
+            requirement_to_dict(req) for req in lifted_requirements
         ]
         analysis_info["output_matching"] = output_matching_info
         analysis_info["output_requirements"] = [
-            requirement_to_dict(req)
-            for req in output_requirements
+            requirement_to_dict(req) for req in output_requirements
         ]
-        analysis_info["requirements"] = [
-            requirement_to_dict(req)
-            for req in requirements
-        ]
+        analysis_info["requirements"] = [requirement_to_dict(req) for req in requirements]
         analysis_info["requirement_delay_candidates"] = [
             {
                 "edge": requirement_to_dict(req)["edge"],
@@ -433,9 +421,7 @@ def route_match_and_realize(
             for req in requirements
         ]
         analysis_info["matching_groups"] = lifted_groups
-        analysis_info["minimum_insertable_extra_length_um"] = float(
-            min_insertable_extra_um
-        )
+        analysis_info["minimum_insertable_extra_length_um"] = float(min_insertable_extra_um)
         requirements_info = [requirement_to_dict(req) for req in requirements]
         if debug_artifacts.realization_grid_spec is None:
             raise RuntimeError("Missing realization grid spec from routing phase.")
@@ -483,9 +469,7 @@ def route_match_and_realize(
             if meander_static_blocked_cell_handle is not None
             else meander_obstacle_map.blocked_cells
         )
-        pipeline_timings_s["meander_obstacle_map"] = (
-            time.perf_counter() - t_meander_obstacle_start
-        )
+        pipeline_timings_s["meander_obstacle_map"] = time.perf_counter() - t_meander_obstacle_start
 
         meander_config = MeanderInsertionConfig(
             enabled=True,
@@ -496,9 +480,7 @@ def route_match_and_realize(
             "min_candidate_straight_length_um": float(
                 meander_config.min_candidate_straight_length_um
             ),
-            "max_extra_length_per_region_um": float(
-                meander_config.max_extra_length_per_region_um
-            ),
+            "max_extra_length_per_region_um": float(meander_config.max_extra_length_per_region_um),
             "conservative_legal_check": bool(meander_config.conservative_legal_check),
             "max_meander_height_um": float(meander_config.max_meander_height_um),
             "auto_meander_endpoint_inset_um": (
@@ -507,9 +489,7 @@ def route_match_and_realize(
                 else float(meander_config.auto_meander_endpoint_inset_um)
             ),
             "endpoint_inset_policy": (
-                "adaptive"
-                if meander_config.auto_meander_endpoint_inset_um is None
-                else "fixed"
+                "adaptive" if meander_config.auto_meander_endpoint_inset_um is None else "fixed"
             ),
         }
 
@@ -531,9 +511,7 @@ def route_match_and_realize(
             ),
             requirement_delay_candidates=requirement_delay_candidates,
         )
-        pipeline_timings_s["meander_planning"] = (
-            time.perf_counter() - t_meander_planning_start
-        )
+        pipeline_timings_s["meander_planning"] = time.perf_counter() - t_meander_planning_start
         if analysis_info is not None:
             matching_group_diagnostics = matching_group_diagnostics_to_info(
                 analysis,
@@ -552,18 +530,13 @@ def route_match_and_realize(
             analysis_info["output_matching_diagnostics"] = output_matching_diagnostics
             analysis_info["path_length_acceptance"] = acceptance_summary
             if not acceptance_summary["passed"]:
-                raise RuntimeError(
-                    format_path_length_acceptance_failure(acceptance_summary)
-                )
+                raise RuntimeError(format_path_length_acceptance_failure(acceptance_summary))
 
     if debug_artifacts.realization_grid_spec is None:
         raise RuntimeError("Missing realization grid spec from routing phase.")
 
     crossing_plan_info = debug_artifacts.crossing_plan_info
-    if (
-        isinstance(crossing_plan_info, dict)
-        and enable_internal_photonic_probe_verification
-    ):
+    if isinstance(crossing_plan_info, dict) and enable_internal_photonic_probe_verification:
         final_records_by_net_id = _routed_records_by_net_id(records_for_realization)
         if final_records_by_net_id:
             illegal_realized_crossings = _verify_realized_route_intersections(
@@ -629,7 +602,6 @@ def route_match_and_realize(
         meander_insertion_report_info=meander_report_info,
         pipeline_timings_s=pipeline_timings_s,
     )
-
 
 
 class _RouteNetsRustSession:
@@ -743,10 +715,7 @@ class _RouteNetsRustSession:
             raise ValueError("route_width_um must be > 0")
         if max_iterations <= 0:
             raise ValueError("max_iterations must be > 0")
-        if (
-            not math.isfinite(float(proactive_congestion_weight))
-            or proactive_congestion_weight < 0
-        ):
+        if not math.isfinite(float(proactive_congestion_weight)) or proactive_congestion_weight < 0:
             raise ValueError("proactive_congestion_weight must be finite and non-negative")
         if proactive_congestion_radius_cells < 0:
             raise ValueError("proactive_congestion_radius_cells must be non-negative")
@@ -756,9 +725,7 @@ class _RouteNetsRustSession:
         if crossing_mode in {"pure", "lidar"}:
             crossing_mode = "lidar-pure"
         if crossing_mode not in {"window", "collision", "lidar-pure"}:
-            raise ValueError(
-                "crossing_mode must be one of 'window', 'collision', or 'lidar-pure'"
-            )
+            raise ValueError("crossing_mode must be one of 'window', 'collision', or 'lidar-pure'")
         effective_allow_only_expected_crossings = bool(allow_only_expected_crossings)
         if crossing_mode == "lidar-pure":
             effective_allow_only_expected_crossings = False
@@ -853,9 +820,7 @@ class _RouteNetsRustSession:
         self.allow_only_expected_crossings = allow_only_expected_crossings
         self.defer_realization = defer_realization
         self.enable_checked_endpoint_correction = enable_checked_endpoint_correction
-        self.effective_allow_only_expected_crossings = (
-            effective_allow_only_expected_crossings
-        )
+        self.effective_allow_only_expected_crossings = effective_allow_only_expected_crossings
         self.crossing_search_loss = crossing_search_loss
         self.fanout_access_mode_normalized = fanout_access_mode_normalized
 
@@ -870,9 +835,7 @@ class _RouteNetsRustSession:
         self.routed_layout.name = "routed_layout_rust"
 
         self.collect_pipeline_timing = (
-            self.debug_timing
-            or self.collect_route_stats
-            or self.collect_attempt_diagnostics
+            self.debug_timing or self.collect_route_stats or self.collect_attempt_diagnostics
         )
         self.route_nets_timings_s: dict[str, float] = {}
 
@@ -1215,20 +1178,11 @@ class _RouteNetsRustSession:
             grid_size = float(self.grid.grid_size_um)
             length_cells = max(
                 1,
-                int(
-                    math.ceil(
-                        max(0.0, float(access_length_um or 0.0)) / grid_size
-                    )
-                ),
+                int(math.ceil(max(0.0, float(access_length_um or 0.0)) / grid_size)),
             )
             half_width_cells = max(
                 0,
-                int(
-                    math.ceil(
-                        (max(0.0, float(access_width_um or 0.0)) / 2.0)
-                        / grid_size
-                    )
-                ),
+                int(math.ceil((max(0.0, float(access_width_um or 0.0)) / 2.0) / grid_size)),
             )
             return length_cells, half_width_cells
 
@@ -1376,10 +1330,9 @@ class _RouteNetsRustSession:
                         continue
                     if cell_center[1] < bottom - bbox_margin or cell_center[1] > top + bbox_margin:
                         continue
-                outward_distance = (
-                    (cell_center[0] - float(center_um[0])) * dir_x
-                    + (cell_center[1] - float(center_um[1])) * dir_y
-                )
+                outward_distance = (cell_center[0] - float(center_um[0])) * dir_x + (
+                    cell_center[1] - float(center_um[1])
+                ) * dir_y
                 if outward_distance >= -bbox_margin:
                     candidate_cells.add((int(cell_x), int(cell_y)))
 
@@ -1388,13 +1341,17 @@ class _RouteNetsRustSession:
     def _is_dense_source_fanout_instance(self, instance_name: str) -> bool:
         return any(
             len(port_specs) > 2
-            for (group_instance, _angle), port_specs in self.source_port_specs_by_instance_angle.items()
+            for (
+                group_instance,
+                _angle,
+            ), port_specs in self.source_port_specs_by_instance_angle.items()
             if group_instance == instance_name
         )
 
     def _is_dense_source_fanout_group(self, instance_name: str, angle: int) -> bool:
         return (
-            len(self.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set())) > 2
+            len(self.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set()))
+            > 2
         )
 
     @dataclass(frozen=True)
@@ -1483,9 +1440,7 @@ class _RouteNetsRustSession:
             "orthogonal-u": 2,
         }
         if normalized not in aliases:
-            raise ValueError(
-                "PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES must be 45 or 90"
-            )
+            raise ValueError("PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES must be 45 or 90")
         return aliases[normalized]
 
     def _append_grid_step(
@@ -1609,9 +1564,7 @@ class _RouteNetsRustSession:
             else self._rotate_right_vector(start_dir)
         )
         n_end = (
-            self._rotate_left_vector(end_dir)
-            if left_turn
-            else self._rotate_right_vector(end_dir)
+            self._rotate_left_vector(end_dir) if left_turn else self._rotate_right_vector(end_dir)
         )
         c0 = (
             t_in[0] + n_start[0] * radius_um,
@@ -1669,9 +1622,7 @@ class _RouteNetsRustSession:
             else self._rotate_right_vector(start_dir)
         )
         n_end = (
-            self._rotate_left_vector(end_dir)
-            if left_turn
-            else self._rotate_right_vector(end_dir)
+            self._rotate_left_vector(end_dir) if left_turn else self._rotate_right_vector(end_dir)
         )
         c0 = (
             float(t_in[0]) + n_start[0] * radius_um,
@@ -1812,8 +1763,8 @@ class _RouteNetsRustSession:
 
         points: list[tuple[float, float]] = [port_point]
         bend_start = port_point
-        initial_forward_um = (
-            float(max(0, int(initial_forward_cells))) * float(self.grid.grid_size_um)
+        initial_forward_um = float(max(0, int(initial_forward_cells))) * float(
+            self.grid.grid_size_um
         )
         if initial_forward_um > 1.0e-9:
             bend_start = (
@@ -1836,8 +1787,7 @@ class _RouteNetsRustSession:
         else:
             target_intermediate_y = self._grid_cell_center_um(
                 0,
-                int(target_anchor_y_cell)
-                - int(intermediate_step[1]) * int(self.bend_radius_cells),
+                int(target_anchor_y_cell) - int(intermediate_step[1]) * int(self.bend_radius_cells),
             )[1]
         if target_intermediate_y is None:
             fail("no_target_intermediate_y")
@@ -1869,16 +1819,11 @@ class _RouteNetsRustSession:
             if target_final_x is None:
                 fail("no_target_final_x")
                 return None
-            min_forward_x = (
-                port_point[0]
-                + float(final_step[0])
-                * float(
-                    max(0, int(min_forward_cells))
-                    + max(0, int(initial_forward_cells))
-                    + max(0, int(extra_final_forward_cells))
-                )
-                * float(self.grid.grid_size_um)
-            )
+            min_forward_x = port_point[0] + float(final_step[0]) * float(
+                max(0, int(min_forward_cells))
+                + max(0, int(initial_forward_cells))
+                + max(0, int(extra_final_forward_cells))
+            ) * float(self.grid.grid_size_um)
             if int(final_step[0]) > 0:
                 if float(target_final_x) < float(min_forward_x):
                     snapped_min_forward_x = _next_grid_axis_value(
@@ -1988,12 +1933,8 @@ class _RouteNetsRustSession:
             lateral_sign = 1 if lateral_delta > 0.0 else -1
             diagonal_angle = (int(physical_angle) + lateral_sign) % 8
             diagonal_end = (
-                points[-1][0]
-                + forward_x * lateral_abs
-                + lateral_x * lateral_delta,
-                points[-1][1]
-                + forward_y * lateral_abs
-                + lateral_y * lateral_delta,
+                points[-1][0] + forward_x * lateral_abs + lateral_x * lateral_delta,
+                points[-1][1] + forward_y * lateral_abs + lateral_y * lateral_delta,
             )
             smoothed: list[tuple[float, float]] = [points[0]]
             self._append_circular_stub_bend(
@@ -2115,9 +2056,7 @@ class _RouteNetsRustSession:
                 if not lower_items or not upper_items:
                     continue
                 stub_bend_steps = self._env_fanout_stub_bend_steps()
-                stagger_forward_cells = (
-                    int(stub_x_offset_cells) if int(stub_bend_steps) >= 2 else 0
-                )
+                stagger_forward_cells = int(stub_x_offset_cells) if int(stub_bend_steps) >= 2 else 0
 
                 lower_inner = lower_items[-1]
                 lower_count = len(lower_items)
@@ -2327,9 +2266,7 @@ class _RouteNetsRustSession:
         if not port_specs:
             return
         half_width_cells = int(self.port_lane_half_width_cells)
-        max_reach = max(
-            int(lengths_by_spec[spec]) + half_width_cells - 1 for spec in port_specs
-        )
+        max_reach = max(int(lengths_by_spec[spec]) + half_width_cells - 1 for spec in port_specs)
         equalized_length = max_reach - half_width_cells + 1
         for spec in port_specs:
             lengths_by_spec[spec] = max(int(lengths_by_spec[spec]), equalized_length)
@@ -2391,8 +2328,8 @@ class _RouteNetsRustSession:
             upper_count = len(upper_jobs)
             for port_index, run_job in enumerate(upper_jobs):
                 port_spec = f"{run_job.inst2},{run_job.port2}"
-                lengths_by_spec[port_spec] = (
-                    base_cells + spacing_cells * (upper_count - 1 - int(port_index))
+                lengths_by_spec[port_spec] = base_cells + spacing_cells * (
+                    upper_count - 1 - int(port_index)
                 )
                 group_port_specs.append(port_spec)
             self._equalize_dense_runway_reach(lengths_by_spec, group_port_specs)
@@ -2612,8 +2549,7 @@ class _RouteNetsRustSession:
             segments = grouped[net_id]
             marked_cells = sum(int(segment.get("marked_cells", 0) or 0) for segment in segments)
             lengths = ", ".join(
-                f"{float(segment.get('length_um', 0.0) or 0.0):.1f}um"
-                for segment in segments
+                f"{float(segment.get('length_um', 0.0) or 0.0):.1f}um" for segment in segments
             )
             print(
                 "        "
@@ -2622,7 +2558,9 @@ class _RouteNetsRustSession:
                 f"marked_cells={marked_cells}, lengths=[{lengths}]"
             )
 
-    def _committed_dynamic_cells(self, *, exclude_net_id: int | None = None) -> set[tuple[int, int]]:
+    def _committed_dynamic_cells(
+        self, *, exclude_net_id: int | None = None
+    ) -> set[tuple[int, int]]:
         return self.route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
 
     def _committed_dynamic_cells_for_attempt(
@@ -2640,10 +2578,7 @@ class _RouteNetsRustSession:
         return merged
 
     def _route_cells_from_router(self, net_id: int) -> set[tuple[int, int]]:
-        return {
-            (int(cell[0]), int(cell[1]))
-            for cell in self.router.get_net_cells(int(net_id))
-        }
+        return {(int(cell[0]), int(cell[1])) for cell in self.router.get_net_cells(int(net_id))}
 
     def _append_centerline_points(
         self,
@@ -2670,9 +2605,7 @@ class _RouteNetsRustSession:
         route_primitive_centerline = getattr(self.router, "route_primitive_centerline", None)
         try:
             if route_primitive_centerline is not None:
-                route_centerline = _centerline_tuple(
-                    route_primitive_centerline(route_obj)
-                )
+                route_centerline = _centerline_tuple(route_primitive_centerline(route_obj))
             else:
                 route_centerline = ()
         except Exception:
@@ -2807,8 +2740,12 @@ class _RouteNetsRustSession:
         opened_candidate_cells.update(original_anchor_cells)
         opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
 
-        opened_cells_set = set(self._opened_cells_for_spec(self.port_access_cells_by_spec, port1_spec))
-        opened_cells_set.update(self._opened_cells_for_spec(self.port_access_cells_by_spec, port2_spec))
+        opened_cells_set = set(
+            self._opened_cells_for_spec(self.port_access_cells_by_spec, port1_spec)
+        )
+        opened_cells_set.update(
+            self._opened_cells_for_spec(self.port_access_cells_by_spec, port2_spec)
+        )
         opened_cells_set.update(endpoint_foreign_keepout_open_cells)
         opened_cells_set.update(original_anchor_cells)
         opened_cells_set.update({source_anchor_cell, target_anchor_cell})
@@ -2841,8 +2778,7 @@ class _RouteNetsRustSession:
         trace_endpoint_bumps = os.environ.get("PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS", "")
         if trace_endpoint_bumps and (
             trace_endpoint_bumps.strip() == "*"
-            or str(int(job.net_id))
-            in {item.strip() for item in trace_endpoint_bumps.split(",")}
+            or str(int(job.net_id)) in {item.strip() for item in trace_endpoint_bumps.split(",")}
         ):
             print(
                 "endpoint_open_trace "
@@ -2887,7 +2823,6 @@ class _RouteNetsRustSession:
 
     def _clearance_exempt_cell_set_for_job(self, job: RouteJob) -> set[tuple[int, int]]:
         return set(self._clearance_exempt_cells_for_job(job))
-
 
     def _static_cells_in_rect(self, min_x: int, max_x: int, min_y: int, max_y: int) -> int:
         if min_x > max_x or min_y > max_y:
@@ -3003,11 +2938,7 @@ class _RouteNetsRustSession:
             min_y=route_bbox_min_y,
             max_y=route_bbox_max_y,
         )
-        total_cost = (
-            float(getattr(route_obj, "total_cost", 0.0))
-            if route_obj is not None
-            else None
-        )
+        total_cost = float(getattr(route_obj, "total_cost", 0.0)) if route_obj is not None else None
         euclidean_lower_bound, heading_lower_bound = self._source_lower_bounds(
             source_x=source_x,
             source_y=source_y,
@@ -3034,32 +2965,25 @@ class _RouteNetsRustSession:
             }
         if hasattr(self.router, "raw_dynamic_core_cells"):
             raw_core_entries = [
-                (int(x), int(y), int(refs))
-                for x, y, refs in self.router.raw_dynamic_core_cells()
+                (int(x), int(y), int(refs)) for x, y, refs in self.router.raw_dynamic_core_cells()
             ]
             raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
-            raw_core_refcount_gt1_cells = {
-                (x, y) for x, y, refs in raw_core_entries if refs > 1
-            }
+            raw_core_refcount_gt1_cells = {(x, y) for x, y, refs in raw_core_entries if refs > 1}
         if hasattr(self.router, "all_net_route_cells"):
             for _, cells in self.router.all_net_route_cells():
-                raw_net_route_cells.update(
-                    (int(cell[0]), int(cell[1])) for cell in cells
-                )
+                raw_net_route_cells.update((int(cell[0]), int(cell[1])) for cell in cells)
         raw_dynamic_without_owner = raw_dynamic_cells - raw_net_route_cells
         raw_net_route_without_dynamic = raw_net_route_cells - raw_dynamic_cells
         raw_core_without_dynamic = raw_core_cells - raw_dynamic_cells
         raw_dynamic_span_cells = {
             (x, y)
             for x, y in raw_dynamic_cells
-            if span_bbox_min_x <= x <= span_bbox_max_x
-            and span_bbox_min_y <= y <= span_bbox_max_y
+            if span_bbox_min_x <= x <= span_bbox_max_x and span_bbox_min_y <= y <= span_bbox_max_y
         }
         raw_dynamic_without_owner_span_cells = {
             (x, y)
             for x, y in raw_dynamic_without_owner
-            if span_bbox_min_x <= x <= span_bbox_max_x
-            and span_bbox_min_y <= y <= span_bbox_max_y
+            if span_bbox_min_x <= x <= span_bbox_max_x and span_bbox_min_y <= y <= span_bbox_max_y
         }
         return {
             "source_state": [source_x, source_y, source_angle],
@@ -3110,14 +3034,10 @@ class _RouteNetsRustSession:
             "window_static_cells": window_static_cells,
             "window_dynamic_cells": window_dynamic_cells,
             "window_static_density": (
-                float(window_static_cells) / float(window_area)
-                if window_area > 0
-                else None
+                float(window_static_cells) / float(window_area) if window_area > 0 else None
             ),
             "window_dynamic_density": (
-                float(window_dynamic_cells) / float(window_area)
-                if window_area > 0
-                else None
+                float(window_dynamic_cells) / float(window_area) if window_area > 0 else None
             ),
             "total_cost": total_cost,
             "euclidean_lower_bound_cost": euclidean_lower_bound,
@@ -3133,9 +3053,7 @@ class _RouteNetsRustSession:
                 else None
             ),
             "heading_lower_bound_gap_cost": (
-                total_cost - heading_lower_bound
-                if total_cost is not None
-                else None
+                total_cost - heading_lower_bound if total_cost is not None else None
             ),
             "committed_dynamic_cells_before": len(dynamic_cells_before),
             "raw_dynamic_obstacle_cells_before": len(raw_dynamic_cells),
@@ -3213,14 +3131,10 @@ class _RouteNetsRustSession:
 
         route_cells = route_cells or set()
         route_static_overlap = self._cells_in_raw_static_geometry(route_cells)
-        route_overlap_with_candidate_opened_static = (
-            route_cells & opened_candidate_static_overlap
-        )
+        route_overlap_with_candidate_opened_static = route_cells & opened_candidate_static_overlap
         route_overlap_with_effective_opened_static = route_cells & opened_static_overlap
         route_dynamic_overlap = route_cells & committed_dynamic_cells
-        route_overlap_with_candidate_opened_dynamic = (
-            route_cells & opened_candidate_dynamic_overlap
-        )
+        route_overlap_with_candidate_opened_dynamic = route_cells & opened_candidate_dynamic_overlap
         route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
         route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
         current_endpoint_foreign_keepout_cells = set(
@@ -3233,14 +3147,18 @@ class _RouteNetsRustSession:
         current_port_runway_cells = set(self.port_runway_cells_by_spec.get(port1_spec, set()))
         current_port_runway_cells.update(self.port_runway_cells_by_spec.get(port2_spec, set()))
         source_sibling_port_runway_cells: set[tuple[int, int]] = set()
-        for cluster_port_spec in self.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()):
+        for cluster_port_spec in self.dense_source_cluster_specs_by_port_spec.get(
+            port1_spec, set()
+        ):
             if cluster_port_spec == port1_spec:
                 continue
             source_sibling_port_runway_cells.update(
                 self.port_runway_cells_by_spec.get(cluster_port_spec, set())
             )
         target_sibling_port_runway_cells: set[tuple[int, int]] = set()
-        for cluster_port_spec in self.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()):
+        for cluster_port_spec in self.dense_source_cluster_specs_by_port_spec.get(
+            port2_spec, set()
+        ):
             if cluster_port_spec == port2_spec:
                 continue
             target_sibling_port_runway_cells.update(
@@ -3249,12 +3167,8 @@ class _RouteNetsRustSession:
         sibling_port_runway_cells = (
             source_sibling_port_runway_cells | target_sibling_port_runway_cells
         )
-        current_port_runway_dynamic_overlap = (
-            current_port_runway_cells & committed_dynamic_cells
-        )
-        sibling_port_runway_dynamic_overlap = (
-            sibling_port_runway_cells & committed_dynamic_cells
-        )
+        current_port_runway_dynamic_overlap = current_port_runway_cells & committed_dynamic_cells
+        sibling_port_runway_dynamic_overlap = sibling_port_runway_cells & committed_dynamic_cells
         route_overlap_current_port_runway = route_cells & current_port_runway_cells
         route_overlap_sibling_port_runway = route_cells & sibling_port_runway_cells
         route_segments: list[str] = []
@@ -3281,8 +3195,7 @@ class _RouteNetsRustSession:
             cells: int,
         ) -> list[tuple[int, int]]:
             return [
-                (int(start[0]) + int(direction[0]) * step,
-                 int(start[1]) + int(direction[1]) * step)
+                (int(start[0]) + int(direction[0]) * step, int(start[1]) + int(direction[1]) * step)
                 for step in range(max(0, int(cells)) + 1)
             ]
 
@@ -3333,10 +3246,7 @@ class _RouteNetsRustSession:
                 )
                 relative = _unique_cells([*first_leg, *second_leg])
                 end = relative[-1]
-            absolute = [
-                (int(source[0]) + int(dx), int(source[1]) + int(dy))
-                for dx, dy in relative
-            ]
+            absolute = [(int(source[0]) + int(dx), int(source[1]) + int(dy)) for dx, dy in relative]
             return (
                 (int(source[0]) + int(end[0]), int(source[1]) + int(end[1])),
                 end_angle,
@@ -3439,19 +3349,23 @@ class _RouteNetsRustSession:
                 end_dir = self._angle_to_step(end_angle)
                 cells: set[tuple[int, int]] = set()
                 for step in range(radius + 1):
-                    cells.add((
-                        int(start[0]) + start_dir[0] * step,
-                        int(start[1]) + start_dir[1] * step,
-                    ))
+                    cells.add(
+                        (
+                            int(start[0]) + start_dir[0] * step,
+                            int(start[1]) + start_dir[1] * step,
+                        )
+                    )
                 corner = (
                     int(start[0]) + start_dir[0] * radius,
                     int(start[1]) + start_dir[1] * radius,
                 )
                 for step in range(radius + 1):
-                    cells.add((
-                        corner[0] + end_dir[0] * step,
-                        corner[1] + end_dir[1] * step,
-                    ))
+                    cells.add(
+                        (
+                            corner[0] + end_dir[0] * step,
+                            corner[1] + end_dir[1] * step,
+                        )
+                    )
                 return cells
 
             target = target_anchor_cell
@@ -3502,9 +3416,7 @@ class _RouteNetsRustSession:
             opened_search_cells = {
                 cell
                 for cell in opened_cells_set
-                if cell == source_key
-                or cell == target_key
-                or cell not in committed_dynamic_cells
+                if cell == source_key or cell == target_key or cell not in committed_dynamic_cells
             }
             routing_static_cells = set(self.static_blocked_cells_before_port_reservations)
             routing_static_cells.update(self.debug_port_keepout_cells)
@@ -3566,9 +3478,7 @@ class _RouteNetsRustSession:
                         owners=owner_cells,
                         opened=sorted(footprint_set & opened_cells_set),
                         opened_search=sorted(footprint_set & opened_search_cells),
-                        dynamic_exempt=sorted(
-                            footprint_set & dynamic_clearance_exempt_cells
-                        ),
+                        dynamic_exempt=sorted(footprint_set & dynamic_clearance_exempt_cells),
                     )
                 )
             return debug_lines
@@ -3588,10 +3498,8 @@ class _RouteNetsRustSession:
             f"fanout_anchor_port_count={len(self.fanout_anchor_by_port_spec)}",
             f"fanout_stub_center_cell_count={len(self.fanout_stub_center_cells)}",
             f"fanout_stub_static_cell_count={len(self.fanout_stub_static_cells)}",
-            "source_fanout_anchor="
-            f"{f'{job.inst1},{job.port1}' in self.fanout_anchor_by_port_spec}",
-            "target_fanout_anchor="
-            f"{f'{job.inst2},{job.port2}' in self.fanout_anchor_by_port_spec}",
+            f"source_fanout_anchor={f'{job.inst1},{job.port1}' in self.fanout_anchor_by_port_spec}",
+            f"target_fanout_anchor={f'{job.inst2},{job.port2}' in self.fanout_anchor_by_port_spec}",
             "source_dense_port_runway_cells="
             f"{self.dense_source_port_runway_length_by_spec.get(port1_spec)}",
             "target_dense_port_runway_cells="
@@ -3616,12 +3524,10 @@ class _RouteNetsRustSession:
             f"opened_dynamic_overlap_count={len(opened_dynamic_overlap)}",
             f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
             f"opened_dynamic_overlap_owners={_dynamic_owners_for_cells(opened_dynamic_overlap)}",
-            "current_port_runway_dynamic_overlap_count="
-            f"{len(current_port_runway_dynamic_overlap)}",
+            f"current_port_runway_dynamic_overlap_count={len(current_port_runway_dynamic_overlap)}",
             "current_port_runway_dynamic_overlap_bbox="
             f"{_cells_bbox(current_port_runway_dynamic_overlap)}",
-            "sibling_port_runway_dynamic_overlap_count="
-            f"{len(sibling_port_runway_dynamic_overlap)}",
+            f"sibling_port_runway_dynamic_overlap_count={len(sibling_port_runway_dynamic_overlap)}",
             "sibling_port_runway_dynamic_overlap_bbox="
             f"{_cells_bbox(sibling_port_runway_dynamic_overlap)}",
             f"dynamic_clearance_exempt_cells_count={len(dynamic_clearance_exempt_cells)}",
@@ -3634,12 +3540,10 @@ class _RouteNetsRustSession:
             f"route_dynamic_overlap_count={len(route_dynamic_overlap)}",
             f"route_dynamic_overlap_bbox={_cells_bbox(route_dynamic_overlap)}",
             f"route_dynamic_overlap_owners={_dynamic_owners_for_cells(route_dynamic_overlap)}",
-            "route_overlap_current_port_runway_count="
-            f"{len(route_overlap_current_port_runway)}",
+            f"route_overlap_current_port_runway_count={len(route_overlap_current_port_runway)}",
             "route_overlap_current_port_runway_bbox="
             f"{_cells_bbox(route_overlap_current_port_runway)}",
-            "route_overlap_sibling_port_runway_count="
-            f"{len(route_overlap_sibling_port_runway)}",
+            f"route_overlap_sibling_port_runway_count={len(route_overlap_sibling_port_runway)}",
             "route_overlap_sibling_port_runway_bbox="
             f"{_cells_bbox(route_overlap_sibling_port_runway)}",
             f"route_overlap_candidate_opened_static_count={len(route_overlap_with_candidate_opened_static)}",
@@ -3692,7 +3596,9 @@ class _RouteNetsRustSession:
             job,
             route_obj,
             opened_cells,
-            route_cells=self._route_cells_from_router(job.net_id) if self.track_dynamic_cells else None,
+            route_cells=self._route_cells_from_router(job.net_id)
+            if self.track_dynamic_cells
+            else None,
             corrected_centerline_um=corrected_centerline_um,
             corrected_total_length_um=corrected_total_length_um,
         )
@@ -3706,9 +3612,8 @@ class _RouteNetsRustSession:
         obstacle_cells: set[tuple[int, int]] | None = None,
         opened_cells: list[tuple[int, int]] | None = None,
     ) -> None:
-        should_export = (
-            self.debug_path is not None
-            and (self.debug_route_indices is None or job.route_index in self.debug_route_indices)
+        should_export = self.debug_path is not None and (
+            self.debug_route_indices is None or job.route_index in self.debug_route_indices
         )
         if not should_export:
             return
@@ -3729,9 +3634,8 @@ class _RouteNetsRustSession:
                 _, _, _, _, opened_cells = self._state_openings_for_job(job)
             except Exception:
                 opened_cells = []
-        if (
-            self.debug_stop_after_route_index is not None
-            and int(job.route_index) == int(self.debug_stop_after_route_index)
+        if self.debug_stop_after_route_index is not None and int(job.route_index) == int(
+            self.debug_stop_after_route_index
         ):
             next_job = self.full_route_jobs_by_route_index.get(
                 int(self.debug_stop_after_route_index) + 1
@@ -3864,15 +3768,13 @@ class _RouteNetsRustSession:
                 source_region_min_distance_to_target = 0
             elif source_region:
                 source_region_min_distance_to_target = min(
-                    abs(x - target[0]) + abs(y - target[1])
-                    for x, y in source_region
+                    abs(x - target[0]) + abs(y - target[1]) for x, y in source_region
                 )
             if source in target_region:
                 target_region_min_distance_to_source = 0
             elif target_region:
                 target_region_min_distance_to_source = min(
-                    abs(x - source[0]) + abs(y - source[1])
-                    for x, y in target_region
+                    abs(x - source[0]) + abs(y - source[1]) for x, y in target_region
                 )
 
         return {
@@ -3913,7 +3815,9 @@ class _RouteNetsRustSession:
             (self.static_blocked_cells_before_port_reservations - opened_cells_set)
             | committed_dynamic_cells,
         )
-        opened_static_overlap = opened_cells_set & self.static_blocked_cells_before_port_reservations
+        opened_static_overlap = (
+            opened_cells_set & self.static_blocked_cells_before_port_reservations
+        )
         opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
         current_attempts = [
             ("current", record)
@@ -3970,7 +3874,7 @@ class _RouteNetsRustSession:
         if root_cause_line is not None:
             fail_lines.append(root_cause_line)
         fail_lines.extend(_format_native_repair_trace_lines(self.native_repair_trace_records))
-        for label, attempt in (current_attempts[-8:] + recent_attempts):
+        for label, attempt in current_attempts[-8:] + recent_attempts:
             as_dict = attempt.as_dict()
             diagnostics = as_dict.get("diagnostics")
             fail_lines.append(
@@ -4035,8 +3939,7 @@ class _RouteNetsRustSession:
                 self._state_openings_for_job(job)
             )
             route_cells = {
-                (int(cell[0]), int(cell[1]))
-                for cell in (getattr(route_obj, "cells", None) or [])
+                (int(cell[0]), int(cell[1])) for cell in (getattr(route_obj, "cells", None) or [])
             }
             self._write_route_diagnostics(
                 job=job,
@@ -4060,7 +3963,6 @@ class _RouteNetsRustSession:
 
         if should_print_route:
             print(f"ok {self._route_engine_summary(route_obj)}")
-
 
     def _dispatch_native_routing(self, route_jobs: list[RouteJob]) -> None:
         if self.repair_config.enabled:
@@ -4160,38 +4062,32 @@ class _RouteNetsRustSession:
                     route_obj = None
                 failed = bool(attempt.get("failed", False))
                 bucket_name = str(attempt.get("bucket_name", "normal_route"))
-                error_text = (
-                    str(attempt.get("error"))
-                    if attempt.get("error") is not None
-                    else None
-                )
+                error_text = str(attempt.get("error")) if attempt.get("error") is not None else None
                 repair_round_raw = attempt.get("repair_round")
-                repair_round = (
-                    int(repair_round_raw)
-                    if repair_round_raw is not None
-                    else None
-                )
+                repair_round = int(repair_round_raw) if repair_round_raw is not None else None
                 attempt_index = len(self.route_attempt_records) + 1
                 candidate_blockers = [
                     int(value)
                     for value in cast(list[object], attempt.get("candidate_blockers", []))
                 ]
                 ripup_ids = [
-                    int(value)
-                    for value in cast(list[object], attempt.get("ripup_ids", []))
+                    int(value) for value in cast(list[object], attempt.get("ripup_ids", []))
                 ]
                 if (
                     route_obj is not None
                     and not failed
                     and bucket_name != "normal_route"
                     and self.debug_path is not None
-                    and (self.debug_route_indices is None or job.route_index in self.debug_route_indices)
+                    and (
+                        self.debug_route_indices is None
+                        or job.route_index in self.debug_route_indices
+                    )
                 ):
                     self._export_route_svg(
                         job,
                         route_obj,
                         suffix=f"_attempt{attempt_index}_{bucket_name}",
-                )
+                    )
                 if self.collect_timing:
                     bucket = self.route_timing_buckets.setdefault(
                         bucket_name,
@@ -4260,9 +4156,13 @@ class _RouteNetsRustSession:
                 error_text = str(batch_result.get("error", "No route found"))
                 if failed_job is None:
                     raise RuntimeError(error_text)
-                source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
-                    self._state_openings_for_job(failed_job)
-                )
+                (
+                    source_state,
+                    target_state,
+                    opened_candidate_cells,
+                    opened_cells_set,
+                    opened_cells,
+                ) = self._state_openings_for_job(failed_job)
                 should_print_route, diag_txt = batch_debug_by_id.get(
                     failed_net_id,
                     (False, None),
@@ -4278,7 +4178,9 @@ class _RouteNetsRustSession:
                     source_state=source_state,
                     target_state=target_state,
                     opened_candidate_cells=opened_candidate_cells,
-                    dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(failed_job),
+                    dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(
+                        failed_job
+                    ),
                     opened_cells_set=opened_cells_set,
                     diag_txt=diag_txt,
                     status="failed",
@@ -4422,9 +4324,13 @@ class _RouteNetsRustSession:
                 error_text = str(batch_result.get("error", "No route found"))
                 if failed_job is None:
                     raise RuntimeError(error_text)
-                source_state, target_state, opened_candidate_cells, opened_cells_set, opened_cells = (
-                    self._state_openings_for_job(failed_job)
-                )
+                (
+                    source_state,
+                    target_state,
+                    opened_candidate_cells,
+                    opened_cells_set,
+                    opened_cells,
+                ) = self._state_openings_for_job(failed_job)
                 should_print_route, diag_txt = batch_debug_by_id.get(
                     failed_net_id,
                     (False, None),
@@ -4457,7 +4363,9 @@ class _RouteNetsRustSession:
                     source_state=source_state,
                     target_state=target_state,
                     opened_candidate_cells=opened_candidate_cells,
-                    dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(failed_job),
+                    dynamic_clearance_exempt_cells=self._clearance_exempt_cell_set_for_job(
+                        failed_job
+                    ),
                     opened_cells_set=opened_cells_set,
                     diag_txt=diag_txt,
                     status="failed",
@@ -4569,8 +4477,8 @@ class _RouteNetsRustSession:
         # this point -- falls through to UNRESTRICTED below instead, the
         # same as it does in the real pass 1 today; that is preserved
         # exactly, not treated as a bug, since Milestone 1 is additive.
-        already_fanout_precorrected = (
-            net_id in self.fanout_anchor_net_ids and bool(record.corrected_centerline_um)
+        already_fanout_precorrected = net_id in self.fanout_anchor_net_ids and bool(
+            record.corrected_centerline_um
         )
         if already_fanout_precorrected:
             if source_has_fanout_stub and target_has_fanout_stub:
@@ -4642,8 +4550,8 @@ class _RouteNetsRustSession:
             target_port = self._routing_endpoint_center_um(job, source=False)
             if source_port is None and target_port is None:
                 continue
-            source_state, target_state, opened_candidate_cells, _, _ = (
-                self._state_openings_for_job(job)
+            source_state, target_state, opened_candidate_cells, _, _ = self._state_openings_for_job(
+                job
             )
             clearance_exempt_cells = self._clearance_exempt_cells_for_job(job)
             correction_jobs.append(
@@ -4909,9 +4817,7 @@ class _RouteNetsRustSession:
                 )
                 continue
 
-            corrected_route = _dedupe_centerline(
-                _centerline_tuple(correction.get("centerline"))
-            )
+            corrected_route = _dedupe_centerline(_centerline_tuple(correction.get("centerline")))
             route_baseline = _primitive_centerline_for_record(
                 record,
                 router=self.router,
@@ -4935,9 +4841,7 @@ class _RouteNetsRustSession:
                 route_end = route_baseline[-1] if route_baseline else None
                 existing_start = existing_baseline[0] if existing_baseline else None
                 existing_end = existing_baseline[-1] if existing_baseline else None
-                corrected_start = (
-                    corrected_route[0] if corrected_route else None
-                )
+                corrected_start = corrected_route[0] if corrected_route else None
                 corrected_end = corrected_route[-1] if corrected_route else None
                 message = (
                     "Checked fanout-stub endpoint correction skipped for net "
@@ -4968,9 +4872,7 @@ class _RouteNetsRustSession:
             centerline_length = getattr(self.router, "centerline_length_um", None)
             if centerline_length is not None:
                 try:
-                    corrected_total_length_um = float(
-                        centerline_length(list(merged_centerline))
-                    )
+                    corrected_total_length_um = float(centerline_length(list(merged_centerline)))
                 except Exception:
                     corrected_total_length_um = _centerline_length_um(merged_centerline)
             else:
@@ -5066,17 +4968,14 @@ class _RouteNetsRustSession:
         if not isinstance(self.crossing_plan_info, dict):
             return
 
-        trace_raw = os.environ.get(
-            "PHOTONIC_ROUTER_TRACE_TERMINAL_BUMP_DISTANCE_CHECKS", ""
-        )
+        trace_raw = os.environ.get("PHOTONIC_ROUTER_TRACE_TERMINAL_BUMP_DISTANCE_CHECKS", "")
         trace_tokens = {item.strip() for item in trace_raw.split(",") if item.strip()}
         trace_all = "*" in trace_tokens
         grid_size = float(self.grid.grid_size_um)
         eps = max(1e-6, grid_size * 1e-6)
         axis_eps = max(1e-6, grid_size * 0.25)
         crossing_half_um = (
-            float(self.crossing_plan_info.get("crossing_half_size_cells", 0) or 0)
-            * grid_size
+            float(self.crossing_plan_info.get("crossing_half_size_cells", 0) or 0) * grid_size
         )
         required_bump_um = 4.0 * float(self.bend_radius_cells) * grid_size
 
@@ -5142,9 +5041,7 @@ class _RouteNetsRustSession:
                             **net_entry,
                             "axis": "target_x",
                             "crossing_um": [round(crossing_x, 6), round(crossing_y, 6)],
-                            "distance_to_target_um": round(
-                                float(distance_to_target_um), 6
-                            ),
+                            "distance_to_target_um": round(float(distance_to_target_um), 6),
                             "crossing_half_um": round(float(crossing_half_um), 6),
                             "available_um": round(float(available_um), 6),
                             "required_bump_um": round(float(required_bump_um), 6),
@@ -5159,9 +5056,7 @@ class _RouteNetsRustSession:
                             **net_entry,
                             "axis": "target_y",
                             "crossing_um": [round(crossing_x, 6), round(crossing_y, 6)],
-                            "distance_to_target_um": round(
-                                float(distance_to_target_um), 6
-                            ),
+                            "distance_to_target_um": round(float(distance_to_target_um), 6),
                             "crossing_half_um": round(float(crossing_half_um), 6),
                             "available_um": round(float(available_um), 6),
                             "required_bump_um": round(float(required_bump_um), 6),
@@ -5169,7 +5064,9 @@ class _RouteNetsRustSession:
                         }
                     )
 
-            should_trace = trace_all or record.net_name in trace_tokens or str(net_id) in trace_tokens
+            should_trace = (
+                trace_all or record.net_name in trace_tokens or str(net_id) in trace_tokens
+            )
             if should_trace:
                 matching_checks = [
                     item for item in active_checks if int(item["net_id"]) == int(net_id)
@@ -5201,9 +5098,7 @@ class _RouteNetsRustSession:
         self.crossing_plan_info["terminal_bump_target_y_offset_net_count"] = len(
             target_y_offset_nets
         )
-        failed_checks = [
-            check for check in active_checks if not bool(check.get("satisfies"))
-        ]
+        failed_checks = [check for check in active_checks if not bool(check.get("satisfies"))]
         self.crossing_plan_info["terminal_bump_distance_checks"] = active_checks
         self.crossing_plan_info["terminal_bump_distance_check_count"] = len(active_checks)
         self.crossing_plan_info["terminal_bump_distance_failures"] = failed_checks
@@ -5650,8 +5545,7 @@ class _RouteNetsRustSession:
         selected_illegal_crossings = [
             item
             for item in illegal_crossings
-            if selected_reason is None
-            or str(item.get("reason", "") or "") == selected_reason
+            if selected_reason is None or str(item.get("reason", "") or "") == selected_reason
         ]
         total_selected_issue_count = len(selected_illegal_crossings)
         if selected_reason in {
@@ -5700,14 +5594,8 @@ class _RouteNetsRustSession:
                         continue
                     if blocker_net_id in self.route_jobs_by_id and blocker_net_id not in priority:
                         priority.append(blocker_net_id)
-            repair_net_ids = [
-                net_id
-                for net_id in priority
-                if net_id in repair_net_ids
-            ] + [
-                net_id
-                for net_id in repair_net_ids
-                if net_id not in priority
+            repair_net_ids = [net_id for net_id in priority if net_id in repair_net_ids] + [
+                net_id for net_id in repair_net_ids if net_id not in priority
             ]
         attempt: dict[str, object] = {
             "selected_reason": selected_reason,
@@ -5716,8 +5604,7 @@ class _RouteNetsRustSession:
             ),
             "selected_reason_counts": dict(
                 Counter(
-                    str(item.get("reason", "") or "unknown")
-                    for item in selected_illegal_crossings
+                    str(item.get("reason", "") or "unknown") for item in selected_illegal_crossings
                 )
             ),
             "repair_net_ids": [int(net_id) for net_id in repair_net_ids],
@@ -5805,9 +5692,7 @@ class _RouteNetsRustSession:
 
         if self.enable_checked_endpoint_correction and repaired_records:
             repaired_net_ids = [
-                int(record.net_id)
-                for record in repaired_records
-                if record.net_id is not None
+                int(record.net_id) for record in repaired_records if record.net_id is not None
             ]
             self._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
                 repaired_net_ids,
@@ -5883,7 +5768,9 @@ class _RouteNetsRustSession:
         self._add_keepout_rect(cells, rect=rect, radius=radius)
         return cells
 
-    def _grid_rect_from_grid_bbox_text(self, text: str, name: str) -> tuple[int, int, int, int] | None:
+    def _grid_rect_from_grid_bbox_text(
+        self, text: str, name: str
+    ) -> tuple[int, int, int, int] | None:
         match = re.search(rf"{re.escape(name)}=\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)", text)
         if match is None:
             return None
@@ -5948,9 +5835,7 @@ class _RouteNetsRustSession:
         if issue.code == "crossing_component_route_overlap":
             crossing = details.get("crossing")
             if isinstance(crossing, Mapping):
-                polygon_bbox = self._polygon_bbox_um(
-                    crossing.get("crossing_footprint_polygon_um")
-                )
+                polygon_bbox = self._polygon_bbox_um(crossing.get("crossing_footprint_polygon_um"))
                 if polygon_bbox is not None:
                     return self._cells_from_um_bbox(polygon_bbox, radius=radius)
             return self._cells_from_um_bbox(
@@ -6187,9 +6072,11 @@ class _RouteNetsRustSession:
             self._record_route(job, route_obj, opened_by_id[net_id])
             repaired_net_ids.append(net_id)
         if self.enable_checked_endpoint_correction and repaired_net_ids:
-            failed_corrections = self._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
-                repaired_net_ids,
-                record_pipeline_timing=False,
+            failed_corrections = (
+                self._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+                    repaired_net_ids,
+                    record_pipeline_timing=False,
+                )
             )
             attempt["endpoint_correction_failed_net_ids"] = [
                 int(net_id) for net_id in failed_corrections
@@ -6211,10 +6098,7 @@ class _RouteNetsRustSession:
             if "overlap_bbox_um" in details:
                 suffix_parts.append(f"bbox={details['overlap_bbox_um']}")
             suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
-            lines.append(
-                f"{issue.code} {issue.net_name or '<unknown>'}: "
-                f"{issue.message}{suffix}"
-            )
+            lines.append(f"{issue.code} {issue.net_name or '<unknown>'}: {issue.message}{suffix}")
         if len(verification.issues) > 5:
             lines.append(f"... {len(verification.issues) - 5} more")
         return "; ".join(lines)
@@ -6301,7 +6185,9 @@ class _RouteNetsRustSession:
             route_layer=self.route_layer,
             include_heater_obstacles=self.include_heater_obstacles,
         )
-        obstacle_map = build_static_obstacle_map(self.unrouted_layout, config=self.resolved_obstacle_config)
+        obstacle_map = build_static_obstacle_map(
+            self.unrouted_layout, config=self.resolved_obstacle_config
+        )
         self._record_pipeline_timing("obstacle_map", t_obstacle_start)
         if self.debug_timing and self.verbose_route_diagnostics:
             print(
@@ -6424,7 +6310,9 @@ class _RouteNetsRustSession:
         if hasattr(self.astar_cfg, "proactive_congestion_weight"):
             self.astar_cfg.proactive_congestion_weight = float(self.proactive_congestion_weight)
         if hasattr(self.astar_cfg, "proactive_congestion_radius_cells"):
-            self.astar_cfg.proactive_congestion_radius_cells = int(self.proactive_congestion_radius_cells)
+            self.astar_cfg.proactive_congestion_radius_cells = int(
+                self.proactive_congestion_radius_cells
+            )
         if self.routing_window_scale is not None:
             self.astar_cfg.routing_window_scale = float(self.routing_window_scale)
 
@@ -6454,11 +6342,15 @@ class _RouteNetsRustSession:
             int(getattr(self.astar_cfg, "simple_route_max_offset_cells", 96)),
             int(12 * self.bend_radius_cells + 2 * self.commit_radius_cells),
         )
-        self.router = self.rust_backend.PyPhotonicRouter(grid_spec, self.primitive_cfg, self.astar_cfg)
+        self.router = self.rust_backend.PyPhotonicRouter(
+            grid_spec, self.primitive_cfg, self.astar_cfg
+        )
         self._record_pipeline_timing("router_setup", t_router_setup_start)
 
         self.port_lane_length_cells = max(3, 2 * self.bend_radius_cells + 2)
-        self.port_lane_half_width_cells = max(1, self.bend_radius_cells + self.commit_radius_cells + 1)
+        self.port_lane_half_width_cells = max(
+            1, self.bend_radius_cells + self.commit_radius_cells + 1
+        )
 
         port_open_radius_um = _as_float(
             getattr(self.resolved_obstacle_config, "port_open_radius_um", 0.5),
@@ -6564,9 +6456,9 @@ class _RouteNetsRustSession:
                 getattr(run_job.source_port, "orientation", None),
                 flip=False,
             )
-            self.source_port_specs_by_instance_angle.setdefault((run_job.inst1, int(angle)), set()).add(
-                port_spec
-            )
+            self.source_port_specs_by_instance_angle.setdefault(
+                (run_job.inst1, int(angle)), set()
+            ).add(port_spec)
 
         self.fanout_anchor_by_port_spec = self._build_static_fanout_anchors()
         self.fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = {
@@ -6596,8 +6488,12 @@ class _RouteNetsRustSession:
             if f"{job.inst2},{job.port2}" in self.fanout_anchor_by_port_spec
         }
 
-        self.dense_source_port_runway_length_by_spec = self._dense_source_port_runway_lengths(route_jobs)
-        self.dense_target_port_runway_length_by_spec = self._dense_target_port_runway_lengths(route_jobs)
+        self.dense_source_port_runway_length_by_spec = self._dense_source_port_runway_lengths(
+            route_jobs
+        )
+        self.dense_target_port_runway_length_by_spec = self._dense_target_port_runway_lengths(
+            route_jobs
+        )
         dense_port_runway_length_by_spec: dict[str, int] = dict(
             self.dense_source_port_runway_length_by_spec
         )
@@ -6625,7 +6521,8 @@ class _RouteNetsRustSession:
             cluster_specs = {
                 f"{run_job.inst1},{run_job.port1}"
                 for run_job in route_jobs[index:run_end]
-                if f"{run_job.inst1},{run_job.port1}" in self.dense_source_port_runway_length_by_spec
+                if f"{run_job.inst1},{run_job.port1}"
+                in self.dense_source_port_runway_length_by_spec
             }
             if len(cluster_specs) > 1:
                 for port_spec in cluster_specs:
@@ -6706,16 +6603,19 @@ class _RouteNetsRustSession:
         self.crossing_plan_info["fanout_anchor_target_net_ids"] = sorted(
             self.fanout_anchor_target_net_ids
         )
-        self.crossing_plan_info["fanout_stub_center_cell_count"] = len(self.fanout_stub_center_cells)
-        self.crossing_plan_info["fanout_stub_static_cell_count"] = len(self.fanout_stub_static_cells)
+        self.crossing_plan_info["fanout_stub_center_cell_count"] = len(
+            self.fanout_stub_center_cells
+        )
+        self.crossing_plan_info["fanout_stub_static_cell_count"] = len(
+            self.fanout_stub_static_cells
+        )
         self.crossing_plan_info["fanout_stub_centerlines_um"] = [
             {
                 "port_spec": anchor.port_spec,
                 "anchor_cell": [int(anchor.state_x), int(anchor.state_y)],
                 "physical_angle": int(anchor.physical_angle) % 8,
                 "centerline_um": [
-                    [float(point[0]), float(point[1])]
-                    for point in anchor.stub_centerline_um
+                    [float(point[0]), float(point[1])] for point in anchor.stub_centerline_um
                 ],
             }
             for anchor in sorted(
@@ -6813,7 +6713,14 @@ class _RouteNetsRustSession:
             if custom_runway_length is not None and not custom_access:
                 length_cells = max(1, int(custom_runway_length))
             port_footprint_inputs.append(
-                (port_spec, float(x_um), float(y_um), orientation, int(length_cells), int(half_width_cells))
+                (
+                    port_spec,
+                    float(x_um),
+                    float(y_um),
+                    orientation,
+                    int(length_cells),
+                    int(half_width_cells),
+                )
             )
 
         for port_spec, raw_cells in self.router.build_port_footprint_cells(port_footprint_inputs):
@@ -6822,7 +6729,9 @@ class _RouteNetsRustSession:
             }
 
         for port_spec, raw_footprint_cells in raw_footprint_cells_by_spec.items():
-            open_cells = raw_footprint_cells - self._cells_in_raw_static_geometry(raw_footprint_cells)
+            open_cells = raw_footprint_cells - self._cells_in_raw_static_geometry(
+                raw_footprint_cells
+            )
             self.port_access_cells_by_spec[port_spec] = set(open_cells)
             self.port_access_candidate_cells_by_spec[port_spec] = set(raw_footprint_cells)
             extra_open_cells = port_rule_extra_open_cells_by_spec.get(port_spec, set())
@@ -6847,8 +6756,12 @@ class _RouteNetsRustSession:
                 instance_name = port_spec.split(",", 1)[0]
                 cells_for_spec = set(raw_footprint_cells)
                 self.foreign_port_keepout_cells_by_spec[port_spec] = cells_for_spec
-                foreign_port_keepout_cells_by_instance.setdefault(instance_name, set()).update(cells_for_spec)
-                nonstatic_cells_for_spec = cells_for_spec - self._cells_in_raw_static_geometry(cells_for_spec)
+                foreign_port_keepout_cells_by_instance.setdefault(instance_name, set()).update(
+                    cells_for_spec
+                )
+                nonstatic_cells_for_spec = cells_for_spec - self._cells_in_raw_static_geometry(
+                    cells_for_spec
+                )
                 foreign_port_keepout_nonstatic_cells_by_instance.setdefault(
                     instance_name,
                     set(),
@@ -6874,7 +6787,9 @@ class _RouteNetsRustSession:
                 )
                 step_x, step_y = self._angle_to_step(angle)
                 lateral_x, lateral_y = -step_y, step_x
-                center = fanout_anchor.center_um if fanout_anchor is not None else _port_center_um(port)
+                center = (
+                    fanout_anchor.center_um if fanout_anchor is not None else _port_center_um(port)
+                )
                 if center is None or (lateral_x == 0 and lateral_y == 0):
                     continue
                 lateral_position = float(center[0]) * lateral_x + float(center[1]) * lateral_y
@@ -6932,7 +6847,9 @@ class _RouteNetsRustSession:
 
         self.port_state_lane_offsets: dict[tuple[str, bool], tuple[int, int]] = {}
         for (base_x, base_y, angle), endpoints in endpoint_ports_by_key.items():
-            unique_endpoints = list(dict.fromkeys((spec, is_target) for spec, is_target, _ in endpoints))
+            unique_endpoints = list(
+                dict.fromkeys((spec, is_target) for spec, is_target, _ in endpoints)
+            )
             if len(unique_endpoints) <= 1:
                 continue
             step_x, step_y = self._angle_to_step(angle)
@@ -7001,7 +6918,9 @@ class _RouteNetsRustSession:
         self.debug_port_keepout_cells.update(self.fanout_stub_static_cells)
         self.static_blocked_cells_before_port_reservations = set(self.raw_static_cells)
         self.static_blocked_cells_before_port_reservations.update(port_runway_static_cells)
-        self.static_blocked_cells_before_port_reservations.update(self.foreign_port_keepout_static_cells)
+        self.static_blocked_cells_before_port_reservations.update(
+            self.foreign_port_keepout_static_cells
+        )
         self.static_blocked_cells_before_port_reservations.update(self.fanout_stub_static_cells)
 
         t_static_handoff_start = self._pipeline_timer_start()
@@ -7032,7 +6951,11 @@ class _RouteNetsRustSession:
         else:
             sorted_static_cells = sorted(self.raw_static_cells)
             self.router.set_static_cells(sorted_static_cells)
-        if port_runway_static_cells or self.foreign_port_keepout_static_cells or self.fanout_stub_static_cells:
+        if (
+            port_runway_static_cells
+            or self.foreign_port_keepout_static_cells
+            or self.fanout_stub_static_cells
+        ):
             if not hasattr(self.router, "add_static_cells"):
                 raise RuntimeError(
                     "The loaded photonic_router._rust extension does not expose "
@@ -7089,7 +7012,9 @@ class _RouteNetsRustSession:
         self.repair_config = self.ripup_reroute_config or RipupRerouteConfig()
         self.route_jobs_by_id = {job.net_id: job for job in route_jobs}
         self.route_order = [job.net_id for job in route_jobs]
-        self.collect_timing = self.debug_timing or self.collect_route_stats or self.collect_attempt_diagnostics
+        self.collect_timing = (
+            self.debug_timing or self.collect_route_stats or self.collect_attempt_diagnostics
+        )
         self.track_dynamic_cells = self.diagnostics_enabled
         self.route_bookkeeping = RouteBookkeeping(
             route_order=self.route_order,
@@ -7130,8 +7055,7 @@ class _RouteNetsRustSession:
 
         t_state_opening_precompute_start = self._pipeline_timer_start()
         self.route_state_openings_by_id = {
-            int(job.net_id): self._states_and_openings(job)
-            for job in route_jobs
+            int(job.net_id): self._states_and_openings(job) for job in route_jobs
         }
         self._record_pipeline_timing(
             "state_opening_precompute",
@@ -7198,7 +7122,13 @@ class _RouteNetsRustSession:
         t_record_assembly_start = self._pipeline_timer_start()
         routed_net_records = self.route_bookkeeping.ordered_records()
         routed_record_keys = [
-            (record.net_name, record.source.instance, record.source.port, record.target.instance, record.target.port)
+            (
+                record.net_name,
+                record.source.instance,
+                record.source.port,
+                record.target.instance,
+                record.target.port,
+            )
             for record in routed_net_records
         ]
         duplicate_record_keys = [
@@ -7287,12 +7217,14 @@ class _RouteNetsRustSession:
         route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec = (
             self._build_route_jobs_and_fanout_clustering(nets)
         )
-        route_jobs, foreign_port_keepout_cells_by_instance = self._build_crossing_plan_and_port_footprints(
-            route_jobs,
-            endpoint_port_specs_by_instance,
-            dense_port_runway_length_by_spec,
-            obstacle_map,
-            crossing_device_info,
+        route_jobs, foreign_port_keepout_cells_by_instance = (
+            self._build_crossing_plan_and_port_footprints(
+                route_jobs,
+                endpoint_port_specs_by_instance,
+                dense_port_runway_length_by_spec,
+                obstacle_map,
+                crossing_device_info,
+            )
         )
         route_jobs, t_astar_start = self._finalize_route_jobs_and_static_handoff(
             route_jobs,
@@ -7302,7 +7234,9 @@ class _RouteNetsRustSession:
 
         self._dispatch_native_routing(route_jobs)
 
-        routed_net_records, astar_elapsed_s = self._finalize_routing_results(route_jobs, t_astar_start)
+        routed_net_records, astar_elapsed_s = self._finalize_routing_results(
+            route_jobs, t_astar_start
+        )
 
         routed_net_records, illegal_realized_crossings = self._repair_and_verify_final_geometry(
             routed_net_records
@@ -7341,11 +7275,6 @@ class _RouteNetsRustSession:
         self.photonic_probe_index = 0
         self.last_photonic_probe_layout: Component | None = None
         self.last_photonic_probe_records: list[RoutedNetRecord] = []
-
-
-
-
-
 
         final_crossing_repair_round_limit = 12
         t_final_verification_block_start = self._pipeline_timer_start()
@@ -7394,12 +7323,15 @@ class _RouteNetsRustSession:
                     debug_prefix=self.debug_prefix,
                     probe_layout=self.last_photonic_probe_layout,
                     verification=final_photonic_verification,
-                    records=self.last_photonic_probe_records or self.route_bookkeeping.ordered_records(),
+                    records=self.last_photonic_probe_records
+                    or self.route_bookkeeping.ordered_records(),
                     router=self.router,
                     realization_grid_spec=self.realization_grid_spec,
                     allow_unchecked_bumps=True,
                 )
-                self.crossing_plan_info["photonic_probe_failure_artifacts"] = probe_failure_artifacts
+                self.crossing_plan_info["photonic_probe_failure_artifacts"] = (
+                    probe_failure_artifacts
+                )
                 self._record_pipeline_timing(
                     "final_verification_block",
                     t_final_verification_block_start,

@@ -17,8 +17,8 @@ def mzi_switch(straight_length: float = 35.0) -> Component:
         coupler_lengths=(10, 20),
         coupler_gaps=(0.2, 0.3),
         delta_lengths=(10,),
-        mzi='mzi_coupler',
-        splitter='coupler'
+        mzi="mzi_coupler",
+        splitter="coupler",
     ).copy()
 
     mzi_comp.pprint_ports()
@@ -32,10 +32,10 @@ def mzi_switch(straight_length: float = 35.0) -> Component:
     # o2: left top input -> in2
     # o3: right top output -> out2
     # o4: right bottom output -> out1
-    c.add_port('in1', port=mzi_ref.ports['o1'])
-    c.add_port('in2', port=mzi_ref.ports['o2'])
-    c.add_port('out1', port=mzi_ref.ports['o4'])
-    c.add_port('out2', port=mzi_ref.ports['o3'])
+    c.add_port("in1", port=mzi_ref.ports["o1"])
+    c.add_port("in2", port=mzi_ref.ports["o2"])
+    c.add_port("out1", port=mzi_ref.ports["o4"])
+    c.add_port("out2", port=mzi_ref.ports["o3"])
 
     return c
 
@@ -86,17 +86,11 @@ def benes_network(N: int = 8) -> Component:
 
         # Collect all output ports from current stage
         for j in range(num_switches_per_stage):
-            ports1.extend([
-                switches[i][j].ports["out1"],
-                switches[i][j].ports["out2"]
-            ])
+            ports1.extend([switches[i][j].ports["out1"], switches[i][j].ports["out2"]])
 
         # Collect all input ports from next stage
         for j in range(num_switches_per_stage):
-            ports2.extend([
-                switches[i + 1][j].ports["in1"],
-                switches[i + 1][j].ports["in2"]
-            ])
+            ports2.extend([switches[i + 1][j].ports["in1"], switches[i + 1][j].ports["in2"]])
 
         # Implement proper Beneš network connection pattern
         # For a proper Beneš network, we need different connection patterns for different stages
@@ -137,15 +131,15 @@ def benes_network(N: int = 8) -> Component:
             gf.routing.route_bundle(
                 c,
                 ports1=ports1,
-                ports2=connected_ports2[:len(ports1)],
+                ports2=connected_ports2[: len(ports1)],
                 separation=4.0,
                 cross_section="strip",
-                sort_ports=False  # Don't sort to preserve our connection pattern
+                sort_ports=False,  # Don't sort to preserve our connection pattern
             )
         except Exception as e:
             print(f"Warning: Routing failed for stage {i}: {e}")
             # Fallback to simple straight connections
-            for p1, p2 in zip(ports1, connected_ports2[:len(ports1)]):
+            for p1, p2 in zip(ports1, connected_ports2[: len(ports1)]):
                 try:
                     gf.routing.route_single(c, p1, p2, cross_section="strip")
                 except:

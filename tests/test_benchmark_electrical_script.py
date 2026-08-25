@@ -208,14 +208,15 @@ def test_electrical_benchmark_uses_case_specific_guardrails():
     small_summary["realization_metrics"]["pre_union_rect_count"] = 15
     small_summary["realization_metrics"]["raw_metal_area_um2"] = 77_692.42
     small_summary["realization_metrics"]["union_metal_area_um2"] = 77_692.42
-    small_summary["realization_metrics"]["metal_area_overcount_um2"] = (
-        0.0
-    )
+    small_summary["realization_metrics"]["metal_area_overcount_um2"] = 0.0
 
-    assert module.guardrail_violations(
-        small_summary,
-        module.guardrails_for_benchmark("mmi_heater"),
-    ) == []
+    assert (
+        module.guardrail_violations(
+            small_summary,
+            module.guardrails_for_benchmark("mmi_heater"),
+        )
+        == []
+    )
     assert module.guardrail_violations(
         small_summary,
         module.guardrails_for_benchmark("mmi_heater_8x4_ripup_reroute"),
@@ -241,10 +242,7 @@ def test_electrical_benchmark_guardrails_report_metric_regressions():
 
     violations = module.guardrail_violations(summary)
 
-    assert {
-        violation["name"]
-        for violation in violations
-    } >= {
+    assert {violation["name"] for violation in violations} >= {
         "verification_success",
         "failed_detailed_route_count",
         "metrics.centerline_length_um",
@@ -281,10 +279,7 @@ def test_electrical_benchmark_baseline_reports_metric_drift():
 
     violations = module.baseline_violations(current, baseline)
 
-    assert {
-        violation["name"]
-        for violation in violations
-    } >= {
+    assert {violation["name"] for violation in violations} >= {
         "metrics.centerline_length_um",
         "realization_metrics.output_polygon_count",
     }

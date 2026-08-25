@@ -112,8 +112,7 @@ def _verify_realized_route_intersections(
     for net_id, record in records:
         net_names.setdefault(net_id, record.net_name)
     opened_cells_by_id = {
-        net_id: {(int(x), int(y)) for x, y in record.opened_cells}
-        for net_id, record in records
+        net_id: {(int(x), int(y)) for x, y in record.opened_cells} for net_id, record in records
     }
     segments_by_net_id = {
         net_id: _route_segments_from_waypoints(centerline)
@@ -130,9 +129,8 @@ def _verify_realized_route_intersections(
     }
 
     crossing_mode = str(crossing_plan_info.get("crossing_mode", "") or "").strip().lower()
-    allow_unexpected = (
-        crossing_mode == "lidar-pure"
-        or not bool(crossing_plan_info.get("allow_only_expected_crossings", True))
+    allow_unexpected = crossing_mode == "lidar-pure" or not bool(
+        crossing_plan_info.get("allow_only_expected_crossings", True)
     )
     realized: list[dict[str, object]] = []
     illegal: list[dict[str, object]] = []
@@ -169,9 +167,7 @@ def _verify_realized_route_intersections(
                             u_start,
                             u_end,
                         ) = overlap
-                        overlap_length_um = _segment_length_um(
-                            (overlap_start, overlap_end)
-                        )
+                        overlap_length_um = _segment_length_um((overlap_start, overlap_end))
                         if overlap_length_um <= eps:
                             continue
                         start_key = (
@@ -284,22 +280,27 @@ def _verify_realized_route_intersections(
                         or grid_cell in opened_cells_by_id.get(net_id_b, set())
                     ):
                         point = (point_x, point_y)
-                        if _point_near_route_endpoint(
-                            point,
-                            centerlines_by_id.get(net_id_a, ()),
-                            tolerance_um=port_access_tolerance_um,
-                        ) or _point_near_route_endpoint(
-                            point,
-                            centerlines_by_id.get(net_id_b, ()),
-                            tolerance_um=port_access_tolerance_um,
-                        ) or _point_near_record_port_endpoint(
-                            point,
-                            record_a,
-                            tolerance_um=port_access_tolerance_um,
-                        ) or _point_near_record_port_endpoint(
-                            point,
-                            record_b,
-                            tolerance_um=port_access_tolerance_um,
+                        if (
+                            _point_near_route_endpoint(
+                                point,
+                                centerlines_by_id.get(net_id_a, ()),
+                                tolerance_um=port_access_tolerance_um,
+                            )
+                            or _point_near_route_endpoint(
+                                point,
+                                centerlines_by_id.get(net_id_b, ()),
+                                tolerance_um=port_access_tolerance_um,
+                            )
+                            or _point_near_record_port_endpoint(
+                                point,
+                                record_a,
+                                tolerance_um=port_access_tolerance_um,
+                            )
+                            or _point_near_record_port_endpoint(
+                                point,
+                                record_b,
+                                tolerance_um=port_access_tolerance_um,
+                            )
                         ):
                             ignored_endpoint_access.append(
                                 {
@@ -315,22 +316,27 @@ def _verify_realized_route_intersections(
                             continue
                     if min(margin_a, margin_b) <= endpoint_margin_tolerance_um:
                         point = (point_x, point_y)
-                        if _point_near_route_endpoint(
-                            point,
-                            centerlines_by_id.get(net_id_a, ()),
-                            tolerance_um=endpoint_margin_tolerance_um,
-                        ) or _point_near_route_endpoint(
-                            point,
-                            centerlines_by_id.get(net_id_b, ()),
-                            tolerance_um=endpoint_margin_tolerance_um,
-                        ) or _point_near_record_port_endpoint(
-                            point,
-                            record_a,
-                            tolerance_um=endpoint_margin_tolerance_um,
-                        ) or _point_near_record_port_endpoint(
-                            point,
-                            record_b,
-                            tolerance_um=endpoint_margin_tolerance_um,
+                        if (
+                            _point_near_route_endpoint(
+                                point,
+                                centerlines_by_id.get(net_id_a, ()),
+                                tolerance_um=endpoint_margin_tolerance_um,
+                            )
+                            or _point_near_route_endpoint(
+                                point,
+                                centerlines_by_id.get(net_id_b, ()),
+                                tolerance_um=endpoint_margin_tolerance_um,
+                            )
+                            or _point_near_record_port_endpoint(
+                                point,
+                                record_a,
+                                tolerance_um=endpoint_margin_tolerance_um,
+                            )
+                            or _point_near_record_port_endpoint(
+                                point,
+                                record_b,
+                                tolerance_um=endpoint_margin_tolerance_um,
+                            )
                         ):
                             ignored_endpoint_access.append(
                                 {
@@ -354,29 +360,32 @@ def _verify_realized_route_intersections(
                         nearby_cells = _grid_cell_neighborhood(grid_cell, radius=1)
                         if nearby_cells.intersection(
                             opened_cells_by_id.get(net_id_a, set())
-                        ) or nearby_cells.intersection(
-                            opened_cells_by_id.get(net_id_b, set())
-                        ):
+                        ) or nearby_cells.intersection(opened_cells_by_id.get(net_id_b, set())):
                             point = (point_x, point_y)
-                            nearby_endpoint_tolerance_um = (
-                                endpoint_margin_tolerance_um + float(grid_size_um)
+                            nearby_endpoint_tolerance_um = endpoint_margin_tolerance_um + float(
+                                grid_size_um
                             )
-                            if _point_near_route_endpoint(
-                                point,
-                                centerlines_by_id.get(net_id_a, ()),
-                                tolerance_um=nearby_endpoint_tolerance_um,
-                            ) or _point_near_route_endpoint(
-                                point,
-                                centerlines_by_id.get(net_id_b, ()),
-                                tolerance_um=nearby_endpoint_tolerance_um,
-                            ) or _point_near_record_port_endpoint(
-                                point,
-                                record_a,
-                                tolerance_um=nearby_endpoint_tolerance_um,
-                            ) or _point_near_record_port_endpoint(
-                                point,
-                                record_b,
-                                tolerance_um=nearby_endpoint_tolerance_um,
+                            if (
+                                _point_near_route_endpoint(
+                                    point,
+                                    centerlines_by_id.get(net_id_a, ()),
+                                    tolerance_um=nearby_endpoint_tolerance_um,
+                                )
+                                or _point_near_route_endpoint(
+                                    point,
+                                    centerlines_by_id.get(net_id_b, ()),
+                                    tolerance_um=nearby_endpoint_tolerance_um,
+                                )
+                                or _point_near_record_port_endpoint(
+                                    point,
+                                    record_a,
+                                    tolerance_um=nearby_endpoint_tolerance_um,
+                                )
+                                or _point_near_record_port_endpoint(
+                                    point,
+                                    record_b,
+                                    tolerance_um=nearby_endpoint_tolerance_um,
+                                )
                             ):
                                 ignored_endpoint_access.append(
                                     {
@@ -399,18 +408,11 @@ def _verify_realized_route_intersections(
                     axis_v = _segment_unit_vector(segment_b)
                     footprint_polygon: list[tuple[float, float]] = []
                     footprint_blockers: list[dict[str, object]] = []
-                    footprint_straight = (
-                        required_margin_um <= eps
-                        or (
-                            margin_a + eps >= required_margin_um
-                            and margin_b + eps >= required_margin_um
-                        )
+                    footprint_straight = required_margin_um <= eps or (
+                        margin_a + eps >= required_margin_um
+                        and margin_b + eps >= required_margin_um
                     )
-                    if (
-                        axis_u is not None
-                        and axis_v is not None
-                        and footprint_half_um > eps
-                    ):
+                    if axis_u is not None and axis_v is not None and footprint_half_um > eps:
                         footprint_axis_u = axis_u
                         footprint_axis_v = axis_v
                         if (
@@ -484,8 +486,7 @@ def _verify_realized_route_intersections(
                         "route_endpoint_distance_a_um": (
                             round(float(route_endpoint_distance_a), 6)
                             if (
-                                route_endpoint_distance_a
-                                := _point_route_endpoint_distance_um(
+                                route_endpoint_distance_a := _point_route_endpoint_distance_um(
                                     (point_x, point_y),
                                     centerlines_by_id.get(net_id_a, ()),
                                 )
@@ -496,8 +497,7 @@ def _verify_realized_route_intersections(
                         "route_endpoint_distance_b_um": (
                             round(float(route_endpoint_distance_b), 6)
                             if (
-                                route_endpoint_distance_b
-                                := _point_route_endpoint_distance_um(
+                                route_endpoint_distance_b := _point_route_endpoint_distance_um(
                                     (point_x, point_y),
                                     centerlines_by_id.get(net_id_b, ()),
                                 )
@@ -508,8 +508,7 @@ def _verify_realized_route_intersections(
                         "port_endpoint_distance_a_um": (
                             round(float(port_endpoint_distance_a), 6)
                             if (
-                                port_endpoint_distance_a
-                                := _point_record_port_endpoint_distance_um(
+                                port_endpoint_distance_a := _point_record_port_endpoint_distance_um(
                                     (point_x, point_y),
                                     record_a,
                                 )
@@ -520,8 +519,7 @@ def _verify_realized_route_intersections(
                         "port_endpoint_distance_b_um": (
                             round(float(port_endpoint_distance_b), 6)
                             if (
-                                port_endpoint_distance_b
-                                := _point_record_port_endpoint_distance_um(
+                                port_endpoint_distance_b := _point_record_port_endpoint_distance_um(
                                     (point_x, point_y),
                                     record_b,
                                 )
@@ -568,6 +566,7 @@ def _verify_realized_route_intersections(
         if str(item.get("classification", "")).startswith("legal_")
         and item.get("crossing_footprint_polygon_um")
     ]
+
     def _add_overlap_peer(
         crossing: dict[str, object],
         *,
@@ -643,17 +642,13 @@ def _verify_realized_route_intersections(
                 and crossing_b.get("degraded_reason") is not None
                 and ids_a.intersection(ids_b)
             ):
-                crossing_a["footprint_overlap_policy"] = (
-                    "allowed_lidar_pure_degraded_cluster"
-                )
+                crossing_a["footprint_overlap_policy"] = "allowed_lidar_pure_degraded_cluster"
                 _add_overlap_peer(
                     crossing_a,
                     peer=overlap_peer_a,
                     peer_index=int(index_b),
                 )
-                crossing_b["footprint_overlap_policy"] = (
-                    "allowed_lidar_pure_degraded_cluster"
-                )
+                crossing_b["footprint_overlap_policy"] = "allowed_lidar_pure_degraded_cluster"
                 _add_overlap_peer(
                     crossing_b,
                     peer=overlap_peer_b,
@@ -682,9 +677,7 @@ def _verify_realized_route_intersections(
         missing_centerline_illegal
     )
     crossing_plan_info["ignored_endpoint_access_intersections"] = ignored_endpoint_access
-    crossing_plan_info["ignored_endpoint_access_intersection_count"] = len(
-        ignored_endpoint_access
-    )
+    crossing_plan_info["ignored_endpoint_access_intersection_count"] = len(ignored_endpoint_access)
     crossing_plan_info["illegal_realized_crossings"] = illegal
     crossing_plan_info["illegal_realized_crossing_count"] = len(illegal)
     return illegal

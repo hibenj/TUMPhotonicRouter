@@ -281,10 +281,9 @@ def test_realized_crossing_verifier_rejects_lidar_pure_overlapping_crossing_foot
 
     reasons = {item["reason"] for item in illegal}
     assert "crossing_footprint_overlap" in reasons
-    assert {
-        item.get("footprint_overlap_policy")
-        for item in info["realized_intersections"]
-    } == {None}
+    assert {item.get("footprint_overlap_policy") for item in info["realized_intersections"]} == {
+        None
+    }
 
 
 def test_realized_crossing_verifier_rejects_route_inside_crossing_footprint():
@@ -350,9 +349,7 @@ def test_realized_crossing_verifier_ignores_route_endpoint_access():
 
     assert illegal == []
     assert info["ignored_endpoint_access_intersection_count"] == 1
-    assert info["ignored_endpoint_access_intersections"][0]["reason"] == (
-        "route_endpoint_access"
-    )
+    assert info["ignored_endpoint_access_intersections"][0]["reason"] == ("route_endpoint_access")
 
 
 def test_realized_crossing_verifier_rejects_midroute_opened_cell_crossing():
@@ -450,9 +447,7 @@ def test_realized_crossing_verifier_ignores_port_center_access():
     )
 
     assert illegal == []
-    assert info["ignored_endpoint_access_intersections"][0]["reason"] == (
-        "route_endpoint_access"
-    )
+    assert info["ignored_endpoint_access_intersections"][0]["reason"] == ("route_endpoint_access")
 
 
 def test_places_active_crossing_components_for_legal_realized_intersections():
@@ -636,13 +631,8 @@ def test_insertion_loss_report_uses_final_realized_intersections():
         },
     )
 
-    by_net_id = {
-        int(entry["net_id"]): entry
-        for entry in info["insertion_loss_by_net"]
-    }
-    assert info["insertion_loss_model"]["crossing_count_source"] == (
-        "realized_intersections"
-    )
+    by_net_id = {int(entry["net_id"]): entry for entry in info["insertion_loss_by_net"]}
+    assert info["insertion_loss_model"]["crossing_count_source"] == ("realized_intersections")
     assert info["insertion_loss_summary"]["total_crossing_count"] == 2
     assert by_net_id[1]["crossing_count"] == 1
     assert by_net_id[2]["crossing_count"] == 1

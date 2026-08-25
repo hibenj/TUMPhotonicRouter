@@ -30,8 +30,7 @@ class _EndpointCorrectionRouter(Protocol):
         source_port_um: tuple[float, float] | None = None,
         target_port_um: tuple[float, float] | None = None,
         allow_unchecked_bumps: bool = True,
-    ) -> Iterable[object]:
-        ...
+    ) -> Iterable[object]: ...
 
 
 def _physical_port_centerline(
@@ -43,10 +42,7 @@ def _physical_port_centerline(
     allow_unchecked_bumps: bool = True,
     route_has_crossing: bool = False,
 ) -> list[tuple[float, float]]:
-    corrected_centerline = [
-        (float(p[0]), float(p[1]))
-        for p in record.corrected_centerline_um
-    ]
+    corrected_centerline = [(float(p[0]), float(p[1])) for p in record.corrected_centerline_um]
     if corrected_centerline:
         return corrected_centerline
     if not enable_endpoint_correction:

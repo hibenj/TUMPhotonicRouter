@@ -187,9 +187,7 @@ def electrical_benchmark_summary(
             getattr(getattr(result, "individual_topology", None), "success", False)
         ),
         "detailed_route_count": len(getattr(detailed_routes, "routes", ()) or ()),
-        "failed_detailed_route_count": len(
-            getattr(detailed_routes, "failed_routes", ()) or ()
-        ),
+        "failed_detailed_route_count": len(getattr(detailed_routes, "failed_routes", ()) or ()),
         "metrics": _selected_metrics(metrics),
         "realization_metrics": _selected_realization_metrics(realization_metrics),
     }
@@ -300,9 +298,7 @@ def attach_baseline_violations(
     for row in rows:
         benchmark_name = row.get("benchmark")
         row_violations = [
-            violation
-            for violation in violations
-            if violation.get("benchmark") == benchmark_name
+            violation for violation in violations if violation.get("benchmark") == benchmark_name
         ]
         if row_violations:
             row["baseline_violations"] = row_violations
@@ -439,9 +435,7 @@ def _check_equal(
     expected = guardrails.get(key)
     actual = summary.get(key)
     if expected is not None and actual != expected:
-        violations.append(
-            {"name": key, "actual": actual, "expected": expected, "operator": "=="}
-        )
+        violations.append({"name": key, "actual": actual, "expected": expected, "operator": "=="})
 
 
 def _check_min(
@@ -453,9 +447,7 @@ def _check_min(
     limit = guardrails.get(f"{key}_min")
     actual = summary.get(key)
     if isinstance(limit, (int, float)) and _number(actual) < float(limit):
-        violations.append(
-            {"name": key, "actual": actual, "expected": limit, "operator": ">="}
-        )
+        violations.append({"name": key, "actual": actual, "expected": limit, "operator": ">="})
 
 
 def _check_max(
@@ -467,9 +459,7 @@ def _check_max(
     limit = guardrails.get(f"{key}_max")
     actual = summary.get(key)
     if isinstance(limit, (int, float)) and _number(actual) > float(limit):
-        violations.append(
-            {"name": key, "actual": actual, "expected": limit, "operator": "<="}
-        )
+        violations.append({"name": key, "actual": actual, "expected": limit, "operator": "<="})
 
 
 def _check_metric_max(
@@ -832,9 +822,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.compare_baseline is not None:
         attach_baseline_violations(payload, load_baseline(args.compare_baseline))
     _write_json(payload, args.output)
-    if args.check and (
-        _has_guardrail_violations(payload) or _has_baseline_violations(payload)
-    ):
+    if args.check and (_has_guardrail_violations(payload) or _has_baseline_violations(payload)):
         return 1
     return 0
 
