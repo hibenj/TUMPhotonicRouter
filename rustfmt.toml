@@ -1,0 +1,11 @@
+# rustfmt configuration for this repository.
+#
+# Deliberately close to rustfmt's own stable defaults -- this repository's
+# Rust source has never been run through rustfmt before (see
+# .agent/execplans/2026-08-25-python-rust-linting-and-coding-standards.md's
+# Surprises & Discoveries for the baseline diff count), so a large,
+# unfamiliar custom style would make that first formatting pass harder to
+# review for no real benefit. `edition` is set explicitly to match
+# Cargo.toml's own `edition = "2021"` rather than left to rustfmt's own
+# default, since the two must agree.
+edition = "2021"

@@ -12,7 +12,7 @@ A person can see this working, once complete, by running the exact command from 
 
 ## Progress
 
-- [ ] Milestone 1: decide and record the tool choices, add the configuration files (no changes to existing source files), and write the short project-specific coding-standards document.
+- [x] (2026-08-25) Milestone 1: tool choices decided and recorded (see Decision Log); `[tool.ruff]`/`[tool.ruff.lint]`/`[tool.mypy]` added to `pyproject.toml` along with a `dev` optional-dependency group (`ruff>=0.16,<0.17`, `mypy>=2.3,<2.4`, installed into `.venv`); `rustfmt.toml` added (`edition = "2021"` only, deliberately close to rustfmt's stable defaults); `clippy.toml` deliberately not added (it configures per-lint thresholds, not which lints run, and nothing needs threshold tuning yet); `scripts/lint.sh` added as the single local/CI entry point (`--fix` flag for auto-fix mode); `.agent/CODING_STANDARDS.md` written. All four tools confirmed to run without a configuration error; no existing source files touched. Updated, accurate baseline under the chosen configuration (superseding the rougher default-ruleset numbers in Surprises & Discoveries below): `ruff check .` reports **832 findings** (360 auto-fixable) after one deliberate suppression (`TRY003`, see Decision Log); `ruff format --check .` reports **85 of 173 files** would be reformatted; `mypy` (now scoped to `translation/`, `routing_flow.py`, `routing_flow_config.py` per `[tool.mypy].files`) reports **292 errors in 36 of 40 checked files**; `cargo fmt -- --check` is unchanged at **137 diff blocks** (`rustfmt.toml`'s near-default settings do not change this).
 - [ ] Milestone 2: one dedicated, purely mechanical formatting pass (`ruff format`, `cargo fmt`) across the existing codebase, validated to be behavior-identical.
 - [ ] Milestone 3: apply the linters' safe auto-fixes (`ruff check --fix`, `cargo clippy --fix`), validated against the full test/benchmark ladder, since auto-fixes touch routing-critical code and "it compiles and lints clean" is not sufficient evidence on its own in this repository.
 - [ ] Milestone 4: for every lint rule category still failing after Milestone 3 that is not auto-fixable, decide per category whether to fix by hand or suppress with a stated, specific reason (matching the justified-ignore discipline described in Context and Orientation) -- not a blanket, unexplained ignore list.
@@ -28,7 +28,29 @@ A person can see this working, once complete, by running the exact command from 
 
 ## Decision Log
 
-(none yet -- Milestone 1 is where tool choices, the standards document's location, and the mypy/PyO3-stub question get decided and recorded)
+- Decision: use a plain shell script (`scripts/lint.sh`), not `nox`, as the single local/CI entry point.
+  Rationale: this repository does not use `uv`/`nox` (or any task-runner framework) anywhere else -- every validation command throughout this session's own ExecPlans is a plain, direct command (`cargo test --lib`, `pytest -q`, `routing_flow.py <benchmark>`). Introducing a new task-runner paradigm for this one purpose would be inconsistent with this repository's existing style and with the general principle of not adding abstraction beyond what a task needs.
+  Date/Author: 2026-08-25, Claude.
+
+- Decision: `ruff` and `mypy` become real, pinned `[project.optional-dependencies]` (a `dev` extra), installed into `.venv` with plain `pip`, invoked as `.venv/bin/python -m ruff`/`.venv/bin/python -m mypy` -- not `uvx`-invoked, even though `uv`/`uvx` happen to be available on this development machine.
+  Rationale: `mypy` needs to resolve imports against this project's actual installed dependencies (`gdsfactory`, `numpy`, and the compiled `photonic_router._rust` extension) to type-check meaningfully; running it via `uvx` in a throwaway environment would not have access to those. Installing both into `.venv` also matches this repository's existing invocation pattern for every other Python tool (`.venv/bin/python -m pytest`), and does not assume `uv` is present in every future development or CI environment, only `pip`, which this repository already depends on implicitly.
+  Date/Author: 2026-08-25, Claude.
+
+- Decision: `ruff`'s starting `select` list is a deliberately moderate, named set (`E`, `F`, `W`, `I`, `UP`, `B`, `C4`, `SIM`, `RUF`, `ISC`, `PIE`, `PYI`, `TRY`, `FURB`) -- not `fiction`'s `select = ["ALL"]` -- with one category-level suppression (`TRY003`) recorded below.
+  Rationale: the baseline scoping check (509 findings under ruff's own bare default rules, before this repository had any `[tool.ruff]` configuration at all) already showed this codebase cannot pass a maximal rule set without substantial work first; picking `select = ["ALL"]` on day one would make Milestone 1's own "confirm the configuration parses and runs" acceptance criterion indistinguishable from "the codebase is already fully clean," which is not true and would misrepresent the real state of this work. `select = ["ALL"]` remains a recorded, explicit future-tightening goal (see the `[tool.ruff.lint]` comment in `pyproject.toml` and this plan's own Milestone 4), not abandoned.
+  Date/Author: 2026-08-25, Claude.
+
+- Decision: suppress `TRY003` (raise-vanilla-args) entirely, with a comment recorded directly in `pyproject.toml`, rather than fixing or deferring it per-instance.
+  Rationale: this rule wants exception-raising code to keep long, dynamic messages inside a custom exception class rather than passed inline to a builtin one -- but this repository's own established, deliberate style (visible throughout this session, e.g. every routing-failure `RuntimeError` in `translation/route_rust.py`) is exactly the opposite: rich, specific, inline error messages built from local context (net name, coordinates, blocker sets). This is not an oversight to fix; it is a real, consistent, correct style choice this rule actively fights. It also accounted for 162 of the 994-finding baseline measured before this suppression was added -- large enough to meaningfully distort what "the current finding count" means for anyone reading this plan later if left unrecorded.
+  Date/Author: 2026-08-25, Claude.
+
+- Decision: scope `[tool.mypy].files` to `translation/`, `routing_flow.py`, and `routing_flow_config.py` for now, rather than the whole repository, and leave `strict = false`/`disallow_untyped_defs = false`; do not attempt a `.pyi` type stub for `photonic_router._rust` as part of Milestone 1.
+  Rationale: a narrower scoping check (`translation/` and `routing_flow.py` only) already found 246 errors, a large fraction of which are `attr-defined` errors on values returned from the compiled Rust extension, which mypy can only ever see as `object`/`Any` without a stub file it does not have. Writing that stub is realistically its own substantial task (the extension exposes a large, growing surface -- dozens of methods across the router/backend types touched throughout this session alone), not something to attempt inside "decide and configure." Recorded as a named Milestone 4 candidate (see `[tool.mypy]`'s own comment in `pyproject.toml`) rather than silently narrowed with no trace of the reason.
+  Date/Author: 2026-08-25, Claude.
+
+- Decision: do not add a `clippy.toml` file in Milestone 1.
+  Rationale: `clippy.toml` configures per-lint *thresholds* (for example, a cognitive-complexity limit or an argument-count limit), not which lints run at all -- which lints run is controlled by `cargo clippy`'s own default lint set (used for this plan's baseline measurement) or explicit `-W`/`-D` flags. Nothing in this plan currently needs a specific threshold tuned, so adding an empty or default-valued file would be pure ceremony.
+  Date/Author: 2026-08-25, Claude.
 
 ## Outcomes & Retrospective
 
