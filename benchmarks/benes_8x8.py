@@ -38,6 +38,10 @@ STABLE_ROUTING_FLAGS: tuple[str, ...] = (
     "static-stubs",
     "--foreign-port-keepout-cells",
     "0",
+    "--proactive-congestion-weight",
+    "4.0",
+    "--proactive-congestion-radius-cells",
+    "3",
 )
 
 
