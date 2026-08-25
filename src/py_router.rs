@@ -929,26 +929,10 @@ struct CrossingReservationBlockers {
 }
 
 const CROSSING_SPACING_HISTORY_AMOUNT: u32 = 1;
-const CROSSING_LOCAL_RIPUP_MIN_SOURCE_DEPTH: u32 = 2;
-const CROSSING_LOCAL_RIPUP_MIN_OVERLAP_CELLS: u32 = 64;
-const CROSSING_LOCAL_RIPUP_MIN_EXTRA_SUM: u64 = 64;
 const LONG_STRAIGHT_CONGESTION_MIN_UM: f64 = 200.0;
 const LONG_STRAIGHT_CONGESTION_LATERAL_RADIUS_CELLS: i32 = 5;
 const LONG_STRAIGHT_CONGESTION_AMOUNT: u32 = 1;
 const SOURCE_LAYER_CENTER_OUT_MIN_JOBS: usize = 8;
-
-fn env_flag_enabled(name: &str) -> Option<bool> {
-    std::env::var(name).ok().map(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "on" | "yes" | "enabled"
-        )
-    })
-}
-
-fn preemptive_crossing_ripup_enabled() -> bool {
-    env_flag_enabled("PHOTONIC_ROUTER_PREEMPTIVE_CROSSING_RIPUP").unwrap_or(false)
-}
 
 impl CrossingReservationBlockers {
     fn is_clear(&self) -> bool {
@@ -1050,11 +1034,6 @@ struct RepairModeAttemptState {
     repaired_route: Option<RouteResult>,
 }
 
-enum GuidedCrossingOutcome {
-    Routed,
-    NotResolved,
-}
-
 enum LocalizedKeepoutOutcome {
     Routed,
     NotResolved,
@@ -1066,11 +1045,6 @@ enum CommitIfCleanOutcome {
 }
 
 enum PlainRouteOutcome {
-    Routed,
-    NotResolved,
-}
-
-enum PreemptiveCrossingRipupOutcome {
     Routed,
     NotResolved,
 }
@@ -3339,72 +3313,6 @@ impl PyPhotonicRouter {
             routed_net_ids.push(job.net_id);
         }
         Ok(routed_net_ids)
-    }
-
-    fn crossing_local_ripup_candidates(&self, net_id: u64, limit: usize) -> Vec<u64> {
-        if limit == 0 || !self.crossing_context.is_enabled() {
-            return Vec::new();
-        }
-        let min_source_depth = self
-            .crossing_context
-            .ordered_constraints_for(net_id)
-            .into_iter()
-            .map(|constraint| constraint.source_depth)
-            .min()
-            .unwrap_or(0);
-        if min_source_depth < CROSSING_LOCAL_RIPUP_MIN_SOURCE_DEPTH {
-            return Vec::new();
-        }
-        let config = self.crossing_context.config();
-        let mut scored: Vec<(u32, u32, u64, u64)> = self
-            .crossing_allowed_partner_set(net_id)
-            .into_iter()
-            .filter_map(|partner_id| {
-                let waypoints = self.committed_center_routes.get(&partner_id)?;
-                let keys = crossing_candidate_keys_for_partner(
-                    waypoints,
-                    config.min_straight_cells_per_crossing,
-                    config.crossing_half_size_cells,
-                    self.primitive_cfg.bend_radius_cells,
-                    self.grid.width as i32,
-                    self.grid.height as i32,
-                );
-                if keys.is_empty() {
-                    return None;
-                }
-                let mut max_extra_history = 0u32;
-                let mut overlap_count = 0u32;
-                let mut extra_sum = 0u64;
-                for key in keys {
-                    let (x, y) = unpack_xy(key);
-                    let extra = self.obstacle_map.get_history_cost(x, y).saturating_sub(1);
-                    if extra == 0 {
-                        continue;
-                    }
-                    max_extra_history = max_extra_history.max(extra);
-                    overlap_count = overlap_count.saturating_add(1);
-                    extra_sum = extra_sum.saturating_add(u64::from(extra));
-                }
-                if max_extra_history == 0
-                    || overlap_count < CROSSING_LOCAL_RIPUP_MIN_OVERLAP_CELLS
-                    || extra_sum < CROSSING_LOCAL_RIPUP_MIN_EXTRA_SUM
-                {
-                    return None;
-                }
-                Some((max_extra_history, overlap_count, extra_sum, partner_id))
-            })
-            .collect();
-        scored.sort_unstable_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| b.1.cmp(&a.1))
-                .then_with(|| b.2.cmp(&a.2))
-                .then_with(|| a.3.cmp(&b.3))
-        });
-        scored
-            .into_iter()
-            .take(limit)
-            .map(|(_, _, _, partner_id)| partner_id)
-            .collect()
     }
 
     /// The topology-declared allowed-partner set for `net_id`, used only in
@@ -8290,141 +8198,6 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Takes up to 2 of the failure probe's `candidate_blockers` that are
-    /// also allowed crossing partners and retries through
-    /// [`Self::try_route_through_collision_partner_set`] with
-    /// `require_terminal_straights=false`. Gated by
-    /// `PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING` (and not
-    /// `..._DISABLE_...`), collision-crossing routing enabled, and a
-    /// non-empty candidate-blocker list from the probe.
-    fn try_guided_collision_crossing(
-        &mut self,
-        batch: &mut RepairBatchState,
-        probe: &ProbeState,
-        job: &NativeRouteJob,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        max_victims_per_failure: usize,
-        collect_native_timing: bool,
-        trace_native_repair: bool,
-    ) -> PyResult<GuidedCrossingOutcome> {
-        if probe.crossing_repair_enabled
-            && self.use_collision_crossing_routing
-            && std::env::var_os("PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING").is_some()
-            && std::env::var_os("PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING").is_none()
-            && !probe.candidate_blockers.is_empty()
-        {
-            let guided_start = native_batch_timer(collect_native_timing);
-            let mut guided_partner_ids = FxHashSet::default();
-            for owner in probe
-                .candidate_blockers
-                .iter()
-                .take(max_victims_per_failure.max(1).min(2))
-            {
-                if probe.allowed_crossing_partners.contains(owner) {
-                    guided_partner_ids.insert(*owner);
-                }
-            }
-            if !guided_partner_ids.is_empty() {
-                let source_state = State::new(job.source.x, job.source.y, job.source.angle);
-                let target_state = State::new(job.target.x, job.target.y, job.target.angle);
-                let opened_search_owned = self.opened_cells_without_dynamic_overlap(
-                    &job.opened_cell_keys,
-                    source_state,
-                    target_state,
-                );
-                let opened_search_ref = opened_search_owned
-                    .as_ref()
-                    .unwrap_or(&job.opened_cell_keys);
-                let dynamic_clearance_exempt_keys =
-                    if block_radius_cells > 0 && !job.clearance_exempt_cells.is_empty() {
-                        Some(&job.clearance_exempt_cell_keys)
-                    } else {
-                        None
-                    };
-                let mut guided_cfg = self
-                    .astar_config(None, None, None)
-                    .map_err(PyRuntimeError::new_err)?;
-                guided_cfg.require_terminal_straights = false;
-                let guided_result = self
-                    .try_route_through_collision_partner_set(
-                        job.net_id,
-                        source_state,
-                        target_state,
-                        opened_search_ref,
-                        &guided_cfg,
-                        block_radius_cells,
-                        dynamic_clearance_exempt_keys,
-                        &guided_partner_ids,
-                        job.source_port_um,
-                        job.target_port_um,
-                        Some(&job.opened_cell_keys),
-                    )
-                    .map_err(PyRuntimeError::new_err)?;
-                batch.timings.repair_failed_net_wall_us += native_batch_elapsed_us(guided_start);
-                if let Some((route, crossing_events)) = guided_result {
-                    let crossed_partner_ids =
-                        Self::crossing_partner_ids_from_events(&crossing_events);
-                    let crossed_partner_vec: Vec<u64> =
-                        crossed_partner_ids.iter().copied().collect();
-                    match self.commit_native_route_with_clearance_allowing_core_overlap(
-                        job.net_id,
-                        &route,
-                        block_radius_cells,
-                        commit_radius_cells,
-                        &job.clearance_exempt_cells,
-                        core_radius_cells,
-                        job.source_port_um,
-                        job.target_port_um,
-                        Some(&job.opened_cell_keys),
-                        &crossed_partner_vec,
-                        true,
-                    ) {
-                        Ok(true) => {
-                            if trace_native_repair {
-                                eprintln!(
-                                    "native_repair_guided_crossing net={} partners={:?} events={} cost={} waypoints={:?}",
-                                    job.net_id,
-                                    crossed_partner_ids,
-                                    crossing_events.len(),
-                                    route.total_cost,
-                                    route.compressed_waypoints,
-                                );
-                            }
-                            batch
-                                .timings
-                                .add_route_result_stats_if(collect_native_timing, &route);
-                            batch.attempts.push(NativeRouteAttempt {
-                                net_id: job.net_id,
-                                bucket_name: "guided_collision_crossing",
-                                route: Some(route.clone()),
-                                failed: false,
-                                error: None,
-                                repair_round: Some(0),
-                                candidate_blockers: probe.candidate_blockers.clone(),
-                                ripup_ids: Vec::new(),
-                            });
-                            batch.final_routes.insert(job.net_id, route);
-                            return Ok(GuidedCrossingOutcome::Routed);
-                        }
-                        Ok(false) => {}
-                        Err(error) => {
-                            if trace_native_repair {
-                                eprintln!(
-                                    "native_repair_guided_crossing_commit_failed net={} error={}",
-                                    job.net_id, error
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(GuidedCrossingOutcome::NotResolved)
-    }
-
-    #[allow(clippy::too_many_arguments)]
     /// Temporarily adds the failure probe's computed keepout cells as
     /// static obstacles, retries plain-with-orthogonal-preference then
     /// repair-native-with-keepout, then removes the keepout regardless of
@@ -10095,39 +9868,29 @@ impl PyPhotonicRouter {
         (victim_first_probe_reservation, temporary_probe_reservation)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// Speculative pre-route ripup: before any route attempt, scans nearby
-    /// already-routed nets in the current net's bounding box as candidate
-    /// victims, snapshots state, rips one candidate, routes the current
-    /// net, then reroutes the victim (plain, then repair-native fallback),
-    /// restoring the snapshot and trying the next candidate on failure.
-    /// Gated by `PHOTONIC_ROUTER_PREEMPTIVE_CROSSING_RIPUP` (default off);
-    /// no specific historical bug motivates this method as its own step --
-    /// it is a speculative optimization, not a response to a documented
-    /// failure.
     /// Shared single-victim "rip up, reroute the current net, reroute the
     /// victim (plain then repair-native fallback)" attempt, extracted
     /// (Milestone 6 of `.agent/execplans/2026-08-24-modular-routing-strategies.md`)
-    /// from what were two near-duplicate ~200-line method bodies:
-    /// [`Self::try_preemptive_crossing_ripup`] (which calls this once per
-    /// candidate victim in a loop, trying the next candidate on failure)
-    /// and [`Self::try_pending_straight_victim_repair`] (which calls this
-    /// exactly once, for its single hinted victim). Snapshots `self`/
-    /// `batch` state at entry and restores it on any failure, so repeated
-    /// calls in a loop are safe -- each call leaves state exactly as it
-    /// found it unless it returns `true`. `bucket_name` controls the
+    /// from what were two near-duplicate ~200-line method bodies. Only
+    /// [`Self::try_pending_straight_victim_repair`] calls it today (exactly
+    /// once, for its single hinted victim); a second caller,
+    /// `try_preemptive_crossing_ripup` (an undocumented, off-by-default,
+    /// speculative pre-route ripup with no historical bug motivating it),
+    /// called this once per candidate victim in a loop and was deleted in
+    /// `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`'s
+    /// Milestone 5 after an explicit resolve-or-delete decision found no
+    /// rationale for it anywhere in this repository's history. Snapshots
+    /// `self`/`batch` state at entry and restores it on any failure, so
+    /// repeated calls in a loop are safe -- each call leaves state exactly
+    /// as it found it unless it returns `true`. `bucket_name` controls the
     /// `NativeRouteAttempt.bucket_name` recorded for both the current-net
-    /// and victim route attempts (kept distinct per caller: this is an
-    /// observable diagnostic string, not merged even though the two
-    /// callers are otherwise unified). `add_history_for_victim` controls
-    /// whether `add_history_for_native_route` runs before ripping up the
-    /// victim -- a real behavioral difference between the two original
-    /// methods (`try_preemptive_crossing_ripup` did this,
-    /// `try_pending_straight_victim_repair` did not), preserved here as a
-    /// parameter rather than silently applied to both or dropped from
-    /// either. Returns `true` if both the current net and the victim were
-    /// successfully rerouted and committed (`batch.repair_count` bumped,
-    /// two `NativeRouteAttempt`s pushed), `false` if any step failed (state
+    /// and victim route attempts. `add_history_for_victim` controls whether
+    /// `add_history_for_native_route` runs before ripping up the victim,
+    /// kept as a parameter rather than hardcoded since the deleted caller
+    /// needed it `true` while the surviving one needs it `false`. Returns
+    /// `true` if both the current net and the victim were successfully
+    /// rerouted and committed (`batch.repair_count` bumped, two
+    /// `NativeRouteAttempt`s pushed), `false` if any step failed (state
     /// fully restored, one failing `NativeRouteAttempt` pushed).
     #[allow(clippy::too_many_arguments)]
     fn try_ripup_single_victim_and_reroute(
@@ -10328,47 +10091,6 @@ impl PyPhotonicRouter {
         batch.final_routes.insert(victim_job.net_id, victim_route);
         batch.repair_count = batch.repair_count.saturating_add(1);
         true
-    }
-
-    fn try_preemptive_crossing_ripup(
-        &mut self,
-        batch: &mut RepairBatchState,
-        job: &NativeRouteJob,
-        job_by_id: &FxHashMap<u64, NativeRouteJob>,
-        max_victims_per_failure: usize,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        history_weight: f64,
-        history_increment: u32,
-        collect_native_timing: bool,
-    ) -> PreemptiveCrossingRipupOutcome {
-        let preemptive_crossing_victims = if preemptive_crossing_ripup_enabled() {
-            self.crossing_local_ripup_candidates(job.net_id, max_victims_per_failure.min(4))
-        } else {
-            Vec::new()
-        };
-        for victim_id in preemptive_crossing_victims {
-            let Some(victim_job) = job_by_id.get(&victim_id) else {
-                continue;
-            };
-            if self.try_ripup_single_victim_and_reroute(
-                batch,
-                job,
-                victim_job,
-                "preemptive_crossing_ripup",
-                true,
-                block_radius_cells,
-                commit_radius_cells,
-                core_radius_cells,
-                history_weight,
-                history_increment,
-                collect_native_timing,
-            ) {
-                return PreemptiveCrossingRipupOutcome::Routed;
-            }
-        }
-        PreemptiveCrossingRipupOutcome::NotResolved
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -11946,22 +11668,6 @@ impl PyPhotonicRouter {
                     job.target.angle
                 );
             }
-            match self.try_preemptive_crossing_ripup(
-                &mut batch,
-                job,
-                &job_by_id,
-                max_victims_per_failure,
-                block_radius_cells,
-                commit_radius_cells,
-                core_radius_cells,
-                history_weight,
-                history_increment,
-                collect_native_timing,
-            ) {
-                PreemptiveCrossingRipupOutcome::Routed => continue 'route_jobs,
-                PreemptiveCrossingRipupOutcome::NotResolved => {}
-            }
-
             match self.try_plain_normal_route(
                 &mut batch,
                 job,
@@ -12043,24 +11749,17 @@ impl PyPhotonicRouter {
                 Ok(probe) => probe,
                 Err(()) => break 'route_jobs,
             };
+            // Still needed here even though `try_guided_collision_crossing`
+            // (the only other former reader of this flag, deleted in
+            // `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`'s
+            // Milestone 5) is gone: `try_crossing_aware_victim_reroute`,
+            // called later in this same function's round-based repair loop,
+            // still takes it as a parameter for its own "guided" per-victim
+            // attempt.
             let guided_collision_crossing_enabled =
                 std::env::var_os("PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING").is_some()
                     && std::env::var_os("PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING")
                         .is_none();
-            match self.try_guided_collision_crossing(
-                &mut batch,
-                &probe,
-                job,
-                block_radius_cells,
-                commit_radius_cells,
-                core_radius_cells,
-                max_victims_per_failure,
-                collect_native_timing,
-                trace_native_repair,
-            )? {
-                GuidedCrossingOutcome::Routed => continue 'route_jobs,
-                GuidedCrossingOutcome::NotResolved => {}
-            }
             match self.try_localized_crossing_keepout_retry(
                 &mut batch,
                 &probe,
