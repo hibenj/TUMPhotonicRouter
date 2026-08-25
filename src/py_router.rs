@@ -1022,6 +1022,22 @@ struct RepairAttemptState {
     learned_repair_retry_counts: FxHashMap<Vec<u64>, usize>,
 }
 
+/// Minimal committed-state snapshot for
+/// [`PyPhotonicRouter::try_negotiated_displacement`] -- the same fields
+/// [`RepairAttemptState`]'s `round_base_*` fields capture, without that
+/// struct's other repair-chain-specific bookkeeping this negotiation
+/// mechanism does not need. See
+/// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 5.
+struct NegotiationSnapshot {
+    obstacle_map: ObstacleMap,
+    committed_center_routes: FxHashMap<u64, Vec<(i32, i32)>>,
+    committed_realized_center_routes: FxHashMap<u64, Vec<(f64, f64)>>,
+    committed_target_terminal_bump_guards: FxHashMap<u64, TerminalBumpGuard>,
+    committed_opened_cell_keys: FxHashMap<u64, FxHashSet<CellKey>>,
+    crossing_events: Vec<CrossingEvent>,
+    final_routes: FxHashMap<u64, RouteResult>,
+}
+
 struct ProbeState {
     probe_route: RouteResult,
     crossing_repair_enabled: bool,
@@ -8599,6 +8615,245 @@ impl PyPhotonicRouter {
         batch.timings.repair_state_reset_us += native_batch_elapsed_us(reset_start);
     }
 
+    /// Shared batch-result serialization for every native repair-dispatch
+    /// entry point (`route_many_with_repair_and_commit`,
+    /// `route_many_with_negotiated_repair_and_commit`) -- both funnel
+    /// through here so the Python-level result shape
+    /// (`status`/`failed_net_id`/`error`/`routes`/`attempts`/`repair_trace`/
+    /// `long_straight_congestion`/`timings_s`) stays identical regardless of
+    /// which repair engine produced `batch`, which is what lets
+    /// `translation/route_rust.py` treat them as interchangeable for direct
+    /// A/B comparison. See
+    /// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 5.
+    fn build_native_batch_result_dict(
+        &mut self,
+        py: Python<'_>,
+        native_jobs: &[NativeRouteJob],
+        batch: &mut RepairBatchState,
+        collect_native_timing: bool,
+    ) -> PyResult<PyObject> {
+        let result_dict = PyDict::new_bound(py);
+        let route_entries = PyList::empty_bound(py);
+        for job in native_jobs {
+            if let Some(route_result) = batch.final_routes.get(&job.net_id) {
+                let entry = PyDict::new_bound(py);
+                let route_construct_start = native_batch_timer(collect_native_timing);
+                let route_obj = Py::new(py, convert_result(py, &self.primitives, route_result)?)?;
+                batch.timings.route_result_construction_us +=
+                    native_batch_elapsed_us(route_construct_start);
+                let dict_start = native_batch_timer(collect_native_timing);
+                entry.set_item("net_id", job.net_id)?;
+                entry.set_item("route", route_obj)?;
+                route_entries.append(entry)?;
+                batch.timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
+            }
+        }
+        let attempt_entries = PyList::empty_bound(py);
+        for attempt in std::mem::take(&mut batch.attempts) {
+            let entry = PyDict::new_bound(py);
+            let route_obj = if let Some(route) = attempt.route.as_ref() {
+                let route_construct_start = native_batch_timer(collect_native_timing);
+                let route_obj = Py::new(py, convert_result(py, &self.primitives, route)?)?;
+                batch.timings.route_result_construction_us +=
+                    native_batch_elapsed_us(route_construct_start);
+                Some(route_obj)
+            } else {
+                None
+            };
+            let dict_start = native_batch_timer(collect_native_timing);
+            entry.set_item("bucket_name", attempt.bucket_name)?;
+            entry.set_item("net_id", attempt.net_id)?;
+            entry.set_item("failed", attempt.failed)?;
+            entry.set_item("error", attempt.error)?;
+            entry.set_item("repair_round", attempt.repair_round)?;
+            entry.set_item("candidate_blockers", attempt.candidate_blockers)?;
+            entry.set_item("ripup_ids", attempt.ripup_ids)?;
+            if let Some(route_obj) = route_obj {
+                entry.set_item("route", route_obj)?;
+            } else {
+                entry.set_item("route", py.None())?;
+            }
+            attempt_entries.append(entry)?;
+            batch.timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
+        }
+        let repair_trace_entries = PyList::empty_bound(py);
+        for event in std::mem::take(&mut batch.repair_trace) {
+            let entry = PyDict::new_bound(py);
+            let dict_start = native_batch_timer(collect_native_timing);
+            entry.set_item("event", event.event_name)?;
+            entry.set_item("route_order", event.route_order)?;
+            entry.set_item("action", event.action)?;
+            entry.set_item("net_id", event.net_id)?;
+            entry.set_item("repair_round", event.repair_round)?;
+            entry.set_item("repair_set_index", event.repair_set_index)?;
+            entry.set_item("candidate_blockers", event.candidate_blockers)?;
+            entry.set_item("ripup_ids", event.ripup_ids)?;
+            entry.set_item("victim_order", event.victim_order)?;
+            entry.set_item("victim_first", event.victim_first)?;
+            entry.set_item("reverse_victim_order", event.reverse_victim_order)?;
+            entry.set_item("success", event.success)?;
+            entry.set_item("error", event.error)?;
+            repair_trace_entries.append(entry)?;
+            batch.timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
+        }
+        let dict_start = native_batch_timer(collect_native_timing);
+        result_dict.set_item(
+            "status",
+            if batch.failed_net_id.is_some() {
+                "failed"
+            } else {
+                "routed"
+            },
+        )?;
+        result_dict.set_item("failed_net_id", batch.failed_net_id)?;
+        result_dict.set_item("error", batch.failed_error.clone())?;
+        result_dict.set_item("repair_count", batch.repair_count)?;
+        result_dict.set_item("routes", route_entries)?;
+        result_dict.set_item("attempts", attempt_entries)?;
+        result_dict.set_item("repair_trace", repair_trace_entries)?;
+        result_dict.set_item(
+            "long_straight_congestion",
+            self.long_straight_congestion_records(py)?,
+        )?;
+        batch.timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
+        result_dict.set_item(
+            "timings_s",
+            native_batch_timings_to_py_dict(py, &batch.timings)?,
+        )?;
+        Ok(result_dict.into())
+    }
+
+    fn snapshot_negotiation_state(&self, batch: &RepairBatchState) -> NegotiationSnapshot {
+        NegotiationSnapshot {
+            obstacle_map: self.obstacle_map.clone(),
+            committed_center_routes: self.committed_center_routes.clone(),
+            committed_realized_center_routes: self.committed_realized_center_routes.clone(),
+            committed_target_terminal_bump_guards: self
+                .committed_target_terminal_bump_guards
+                .clone(),
+            committed_opened_cell_keys: self.committed_opened_cell_keys.clone(),
+            crossing_events: self.crossing_events.clone(),
+            final_routes: batch.final_routes.clone(),
+        }
+    }
+
+    fn restore_negotiation_state(
+        &mut self,
+        batch: &mut RepairBatchState,
+        snapshot: NegotiationSnapshot,
+    ) {
+        self.obstacle_map = snapshot.obstacle_map;
+        self.committed_center_routes = snapshot.committed_center_routes;
+        self.committed_realized_center_routes = snapshot.committed_realized_center_routes;
+        self.committed_target_terminal_bump_guards = snapshot.committed_target_terminal_bump_guards;
+        self.committed_opened_cell_keys = snapshot.committed_opened_cell_keys;
+        self.crossing_events = snapshot.crossing_events;
+        batch.final_routes = snapshot.final_routes;
+        self.invalidate_meander_base_prefix();
+    }
+
+    /// Pairwise negotiated displacement: rip up every net in `blocker_ids`,
+    /// try to commit `job` in the space that frees up, then try to reroute
+    /// and recommit every displaced blocker in turn. Succeeds (returns
+    /// `true`, `batch.repair_count` bumped, all routes left committed) only
+    /// if `job` *and* every blocker can all be routed; any failure at any
+    /// step restores every field the negotiation touched to exactly the
+    /// snapshot taken at entry, so a failed attempt is a pure no-op from the
+    /// caller's perspective. This is `route_many_with_negotiated_repair_and_commit`'s
+    /// entire conflict-resolution mechanism for Milestone 5 -- reusing
+    /// `route_single_net_and_commit_native` (the same primitive
+    /// `try_plain_normal_route` and every other repair strategy already
+    /// uses) rather than a new search mechanism. Does not yet weight the
+    /// reroute searches by history cost (`history_weight` is not threaded
+    /// into these calls, matching `route_single_net_and_commit_native`'s own
+    /// existing default of falling back to `self.astar_cfg`'s baseline);
+    /// Milestone 6 is where this negotiation logic and search-level history
+    /// weighting are meant to be unified into the real distance/cost-based
+    /// heuristic. See
+    /// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 5.
+    #[allow(clippy::too_many_arguments)]
+    fn try_negotiated_displacement(
+        &mut self,
+        batch: &mut RepairBatchState,
+        job: &NativeRouteJob,
+        blocker_ids: &[u64],
+        job_by_id: &FxHashMap<u64, NativeRouteJob>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        collect_native_timing: bool,
+    ) -> bool {
+        let snapshot = self.snapshot_negotiation_state(batch);
+        self.ripup_repair_set_victims(batch, blocker_ids, collect_native_timing);
+
+        let route_start = native_batch_timer(collect_native_timing);
+        let route_result = self.route_single_net_and_commit_native(
+            job.net_id,
+            job.source,
+            job.target,
+            block_radius_cells,
+            Some(&job.opened_cells),
+            Some(&job.opened_cell_keys),
+            commit_radius_cells,
+            Some(&job.clearance_exempt_cells),
+            Some(&job.clearance_exempt_cell_keys),
+            core_radius_cells,
+            job.source_port_um,
+            job.target_port_um,
+        );
+        batch.timings.normal_route_wall_us += native_batch_elapsed_us(route_start);
+        let route = match route_result {
+            Ok(route) => route,
+            Err(_) => {
+                self.restore_negotiation_state(batch, snapshot);
+                return false;
+            }
+        };
+        remove_success_static_cleanup(&mut self.obstacle_map, job);
+        batch.final_routes.insert(job.net_id, route);
+
+        let mut all_blockers_rerouted = true;
+        for blocker_id in blocker_ids {
+            let Some(blocker_job) = job_by_id.get(blocker_id) else {
+                continue;
+            };
+            let blocker_route_start = native_batch_timer(collect_native_timing);
+            let blocker_result = self.route_single_net_and_commit_native(
+                blocker_job.net_id,
+                blocker_job.source,
+                blocker_job.target,
+                block_radius_cells,
+                Some(&blocker_job.opened_cells),
+                Some(&blocker_job.opened_cell_keys),
+                commit_radius_cells,
+                Some(&blocker_job.clearance_exempt_cells),
+                Some(&blocker_job.clearance_exempt_cell_keys),
+                core_radius_cells,
+                blocker_job.source_port_um,
+                blocker_job.target_port_um,
+            );
+            batch.timings.normal_route_wall_us += native_batch_elapsed_us(blocker_route_start);
+            match blocker_result {
+                Ok(blocker_route) => {
+                    remove_success_static_cleanup(&mut self.obstacle_map, blocker_job);
+                    batch.final_routes.insert(blocker_job.net_id, blocker_route);
+                }
+                Err(_) => {
+                    all_blockers_rerouted = false;
+                    break;
+                }
+            }
+        }
+
+        if all_blockers_rerouted {
+            batch.repair_count += 1;
+            true
+        } else {
+            self.restore_negotiation_state(batch, snapshot);
+            false
+        }
+    }
+
     fn ripup_repair_set_victims(
         &mut self,
         batch: &mut RepairBatchState,
@@ -12113,95 +12368,229 @@ impl PyPhotonicRouter {
             }
         }
 
-        let result_dict = PyDict::new_bound(py);
-        let route_entries = PyList::empty_bound(py);
-        for job in &native_jobs {
-            if let Some(route_result) = batch.final_routes.get(&job.net_id) {
-                let entry = PyDict::new_bound(py);
-                let route_construct_start = native_batch_timer(collect_native_timing);
-                let route_obj = Py::new(py, convert_result(py, &self.primitives, route_result)?)?;
-                batch.timings.route_result_construction_us +=
-                    native_batch_elapsed_us(route_construct_start);
-                let dict_start = native_batch_timer(collect_native_timing);
-                entry.set_item("net_id", job.net_id)?;
-                entry.set_item("route", route_obj)?;
-                route_entries.append(entry)?;
-                batch.timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
+        self.build_native_batch_result_dict(py, &native_jobs, &mut batch, collect_native_timing)
+    }
+
+    /// Milestone 5 of `.agent/execplans/2026-08-25-negotiated-repair-engine.md`:
+    /// a general negotiated-congestion repair loop, replacing
+    /// `route_many_with_repair_and_commit`'s 17-method dispatch chain and
+    /// brute-force 4-way ordering enumeration with a short, readable loop --
+    /// route nets in the order given (the caller,
+    /// `translation/route_rust.py`'s `_topological_net_route_order`, already
+    /// sorts by topological depth); when a net fails, find who is blocking
+    /// it (`probe_net_for_repair`, unchanged, already crossing-legality-
+    /// aware) and negotiate pairwise (`try_negotiated_displacement`); a net
+    /// gets exactly one displacement attempt per history-reset epoch
+    /// (`failed_count == 0`, mirroring LiDAR's `cur_net.failed_count == 0`
+    /// gate); requeue whoever did not resolve and iterate until every net
+    /// routes or `max_rounds` is exhausted. Kept as a separate entry point
+    /// alongside the untouched `route_many_with_repair_and_commit` (not a
+    /// replacement of it) specifically so `translation/route_rust.py` can
+    /// A/B the two -- see this milestone's own Surprises & Discoveries for
+    /// what does and does not yet match the old chain's coverage (crossing-
+    /// specific repair strategies and dense-source-fanout static cleanup
+    /// are not yet reimplemented here).
+    #[pyo3(signature=(jobs,block_radius_cells=0,commit_radius_cells=None,core_radius_cells=None,max_rounds=8,history_weight=2.0,history_increment=1))]
+    #[allow(clippy::too_many_arguments)]
+    fn route_many_with_negotiated_repair_and_commit(
+        &mut self,
+        py: Python<'_>,
+        jobs: Vec<(
+            u64,
+            PyState,
+            PyState,
+            Vec<(i32, i32)>,
+            Vec<(i32, i32)>,
+            Vec<(i32, i32)>,
+            Option<(f64, f64)>,
+            Option<(f64, f64)>,
+        )>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        max_rounds: u32,
+        history_weight: f64,
+        history_increment: u32,
+    ) -> PyResult<PyObject> {
+        // Not yet threaded into search cost -- see
+        // `try_negotiated_displacement`'s doc comment. Accepted here so
+        // Python can pass the same kwargs it uses for the old entry point.
+        let _ = history_weight;
+        self.obstacle_map.clear_congestion();
+        self.obstacle_map.clear_history();
+        self.long_straight_congestion_cells.clear();
+        self.long_straight_congestion_records.clear();
+        self.commit_history_increment = history_increment;
+        self.commit_history_block_radius_cells = block_radius_cells;
+        let collect_native_timing = self.astar_cfg.collect_detailed_timing;
+        let trace_native_repair = std::env::var_os("PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG").is_some();
+        let mut batch = RepairBatchState {
+            final_routes: FxHashMap::default(),
+            attempts: Vec::new(),
+            repair_trace: Vec::new(),
+            repair_count: 0,
+            failed_net_id: None,
+            failed_error: None,
+            retried_source_layers: FxHashSet::default(),
+            timings: NativeBatchTimings::default(),
+            trace_last_route_start: None,
+        };
+        let native_jobs: Vec<NativeRouteJob> = jobs
+            .into_iter()
+            .map(
+                |(
+                    net_id,
+                    source,
+                    target,
+                    opened_cells,
+                    clearance_exempt_cells,
+                    static_cleanup_cells,
+                    source_port_um,
+                    target_port_um,
+                )| {
+                    NativeRouteJob::new(
+                        net_id,
+                        source,
+                        target,
+                        opened_cells,
+                        clearance_exempt_cells,
+                        static_cleanup_cells,
+                        source_port_um,
+                        target_port_um,
+                    )
+                },
+            )
+            .collect();
+        let order_by_id: FxHashMap<u64, usize> = native_jobs
+            .iter()
+            .enumerate()
+            .map(|(index, job)| (job.net_id, index))
+            .collect();
+        let job_by_id: FxHashMap<u64, NativeRouteJob> = native_jobs
+            .iter()
+            .cloned()
+            .map(|job| (job.net_id, job))
+            .collect();
+
+        const RESET_AFTER_ROUNDS_WITHOUT_PROGRESS: u32 = 2;
+        let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
+        let mut queue: Vec<u64> = native_jobs.iter().map(|job| job.net_id).collect();
+        let mut round = 0u32;
+        let mut rounds_without_progress = 0u32;
+
+        while round < max_rounds && !queue.is_empty() {
+            round += 1;
+            let this_round = std::mem::take(&mut queue);
+            let mut made_progress = false;
+            for net_id in this_round {
+                let job = job_by_id
+                    .get(&net_id)
+                    .expect("every queued net_id came from job_by_id's own keys")
+                    .clone();
+
+                if let PlainRouteOutcome::Routed = self.try_plain_normal_route(
+                    &mut batch,
+                    &job,
+                    block_radius_cells,
+                    commit_radius_cells,
+                    core_radius_cells,
+                    collect_native_timing,
+                ) {
+                    made_progress = true;
+                    continue;
+                }
+
+                let probe = match self.probe_net_for_repair(
+                    &mut batch,
+                    &job,
+                    &order_by_id,
+                    block_radius_cells,
+                    commit_radius_cells,
+                    collect_native_timing,
+                    trace_native_repair,
+                ) {
+                    Ok(probe) => probe,
+                    Err(()) => {
+                        return self.build_native_batch_result_dict(
+                            py,
+                            &native_jobs,
+                            &mut batch,
+                            collect_native_timing,
+                        );
+                    }
+                };
+
+                match self.try_commit_clean_probe(
+                    &mut batch,
+                    &probe,
+                    &job,
+                    block_radius_cells,
+                    commit_radius_cells,
+                    core_radius_cells,
+                    collect_native_timing,
+                ) {
+                    Ok(CommitIfCleanOutcome::Routed) => {
+                        made_progress = true;
+                        continue;
+                    }
+                    Err(()) => {
+                        return self.build_native_batch_result_dict(
+                            py,
+                            &native_jobs,
+                            &mut batch,
+                            collect_native_timing,
+                        );
+                    }
+                    Ok(CommitIfCleanOutcome::NotResolved) => {}
+                }
+
+                let my_failed_count = *failed_counts.get(&net_id).unwrap_or(&0);
+                let displaced = !probe.candidate_blockers.is_empty()
+                    && my_failed_count == 0
+                    && self.try_negotiated_displacement(
+                        &mut batch,
+                        &job,
+                        &probe.candidate_blockers,
+                        &job_by_id,
+                        block_radius_cells,
+                        commit_radius_cells,
+                        core_radius_cells,
+                        collect_native_timing,
+                    );
+
+                if displaced {
+                    for blocker_id in &probe.candidate_blockers {
+                        *failed_counts.entry(*blocker_id).or_insert(0) += 1;
+                    }
+                    made_progress = true;
+                } else {
+                    *failed_counts.entry(net_id).or_insert(0) += 1;
+                    queue.push(net_id);
+                }
+            }
+
+            if made_progress {
+                rounds_without_progress = 0;
+            } else {
+                rounds_without_progress += 1;
+                if rounds_without_progress >= RESET_AFTER_ROUNDS_WITHOUT_PROGRESS && !queue.is_empty()
+                {
+                    self.obstacle_map.clear_history();
+                    failed_counts.clear();
+                    rounds_without_progress = 0;
+                }
             }
         }
-        let attempt_entries = PyList::empty_bound(py);
-        for attempt in batch.attempts {
-            let entry = PyDict::new_bound(py);
-            let route_obj = if let Some(route) = attempt.route.as_ref() {
-                let route_construct_start = native_batch_timer(collect_native_timing);
-                let route_obj = Py::new(py, convert_result(py, &self.primitives, route)?)?;
-                batch.timings.route_result_construction_us +=
-                    native_batch_elapsed_us(route_construct_start);
-                Some(route_obj)
-            } else {
-                None
-            };
-            let dict_start = native_batch_timer(collect_native_timing);
-            entry.set_item("bucket_name", attempt.bucket_name)?;
-            entry.set_item("net_id", attempt.net_id)?;
-            entry.set_item("failed", attempt.failed)?;
-            entry.set_item("error", attempt.error)?;
-            entry.set_item("repair_round", attempt.repair_round)?;
-            entry.set_item("candidate_blockers", attempt.candidate_blockers)?;
-            entry.set_item("ripup_ids", attempt.ripup_ids)?;
-            if let Some(route_obj) = route_obj {
-                entry.set_item("route", route_obj)?;
-            } else {
-                entry.set_item("route", py.None())?;
-            }
-            attempt_entries.append(entry)?;
-            batch.timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
+
+        if let Some(&failed_net_id) = queue.first() {
+            batch.failed_net_id = Some(failed_net_id);
+            batch.failed_error = Some(format!(
+                "Negotiated repair did not converge for net {failed_net_id} within {max_rounds} rounds; {} net(s) still unrouted",
+                queue.len()
+            ));
         }
-        let repair_trace_entries = PyList::empty_bound(py);
-        for event in batch.repair_trace {
-            let entry = PyDict::new_bound(py);
-            let dict_start = native_batch_timer(collect_native_timing);
-            entry.set_item("event", event.event_name)?;
-            entry.set_item("route_order", event.route_order)?;
-            entry.set_item("action", event.action)?;
-            entry.set_item("net_id", event.net_id)?;
-            entry.set_item("repair_round", event.repair_round)?;
-            entry.set_item("repair_set_index", event.repair_set_index)?;
-            entry.set_item("candidate_blockers", event.candidate_blockers)?;
-            entry.set_item("ripup_ids", event.ripup_ids)?;
-            entry.set_item("victim_order", event.victim_order)?;
-            entry.set_item("victim_first", event.victim_first)?;
-            entry.set_item("reverse_victim_order", event.reverse_victim_order)?;
-            entry.set_item("success", event.success)?;
-            entry.set_item("error", event.error)?;
-            repair_trace_entries.append(entry)?;
-            batch.timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
-        }
-        let dict_start = native_batch_timer(collect_native_timing);
-        result_dict.set_item(
-            "status",
-            if batch.failed_net_id.is_some() {
-                "failed"
-            } else {
-                "routed"
-            },
-        )?;
-        result_dict.set_item("failed_net_id", batch.failed_net_id)?;
-        result_dict.set_item("error", batch.failed_error)?;
-        result_dict.set_item("repair_count", batch.repair_count)?;
-        result_dict.set_item("routes", route_entries)?;
-        result_dict.set_item("attempts", attempt_entries)?;
-        result_dict.set_item("repair_trace", repair_trace_entries)?;
-        result_dict.set_item(
-            "long_straight_congestion",
-            self.long_straight_congestion_records(py)?,
-        )?;
-        batch.timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
-        result_dict.set_item(
-            "timings_s",
-            native_batch_timings_to_py_dict(py, &batch.timings)?,
-        )?;
-        Ok(result_dict.into())
+
+        self.build_native_batch_result_dict(py, &native_jobs, &mut batch, collect_native_timing)
     }
 
     fn ripup_route(&mut self, net_id: u64) -> bool {

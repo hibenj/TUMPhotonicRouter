@@ -4000,16 +4000,42 @@ class _RouteNetsRustSession:
             self._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
 
             batch_start = self._timing_start()
-            raw_batch_result = self.router.route_many_with_repair_and_commit(
-                batch_jobs,
-                self.block_radius_cells,
-                self.commit_radius_cells,
-                self.core_commit_radius_cells,
-                int(self.repair_config.max_rounds),
-                int(self.repair_config.max_victims_per_failure),
-                float(self.repair_config.history_weight),
-                int(self.repair_config.history_increment),
-            )
+            if os.environ.get("PHOTONIC_ROUTER_NEGOTIATED_REPAIR", "") == "1":
+                # A/B comparison path for
+                # .agent/execplans/2026-08-25-negotiated-repair-engine.md
+                # Milestone 5's new negotiated-congestion loop, kept
+                # opt-in behind this env var specifically so the
+                # existing, validated `route_many_with_repair_and_commit`
+                # stays the default until the new loop's own coverage
+                # (crossing-specific repair strategies, dense-source-
+                # fanout static cleanup) closes the gap documented in
+                # that milestone's Surprises & Discoveries.
+                if not hasattr(self.router, "route_many_with_negotiated_repair_and_commit"):
+                    raise RuntimeError(
+                        "The loaded photonic_router._rust extension does not expose "
+                        "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. "
+                        "Rebuild it with `maturin develop --release`."
+                    )
+                raw_batch_result = self.router.route_many_with_negotiated_repair_and_commit(
+                    batch_jobs,
+                    self.block_radius_cells,
+                    self.commit_radius_cells,
+                    self.core_commit_radius_cells,
+                    int(self.repair_config.max_rounds),
+                    float(self.repair_config.history_weight),
+                    int(self.repair_config.history_increment),
+                )
+            else:
+                raw_batch_result = self.router.route_many_with_repair_and_commit(
+                    batch_jobs,
+                    self.block_radius_cells,
+                    self.commit_radius_cells,
+                    self.core_commit_radius_cells,
+                    int(self.repair_config.max_rounds),
+                    int(self.repair_config.max_victims_per_failure),
+                    float(self.repair_config.history_weight),
+                    int(self.repair_config.history_increment),
+                )
             batch_elapsed_s = time.perf_counter() - batch_start if self.collect_timing else 0.0
             self._record_pipeline_timing("native_route_batch", batch_start)
             t_batch_result_processing_start = self._pipeline_timer_start()
