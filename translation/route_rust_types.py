@@ -293,6 +293,24 @@ class NetEndpointCorrectionClassification:
 
 @dataclass(frozen=True)
 class RipupRerouteConfig:
+    """Resolved 2026-08-25 (`.agent/execplans/2026-08-25-negotiated-repair-engine.md`
+    Milestone 6): `enabled` is not really a general-purpose user choice --
+    every benchmark needs repair to run (even `benes_4x4`/`benes_8x8` fail
+    immediately without it), confirmed unchanged by that plan's Milestone 5/6
+    work. Its one legitimate use is isolating repair *out* for a diagnostic/
+    test baseline (e.g. `test_benchmarks_route_with_astar_only`, which
+    deliberately wants to see what plain A* alone can do). Kept as a real
+    config field rather than replaced with an explicit test-only bypass
+    because that plan's negotiated-congestion loop
+    (`route_many_with_negotiated_repair_and_commit`) did not become the
+    integral, always-on replacement for this dispatch-chain-based repair --
+    it stays opt-in (`PHOTONIC_ROUTER_NEGOTIATED_REPAIR=1`) because it does
+    not yet handle crossing-legality-driven conflicts (as opposed to plain
+    cell-contention conflicts), which the old chain's crossing-specific
+    strategies still need to cover. Revisit this field's shape only if a
+    future plan makes the negotiated loop the sole repair mechanism.
+    """
+
     enabled: bool = True
     max_rounds: int = 4
     max_victims_per_failure: int = 8

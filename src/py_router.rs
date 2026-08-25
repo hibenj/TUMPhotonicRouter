@@ -747,6 +747,16 @@ pub struct PyPhotonicRouter {
     // Milestone 4.
     commit_history_increment: u32,
     commit_history_block_radius_cells: i32,
+    // Set once at the top of `route_many_with_negotiated_repair_and_commit`
+    // from that call's own `history_weight` argument, reset to 0.0 (a no-op
+    // override, matching `AStarConfig`'s own baseline) everywhere else.
+    // Read by `route_single_net_and_commit_native` to weight its A* search
+    // by accumulated history cost -- closing Milestone 5's documented gap
+    // (history cost accumulated via Milestone 4 but never fed back into
+    // search cost, root-caused as why the negotiated loop did not converge
+    // on `benes_16x16` in practical time). See
+    // `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 6.
+    commit_history_weight: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -850,6 +860,23 @@ fn remove_success_static_cleanup(obstacle_map: &mut ObstacleMap, job: &NativeRou
         return;
     }
     obstacle_map.remove_static_keys(&job.static_cleanup_cell_keys);
+}
+
+/// Straight-line source-to-target distance in grid cells: a cheap, no-search
+/// proxy for how much slack a net has to detour around an obstacle without
+/// a drastically worse route, mirroring LiDAR's own `Nets.distance["Euler"]`
+/// (`database/schematic.py`) -- a static per-net port-distance property, not
+/// a computed alternate-path cost. Used by
+/// `route_many_with_negotiated_repair_and_commit`'s conflict-resolution gate:
+/// only displace a blocker that has strictly more of this than the
+/// contesting net, mirroring the other half of LiDAR's `routeSingleNet`
+/// `clear` condition (`cur_net.failed_count == 0 AND owner_slack >
+/// cur_net_slack`). See
+/// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 6.
+fn net_endpoint_distance_cells(job: &NativeRouteJob) -> f64 {
+    let dx = f64::from(job.target.x - job.source.x);
+    let dy = f64::from(job.target.y - job.source.y);
+    (dx * dx + dy * dy).sqrt()
 }
 
 #[derive(Clone)]
@@ -5700,7 +5727,14 @@ impl PyPhotonicRouter {
             &opened_default_owned
         };
         let validation_opened_cell_keys = opened_ref.clone();
-        let mut cfg = self.astar_config(None, None, None)?;
+        // `commit_history_weight` is 0.0 (a no-op override, matching
+        // `AStarConfig`'s own baseline -- this codebase never constructs a
+        // router with a nonzero baseline `history_weight`) outside
+        // `route_many_with_negotiated_repair_and_commit`, so this is
+        // behaviorally neutral for every other caller of this function. See
+        // `.agent/execplans/2026-08-25-negotiated-repair-engine.md`
+        // Milestone 6.
+        let mut cfg = self.astar_config(None, None, Some(self.commit_history_weight))?;
         cfg.require_terminal_straights = true;
         let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or(&[]);
         let collect_timing = self.astar_cfg.collect_detailed_timing;
@@ -8752,25 +8786,37 @@ impl PyPhotonicRouter {
         self.invalidate_meander_base_prefix();
     }
 
-    /// Pairwise negotiated displacement: rip up every net in `blocker_ids`,
-    /// try to commit `job` in the space that frees up, then try to reroute
-    /// and recommit every displaced blocker in turn. Succeeds (returns
-    /// `true`, `batch.repair_count` bumped, all routes left committed) only
-    /// if `job` *and* every blocker can all be routed; any failure at any
-    /// step restores every field the negotiation touched to exactly the
-    /// snapshot taken at entry, so a failed attempt is a pure no-op from the
-    /// caller's perspective. This is `route_many_with_negotiated_repair_and_commit`'s
-    /// entire conflict-resolution mechanism for Milestone 5 -- reusing
-    /// `route_single_net_and_commit_native` (the same primitive
-    /// `try_plain_normal_route` and every other repair strategy already
-    /// uses) rather than a new search mechanism. Does not yet weight the
-    /// reroute searches by history cost (`history_weight` is not threaded
-    /// into these calls, matching `route_single_net_and_commit_native`'s own
-    /// existing default of falling back to `self.astar_cfg`'s baseline);
-    /// Milestone 6 is where this negotiation logic and search-level history
-    /// weighting are meant to be unified into the real distance/cost-based
-    /// heuristic. See
-    /// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 5.
+    /// Negotiated displacement, cascading up to `depth_remaining` levels:
+    /// rip up every net in `blocker_ids`, try to commit `job` in the space
+    /// that frees up, then try to reroute and recommit every displaced
+    /// blocker in turn. If a blocker cannot be rerouted plainly and
+    /// `depth_remaining > 0`, probe *that* blocker for its own blockers and
+    /// recursively attempt to displace them too -- so a chain (`job` needs
+    /// `B`'s spot, `B` needs `C`'s spot, ...) can resolve as one atomic
+    /// negotiation, not just a single pairwise swap. Succeeds (returns
+    /// `true`, `batch.repair_count` bumped once per top-level call, all
+    /// routes left committed) only if `job` and the *entire* resulting
+    /// displacement chain can be routed; any failure at any level restores
+    /// every field the negotiation touched to exactly the snapshot taken at
+    /// that level's own entry (nested restores compose correctly: an inner
+    /// failure already undoes its own sub-chain before an outer failure
+    /// restores everything above it), so a failed attempt at any depth is a
+    /// pure no-op from its caller's perspective. A nested `probe_net_for_repair`
+    /// call's own `batch.failed_net_id`/`failed_error` side effects (meant
+    /// for a *top-level* probe failure to abort the whole batch) are
+    /// explicitly cleared here when used for cascade exploration -- a
+    /// blocker genuinely having no route at all only means this cascade
+    /// branch fails, not that the batch should abort.
+    ///
+    /// This is `route_many_with_negotiated_repair_and_commit`'s entire
+    /// conflict-resolution mechanism -- reusing `route_single_net_and_commit_native`
+    /// (the same primitive `try_plain_normal_route` and every other repair
+    /// strategy already uses) and `probe_net_for_repair` (unchanged, already
+    /// crossing-legality-aware) rather than new search machinery. See
+    /// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestones 5
+    /// (single-level version) and 6 (cascading; the single-level version was
+    /// found insufficient for `benes_16x16`, see Milestone 6's Surprises &
+    /// Discoveries).
     #[allow(clippy::too_many_arguments)]
     fn try_negotiated_displacement(
         &mut self,
@@ -8778,10 +8824,13 @@ impl PyPhotonicRouter {
         job: &NativeRouteJob,
         blocker_ids: &[u64],
         job_by_id: &FxHashMap<u64, NativeRouteJob>,
+        order_by_id: &FxHashMap<u64, usize>,
         block_radius_cells: i32,
         commit_radius_cells: Option<i32>,
         core_radius_cells: Option<i32>,
         collect_native_timing: bool,
+        trace_native_repair: bool,
+        depth_remaining: u32,
     ) -> bool {
         let snapshot = self.snapshot_negotiation_state(batch);
         self.ripup_repair_set_victims(batch, blocker_ids, collect_native_timing);
@@ -8814,7 +8863,7 @@ impl PyPhotonicRouter {
 
         let mut all_blockers_rerouted = true;
         for blocker_id in blocker_ids {
-            let Some(blocker_job) = job_by_id.get(blocker_id) else {
+            let Some(blocker_job) = job_by_id.get(blocker_id).cloned() else {
                 continue;
             };
             let blocker_route_start = native_batch_timer(collect_native_timing);
@@ -8835,8 +8884,47 @@ impl PyPhotonicRouter {
             batch.timings.normal_route_wall_us += native_batch_elapsed_us(blocker_route_start);
             match blocker_result {
                 Ok(blocker_route) => {
-                    remove_success_static_cleanup(&mut self.obstacle_map, blocker_job);
+                    remove_success_static_cleanup(&mut self.obstacle_map, &blocker_job);
                     batch.final_routes.insert(blocker_job.net_id, blocker_route);
+                }
+                Err(_) if depth_remaining > 0 => {
+                    let sub_probe = self.probe_net_for_repair(
+                        batch,
+                        &blocker_job,
+                        order_by_id,
+                        block_radius_cells,
+                        commit_radius_cells,
+                        collect_native_timing,
+                        trace_native_repair,
+                    );
+                    let cascaded = match sub_probe {
+                        Ok(sub_probe) if !sub_probe.candidate_blockers.is_empty() => self
+                            .try_negotiated_displacement(
+                                batch,
+                                &blocker_job,
+                                &sub_probe.candidate_blockers,
+                                job_by_id,
+                                order_by_id,
+                                block_radius_cells,
+                                commit_radius_cells,
+                                core_radius_cells,
+                                collect_native_timing,
+                                trace_native_repair,
+                                depth_remaining - 1,
+                            ),
+                        _ => false,
+                    };
+                    // A nested probe failure (no route exists for
+                    // `blocker_job` even ignoring dynamic obstacles) is only
+                    // this cascade branch failing, not a reason to abort the
+                    // whole batch -- clear the side effect a top-level probe
+                    // failure would otherwise leave behind.
+                    batch.failed_net_id = None;
+                    batch.failed_error = None;
+                    if !cascaded {
+                        all_blockers_rerouted = false;
+                        break;
+                    }
                 }
                 Err(_) => {
                     all_blockers_rerouted = false;
@@ -11061,6 +11149,7 @@ impl PyPhotonicRouter {
             long_straight_congestion_records: Vec::new(),
             commit_history_increment: 0,
             commit_history_block_radius_cells: 0,
+            commit_history_weight: 0.0,
         }
     }
 
@@ -11720,6 +11809,7 @@ impl PyPhotonicRouter {
         // this router instance.
         self.commit_history_increment = 0;
         self.commit_history_block_radius_cells = 0;
+        self.commit_history_weight = 0.0;
         let collect_native_timing = self.astar_cfg.collect_detailed_timing;
         let mut timings = NativeBatchTimings::default();
         let unpack_start = native_batch_timer(collect_native_timing);
@@ -11846,6 +11936,15 @@ impl PyPhotonicRouter {
         self.long_straight_congestion_records.clear();
         self.commit_history_increment = history_increment;
         self.commit_history_block_radius_cells = block_radius_cells;
+        // This engine already threads its own `history_weight` explicitly
+        // into the specific `try_*` methods that need it
+        // (`self.astar_config(Some(false), Some(false), Some(history_weight))`);
+        // `route_single_net_and_commit_native` (used by `try_plain_normal_route`,
+        // "no repair awareness" by design) must stay at its historical,
+        // unweighted baseline here, not pick up a stale value left by a
+        // prior `route_many_with_negotiated_repair_and_commit` call on this
+        // router instance.
+        self.commit_history_weight = 0.0;
         let collect_native_timing = self.astar_cfg.collect_detailed_timing;
         let mut batch = RepairBatchState {
             final_routes: FxHashMap::default(),
@@ -12412,16 +12511,24 @@ impl PyPhotonicRouter {
         history_weight: f64,
         history_increment: u32,
     ) -> PyResult<PyObject> {
-        // Not yet threaded into search cost -- see
-        // `try_negotiated_displacement`'s doc comment. Accepted here so
-        // Python can pass the same kwargs it uses for the old entry point.
-        let _ = history_weight;
         self.obstacle_map.clear_congestion();
         self.obstacle_map.clear_history();
         self.long_straight_congestion_cells.clear();
         self.long_straight_congestion_records.clear();
         self.commit_history_increment = history_increment;
         self.commit_history_block_radius_cells = block_radius_cells;
+        // `commit_history_weight` is set per-attempt below (0.0 for a net's
+        // first try each history-reset epoch, `history_weight` on a retry),
+        // not once here -- a nonzero `history_weight` disables this
+        // codebase's JPS4 fast path entirely (`astar.rs`'s
+        // `Jps4Eligibility`, "history costs are active"), regardless of its
+        // magnitude, so weighting *every* search (including a fresh net's
+        // near-always-uncontested first attempt) made every search fall
+        // back to full-grid A* and was measured to make `benes_16x16`
+        // dramatically slower, not faster -- the opposite of this
+        // milestone's goal. Only a net that has already failed once needs
+        // history-cost steering; see this milestone's Surprises &
+        // Discoveries for the measurements that found this.
         let collect_native_timing = self.astar_cfg.collect_detailed_timing;
         let trace_native_repair = std::env::var_os("PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG").is_some();
         let mut batch = RepairBatchState {
@@ -12473,6 +12580,14 @@ impl PyPhotonicRouter {
             .collect();
 
         const RESET_AFTER_ROUNDS_WITHOUT_PROGRESS: u32 = 2;
+        // How many levels of "blocker needs to displace its own blocker"
+        // try_negotiated_displacement will chase before giving up on a
+        // cascade branch. Bounded to keep one negotiation attempt's cost
+        // predictable; 3 was enough to resolve every case in this
+        // milestone's validation ladder (see Surprises & Discoveries) --
+        // raise it only if a future benchmark's validation shows a chain
+        // longer than this actually occurs.
+        const MAX_DISPLACEMENT_DEPTH: u32 = 3;
         let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
         let mut queue: Vec<u64> = native_jobs.iter().map(|job| job.net_id).collect();
         let mut round = 0u32;
@@ -12487,6 +12602,12 @@ impl PyPhotonicRouter {
                     .get(&net_id)
                     .expect("every queued net_id came from job_by_id's own keys")
                     .clone();
+                let my_failed_count = *failed_counts.get(&net_id).unwrap_or(&0);
+                self.commit_history_weight = if my_failed_count == 0 {
+                    0.0
+                } else {
+                    history_weight
+                };
 
                 if let PlainRouteOutcome::Routed = self.try_plain_normal_route(
                     &mut batch,
@@ -12544,18 +12665,27 @@ impl PyPhotonicRouter {
                     Ok(CommitIfCleanOutcome::NotResolved) => {}
                 }
 
-                let my_failed_count = *failed_counts.get(&net_id).unwrap_or(&0);
+                let my_slack = net_endpoint_distance_cells(&job);
+                let all_blockers_have_more_slack = probe.candidate_blockers.iter().all(|blocker_id| {
+                    job_by_id
+                        .get(blocker_id)
+                        .is_some_and(|blocker_job| net_endpoint_distance_cells(blocker_job) > my_slack)
+                });
                 let displaced = !probe.candidate_blockers.is_empty()
                     && my_failed_count == 0
+                    && all_blockers_have_more_slack
                     && self.try_negotiated_displacement(
                         &mut batch,
                         &job,
                         &probe.candidate_blockers,
                         &job_by_id,
+                        &order_by_id,
                         block_radius_cells,
                         commit_radius_cells,
                         core_radius_cells,
                         collect_native_timing,
+                        trace_native_repair,
+                        MAX_DISPLACEMENT_DEPTH,
                     );
 
                 if displaced {
