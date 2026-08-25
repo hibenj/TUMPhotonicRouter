@@ -20,26 +20,34 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-25
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `229cc76`, plus this docs-only close-out commit. Two large
+- Current HEAD: `8fdd435`, plus this docs-only close-out commit. Two large
   ExecPlans completed today, one commit per milestone throughout:
   `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
   (Milestones 1-5 of 6; Milestone 6, final validation/retrospective, remains
   open, deprioritized, not abandoned) and
   `.agent/execplans/2026-08-25-negotiated-repair-engine.md` (all 8
-  milestones complete). See Completed ExecPlans below for both.
+  milestones complete) -- plus one real bug found and fixed outside any
+  ExecPlan afterward (a routed net's own path could cross itself
+  undetected; see Resolved Findings entry 1, commits `a4baba7`/`8fdd435`).
 - **No active ExecPlan right now.** The repository owner is directing next
   steps turn by turn; see Next Engineering Step for the real current
   candidates.
-- Current test baselines: `cargo test --lib` `396 passed, 0 failed`;
-  `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 328 passed, 1 skipped`
-  (net count changed from the prior `335 passed` snapshot only because of
-  test additions/removals in intervening plans, not a regression -- every
-  one of the 11 failures is the same, already-documented set; see Current
-  Findings below). Benchmark ladder as of today: `benes_4x4`,
-  `multiportmmi_8x8` (stable baseline; bare defaults still fails, see
-  Current Findings), `benes_8x8`, and `benes_16x16` (stable baseline) all
-  pass cleanly under the default engine. `multiportmmi_16x16` (stable
-  baseline) still fails -- see Current Findings, updated today.
+- Current test baselines: `cargo test --lib` `401 passed, 0 failed` (5 new,
+  covering the self-intersection fix); `PYTHONPATH=. .venv/bin/pytest -q`
+  `11 failed, 334 passed, 1 skipped` (net count changed from prior
+  snapshots only because of test additions in intervening work, not a
+  regression -- every one of the 11 failures is the same, already-
+  documented set; see Current Findings below).
+- **Full benchmark ladder re-run 2026-08-25, after the self-intersection
+  fix, confirmed clean end-to-end**: `benes_4x4` (plain defaults) passes;
+  `multiportmmi_8x8` bare CLI defaults fails byte-identically to its
+  already-documented pre-existing failure (`n_33`/`n_52` endpoint
+  correction, see Current Findings); `multiportmmi_8x8` stable baseline,
+  `benes_8x8` stable baseline, and `benes_16x16` stable baseline (3.8 min)
+  all pass cleanly under the default engine, `self_intersecting_route_count=0`
+  where applicable; `multiportmmi_16x16` stable baseline fails byte-
+  identically to its already-documented, known gap (`n_49`, see Current
+  Findings). Zero regressions and zero surprises anywhere in the ladder.
 - **Future Architecture Initiative: complete.** `.agent/PROJECT_GOAL.md`'s
   "Future Architecture Initiative" (giving routing-pipeline stages
   explicit `Protocol`/`trait` interfaces), per the recommended order in
@@ -439,7 +447,49 @@ restructuring; the third (below, in Resolved Findings) is fixed:
 
 ## Resolved Findings
 
-1. **`multiportmmi_8x8` bare CLI defaults, `n_67`/`n_70`/`n_71` cluster --
+1. **A routed net's own path could cross itself, undetected -- fixed
+   2026-08-25**, not part of any ExecPlan (found via the repository
+   owner's direct visual inspection of a GDS, `build/routed_multiportmmi_8x8.gds`,
+   while investigating fanout lane spacing under
+   `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS=6` -- see the
+   negotiated-repair-engine plan's own Milestone 7 for that spacing
+   investigation, separate from this finding). Net `n_31` needed to
+   legally cross four other nets in a tight vertical corridor
+   (`x~750`, `y` 148 to 182, ~12-14 cells apart) and the raw A* result
+   looped back and crossed its own earlier diagonal segment before
+   continuing to its target -- confirmed via direct `shapely`
+   `Polygon.is_valid`/`LineString.is_simple` inspection of the rendered
+   GDS geometry and the raw `route_obj.cells`, not assumed. Root cause:
+   this codebase's A* search state is `(x, y, angle)`, so revisiting a
+   cell at a different heading is a legitimate, distinct state (real
+   crossings need exactly this), but nothing anywhere -- search,
+   crossing legality, endpoint correction, or verification -- ever
+   checked whether the *resulting physical path* crosses itself. Fixed
+   in two parts, both committed: (1) `src/astar.rs`'s
+   `polyline_self_intersects`, rejecting a self-crossing candidate at
+   every place a `RouteResult` gets constructed (3 sites), treating it
+   as an ordinary "no route found" so the existing dispatch/repair
+   fallbacks take over (commit `a4baba7`); (2)
+   `translation/photonic_verification.py`'s `_verify_self_intersecting_routes`,
+   checking the final corrected centerline as defense in depth, since
+   endpoint correction could in principle introduce the same class of
+   defect downstream of the search (commit `8fdd435`). Both checks are
+   deliberately more permissive than the textbook "is this polyline
+   simple" definition: a route revisiting an *exact* earlier vertex
+   (e.g. a one-cell overshoot-and-return to satisfy a required terminal
+   heading) is legitimate and not flagged -- the first version of the
+   Rust check was too strict, broke
+   `test_rust_batch_repair_rips_and_reroutes_dynamic_blocker`, and was
+   refined before landing; see `a4baba7`'s own commit message for the
+   exact distinction (transversal crossing / T-junction / collinear
+   overlap of more than a point, vs. a shared-vertex touch). Verified
+   end-to-end: the real repro case (`multiportmmi_8x8`, reduced fanout
+   lane spacing) now routes 111/111 with a genuinely different path for
+   `n_31` and zero invalid polygons in the GDS, instead of silently
+   committing the loop; full benchmark ladder re-run afterward (see
+   Current Snapshot) shows zero regressions anywhere.
+
+2. **`multiportmmi_8x8` bare CLI defaults, `n_67`/`n_70`/`n_71` cluster --
    fixed 2026-08-20**, see
    `.agent/execplans/2026-08-20-ripup-repair-orchestration-restructuring.md`.
    Was: `RuntimeError: No route found for n_70` (`candidate_blockers=[70]`),
