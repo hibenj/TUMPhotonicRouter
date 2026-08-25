@@ -1586,6 +1586,10 @@ impl IndexedOpenSet {
         Some(popped)
     }
 
+    fn peek(&self) -> Option<&OpenEntry> {
+        self.heap.first()
+    }
+
     fn sift_up(&mut self, mut position: usize) {
         while position > 0 {
             let parent = (position - 1) / 2;
@@ -1672,6 +1676,13 @@ impl OpenSet {
         match self {
             Self::Duplicate(heap) => heap.pop(),
             Self::Indexed(heap) => heap.pop(),
+        }
+    }
+
+    fn peek(&self) -> Option<&OpenEntry> {
+        match self {
+            Self::Duplicate(heap) => heap.peek(),
+            Self::Indexed(heap) => heap.peek(),
         }
     }
 
@@ -4928,36 +4939,63 @@ fn route_single_net_with_bounds_crossing(
     None
 }
 
-/// Milestone 2 bounded prototype for
+/// Milestone 3 production implementation of the unified A* kernel for
 /// `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`.
 ///
-/// Not wired into any production call site -- that migration is Milestone
-/// 3/4's job. This module exists to validate, against real obstacle maps and
-/// the real crossing-legality functions the production crossing kernel above
-/// already uses (`crossing_no_contact_outcome`, `crossing_move_outcome_with_segments`),
-/// that a single search loop can behave exactly like today's plain kernel
-/// (`route_single_net_with_bounds_dynamic_expansion`) when crossings are
-/// disabled, and can insert legal crossings via one pluggable
-/// `CrossingLegalityHook` when they are enabled -- without paying the
-/// crossing kernel's per-state sparse-storage cost for states that never
-/// touch a crossing. See the plan's Milestone 2 write-up for the full design
-/// rationale (two-tier storage, why the hook is only called on a blocked
-/// cell or an already-active post-crossing corridor state).
+/// Not wired into any production call site yet -- that migration is
+/// Milestone 4's job, once this kernel has been validated against the full
+/// benchmark ladder. Until then every item below is reachable only from this
+/// module's own tests, so `#[allow(dead_code)]` on the module suppresses the
+/// resulting "never constructed"/"never used" warnings deliberately, not
+/// accidentally.
 ///
-/// Known, intentionally out-of-scope gaps for this bounded prototype, left
-/// for Milestone 3's full production implementation:
-/// - `AStarConfig::use_indexed_heap` is not honored by either tier here (both
-///   the plain kernel and this prototype default to a plain `BinaryHeap`
-///   when it is `false`, which is the default, so this does not affect the
-///   parity tests below).
+/// Structurally this is `route_single_net_with_bounds_dynamic_expansion`
+/// (the plain kernel, above) with exactly one branch point added: on each
+/// accepted primitive, if the destination is free and the current state has
+/// never touched a crossing, take the identical dense-array fast path the
+/// plain kernel always takes -- no hook call, no allocation, same
+/// `OpenSet`/`DenseSearchStorage`. Otherwise, and only otherwise, consult a
+/// pluggable `CrossingLegalityHook` and -- if it accepts -- store the
+/// resulting state in a small side table (Tier 2) instead of the dense
+/// array (Tier 1). See the plan's Milestone 2 write-up for the full design
+/// rationale.
+///
+/// Milestone 2's bounded prototype left two gaps open; both are closed here:
+/// - `AStarConfig::use_indexed_heap` is now honored for Tier 1, by reusing
+///   the plain kernel's own `OpenSet`/`IndexedOpenSet` unchanged. Tier 2
+///   (a small minority of states in any real search) still uses a plain
+///   `BinaryHeap<OpenEntry>`, matching what today's *whole* crossing kernel
+///   already does unconditionally for every state -- so Tier 2 is never
+///   slower than what production runs today, only smaller. The two heaps
+///   are merged by peeking both and popping whichever is better, which is
+///   why `OpenSet`/`IndexedOpenSet` gained a `peek` method.
 /// - `crossing_candidate_hits_active_local_crossing_reservation`'s local
-///   self-overlap guard is not reproduced (irrelevant to the single-partner
-///   fixtures this module tests, but load-bearing for routes that cross the
-///   same partner more than once).
-#[cfg(test)]
-mod unified_kernel_prototype {
+///   self-overlap guard is reproduced as `unified_candidate_hits_active_local_crossing_reservation`,
+///   walking `UnifiedExtendedNode`'s parent chain instead of the crossing
+///   kernel's flat `nodes` arena. Because Tier-1 (dense) states never carry
+///   any reservation, this walk stops as soon as it reaches one -- bounded
+///   by how far into an active crossing corridor the current state is, not
+///   by the whole route's length the way today's crossing kernel's
+///   equivalent walk is.
+///
+/// A correctness fix made in this milestone, not present in Milestone 2's
+/// prototype: the "is this primitive even a valid continuation of an active
+/// post-crossing corridor" rejection (angle must match
+/// `pending_after_crossing_angle`; the primitive must complete or correctly
+/// continue the required straight run) now happens in the kernel loop
+/// itself, mirroring where today's crossing kernel does it, *before* the
+/// hook is consulted -- not only inside `crossing_move_outcome_with_segments`
+/// (which does still also check it, redundantly, as a safety net for any
+/// other caller). Milestone 2's prototype called `crossing_no_contact_outcome`
+/// -- which does *not* perform this check -- directly on the cheap-path
+/// branch without it, which would have silently accepted a primitive that
+/// breaks a pending straight-run requirement whenever that primitive's
+/// destination happened to be free. The bounded prototype's fixtures never
+/// exercised this path, so the gap was invisible there; it is closed now
+/// before this kernel is trusted with real benchmarks in Milestone 4.
+#[allow(dead_code)]
+mod unified_kernel {
     use super::*;
-    use crate::primitives::{create_photonic_primitive_library, PrimitiveLibraryConfig};
 
     /// Every state the unified kernel visits carries one of these. The
     /// `Default` value means "never touched a crossing" -- the only value
@@ -4965,7 +5003,7 @@ mod unified_kernel_prototype {
     /// the state is inside, or just past, an active crossing corridor, and
     /// lives in Tier 2 (the small sparse side table) instead.
     #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-    struct CrossingExtension {
+    pub(super) struct CrossingExtension {
         crossed_mask: u64,
         next_partner_index: u8,
         straight_run_cells: i32,
@@ -5021,16 +5059,17 @@ mod unified_kernel_prototype {
     /// current state already carries a non-default `CrossingExtension` --
     /// never on a step that is both free and extension-free, which is what
     /// keeps crossing-disabled routing from paying for this call at all.
-    trait CrossingLegalityHook {
+    pub(super) trait CrossingLegalityHook {
         /// Returns `None` to reject the step (no legal crossing here, and
         /// this is not an active post-crossing corridor state either -- the
         /// unified kernel rejects it exactly like the plain kernel rejects a
-        /// blocked cell). Returns `Some((extension, extra_cost))` to accept
-        /// it: `extension` is the `CrossingExtension` the destination state
-        /// must now carry, and `extra_cost` is the already-priced cost this
-        /// step adds on top of the primitive's own base step cost (0.0 for a
-        /// step that only continues an existing post-crossing corridor
-        /// without crossing anything new).
+        /// blocked cell). Returns `Some((outcome, extra_cost))` to accept it:
+        /// `outcome` carries the `CrossingExtension` the destination state
+        /// must now carry plus any local-crossing-reservation bookkeeping,
+        /// and `extra_cost` is the already-priced cost this step adds on top
+        /// of the primitive's own base step cost (0.0 for a step that only
+        /// continues an existing post-crossing corridor without crossing
+        /// anything new).
         #[allow(clippy::too_many_arguments)]
         fn evaluate(
             &self,
@@ -5041,15 +5080,19 @@ mod unified_kernel_prototype {
             primitive_crossing: &PrimitiveCrossingMetadata,
             footprint_free: bool,
             stats: &mut RouteSearchStats,
-        ) -> Option<(CrossingExtension, f64)>;
+        ) -> Option<(CrossingMoveOutcome, f64)>;
 
-        /// Optional search-guidance bonus added to a next state's f-score,
-        /// mirroring today's `crossing_progress_heuristic`. Zero when
-        /// crossings are disabled.
+        /// Whether `extension` satisfies any extra crossing-specific goal
+        /// condition (today: `require_all_partners`'s "every partner has
+        /// been crossed" requirement). Always satisfied when crossings are
+        /// disabled.
         fn goal_extra_ok(&self, _extension: CrossingExtension) -> bool {
             true
         }
 
+        /// Optional search-guidance bonus added to a next state's f-score,
+        /// mirroring today's `crossing_progress_heuristic`. Zero when
+        /// crossings are disabled.
         fn heuristic_bonus(&self, _next_state: State, _next_extension: CrossingExtension) -> f64 {
             0.0
         }
@@ -5061,7 +5104,7 @@ mod unified_kernel_prototype {
     /// kernel's fast path, which never calls this hook at all) or, if
     /// genuinely blocked, this hook always rejects it -- identical to the
     /// plain kernel's own `if !footprint_free { continue; }`.
-    struct NoCrossingHook;
+    pub(super) struct NoCrossingHook;
 
     impl CrossingLegalityHook for NoCrossingHook {
         fn evaluate(
@@ -5073,32 +5116,31 @@ mod unified_kernel_prototype {
             _primitive_crossing: &PrimitiveCrossingMetadata,
             _footprint_free: bool,
             _stats: &mut RouteSearchStats,
-        ) -> Option<(CrossingExtension, f64)> {
+        ) -> Option<(CrossingMoveOutcome, f64)> {
             None
         }
     }
 
     /// Crossings enabled: reuses today's crossing kernel's own legality
     /// functions (`crossing_no_contact_outcome`, `crossing_move_outcome_with_segments`)
-    /// unchanged, so this prototype validates the unified kernel's
-    /// storage/dispatch architecture against the real crossing-legality
-    /// logic, not a stand-in for it.
-    struct LiveCrossingHook<'a> {
-        obstacle_map: &'a ObstacleMap,
-        dense_grid: &'a DenseRoutingGrid,
-        crossing: &'a CrossingSearchConfig,
-        required_margin: i32,
-        capped_required_margin: i32,
-        reservation_margin: i32,
-        reservation_open_cells: Option<&'a FxHashSet<CellKey>>,
-        partner_index_by_id: &'a FxHashMap<NetId, usize>,
-        partner_segments: &'a [Vec<PartnerPathSegment>],
-        dynamic_core_owners: &'a DenseDynamicCoreOwnerGrid,
-        ignore_dynamic_obstacles: bool,
-        grid_size_um: f64,
-        all_partner_mask: u64,
-        all_partner_count: u8,
-        search_start: Instant,
+    /// unchanged, so this kernel is validated against the real
+    /// crossing-legality logic, not a stand-in for it.
+    pub(super) struct LiveCrossingHook<'a> {
+        pub(super) obstacle_map: &'a ObstacleMap,
+        pub(super) dense_grid: &'a DenseRoutingGrid,
+        pub(super) crossing: &'a CrossingSearchConfig,
+        pub(super) required_margin: i32,
+        pub(super) capped_required_margin: i32,
+        pub(super) reservation_margin: i32,
+        pub(super) reservation_open_cells: Option<&'a FxHashSet<CellKey>>,
+        pub(super) partner_index_by_id: &'a FxHashMap<NetId, usize>,
+        pub(super) partner_segments: &'a [Vec<PartnerPathSegment>],
+        pub(super) dynamic_core_owners: &'a DenseDynamicCoreOwnerGrid,
+        pub(super) ignore_dynamic_obstacles: bool,
+        pub(super) grid_size_um: f64,
+        pub(super) all_partner_mask: u64,
+        pub(super) all_partner_count: u8,
+        pub(super) search_start: Instant,
     }
 
     impl CrossingLegalityHook for LiveCrossingHook<'_> {
@@ -5111,7 +5153,7 @@ mod unified_kernel_prototype {
             primitive_crossing: &PrimitiveCrossingMetadata,
             footprint_free: bool,
             stats: &mut RouteSearchStats,
-        ) -> Option<(CrossingExtension, f64)> {
+        ) -> Option<(CrossingMoveOutcome, f64)> {
             let current_key = current_extension.to_key(state);
             let extra_halo_free = footprint_free
                 && !self.ignore_dynamic_obstacles
@@ -5161,7 +5203,7 @@ mod unified_kernel_prototype {
                 return None;
             }
             let extra_cost = f64::from(outcome.crossing_count) * self.crossing.crossing_loss;
-            Some((CrossingExtension::from_outcome(&outcome), extra_cost))
+            Some((outcome, extra_cost))
         }
 
         fn goal_extra_ok(&self, extension: CrossingExtension) -> bool {
@@ -5180,49 +5222,123 @@ mod unified_kernel_prototype {
         }
     }
 
+    /// Owns everything a `LiveCrossingHook` borrows from, so tests can build
+    /// one context and construct as many short-lived hooks (plain or
+    /// call-counting) from it as they need.
+    pub(super) struct CrossingHookContext {
+        dense_grid: DenseRoutingGrid,
+        dynamic_core_owners: DenseDynamicCoreOwnerGrid,
+        partner_index_by_id: FxHashMap<NetId, usize>,
+        partner_segments: Vec<Vec<PartnerPathSegment>>,
+        required_margin: i32,
+        capped_required_margin: i32,
+        all_partner_mask: u64,
+        all_partner_count: u8,
+    }
+
+    impl CrossingHookContext {
+        pub(super) fn build(
+            obstacle_map: &ObstacleMap,
+            primitives: &PrimitiveLibrary,
+            config: &AStarConfig,
+            crossing: &CrossingSearchConfig,
+            full_bounds: RoutingBounds,
+        ) -> Self {
+            let dense_grid = DenseRoutingGrid::from_obstacle_map_with_dynamic_expansion(
+                obstacle_map,
+                full_bounds,
+                None,
+                config.max_dense_obstacle_cells,
+                config.ignore_dynamic_obstacles,
+                config.history_weight > 0.0,
+                config.long_straight_congestion_weight > 0.0,
+                0,
+                None,
+            )
+            .expect("dense grid should build for a valid obstacle map");
+            let primitive_buckets: [&[Primitive]; 8] =
+                std::array::from_fn(|angle| primitives.get_primitives_for_angle(angle as u8));
+            let primitive_crossing_metadata: Vec<Vec<PrimitiveCrossingMetadata>> =
+                primitive_buckets
+                    .iter()
+                    .map(|bucket| bucket.iter().map(primitive_crossing_metadata).collect())
+                    .collect();
+            let crossing_lookup_bounds = full_bounds.expanded_and_clamped(
+                max_crossing_witness_offset(&primitive_crossing_metadata),
+                obstacle_map.width(),
+                obstacle_map.height(),
+            );
+            let dynamic_core_owners =
+                DenseDynamicCoreOwnerGrid::from_obstacle_map(obstacle_map, crossing_lookup_bounds)
+                    .expect("owner grid should build for a valid obstacle map");
+            let required_margin = crossing_required_margin_cells(
+                crossing.crossing_half_size_cells,
+                crossing.min_straight_cells,
+                crossing.bend_runout_cells,
+            );
+            let capped_required_margin = required_margin.max(1);
+            let all_partner_mask = if crossing.require_all_partners {
+                (1u64 << crossing.partners.len()) - 1
+            } else {
+                0
+            };
+            let all_partner_count = u8::try_from(crossing.partners.len()).unwrap_or(u8::MAX);
+            let partner_index_by_id = crossing
+                .partners
+                .iter()
+                .enumerate()
+                .map(|(idx, partner)| (partner.net_id, idx))
+                .collect();
+            let partner_segments = crossing_partner_path_segments(crossing);
+            Self {
+                dense_grid,
+                dynamic_core_owners,
+                partner_index_by_id,
+                partner_segments,
+                required_margin,
+                capped_required_margin,
+                all_partner_mask,
+                all_partner_count,
+            }
+        }
+
+        pub(super) fn hook<'a>(
+            &'a self,
+            obstacle_map: &'a ObstacleMap,
+            crossing: &'a CrossingSearchConfig,
+            config: &AStarConfig,
+            grid_size_um: f64,
+        ) -> LiveCrossingHook<'a> {
+            LiveCrossingHook {
+                obstacle_map,
+                dense_grid: &self.dense_grid,
+                crossing,
+                required_margin: self.required_margin,
+                capped_required_margin: self.capped_required_margin,
+                reservation_margin: crossing.crossing_half_size_cells,
+                reservation_open_cells: None,
+                partner_index_by_id: &self.partner_index_by_id,
+                partner_segments: &self.partner_segments,
+                dynamic_core_owners: &self.dynamic_core_owners,
+                ignore_dynamic_obstacles: config.ignore_dynamic_obstacles,
+                grid_size_um,
+                all_partner_mask: self.all_partner_mask,
+                all_partner_count: self.all_partner_count,
+                search_start: Instant::now(),
+            }
+        }
+    }
+
+    /// Identifies a state the unified kernel has reached: either a Tier-1
+    /// dense-array index, or an index into the Tier-2 `UnifiedExtendedNode`
+    /// arena. Reused as the `idx` payload of the existing `OpenEntry` for
+    /// both tiers' open sets -- exactly how today's crossing kernel already
+    /// reuses `OpenEntry.idx` to mean "index into its own `nodes` arena"
+    /// rather than a dense grid index.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum UnifiedOpenRef {
+    pub(super) enum UnifiedOpenRef {
         Dense(usize),
         Extended(usize),
-    }
-
-    struct UnifiedOpenEntry {
-        f_score: f64,
-        tie_score: f64,
-        g_score: f64,
-        counter: u32,
-        generation: u32,
-        node: UnifiedOpenRef,
-    }
-
-    impl Eq for UnifiedOpenEntry {}
-
-    impl PartialEq for UnifiedOpenEntry {
-        fn eq(&self, other: &Self) -> bool {
-            self.f_score == other.f_score && self.counter == other.counter
-        }
-    }
-
-    impl Ord for UnifiedOpenEntry {
-        fn cmp(&self, other: &Self) -> Ordering {
-            other
-                .f_score
-                .partial_cmp(&self.f_score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| {
-                    other
-                        .tie_score
-                        .partial_cmp(&self.tie_score)
-                        .unwrap_or(Ordering::Equal)
-                })
-                .then_with(|| other.counter.cmp(&self.counter))
-        }
-    }
-
-    impl PartialOrd for UnifiedOpenEntry {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -5237,17 +5353,59 @@ mod unified_kernel_prototype {
         parent: UnifiedParentRef,
         primitive_id: u16,
         g_score: f64,
+        active_local_reservation_keys: Vec<CellKey>,
+        pending_local_reservation_keys: Vec<CellKey>,
     }
 
-    /// The unified kernel. Structurally this is `route_single_net_with_bounds_dynamic_expansion`
-    /// with exactly one branch point added: on each accepted primitive, if
-    /// the destination is free and the current state has never touched a
-    /// crossing, take the same dense-array fast path the plain kernel always
-    /// takes (no hook call, no allocation). Otherwise, and only otherwise,
-    /// consult `hook` and -- if it accepts -- store the resulting state in a
-    /// small side table instead of the dense array.
+    /// Tier 2's local self-overlap guard: today's crossing kernel's
+    /// `crossing_candidate_hits_active_local_crossing_reservation`, ported to
+    /// walk `UnifiedExtendedNode`'s parent chain instead of a flat `nodes`
+    /// arena. Tier-1 (dense) states never carry a reservation, so the walk
+    /// stops as soon as it reaches one -- bounded by how far into an active
+    /// crossing corridor the current state is, not by the whole route.
+    fn unified_candidate_hits_active_local_crossing_reservation(
+        current: UnifiedOpenRef,
+        state: State,
+        primitive_crossing: &PrimitiveCrossingMetadata,
+        extended_nodes: &[UnifiedExtendedNode],
+    ) -> bool {
+        let current_key = pack_xy(state.x, state.y);
+        let mut candidate_keys = FxHashSet::default();
+        for witness in &primitive_crossing.witnesses {
+            let key = pack_xy(state.x + witness.offset.0, state.y + witness.offset.1);
+            if key != current_key {
+                candidate_keys.insert(key);
+            }
+        }
+        if candidate_keys.is_empty() {
+            return false;
+        }
+
+        let mut cursor = current;
+        loop {
+            let UnifiedOpenRef::Extended(ext_idx) = cursor else {
+                // Tier-1 (dense) states never carry a local reservation.
+                return false;
+            };
+            let Some(node) = extended_nodes.get(ext_idx) else {
+                return false;
+            };
+            for key in &node.active_local_reservation_keys {
+                if candidate_keys.contains(key) {
+                    return true;
+                }
+            }
+            cursor = match node.parent {
+                UnifiedParentRef::Dense(idx) => UnifiedOpenRef::Dense(idx),
+                UnifiedParentRef::Extended(idx) => UnifiedOpenRef::Extended(idx),
+            };
+        }
+    }
+
+    /// The unified kernel. See this module's own doc comment above for the
+    /// full design summary.
     #[allow(clippy::too_many_arguments)]
-    fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
+    pub(super) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
         obstacle_map: &ObstacleMap,
         primitives: &PrimitiveLibrary,
         source: State,
@@ -5341,18 +5499,19 @@ mod unified_kernel_prototype {
             FxHashMap::default();
         let mut extended_closed: FxHashSet<(State, CrossingExtension)> = FxHashSet::default();
 
-        let mut open_set: BinaryHeap<UnifiedOpenEntry> = BinaryHeap::new();
-        open_set.push(UnifiedOpenEntry {
+        let mut tier1_open = OpenSet::new(config.use_indexed_heap, storage.state_count());
+        let mut tier2_open: BinaryHeap<OpenEntry> = BinaryHeap::new();
+        tier1_open.push(OpenEntry {
             f_score: search_heuristic.estimate(source)
                 + hook.heuristic_bonus(source, CrossingExtension::default()),
             tie_score: heap_tie_score(0.0, config.heap_tie_breaker),
             g_score: 0.0,
             counter: source_generation,
             generation: source_generation,
-            node: UnifiedOpenRef::Dense(source_idx),
+            idx: source_idx,
         });
         stats.heap_pushes += 1;
-        stats.max_heap_size = stats.max_heap_size.max(open_set.len());
+        stats.max_heap_size = stats.max_heap_size.max(tier1_open.len());
 
         let mut iterations = 0usize;
         let search_loop_start = if config.collect_detailed_timing {
@@ -5363,8 +5522,20 @@ mod unified_kernel_prototype {
         let search_timeout_start = (config.max_search_time_ms > 0).then(Instant::now);
 
         loop {
-            let Some(entry) = open_set.pop() else {
-                break;
+            let take_tier1 = match (tier1_open.peek(), tier2_open.peek()) {
+                (Some(t1), Some(t2)) => entry_is_better(t1, t2) || t1 == t2,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            let (entry, current_ref) = if take_tier1 {
+                let entry = tier1_open.pop().expect("peeked Some above");
+                let idx = entry.idx;
+                (entry, UnifiedOpenRef::Dense(idx))
+            } else {
+                let entry = tier2_open.pop().expect("peeked Some above");
+                let idx = entry.idx;
+                (entry, UnifiedOpenRef::Extended(idx))
             };
             stats.heap_pops += 1;
             iterations += 1;
@@ -5380,11 +5551,17 @@ mod unified_kernel_prototype {
                 if let Some(search_loop_start) = search_loop_start.as_ref() {
                     stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
                 }
-                trace_search_timeout("unified_astar", config, stats, iterations, open_set.len());
+                trace_search_timeout(
+                    "unified_astar",
+                    config,
+                    stats,
+                    iterations,
+                    tier1_open.len() + tier2_open.len(),
+                );
                 return None;
             }
 
-            let (state, current_extension, current_g) = match entry.node {
+            let (state, current_extension, current_g) = match current_ref {
                 UnifiedOpenRef::Dense(idx) => {
                     if storage.best_generation[idx] != entry.generation {
                         stats.skipped_duplicate_heap_entries += 1;
@@ -5436,7 +5613,7 @@ mod unified_kernel_prototype {
                 }
                 return reconstruct_route_unified(
                     source_idx,
-                    entry.node,
+                    current_ref,
                     current_g,
                     target,
                     primitives,
@@ -5446,7 +5623,7 @@ mod unified_kernel_prototype {
                 );
             }
 
-            match entry.node {
+            match current_ref {
                 UnifiedOpenRef::Dense(idx) => storage.closed.set(idx)?,
                 UnifiedOpenRef::Extended(_) => {
                     extended_closed.insert((state, current_extension));
@@ -5484,6 +5661,36 @@ mod unified_kernel_prototype {
                     continue;
                 }
 
+                // Mirrors today's crossing kernel: a state already inside an
+                // active post-crossing corridor may only continue with a
+                // primitive that keeps heading the required direction and
+                // either completes or correctly extends the required
+                // straight run. This is checked here, before the hook is
+                // even consulted, exactly like today's crossing kernel --
+                // not solely inside the reused legality functions, one of
+                // which (`crossing_no_contact_outcome`) does not perform
+                // this check on its own.
+                let pending_initial_run =
+                    primitive_initial_straight_run_distance(primitive, state.angle);
+                let pending_completed_by_primitive = current_extension.pending_after_crossing_cells
+                    > 0
+                    && pending_initial_run + 1.0e-9
+                        >= f64::from(current_extension.pending_after_crossing_cells);
+                if current_extension.pending_after_crossing_cells > 0 {
+                    if current_extension.pending_after_crossing_angle != state.angle {
+                        stats.crossing_reject_pending_straight += 1;
+                        continue;
+                    }
+                    if !pending_completed_by_primitive
+                        && !(primitive_class_is_straight(primitive_class)
+                            && primitive.end_angle % 8 == state.angle
+                            && pending_initial_run > 0.0)
+                    {
+                        stats.crossing_reject_pending_straight += 1;
+                        continue;
+                    }
+                }
+
                 let next_x = state.x.checked_add(primitive.dx)?;
                 let next_y = state.y.checked_add(primitive.dy)?;
                 let next_angle = primitive.end_angle % 8;
@@ -5516,7 +5723,7 @@ mod unified_kernel_prototype {
                 if footprint_free && current_extension.is_default() {
                     // Tier 1: identical fast path to today's plain kernel --
                     // dense array storage, no crossing bookkeeping, no hook call.
-                    let UnifiedOpenRef::Dense(current_dense_idx) = entry.node else {
+                    let UnifiedOpenRef::Dense(current_dense_idx) = current_ref else {
                         unreachable!(
                             "tier-1 fast path only runs from a default-extension \
                              state, which is always stored densely"
@@ -5587,22 +5794,24 @@ mod unified_kernel_prototype {
                     storage.best_generation[next_idx] = generation;
                     stats.best_cost_updates += 1;
                     stats.parent_updates += 1;
-                    open_set.push(UnifiedOpenEntry {
+                    let queued = tier1_open.push(OpenEntry {
                         f_score: tentative_g + search_heuristic.estimate(next_state),
                         tie_score: heap_tie_score(tentative_g, config.heap_tie_breaker),
                         g_score: tentative_g,
                         counter: generation,
                         generation,
-                        node: UnifiedOpenRef::Dense(next_idx),
+                        idx: next_idx,
                     });
-                    stats.heap_pushes += 1;
-                    stats.max_heap_size = stats.max_heap_size.max(open_set.len());
+                    if queued {
+                        stats.heap_pushes += 1;
+                        stats.max_heap_size = stats.max_heap_size.max(tier1_open.len());
+                    }
                 } else {
                     // Tier 2: this step is either genuinely blocked, or the
                     // current state already carries active post-crossing
                     // bookkeeping -- only here does the pluggable legality
                     // hook get called.
-                    let Some((next_extension, extra_cost)) = hook.evaluate(
+                    let Some((outcome, extra_cost)) = hook.evaluate(
                         state,
                         current_extension,
                         primitive,
@@ -5620,6 +5829,7 @@ mod unified_kernel_prototype {
                         }
                         continue;
                     };
+                    let next_extension = CrossingExtension::from_outcome(&outcome);
 
                     let key = (next_state, next_extension);
                     if extended_closed.contains(&key) {
@@ -5674,11 +5884,51 @@ mod unified_kernel_prototype {
                         stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                         continue;
                     }
+                    if unified_candidate_hits_active_local_crossing_reservation(
+                        current_ref,
+                        state,
+                        primitive_crossing,
+                        &extended_nodes,
+                    ) {
+                        stats.footprint_rejects += 1;
+                        stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                        continue;
+                    }
 
-                    let parent = match entry.node {
+                    let parent = match current_ref {
                         UnifiedOpenRef::Dense(idx) => UnifiedParentRef::Dense(idx),
                         UnifiedOpenRef::Extended(ext_idx) => UnifiedParentRef::Extended(ext_idx),
                     };
+                    let node_pending_local_reservation_keys: &[CellKey] = match current_ref {
+                        UnifiedOpenRef::Dense(_) => &[],
+                        UnifiedOpenRef::Extended(ext_idx) => {
+                            &extended_nodes[ext_idx].pending_local_reservation_keys
+                        }
+                    };
+                    let mut active_local_reservation_keys =
+                        Vec::with_capacity(outcome.active_reservation_keys.len());
+                    let mut pending_local_reservation_keys =
+                        Vec::with_capacity(outcome.pending_reservation_keys.len());
+                    if current_extension.pending_after_crossing_cells > 0
+                        && pending_completed_by_primitive
+                    {
+                        active_local_reservation_keys
+                            .extend(node_pending_local_reservation_keys.iter().copied());
+                    } else if current_extension.pending_after_crossing_cells > 0
+                        && outcome.pending_after_crossing_cells > 0
+                    {
+                        pending_local_reservation_keys
+                            .extend(node_pending_local_reservation_keys.iter().copied());
+                    }
+                    extend_unique_keys(
+                        &mut active_local_reservation_keys,
+                        &outcome.active_reservation_keys,
+                    );
+                    extend_unique_keys(
+                        &mut pending_local_reservation_keys,
+                        &outcome.pending_reservation_keys,
+                    );
+
                     let node_idx = extended_nodes.len();
                     extended_nodes.push(UnifiedExtendedNode {
                         state: next_state,
@@ -5686,13 +5936,15 @@ mod unified_kernel_prototype {
                         parent,
                         primitive_id: primitive.id,
                         g_score: tentative_g,
+                        active_local_reservation_keys,
+                        pending_local_reservation_keys,
                     });
                     extended_best_cost.insert(key, tentative_g);
                     stats.primitive_accepted_by_class[primitive_class] += 1;
                     stats.best_cost_updates += 1;
                     stats.parent_updates += 1;
                     let generation = next_search_generation(&mut counter)?;
-                    open_set.push(UnifiedOpenEntry {
+                    tier2_open.push(OpenEntry {
                         f_score: tentative_g
                             + search_heuristic.estimate(next_state)
                             + hook.heuristic_bonus(next_state, next_extension),
@@ -5700,10 +5952,11 @@ mod unified_kernel_prototype {
                         g_score: tentative_g,
                         counter: generation,
                         generation,
-                        node: UnifiedOpenRef::Extended(node_idx),
+                        idx: node_idx,
                     });
                     stats.heap_pushes += 1;
-                    stats.max_heap_size = stats.max_heap_size.max(open_set.len());
+                    stats.max_heap_size =
+                        stats.max_heap_size.max(tier1_open.len() + tier2_open.len());
                 }
             }
         }
@@ -5827,282 +6080,397 @@ mod unified_kernel_prototype {
         )
     }
 
-    fn primitive_library() -> PrimitiveLibrary {
-        create_photonic_primitive_library(PrimitiveLibraryConfig {
-            grid_size_um: 1.0,
-            straight_short_cells: 1,
-            straight_long_cells: 4,
-            bend_radius_cells: 1,
-            allow_45_degree_turns: true,
-        })
-    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::primitives::{create_photonic_primitive_library, PrimitiveLibraryConfig};
+        use std::cell::Cell;
 
-    fn primitive_library_no45_bend1() -> PrimitiveLibrary {
-        create_photonic_primitive_library(PrimitiveLibraryConfig {
-            grid_size_um: 1.0,
-            straight_short_cells: 1,
-            straight_long_cells: 4,
-            bend_radius_cells: 1,
-            allow_45_degree_turns: false,
-        })
-    }
+        fn primitive_library() -> PrimitiveLibrary {
+            create_photonic_primitive_library(PrimitiveLibraryConfig {
+                grid_size_um: 1.0,
+                straight_short_cells: 1,
+                straight_long_cells: 4,
+                bend_radius_cells: 1,
+                allow_45_degree_turns: true,
+            })
+        }
 
-    #[allow(clippy::too_many_arguments)]
-    fn route_single_net_unified_for_test(
-        obstacle_map: &ObstacleMap,
-        primitives: &PrimitiveLibrary,
-        source: State,
-        target: State,
-        config: &AStarConfig,
-        crossing: Option<&CrossingSearchConfig>,
-    ) -> (Option<RouteResult>, RouteSearchStats) {
-        let full_bounds = RoutingBounds {
-            min_x: 0,
-            max_x: obstacle_map.width() - 1,
-            min_y: 0,
-            max_y: obstacle_map.height() - 1,
-        };
-        let mut stats = RouteSearchStats::default();
-        let route = match crossing {
-            None => route_single_net_with_bounds_unified(
-                obstacle_map,
-                primitives,
-                source,
-                target,
-                None,
-                config,
-                None,
-                &mut stats,
-                0,
-                None,
-                &NoCrossingHook,
-            ),
-            Some(crossing) => {
-                let dense_grid = DenseRoutingGrid::from_obstacle_map_with_dynamic_expansion(
-                    obstacle_map,
-                    full_bounds,
-                    None,
-                    config.max_dense_obstacle_cells,
-                    config.ignore_dynamic_obstacles,
-                    config.history_weight > 0.0,
-                    config.long_straight_congestion_weight > 0.0,
-                    0,
-                    None,
-                )
-                .expect("dense grid should build for test fixture");
-                let primitive_buckets: [&[Primitive]; 8] =
-                    std::array::from_fn(|angle| primitives.get_primitives_for_angle(angle as u8));
-                let primitive_crossing_metadata: Vec<Vec<PrimitiveCrossingMetadata>> =
-                    primitive_buckets
-                        .iter()
-                        .map(|bucket| bucket.iter().map(primitive_crossing_metadata).collect())
-                        .collect();
-                let crossing_lookup_bounds = full_bounds.expanded_and_clamped(
-                    max_crossing_witness_offset(&primitive_crossing_metadata),
-                    obstacle_map.width(),
-                    obstacle_map.height(),
-                );
-                let dynamic_core_owners = DenseDynamicCoreOwnerGrid::from_obstacle_map(
-                    obstacle_map,
-                    crossing_lookup_bounds,
-                )
-                .expect("owner grid should build for test fixture");
-                let required_margin = crossing_required_margin_cells(
-                    crossing.crossing_half_size_cells,
-                    crossing.min_straight_cells,
-                    crossing.bend_runout_cells,
-                );
-                let capped_required_margin = required_margin.max(1);
-                let all_partner_mask = if crossing.require_all_partners {
-                    (1u64 << crossing.partners.len()) - 1
-                } else {
-                    0
-                };
-                let all_partner_count = u8::try_from(crossing.partners.len()).unwrap_or(u8::MAX);
-                let partner_index_by_id: FxHashMap<NetId, usize> = crossing
-                    .partners
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, partner)| (partner.net_id, idx))
-                    .collect();
-                let partner_segments = crossing_partner_path_segments(crossing);
-                let hook = LiveCrossingHook {
-                    obstacle_map,
-                    dense_grid: &dense_grid,
-                    crossing,
-                    required_margin,
-                    capped_required_margin,
-                    reservation_margin: crossing.crossing_half_size_cells,
-                    reservation_open_cells: None,
-                    partner_index_by_id: &partner_index_by_id,
-                    partner_segments: &partner_segments,
-                    dynamic_core_owners: &dynamic_core_owners,
-                    ignore_dynamic_obstacles: config.ignore_dynamic_obstacles,
-                    grid_size_um: primitives.grid_size_um(),
-                    all_partner_mask,
-                    all_partner_count,
-                    search_start: Instant::now(),
-                };
-                route_single_net_with_bounds_unified(
+        fn primitive_library_no45_bend1() -> PrimitiveLibrary {
+            create_photonic_primitive_library(PrimitiveLibraryConfig {
+                grid_size_um: 1.0,
+                straight_short_cells: 1,
+                straight_long_cells: 4,
+                bend_radius_cells: 1,
+                allow_45_degree_turns: false,
+            })
+        }
+
+        fn full_bounds_of(map: &ObstacleMap) -> RoutingBounds {
+            RoutingBounds {
+                min_x: 0,
+                max_x: map.width() - 1,
+                min_y: 0,
+                max_y: map.height() - 1,
+            }
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn route_single_net_unified_for_test(
+            obstacle_map: &ObstacleMap,
+            primitives: &PrimitiveLibrary,
+            source: State,
+            target: State,
+            config: &AStarConfig,
+            crossing: Option<&CrossingSearchConfig>,
+        ) -> (Option<RouteResult>, RouteSearchStats) {
+            let full_bounds = full_bounds_of(obstacle_map);
+            let mut stats = RouteSearchStats::default();
+            let route = match crossing {
+                None => route_single_net_with_bounds_unified(
                     obstacle_map,
                     primitives,
                     source,
                     target,
                     None,
                     config,
-                    Some(full_bounds),
+                    None,
                     &mut stats,
                     0,
                     None,
-                    &hook,
+                    &NoCrossingHook,
+                ),
+                Some(crossing) => {
+                    let context = CrossingHookContext::build(
+                        obstacle_map,
+                        primitives,
+                        config,
+                        crossing,
+                        full_bounds,
+                    );
+                    let hook =
+                        context.hook(obstacle_map, crossing, config, primitives.grid_size_um());
+                    route_single_net_with_bounds_unified(
+                        obstacle_map,
+                        primitives,
+                        source,
+                        target,
+                        None,
+                        config,
+                        Some(full_bounds),
+                        &mut stats,
+                        0,
+                        None,
+                        &hook,
+                    )
+                }
+            };
+            (route, stats)
+        }
+
+        #[test]
+        fn unified_kernel_matches_plain_kernel_when_crossings_disabled() {
+            let scenarios: Vec<(ObstacleMap, State, State)> = vec![
+                (
+                    ObstacleMap::new(10, 5),
+                    State::new(1, 2, 0),
+                    State::new(5, 2, 0),
+                ),
+                {
+                    let mut map = ObstacleMap::new(12, 8);
+                    map.add_static_cell(3, 3);
+                    map.add_static_cell(4, 3);
+                    map.add_static_cell(5, 3);
+                    (map, State::new(1, 3, 0), State::new(8, 3, 0))
+                },
+                (
+                    ObstacleMap::new(8, 8),
+                    State::new(1, 1, 0),
+                    State::new(3, 3, 2),
+                ),
+            ];
+            // Exercise both open-set implementations: production configs with
+            // 45-degree turns force `use_indexed_heap = true`
+            // (`translation/route_rust.py`'s `self.astar_cfg.use_indexed_heap
+            // = bool(self.use_indexed_heap or self.allow_45_degree_turns)`),
+            // so parity must hold for both, not just the `false` default.
+            for use_indexed_heap in [false, true] {
+                let config = AStarConfig {
+                    use_indexed_heap,
+                    ..AStarConfig::default()
+                };
+                let primitives = primitive_library();
+
+                for (map, source, target) in &scenarios {
+                    let (map, source, target) = (map, *source, *target);
+                    let mut plain_stats = RouteSearchStats::default();
+                    let plain = route_single_net_with_bounds_dynamic_expansion(
+                        map,
+                        &primitives,
+                        source,
+                        target,
+                        None,
+                        &config,
+                        None,
+                        &mut plain_stats,
+                        0,
+                        None,
+                    );
+                    let (unified, unified_stats) = route_single_net_unified_for_test(
+                        map,
+                        &primitives,
+                        source,
+                        target,
+                        &config,
+                        None,
+                    );
+
+                    assert_eq!(plain.is_some(), unified.is_some());
+                    if let (Some(plain), Some(unified)) = (&plain, &unified) {
+                        assert_eq!(plain.states, unified.states);
+                        assert_eq!(plain.primitives, unified.primitives);
+                        assert_eq!(plain.cells, unified.cells);
+                        assert_eq!(plain.compressed_waypoints, unified.compressed_waypoints);
+                        assert_eq!(plain.total_length_um, unified.total_length_um);
+                        assert_eq!(plain.total_cost, unified.total_cost);
+                        assert_eq!(plain.reached_target, unified.reached_target);
+                    }
+                    assert_eq!(plain_stats.expanded_states, unified_stats.expanded_states);
+                    assert_eq!(plain_stats.heap_pushes, unified_stats.heap_pushes);
+                    assert_eq!(plain_stats.heap_pops, unified_stats.heap_pops);
+                }
+            }
+        }
+
+        fn crossing_fixture() -> (
+            ObstacleMap,
+            PrimitiveLibrary,
+            State,
+            State,
+            AStarConfig,
+            CrossingSearchConfig,
+        ) {
+            let mut map = ObstacleMap::new(20, 14);
+            for x in 3..=13 {
+                map.add_static_cell(x, 5);
+                map.add_static_cell(x, 7);
+            }
+            let partner_cells: Vec<(i32, i32)> = (2..=10).map(|y| (8, y)).collect();
+            assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+                1,
+                &partner_cells,
+                &partner_cells,
+                &[],
+                &FxHashSet::default()
+            ));
+
+            let crossing = CrossingSearchConfig {
+                net_id: 2,
+                partners: vec![CrossingSearchPartner {
+                    net_id: 1,
+                    waypoints: vec![(8, 2), (8, 10)],
+                    target_terminal_bump_guard: None,
+                }],
+                min_straight_cells: 1,
+                crossing_half_size_cells: 0,
+                bend_runout_cells: 0,
+                crossing_loss: 3.0,
+                require_all_partners: false,
+                terminal_bump_guard: None,
+            };
+            let config = AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                require_target_angle: false,
+                ..AStarConfig::default()
+            };
+
+            (
+                map,
+                primitive_library_no45_bend1(),
+                State::new(2, 6, 0),
+                State::new(14, 6, 0),
+                config,
+                crossing,
+            )
+        }
+
+        #[test]
+        fn unified_kernel_inserts_legal_crossing_via_hook() {
+            let (map, primitives, source, target, config, crossing) = crossing_fixture();
+            let (route, stats) = route_single_net_unified_for_test(
+                &map,
+                &primitives,
+                source,
+                target,
+                &config,
+                Some(&crossing),
+            );
+            let route = route.expect("route should exist through a legal crossing");
+            assert!(stats.expanded_states > 0);
+            // The route must actually cross the partner's column (x == 8),
+            // proving the collision-triggered hook -- not just an
+            // obstacle-avoiding detour -- produced this route.
+            assert!(route
+                .cells
+                .iter()
+                .any(|&(x, y)| x == 8 && (2..=10).contains(&y)));
+        }
+
+        #[test]
+        fn unified_kernel_rejects_crossing_when_no_hook_allows_it() {
+            let (map, primitives, source, target, config, _crossing) = crossing_fixture();
+            // With `NoCrossingHook`, the same obstacle map the crossing
+            // fixture above successfully routes through must fail outright:
+            // the wall at y=5 and y=7 spans the whole window and there is no
+            // crossing to legalize a way through it.
+            let (route, _stats) =
+                route_single_net_unified_for_test(&map, &primitives, source, target, &config, None);
+            assert!(route.is_none());
+        }
+
+        /// Wraps any hook and counts how many times `evaluate` actually ran,
+        /// without changing its behavior.
+        struct CountingHook<'a, H: CrossingLegalityHook> {
+            inner: &'a H,
+            calls: Cell<usize>,
+        }
+
+        impl<H: CrossingLegalityHook> CrossingLegalityHook for CountingHook<'_, H> {
+            fn evaluate(
+                &self,
+                state: State,
+                current_extension: CrossingExtension,
+                primitive: &Primitive,
+                primitive_class_is_straight: bool,
+                primitive_crossing: &PrimitiveCrossingMetadata,
+                footprint_free: bool,
+                stats: &mut RouteSearchStats,
+            ) -> Option<(CrossingMoveOutcome, f64)> {
+                self.calls.set(self.calls.get() + 1);
+                self.inner.evaluate(
+                    state,
+                    current_extension,
+                    primitive,
+                    primitive_class_is_straight,
+                    primitive_crossing,
+                    footprint_free,
+                    stats,
                 )
             }
-        };
-        (route, stats)
-    }
 
-    #[test]
-    fn unified_kernel_matches_plain_kernel_when_crossings_disabled() {
-        let scenarios: Vec<(ObstacleMap, State, State)> = vec![
-            (
-                ObstacleMap::new(10, 5),
-                State::new(1, 2, 0),
-                State::new(5, 2, 0),
-            ),
-            {
-                let mut map = ObstacleMap::new(12, 8);
-                map.add_static_cell(3, 3);
-                map.add_static_cell(4, 3);
-                map.add_static_cell(5, 3);
-                (map, State::new(1, 3, 0), State::new(8, 3, 0))
-            },
-            (
-                ObstacleMap::new(8, 8),
-                State::new(1, 1, 0),
-                State::new(3, 3, 2),
-            ),
-        ];
-        let primitives = primitive_library();
-        let config = AStarConfig::default();
+            fn goal_extra_ok(&self, extension: CrossingExtension) -> bool {
+                self.inner.goal_extra_ok(extension)
+            }
 
-        for (map, source, target) in scenarios {
-            let mut plain_stats = RouteSearchStats::default();
-            let plain = route_single_net_with_bounds_dynamic_expansion(
+            fn heuristic_bonus(&self, next_state: State, next_extension: CrossingExtension) -> f64 {
+                self.inner.heuristic_bonus(next_state, next_extension)
+            }
+        }
+
+        #[test]
+        fn hook_is_called_only_on_collision_not_on_every_step() {
+            // Scenario A: an empty map with a crossing config present but
+            // nothing ever actually blocking the route -- every step stays
+            // in Tier 1, so the hook must never fire at all.
+            let empty_map = ObstacleMap::new(20, 10);
+            let primitives = primitive_library_no45_bend1();
+            let far_crossing = CrossingSearchConfig {
+                net_id: 2,
+                partners: vec![CrossingSearchPartner {
+                    net_id: 1,
+                    waypoints: vec![(1, 1), (1, 2)],
+                    target_terminal_bump_guard: None,
+                }],
+                min_straight_cells: 1,
+                crossing_half_size_cells: 0,
+                bend_runout_cells: 0,
+                crossing_loss: 3.0,
+                require_all_partners: false,
+                terminal_bump_guard: None,
+            };
+            let config = AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                require_target_angle: false,
+                ..AStarConfig::default()
+            };
+            let full_bounds = full_bounds_of(&empty_map);
+            let context = CrossingHookContext::build(
+                &empty_map,
+                &primitives,
+                &config,
+                &far_crossing,
+                full_bounds,
+            );
+            let hook = context.hook(
+                &empty_map,
+                &far_crossing,
+                &config,
+                primitives.grid_size_um(),
+            );
+            let counting = CountingHook {
+                inner: &hook,
+                calls: Cell::new(0),
+            };
+            let mut stats = RouteSearchStats::default();
+            let route = route_single_net_with_bounds_unified(
+                &empty_map,
+                &primitives,
+                State::new(1, 5, 0),
+                State::new(18, 5, 0),
+                None,
+                &config,
+                Some(full_bounds),
+                &mut stats,
+                0,
+                None,
+                &counting,
+            );
+            assert!(route.is_some());
+            assert!(stats.generated_neighbors > 0);
+            assert_eq!(
+                counting.calls.get(),
+                0,
+                "hook must not be called when no step is ever blocked"
+            );
+
+            // Scenario B: the crossing fixture's wall forces a real collision
+            // -- the hook must fire, but only for a small fraction of the
+            // primitives the search actually generates.
+            let (map, primitives, source, target, config, crossing) = crossing_fixture();
+            let full_bounds = full_bounds_of(&map);
+            let context =
+                CrossingHookContext::build(&map, &primitives, &config, &crossing, full_bounds);
+            let hook = context.hook(&map, &crossing, &config, primitives.grid_size_um());
+            let counting = CountingHook {
+                inner: &hook,
+                calls: Cell::new(0),
+            };
+            let mut stats = RouteSearchStats::default();
+            let route = route_single_net_with_bounds_unified(
                 &map,
                 &primitives,
                 source,
                 target,
                 None,
                 &config,
-                None,
-                &mut plain_stats,
+                Some(full_bounds),
+                &mut stats,
                 0,
                 None,
+                &counting,
             );
-            let (unified, unified_stats) =
-                route_single_net_unified_for_test(&map, &primitives, source, target, &config, None);
-
-            assert_eq!(plain.is_some(), unified.is_some());
-            if let (Some(plain), Some(unified)) = (&plain, &unified) {
-                assert_eq!(plain.states, unified.states);
-                assert_eq!(plain.primitives, unified.primitives);
-                assert_eq!(plain.cells, unified.cells);
-                assert_eq!(plain.compressed_waypoints, unified.compressed_waypoints);
-                assert_eq!(plain.total_length_um, unified.total_length_um);
-                assert_eq!(plain.total_cost, unified.total_cost);
-                assert_eq!(plain.reached_target, unified.reached_target);
-            }
-            assert_eq!(plain_stats.expanded_states, unified_stats.expanded_states);
-            assert_eq!(plain_stats.heap_pushes, unified_stats.heap_pushes);
-            assert_eq!(plain_stats.heap_pops, unified_stats.heap_pops);
+            assert!(route.is_some());
+            assert!(
+                counting.calls.get() > 0,
+                "hook must be called when the search hits a real collision"
+            );
+            assert!(
+                counting.calls.get() < stats.generated_neighbors,
+                "hook must not be called on every generated neighbor"
+            );
         }
-    }
-
-    fn crossing_fixture() -> (
-        ObstacleMap,
-        PrimitiveLibrary,
-        State,
-        State,
-        AStarConfig,
-        CrossingSearchConfig,
-    ) {
-        let mut map = ObstacleMap::new(20, 14);
-        for x in 3..=13 {
-            map.add_static_cell(x, 5);
-            map.add_static_cell(x, 7);
-        }
-        let partner_cells: Vec<(i32, i32)> = (2..=10).map(|y| (8, y)).collect();
-        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
-            1,
-            &partner_cells,
-            &partner_cells,
-            &[],
-            &FxHashSet::default()
-        ));
-
-        let crossing = CrossingSearchConfig {
-            net_id: 2,
-            partners: vec![CrossingSearchPartner {
-                net_id: 1,
-                waypoints: vec![(8, 2), (8, 10)],
-                target_terminal_bump_guard: None,
-            }],
-            min_straight_cells: 1,
-            crossing_half_size_cells: 0,
-            bend_runout_cells: 0,
-            crossing_loss: 3.0,
-            require_all_partners: false,
-            terminal_bump_guard: None,
-        };
-        let config = AStarConfig {
-            use_routing_window: false,
-            enable_simple_routes: false,
-            require_target_angle: false,
-            ..AStarConfig::default()
-        };
-
-        (
-            map,
-            primitive_library_no45_bend1(),
-            State::new(2, 6, 0),
-            State::new(14, 6, 0),
-            config,
-            crossing,
-        )
-    }
-
-    #[test]
-    fn unified_kernel_inserts_legal_crossing_via_hook() {
-        let (map, primitives, source, target, config, crossing) = crossing_fixture();
-        let (route, stats) = route_single_net_unified_for_test(
-            &map,
-            &primitives,
-            source,
-            target,
-            &config,
-            Some(&crossing),
-        );
-        let route = route.expect("route should exist through a legal crossing");
-        assert!(stats.expanded_states > 0);
-        // The route must actually cross the partner's column (x == 8), proving
-        // the collision-triggered hook -- not just an obstacle-avoiding
-        // detour -- produced this route.
-        assert!(route
-            .cells
-            .iter()
-            .any(|&(x, y)| x == 8 && (2..=10).contains(&y)));
-    }
-
-    #[test]
-    fn unified_kernel_rejects_crossing_when_no_hook_allows_it() {
-        let (map, primitives, source, target, config, _crossing) = crossing_fixture();
-        // With `NoCrossingHook`, the same obstacle map the crossing fixture
-        // above successfully routes through must fail outright: the wall at
-        // y=5 and y=7 spans the whole window and there is no crossing to
-        // legalize a way through it.
-        let (route, _stats) =
-            route_single_net_unified_for_test(&map, &primitives, source, target, &config, None);
-        assert!(route.is_none());
     }
 }
 
