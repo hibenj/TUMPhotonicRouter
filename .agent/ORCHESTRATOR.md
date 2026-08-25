@@ -24,24 +24,32 @@ orchestration loop.** Several plans exist; do not resume any of them
 automatically without the repository owner's direction.
 
 `.agent/execplans/2026-08-25-negotiated-repair-engine.md` (written
-2026-08-25) is the newest and, per the repository owner's own direction,
-the current focus: replace `route_many_with_repair_and_commit`'s
-17-method repair dispatch chain with a small number of general,
-composable mechanisms built around a real negotiated-congestion
-algorithm (topological net ordering, systematic per-commit history
-cost, one global iterate-until-converged loop, distance/cost-based
-conflict resolution) instead of hand-tuned special cases. This grew
-directly out of the kernel-unification plan below finding that none of
-the 17 methods are dead code, which the repository owner correctly
-pointed out is a correctness bar, not a design bar -- "just becaus[e]
-all these strategies are somewhat called doesnt mean the[y] are really
-necessary or that the behaviour is kinda 'wild'." Milestone 1 (read-only
-investigation, including a close read of a sibling reference
-implementation at `/home/benjamin/Documents/Repositories/working/LiDAR`
--- the likely research-paper ancestor of this repository's own
-"lidar-pure" terminology) is complete; read that plan's own Surprises &
-Discoveries for the full evidence-backed comparison between the two
-algorithms before resuming.
+2026-08-25) is **complete, all 8 milestones**, with a materially honest,
+narrower-than-originally-hoped outcome stated plainly in its own Outcomes
+& Retrospective. It grew directly out of the kernel-unification plan
+below finding that none of the old chain's 17 methods are dead code,
+which the repository owner correctly pointed out is a correctness bar,
+not a design bar -- "just becaus[e] all these strategies are somewhat
+called doesnt mean the[y] are really necessary or that the behaviour is
+kinda 'wild'." Real, general improvements landed directly in the
+still-default dispatch chain (topological net ordering, systematic
+per-commit history cost); a complete second, opt-in, faster negotiated-
+congestion repair engine was built but not shipped as a default, since
+`benes_16x16` needs crossing-legality-aware repair strategies it does
+not implement. The single highest-value finding came *after* that
+engine work, prompted by the repository owner questioning the
+assistant's own proposed next step: `--proactive-congestion-weight`/
+`--proactive-congestion-radius-cells`, a general mechanism that was
+already fully built and simply never turned on anywhere, resolves
+`benes_8x8`/`benes_16x16`/`multiportmmi_8x8` outright with zero source
+changes (now part of those benchmarks' own `STABLE_ROUTING_FLAGS`, not
+a global default -- it regressed 3 unrelated cases when tried as one).
+`multiportmmi_16x16` remains a known, documented gap under every
+configuration tried -- see `.agent/REPOSITORY_STATE.md`'s Current
+Findings and Next Engineering Step for the exact reproduction command
+and the most promising untried direction (crossing-aware rerouting
+inside the negotiation loop, identified and deferred in this plan's own
+Milestone 6).
 
 `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
 (written 2026-08-25) is complete through Milestone 5 of 6: the two

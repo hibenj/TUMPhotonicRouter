@@ -18,31 +18,28 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-24
+- Date: 2026-08-25
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `2755a22`, plus this docs-only close-out commit. All code
-  work committed, one commit per milestone/fix, per repository owner's
-  direction: `8a0309a` Milestone 1 (`require_terminal_straights` in the
-  crossing kernel), `c1b8d78` Milestone 2 (weight unification +
-  `crossing_loss` retune), `2755a22` the endpoint-correction anchor-match
-  fix found while validating Milestone 3.
-- **No active ExecPlan right now, by explicit repository owner
-  instruction ("finish the current plan, then park the rest").**
-  `.agent/execplans/2026-08-24-crossing-cost-function-soundness.md` is
-  complete (all 3 milestones) -- see Completed ExecPlans below. Do not
-  automatically start the next candidate; see Next Engineering Step.
-  `stabilize-16x16-benchmarks.md` remains paused mid-Milestone-1 from
-  earlier the same day, with a new fact it will need to account for when
-  resumed (the `n_50` failure signature moved to `n_49`; see Next
-  Engineering Step).
-- Current test baselines: `cargo test --lib` `394 passed, 0 failed`;
-  `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 335 passed, 1 skipped`
-  (dropped from the long-standing `21 failed, 325 passed` baseline via
-  two 2026-08-20 passes: the batch-repair stale-signature fix, then a
-  full triage of the remaining 20 -- see Completed ExecPlans'
-  `2026-08-20-pytest-baseline-triage.md` entry. Every one of the
-  remaining 11 failures is now individually documented, not just
-  "the stable baseline" -- see Current Findings below).
+- Current HEAD: `229cc76`, plus this docs-only close-out commit. Two large
+  ExecPlans completed today, one commit per milestone throughout:
+  `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
+  (Milestones 1-5 of 6; Milestone 6, final validation/retrospective, remains
+  open, deprioritized, not abandoned) and
+  `.agent/execplans/2026-08-25-negotiated-repair-engine.md` (all 8
+  milestones complete). See Completed ExecPlans below for both.
+- **No active ExecPlan right now.** The repository owner is directing next
+  steps turn by turn; see Next Engineering Step for the real current
+  candidates.
+- Current test baselines: `cargo test --lib` `396 passed, 0 failed`;
+  `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 328 passed, 1 skipped`
+  (net count changed from the prior `335 passed` snapshot only because of
+  test additions/removals in intervening plans, not a regression -- every
+  one of the 11 failures is the same, already-documented set; see Current
+  Findings below). Benchmark ladder as of today: `benes_4x4`,
+  `multiportmmi_8x8` (stable baseline; bare defaults still fails, see
+  Current Findings), `benes_8x8`, and `benes_16x16` (stable baseline) all
+  pass cleanly under the default engine. `multiportmmi_16x16` (stable
+  baseline) still fails -- see Current Findings, updated today.
 - **Future Architecture Initiative: complete.** `.agent/PROJECT_GOAL.md`'s
   "Future Architecture Initiative" (giving routing-pipeline stages
   explicit `Protocol`/`trait` interfaces), per the recommended order in
@@ -65,6 +62,60 @@ now lives only in the referenced ExecPlan and `git log`.)
   restructuring gives their surrounding code a clearer structure.
 - **Completed ExecPlans** (all still valid, no known regressions; each
   plan's own Outcomes & Retrospective has the full story):
+  - `2026-08-25-negotiated-repair-engine.md` -- all 8 milestones complete,
+    with a materially honest, narrower-than-originally-hoped outcome
+    (stated plainly in its own Outcomes & Retrospective, not glossed
+    over). Grew from the repository owner's own challenge to the sibling
+    kernel-unification plan's Milestone 5 finding ("reachability is not
+    evidence of good design"). Milestones 1-4: replaced raw netlist
+    declaration order with real topological net ordering
+    (`_topological_net_route_order`, `translation/route_rust.py`) and made
+    history-cost application systematic on every commit
+    (`add_repair_history_for_route`, `src/py_router.rs`) -- both land
+    directly in the still-default dispatch chain. Milestones 5-6: built a
+    complete, separate, opt-in negotiated-congestion repair engine
+    (`route_many_with_negotiated_repair_and_commit`, behind
+    `PHOTONIC_ROUTER_NEGOTIATED_REPAIR=1`) with cascading displacement and
+    a real distance/slack conflict-resolution heuristic -- genuinely
+    faster than the old chain on `benes_4x4`/`benes_8x8`, but the old
+    17-method dispatch chain was **not** deleted and remains the permanent
+    default: `benes_16x16` was found (by direct trace, not assumption) to
+    need crossing-legality-aware repair strategies the new loop does not
+    implement. Milestone 7's own investigation, redirected by the
+    repository owner's own physical reasoning (port spreading cannot
+    apply to Benes networks; some other spacing rule must already exist),
+    found the actual fix for `benes_16x16` instead: `--proactive-congestion-weight`/
+    `--proactive-congestion-radius-cells`, a general, already-built,
+    live lateral-congestion mechanism that had simply never been turned
+    on anywhere. Enabling it (`4.0`/`3`) resolves `benes_8x8`/`benes_16x16`
+    (both engines) and `multiportmmi_8x8` outright with zero source
+    changes; could not be made a global default (regressed 3 unrelated
+    cases, confirmed by direct revert-and-rerun), so it landed as an
+    addition to those 3 benchmarks' own `STABLE_ROUTING_FLAGS`.
+    `multiportmmi_16x16` remains a known, documented gap under every
+    configuration tried -- see Current Findings.
+  - `2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md` --
+    Milestones 1-5 of 6 complete (Milestone 6, final validation ladder +
+    retrospective, deprioritized in favor of the negotiated-repair-engine
+    plan above, not abandoned). Unified the two previously-duplicated A*
+    search kernels (`src/astar.rs`) into one two-tier kernel
+    (`unified_kernel` module: dense-array Tier 1 for never-crossed states,
+    sparse Tier 2 for post-crossing-corridor states) with crossing
+    legality as a monomorphized, pluggable `CrossingLegalityHook` instead
+    of a second ~600-900 line duplicate implementation -- the repository
+    owner's own target architecture, recorded verbatim in that plan's
+    Purpose. A real correctness bug (`straight_run_cells` not tracked for
+    Tier-1 states, causing `benes_4x4` to spuriously reject legal
+    crossings) was found and fixed by the benchmark ladder itself, not a
+    unit test. Milestone 5 traced and deleted 2 undocumented, off-by-
+    default repair experiments (`try_guided_collision_crossing`,
+    `try_preemptive_crossing_ripup`) after confirming via call-graph
+    tracing that neither had any load-bearing caller or historical
+    rationale; that same tracing found 4 of a candidate "6 duplicated
+    kernel artifacts" were actually load-bearing core-routing
+    infrastructure, correcting Milestone 1's own initial classification
+    before any deletion was attempted on those 4. This investigation is
+    the direct origin of the negotiated-repair-engine plan above.
   - `2026-08-24-crossing-cost-function-soundness.md` -- three milestones,
     all a direct response to the repository owner's own architectural
     question ("why should crossing-aware A* even behave differently --
@@ -367,6 +418,24 @@ restructuring; the third (below, in Resolved Findings) is fixed:
    (completes in under 2 minutes without `--attempt-diagnostics`; the
    ~10-minute-and-killed prior attempt was the heavier
    `--attempt-diagnostics` variant, not this one).
+   **Re-checked 2026-08-25** (`.agent/execplans/2026-08-25-negotiated-repair-engine.md`
+   Milestone 7): still fails identically at `n_49` with the exact command
+   above (unchanged `STABLE_ROUTING_FLAGS`, no `--proactive-congestion-*`).
+   Tried enabling `--proactive-congestion-weight`/`--proactive-congestion-radius-cells`
+   (the mechanism that fixes `benes_8x8`/`benes_16x16`/`multiportmmi_8x8`
+   outright, see the plan entry above) at `4.0`/`3`: still fails, different
+   net (`n_50`); at `6.0`/`5`: still fails, yet another net (`n_85`). Each
+   parameter change relocates the failure rather than converging toward
+   zero -- a materially different signal from under-tuning, consistent
+   with this benchmark being genuinely denser than the other three in a
+   way this one mechanism does not fully resolve alone. Not added to this
+   benchmark's own `STABLE_ROUTING_FLAGS` as a result (it does not
+   actually make the benchmark route cleanly). Likely needs the
+   crossing-aware-rerouting-inside-negotiation work identified and
+   deferred in that same plan's Milestone 6, on top of more spacing
+   tuning, not either alone -- not attempted further per the repository
+   owner's explicit instruction to stop guessing rather than keep
+   spending ~8-minute runs on parameter search.
 
 ## Resolved Findings
 
@@ -523,49 +592,49 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**Three ExecPlans exist, none actively being driven by an agent right now
-(2026-08-25) -- the repository owner is walking through the codebase
-manually and directing next steps turn by turn.**
+**No ExecPlan is actively being driven by an agent right now (2026-08-25)
+-- the repository owner is directing next steps turn by turn.**
 
 `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
-(written 2026-08-25) is the newest, and per the repository owner's own
-direction the most significant of the three. Grew directly out of a
-manual, line-by-line walkthrough of the routing pipeline with the
-assistant, which repeatedly found undocumented, historically-
-accumulated special-case behavior: a topology-precomputed-crossing-plan
-leak into the "lidar-pure" baseline (fixed, commit `5958db3`), and,
-still open, a 19-strategy pre-repair dispatch chain in
-`route_many_with_repair_and_commit` (`src/py_router.rs:11833`) --
-including one strategy gated behind an undocumented environment
-variable, `PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING` -- sitting
-on top of two separately-implemented, ~600-900 line A* search kernels
-in `src/astar.rs` that have already drifted apart twice this session in
-ways that caused real bugs. The repository owner's own target
-architecture (recorded verbatim in that plan's Purpose): one swappable
-A* kernel where crossing-legality is a collision-triggered, pluggable
-hook instead of a duplicate implementation, and rip-up/reroute as its
-own clean, standalone module. Not started -- Milestone 1 is read-only
-characterization of both kernels and all 19 `try_*` methods.
+and `.agent/execplans/2026-08-25-negotiated-repair-engine.md` are both
+complete (5/6 and 8/8 milestones respectively) -- see Completed ExecPlans
+above for the full story. The real open candidates right now:
 
-`.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`
-(written 2026-08-24) is paused mid-Milestone-4 (accepted the tier-2
-removal's larger-than-measured consequence -- 5 nets newly fail in
-`multiportmmi_8x8` stable-baseline, not the 1 originally measured, see
-that plan's own Surprises & Discoveries) at the repository owner's direct
-request, to read through the pipeline starting at `routing_flow.py`
-before deciding what (if anything) to do next in that plan.
-
-`.agent/execplans/2026-08-25-python-rust-linting-and-coding-standards.md`
-(written 2026-08-25) is a new, independent initiative: adopt `ruff`/`mypy`
-for Python and `cargo clippy`/`cargo fmt` for Rust, add a short project
-coding-standards document, and wire GitHub Actions CI -- prompted by the
-repository owner's own review of `routing_flow.py` surfacing real issues
-(a ~40-parameter function signature, import-time side effects) plus a
-look at the sibling `fiction` repository's mature tooling setup for
-concrete inspiration. Not started; a baseline scoping pass already found
-509 ruff findings, 235 clippy warnings, 137 `cargo fmt` diff blocks, and
-246 mypy errors (many from the untyped PyO3 boundary) -- see that plan's
-own Surprises & Discoveries for the exact commands and numbers.
+1. **`multiportmmi_16x16` stable-baseline still fails.** See Current
+   Findings above (updated today) for the exact reproduction command and
+   what has already been ruled out (proactive-congestion tuning alone
+   relocates the failure rather than resolving it). Most promising
+   untried direction: integrate crossing-aware rerouting into
+   `route_many_with_negotiated_repair_and_commit`'s displacement logic
+   (`try_negotiated_displacement`, `src/py_router.rs`) -- identified and
+   explicitly deferred in `2026-08-25-negotiated-repair-engine.md`
+   Milestone 6's Surprises & Discoveries, on the reasoning that a
+   displaced blocker's plain reroute has no way to satisfy a specific
+   crossing angle/straight-margin constraint. Not yet attempted.
+2. **Kernel-unification plan's own Milestone 6** (final validation ladder,
+   `.agent/REPOSITORY_STATE.md` update, retrospective) remains open --
+   deprioritized in favor of the negotiated-repair-engine plan, not
+   abandoned. Low risk to resume whenever there is time for it; the
+   kernel itself has been stable and validated throughout every plan
+   since.
+3. `.agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md`
+   (written 2026-08-24) is still paused mid-Milestone-4 (accepted the
+   tier-2 removal's larger-than-measured consequence -- 5 nets newly fail
+   in `multiportmmi_8x8` stable-baseline, not the 1 originally measured,
+   see that plan's own Surprises & Discoveries), at the repository
+   owner's direct request to prioritize getting benchmarks to actually
+   route first (2026-08-25 direction: "the big problem for now is that
+   the routing does not work... i do not really care about something
+   like endpoint correction if we can not route these benchmarks").
+   Revisit once the routing-correctness work above is in a good place,
+   not before.
+4. `.agent/execplans/2026-08-25-python-rust-linting-and-coding-standards.md`
+   (written 2026-08-25): adopt `ruff`/`mypy`/`cargo clippy`/`cargo fmt`,
+   add a coding-standards doc, wire CI. Not started; a baseline scoping
+   pass already found 509 ruff findings, 235 clippy warnings, 137
+   `cargo fmt` diff blocks, and 246 mypy errors -- see that plan's own
+   Surprises & Discoveries. Lower priority than the routing-correctness
+   items above per the same 2026-08-25 direction.
 
 The rest of this list is preserved for context and for whatever gets
 picked up next.
