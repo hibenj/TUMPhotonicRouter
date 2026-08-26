@@ -330,6 +330,7 @@ class RouteBookkeeping:
         route_cells: set[tuple[int, int]] | None = None,
         corrected_centerline_um: tuple[tuple[float, float], ...] = (),
         corrected_total_length_um: float | None = None,
+        target_port_center_um_override: tuple[float, float] | None = None,
     ) -> None:
         edge_key = route_edge_key(job)
         route_total_length_um = float(getattr(route_obj, "total_length_um"))
@@ -337,6 +338,11 @@ class RouteBookkeeping:
             float(corrected_total_length_um)
             if corrected_total_length_um is not None
             else route_total_length_um
+        )
+        target_port_center_um = (
+            target_port_center_um_override
+            if target_port_center_um_override is not None
+            else _port_center_um(job.target_port)
         )
         self.records_by_id[job.net_id] = RoutedNetRecord(
             net_name=job.net_name,
@@ -347,7 +353,7 @@ class RouteBookkeeping:
             net_id=int(job.net_id),
             opened_cells=tuple(opened_cells),
             source_port_center_um=_port_center_um(job.source_port),
-            target_port_center_um=_port_center_um(job.target_port),
+            target_port_center_um=target_port_center_um,
             source_port_orientation_deg=_port_orientation_deg(job.source_port),
             target_port_orientation_deg=_port_orientation_deg(job.target_port),
             base_total_length_um=(route_total_length_um if corrected_centerline_um else None),

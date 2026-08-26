@@ -1190,6 +1190,19 @@ class _RouteNetsRustSession:
             return int(self.stub_port_lane_length_cells), int(
                 self.stub_port_lane_half_width_cells
             )
+        # A dense TARGET port with a real, pre-committed static stub
+        # (`_build_static_fanout_target_anchors`) is in exactly the same
+        # position as a dense source port with one: the stub's own committed
+        # waveguide already protects the approach, so the generic port-lane
+        # reservation below would only be redundant. Reuse the same
+        # stub-scoped knobs (still real, still overridable via the same
+        # `PHOTONIC_ROUTER_STUB_PORT_LANE_*` environment variables) rather
+        # than introducing separate target-only ones -- see
+        # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
+        if f"{instance_name},{port_name}" in getattr(self, "fanout_anchor_by_port_spec", {}):
+            return int(self.stub_port_lane_length_cells), int(
+                self.stub_port_lane_half_width_cells
+            )
         return int(self.port_lane_length_cells), int(self.port_lane_half_width_cells)
 
     def _keyed_port_access_rule(
@@ -1355,6 +1368,22 @@ class _RouteNetsRustSession:
     def _is_dense_source_fanout_group(self, instance_name: str, angle: int) -> bool:
         return (
             len(self.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set()))
+            > 2
+        )
+
+    def _is_dense_target_fanout_instance(self, instance_name: str) -> bool:
+        return any(
+            len(port_specs) > 2
+            for (
+                group_instance,
+                _angle,
+            ), port_specs in self.target_port_specs_by_instance_angle.items()
+            if group_instance == instance_name
+        )
+
+    def _is_dense_target_fanout_group(self, instance_name: str, angle: int) -> bool:
+        return (
+            len(self.target_port_specs_by_instance_angle.get((instance_name, int(angle)), set()))
             > 2
         )
 
@@ -1898,6 +1927,83 @@ class _RouteNetsRustSession:
             return None
         return _compress_centerline(tuple(points)), (anchor_x, anchor_y)
 
+    def _straight_static_stub_centerline_um(
+        self,
+        port_center_um: tuple[float, float],
+        physical_angle: int,
+        forward_cells: int,
+    ) -> tuple[tuple[tuple[float, float], ...], tuple[int, int]] | None:
+        """Build a straight stub extending `forward_cells` grid cells forward
+        from a port along its own physical orientation, absorbing any
+        sub-cell port-to-grid misalignment with a small real-bend-radius
+        curve rather than a lateral offset.
+
+        Used for dense TARGET port stubs. Unlike source stubs (which need
+        to laterally redistribute a tight component pitch out to a wider
+        lane spacing via `_two_bend_static_stub_centerline_um`, since many
+        source nets fan out from adjacent ports toward widely separated
+        destinations), a target port just needs a short, protected,
+        straight approach directly in front of itself -- any lateral
+        movement a route still needs happens in the main A* search after
+        it reaches this anchor, not baked into the stub geometry.
+
+        Two things were tried and rejected before this one, both recorded
+        in `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`
+        Surprises & Discoveries: (1) reusing the two-bend, laterally
+        offsetting source-stub geometry for target ports too caused a real
+        regression (nearby target stubs ended up on different lateral
+        lanes, producing near-duplicate diagonal candidate paths for
+        adjacent nets that then illegally collided); (2) keeping the
+        anchor's geometric Y exactly at the port's own Y (a perfectly
+        straight, unbent line) and deferring the resulting sub-cell offset
+        to the ordinary checked-endpoint-correction pass did not work --
+        that pass left the route's raw grid endpoint essentially untouched
+        rather than reconciling it, for reasons not yet root-caused. This
+        version absorbs the offset locally instead, using
+        `_fanout_stub_centerline_um`, which is a plain straight line when
+        the port and the grid-snapped anchor are already aligned, and a
+        small circular arc (built by `_append_circular_stub_bend`, using
+        `self.bend_radius_cells` -- the exact same physical bend radius
+        every other primitive in this router uses, not an approximation)
+        only when they are not.
+        """
+        step_x, step_y = self._angle_to_step(int(physical_angle) % 8)
+        if abs(step_x) + abs(step_y) != 1:
+            return None
+        forward_cells = max(0, int(forward_cells))
+        if forward_cells <= 0:
+            return None
+        port_cell = _physical_point_to_grid_cell(
+            port_center_um,
+            grid_size_um=float(self.grid.grid_size_um),
+            origin_x_um=self.origin_x_um,
+            origin_y_um=self.origin_y_um,
+        )
+        if port_cell is None:
+            return None
+        anchor_x = int(port_cell[0]) + step_x * forward_cells
+        anchor_y = int(port_cell[1]) + step_y * forward_cells
+        if not self._in_bounds(anchor_x, anchor_y):
+            return None
+        # Deliberately NOT grid-snapped: a port's exact physical position
+        # generally does not fall exactly on a grid cell center, and a
+        # pure straight run along one axis cannot itself correct the other
+        # axis. Keep the port's exact Y throughout (a truly straight line,
+        # X-only) and let this exact point be what standard, ordinary
+        # checked-endpoint-correction resolves against -- see
+        # `RouteBookkeeping.record_route`'s `target_port_center_um_override`
+        # and `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
+        anchor_point_um = (
+            float(port_center_um[0])
+            + float(step_x) * float(forward_cells) * float(self.grid.grid_size_um),
+            float(port_center_um[1])
+            + float(step_y) * float(forward_cells) * float(self.grid.grid_size_um),
+        )
+        centerline = _compress_centerline((tuple(port_center_um), anchor_point_um))
+        if len(centerline) < 2:
+            return None
+        return centerline, (anchor_x, anchor_y)
+
     def _fanout_stub_centerline_um(
         self,
         port_center_um: tuple[float, float] | None,
@@ -2127,6 +2233,137 @@ class _RouteNetsRustSession:
                         )
         return anchors
 
+    def _build_static_fanout_target_anchors(self) -> dict[str, _FanoutAnchor]:
+        """Build real, pre-committed straight stubs for dense TARGET ports.
+
+        Unlike `_build_static_fanout_anchors` (the source-side equivalent),
+        this deliberately does NOT reuse the two-bend, laterally-offsetting
+        stub geometry: a first implementation attempt did reuse it, and that
+        turned out to actively cause a regression on `multiportmmi_8x8`
+        (`n_24` newly failed to route) -- see
+        `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`
+        Surprises & Discoveries for the full trace evidence. Laterally
+        offsetting each target port onto a different lane produced
+        near-duplicate diagonal candidate paths for adjacent nets, which
+        then illegally collided (non-perpendicular / collinear-overlap
+        crossings) with each other. A target port does not need lateral
+        redistribution the way a dense source fanout does (source nets fan
+        out from adjacent ports toward widely separated destinations;
+        target nets converge from widely separated sources onto adjacent
+        ports, which is not the same problem) -- it only needs a short,
+        protected, straight approach directly in front of itself, staggered
+        in LENGTH only (middle ports reaching further, matching this
+        benchmark's own physical layout intent), never in lateral position.
+        Any lateral movement a route still needs happens in the main A*
+        search after it reaches this anchor, exactly as it already does for
+        every non-stubbed port.
+
+        `_states_and_openings` and `_fanout_stubbed_centerline` already
+        consume `fanout_anchor_by_port_spec` symmetrically for source and
+        target anchors (confirmed by reading both before writing this
+        function), so populating target entries in that same dict is all
+        that is required for the rest of the routing pipeline to pick them
+        up correctly -- no other call site needs to change.
+        """
+        if self.fanout_access_mode_normalized != "static-stubs":
+            return {}
+        default_forward_cells = max(3, int(self.bend_radius_cells) + 3)
+        forward_cells = self._env_nonnegative_int(
+            "PHOTONIC_ROUTER_FANOUT_STUB_FORWARD_CELLS",
+            default_forward_cells,
+        )
+        spacing_cells = self._env_nonnegative_int(
+            "PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS",
+            self._env_nonnegative_int(
+                "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
+                self._env_nonnegative_int(
+                    "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+                    3,
+                ),
+            ),
+        )
+        if forward_cells <= 0:
+            return {}
+
+        anchors: dict[str, _FanoutAnchor] = {}
+        for instance_name, port_specs in self.target_port_specs_by_instance.items():
+            if not self._is_dense_target_fanout_instance(instance_name):
+                continue
+            by_angle: dict[int, list[str]] = {}
+            for port_spec in port_specs:
+                _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
+                angle = self._orientation_to_angle(getattr(port, "orientation", None), flip=False)
+                step_x, step_y = self._angle_to_step(angle)
+                # Mirrors the source-side restriction: static stub geometry
+                # is only defined for cardinal (axis-aligned) port rows
+                # today. Diagonal target ports fall back to the normal
+                # (non-stub) endpoint behavior, exactly like diagonal
+                # source ports already do.
+                if abs(step_x) + abs(step_y) != 1:
+                    continue
+                by_angle.setdefault(angle, []).append(port_spec)
+
+            for angle, group_specs in by_angle.items():
+                if not self._is_dense_target_fanout_group(instance_name, angle):
+                    continue
+                step_x, step_y = self._angle_to_step(angle)
+                lateral_x, lateral_y = -step_y, step_x
+
+                def _lateral_position(port_spec: str) -> float:
+                    _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
+                    center = _port_center_um(port)
+                    if center is None:
+                        return 0.0
+                    return float(center[0]) * lateral_x + float(center[1]) * lateral_y
+
+                ordered = sorted(group_specs, key=lambda spec: (_lateral_position(spec), spec))
+                count = len(ordered)
+                if count <= 2:
+                    continue
+                lower_specs = ordered[: count // 2]
+                upper_specs = ordered[count // 2 :]
+                # Rank 1 = shortest (edge of the group), highest rank =
+                # longest (middle of the group) -- the "middle ones go out
+                # the furthest" staggering, in length only.
+                ranked: list[tuple[str, int]] = [
+                    (port_spec, port_index + 1) for port_index, port_spec in enumerate(lower_specs)
+                ]
+                upper_count = len(upper_specs)
+                ranked.extend(
+                    (port_spec, upper_count - port_index)
+                    for port_index, port_spec in enumerate(upper_specs)
+                )
+
+                for port_spec, rank in ranked:
+                    _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
+                    real_center = _port_center_um(port)
+                    if real_center is None:
+                        continue
+                    length_cells = int(forward_cells) + int(spacing_cells) * (int(rank) - 1)
+                    stub_result = self._straight_static_stub_centerline_um(
+                        real_center,
+                        angle,
+                        length_cells,
+                    )
+                    if stub_result is None:
+                        continue
+                    centerline, (anchor_x, anchor_y) = stub_result
+                    # The anchor's own exact geometric position (the
+                    # straight stub's far end, keeping the port's true Y),
+                    # NOT the grid cell's snapped center -- see
+                    # `_straight_static_stub_centerline_um`.
+                    anchor_center = centerline[-1]
+                    anchors[port_spec] = self._FanoutAnchor(
+                        port_spec=port_spec,
+                        state_x=anchor_x,
+                        state_y=anchor_y,
+                        physical_angle=angle,
+                        center_um=anchor_center,
+                        stub_center_cells=self._centerline_grid_cells(centerline),
+                        stub_centerline_um=centerline,
+                    )
+        return anchors
+
     def _dense_source_port_runway_lengths(
         self,
         jobs: list[RouteJob],
@@ -2327,11 +2564,24 @@ class _RouteNetsRustSession:
             group_port_specs: list[str] = []
             for port_index, run_job in enumerate(lower_jobs):
                 port_spec = f"{run_job.inst2},{run_job.port2}"
+                if port_spec in self.fanout_anchor_by_port_spec:
+                    # A real, pre-committed static stub already exists for
+                    # this port (see `_build_static_fanout_target_anchors`):
+                    # the abstract reservation this function computes is
+                    # redundant for it and would just reintroduce the
+                    # flattened-staggering behavior this mechanism exists to
+                    # avoid, so skip it entirely (0 reservation, excluded
+                    # from equalization) rather than reserving anything.
+                    lengths_by_spec[port_spec] = 0
+                    continue
                 lengths_by_spec[port_spec] = base_cells + spacing_cells * int(port_index)
                 group_port_specs.append(port_spec)
             upper_count = len(upper_jobs)
             for port_index, run_job in enumerate(upper_jobs):
                 port_spec = f"{run_job.inst2},{run_job.port2}"
+                if port_spec in self.fanout_anchor_by_port_spec:
+                    lengths_by_spec[port_spec] = 0
+                    continue
                 lengths_by_spec[port_spec] = base_cells + spacing_cells * (
                     upper_count - 1 - int(port_index)
                 )
@@ -2574,9 +2824,25 @@ class _RouteNetsRustSession:
         job: RouteJob,
         route_obj: Any,
     ) -> tuple[tuple[float, float], ...]:
+        """Eagerly stitch a SOURCE fanout stub onto a route's own centerline.
+
+        Deliberately does NOT do the same for a TARGET fanout stub: a
+        target stub's anchor is not guaranteed to land exactly on a grid
+        cell (a plain straight stub can only correct the forward axis, not
+        the lateral one -- see `_straight_static_stub_centerline_um`), so
+        stitching it in eagerly here would mark the record "already fully
+        corrected" and skip the real endpoint-correction pass needed to
+        close that gap. Instead, `_record_route` points this net's own
+        effective target port at the anchor's exact position
+        (`target_port_center_um_override`), letting ordinary endpoint
+        correction resolve it the same way it would for any ordinary port,
+        and `_append_target_fanout_stubs_after_correction` appends the
+        fixed, pre-built anchor-to-true-port segment once that correction
+        has completed. See
+        `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
+        """
         source_anchor = self.fanout_anchor_by_port_spec.get(f"{job.inst1},{job.port1}")
-        target_anchor = self.fanout_anchor_by_port_spec.get(f"{job.inst2},{job.port2}")
-        if source_anchor is None and target_anchor is None:
+        if source_anchor is None:
             return ()
         route_primitive_centerline = getattr(self.router, "route_primitive_centerline", None)
         try:
@@ -2589,15 +2855,8 @@ class _RouteNetsRustSession:
         if len(route_centerline) < 2:
             return ()
         points: list[tuple[float, float]] = []
-        if source_anchor is not None:
-            self._append_centerline_points(points, source_anchor.stub_centerline_um)
-        else:
-            self._append_centerline_points(points, route_centerline[:1])
+        self._append_centerline_points(points, source_anchor.stub_centerline_um)
         self._append_centerline_points(points, route_centerline)
-        if target_anchor is not None:
-            self._append_centerline_points(points, reversed(target_anchor.stub_centerline_um))
-        else:
-            self._append_centerline_points(points, route_centerline[-1:])
         centerline = _compress_centerline(tuple(points))
         return centerline if len(centerline) >= 2 else ()
 
@@ -3568,6 +3827,10 @@ class _RouteNetsRustSession:
                     )
                 except Exception:
                     corrected_total_length_um = None
+        target_anchor = self.fanout_anchor_by_port_spec.get(f"{job.inst2},{job.port2}")
+        target_port_center_um_override = (
+            target_anchor.center_um if target_anchor is not None else None
+        )
         self.route_bookkeeping.record_route(
             job,
             route_obj,
@@ -3577,6 +3840,7 @@ class _RouteNetsRustSession:
             else None,
             corrected_centerline_um=corrected_centerline_um,
             corrected_total_length_um=corrected_total_length_um,
+            target_port_center_um_override=target_port_center_um_override,
         )
 
     def _export_route_svg(
@@ -5130,7 +5394,27 @@ class _RouteNetsRustSession:
             net_id = int(raw_net_id)
             crossing_points = crossing_points_by_net_id.get(net_id, [])
             if not crossing_points:
-                continue
+                # A net classified crossing-aware (the crossing plan expected
+                # it to cross something) but with zero REALIZED crossing
+                # points normally just gets skipped here entirely, on the
+                # assumption it will be corrected some other way. That
+                # assumption silently breaks for a net whose target has a
+                # dense-fanout static stub (`target_has_fanout_stub`):
+                # `record.target_port_center_um` was deliberately pointed at
+                # the stub anchor's own exact position (not the true port)
+                # specifically so THIS correction machinery would reconcile
+                # it, but skipping here means nothing ever does -- see
+                # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`
+                # Surprises & Discoveries for the concrete trace that found
+                # this. `_apply_crossing_aware_endpoint_correction_to_record`
+                # already has its own correct, generic handling for empty
+                # `crossing_points` (falls back to plain
+                # `apply_port_endpoint_corrections`), so only nets that
+                # actually need it are let through here, keeping every other
+                # net's existing behavior (and this function's own
+                # early-return-on-nothing-to-do intent) unchanged.
+                if net_id not in self.fanout_anchor_net_ids:
+                    continue
             record = self.route_bookkeeping.records_by_id.get(net_id)
             job = self.route_jobs_by_id.get(net_id)
             if record is None or job is None:
@@ -5160,7 +5444,22 @@ class _RouteNetsRustSession:
                 log_failures=print_warnings,
                 crossing_plan_info=self.crossing_plan_info,
                 correct_source=not source_has_fanout_stub,
-                correct_target=not target_has_fanout_stub,
+                # Unlike a source fanout stub (still always eagerly,
+                # fully pre-stitched to the true port by
+                # `_fanout_stubbed_centerline`, so its side never needs
+                # further correction), a TARGET fanout stub's own
+                # `record.target_port_center_um` is deliberately pointed
+                # at the anchor's own exact position, not the true port
+                # (see `RouteBookkeeping.record_route`'s
+                # `target_port_center_um_override`) -- so the target side
+                # of a crossing-aware net always still needs correction
+                # too, regardless of whether it has a fanout stub. Always
+                # correcting here (instead of `not target_has_fanout_stub`,
+                # which assumed the old eager-stitch design where the
+                # target was already fully corrected) is what actually
+                # closes that gap; see
+                # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
+                correct_target=True,
                 prefer_corrected_baseline=(
                     record_has_fanout_stub and bool(record.corrected_centerline_um)
                 ),
@@ -6481,6 +6780,8 @@ class _RouteNetsRustSession:
 
         self.source_port_specs_by_instance: dict[str, set[str]] = {}
         self.source_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
+        self.target_port_specs_by_instance: dict[str, set[str]] = {}
+        self.target_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
         for run_job in route_jobs:
             port_spec = f"{run_job.inst1},{run_job.port1}"
             self.source_port_specs_by_instance.setdefault(run_job.inst1, set()).add(port_spec)
@@ -6491,8 +6792,31 @@ class _RouteNetsRustSession:
             self.source_port_specs_by_instance_angle.setdefault(
                 (run_job.inst1, int(angle)), set()
             ).add(port_spec)
+            target_port_spec = f"{run_job.inst2},{run_job.port2}"
+            self.target_port_specs_by_instance.setdefault(run_job.inst2, set()).add(
+                target_port_spec
+            )
+            target_angle = self._orientation_to_angle(
+                getattr(run_job.target_port, "orientation", None),
+                flip=False,
+            )
+            self.target_port_specs_by_instance_angle.setdefault(
+                (run_job.inst2, int(target_angle)), set()
+            ).add(target_port_spec)
 
-        self.fanout_anchor_by_port_spec = self._build_static_fanout_anchors()
+        self.fanout_anchor_by_port_spec = {
+            **self._build_static_fanout_anchors(),
+            **self._build_static_fanout_target_anchors(),
+        }
+        if os.environ.get("PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE"):
+            traced_instance = os.environ["PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE"]
+            for port_spec, anchor in sorted(self.fanout_anchor_by_port_spec.items()):
+                if port_spec.startswith(f"{traced_instance},"):
+                    print(
+                        f"anchor_trace {port_spec} state=({anchor.state_x},{anchor.state_y}) "
+                        f"angle={anchor.physical_angle} "
+                        f"centerline={anchor.stub_centerline_um}"
+                    )
         self.fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = {
             port_spec: self._inflated_cells(anchor.stub_center_cells, int(self.commit_radius_cells))
             for port_spec, anchor in self.fanout_anchor_by_port_spec.items()
@@ -6526,6 +6850,18 @@ class _RouteNetsRustSession:
         self.dense_target_port_runway_length_by_spec = self._dense_target_port_runway_lengths(
             route_jobs
         )
+        if os.environ.get("PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE"):
+            traced_instance = os.environ["PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE"]
+            for port_spec, runway_length in sorted(
+                self.dense_target_port_runway_length_by_spec.items()
+            ):
+                if port_spec.startswith(f"{traced_instance},"):
+                    print(f"runway_trace target {port_spec} length={runway_length}")
+            for port_spec, runway_length in sorted(
+                self.dense_source_port_runway_length_by_spec.items()
+            ):
+                if port_spec.startswith(f"{traced_instance},"):
+                    print(f"runway_trace source {port_spec} length={runway_length}")
         dense_port_runway_length_by_spec: dict[str, int] = dict(
             self.dense_source_port_runway_length_by_spec
         )
@@ -7131,6 +7467,53 @@ class _RouteNetsRustSession:
 
         return route_jobs, t_astar_start
 
+    def _append_target_fanout_stubs_after_correction(self) -> None:
+        """Splice each target-anchored net's fixed stub onto its corrected route.
+
+        `_record_route`/`RouteBookkeeping.record_route` pointed any
+        target-anchored net's own `target_port_center_um` at the anchor's
+        exact position (not the true physical port) specifically so that
+        the endpoint-correction pass just run in `_finalize_routing_results`
+        would resolve the search's grid state to that exact point using
+        the same machinery every ordinary port already relies on. Now that
+        correction is done, append the fixed, pre-built stub segment
+        (already known exactly -- `anchor.stub_centerline_um`, reversed --
+        no further correction needed for it) to reach the true port, and
+        restore `target_port_center_um` to the true port so downstream
+        verification and reporting see the net's real, declared endpoint.
+        See `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
+        """
+        for net_id, record in list(self.route_bookkeeping.records_by_id.items()):
+            target_spec = f"{record.target.instance},{record.target.port}"
+            anchor = self.fanout_anchor_by_port_spec.get(target_spec)
+            if anchor is None:
+                continue
+            centerline = list(record.corrected_centerline_um)
+            if len(centerline) < 2:
+                continue
+            endpoint_entry = self.endpoint_ports_by_spec.get(target_spec)
+            if endpoint_entry is None:
+                continue
+            _inst, _port_name, port = endpoint_entry
+            true_port_um = _port_center_um(port)
+            if true_port_um is None:
+                continue
+            points = list(centerline)
+            self._append_centerline_points(points, [true_port_um])
+            new_centerline = _compress_centerline(tuple(points))
+            if len(new_centerline) < 2:
+                continue
+            try:
+                new_total_length_um = float(_centerline_length_um(new_centerline))
+            except Exception:
+                continue
+            self.route_bookkeeping.records_by_id[net_id] = replace(
+                record,
+                corrected_centerline_um=new_centerline,
+                total_length_um=new_total_length_um,
+                target_port_center_um=true_port_um,
+            )
+
     def _finalize_routing_results(
         self, route_jobs: list[RouteJob], t_astar_start: float
     ) -> tuple[list[RoutedNetRecord], float]:
@@ -7159,6 +7542,7 @@ class _RouteNetsRustSession:
                     or self.verbose_route_diagnostics
                 ),
             )
+        self._append_target_fanout_stubs_after_correction()
 
         t_record_assembly_start = self._pipeline_timer_start()
         routed_net_records = self.route_bookkeeping.ordered_records()
