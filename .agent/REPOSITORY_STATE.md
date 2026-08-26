@@ -18,23 +18,25 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-25
+- Date: 2026-08-26
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `8fdd435`, plus this docs-only close-out commit. Two large
-  ExecPlans completed today, one commit per milestone throughout:
+- Current HEAD: as of the commit alongside this update. Two large
+  ExecPlans completed 2026-08-25, one commit per milestone throughout:
   `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
   (Milestones 1-5 of 6; Milestone 6, final validation/retrospective, remains
   open, deprioritized, not abandoned) and
   `.agent/execplans/2026-08-25-negotiated-repair-engine.md` (all 8
-  milestones complete) -- plus one real bug found and fixed outside any
-  ExecPlan afterward (a routed net's own path could cross itself
-  undetected; see Resolved Findings entry 1, commits `a4baba7`/`8fdd435`).
+  milestones complete) -- plus two real findings fixed outside any
+  ExecPlan afterward: a routed net's own path could cross itself
+  undetected (Resolved Findings entry 1, commits `a4baba7`/`8fdd435`), and
+  the dense-source-fanout stub port-lane reservation tuned down to zero
+  (Resolved Findings entry 3, commits `5f6fd0f`/`b776541`/this commit).
 - **No active ExecPlan right now.** The repository owner is directing next
   steps turn by turn; see Next Engineering Step for the real current
   candidates.
 - Current test baselines: `cargo test --lib` `401 passed, 0 failed` (5 new,
   covering the self-intersection fix); `PYTHONPATH=. .venv/bin/pytest -q`
-  `11 failed, 334 passed, 1 skipped` (net count changed from prior
+  `11 failed, 335 passed, 1 skipped` (net count changed from prior
   snapshots only because of test additions in intervening work, not a
   regression -- every one of the 11 failures is the same, already-
   documented set; see Current Findings below).
@@ -507,6 +509,47 @@ restructuring; the third (below, in Resolved Findings) is fixed:
    now routes cleanly, `error_count: 0` on both crossing and photonic
    verification. Full pytest suite and the `multiportmmi_8x8`
    stable-baseline config both unaffected.
+
+3. **Dense-source-fanout stub port-lane reservation tuned to zero -- landed
+   2026-08-26**, not part of any ExecPlan (a direct follow-on to the
+   `n_31` self-intersection fix above, found while the repository owner was
+   visually inspecting the same GDS region for an oversized red port-
+   keepout area). `_resolve_port_footprint_cells`
+   (`translation/route_rust.py`) returns `(length_cells, half_width_cells)`
+   controlling how many forward grid steps get reserved past each port,
+   and how wide (full square side `2*half_width+1`) each step's stamp is
+   (`route_collect_inflated_step_cells`, `src/py_router.rs:1193-1271`);
+   real forward reach is `length_cells + half_width_cells`, not
+   `length_cells` alone (the width-square is stamped at every step,
+   including the last). At a dense-source-fanout instance (a multi-port
+   MMI splitter with several stubbed ports stacked closely, e.g.
+   `multiportmmi_8x8`), this general per-port reservation, sized for a
+   port whose own waveguide isn't committed yet, was overlapping heavily
+   across stacked ports and merging into one large blocked region visible
+   in the rendered GDS. A stub's waveguide, unlike a general port's, *is*
+   already committed static geometry by the time this reservation would
+   matter, and legality of anything placed at its exit (including a
+   crossing) is governed separately by the crossing-legality rules
+   (`crossing_half_size_cells`, `min_straight_cells_per_crossing`), not by
+   this reservation -- so there was nothing left for it to protect at
+   stubs specifically. Landed in three steps, each validated on
+   `multiportmmi_8x8`'s stable baseline (still 111/111 routed, 0 errors,
+   0 warnings on both crossing and photonic verification, `PYTHONPATH=.
+   .venv/bin/pytest -q` unaffected -- same 11 pre-existing failures, 335
+   passed, throughout): (1) added a scoped override,
+   `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS`/
+   `PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS`, applying only to
+   `_is_dense_source_fanout_instance` instances, confirmed via a real
+   regression (`n_76`, an unrelated heater port) that a *global* reduction
+   is unsafe -- other ports still need the full general formula; (2)
+   promoted `half_width_cells=2` (down from the general formula's
+   `bend_radius_cells + commit_radius_cells + 1`) to the real default,
+   shrinking the merged keepout region for 6 stacked ports from 21 to 17
+   cells tall; (3) this entry -- promoted both knobs to `0` (no
+   reservation at all at stubs), after confirming `half_width=0` alone,
+   then both `half_width=0` and `length=0` together, each pass clean.
+   Commits: `5f6fd0f` (scoped override), `b776541` (`half_width=2`
+   default), and the commit alongside this entry (`0`/`0` default).
 
 **Idea saved for the eventual repair rewrite** (not acted on):
 repair's necessity is not just a net-ordering artifact -- confirmed

@@ -6363,22 +6363,25 @@ class _RouteNetsRustSession:
         # unaffected regardless of these values, so this stays scoped
         # rather than becoming a second general default.
         #
-        # `half_width_cells` defaults to `2` (not the general formula
-        # above) as a real default now, not just an opt-in experiment:
-        # validated on `multiportmmi_8x8`'s stable baseline (still routes
-        # 111/111, 0 errors) with each dense-source port's own reservation
-        # roughly halved and the merged keepout region for 6 stacked ports
-        # shrinking from 21 to 17 cells tall. `length_cells` keeps the
-        # general formula's own value -- only `half_width_cells` (the
-        # dimension actually driving the port-to-port overlap) was
-        # validated as safe to shrink by default.
+        # Both default to `0` (no reservation at all): at a stub, the
+        # runway/keepout exists to protect a port whose own waveguide isn't
+        # committed yet, but a dense-source-fanout stub's waveguide *is*
+        # already committed static geometry by the time this reservation
+        # would matter. A crossing (or anything else) placed directly at a
+        # stub's exit cell is governed by the crossing-legality rules
+        # (`crossing_half_size_cells`, `min_straight_cells_per_crossing`),
+        # not by this reservation, so there is nothing left for it to
+        # protect at stubs specifically. Validated on `multiportmmi_8x8`'s
+        # stable baseline with both knobs at `0` (previously `half_width=2`,
+        # `length=port_lane_length_cells`): still routes 111/111, 0 errors,
+        # 0 self-intersections, 0 cross-net overlaps.
         self.stub_port_lane_length_cells = self._env_nonnegative_int(
             "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
-            self.port_lane_length_cells,
+            0,
         )
         self.stub_port_lane_half_width_cells = self._env_nonnegative_int(
             "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
-            2,
+            0,
         )
 
         port_open_radius_um = _as_float(
