@@ -92,6 +92,10 @@ class CrossingGridGeometry:
     # removes crossing complexity, not routing. "in_grid": the grid also
     # contains the vertical fan-in/fan-out to the lanes' natural rows.
     fan_mode: str = "router"
+    # Extra stub length per lane rank from the grid's edge (middle lanes get
+    # the longest stubs, like the multiport-MMI static stubs), so the router
+    # starts each lane's route at a different x. 0 disables the stagger.
+    stub_stagger_um: float = 6.0
     route_width_um: float = 0.5
     cross_section: str = "strip"
 
@@ -421,8 +425,15 @@ def build_crossing_grid_component(
 
     entry_fan_um = fan_width(entry_column_count)
     exit_fan_um = fan_width(exit_column_count)
-    x_left = core_x0 - entry_fan_um - entry_um
-    x_right = core_x0 + core_width_um + exit_fan_um + entry_um
+
+    def stub_len(slot: int) -> float:
+        """Straight stub length for a lane at ``slot``: middle lanes longest."""
+        rank_from_edge = min(slot, lane_count - 1 - slot)
+        return entry_um + float(geometry.stub_stagger_um) * rank_from_edge
+
+    max_stub_um = max(stub_len(slot) for slot in range(lane_count))
+    x_left = core_x0 - entry_fan_um - max_stub_um
+    x_right = core_x0 + core_width_um + exit_fan_um + max_stub_um
     total_width_um = x_right - x_left
 
     def crossing_center(level: int, upper_slot: int) -> tuple[float, float]:
@@ -490,18 +501,20 @@ def build_crossing_grid_component(
         first, last, direction = movement[net]
         length = 0.0
 
-        # Entry straight + port at the lane's natural row.
-        ref = component.add_ref(_straight(geometry, entry_um))
-        ref.dmove((x_left, entry_rows[net]))
+        # Entry stub + port at the lane's natural row. The port sits at
+        # x_left + (max_stub - own stub): shorter stubs start further right.
+        entry_stub_um = stub_len(start_slot)
+        ref = component.add_ref(_straight(geometry, entry_stub_um))
+        ref.dmove((x_left + max_stub_um - entry_stub_um, entry_rows[net]))
         component.add_port(f"in_{start_slot}", port=ref.ports["o1"])
         open_port = ref.ports["o2"]
-        length += entry_um
+        length += entry_stub_um
 
         # Fan-in: turn in this lane's own column, land on the slot row.
         column = entry_columns.get(net)
         if column is not None:
             open_port, run = _straight_to_x(
-                open_port, x_left + entry_um + column * column_pitch_um, net, "entry fan"
+                open_port, x_left + max_stub_um + column * column_pitch_um, net, "entry fan"
             )
             length += run
             open_port, run = _jog(open_port, entry_offsets[net], net)
@@ -554,19 +567,20 @@ def build_crossing_grid_component(
             length += run
         if abs(float(open_port.dcenter[1]) - exit_rows[net]) > _GEOMETRY_TOLERANCE_UM:
             raise RuntimeError(f"lane {net} did not reach its exit row")
-        open_port, run = _straight_to_x(open_port, x_right - entry_um, net, "exit")
+        exit_stub_um = stub_len(end_slot)
+        open_port, run = _straight_to_x(open_port, x_right - max_stub_um, net, "exit")
         length += run
-        # Place the exit straight absolutely (like the entry straight) rather
-        # than chaining it: port-to-port connects accumulate ~1 nm of dbu
+        # Place the exit stub absolutely (like the entry stub) rather than
+        # chaining it: port-to-port connects accumulate ~1 nm of dbu
         # rounding, and the exit port must sit on *exactly* the row the next
         # switch port has, or the stub's endpoint corrector falls back from a
         # plain straight shift to a 12 um bump.
-        ref = component.add_ref(_straight(geometry, entry_um))
-        ref.dmove((x_right - entry_um, exit_rows[net]))
-        _check(ref.ports["o1"], open_port, f"lane {net} exit straight")
+        ref = component.add_ref(_straight(geometry, exit_stub_um))
+        ref.dmove((x_right - max_stub_um, exit_rows[net]))
+        _check(ref.ports["o1"], open_port, f"lane {net} exit stub")
         component.add_port(f"out_{end_slot}", port=ref.ports["o2"])
         output_port_by_net[net] = f"out_{end_slot}"
-        lane_length_um[net] = length + entry_um
+        lane_length_um[net] = length + exit_stub_um
 
     input_port_by_net = {edge.net_name: f"in_{index}" for index, edge in enumerate(lanes)}
     component.info["crossing_count"] = len(crossings)
@@ -630,6 +644,7 @@ def crossing_grid_geometry_from_env() -> CrossingGridGeometry:
         ),
         fan_mode=os.environ.get("PHOTONIC_ROUTER_CROSSING_GRID_FAN_MODE", base.fan_mode).strip()
         or base.fan_mode,
+        stub_stagger_um=_read("PHOTONIC_ROUTER_CROSSING_GRID_STUB_STAGGER_UM", base.stub_stagger_um),
         route_width_um=base.route_width_um,
         cross_section=base.cross_section,
     )
