@@ -551,6 +551,47 @@ restructuring; the third (below, in Resolved Findings) is fixed:
    Commits: `5f6fd0f` (scoped override), `b776541` (`half_width=2`
    default), and the commit alongside this entry (`0`/`0` default).
 
+4. **`try_route_through_collision_partner_set`'s uncapped
+   `max_iterations` was the dominant cost in repair -- fixed 2026-08-26**,
+   not part of any ExecPlan (direct follow-on from the repository owner
+   asking why routing was much slower than LiDAR's reference timing).
+   Confirmed via direct instrumentation (temporary `eprintln!`s under the
+   existing `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1`/
+   `PHOTONIC_ROUTER_TRACE_CROSSING_NET=<net>` flags, kept as permanent
+   per-attempt timing diagnostics in `try_crossing_aware_victim_reroute`
+   since they're cheap and match the function's existing gated-`eprintln!`
+   style): on `multiportmmi_8x8`'s stable baseline, of `astar_loop=113.5s`
+   total A*-loop time, `repair_total=96.9s` (85%) was repair, and
+   `victims=95.4s` of that was two single searches on one net (`net 32`,
+   `47.9s` and `36.6s`) inside `try_route_through_collision_partner_set`
+   (the "seeded"/"guided" strategies in the 3-strategy victim-reroute
+   cascade), both of which **failed** after exhausting the search space.
+   Root cause: this function requires the found route to cross *every*
+   partner in its set simultaneously (`require_all_partners=true`,
+   `src/py_router.rs`); when that joint constraint is infeasible, A* has
+   no early-exit signal and searches up to the uncapped
+   `max_iterations=5,000,000` before giving up. The same partner set
+   handed to the sibling "collision" strategy
+   (`try_route_with_collision_crossings_using_primitives`, which does
+   *not* require all partners) failed or succeeded in `0.1s-1.0s` on the
+   identical net. Across every victim captured, "seeded"/"guided" never
+   won once -- it only ever burned time before falling through to a
+   cheaper strategy that actually resolved the net. Fixed by capping
+   `crossing_search_cfg.max_iterations` to `500_000` inside
+   `try_route_through_collision_partner_set` (10x lower than the default,
+   still ~15x more headroom than any observed real success, which
+   completed in under 30,000 expanded states). Verified end-to-end, all
+   clean (`error_count=0`, `warning_count=0`, full route count unchanged)
+   on the three benchmarks that exercise this path: `multiportmmi_8x8`
+   stable baseline `121-140s -> 53.7s` total; `benes_8x8` stable baseline
+   unaffected (`28.9s`, already fast); `benes_16x16` stable baseline
+   `392.4s -> 215.2s` total. `cargo test --lib` `401 passed, 0 failed`
+   and `PYTHONPATH=. .venv/bin/pytest -q` `11 failed (same pre-existing
+   set), 335 passed, 1 skipped` both unaffected. `multiportmmi_16x16`
+   (the known, separate `n_49`/`n_50` gap; see Current Findings entry 2)
+   not re-checked as part of this fix -- it already fails before reaching
+   a stable baseline, orthogonal to this timing finding.
+
 **Idea saved for the eventual repair rewrite** (not acted on):
 repair's necessity is not just a net-ordering artifact -- confirmed
 `--ripup-reroute false` still allows per-net crossing search, only disables

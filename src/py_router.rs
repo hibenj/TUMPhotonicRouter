@@ -4741,6 +4741,18 @@ impl PyPhotonicRouter {
         crossing_search_cfg.require_terminal_straights = false;
         crossing_search_cfg.enable_simple_routes = false;
         crossing_search_cfg.enable_jps4 = false;
+        // This search requires the route to cross *every* partner in
+        // `partner_ids` simultaneously (`require_all_partners=true` below).
+        // When that joint constraint is infeasible, A* has no early-exit
+        // signal and must exhaust the search space before concluding
+        // failure -- confirmed via direct measurement on multiportmmi_8x8
+        // (net 32 repair, 2026-08-26): two such failed searches took 47.9s
+        // and 36.6s each against the uncapped default (5,000,000), while
+        // every real success this call has ever produced completed in
+        // well under 200ms (expanded well under 30,000 states). Capped 10x
+        // lower as a circuit breaker for the infeasible case -- still ~15x
+        // more headroom than any observed real success.
+        crossing_search_cfg.max_iterations = crossing_search_cfg.max_iterations.min(500_000);
         let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -9626,7 +9638,16 @@ impl PyPhotonicRouter {
                         Some(&victim_job.opened_cell_keys),
                     )
                     .map_err(PyRuntimeError::new_err)?;
-                batch.timings.reroute_victims_wall_us += native_batch_elapsed_us(seeded_start);
+                let seeded_elapsed_us = native_batch_elapsed_us(seeded_start);
+                batch.timings.reroute_victims_wall_us += seeded_elapsed_us;
+                if trace_native_repair {
+                    eprintln!(
+                        "victim_diag net={} strategy=seeded elapsed_us={} found={}",
+                        victim_job.net_id,
+                        seeded_elapsed_us,
+                        seeded_result.is_some()
+                    );
+                }
                 if let Some((route, crossing_events)) = seeded_result {
                     let crossed_partner_ids =
                         Self::crossing_partner_ids_from_events(&crossing_events);
@@ -9717,7 +9738,16 @@ impl PyPhotonicRouter {
                         Some(0.0),
                     )
                     .map_err(PyRuntimeError::new_err)?;
-                batch.timings.reroute_victims_wall_us += native_batch_elapsed_us(crossing_start);
+                let crossing_elapsed_us = native_batch_elapsed_us(crossing_start);
+                batch.timings.reroute_victims_wall_us += crossing_elapsed_us;
+                if trace_native_repair {
+                    eprintln!(
+                        "victim_diag net={} strategy=collision elapsed_us={} found={}",
+                        victim_job.net_id,
+                        crossing_elapsed_us,
+                        crossing_result.is_some()
+                    );
+                }
                 if let Some((route, crossing_events)) = crossing_result {
                     let crossed_partner_ids =
                         Self::crossing_partner_ids_from_events(&crossing_events);
@@ -9835,7 +9865,16 @@ impl PyPhotonicRouter {
                     Some(&victim_job.opened_cell_keys),
                 )
                 .map_err(PyRuntimeError::new_err)?;
-            batch.timings.reroute_victims_wall_us += native_batch_elapsed_us(guided_start);
+            let guided_elapsed_us = native_batch_elapsed_us(guided_start);
+            batch.timings.reroute_victims_wall_us += guided_elapsed_us;
+            if trace_native_repair {
+                eprintln!(
+                    "victim_diag net={} strategy=guided elapsed_us={} found={}",
+                    victim_job.net_id,
+                    guided_elapsed_us,
+                    guided_result.is_some()
+                );
+            }
             if let Some((route, crossing_events)) = guided_result {
                 let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
                 let crossed_partner_vec: Vec<u64> = crossed_partner_ids.iter().copied().collect();
