@@ -42,6 +42,10 @@ from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
 from photonic_router.crossing_plan import CrossingPlan, CrossingStagePlan
 from photonic_router.path_length_graph import RoutedEdgeKey
+from photonic_router.routing_layers import (
+    ComponentPortAccessRule,
+    register_component_port_access_rule,
+)
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_gds import get_port_from_instance
 
@@ -69,7 +73,11 @@ class CrossingGridGeometry:
     move lanes from their natural rows to their lattice slots (and back).
     ``port_pair_spread_um`` is how far sibling ports of one component (e.g. a
     switch's two outputs, 1.25 um apart) are pushed apart at the grid face so
-    each stub lands in its own routing-grid cell.
+    each stub lands in its own routing-grid cell. ``unrouted_sibling_clearance_um``
+    is the minimum distance a grid port keeps from a sibling port that is *not*
+    in the grid (a lane that crosses nothing and is routed as an ordinary net),
+    so the grid's bounding box never covers that lane's natural row and it can
+    run straight past the grid.
     """
 
     lane_pitch_um: float = 20.0
@@ -77,6 +85,7 @@ class CrossingGridGeometry:
     entry_straight_um: float = 4.0
     fan_column_pitch_um: float = 4.0
     port_pair_spread_um: float = 2.0
+    unrouted_sibling_clearance_um: float = 0.0
     route_width_um: float = 0.5
     cross_section: str = "strip"
 
@@ -541,8 +550,14 @@ def build_crossing_grid_component(
             raise RuntimeError(f"lane {net} did not reach its exit row")
         open_port, run = _straight_to_x(open_port, x_right - entry_um, net, "exit")
         length += run
+        # Place the exit straight absolutely (like the entry straight) rather
+        # than chaining it: port-to-port connects accumulate ~1 nm of dbu
+        # rounding, and the exit port must sit on *exactly* the row the next
+        # switch port has, or the stub's endpoint corrector falls back from a
+        # plain straight shift to a 12 um bump.
         ref = component.add_ref(_straight(geometry, entry_um))
-        ref.connect("o1", open_port)
+        ref.dmove((x_right - entry_um, exit_rows[net]))
+        _check(ref.ports["o1"], open_port, f"lane {net} exit straight")
         component.add_port(f"out_{end_slot}", port=ref.ports["o2"])
         output_port_by_net[net] = f"out_{end_slot}"
         lane_length_um[net] = length + entry_um
@@ -603,6 +618,10 @@ def crossing_grid_geometry_from_env() -> CrossingGridGeometry:
         port_pair_spread_um=_read(
             "PHOTONIC_ROUTER_CROSSING_GRID_PORT_PAIR_SPREAD_UM", base.port_pair_spread_um
         ),
+        unrouted_sibling_clearance_um=_read(
+            "PHOTONIC_ROUTER_CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM",
+            base.unrouted_sibling_clearance_um,
+        ),
         route_width_um=base.route_width_um,
         cross_section=base.cross_section,
     )
@@ -650,6 +669,41 @@ def _spread_sibling_rows(
     return result
 
 
+def _push_away_from_unrouted_siblings(
+    rows_by_net: Mapping[str, float],
+    port_spec_by_net: Mapping[str, str],
+    unrouted_layout: Component,
+    clearance_um: float,
+) -> dict[str, float]:
+    """Keep every grid port ``clearance_um`` away from same-instance ports not in the grid.
+
+    A lane that crosses nothing is routed as an ordinary net along its natural
+    row; if a sibling lane's grid port sat 1.25 um from that row, the grid's
+    bounding box would block it and force a detour around the grid.
+    """
+    in_grid = set(port_spec_by_net.values())
+    result = dict(rows_by_net)
+    for net, spec in port_spec_by_net.items():
+        instance_name, port_name = spec.split(",")
+        own = get_port_from_instance(unrouted_layout, instance_name, port_name)
+        own_y = float(own.dcenter[1])
+        row = result[net]
+        for other in unrouted_layout.insts[instance_name].ports:
+            other_spec = f"{instance_name},{other.name}"
+            if other_spec == spec or other_spec in in_grid:
+                continue
+            if abs(float(other.orientation) - float(own.orientation)) % 360.0 > 1e-6:
+                continue
+            other_y = float(other.dcenter[1])
+            gap = row - other_y
+            if abs(gap) >= clearance_um:
+                continue
+            direction = 1.0 if (gap > 0 or (gap == 0 and own_y >= other_y)) else -1.0
+            row = other_y + direction * clearance_um
+        result[net] = row
+    return result
+
+
 def _run_placement(
     unrouted_layout: Component,
     schematic: Schematic,
@@ -669,10 +723,14 @@ def _run_placement(
     exit_rows: dict[str, float] = {}
     source_instance: dict[str, str] = {}
     target_instance: dict[str, str] = {}
+    source_spec: dict[str, str] = {}
+    target_spec: dict[str, str] = {}
     for edge in lanes:
         p1, p2 = _net_endpoints(schematic, edge.net_name)
         inst1, port1 = p1.split(",")
         inst2, port2 = p2.split(",")
+        source_spec[edge.net_name] = p1
+        target_spec[edge.net_name] = p2
         source = get_port_from_instance(unrouted_layout, inst1, port1)
         target = get_port_from_instance(unrouted_layout, inst2, port2)
         source_xs.append(float(source.dcenter[0]))
@@ -683,9 +741,19 @@ def _run_placement(
         target_instance[edge.net_name] = inst2
     entry_rows = _spread_sibling_rows(entry_rows, source_instance, geometry.port_pair_spread_um)
     exit_rows = _spread_sibling_rows(exit_rows, target_instance, geometry.port_pair_spread_um)
-    x_center = 0.5 * (max(source_xs) + min(target_xs))
+    entry_rows = _push_away_from_unrouted_siblings(
+        entry_rows, source_spec, unrouted_layout, geometry.unrouted_sibling_clearance_um
+    )
+    exit_rows = _push_away_from_unrouted_siblings(
+        exit_rows, target_spec, unrouted_layout, geometry.unrouted_sibling_clearance_um
+    )
+    # Snap the placement to the 1 nm database unit so a grid port lands on
+    # *exactly* the same coordinate as the switch port it faces: the endpoint
+    # corrector only uses the plain "shift the straight" strategy when the two
+    # port rows agree exactly, and a 1 nm mismatch would cost a 12 um bump.
+    x_center = round(0.5 * (max(source_xs) + min(target_xs)), 3)
     all_rows = list(entry_rows.values()) + list(exit_rows.values())
-    y_center = sum(all_rows) / float(len(all_rows))
+    y_center = round(sum(all_rows) / float(len(all_rows)), 3)
     return _RunPlacement(
         x_center_um=x_center,
         y_center_um=y_center,
@@ -746,6 +814,19 @@ def split_stage_into_participating_runs(
 
 
 def _register_grid_cell(name: str, component: Component) -> None:
+    # A grid port's approach is already protected by the grid's own committed
+    # geometry (same reasoning as for static stubs), so it gets the smallest
+    # possible access opening and no lane reservation -- otherwise the
+    # reservation (+-4 cells) covers the natural row of a sibling lane that
+    # crosses nothing and forces it to detour around the grid.
+    register_component_port_access_rule(
+        ComponentPortAccessRule(
+            component_name_pattern=name,
+            port_names=tuple(port.name for port in component.ports),
+            access_length_um=0.0,
+            access_width_um=0.0,
+        )
+    )
     pdk = gf.get_active_pdk()
     if name in pdk.cells:
         return

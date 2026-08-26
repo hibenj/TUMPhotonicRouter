@@ -78,15 +78,33 @@ def get_routing_obstacle_layers(
     return _dedupe_layers(layers)
 
 
+# Rules registered at run time by flow stages that create components on the
+# fly (e.g. pre-placed crossing grids). Consulted after the static rules.
+REGISTERED_PORT_ACCESS_RULES: list[ComponentPortAccessRule] = []
+
+
+def register_component_port_access_rule(rule: ComponentPortAccessRule) -> None:
+    """Register a run-time port access rule (idempotent for identical rules)."""
+
+    if rule not in REGISTERED_PORT_ACCESS_RULES:
+        REGISTERED_PORT_ACCESS_RULES.append(rule)
+
+
 def find_component_port_access_rule(
     *,
     component_name: str | None,
     port_name: str | None,
     port_type: str | None = None,
-    rules: Iterable[ComponentPortAccessRule] = HEATER_OPTICAL_PORT_ACCESS_RULES,
+    rules: Iterable[ComponentPortAccessRule] | None = None,
 ) -> ComponentPortAccessRule | None:
-    """Return the first access rule matching a component port."""
+    """Return the first access rule matching a component port.
 
+    With ``rules`` unset, the static heater rules are consulted first, then
+    any run-time registered rules.
+    """
+
+    if rules is None:
+        rules = (*HEATER_OPTICAL_PORT_ACCESS_RULES, *REGISTERED_PORT_ACCESS_RULES)
     for rule in rules:
         if rule.matches(
             component_name=component_name,
