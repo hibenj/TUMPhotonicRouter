@@ -206,11 +206,15 @@ def _footprint_resolver_session(
     def keyed_port_access_rule(**_kwargs: object) -> tuple[float | None, float | None, str | None]:
         return access_rule
 
+    def is_dense_source_fanout_instance(_instance_name: str) -> bool:
+        return False
+
     return SimpleNamespace(
         grid=SimpleNamespace(grid_size_um=grid_size_um),
         port_lane_length_cells=max(3, 2 * bend_radius_cells + 2),
         port_lane_half_width_cells=max(1, bend_radius_cells + commit_radius_cells + 1),
         _keyed_port_access_rule=keyed_port_access_rule,
+        _is_dense_source_fanout_instance=is_dense_source_fanout_instance,
     )
 
 
@@ -253,6 +257,41 @@ def test_resolve_port_footprint_cells_uses_lane_sized_optical_default():
         port_name="o1",
         port=port,
     ) == (4, 2)
+
+
+def test_resolve_port_footprint_cells_uses_stub_override_only_for_dense_fanout_instances():
+    port = SimpleNamespace(port_type="optical")
+
+    def is_dense_source_fanout_instance(instance_name: str) -> bool:
+        return instance_name == "mmi0_multiport_0_0"
+
+    session = SimpleNamespace(
+        grid=SimpleNamespace(grid_size_um=1.0),
+        port_lane_length_cells=8,
+        port_lane_half_width_cells=4,
+        stub_port_lane_length_cells=8,
+        stub_port_lane_half_width_cells=2,
+        _keyed_port_access_rule=lambda **_kwargs: (None, None, None),
+        _is_dense_source_fanout_instance=is_dense_source_fanout_instance,
+    )
+
+    # A port on the dense-fanout instance gets the stub-scoped override...
+    assert route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
+        session,
+        instance_name="mmi0_multiport_0_0",
+        port_name="o1",
+        port=port,
+    ) == (8, 2)
+    # ...but an unrelated instance (e.g. a heater port elsewhere in the same
+    # benchmark) is unaffected and still gets the general default -- the
+    # real regression (test_rust_batch_repair-adjacent multiportmmi_8x8
+    # n_76 endpoint-correction failure) this scoping fixed.
+    assert route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
+        session,
+        instance_name="mmi1_ps_array_0_heater_5",
+        port_name="o1",
+        port=port,
+    ) == (8, 4)
 
 
 def test_corridor_clearance_reports_no_bare_centerline_path():

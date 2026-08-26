@@ -1186,6 +1186,10 @@ class _RouteNetsRustSession:
             )
             return length_cells, half_width_cells
 
+        if self._is_dense_source_fanout_instance(instance_name):
+            return int(self.stub_port_lane_length_cells), int(
+                self.stub_port_lane_half_width_cells
+            )
         return int(self.port_lane_length_cells), int(self.port_lane_half_width_cells)
 
     def _keyed_port_access_rule(
@@ -6348,6 +6352,24 @@ class _RouteNetsRustSession:
         self.port_lane_length_cells = max(3, 2 * self.bend_radius_cells + 2)
         self.port_lane_half_width_cells = max(
             1, self.bend_radius_cells + self.commit_radius_cells + 1
+        )
+        # Separate, opt-in override scoped to dense-source-fanout instances
+        # only (`_is_dense_source_fanout_instance`) -- e.g. a multi-port MMI
+        # splitter with many stubbed ports stacked close together, where the
+        # flat per-port reservation above overlaps heavily and merges into
+        # one large blocked region (see the negotiated-repair-engine plan's
+        # session notes on this). Defaults to the same values as above, so
+        # leaving these unset changes nothing; every *other* port (e.g. a
+        # heater port on the same benchmark, confirmed via a real
+        # regression to need the full default margin for its own endpoint
+        # correction) is unaffected regardless of these env vars.
+        self.stub_port_lane_length_cells = self._env_nonnegative_int(
+            "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
+            self.port_lane_length_cells,
+        )
+        self.stub_port_lane_half_width_cells = self._env_nonnegative_int(
+            "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
+            self.port_lane_half_width_cells,
         )
 
         port_open_radius_um = _as_float(
