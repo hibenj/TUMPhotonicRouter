@@ -18,33 +18,55 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-26
+- Date: 2026-08-26 (evening)
 - Branch: `crossings/verification-foundation`
-- Current HEAD: `3c2b2af`. Two large ExecPlans completed 2026-08-25, one
-  commit per milestone throughout:
-  `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
-  (Milestones 1-5 of 6; Milestone 6, final validation/retrospective, remains
-  open, deprioritized, not abandoned) and
-  `.agent/execplans/2026-08-25-negotiated-repair-engine.md` (all 8
-  milestones complete) -- plus three real findings fixed outside any
-  ExecPlan afterward: a routed net's own path could cross itself
-  undetected (Resolved Findings entry 1, commits `a4baba7`/`8fdd435`), the
-  dense-source-fanout stub port-lane reservation tuned down to zero
-  (Resolved Findings entry 3, commits `5f6fd0f`/`b776541`/`56d978f`), and
-  an uncapped `max_iterations` in a near-infeasible crossing search that
-  was the dominant cost in repair, capped (Resolved Findings entry 4,
-  commit `3c2b2af`) -- `multiportmmi_8x8` stable baseline `~130s -> 53.7s`,
-  `benes_16x16` stable baseline `392.4s -> 215.2s`, both still
-  `error_count=0`.
+- Current HEAD: the `feat: pre-place topology-derived crossing grids`
+  commit on top of `e6432b2`. Three things happened on 2026-08-26, each
+  with its own ExecPlan:
+  1. `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`
+     (committed as `e6432b2`): dense *target* ports now get real,
+     length-staggered pre-committed stubs like dense source ports already
+     did; `multiportmmi_16x16`'s `n_49` routes; that benchmark now fails
+     74 nets later at `n_123` (adjacent-diagonal contention at staggered
+     anchors, fix direction (a)/(b) noted in that plan, **not decided**).
+  2. `.agent/execplans/2026-08-26-diagonal-crossing-conflict-adjacent-fanout-nets.md`:
+     investigation only; root cause of the `n_15`/`n_16` forced-orthogonal
+     detour proven, `--proactive-congestion-weight` correlation observed
+     but its mechanism deliberately *not* trusted yet. Converged on the
+     same root problem as `n_123` above.
+  3. `.agent/execplans/2026-08-26-preplaced-crossing-grids-for-benes.md`
+     (Milestones 0-3 complete, 4 partly): new opt-in
+     `--preplaced-crossing-grids true` mode that builds every Benes
+     interstage layer's crossings from the topology as pre-wired grid
+     components before routing and routes only crossing-free stubs with
+     crossings off. `benes_4x4`/`benes_8x8`/`benes_16x16` all
+     `error_count=0` with 2/16/88 crossing components; `benes_16x16`
+     routing stage 2.3 s (wall 27.5 s) vs 215 s in `lidar-pure`. Open in
+     that plan: PLM pass-through only prepared; repository owner visual
+     GDS review of the final lattice geometry pending; and a verifier
+     blind spot found on the way -- `verify_photonic_routing`'s
+     `min_route_overlap_area_um2=2.0` hides route-route crossings of a
+     full waveguide width (a 1.09 um^2 one was observed and fixed at the
+     source) -- threshold deliberately left unchanged pending the owner's
+     decision, since lowering it changes pass/fail elsewhere.
+- Prior to that (2026-08-25/26): the negotiated-repair-engine and
+  kernel-unification plans completed (8/8 and 5/6 milestones), plus four
+  findings fixed outside any plan (self-intersecting routes, stub
+  port-lane reservation zeroed, `max_iterations` cap in the
+  require-all-partners search, orthogonal-repair try order) -- see
+  Resolved Findings and the Completed ExecPlans list.
 - **No active ExecPlan right now.** The repository owner is directing next
   steps turn by turn; see Next Engineering Step for the real current
   candidates.
-- Current test baselines: `cargo test --lib` `401 passed, 0 failed` (5 new,
-  covering the self-intersection fix); `PYTHONPATH=. .venv/bin/pytest -q`
-  `11 failed, 335 passed, 1 skipped` (net count changed from prior
-  snapshots only because of test additions in intervening work, not a
-  regression -- every one of the 11 failures is the same, already-
-  documented set; see Current Findings below).
+- Current test baselines: `cargo test --lib` `401 passed, 0 failed`;
+  `PYTHONPATH=. .venv/bin/pytest -q` `11 failed, 351 passed, 1 skipped`
+  (335 + 16 new `tests/test_preplaced_crossing_grids.py`; the 11 are the
+  same pre-existing set -- the four not listed by name anywhere,
+  `test_rust_routed_layout_uses_waveguide_geometry`,
+  `test_toy_ten_um_bend_radius_does_not_backtrack_on_one_cell_short_s_bend`,
+  `test_routing_flow_populates_stats`,
+  `test_heater_s_mod_90_degree_plm_regression[3.0]`, were re-run at
+  `e6432b2` in a throwaway worktree and fail there too).
 - **Full benchmark ladder re-run 2026-08-25, after the self-intersection
   fix, confirmed clean end-to-end**: `benes_4x4` (plain defaults) passes;
   `multiportmmi_8x8` bare CLI defaults fails byte-identically to its
@@ -731,8 +753,14 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No ExecPlan is actively being driven by an agent right now (2026-08-25)
--- the repository owner is directing next steps turn by turn.**
+**No ExecPlan is actively being driven by an agent right now (2026-08-26)
+-- the repository owner is directing next steps turn by turn.** The most
+recent work is `.agent/execplans/2026-08-26-preplaced-crossing-grids-for-benes.md`
+(see Current Snapshot); its own open items (owner GDS review, verifier
+overlap threshold decision, PLM pass-through, retrospective) are the
+natural next steps if the owner wants to continue there. The
+`multiportmmi_16x16` `n_123` adjacent-diagonal fix (two directions, not
+yet decided) is the other live thread.
 
 `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
 and `.agent/execplans/2026-08-25-negotiated-repair-engine.md` are both
