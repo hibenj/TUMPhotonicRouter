@@ -1224,64 +1224,69 @@ def test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor(
     assert len(record.corrected_centerline_um) > 2
 
 
-def test_apply_checked_fanout_stub_endpoint_corrections_skips_both_sides_fanout_net():
-    # Characterizes the currently-implicit both_fanout_stub fall-through
-    # (2026-08-19-restructure-port-endpoint-correction ExecPlan, Milestone 0):
-    # a net with fanout stubs on both its source and target sides is skipped
-    # entirely by this pass, via the explicit
-    # `if source_has_fanout_stub and target_has_fanout_stub: continue` guard
-    # at translation/route_rust.py:4705, before it ever reaches port
-    # resolution or the native corrector.
-    #
-    # A real, end-to-end benchmark layout could not be built to exercise this
-    # case with an actual successful route (investigated directly, not
-    # assumed): fanout anchors are only ever built from a net's *source*
-    # side (`_build_static_fanout_anchors` only reads
-    # `source_port_specs_by_instance`), so the only way for a net's *target*
-    # port to also be a fanout anchor is for that exact port to be reused as
-    # a different net's source port. Constructing that (two mmi_3x3-style
-    # hubs, the second hub's port used both as one net's target and a
-    # second net's source) makes the router reject one of the two nets
-    # outright: the shared anchor grid cell cannot simultaneously be one
-    # route's commit-destination and a different route's commit-origin in
-    # the router's dynamic occupancy model ("No route found ...
-    # candidate_blockers=[<the other net's id>]"). So this test instead
-    # constructs the minimal session state needed to exercise the guard
-    # directly, and proves via spies that control flow never reaches port
-    # resolution (i.e. the explicit both-sides guard is what skips the net,
-    # not some other, later fallback that happens to produce the same
-    # empty result).
+def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_sides_fanout_net():
+    # Until 2026-08-27 a net with fanout stubs on both sides was skipped by
+    # this pass entirely, on the (then true) premise that every stub was
+    # eagerly pre-stitched. Target stubs stopped being pre-stitched with
+    # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`
+    # (the record's target is the anchor's exact point and the search's grid
+    # state still has to be corrected to it), so the skip left such a net's
+    # target at the raw cell center and realization then rejected the
+    # slanted spliced stub. The pass must now submit a correction job for
+    # the net with the source side left alone (pre-stitched) and the target
+    # resolved through `_routing_endpoint_center_um` (the anchor). See
+    # `.agent/execplans/2026-08-27-router-fixes-for-crossing-grid-stubs.md`.
     net_id = 1
-    record = SimpleNamespace(corrected_centerline_um=((0.0, 0.0), (1.0, 0.0)))
-    job = SimpleNamespace()
+    record = SimpleNamespace(
+        corrected_centerline_um=((0.0, 0.0), (1.0, 0.0)),
+        route_obj=object(),
+        source_port_center_um=(0.0, 0.0),
+        target_port_center_um=(9.0, 0.0),
+    )
+    job = SimpleNamespace(inst1="a", port1="o1", inst2="b", port2="o1", net_id=net_id)
+    anchor = (9.0, 0.4)
+    submitted: list[Any] = []
+    endpoint_calls: list[bool] = []
 
-    def _unexpected_call(name: str):
-        def _raise(*_args: Any, **_kwargs: Any) -> Any:
-            raise AssertionError(f"{name} must not be called for a both-fanout-stub net")
+    def _apply(jobs: Any, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        submitted.extend(jobs)
+        return []
 
-        return _raise
+    def _endpoint(job_arg: Any, *, source: bool) -> tuple[float, float]:
+        endpoint_calls.append(source)
+        assert job_arg is job
+        return anchor
 
     session = object.__new__(route_rust._RouteNetsRustSession)
     session.enable_checked_endpoint_correction = True
     session.fanout_anchor_net_ids = {net_id}
     session.fanout_anchor_source_net_ids = {net_id}
     session.fanout_anchor_target_net_ids = {net_id}
+    session.fanout_stub_static_cells_by_spec = {}
     session.enable_crossings = False
-    session.router = SimpleNamespace(
-        apply_checked_endpoint_corrections=_unexpected_call("apply_checked_endpoint_corrections"),
-    )
+    session.collect_timing = False
+    session.router = SimpleNamespace(apply_checked_endpoint_corrections=_apply)
     session.route_bookkeeping = SimpleNamespace(records_by_id={net_id: record})
     session.route_jobs_by_id = {net_id: job}
+    session.route_width_um = 0.5
+    session.commit_radius_cells = 0
+    session.core_commit_radius_cells = 0
     session._pipeline_timer_start = lambda: 0.0
     session._record_pipeline_timing = lambda *_args, **_kwargs: None
-    session._routing_endpoint_center_um = _unexpected_call("_routing_endpoint_center_um")
-    session._state_openings_for_job = _unexpected_call("_state_openings_for_job")
+    session._timing_start = lambda: 0.0
+    session._routing_endpoint_center_um = _endpoint
+    session._state_openings_for_job = lambda _job: (None, None, set(), None, None)
+    session._clearance_exempt_cells_for_job = lambda _job: []
+    session._endpoint_correction_crossing_net_ids = lambda: set()
 
-    corrected_net_ids = session._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
-        [net_id]
-    )
+    session._apply_checked_fanout_stub_endpoint_corrections_for_net_ids([net_id])
 
-    assert corrected_net_ids == []
+    assert endpoint_calls == [False], "only the target side is resolved (source stub is pre-stitched)"
+    assert len(submitted) == 1
+    submitted_net_id, _route, _opened, _exempt, source_port, target_port = submitted[0]
+    assert submitted_net_id == net_id
+    assert source_port is None
+    assert target_port == anchor
 
 
 def test_classify_net_for_endpoint_correction_covers_every_category():

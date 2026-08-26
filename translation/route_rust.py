@@ -1355,9 +1355,50 @@ class _RouteNetsRustSession:
 
         return candidate_cells
 
+    def _dense_fanout_min_ports(self) -> int:
+        """Smallest same-instance, same-angle port group treated as a dense fanout.
+
+        Default 3 (the historical `> 2`). `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS`
+        overrides it; the pre-placed crossing-grid flow uses 2 so a 2x2
+        switch's port pair (1.25 um apart, inside one routing cell) gets the
+        same staggered static stubs a multiport MMI's port row gets.
+        """
+        raw = os.environ.get("PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS", "").strip()
+        if not raw:
+            return 3
+        value = int(raw)
+        if value < 2:
+            raise ValueError("PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS must be >= 2")
+        return value
+
+    def _dense_fanout_group_size(self, port_specs: set[str]) -> int:
+        """Ports of a group that qualify for automatic dense-fanout handling.
+
+        A port with an explicit component access rule (see
+        `_keyed_port_access_rule`) has had its access geometry decided
+        deliberately and is left out, so components that manage their own
+        approach (e.g. pre-placed crossing grids) never get automatic stubs
+        or runways. Looked up directly rather than through
+        `port_access_rule_by_spec`, which is only populated after the anchor
+        passes that call this.
+        """
+        count = 0
+        for spec in port_specs:
+            endpoint = self.endpoint_ports_by_spec.get(spec)
+            if endpoint is None:
+                count += 1
+                continue
+            instance_name, port_name, port = endpoint
+            length_um, width_um, _rule = self._keyed_port_access_rule(
+                instance_name=instance_name, port_name=port_name, port=port
+            )
+            if length_um is None and width_um is None:
+                count += 1
+        return count
+
     def _is_dense_source_fanout_instance(self, instance_name: str) -> bool:
         return any(
-            len(port_specs) > 2
+            self._dense_fanout_group_size(port_specs) >= self._dense_fanout_min_ports()
             for (
                 group_instance,
                 _angle,
@@ -1367,13 +1408,15 @@ class _RouteNetsRustSession:
 
     def _is_dense_source_fanout_group(self, instance_name: str, angle: int) -> bool:
         return (
-            len(self.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set()))
-            > 2
+            self._dense_fanout_group_size(
+                self.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set())
+            )
+            >= self._dense_fanout_min_ports()
         )
 
     def _is_dense_target_fanout_instance(self, instance_name: str) -> bool:
         return any(
-            len(port_specs) > 2
+            self._dense_fanout_group_size(port_specs) >= self._dense_fanout_min_ports()
             for (
                 group_instance,
                 _angle,
@@ -1383,8 +1426,10 @@ class _RouteNetsRustSession:
 
     def _is_dense_target_fanout_group(self, instance_name: str, angle: int) -> bool:
         return (
-            len(self.target_port_specs_by_instance_angle.get((instance_name, int(angle)), set()))
-            > 2
+            self._dense_fanout_group_size(
+                self.target_port_specs_by_instance_angle.get((instance_name, int(angle)), set())
+            )
+            >= self._dense_fanout_min_ports()
         )
 
     @dataclass(frozen=True)
@@ -2122,7 +2167,7 @@ class _RouteNetsRustSession:
                     ordered_items.append((port_spec, lateral_cell, state))
                 ordered_items.sort(key=lambda item: (item[1], item[0]))
                 count = len(ordered_items)
-                if count <= 2 or step_y != 0:
+                if count < self._dense_fanout_min_ports() or step_y != 0:
                     continue
 
                 def add_two_bend_anchor(
@@ -2318,7 +2363,7 @@ class _RouteNetsRustSession:
 
                 ordered = sorted(group_specs, key=lambda spec: (_lateral_position(spec), spec))
                 count = len(ordered)
-                if count <= 2:
+                if count < self._dense_fanout_min_ports():
                     continue
                 lower_specs = ordered[: count // 2]
                 upper_specs = ordered[count // 2 :]
@@ -2333,6 +2378,13 @@ class _RouteNetsRustSession:
                     (port_spec, upper_count - port_index)
                     for port_index, port_spec in enumerate(upper_specs)
                 )
+                if count == 2:
+                    # A bare pair (e.g. a 2x2 switch's inputs, 1.25 um apart
+                    # inside one routing cell) has no "middle": the symmetric
+                    # ranking gives both the same length and the two
+                    # approaches would still share the port cell. Ranks 1
+                    # and 2 put their anchors at different x instead.
+                    ranked = [(ordered[0], 1), (ordered[1], 2)]
 
                 for port_spec, rank in ranked:
                     _inst, _port_name, port = self.endpoint_ports_by_spec[port_spec]
@@ -2386,7 +2438,7 @@ class _RouteNetsRustSession:
                 ).add(port_spec)
 
             for (_instance_name, angle), specs in grouped_specs.items():
-                if len(specs) <= 2:
+                if len(specs) < self._dense_fanout_min_ports():
                     continue
                 step_x, step_y = self._angle_to_step(angle)
                 lateral_x, lateral_y = -step_y, step_x
@@ -4980,9 +5032,14 @@ class _RouteNetsRustSession:
             classification = self._classify_net_for_endpoint_correction(
                 net_id, crossing_net_ids=crossing_net_ids
             )
+            # ALREADY_CORRECTED_NO_OP (source *and* target stubbed) dates from
+            # the eager-stitch design in which both sides were pre-stitched;
+            # a target stub is no longer, so such a net still needs its
+            # target corrected to the anchor exactly like TARGET_ONLY.
             if classification is None or classification.category not in (
                 EndpointCorrectionCategory.FANOUT_STUB_SOURCE_ONLY,
                 EndpointCorrectionCategory.FANOUT_STUB_TARGET_ONLY,
+                EndpointCorrectionCategory.ALREADY_CORRECTED_NO_OP,
             ):
                 continue
             record = self.route_bookkeeping.records_by_id[net_id]
@@ -4995,11 +5052,14 @@ class _RouteNetsRustSession:
                 if source_has_fanout_stub
                 else self._routing_endpoint_center_um(job, source=True)
             )
-            target_port = (
-                None
-                if target_has_fanout_stub
-                else self._routing_endpoint_center_um(job, source=False)
-            )
+            # A TARGET fanout stub is not eagerly stitched: the record's
+            # target is the anchor's exact point and the search's grid state
+            # still has to be corrected to it, otherwise the fixed stub gets
+            # spliced onto the raw cell center and the last segment is
+            # slanted (realization rejects it as an unsupported terminal
+            # stub). Same reasoning as the crossing-aware pass's
+            # `correct_target=True`; only SOURCE stubs are pre-stitched.
+            target_port = self._routing_endpoint_center_um(job, source=False)
             if source_port is None and target_port is None:
                 continue
             _, _, opened_candidate_cells, _, _ = self._state_openings_for_job(job)
@@ -7143,7 +7203,7 @@ class _RouteNetsRustSession:
             tuple[float, float, tuple[tuple[str, float], ...]],
         ] = {}
         for instance_name, port_specs in endpoint_port_specs_by_instance.items():
-            if len(port_specs) <= 2:
+            if len(port_specs) < self._dense_fanout_min_ports():
                 continue
             groups: dict[int, list[tuple[str, float]]] = {}
             for port_spec in port_specs:
