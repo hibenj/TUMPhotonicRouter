@@ -258,6 +258,9 @@ pub struct RouteSearchStats {
     pub obstacle_clearance_checks: usize,
     pub window_rejects: usize,
     pub footprint_rejects: usize,
+    /// Diagonal moves whose compact halo touched a blocked cell while their
+    /// own footprint was free (see the Tier-1 gate in the unified kernel).
+    pub diagonal_halo_contacts: usize,
     pub primitive_generated_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
     pub primitive_bounds_rejects_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
     pub primitive_closed_rejects_by_class: [usize; PRIMITIVE_TRANSITION_CLASS_COUNT],
@@ -4409,7 +4412,27 @@ mod unified_kernel {
                     )
                 };
 
-                if footprint_free && current_extension.is_default() {
+                // Compact diagonal halo (see `.agent/WORKFLOW.md`): a one-cell-wide
+                // diagonal piece can have a completely free footprint while a
+                // committed route runs through the *adjacent* diagonal cells;
+                // the realized bends of the two waveguides then overlap even
+                // though no cell is shared. Such a move must not take the
+                // fast path -- it goes to the legality hook, which legalizes
+                // it as a crossing when crossings are enabled and rejects it
+                // when they are not. Straights carry no halo, so this costs
+                // nothing on the common path.
+                let halo_free = !primitive_crossing.has_extra_witnesses
+                    || dense_grid.relative_offsets_free_with_profile(
+                        state.x,
+                        state.y,
+                        &primitive_crossing.extra_witness_offsets,
+                        &primitive_crossing.extra_witness_profile,
+                    );
+                if !halo_free {
+                    stats.diagonal_halo_contacts += 1;
+                }
+
+                if footprint_free && halo_free && current_extension.is_default() {
                     // Tier 1: identical fast path to today's plain kernel --
                     // dense array storage, no crossing bookkeeping, no hook call.
                     let UnifiedOpenRef::Dense(current_dense_idx) = current_ref else {
@@ -9687,6 +9710,50 @@ mod tests {
         )
         .expect("grid");
         assert!(opened_grid.is_blocked(3, 2));
+    }
+
+    #[test]
+    fn plain_search_rejects_diagonal_adjacent_to_committed_diagonal() {
+        // A committed 45-degree route along (k, k). A plain (crossings
+        // disabled) search whose straight-line answer is the *adjacent*
+        // diagonal (k, k + 1) shares no cell with it, but the two realized
+        // waveguides would overlap (bend deviation > cell gap). The compact
+        // diagonal halo must keep the search off that adjacent diagonal.
+        let mut map = ObstacleMap::new(40, 40);
+        let committed: Vec<(i32, i32)> = (10..26).map(|k| (k, k)).collect();
+        assert!(map.commit_route(1, &committed));
+        let committed_set: FxHashSet<(i32, i32)> = committed.iter().copied().collect();
+        let library = primitive_library();
+        let mut stats = RouteSearchStats::default();
+        let route = route_single_net_with_config_reporting_stats(
+            &map,
+            &library,
+            State::new(2, 3, 1),
+            State::new(32, 33, 1),
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                ..AStarConfig::default()
+            },
+            &mut stats,
+        )
+        .expect("a route away from the committed diagonal must exist");
+        assert!(stats.diagonal_halo_contacts > 0);
+        for pair in route.cells.windows(2) {
+            let (start, end) = (pair[0], pair[1]);
+            let dx = end.0 - start.0;
+            let dy = end.1 - start.1;
+            if dx == 0 || dy == 0 {
+                continue;
+            }
+            for halo in compact_diagonal_halo_cells(start, end, dx.signum(), dy.signum()) {
+                assert!(
+                    !committed_set.contains(&halo),
+                    "diagonal step {start:?}->{end:?} runs adjacent to the committed diagonal"
+                );
+            }
+        }
     }
 
     #[test]

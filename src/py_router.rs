@@ -15505,6 +15505,7 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
         ),
         stats: RouteSearchStats {
             window_attempts: route.window_attempts,
+            diagonal_halo_contacts: 0,
             used_full_grid_fallback: route.used_full_grid_fallback,
             last_window_min_x: route.last_window_min_x,
             last_window_max_x: route.last_window_max_x,
