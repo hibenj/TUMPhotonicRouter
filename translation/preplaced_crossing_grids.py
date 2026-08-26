@@ -86,6 +86,12 @@ class CrossingGridGeometry:
     fan_column_pitch_um: float = 4.0
     port_pair_spread_um: float = 2.0
     unrouted_sibling_clearance_um: float = 0.0
+    # "router": the grid is only the compact crossing lattice (ports on the
+    # lattice slot rows, short straight stubs) and the router bridges the
+    # gap to the switch ports -- the repository owner's model: the grid
+    # removes crossing complexity, not routing. "in_grid": the grid also
+    # contains the vertical fan-in/fan-out to the lanes' natural rows.
+    fan_mode: str = "router"
     route_width_um: float = 0.5
     cross_section: str = "strip"
 
@@ -622,6 +628,8 @@ def crossing_grid_geometry_from_env() -> CrossingGridGeometry:
             "PHOTONIC_ROUTER_CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM",
             base.unrouted_sibling_clearance_um,
         ),
+        fan_mode=os.environ.get("PHOTONIC_ROUTER_CROSSING_GRID_FAN_MODE", base.fan_mode).strip()
+        or base.fan_mode,
         route_width_um=base.route_width_um,
         cross_section=base.cross_section,
     )
@@ -747,6 +755,17 @@ def _run_placement(
     exit_rows = _push_away_from_unrouted_siblings(
         exit_rows, target_spec, unrouted_layout, geometry.unrouted_sibling_clearance_um
     )
+    if geometry.fan_mode == "router":
+        # Ports sit on the lattice slot rows; the router does the fan-out.
+        all_rows = list(entry_rows.values()) + list(exit_rows.values())
+        return _RunPlacement(
+            x_center_um=round(0.5 * (max(source_xs) + min(target_xs)), 3),
+            y_center_um=round(sum(all_rows) / float(len(all_rows)), 3),
+            entry_row_by_net={},
+            exit_row_by_net={},
+        )
+    if geometry.fan_mode != "in_grid":
+        raise ValueError(f"unknown fan_mode {geometry.fan_mode!r}; use 'router' or 'in_grid'")
     # Snap the placement to the 1 nm database unit so a grid port lands on
     # *exactly* the same coordinate as the switch port it faces: the endpoint
     # corrector only uses the plain "shift the straight" strategy when the two
