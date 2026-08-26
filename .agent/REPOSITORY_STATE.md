@@ -20,17 +20,22 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 - Date: 2026-08-26
 - Branch: `crossings/verification-foundation`
-- Current HEAD: as of the commit alongside this update. Two large
-  ExecPlans completed 2026-08-25, one commit per milestone throughout:
+- Current HEAD: `3c2b2af`. Two large ExecPlans completed 2026-08-25, one
+  commit per milestone throughout:
   `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
   (Milestones 1-5 of 6; Milestone 6, final validation/retrospective, remains
   open, deprioritized, not abandoned) and
   `.agent/execplans/2026-08-25-negotiated-repair-engine.md` (all 8
-  milestones complete) -- plus two real findings fixed outside any
+  milestones complete) -- plus three real findings fixed outside any
   ExecPlan afterward: a routed net's own path could cross itself
-  undetected (Resolved Findings entry 1, commits `a4baba7`/`8fdd435`), and
-  the dense-source-fanout stub port-lane reservation tuned down to zero
-  (Resolved Findings entry 3, commits `5f6fd0f`/`b776541`/this commit).
+  undetected (Resolved Findings entry 1, commits `a4baba7`/`8fdd435`), the
+  dense-source-fanout stub port-lane reservation tuned down to zero
+  (Resolved Findings entry 3, commits `5f6fd0f`/`b776541`/`56d978f`), and
+  an uncapped `max_iterations` in a near-infeasible crossing search that
+  was the dominant cost in repair, capped (Resolved Findings entry 4,
+  commit `3c2b2af`) -- `multiportmmi_8x8` stable baseline `~130s -> 53.7s`,
+  `benes_16x16` stable baseline `392.4s -> 215.2s`, both still
+  `error_count=0`.
 - **No active ExecPlan right now.** The repository owner is directing next
   steps turn by turn; see Next Engineering Step for the real current
   candidates.
