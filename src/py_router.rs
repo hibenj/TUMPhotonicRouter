@@ -6879,27 +6879,20 @@ impl PyPhotonicRouter {
         target_port_um: Option<(f64, f64)>,
         prefer_orthogonal: bool,
     ) -> Result<RouteResult, String> {
-        if prefer_orthogonal {
-            if let Ok(route) = self
-                .route_single_net_and_commit_orthogonal_native_with_repair_keepout(
-                    net_id,
-                    source,
-                    target,
-                    block_radius_cells,
-                    opened_cells,
-                    opened_cell_keys,
-                    commit_radius_cells,
-                    clearance_exempt_cells,
-                    core_radius_cells,
-                    repair_keepout,
-                    source_port_um,
-                    target_port_um,
-                )
-            {
-                return Ok(route);
-            }
-        }
-        self.route_single_net_and_commit_native_with_repair_keepout(
+        // Try the normal, diagonal-capable search first even when
+        // `prefer_orthogonal` is set: it already enforces the same
+        // crossing-legality checks (including perpendicularity) used
+        // everywhere else in the router, so a route it commits is exactly as
+        // legal as one from the orthogonal-only search -- just potentially
+        // shorter and less likely to force an unnecessary crossing with a
+        // neighboring net (confirmed visually on multiportmmi_16x16, where
+        // an orthogonal-first detour forced crossings in an otherwise
+        // trivially routable region). The orthogonal-only search
+        // (`orthogonal_repair_primitives`, which excludes every diagonal
+        // primitive) remains the fallback for when the normal search can't
+        // find any legal route at all -- unchanged safety net, just no
+        // longer tried first.
+        let normal_result = self.route_single_net_and_commit_native_with_repair_keepout(
             net_id,
             source,
             target,
@@ -6913,7 +6906,25 @@ impl PyPhotonicRouter {
             repair_keepout,
             source_port_um,
             target_port_um,
+        );
+        if normal_result.is_ok() || !prefer_orthogonal {
+            return normal_result;
+        }
+        self.route_single_net_and_commit_orthogonal_native_with_repair_keepout(
+            net_id,
+            source,
+            target,
+            block_radius_cells,
+            opened_cells,
+            opened_cell_keys,
+            commit_radius_cells,
+            clearance_exempt_cells,
+            core_radius_cells,
+            repair_keepout,
+            source_port_um,
+            target_port_um,
         )
+        .or(normal_result)
     }
 
     fn route_single_net_ignore_dynamic_native(
