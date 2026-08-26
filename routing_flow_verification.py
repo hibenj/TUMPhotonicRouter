@@ -28,8 +28,13 @@ def verify_and_attach_photonic_reports(
     debug_artifacts: object,
     include_heater_obstacles: bool,
     debug_stop_after_route_index: int | None,
+    extra_report_metadata: Mapping[str, object] | None = None,
 ) -> None:
-    """Run crossing and photonic final-geometry gates and attach report metadata."""
+    """Run crossing and photonic final-geometry gates and attach report metadata.
+
+    ``extra_report_metadata`` is merged into both verification reports' top
+    level and ``metrics`` (e.g. pre-placed crossing grid counters).
+    """
     crossing_plan_info = getattr(debug_artifacts, "crossing_plan_info", None)
     routed_records = tuple(getattr(debug_artifacts, "routed_net_records", ()) or ())
     route_coverage_check_enabled = debug_stop_after_route_index is None
@@ -39,6 +44,8 @@ def verify_and_attach_photonic_reports(
         routed_record_count=len(routed_records),
         route_coverage_check_enabled=route_coverage_check_enabled,
     )
+    if extra_report_metadata:
+        verification_status = {**verification_status, **dict(extra_report_metadata)}
     routed_info = component_info(routed_layout)
     if isinstance(crossing_plan_info, Mapping):
         routed_info["crossing_plan"] = dict(crossing_plan_info)

@@ -234,6 +234,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--preplaced-crossing-grids",
+        type=_parse_bool_flag,
+        default=False,
+        metavar="BOOL",
+        help=(
+            "Place topology-derived, pre-wired crossing grids into every "
+            "interstage layer before routing and route only crossing-free stubs "
+            "to/from them; forces crossings off in the router. Benes benchmarks "
+            "only (default: false)."
+        ),
+    )
+    parser.add_argument(
         "--crossing-mode",
         choices=("window", "collision", "lidar-pure"),
         default=SCRIPT_CROSSING_MODE,
@@ -603,6 +615,7 @@ def main(argv: list[str] | None = None) -> Component:
         path_length_meander_height_um=args.path_length_meander_height_um,
         enable_crossings=args.crossings,
         crossing_mode=args.crossing_mode,
+        preplaced_crossing_grids=args.preplaced_crossing_grids,
         min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
         foreign_port_keepout_cells=args.foreign_port_keepout_cells,
         fanout_access_mode=args.fanout_access_mode,
@@ -736,6 +749,53 @@ def _print_flow_footer() -> None:
     print(f"\n{'=' * 60}\n")
 
 
+def _preplaced_crossing_grids_stage(
+    *,
+    benchmark_name: str,
+    schematic: Schematic,
+    unrouted_layout: Component,
+    total_steps: int,
+    stats: RoutingFlowStats | None,
+) -> tuple[Schematic, Component, dict[str, object]]:
+    """Replace the schematic/layout with the crossing-grid-derived pair.
+
+    Every interstage crossing of the benchmark is computed from its topology
+    metadata, realized as a pre-wired crossing grid instance placed in the
+    layer's free band, and the interstage nets are split into crossing-free
+    stubs. Downstream stages see an ordinary schematic and layout.
+    """
+    from benchmark_metadata import load_benchmark_metadata
+    from translation.preplaced_crossing_grids import (
+        build_crossing_plan_for_benchmark,
+        derive_preplaced_crossing_layout,
+        preplaced_crossing_grid_metrics,
+    )
+
+    print(f"\n[2b/{total_steps}] Placing topology-derived crossing grids...")
+    t_start = time.perf_counter()
+    metadata = load_benchmark_metadata(benchmark_name, schematic=schematic)
+    crossing_plan = build_crossing_plan_for_benchmark(schematic, metadata)
+    derived = derive_preplaced_crossing_layout(schematic, unrouted_layout, crossing_plan)
+    metrics = preplaced_crossing_grid_metrics(derived)
+    if derived.placed_crossing_count != derived.expected_crossing_count:
+        raise RuntimeError(
+            "pre-placed crossing grids realized "
+            f"{derived.placed_crossing_count} crossing component(s) but the topology "
+            f"expects {derived.expected_crossing_count}"
+        )
+    elapsed = time.perf_counter() - t_start
+    if stats is not None:
+        stats.step_times_s["preplaced_crossing_grids"] = elapsed
+    print(
+        f"      - Grids: {metrics['grid_count']} placed, "
+        f"{metrics['crossing_component_count']} crossing component(s) "
+        f"(topology expects {metrics['expected_crossing_count']}), "
+        f"{metrics['split_net_count']} interstage net(s) split into stubs; "
+        f"{len(derived.schematic.netlist.routes)} route(s) to route ({elapsed:.2f}s)"
+    )
+    return derived.schematic, derived.unrouted_layout, {"preplaced_crossing_grids": metrics}
+
+
 def run_routing_flow(
     benchmark_name: str,
     *,
@@ -754,6 +814,7 @@ def run_routing_flow(
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     enable_crossings: bool = False,
     crossing_mode: str = "window",
+    preplaced_crossing_grids: bool = False,
     crossing_half_size_cells: int = 0,
     min_straight_cells_per_crossing: int = SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     foreign_port_keepout_cells: int = SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
@@ -820,6 +881,13 @@ def run_routing_flow(
                       crossings after A* collides with topology-allowed route
                       geometry; "lidar-pure" uses dynamic DRC-style crossing
                       permission against any committed route.
+        preplaced_crossing_grids: If True, derive every interstage layer's
+                      crossings from the benchmark topology, place one
+                      pre-wired crossing grid per layer into the layout before
+                      routing, split each interstage net into two crossing-free
+                      stubs to/from the grid, and route with crossings disabled.
+                      Mutually exclusive with enable_crossings. See
+                      translation/preplaced_crossing_grids.py.
         min_straight_cells_per_crossing: Minimum straight access length on each
                       side of a crossing in grid cells.
         fanout_access_mode: Dense multi-port access strategy passed to the Rust
@@ -929,6 +997,21 @@ def run_routing_flow(
         stats=stats,
         debug_timing=debug_timing,
     )
+    preplaced_report_metadata: dict[str, object] | None = None
+    if preplaced_crossing_grids:
+        if enable_crossings:
+            raise ValueError(
+                "preplaced_crossing_grids and enable_crossings are mutually exclusive: "
+                "pre-placed grids resolve every crossing before routing, so the router "
+                "must run with crossings disabled."
+            )
+        schematic, unrouted_layout, preplaced_report_metadata = _preplaced_crossing_grids_stage(
+            benchmark_name=benchmark_name,
+            schematic=schematic,
+            unrouted_layout=unrouted_layout,
+            total_steps=total_steps,
+            stats=stats,
+        )
     record_initial_route_stats(stats)
     optical_config = build_optical_routing_stage_config(
         enable_path_length_matching=enable_path_length_matching,
@@ -995,6 +1078,7 @@ def run_routing_flow(
         debug_artifacts=debug_artifacts,
         include_heater_obstacles=include_heater_obstacles,
         debug_stop_after_route_index=debug_stop_after_route_index,
+        extra_report_metadata=preplaced_report_metadata,
     )
 
     attach_and_report_path_length_matching(
