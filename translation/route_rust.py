@@ -6353,23 +6353,32 @@ class _RouteNetsRustSession:
         self.port_lane_half_width_cells = max(
             1, self.bend_radius_cells + self.commit_radius_cells + 1
         )
-        # Separate, opt-in override scoped to dense-source-fanout instances
-        # only (`_is_dense_source_fanout_instance`) -- e.g. a multi-port MMI
+        # Separate override scoped to dense-source-fanout instances only
+        # (`_is_dense_source_fanout_instance`) -- e.g. a multi-port MMI
         # splitter with many stubbed ports stacked close together, where the
         # flat per-port reservation above overlaps heavily and merges into
-        # one large blocked region (see the negotiated-repair-engine plan's
-        # session notes on this). Defaults to the same values as above, so
-        # leaving these unset changes nothing; every *other* port (e.g. a
-        # heater port on the same benchmark, confirmed via a real
-        # regression to need the full default margin for its own endpoint
-        # correction) is unaffected regardless of these env vars.
+        # one large blocked region. Every *other* port (e.g. a heater port
+        # on the same benchmark, confirmed via a real regression to need
+        # the full default margin for its own endpoint correction) is
+        # unaffected regardless of these values, so this stays scoped
+        # rather than becoming a second general default.
+        #
+        # `half_width_cells` defaults to `2` (not the general formula
+        # above) as a real default now, not just an opt-in experiment:
+        # validated on `multiportmmi_8x8`'s stable baseline (still routes
+        # 111/111, 0 errors) with each dense-source port's own reservation
+        # roughly halved and the merged keepout region for 6 stacked ports
+        # shrinking from 21 to 17 cells tall. `length_cells` keeps the
+        # general formula's own value -- only `half_width_cells` (the
+        # dimension actually driving the port-to-port overlap) was
+        # validated as safe to shrink by default.
         self.stub_port_lane_length_cells = self._env_nonnegative_int(
             "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
             self.port_lane_length_cells,
         )
         self.stub_port_lane_half_width_cells = self._env_nonnegative_int(
             "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
-            self.port_lane_half_width_cells,
+            2,
         )
 
         port_open_radius_um = _as_float(
