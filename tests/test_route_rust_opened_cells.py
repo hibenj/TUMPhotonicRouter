@@ -12,10 +12,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
-from gdsfactory.component import Component
 import gdsfactory as gf
+from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
+from photonic_router.routing_layers import ComponentPortAccessRule
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
+
 from translation import route_rust
 
 get_generic_pdk().activate()
@@ -201,9 +203,9 @@ def _footprint_resolver_session(
     bend_radius_cells: int,
     commit_radius_cells: int = 0,
     grid_size_um: float = 1.0,
-    access_rule: tuple[float | None, float | None, str | None] = (None, None, None),
+    access_rule: ComponentPortAccessRule | None = None,
 ) -> SimpleNamespace:
-    def keyed_port_access_rule(**_kwargs: object) -> tuple[float | None, float | None, str | None]:
+    def port_access_rule_for(**_kwargs: object) -> ComponentPortAccessRule | None:
         return access_rule
 
     def is_dense_source_fanout_instance(_instance_name: str) -> bool:
@@ -213,7 +215,7 @@ def _footprint_resolver_session(
         grid=SimpleNamespace(grid_size_um=grid_size_um),
         port_lane_length_cells=max(3, 2 * bend_radius_cells + 2),
         port_lane_half_width_cells=max(1, bend_radius_cells + commit_radius_cells + 1),
-        _keyed_port_access_rule=keyed_port_access_rule,
+        _port_access_rule_for=port_access_rule_for,
         _is_dense_source_fanout_instance=is_dense_source_fanout_instance,
     )
 
@@ -249,7 +251,12 @@ def test_resolve_port_footprint_cells_uses_lane_sized_optical_default():
     custom_session = _footprint_resolver_session(
         bend_radius_cells=3,
         grid_size_um=2.0,
-        access_rule=(6.1, 5.0, "gc"),
+        access_rule=ComponentPortAccessRule(
+            component_name_pattern="gc",
+            port_names=("o1",),
+            access_length_um=6.1,
+            access_width_um=5.0,
+        ),
     )
     assert route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
         custom_session,
@@ -271,7 +278,7 @@ def test_resolve_port_footprint_cells_uses_stub_override_only_for_dense_fanout_i
         port_lane_half_width_cells=4,
         stub_port_lane_length_cells=8,
         stub_port_lane_half_width_cells=2,
-        _keyed_port_access_rule=lambda **_kwargs: (None, None, None),
+        _port_access_rule_for=lambda **_kwargs: None,
         _is_dense_source_fanout_instance=is_dense_source_fanout_instance,
     )
 
@@ -1595,3 +1602,45 @@ def test_route_nets_rust_multi_net_with_bounding_box_mode(monkeypatch, tmp_path)
         diag_text = diag_path.read_text(encoding="utf-8")
         assert "status=ok" in diag_text
         assert "route_dynamic_overlap_count=0" in diag_text
+
+
+def test_only_rules_flagged_for_instance_geometry_open_the_heater_pad(monkeypatch):
+    """A zero-size runway rule (crossing grids) must not open the instance interior.
+
+    Regression for the 2026-08-27 `benes_16x16` grid-mode hook: the heater-pad
+    opening used to fire for every port that had *any* access rule, so the
+    grids' zero-size rule opened the whole grid along the port's row.
+    """
+    from photonic_router import routing_layers
+    from photonic_router.routing_layers import HEATER_OPTICAL_PORT_ACCESS_RULES
+
+    from translation import route_rust as route_rust_module
+
+    grid_rule = ComponentPortAccessRule(
+        component_name_pattern="crossing_grid_test",
+        port_names=("in_0",),
+        access_length_um=0.0,
+        access_width_um=0.0,
+    )
+    assert grid_rule.opens_instance_static_geometry is False
+    assert all(rule.opens_instance_static_geometry for rule in HEATER_OPTICAL_PORT_ACCESS_RULES)
+
+    component_by_instance = {
+        "grid": "crossing_grid_test",
+        "heater": "straight_heater_metal_undercut",
+    }
+    monkeypatch.setattr(
+        route_rust_module,
+        "_schematic_instance_component_name",
+        lambda _schematic, name: component_by_instance[name],
+    )
+    monkeypatch.setattr(routing_layers, "REGISTERED_PORT_ACCESS_RULES", [grid_rule])
+    session = SimpleNamespace(schematic=object())
+    rule_for = route_rust_module._RouteNetsRustSession._port_access_rule_for
+    port = SimpleNamespace(port_type="optical")
+
+    grid = rule_for(session, instance_name="grid", port_name="in_0", port=port)
+    assert grid is grid_rule and not grid.opens_instance_static_geometry
+    heater = rule_for(session, instance_name="heater", port_name="o1", port=port)
+    assert heater is not None and heater.opens_instance_static_geometry
+    assert rule_for(session, instance_name="heater", port_name="e1", port=port) is None

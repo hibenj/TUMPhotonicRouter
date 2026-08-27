@@ -125,14 +125,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--debug-svgs",
-        nargs="?",
-        const="all",
         default=SCRIPT_DEBUG_SVGS,
         metavar="SELECTOR",
         help=(
-            "Generate debug SVGs. Use without a value or with 'all' for every "
-            "route, or pass 1-based route selectors like '5', '5-10', "
-            "or '2,5-10'."
+            "Generate debug SVGs for the selected routes only: 1-based route "
+            "selectors like '5', '5-10', or '2,5-10'. Pass 'all' explicitly for "
+            "every route (large benchmarks then write hundreds of multi-MB "
+            "files; a bare --debug-svgs is deliberately not accepted)."
         ),
     )
     parser.add_argument(

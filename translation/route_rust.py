@@ -27,6 +27,7 @@ from gdsfactory.typings import Port
 
 from translation.route_gds import get_port_from_instance
 from photonic_router.routing_layers import (
+    ComponentPortAccessRule,
     find_component_port_access_rule,
 )
 from photonic_router.static_obstacle_builder import grid_cell_center, physical_to_grid
@@ -1169,20 +1170,20 @@ class _RouteNetsRustSession:
         port: object,
     ) -> tuple[int, int]:
         """Return (length_cells, half_width_cells) sizing this port's access/keepout region."""
-        access_length_um, access_width_um, _rule_name = self._keyed_port_access_rule(
+        rule = self._port_access_rule_for(
             instance_name=instance_name,
             port_name=port_name,
             port=port,
         )
-        if access_length_um is not None or access_width_um is not None:
+        if rule is not None:
             grid_size = float(self.grid.grid_size_um)
             length_cells = max(
                 1,
-                int(math.ceil(max(0.0, float(access_length_um or 0.0)) / grid_size)),
+                int(math.ceil(max(0.0, float(rule.access_length_um)) / grid_size)),
             )
             half_width_cells = max(
                 0,
-                int(math.ceil((max(0.0, float(access_width_um or 0.0)) / 2.0) / grid_size)),
+                int(math.ceil((max(0.0, float(rule.access_width_um)) / 2.0) / grid_size)),
             )
             return length_cells, half_width_cells
 
@@ -1205,28 +1206,24 @@ class _RouteNetsRustSession:
             )
         return int(self.port_lane_length_cells), int(self.port_lane_half_width_cells)
 
-    def _keyed_port_access_rule(
+    def _port_access_rule_for(
         self,
         *,
         instance_name: str,
         port_name: str,
         port: Port,
-    ) -> tuple[float | None, float | None, str | None]:
-        port_type = _port_type_name(port)
-        component_name = _schematic_instance_component_name(self.schematic, instance_name)
-        rule = find_component_port_access_rule(
-            component_name=component_name,
-            port_name=port_name,
-            port_type=port_type,
-        )
-        if rule is not None:
-            return (
-                float(rule.access_length_um),
-                float(rule.access_width_um),
-                rule.component_name_pattern,
-            )
+    ) -> ComponentPortAccessRule | None:
+        """The component access rule governing this port, if any.
 
-        return None, None, None
+        Returns the rule itself (not a projection of it) so every consumer --
+        runway sizing, dense-group exclusion, the instance-geometry opening --
+        reads the same declaration.
+        """
+        return find_component_port_access_rule(
+            component_name=_schematic_instance_component_name(self.schematic, instance_name),
+            port_name=port_name,
+            port_type=_port_type_name(port),
+        )
 
     def _instance_ref_by_name(self, instance_name: str) -> Any | None:
         try:
@@ -1238,16 +1235,26 @@ class _RouteNetsRustSession:
                 return instance
         return None
 
-    def _heater_pad_port_open_cells(
+    def _instance_static_geometry_open_cells(
         self,
         *,
         instance_name: str,
-        port: Port,
         center_um: tuple[float, float],
         orientation: float | None,
-        rule_name: str | None,
     ) -> set[tuple[int, int]]:
-        if rule_name is None or orientation is None:
+        """Static cells of the port's own instance to open on the port-facing side.
+
+        Only called for ports whose access rule declares
+        ``opens_instance_static_geometry`` (today: heater optical ports, whose
+        metal pad sits on the port-facing side and would otherwise block the
+        access runway). The margin covers the clearance-expanded blocked
+        rectangles as well, so the opening matches what the obstacle map
+        actually blocks. Never call this on the strength of a rule merely
+        existing: the pre-placed crossing grids register a zero-size runway
+        rule, and opening their interior let a net hook through the grid
+        (``benes_16x16`` grid mode, route 74, 2026-08-27).
+        """
+        if orientation is None:
             return set()
         ref = self._instance_ref_by_name(instance_name)
         if ref is None:
@@ -1266,10 +1273,6 @@ class _RouteNetsRustSession:
         if not math.isfinite(dir_x) or not math.isfinite(dir_y):
             return set()
 
-        # Heater optical ports need the metal/static pad on the port-facing side
-        # opened, not only the narrow access runway. The router blocks compact
-        # heater rectangles after clearance expansion, so the opening must cover
-        # the matching expanded blocked rectangles too.
         bbox_margin = 0.5 * grid_size
         min_bbox_cell = physical_to_grid(
             float(left) - bbox_margin,
@@ -1375,7 +1378,7 @@ class _RouteNetsRustSession:
         """Ports of a group that qualify for automatic dense-fanout handling.
 
         A port with an explicit component access rule (see
-        `_keyed_port_access_rule`) has had its access geometry decided
+        `_port_access_rule_for`) has had its access geometry decided
         deliberately and is left out, so components that manage their own
         approach (e.g. pre-placed crossing grids) never get automatic stubs
         or runways. Looked up directly rather than through
@@ -1389,10 +1392,10 @@ class _RouteNetsRustSession:
                 count += 1
                 continue
             instance_name, port_name, port = endpoint
-            length_um, width_um, _rule = self._keyed_port_access_rule(
+            rule = self._port_access_rule_for(
                 instance_name=instance_name, port_name=port_name, port=port
             )
-            if length_um is None and width_um is None:
+            if rule is None:
                 count += 1
         return count
 
@@ -7088,18 +7091,24 @@ class _RouteNetsRustSession:
             orientation_value = getattr(port, "orientation", None)
             orientation = None if orientation_value is None else float(orientation_value)
             port_type = _port_type_name(port)
-            access_length_um, access_width_um, rule_name = self._keyed_port_access_rule(
+            rule = self._port_access_rule_for(
                 instance_name=instance_name,
                 port_name=port_name,
                 port=port,
             )
-            self.port_access_rule_by_spec[port_spec] = rule_name
-            port_rule_extra_open_cells_by_spec[port_spec] = self._heater_pad_port_open_cells(
-                instance_name=instance_name,
-                port=port,
-                center_um=(float(center[0]), float(center[1])),
-                orientation=orientation,
-                rule_name=rule_name,
+            access_length_um = None if rule is None else float(rule.access_length_um)
+            access_width_um = None if rule is None else float(rule.access_width_um)
+            self.port_access_rule_by_spec[port_spec] = (
+                None if rule is None else rule.component_name_pattern
+            )
+            port_rule_extra_open_cells_by_spec[port_spec] = (
+                self._instance_static_geometry_open_cells(
+                    instance_name=instance_name,
+                    center_um=(float(center[0]), float(center[1])),
+                    orientation=orientation,
+                )
+                if rule is not None and rule.opens_instance_static_geometry
+                else set()
             )
             port_opening_inputs.append(
                 (

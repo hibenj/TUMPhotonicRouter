@@ -37,6 +37,11 @@ class ComponentPortAccessRule:
     access_length_um: float
     access_width_um: float
     port_types: tuple[str, ...] = ("optical",)
+    # When true, the router additionally opens the owning instance's own static
+    # geometry on the port-facing side (the heater pad case, see
+    # ``_instance_static_geometry_open_cells``). Off by default: a rule that only sizes
+    # the access runway must never make the component's interior routable.
+    opens_instance_static_geometry: bool = False
 
     def matches(
         self,
@@ -62,6 +67,7 @@ HEATER_OPTICAL_PORT_ACCESS_RULES: tuple[ComponentPortAccessRule, ...] = (
         port_names=("o1", "o2"),
         access_length_um=HEATER_OPTICAL_ACCESS_LENGTH_UM,
         access_width_um=HEATER_OPTICAL_ACCESS_WIDTH_UM,
+        opens_instance_static_geometry=True,
     ),
 )
 
