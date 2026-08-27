@@ -527,6 +527,50 @@ fn rasterize_polygon_into(
     }
 }
 
+/// Cells touched by a polyline, found by sampling every segment at most
+/// `grid.grid_size_um / 4` apart (vertices included).
+///
+/// `rasterize_polygon` decides coverage by cell *centers*, which is the right
+/// contract for the static obstacle map (thin static geometry is expanded by
+/// clearance before it is rasterized there) but blind to a thin waveguide
+/// that runs between two cell centers: a 0.5 um guide realized 0.5 um off its
+/// cell center contains no center at all and rasterizes to nothing. Callers
+/// that need to know which cells a *realized route* passes through union the
+/// centerline's sampled cells with the polygon rasterization -- see
+/// `centerline_core_cells` in `py_router.rs`.
+pub fn sample_polyline_cells(points: &[Point], grid: &StaticGridSpec) -> FxHashSet<CellKey> {
+    let mut cells = FxHashSet::default();
+    if grid.width <= 0 || grid.height <= 0 || grid.grid_size_um <= 0.0 {
+        return cells;
+    }
+    let step = grid.grid_size_um / 4.0;
+    let mut insert = |x: f64, y: f64| {
+        if !x.is_finite() || !y.is_finite() {
+            return;
+        }
+        let (gx, gy) = physical_to_grid(x, y, grid);
+        if gx >= 0 && gy >= 0 && gx < grid.width && gy < grid.height {
+            cells.insert(pack_xy(gx, gy));
+        }
+    };
+    for (index, &(x0, y0)) in points.iter().enumerate() {
+        insert(x0, y0);
+        let Some(&(x1, y1)) = points.get(index + 1) else {
+            continue;
+        };
+        let length = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+        if !length.is_finite() || length <= EPS {
+            continue;
+        }
+        let samples = (length / step).ceil().max(1.0) as usize;
+        for sample in 1..samples {
+            let t = sample as f64 / samples as f64;
+            insert(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+        }
+    }
+    cells
+}
+
 fn axis_aligned_rectangle_bounds(polygon: &Polygon) -> Option<BBox> {
     if polygon.len() < 4 {
         return None;
@@ -1175,6 +1219,25 @@ mod tests {
         let cells = sorted_cells_from_keys(&rasterize_polygon(&polygon, &grid));
 
         assert_eq!(cells, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn thin_off_center_strip_is_invisible_to_center_rasterization_but_sampled() {
+        // A 0.5 um wide vertical guide between two cell centers (x = 1.0 and
+        // 3.0 on a 2 um grid): no cell center lies inside it.
+        let grid = StaticGridSpec {
+            width: 4,
+            height: 4,
+            grid_size_um: 2.0,
+            origin: (0.0, 0.0),
+            die_bbox: (0.0, 0.0, 8.0, 8.0),
+        };
+        let polygon = vec![(2.25, 0.5), (2.75, 0.5), (2.75, 7.5), (2.25, 7.5)];
+        assert!(rasterize_polygon(&polygon, &grid).is_empty());
+
+        let centerline = vec![(2.5, 0.5), (2.5, 7.5)];
+        let cells = sorted_cells_from_keys(&sample_polyline_cells(&centerline, &grid));
+        assert_eq!(cells, vec![(1, 0), (1, 1), (1, 2), (1, 3)]);
     }
 
     #[test]

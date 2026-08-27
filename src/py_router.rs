@@ -68,8 +68,8 @@ use crate::primitives::{
     PrimitiveLibraryConfig, DIRECTIONS,
 };
 use crate::static_obstacle_builder::{
-    floor_snap_to_grid, physical_to_grid, rasterize_polygon, PortInput, PyStaticCellSet,
-    StaticGridSpec,
+    floor_snap_to_grid, grid_cell_center, physical_to_grid, rasterize_polygon,
+    sample_polyline_cells, PortInput, PyStaticCellSet, StaticGridSpec,
 };
 
 #[pyclass(name = "GridSpec")]
@@ -1482,16 +1482,47 @@ fn static_grid_from_py_grid(grid: &PyGridSpec) -> StaticGridSpec {
     }
 }
 
+/// Cells a realized centerline occupies: the waveguide polygon's cell-center
+/// rasterization unioned with every cell the centerline itself passes through.
+///
+/// The center-only rasterization alone misses a thin guide realized between
+/// cell centers (an endpoint correction that slides a 290 um vertical 2.5 um
+/// sideways produced exactly that in `benes_16x16` grid mode, 2026-08-27: the
+/// candidate rasterized to zero cells, the collision check saw nothing, and
+/// two nets were committed on top of each other).
+/// Grid footprint of a realized centerline at two granularities.
+///
+/// `center` is the waveguide polygon's cell-center rasterization -- the
+/// granularity every other static-obstacle decision (openings, primitive
+/// footprints) is made at, so it is what static checks compare against.
+/// `occupied` additionally contains every cell the centerline itself passes
+/// through, so a thin guide realized between cell centers is still visible to
+/// dynamic (other-net) checks and gets registered when it is committed.
+struct CenterlineCells {
+    center: Vec<(i32, i32)>,
+    occupied: Vec<(i32, i32)>,
+}
+
+impl CenterlineCells {
+    fn is_center_cell(&self, cell: (i32, i32)) -> bool {
+        self.center.binary_search(&cell).is_ok()
+    }
+}
+
 fn centerline_core_cells(
     centerline: &[(f64, f64)],
     width_um: f64,
     static_grid: &StaticGridSpec,
-) -> Result<Vec<(i32, i32)>, GeometryError> {
+) -> Result<CenterlineCells, GeometryError> {
     let polygon = generate_waveguide_polygon_rs(centerline, width_um)?;
-    Ok(rasterize_polygon(&polygon, static_grid)
-        .into_iter()
-        .map(unpack_xy)
-        .collect())
+    let center_keys = rasterize_polygon(&polygon, static_grid);
+    let mut occupied_keys = center_keys.clone();
+    occupied_keys.extend(sample_polyline_cells(centerline, static_grid));
+    let mut center: Vec<(i32, i32)> = center_keys.into_iter().map(unpack_xy).collect();
+    center.sort_unstable();
+    let mut occupied: Vec<(i32, i32)> = occupied_keys.into_iter().map(unpack_xy).collect();
+    occupied.sort_unstable();
+    Ok(CenterlineCells { center, occupied })
 }
 
 fn compact_bump_portion(centerline: &[(f64, f64)], placement_is_start: bool) -> &[(f64, f64)] {
@@ -1555,6 +1586,104 @@ fn sorted_other_owners_for_cells(
         .collect();
     owners.sort_unstable();
     owners
+}
+
+/// Cells of a candidate that other nets own, split by whether the other net's
+/// *realized* geometry actually comes within one waveguide width of the
+/// candidate there.
+///
+/// Cell ownership is a routing-time approximation: a primitive's footprint
+/// claims whole cells, and at a bend it claims cells the realized Euler bend
+/// never touches, while a neighbouring net's bend legitimately sweeps through
+/// them. Two adjacent Benes switch stubs interleave exactly like that at the
+/// switch, so judging an endpoint-correction candidate by ownership alone
+/// rejected the physically clean candidate (its bend ran over a cell the
+/// neighbour's footprint claimed) and then accepted a physically colliding one
+/// (a thin guide realized between cell centers, which the cell-center
+/// rasterization could not see at all) -- `benes_16x16` grid mode, nets 132/134,
+/// 2026-08-27. `blockers` are the cells where the geometry really collides;
+/// `shared_clear_cells` / `shared_clear_nets` are the cells (and their owners)
+/// that are shared on the grid but clear in geometry, which a commit may allow
+/// as core overlap.
+struct RealizedDynamicBlockers {
+    blockers: Vec<(i32, i32)>,
+    shared_clear_cells: FxHashSet<CellKey>,
+    shared_clear_nets: FxHashSet<u64>,
+}
+
+impl RealizedDynamicBlockers {
+    fn allowed_overlap_cells(&self) -> Option<&FxHashSet<CellKey>> {
+        (!self.shared_clear_cells.is_empty()).then_some(&self.shared_clear_cells)
+    }
+}
+
+fn point_to_segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length_sq = dx * dx + dy * dy;
+    let t = if length_sq <= f64::EPSILON {
+        0.0
+    } else {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length_sq).clamp(0.0, 1.0)
+    };
+    let (cx, cy) = (a.0 + t * dx, a.1 + t * dy);
+    ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
+}
+
+fn segments_cross(p1: (f64, f64), p2: (f64, f64), q1: (f64, f64), q2: (f64, f64)) -> bool {
+    let orient = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    let d1 = orient(q1, q2, p1);
+    let d2 = orient(q1, q2, p2);
+    let d3 = orient(p1, p2, q1);
+    let d4 = orient(p1, p2, q2);
+    ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0))
+}
+
+fn segment_to_segment_distance(
+    p1: (f64, f64),
+    p2: (f64, f64),
+    q1: (f64, f64),
+    q2: (f64, f64),
+) -> f64 {
+    if segments_cross(p1, p2, q1, q2) {
+        return 0.0;
+    }
+    point_to_segment_distance(p1, q1, q2)
+        .min(point_to_segment_distance(p2, q1, q2))
+        .min(point_to_segment_distance(q1, p1, p2))
+        .min(point_to_segment_distance(q2, p1, p2))
+}
+
+fn segment_touches_region(a: (f64, f64), b: (f64, f64), region: (f64, f64, f64, f64)) -> bool {
+    let (min_x, min_y, max_x, max_y) = region;
+    a.0.min(b.0) <= max_x && a.0.max(b.0) >= min_x && a.1.min(b.1) <= max_y && a.1.max(b.1) >= min_y
+}
+
+/// True when any segment of `a` inside `region` passes closer than
+/// `threshold_um` to any segment of `b` inside `region`.
+fn polylines_closer_than(
+    a: &[(f64, f64)],
+    b: &[(f64, f64)],
+    threshold_um: f64,
+    region: (f64, f64, f64, f64),
+) -> bool {
+    let b_segments: Vec<((f64, f64), (f64, f64))> = b
+        .windows(2)
+        .map(|w| (w[0], w[1]))
+        .filter(|&(q1, q2)| segment_touches_region(q1, q2, region))
+        .collect();
+    if b_segments.is_empty() {
+        return false;
+    }
+    a.windows(2)
+        .map(|w| (w[0], w[1]))
+        .filter(|&(p1, p2)| segment_touches_region(p1, p2, region))
+        .any(|(p1, p2)| {
+            b_segments
+                .iter()
+                .any(|&(q1, q2)| segment_to_segment_distance(p1, p2, q1, q2) < threshold_um)
+        })
 }
 
 fn cells_with_other_dynamic_owner(
@@ -7239,6 +7368,68 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// See `RealizedDynamicBlockers`. `clearance_exempt_keys` follows
+    /// `cells_with_other_dynamic_owner`.
+    fn realized_dynamic_blockers(
+        &self,
+        net_id: u64,
+        candidate: &[(f64, f64)],
+        candidate_cells: &CenterlineCells,
+        clearance_exempt_keys: &FxHashSet<CellKey>,
+        width_um: f64,
+        static_grid: &StaticGridSpec,
+    ) -> RealizedDynamicBlockers {
+        let mut result = RealizedDynamicBlockers {
+            blockers: Vec::new(),
+            shared_clear_cells: FxHashSet::default(),
+            shared_clear_nets: FxHashSet::default(),
+        };
+        let cell_blockers = cells_with_other_dynamic_owner(
+            &self.obstacle_map,
+            &candidate_cells.occupied,
+            clearance_exempt_keys,
+            net_id,
+        );
+        let reach = static_grid.grid_size_um + width_um;
+        for cell in cell_blockers {
+            let owners: Vec<u64> = self
+                .obstacle_map
+                .dynamic_owners_for_cells(&[cell])
+                .into_iter()
+                .filter(|owner| *owner != net_id)
+                .collect();
+            let (cx, cy) = grid_cell_center(cell.0, cell.1, static_grid);
+            let region = (cx - reach, cy - reach, cx + reach, cy + reach);
+            // Without a remembered geometry for the owner the only available
+            // judgement is the grid-level one, at the granularity it was always
+            // made: a cell-center hit blocks, a sampled-only cell does not.
+            let collides = owners.iter().any(|owner| {
+                match self.committed_realized_center_routes.get(owner) {
+                    Some(other) => polylines_closer_than(candidate, other, width_um, region),
+                    None => candidate_cells.is_center_cell(cell),
+                }
+            });
+            if collides {
+                result.blockers.push(cell);
+            } else {
+                result.shared_clear_cells.insert(pack_xy(cell.0, cell.1));
+                result.shared_clear_nets.extend(owners);
+            }
+        }
+        result
+    }
+
+    /// Record the geometry a corrected commit actually realized, so later
+    /// candidates of other nets are judged against it rather than the raw
+    /// primitive centerline `remember_committed_route_centerlines_with_ports`
+    /// derives from the route alone.
+    fn remember_corrected_realized_centerline(&mut self, net_id: u64, centerline: &[(f64, f64)]) {
+        if centerline.len() >= 2 {
+            self.committed_realized_center_routes
+                .insert(net_id, compress_physical_centerline(centerline.to_vec()));
+        }
+    }
+
     fn route_port_corrected_centerline_checked_and_commit_native(
         &mut self,
         net_id: u64,
@@ -7286,20 +7477,40 @@ impl PyPhotonicRouter {
             // .agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md.
             // The post-construction check below is left unchanged and still
             // runs as a defense-in-depth backstop.
+            let trace_net = std::env::var("PHOTONIC_ROUTER_TRACE_ENDPOINT_CORRECTION_NET")
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                == Some(net_id);
             let candidate_collision_check = |candidate: &[(f64, f64)]| -> bool {
-                let Ok(candidate_core_cells) =
-                    centerline_core_cells(candidate, width_um, &static_grid)
+                let Ok(candidate_cells) = centerline_core_cells(candidate, width_um, &static_grid)
                 else {
                     return false;
                 };
-                !candidate_core_cells.iter().any(|&(x, y)| {
-                    self.obstacle_map.in_bounds(x, y)
-                        && self
-                            .obstacle_map
-                            .dynamic_owners_at(x, y)
-                            .iter()
-                            .any(|&owner| owner != net_id)
-                })
+                let blockers = self
+                    .realized_dynamic_blockers(
+                        net_id,
+                        candidate,
+                        &candidate_cells,
+                        &clearance_exempt_keys,
+                        width_um,
+                        &static_grid,
+                    )
+                    .blockers;
+                if trace_net {
+                    let owners = sorted_other_owners_for_cells(&self.obstacle_map, &blockers, net_id);
+                    eprintln!(
+                        "endpoint_correction_trace net={net_id} candidate_points={} core_cells={} dynamic_blockers={} owners={owners:?} blocker_bbox={} candidate_bbox=({:.3},{:.3})-({:.3},{:.3})",
+                        candidate.len(),
+                        candidate_cells.occupied.len(),
+                        blockers.len(),
+                        format_bbox(&blockers),
+                        candidate.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
+                        candidate.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
+                        candidate.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
+                        candidate.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
+                    );
+                }
+                blockers.is_empty()
             };
             let centerline = route_to_port_corrected_centerline_with_options_and_collision_check(
                 route,
@@ -7311,8 +7522,9 @@ impl PyPhotonicRouter {
                 Some(&candidate_collision_check),
             )
             .map_err(|err| err.to_string())?;
-            let corrected_core_cells = centerline_core_cells(&centerline, width_um, &static_grid)
+            let corrected_cells = centerline_core_cells(&centerline, width_um, &static_grid)
                 .map_err(|err| err.to_string())?;
+            let corrected_core_cells = corrected_cells.occupied.clone();
             if corrected_core_cells.is_empty() {
                 return Ok(NativeEndpointCorrection {
                     centerline,
@@ -7325,6 +7537,7 @@ impl PyPhotonicRouter {
                 match route_to_primitive_centerline_rs(route, &self.primitives, &grid) {
                     Ok(old_centerline) => {
                         centerline_core_cells(&old_centerline, width_um, &static_grid)
+                            .map(|cells| cells.occupied)
                             .unwrap_or_else(|_| {
                                 route_core_cells(&route.cells, core_radius_cells, width, height)
                             })
@@ -7337,7 +7550,8 @@ impl PyPhotonicRouter {
                 .copied()
                 .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
                 .collect();
-            let static_blockers: Vec<(i32, i32)> = corrected_core_cells
+            let static_blockers: Vec<(i32, i32)> = corrected_cells
+                .center
                 .iter()
                 .copied()
                 .filter(|&(x, y)| {
@@ -7380,29 +7594,38 @@ impl PyPhotonicRouter {
             // case-4 bump candidate loop below, which never allows overlap.
             let corrected_blocked_cells =
                 inflate_route_cells(&corrected_core_cells, core_radius_cells, width, height);
-            let commit_ok = if commit_to_router {
-                self.obstacle_map.commit_route_with_clearance_overlap(
-                    net_id,
-                    &corrected_core_cells,
-                    &corrected_blocked_cells,
-                    clearance_exempt_cells,
-                )
-            } else {
-                let mut check_map = self.obstacle_map.clone();
-                check_map.commit_route_with_clearance_overlap(
-                    net_id,
-                    &corrected_core_cells,
-                    &corrected_blocked_cells,
-                    clearance_exempt_cells,
-                )
-            };
+            let realized_blockers = self.realized_dynamic_blockers(
+                net_id,
+                &centerline,
+                &corrected_cells,
+                &clearance_exempt_keys,
+                width_um,
+                &static_grid,
+            );
+            let commit_dynamic_blockers = realized_blockers.blockers.clone();
+            let commit_ok = commit_dynamic_blockers.is_empty()
+                && if commit_to_router {
+                    self.obstacle_map
+                        .commit_route_with_clearance_and_allowed_core_overlap_cells(
+                            net_id,
+                            &corrected_core_cells,
+                            &corrected_blocked_cells,
+                            clearance_exempt_cells,
+                            &realized_blockers.shared_clear_nets,
+                            realized_blockers.allowed_overlap_cells(),
+                        )
+                } else {
+                    let mut check_map = self.obstacle_map.clone();
+                    check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
+                        net_id,
+                        &corrected_core_cells,
+                        &corrected_blocked_cells,
+                        clearance_exempt_cells,
+                        &realized_blockers.shared_clear_nets,
+                        realized_blockers.allowed_overlap_cells(),
+                    )
+                };
             if !commit_ok {
-                let commit_dynamic_blockers = cells_with_other_dynamic_owner(
-                    &self.obstacle_map,
-                    &corrected_core_cells,
-                    &clearance_exempt_keys,
-                    net_id,
-                );
                 let owners = sorted_other_owners_for_cells(
                     &self.obstacle_map,
                     &commit_dynamic_blockers,
@@ -7436,6 +7659,7 @@ impl PyPhotonicRouter {
                     self.rollback_committed_route(net_id);
                     return Err("Failed to record endpoint-corrected route centerline".to_string());
                 }
+                self.remember_corrected_realized_centerline(net_id, &centerline);
                 self.remember_committed_route_opened_cells(net_id, Some(&opened_keys));
                 self.add_post_commit_guidance_for_route(net_id, route);
                 if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
@@ -7487,9 +7711,9 @@ impl PyPhotonicRouter {
             let candidate_label = candidate.label;
             let centerline = candidate.centerline;
             let bump_centerline = compact_bump_portion(&centerline, candidate.placement_is_start);
-            let candidate_core_cells =
-                centerline_core_cells(bump_centerline, width_um, &static_grid)
-                    .map_err(|err| err.to_string())?;
+            let candidate_cells = centerline_core_cells(bump_centerline, width_um, &static_grid)
+                .map_err(|err| err.to_string())?;
+            let candidate_core_cells = candidate_cells.occupied.clone();
             if candidate_core_cells.is_empty() {
                 let detail = format!("#{candidate_index} {candidate_label}: empty core footprint");
                 if trace_endpoint_bumps {
@@ -7511,7 +7735,8 @@ impl PyPhotonicRouter {
                 .copied()
                 .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
                 .collect();
-            let static_blockers: Vec<(i32, i32)> = candidate_core_cells
+            let static_blockers: Vec<(i32, i32)> = candidate_cells
+                .center
                 .iter()
                 .copied()
                 .filter(|&(x, y)| {
@@ -7521,12 +7746,15 @@ impl PyPhotonicRouter {
                         && !opened_keys.contains(&key)
                 })
                 .collect();
-            let dynamic_blockers = cells_with_other_dynamic_owner(
-                &self.obstacle_map,
-                &candidate_core_cells,
-                &clearance_exempt_keys,
+            let realized_blockers = self.realized_dynamic_blockers(
                 net_id,
+                bump_centerline,
+                &candidate_cells,
+                &clearance_exempt_keys,
+                width_um,
+                &static_grid,
             );
+            let dynamic_blockers = realized_blockers.blockers.clone();
             if !out_of_bounds.is_empty()
                 || !static_blockers.is_empty()
                 || !dynamic_blockers.is_empty()
@@ -7592,19 +7820,24 @@ impl PyPhotonicRouter {
             );
 
             let commit_ok = if commit_to_router {
-                self.obstacle_map.commit_route_with_clearance_overlap(
-                    net_id,
-                    &merged_core_cells,
-                    &merged_blocked_cells,
-                    &commit_clearance_exempt_cell_vec,
-                )
+                self.obstacle_map
+                    .commit_route_with_clearance_and_allowed_core_overlap_cells(
+                        net_id,
+                        &merged_core_cells,
+                        &merged_blocked_cells,
+                        &commit_clearance_exempt_cell_vec,
+                        &realized_blockers.shared_clear_nets,
+                        realized_blockers.allowed_overlap_cells(),
+                    )
             } else {
                 let mut check_map = self.obstacle_map.clone();
-                check_map.commit_route_with_clearance_overlap(
+                check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
                     net_id,
                     &merged_core_cells,
                     &merged_blocked_cells,
                     &commit_clearance_exempt_cell_vec,
+                    &realized_blockers.shared_clear_nets,
+                    realized_blockers.allowed_overlap_cells(),
                 )
             };
             if commit_ok {
@@ -7639,6 +7872,7 @@ impl PyPhotonicRouter {
                             "Failed to record endpoint-corrected bump route centerline".to_string()
                         );
                     }
+                    self.remember_corrected_realized_centerline(net_id, &centerline);
                     self.remember_committed_route_opened_cells(net_id, Some(&opened_keys));
                     self.add_post_commit_guidance_for_route(net_id, route);
                     if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
@@ -7759,13 +7993,15 @@ impl PyPhotonicRouter {
             target_port_um,
             true,
         ) {
-            let corrected_core_cells =
+            let corrected_cells =
                 centerline_core_cells(&corrected_centerline, width_um, &static_grid)
                     .map_err(|err| err.to_string())?;
+            let corrected_core_cells = corrected_cells.occupied.clone();
             let corrected_blocked_cells =
                 inflate_route_cells(&corrected_core_cells, core_radius_cells, width, height);
-            let old_core_cells =
-                centerline_core_cells(centerline, width_um, &static_grid).unwrap_or_default();
+            let old_core_cells = centerline_core_cells(centerline, width_um, &static_grid)
+                .map(|cells| cells.occupied)
+                .unwrap_or_default();
             let old_core_keys = pack_cells(&old_core_cells);
             let correction_clearance_exempt_cells = unique_cells(
                 clearance_exempt_cells
@@ -7779,7 +8015,8 @@ impl PyPhotonicRouter {
                 .copied()
                 .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
                 .collect();
-            let static_blockers: Vec<(i32, i32)> = corrected_core_cells
+            let static_blockers: Vec<(i32, i32)> = corrected_cells
+                .center
                 .iter()
                 .copied()
                 .filter(|&(x, y)| {
@@ -7790,20 +8027,25 @@ impl PyPhotonicRouter {
                         && !old_core_keys.contains(&key)
                 })
                 .collect();
-            let dynamic_blockers = cells_with_other_dynamic_owner(
-                &self.obstacle_map,
-                &corrected_core_cells,
-                &correction_clearance_exempt_keys,
+            let realized_blockers = self.realized_dynamic_blockers(
                 net_id,
+                &corrected_centerline,
+                &corrected_cells,
+                &correction_clearance_exempt_keys,
+                width_um,
+                &static_grid,
             );
+            let dynamic_blockers = realized_blockers.blockers.clone();
             if out_of_bounds.is_empty() && static_blockers.is_empty() && dynamic_blockers.is_empty()
             {
                 let mut check_map = self.obstacle_map.clone();
-                if check_map.commit_route_with_clearance_overlap(
+                if check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
                     net_id,
                     &corrected_core_cells,
                     &corrected_blocked_cells,
                     &correction_clearance_exempt_cells,
+                    &realized_blockers.shared_clear_nets,
+                    realized_blockers.allowed_overlap_cells(),
                 ) {
                     if trace_endpoint_bumps {
                         println!(
@@ -7854,9 +8096,9 @@ impl PyPhotonicRouter {
             let candidate_centerline = candidate.centerline;
             let bump_centerline =
                 compact_bump_portion(&candidate_centerline, candidate.placement_is_start);
-            let candidate_core_cells =
-                centerline_core_cells(bump_centerline, width_um, &static_grid)
-                    .map_err(|err| err.to_string())?;
+            let candidate_cells = centerline_core_cells(bump_centerline, width_um, &static_grid)
+                .map_err(|err| err.to_string())?;
+            let candidate_core_cells = candidate_cells.occupied.clone();
             if candidate_core_cells.is_empty() {
                 let detail = format!("#{candidate_index} {candidate_label}: empty core footprint");
                 if trace_endpoint_bumps {
@@ -7874,7 +8116,8 @@ impl PyPhotonicRouter {
                 .copied()
                 .filter(|&(x, y)| !self.obstacle_map.in_bounds(x, y))
                 .collect();
-            let static_blockers: Vec<(i32, i32)> = candidate_core_cells
+            let static_blockers: Vec<(i32, i32)> = candidate_cells
+                .center
                 .iter()
                 .copied()
                 .filter(|&(x, y)| {
@@ -7884,12 +8127,15 @@ impl PyPhotonicRouter {
                         && !opened_keys.contains(&key)
                 })
                 .collect();
-            let dynamic_blockers = cells_with_other_dynamic_owner(
-                &self.obstacle_map,
-                &candidate_core_cells,
-                &clearance_exempt_keys,
+            let realized_blockers = self.realized_dynamic_blockers(
                 net_id,
+                bump_centerline,
+                &candidate_cells,
+                &clearance_exempt_keys,
+                width_um,
+                &static_grid,
             );
+            let dynamic_blockers = realized_blockers.blockers.clone();
             if !out_of_bounds.is_empty()
                 || !static_blockers.is_empty()
                 || !dynamic_blockers.is_empty()
@@ -7942,11 +8188,13 @@ impl PyPhotonicRouter {
             }
 
             let mut check_map = self.obstacle_map.clone();
-            let commit_ok = check_map.commit_route_with_clearance_overlap(
+            let commit_ok = check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
                 net_id,
                 &candidate_core_cells,
                 &candidate_blocked_cells,
                 clearance_exempt_cells,
+                &realized_blockers.shared_clear_nets,
+                realized_blockers.allowed_overlap_cells(),
             );
             if commit_ok {
                 if trace_endpoint_bumps {
@@ -18843,5 +19091,39 @@ mod tests {
         for (x, y) in reserved_cells {
             assert!(router.obstacle_map.is_blocked(x, y));
         }
+    }
+
+    #[test]
+    fn polylines_closer_than_sees_parallel_guides_only_when_they_overlap() {
+        // Two vertical 0.5 um guides: at 2.0 um center spacing they are clear,
+        // at 0.5 um (the benes_16x16 nets 132/134 case) they overlap.
+        let a = vec![(0.0, 0.0), (0.0, 100.0)];
+        let far = vec![(2.0, 0.0), (2.0, 100.0)];
+        let near = vec![(0.5, 0.0), (0.5, 100.0)];
+        let region = (-3.0, 40.0, 3.0, 60.0);
+        assert!(!polylines_closer_than(&a, &far, 0.5, region));
+        assert!(!polylines_closer_than(&a, &near, 0.5, region));
+        assert!(polylines_closer_than(&a, &near, 0.5 + 1.0e-6, region));
+        assert!(polylines_closer_than(&a, &vec![(0.3, 0.0), (0.3, 100.0)], 0.5, region));
+    }
+
+    #[test]
+    fn polylines_closer_than_only_looks_inside_the_region() {
+        let a = vec![(0.0, 0.0), (0.0, 100.0)];
+        let crossing = vec![(-5.0, 90.0), (5.0, 90.0)];
+        assert!(polylines_closer_than(&a, &crossing, 0.5, (-3.0, 85.0, 3.0, 95.0)));
+        assert!(!polylines_closer_than(&a, &crossing, 0.5, (-3.0, 40.0, 3.0, 60.0)));
+    }
+
+    #[test]
+    fn segment_to_segment_distance_handles_crossing_and_disjoint_segments() {
+        assert_eq!(
+            segment_to_segment_distance((0.0, 0.0), (2.0, 2.0), (0.0, 2.0), (2.0, 0.0)),
+            0.0
+        );
+        let d = segment_to_segment_distance((0.0, 0.0), (1.0, 0.0), (3.0, 0.0), (4.0, 0.0));
+        assert!((d - 2.0).abs() < 1.0e-9);
+        let d = segment_to_segment_distance((0.0, 0.0), (1.0, 0.0), (0.5, 1.0), (0.5, 3.0));
+        assert!((d - 1.0).abs() < 1.0e-9);
     }
 }
