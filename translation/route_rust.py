@@ -7352,6 +7352,20 @@ class _RouteNetsRustSession:
         repair_enabled = (self.ripup_reroute_config or RipupRerouteConfig()).enabled
         if repair_enabled:
             route_jobs = self._topological_net_route_order(route_jobs)
+            # Renumber so `route_index` is the execution position, layer by
+            # layer. Everything a person points at by index -- the
+            # `Routing [i/N]` lines, `--debug-svgs <selector>`,
+            # `--debug-stop-after-route N`, a partial GDS "up to the failure"
+            # -- then follows the order the nets are actually routed in,
+            # instead of the schematic's declaration order (which, with
+            # pre-placed crossing grids, lists every `__from_grid` stub after
+            # every `__to_grid` one, so a stop-after cut used to drop nets
+            # that had already been routed). `net_id` is untouched: it is
+            # the identity the obstacle map and bookkeeping key on.
+            route_jobs = [
+                replace(job, route_index=position)
+                for position, job in enumerate(route_jobs, start=1)
+            ]
 
         port_runway_static_cells: set[tuple[int, int]] = set()
         for cells in self.port_runway_cells_by_spec.values():
