@@ -25,7 +25,7 @@ now lives only in the referenced ExecPlan and `git log`.)
   nets serving ports closer than the clearance route side by side.
   `heater_s_mod` 90-degree / 3 um routes 81/81 (`error_count=0`) in both
   crossings-off and lidar-pure modes; full ladder clean (see that plan's
-  Milestone 3). Uncommitted in the working tree. Also 2026-08-28: the
+  Milestone 3). Committed as `946dfbd`. Also 2026-08-28: the
   repository owner retired the Codex flow -- Claude implements directly
   (`.agent/ORCHESTRATOR.md`, `.agent/CLAUDE_CODEX_FLOW.md`).
   **Open, owner decision needed**: `test_heater_s_mod_90_degree_plm_regression[3.0]`
@@ -34,7 +34,7 @@ now lives only in the referenced ExecPlan and `git log`.)
   `translation/route_rust.py` predates this work and is unrelated to it.
 - Previous snapshot (2026-08-26, evening)
 - Branch: `crossings/verification-foundation`
-- Current HEAD: the `feat: pre-place topology-derived crossing grids`
+- Current HEAD: `946dfbd` (port-adjacent clearance waiver). Before that: the `feat: pre-place topology-derived crossing grids`
   commit on top of `e6432b2`. Three things happened on 2026-08-26, each
   with its own ExecPlan:
   1. `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`
@@ -817,8 +817,9 @@ above for the full story. The real open candidates right now:
    open question.** Routing fixed and ladder-validated (see Resolved
    Findings). Open: the 3 um configuration's path-length matching failure
    (Current Findings item 0) -- owner to decide whether it is worth
-   pursuing; and whether to commit the working tree (7 files, plus the
-   unrelated pre-existing `LAYER_ORDER=span` experiment to leave out).
+   pursuing. Committed as `946dfbd`; the unrelated pre-existing
+   `PHOTONIC_ROUTER_LAYER_ORDER=span` experiment stays uncommitted in
+   `translation/route_rust.py`.
 
 1. **`multiportmmi_16x16` stable-baseline still fails.** See Current
    Findings above (updated today) for the exact reproduction command and
