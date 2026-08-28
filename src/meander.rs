@@ -2,7 +2,6 @@
 // Analytic physical meander planner
 // -----------------------------------------------------------------------------
 
-const BEND_SAMPLES_PER_90_DEG: usize = 8;
 const EPS: f64 = 1.0e-9;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -347,8 +346,9 @@ fn append_quarter_arc_local(
     a0: f64,
     a1: f64,
 ) {
-    for i in 1..=BEND_SAMPLES_PER_90_DEG {
-        let t = (i as f64) / (BEND_SAMPLES_PER_90_DEG as f64);
+    let samples = crate::geometry_realization::arc_samples_per_90_deg(r);
+    for i in 1..=samples {
+        let t = (i as f64) / (samples as f64);
         let a = a0 + (a1 - a0) * t;
         let u = cx + r * a.cos();
         let v = cy + r * a.sin();

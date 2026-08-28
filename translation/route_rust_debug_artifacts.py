@@ -10,6 +10,7 @@ from typing import cast
 
 from gdsfactory.component import Component
 
+from translation.gds_write_options import gds_save_options
 from translation.photonic_verification import PhotonicVerificationResult
 from translation.route_rust_records import EndpointCorrectionRouter
 from translation.route_rust_types import RoutedNetRecord
@@ -170,7 +171,7 @@ def _dump_photonic_probe_failure_artifacts(
 
     if probe_layout is not None:
         gds_path = probe_dir / f"{stem}.gds"
-        probe_layout.write_gds(str(gds_path))
+        probe_layout.write_gds(str(gds_path), save_options=gds_save_options())
         artifacts["probe_gds"] = str(gds_path)
 
     issues_path = probe_dir / f"{stem}.json"

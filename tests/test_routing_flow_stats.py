@@ -414,6 +414,35 @@ def test_heater_s_mod_sibling_ports_route_side_by_side_inside_the_clearance(cros
     assert route_summary.repair_count == 0
 
 
+def test_heater_s_mod_stable_configuration_routes_matches_and_wires():
+    """`benchmarks.heater_s_mod.STABLE_ROUTING_FLAGS` end to end: 90-degree
+    routing, 10 um bends, path-length matching, heater electrical routing."""
+    stats = RoutingFlowStats()
+    routed = run_routing_flow(
+        "heater_s_mod",
+        show_unrouted=False,
+        show_routed=False,
+        show_static_obstacles_svg=False,
+        allow_45_degree_turns=False,
+        bend_radius_um=10.0,
+        enable_path_length_matching=True,
+        path_length_match_outputs=True,
+        include_heater_obstacles=True,
+        enable_electrical_routing=True,
+        collect_route_stats=True,
+        stats=stats,
+    )
+
+    assert stats.net_count == 81
+    assert stats.route_failures == 0
+    analysis = routed.info["path_length_analysis"]
+    assert analysis["path_length_acceptance"]["passed"] is True
+    meander_report = routed.info["meander_insertion_report"]
+    assert meander_report["unmatched_length_um"] == pytest.approx(0.0, abs=1e-9)
+    electrical = routed.info["electrical_routing"]
+    assert electrical["terminal_group_count"] > 0
+
+
 def test_routing_flow_routes_single_heater_electrical_metal_end_to_end():
     routed = run_routing_flow(
         "mmi_heater",
@@ -1245,7 +1274,7 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
         name="electrical_routed",
         info={},
     )
-    electrical_layout.write_gds = lambda path: captured.setdefault("gds_path", path)
+    electrical_layout.write_gds = lambda path, **_kwargs: captured.setdefault("gds_path", path)
 
     def fake_load_benchmark(_benchmark_name: str):
         return schematic

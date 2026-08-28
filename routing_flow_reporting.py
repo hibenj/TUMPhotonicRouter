@@ -10,6 +10,7 @@ import webbrowser
 from gdsfactory.component import Component
 
 from translation.electrical import ElectricalRoutingResult
+from translation.gds_write_options import gds_save_options
 
 
 def route_attempt_as_dict(record: object) -> dict[str, object]:
@@ -525,7 +526,7 @@ def write_or_show_routed_layout(
         return
 
     print("      - Write GDS...")
-    routed_layout.write_gds(f"build/routed_{benchmark_name}.gds")
+    routed_layout.write_gds(f"build/routed_{benchmark_name}.gds", save_options=gds_save_options())
 
 
 def _format_debug_route_indices(indices: set[int]) -> str:

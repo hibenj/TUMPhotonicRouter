@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+
+import numpy as np
 from collections.abc import Mapping
 from typing import Any, Iterable
 
@@ -791,6 +793,49 @@ def _polyline_self_intersects_um(
     """
     if len(points) < 4:
         return None
+    # Bounding-box prefilter, vectorized: a realized centerline can have a
+    # few thousand vertices (finely sampled bends, long meanders), and the
+    # exact pairwise check below costs a shapely call per pair. Only pairs
+    # of non-adjacent segments whose boxes overlap (within the tolerance)
+    # reach it; for a well-formed route that is a handful of pairs.
+    coords = np.asarray(points, dtype=float)
+    starts, ends = coords[:-1], coords[1:]
+    lengths = np.hypot(*(ends - starts).T)
+    lower = np.minimum(starts, ends) - tolerance_um
+    upper = np.maximum(starts, ends) + tolerance_um
+    overlap = (
+        (lower[:, None, 0] <= upper[None, :, 0])
+        & (lower[None, :, 0] <= upper[:, None, 0])
+        & (lower[:, None, 1] <= upper[None, :, 1])
+        & (lower[None, :, 1] <= upper[:, None, 1])
+    )
+    segment_count = len(starts)
+    non_adjacent_upper = np.triu(np.ones((segment_count, segment_count), dtype=bool), k=2)
+    long_enough = lengths > tolerance_um
+    candidates = overlap & non_adjacent_upper & long_enough[:, None] & long_enough[None, :]
+    for i, j in zip(*np.nonzero(candidates), strict=True):
+        p1, q1 = points[i], points[i + 1]
+        p2, q2 = points[j], points[j + 1]
+        intersection = LineString([p1, q1]).intersection(LineString([p2, q2]))
+        if intersection.is_empty:
+            continue
+        if isinstance(intersection, Point):
+            point = (intersection.x, intersection.y)
+            touches_a_endpoint = any(
+                math.hypot(point[0] - ep[0], point[1] - ep[1]) <= tolerance_um for ep in (p1, q1)
+            )
+            touches_b_endpoint = any(
+                math.hypot(point[0] - ep[0], point[1] - ep[1]) <= tolerance_um for ep in (p2, q2)
+            )
+            if touches_a_endpoint and touches_b_endpoint:
+                continue
+            return point
+        # Not a single point (a MultiPoint, an overlapping LineString, or a
+        # GeometryCollection): a genuine overlap spanning more than one
+        # shared vertex.
+        centroid = intersection.centroid
+        return (centroid.x, centroid.y)
+    return None
     for i in range(len(points) - 1):
         p1, q1 = points[i], points[i + 1]
         segment_a = LineString([p1, q1])

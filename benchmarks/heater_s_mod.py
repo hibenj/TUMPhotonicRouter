@@ -10,6 +10,33 @@ second-stage MMI, whose upper output passes through another heater.
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
+# Stable configuration (repository owner, 2026-08-28): 90-degree routing with
+# a 10 um bend radius, path-length matching of every gate and of the outputs,
+# heater obstacles, and heater electrical routing. This is the configuration
+# `tests/test_routing_flow_stats.py::`
+# `test_heater_s_mod_stable_configuration_routes_matches_and_wires`
+# runs end to end:
+#   python routing_flow.py heater_s_mod --allow-45-degree-turns false --bend-radius-um 10
+#     --path-length-matching true --path-length-match-outputs true
+#     --include-heater-obstacles true --electrical-routing true
+# Waveguide clearance stays at the CLI default (0 um): at 3 um the
+# path-length matcher finds no meander candidate for one edge (see
+# .agent/REPOSITORY_STATE.md, Current Findings).
+STABLE_ROUTING_FLAGS: tuple[str, ...] = (
+    "--allow-45-degree-turns",
+    "false",
+    "--bend-radius-um",
+    "10",
+    "--path-length-matching",
+    "true",
+    "--path-length-match-outputs",
+    "true",
+    "--include-heater-obstacles",
+    "true",
+    "--electrical-routing",
+    "true",
+)
+
 LANE_COUNT = 4
 
 

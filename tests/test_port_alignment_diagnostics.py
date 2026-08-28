@@ -188,8 +188,10 @@ def test_mmi_heater_pass0_characterizes_current_port_alignment():
     second = records_by_name["gc1_to_mmi0_in2"]
     assert first.base_total_length_um == pytest.approx(149.0)
     assert second.base_total_length_um == pytest.approx(149.5)
-    assert first.total_length_um == pytest.approx(140.40331156954753)
-    assert second.total_length_um == pytest.approx(140.9033115695475)
+    # Realized (arc-sampled) centerline lengths; they move by a few nm when
+    # the arc sampling density changes (see `MAX_ARC_SAGITTA_UM`).
+    assert first.total_length_um == pytest.approx(140.41489662877973, abs=1e-6)
+    assert second.total_length_um == pytest.approx(140.91489662877973, abs=1e-6)
     assert (second.total_length_um - first.total_length_um) == pytest.approx(0.5)
     assert len(first.corrected_centerline_um) >= 2
     assert len(second.corrected_centerline_um) >= 2

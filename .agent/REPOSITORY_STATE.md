@@ -18,7 +18,17 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-28
+- Date: 2026-08-28 (afternoon)
+- **Latest (2026-08-28, uncommitted)**: `.agent/execplans/2026-08-28-plm-geometry-arc-sampling-and-meander-length-model.md`
+  -- Milestone 1 done and ladder-validated: one sagitta-driven arc sampler
+  (`arc_samples_per_90_deg`, 1 nm sagitta, gdsfactory-equivalent density; the verifier's self-intersection check got a vectorized bbox prefilter so the denser centerlines cost nothing -- heater stable config 15.7 -> 7.8 s) for primitive bends, endpoint-correction
+  jogs (were 4 chords per arc) and meanders (were 8), plus a GDS write cap
+  of 4000 vertices per polygon (`translation/gds_write_options.py`) so
+  long meanders stay inside the GDSII record limit. Milestone 2 is an
+  investigation with the answer in hand, **fix pending owner decision**:
+  the fill-box meander length model books (amplitude - r) too little per
+  meander -- every matched group with a meander is 58-240 um off in the
+  GDS; formula and inversion fix spelled out in that plan's Decision Log.
 - **Latest (2026-08-28)**: `.agent/execplans/2026-08-28-port-adjacent-clearance-waiver.md`
   -- by owner direction the waveguide clearance is now waived by default in
   a run-in corridor at every port (other nets' halos only, never cores), so
@@ -813,7 +823,19 @@ and `.agent/execplans/2026-08-25-negotiated-repair-engine.md` are both
 complete (5/6 and 8/8 milestones respectively) -- see Completed ExecPlans
 above for the full story. The real open candidates right now:
 
-0. **Port-adjacent clearance waiver: done (2026-08-28), uncommitted, one
+-1. **PLM meander length model (2026-08-28, owner decision pending).** See
+   `.agent/execplans/2026-08-28-plm-geometry-arc-sampling-and-meander-length-model.md`
+   Decision Log: `MeanderTurnModel::inserted_extra_length_um` must become
+   `(u_turns + 1) * (A - 4r + pi*r)` with the matching inversion in
+   `plan_fill_box_multi_bump_footprint`; acceptance = realized group
+   arrival spread < 1 um on `heater_s_mod`. Small, bounded, changes every
+   PLM result. Done 2026-08-28 (owner direction, uncommitted): `heater_s_mod`'s
+   stable configuration is now `benchmarks/heater_s_mod.py::STABLE_ROUTING_FLAGS`
+   (90-degree, r=10, PLM + outputs, heater obstacles, electrical; clearance
+   at the CLI default 0 um) with the end-to-end test
+   `test_heater_s_mod_stable_configuration_routes_matches_and_wires`
+   (81/81, PLM acceptance passed, electrical routed; 16 s).
+0. **Port-adjacent clearance waiver: done (2026-08-28, commit `946dfbd`), one
    open question.** Routing fixed and ladder-validated (see Resolved
    Findings). Open: the 3 um configuration's path-length matching failure
    (Current Findings item 0) -- owner to decide whether it is worth

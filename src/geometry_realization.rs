@@ -33,7 +33,32 @@ use crate::static_obstacle_builder::{
 
 pub(crate) const EPS: f64 = 1.0e-9;
 const MITER_LIMIT: f64 = 4.0;
+/// Floor for the number of polyline samples per 90 degrees of bend arc.
 const DEFAULT_BEND_SAMPLES_PER_90_DEG: usize = 16;
+/// Largest allowed deviation (sagitta) between a sampled arc chord and the
+/// true arc, in micrometers. 1 nm is one GDS database unit -- the same
+/// density gdsfactory's `bend_circular` uses (a vertex every 20 nm of arc) -- so realized
+/// bends and meander U-turns read as curves rather than as chamfered
+/// corners, and their polyline length stays within ~1e-5 of the true arc
+/// length that the path-length model books.
+pub const MAX_ARC_SAGITTA_UM: f64 = 0.001;
+
+/// Number of polyline samples per 90 degrees of arc at `radius_um` so that
+/// no chord deviates from the arc by more than [`MAX_ARC_SAGITTA_UM`], never
+/// fewer than [`DEFAULT_BEND_SAMPLES_PER_90_DEG`]. Every arc builder in the
+/// realization (primitive bends, endpoint-correction jogs, meanders) samples
+/// through this so a bend looks the same wherever it comes from.
+pub fn arc_samples_per_90_deg(radius_um: f64) -> usize {
+    if !radius_um.is_finite() || radius_um <= MAX_ARC_SAGITTA_UM {
+        return DEFAULT_BEND_SAMPLES_PER_90_DEG;
+    }
+    let max_step_rad = 2.0 * (1.0 - MAX_ARC_SAGITTA_UM / radius_um).acos();
+    if !max_step_rad.is_finite() || max_step_rad <= 0.0 {
+        return DEFAULT_BEND_SAMPLES_PER_90_DEG;
+    }
+    let needed = (std::f64::consts::FRAC_PI_2 / max_step_rad).ceil() as usize;
+    needed.max(DEFAULT_BEND_SAMPLES_PER_90_DEG)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AxisAlignedRunKind {
@@ -609,7 +634,7 @@ fn route_to_primitive_centerline_with_runs(
                     next_state.angle,
                     radius_um,
                     angle_delta,
-                    DEFAULT_BEND_SAMPLES_PER_90_DEG,
+                    arc_samples_per_90_deg(radius_um),
                 )?;
             }
         }
@@ -1525,7 +1550,7 @@ fn append_bump_bend(
         end_angle,
         radius_um,
         signed_angle_delta(start_angle, end_angle)?,
-        DEFAULT_BEND_SAMPLES_PER_90_DEG,
+        arc_samples_per_90_deg(radius_um),
     )
 }
 
@@ -3841,7 +3866,10 @@ fn append_arc_samples(
             a1 -= std::f64::consts::TAU;
         }
     }
-    let steps = 4usize;
+    let arc_span = (a1 - a0).abs();
+    let steps = ((arc_span / std::f64::consts::FRAC_PI_2) * arc_samples_per_90_deg(radius) as f64)
+        .ceil()
+        .max(2.0) as usize;
     for i in 1..steps {
         let t = i as f64 / steps as f64;
         let a = a0 + (a1 - a0) * t;
@@ -4209,6 +4237,29 @@ mod tests {
     }
 
     #[test]
+    fn arc_samples_keep_every_chord_within_the_sagitta_tolerance() {
+        for radius_um in [0.5, 2.0, 5.0, 10.0, 25.0, 100.0] {
+            let samples = arc_samples_per_90_deg(radius_um);
+            assert!(samples >= DEFAULT_BEND_SAMPLES_PER_90_DEG);
+            let step = std::f64::consts::FRAC_PI_2 / samples as f64;
+            let sagitta = radius_um * (1.0 - (step / 2.0).cos());
+            assert!(
+                sagitta <= MAX_ARC_SAGITTA_UM + 1.0e-12,
+                "radius {radius_um}: sagitta {sagitta} with {samples} samples"
+            );
+            // Not absurdly dense either: one step short would already violate
+            // the tolerance (or we are at the floor).
+            if samples > DEFAULT_BEND_SAMPLES_PER_90_DEG {
+                let coarser = std::f64::consts::FRAC_PI_2 / (samples - 1) as f64;
+                assert!(radius_um * (1.0 - (coarser / 2.0).cos()) > MAX_ARC_SAGITTA_UM);
+            }
+        }
+        // A 10 um bend used to be 4 chords in the endpoint-correction jog and
+        // 8 in a meander; it is 56 everywhere now (gdsfactory: ~62).
+        assert_eq!(arc_samples_per_90_deg(10.0), 56);
+    }
+
+    #[test]
     fn primitive_replay_45_and_right_bends_are_sampled_and_oriented() {
         let lib = test_lib();
         let left_45_pid = lib.get_primitives_for_angle(0)[2].id;
@@ -4568,10 +4619,9 @@ mod tests {
         assert_eq!(centerline.first().copied(), Some((0.0, 0.0)));
         assert_eq!(centerline.last().copied(), Some((forward_len, offset_len)));
 
-        let sampled_quarter_arc_len = DEFAULT_BEND_SAMPLES_PER_90_DEG as f64
-            * 2.0
-            * radius_um
-            * (std::f64::consts::PI / (4.0 * DEFAULT_BEND_SAMPLES_PER_90_DEG as f64)).sin();
+        let samples = arc_samples_per_90_deg(radius_um) as f64;
+        let sampled_quarter_arc_len =
+            samples * 2.0 * radius_um * (std::f64::consts::PI / (4.0 * samples)).sin();
         let expected_len =
             (forward_len - 4.0 * radius_um) + offset_len + 4.0 * sampled_quarter_arc_len;
         assert!((centerline_length_um(&centerline).unwrap() - expected_len).abs() < 1.0e-6);
