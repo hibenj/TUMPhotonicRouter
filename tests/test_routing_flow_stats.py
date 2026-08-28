@@ -1,4 +1,6 @@
+import math
 import json
+from dataclasses import replace
 
 from routing_flow import (
     RipupRerouteConfig,
@@ -16,6 +18,8 @@ from routing_flow import (
 )
 import inspect
 import benchmark_metadata
+from translation.path_length_requirements import analyze_path_length_matching
+from translation.route_rust_types import RoutedNetRecord
 import pytest
 from pathlib import Path
 from photonic_router.routing_layers import get_routing_obstacle_layers
@@ -338,7 +342,9 @@ def test_heater_s_mod_90_degree_plm_regression(waveguide_clearance_um):
     assert route_summary.route_count == 81
     assert route_summary.route_failures == 0
     assert route_summary.repair_count == 0
-    assert route_summary.simple_route_count >= 60
+    # At 3 um clearance the sibling-port corridors turn many of the simple
+    # Z routes into A* routes (48 of 81); at 0 um most stay simple.
+    assert route_summary.simple_route_count >= (60 if waveguide_clearance_um == 0.0 else 40)
     assert route_summary.full_grid_fallbacks == 0
 
     analysis = result.path_length_analysis_info
@@ -412,6 +418,57 @@ def test_heater_s_mod_sibling_ports_route_side_by_side_inside_the_clearance(cros
     assert route_summary.route_count == 2
     assert route_summary.route_failures == 0
     assert route_summary.repair_count == 0
+
+
+def test_heater_s_mod_realized_meanders_leave_no_residual_mismatch(monkeypatch):
+    """The meander a group receives must physically add what the matcher booked.
+
+    Re-runs the path-length analysis on the *realized* edge lengths (routed
+    centerline plus the planned meander centerline's extra) and expects no
+    edge to still be missing length. Guards the fill-box length model: until
+    2026-08-28 it booked (amplitude - r) too little per meander, so every
+    matched group was 58-240 um off in the GDS while the report said 0."""
+    import translation.route_rust as route_rust_module
+
+    captured: dict[str, list[RoutedNetRecord]] = {}
+    original = route_rust_module.realize_routed_net_records
+
+    def capture_records(*args: object, **kwargs: object) -> object:
+        for value in (*args, *kwargs.values()):
+            if (
+                isinstance(value, (list, tuple))
+                and value
+                and hasattr(value[0], "meander_auto_plan")
+            ):
+                captured["records"] = list(value)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(route_rust_module, "realize_routed_net_records", capture_records)
+    schematic, _unrouted, _result = _route_heater_s_mod_for_regression(0.0)
+    records = captured["records"]
+    assert any(record.meander_auto_plan for record in records)
+
+    def polyline_length(points: list[tuple[float, float]]) -> float:
+        return sum(math.dist(points[i], points[i + 1]) for i in range(len(points) - 1))
+
+    realized: list[RoutedNetRecord] = []
+    for record in records:
+        extra = 0.0
+        plan = record.meander_auto_plan
+        if plan:
+            meander = [(float(p[0]), float(p[1])) for p in plan["selected_meander_centerline"]]
+            extra = polyline_length(meander) - math.dist(meander[0], meander[-1])
+        realized.append(replace(record, total_length_um=record.total_length_um + extra))
+
+    metadata = benchmark_metadata.load_benchmark_metadata("heater_s_mod", schematic=schematic)
+    analysis, _edges = analyze_path_length_matching(
+        schematic,
+        routed_net_records=realized,
+        node_types=metadata.get("node_types"),
+        internal_delays_um=metadata.get("internal_delays_um"),
+    )
+    worst = max(float(v) for v in analysis.edge_missing_lengths_um.values())
+    assert worst < 0.1, f"realized lengths still leave {worst:.3f} um of mismatch"
 
 
 def test_heater_s_mod_stable_configuration_routes_matches_and_wires():

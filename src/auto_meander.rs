@@ -1837,7 +1837,10 @@ mod tests {
             .expect("second depth should satisfy the analytic footprint");
 
         assert_eq!(plan.profile.depth_count, 2);
-        assert!((plan.selected_box_depth_um - 1.1433629385640827).abs() < 1.0e-9);
+        // One U-turn (two legs) at r = 0.2 for 1.0 um of extra length:
+        // A = requested / legs - r * (pi - 4).
+        let expected_depth = 1.0 / 2.0 + 0.2 * (4.0 - std::f64::consts::PI);
+        assert!((plan.selected_box_depth_um - expected_depth).abs() < 1.0e-9);
         assert!(!plan.plan.centerline.is_empty());
     }
 

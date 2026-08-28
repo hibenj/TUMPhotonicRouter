@@ -106,15 +106,29 @@ impl MeanderTurnModel {
         bend_radius_um * (4.0 * self.visual_bumps as f64 + 1.0)
     }
 
+    /// Number of vertical legs: one per U-turn plus the entry leg.
+    pub fn legs(self) -> usize {
+        self.u_turns + 1
+    }
+
+    /// Extra length a meander of this shape adds at amplitude 0, i.e. the
+    /// part that does not depend on the amplitude. Derived from the geometry
+    /// `plan_fill_box_multi_bump_meander` builds: an entry straight of `r`,
+    /// `quarter_turns` (= 2 * legs) quarter arcs, `legs` vertical legs of
+    /// length `A - 2r`, replacing an axis run of `insertion_width_um` =
+    /// `r * (2 * u_turns + 3)`:
+    ///   extra(A) = r + legs * (A - 2r) + legs * pi * r - r * (2 * u_turns + 3)
+    ///            = legs * (A - 4r + pi * r)
+    /// (Until 2026-08-28 this booked `u_turns * A + ...`, one amplitude short:
+    /// every planned meander was physically `A - r` longer than the group
+    /// needed -- see
+    /// `.agent/execplans/2026-08-28-plm-geometry-arc-sampling-and-meander-length-model.md`.)
     pub fn fixed_extra_length_term_um(self, bend_radius_um: f64) -> f64 {
-        let arc_length_um =
-            bend_radius_um * (self.quarter_turns as f64) * std::f64::consts::FRAC_PI_2;
-        let replaced_axis_length_um = bend_radius_um * (4.0 * self.u_turns as f64 + 3.0);
-        arc_length_um - replaced_axis_length_um
+        self.legs() as f64 * bend_radius_um * (std::f64::consts::PI - 4.0)
     }
 
     pub fn inserted_extra_length_um(self, bend_radius_um: f64, amplitude_um: f64) -> f64 {
-        self.u_turns as f64 * amplitude_um + self.fixed_extra_length_term_um(bend_radius_um)
+        self.legs() as f64 * amplitude_um + self.fixed_extra_length_term_um(bend_radius_um)
     }
 }
 
@@ -164,8 +178,8 @@ pub fn plan_fill_box_multi_bump_footprint(
         let Some(model) = MeanderTurnModel::from_visual_bumps(visual_bumps) else {
             continue;
         };
-        let amplitude = (requested_extra_length_um - model.fixed_extra_length_term_um(r))
-            / model.u_turns as f64;
+        let amplitude =
+            (requested_extra_length_um - model.fixed_extra_length_term_um(r)) / model.legs() as f64;
         if amplitude + EPS < min_height || amplitude - EPS > max_meander_height_um {
             continue;
         }
@@ -817,6 +831,65 @@ mod analytic_tests {
         let plan = plan_analytic_meander(seg, b, &cfg).unwrap();
         assert!(plan.bumps >= 1);
         assert!((plan.inserted_extra_length_um - cfg.requested_extra_length_um).abs() <= 1.0e-6);
+        assert_centerline_adds_the_booked_extra(&plan, &cfg);
+    }
+
+    /// The booked extra length must be what the planned centerline physically
+    /// adds over the straight run it replaces (its endpoints lie on that run).
+    fn assert_centerline_adds_the_booked_extra(
+        plan: &AnalyticMeanderPlan,
+        cfg: &AnalyticMeanderConfig,
+    ) {
+        let pts = &plan.centerline;
+        let polyline: f64 = pts
+            .windows(2)
+            .map(|w| ((w[1].x_um - w[0].x_um).powi(2) + (w[1].y_um - w[0].y_um).powi(2)).sqrt())
+            .sum();
+        let first = pts.first().unwrap();
+        let last = pts.last().unwrap();
+        let replaced = ((last.x_um - first.x_um).powi(2) + (last.y_um - first.y_um).powi(2)).sqrt();
+        let realized_extra = polyline - replaced;
+        // Sampled arcs are marginally shorter than true arcs (1 nm sagitta).
+        let chord_slack = 1.0e-3 * cfg.requested_extra_length_um + 1.0e-3;
+        assert!(
+            (realized_extra - plan.inserted_extra_length_um).abs() <= chord_slack,
+            "realized extra {realized_extra} vs booked {} (requested {})",
+            plan.inserted_extra_length_um,
+            cfg.requested_extra_length_um
+        );
+    }
+
+    #[test]
+    fn fill_box_multi_bump_centerline_length_matches_for_many_bump_counts() {
+        for (requested, height) in [(8.0, 8.0), (20.0, 12.0), (80.0, 12.0), (300.0, 30.0)] {
+            let seg = StraightSegment {
+                start: PhysicalPoint {
+                    x_um: 0.0,
+                    y_um: 0.0,
+                },
+                end: PhysicalPoint {
+                    x_um: 400.0,
+                    y_um: 0.0,
+                },
+            };
+            let b = MeanderBox {
+                min_x_um: 0.0,
+                max_x_um: 400.0,
+                min_y_um: -1.0,
+                max_y_um: 40.0,
+            };
+            let cfg = AnalyticMeanderConfig {
+                requested_extra_length_um: requested,
+                min_bend_radius_um: 2.0,
+                min_straight_um: 1.0,
+                max_bumps: 60,
+                max_meander_height_um: height,
+                side: MeanderSide::Left,
+                mode: MeanderPlanningMode::FillBoxMultiBump,
+            };
+            let plan = plan_analytic_meander(seg, b, &cfg).unwrap();
+            assert_centerline_adds_the_booked_extra(&plan, &cfg);
+        }
     }
 
     #[test]

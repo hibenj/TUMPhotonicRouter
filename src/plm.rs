@@ -2421,7 +2421,9 @@ mod tests {
             vec![registered_geometry(vec![(1.5, 10.5), (15.5, 10.5)], 0)],
         );
 
-        let result = call_final_requests_with_split_config(&fixture, &[0], &[2.0], 0.5, 4)
+        // 4 um in one meander needs A = 4/2 + r(4 - pi) = 2.17 um of depth,
+        // more than the 1.6 um box; two 2 um chunks need 1.17 um each.
+        let result = call_final_requests_with_split_config(&fixture, &[0], &[4.0], 0.5, 4)
             .expect("split fallback should plan two insertable chunks");
 
         assert_eq!(result.planning_mode, "rust_registered_split_route_runs");

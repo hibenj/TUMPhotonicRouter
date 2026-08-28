@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from photonic_router.path_length_graph import (
     MissingLengthRequirement,
     NodeIncomingEdgeTiming,
@@ -83,7 +85,9 @@ def minimum_four_bend_extra_length_um(
     """
     bend_radius_um = max(0.0, float(grid_size_um) * float(bend_radius_cells))
     min_straight = max(0.0, float(min_straight_um))
-    return max(0.0, bend_radius_um * (2.0 * 3.141592653589793 - 5.0) + min_straight)
+    # One U-turn at the minimum amplitude (2r + min_straight), from the
+    # fill-box model `extra = legs * (A - 4r + pi*r)` with legs = 2:
+    return max(0.0, 2.0 * (min_straight + (math.pi - 2.0) * bend_radius_um))
 
 
 def compute_group_lifted_requirements(

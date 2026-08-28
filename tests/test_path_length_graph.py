@@ -2497,7 +2497,10 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
         route_obj=route_obj,
         total_length_um=73.0,
     )
-    req = MissingLengthRequirement(edge_key=edge, missing_length_um=60.0)
+    # 100 um at r = 7 needs three U-turns (one would need 56 um of height,
+    # the box allows 40), whose 63 um insertion width does not fit the
+    # 73 um run once 7 um is inset at both ends -- until the inset relaxes.
+    req = MissingLengthRequirement(edge_key=edge, missing_length_um=100.0)
 
     _fixed_updated, fixed_report = analyze_meander_insertion_for_requirements(
         [record],
@@ -2540,7 +2543,7 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
         search_config["endpoint_insets_um"],
     )
     assert entry["status"] == "planned"
-    assert entry["inserted_extra_length_um"] == pytest.approx(60.0)
+    assert entry["inserted_extra_length_um"] == pytest.approx(100.0)
     assert cast(float, entry["endpoint_inset_um"]) < 7.0
     assert endpoint_inset_candidates[:3] == [7.0, 5.25, 3.5]
     assert search_config["max_height_um"] == pytest.approx(40.0)
@@ -2747,7 +2750,9 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
     assert entry["inserted_extra_length_um"] == pytest.approx(1459.0)
     assert entry["unmatched_length_um"] == pytest.approx(0.0)
     assert int(cast(int, entry["max_bumps"])) == 259
-    assert int(cast(int, entry["bumps"])) == 81
+    # 1459 um at r = 2 within 20 um of height: legs = ceil(1459 / (20 - 2r(4 - pi)))
+    # = 80, i.e. 79 U-turns.
+    assert int(cast(int, entry["bumps"])) == 79
     assert entry.get("effective_bend_radius_um") is not None
     assert float(cast(float, entry["planning_elapsed_s"])) >= 0.0
     assert float(cast(float, report["planner_elapsed_s"])) >= 0.0
@@ -2944,7 +2949,8 @@ def test_minimum_insertable_uses_fill_box_meander_lower_bound():
         bend_radius_cells=8,
     )
 
-    assert minimum == pytest.approx(8.0 * (2.0 * 3.141592653589793 - 5.0) + 1.0)
+    # One U-turn at the minimum amplitude 2r + min_straight, two legs.
+    assert minimum == pytest.approx(2.0 * (1.0 + (3.141592653589793 - 2.0) * 8.0))
     assert minimum < 46.75
 
 
