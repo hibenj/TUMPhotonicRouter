@@ -18,7 +18,21 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-26 (evening)
+- Date: 2026-08-28
+- **Latest (2026-08-28)**: `.agent/execplans/2026-08-28-port-adjacent-clearance-waiver.md`
+  -- by owner direction the waveguide clearance is now waived by default in
+  a run-in corridor at every port (other nets' halos only, never cores), so
+  nets serving ports closer than the clearance route side by side.
+  `heater_s_mod` 90-degree / 3 um routes 81/81 (`error_count=0`) in both
+  crossings-off and lidar-pure modes; full ladder clean (see that plan's
+  Milestone 3). Uncommitted in the working tree. Also 2026-08-28: the
+  repository owner retired the Codex flow -- Claude implements directly
+  (`.agent/ORCHESTRATOR.md`, `.agent/CLAUDE_CODEX_FLOW.md`).
+  **Open, owner decision needed**: `test_heater_s_mod_90_degree_plm_regression[3.0]`
+  now fails in path-length matching, not routing (see Current Findings
+  item 0). The uncommitted `PHOTONIC_ROUTER_LAYER_ORDER=span` experiment in
+  `translation/route_rust.py` predates this work and is unrelated to it.
+- Previous snapshot (2026-08-26, evening)
 - Branch: `crossings/verification-foundation`
 - Current HEAD: the `feat: pre-place topology-derived crossing grids`
   commit on top of `e6432b2`. Three things happened on 2026-08-26, each
@@ -65,7 +79,8 @@ now lives only in the referenced ExecPlan and `git log`.)
   `test_rust_routed_layout_uses_waveguide_geometry`,
   `test_toy_ten_um_bend_radius_does_not_backtrack_on_one_cell_short_s_bend`,
   `test_routing_flow_populates_stats`,
-  `test_heater_s_mod_90_degree_plm_regression[3.0]`, were re-run at
+  `test_heater_s_mod_90_degree_plm_regression[3.0]` (2026-08-28: routing
+  fixed, now fails in PLM instead, see Current Findings item 0), were re-run at
   `e6432b2` in a throwaway worktree and fail there too).
 - **Full benchmark ladder re-run 2026-08-25, after the self-intersection
   fix, confirmed clean end-to-end**: `benes_4x4` (plain defaults) passes;
@@ -412,6 +427,24 @@ slices by default once a change is well-specified.
 Two of the original three remain parked, pending a real design decision or
 restructuring; the third (below, in Resolved Findings) is fixed:
 
+0. **`heater_s_mod` 90-degree / 3 um: path-length matching fails after
+   routing was fixed (2026-08-28).** The routing half of this finding is
+   resolved (see Resolved Findings and
+   `.agent/execplans/2026-08-28-port-adjacent-clearance-waiver.md`). What
+   remains: `test_heater_s_mod_90_degree_plm_regression[3.0]` fails with
+   `Path-length matching failed: ... heater_post_1_to_mmi_extra_0_lower_in
+   requested=164.153 um, inserted=0 um, status=no_candidate` (`candidate_runs=1,
+   rejected_box_blocked=4, rejected_planning_failed=11`, first rejection
+   `projected_strip_blocked_or_too_short` on the Left, 589 blocked cells in
+   the strip). At 0 um the same edge plans 7 bumps on the right side. With 3
+   um clearance the PLM's registered-route keepout is 2 cells and its
+   candidate boxes need more room; whether this is a real capacity limit of
+   the placement or a PLM defect is not investigated. Repro:
+   `.venv/bin/python routing_flow.py heater_s_mod --allow-45-degree-turns false
+   --bend-radius-um 10 --waveguide-clearance-um 3.0 --crossings false
+   --path-length-matching true --path-length-match-outputs true
+   --include-heater-obstacles true` (~35 s). Owner to decide whether to
+   pursue.
 1. **`multiportmmi_8x8` dense-port lateral-width allocation** (only
    manifests with `--ripup-reroute false`; default repair papers over it):
    `_filter_dense_port_opening` splits a dense port group's available rows
@@ -475,6 +508,19 @@ restructuring; the third (below, in Resolved Findings) is fixed:
    spending ~8-minute runs on parameter search.
 
 ## Resolved Findings
+
+- **Port-adjacent clearance blocked the sibling port (found and fixed
+  2026-08-28, `.agent/execplans/2026-08-28-port-adjacent-clearance-waiver.md`).**
+  `mmi_a_0`'s inputs are 1.25 um apart; with 3 um clearance the first net's
+  keepout covered the sibling port's cell and whole approach. Fix (owner
+  direction: waiving clearance near ports is the default): the per-net
+  exempt set (`route_dynamic_clearance_exempt_cells`, `src/py_router.rs`)
+  is now a keepout-radius box plus a run-in corridor along the port axis
+  following the net's own opened cells; `opened_cells_without_dynamic_overlap`
+  keeps exempt halo-only cells; lidar-pure treats a halo-only probe conflict
+  as a spacing problem (skips the collision-crossing search, takes the
+  ordinary A*) instead of a collision needing repair -- a no-op at clearance
+  0 by construction. New trace `PHOTONIC_ROUTER_TRACE_PLAIN_ROUTE_NET`.
 
 1. **A routed net's own path could cross itself, undetected -- fixed
    2026-08-25**, not part of any ExecPlan (found via the repository
@@ -766,6 +812,13 @@ yet decided) is the other live thread.
 and `.agent/execplans/2026-08-25-negotiated-repair-engine.md` are both
 complete (5/6 and 8/8 milestones respectively) -- see Completed ExecPlans
 above for the full story. The real open candidates right now:
+
+0. **Port-adjacent clearance waiver: done (2026-08-28), uncommitted, one
+   open question.** Routing fixed and ladder-validated (see Resolved
+   Findings). Open: the 3 um configuration's path-length matching failure
+   (Current Findings item 0) -- owner to decide whether it is worth
+   pursuing; and whether to commit the working tree (7 files, plus the
+   unrelated pre-existing `LAYER_ORDER=span` experiment to leave out).
 
 1. **`multiportmmi_16x16` stable-baseline still fails.** See Current
    Findings above (updated today) for the exact reproduction command and

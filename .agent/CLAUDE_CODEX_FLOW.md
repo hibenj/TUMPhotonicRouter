@@ -1,5 +1,9 @@
 # Claude + Codex Flow
 
+> **Retired 2026-08-28** by repository-owner direction: Codex is no longer
+> used for implementation. Claude implements directly and may use Claude
+> subagents for coding and verification lanes. Kept for history.
+
 This document defines how this repository's existing agent workflow
 (`.agent/WORKFLOW.md`, `.agent/ORCHESTRATOR.md`, `.agent/roles/`,
 `.agent/PLANS.md`) maps onto a session where a Claude agent (in Claude Code)

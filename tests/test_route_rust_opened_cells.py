@@ -428,7 +428,7 @@ def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
     assert route_opened_static_count == 0
 
 
-def test_rust_dynamic_clearance_exempt_batch_uses_endpoint_contact_cells_only():
+def test_rust_dynamic_clearance_exempt_batch_covers_endpoint_boxes_and_run_in_corridors():
     rust_backend = route_rust._load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend is not available")
@@ -446,30 +446,33 @@ def test_rust_dynamic_clearance_exempt_batch_uses_endpoint_contact_cells_only():
     )
     source = rust_backend.State(10, 10, 0)
     target = rust_backend.State(24, 12, 4)
+    # The net's own port openings: 3 cells ahead of the source, 4 cells
+    # behind the target (reached heading -x, so at larger x).
+    opened_cells = [(x, 10) for x in range(10, 13)] + [(x, 12) for x in range(24, 28)]
 
-    ninety_result = router.build_dynamic_clearance_exempt_cells_for_routes(
-        [(7, source, target)],
-        False,
-        2,
+    result = router.build_dynamic_clearance_exempt_cells_for_routes(
+        [(7, source, target, opened_cells)],
         1,
-    )
-    diagonal_result = router.build_dynamic_clearance_exempt_cells_for_routes(
-        [(7, source, target)],
-        True,
         2,
-        1,
     )
 
-    ninety_cells = set(ninety_result[0][1])
-    diagonal_cells = set(diagonal_result[0][1])
-    assert ninety_result[0][0] == 7
-    assert diagonal_result[0][0] == 7
-    assert (10, 10) in diagonal_cells
-    assert (24, 12) in diagonal_cells
-    assert ninety_cells == diagonal_cells
-    assert (11, 10) in diagonal_cells
-    assert (23, 12) in diagonal_cells
-    assert (12, 12) not in diagonal_cells
+    cells = set(result[0][1])
+    assert result[0][0] == 7
+    # Endpoint boxes (keepout radius 1) around both ports.
+    assert (10, 10) in cells
+    assert (24, 12) in cells
+    assert (9, 10) in cells
+    assert (23, 12) in cells
+    assert (12, 12) not in cells
+    # Source corridor: the opened run x=10..12, last step cell inflated to 13.
+    assert (12, 11) in cells
+    assert (13, 10) in cells
+    assert (14, 10) not in cells
+    # Target corridor: the opened run x=24..27, inflated to 28.
+    assert (27, 12) in cells
+    assert (28, 12) in cells
+    assert (29, 12) not in cells
+    assert (21, 12) not in cells
 
 
 def test_route_nets_rust_applies_heater_opening_without_heater_obstacle_layers(
@@ -1288,7 +1291,9 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
 
     session._apply_checked_fanout_stub_endpoint_corrections_for_net_ids([net_id])
 
-    assert endpoint_calls == [False], "only the target side is resolved (source stub is pre-stitched)"
+    assert endpoint_calls == [False], (
+        "only the target side is resolved (source stub is pre-stitched)"
+    )
     assert len(submitted) == 1
     submitted_net_id, _route, _opened, _exempt, source_port, target_port = submitted[0]
     assert submitted_net_id == net_id

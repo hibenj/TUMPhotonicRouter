@@ -258,9 +258,13 @@ work local when the next step is tightly coupled, urgent, or hard to specify.
 If real subagents are not available, the orchestrator should run the same roles
 sequentially in one session using the role briefs in `.agent/roles/`.
 
-When the orchestrator is a Claude agent (Claude Code) working alongside Codex
-CLI, use `.agent/CLAUDE_CODEX_FLOW.md` instead of spawning further Claude
-subagents for the Implementation Engineer role: Claude keeps the Orchestrator,
+**Superseded 2026-08-28 by repository-owner direction: Codex is no longer
+used. The Claude agent implements directly and may spawn Claude subagents
+for bounded coding and verification lanes; `.agent/CLAUDE_CODEX_FLOW.md` is
+kept for history only.** The previous rule was: when the orchestrator is a
+Claude agent (Claude Code) working alongside Codex CLI, use
+`.agent/CLAUDE_CODEX_FLOW.md` instead of spawning further Claude subagents
+for the Implementation Engineer role: Claude keeps the Orchestrator,
 Planner, Explorer, Reviewer, and QA/Harness roles, and delegates only the
 scoped coding step to Codex via `.agent/scripts/codex_task.sh`. The Subagent
 Prompt Contract below still applies; the script attaches it automatically.

@@ -1270,28 +1270,57 @@ fn route_port_footprint_cells(
     cells
 }
 
+/// Cells where *other* nets' clearance halos are ignored for one net: a box
+/// of the keepout radius around each endpoint plus a run-in corridor along
+/// the port axis (ahead of the source, behind the target -- a target state's
+/// angle is the arrival heading). Ports of one component can sit closer
+/// together than the configured clearance (a 2x2 MMI's inputs are 1.25 um
+/// apart), so without this the first committed net's halo would cover the
+/// sibling port and its whole approach. How far two such nets must run side
+/// by side is decided by whichever of them routes first, so the corridor is
+/// not a fixed length: it runs from the port along its axis for as long as
+/// the net's own `opened_cells` continue (the router's own notion of this
+/// port's approach region), and never shorter than `min_run_in_length_cells`
+/// (the port lane). Only the halo is waived: core overlap stays illegal in
+/// every consumer of this set.
 fn route_dynamic_clearance_exempt_cells(
+    grid: &StaticGridSpec,
+    opened_cells: &FxHashSet<CellKey>,
     source: PyState,
     target: PyState,
-    allow_45_degree_turns: bool,
-    bend_radius_cells: i32,
     commit_radius_cells: i32,
-    width: i32,
-    height: i32,
+    min_run_in_length_cells: i32,
 ) -> FxHashSet<CellKey> {
-    let _ = (allow_45_degree_turns, bend_radius_cells);
+    let radius = commit_radius_cells.max(0);
+    let min_run_in = min_run_in_length_cells.max(0);
     let mut cells = FxHashSet::default();
-    let radius = commit_radius_cells.clamp(0, 1);
-    for anchor in [source, target] {
+    for (anchor, toward_route) in [(source, 1), (target, -1)] {
         for dx in -radius..=radius {
             for dy in -radius..=radius {
                 let x = anchor.x + dx;
                 let y = anchor.y + dy;
-                if x >= 0 && x < width && y >= 0 && y < height {
+                if route_in_bounds(x, y, grid) {
                     cells.insert(pack_xy(x, y));
                 }
             }
         }
+        let (sx, sy) = route_angle_to_step(anchor.angle);
+        let (sx, sy) = (sx * toward_route, sy * toward_route);
+        let mut run_in = 0;
+        loop {
+            let x = anchor.x + sx * run_in;
+            let y = anchor.y + sy * run_in;
+            if !route_in_bounds(x, y, grid) {
+                break;
+            }
+            if run_in >= min_run_in && !opened_cells.contains(&pack_xy(x, y)) {
+                break;
+            }
+            run_in += 1;
+        }
+        cells.extend(route_collect_inflated_step_cells(
+            grid, anchor.x, anchor.y, sx, sy, run_in, radius,
+        ));
     }
     cells
 }
@@ -4509,11 +4538,20 @@ impl PyPhotonicRouter {
         )
     }
 
+    /// The opened cells a search may use: the port openings minus every
+    /// cell another net already occupies -- except cells in this net's
+    /// clearance-exempt set that only carry another net's clearance halo
+    /// (not its core). Those stay open: the exemption exists so that two
+    /// nets serving ports closer together than the clearance can approach
+    /// side by side, and an approach cell is usually static underneath
+    /// (port-lane reservation), so dropping it from the opened set here would
+    /// re-block it before the search's own exemption check ever runs.
     fn opened_cells_without_dynamic_overlap(
         &self,
         opened_ref: &FxHashSet<CellKey>,
         source: State,
         target: State,
+        dynamic_clearance_exempt_keys: Option<&FxHashSet<CellKey>>,
     ) -> Option<FxHashSet<CellKey>> {
         let source_key = pack_xy(source.x, source.y);
         let target_key = pack_xy(target.x, target.y);
@@ -4523,15 +4561,30 @@ impl PyPhotonicRouter {
             .filter(|&key| {
                 key == source_key || key == target_key || {
                     let (x, y) = unpack_xy(key);
-                    !self.obstacle_map.is_dynamic_blocked(x, y)
-                        && self
-                            .obstacle_map
-                            .dynamic_owners_for_cells(&[(x, y)])
-                            .is_empty()
+                    let exempt_halo_only = dynamic_clearance_exempt_keys
+                        .is_some_and(|keys| keys.contains(&key))
+                        && !self.obstacle_map.is_dynamic_core_blocked(x, y);
+                    exempt_halo_only
+                        || (!self.obstacle_map.is_dynamic_blocked(x, y)
+                            && self
+                                .obstacle_map
+                                .dynamic_owners_for_cells(&[(x, y)])
+                                .is_empty())
                 }
             })
             .collect();
         (filtered.len() != opened_ref.len()).then_some(filtered)
+    }
+
+    /// `PHOTONIC_ROUTER_TRACE_PLAIN_ROUTE_NET=<net_id>` prints, to stderr,
+    /// the outcome of each stage of `route_single_net_and_commit_native` for
+    /// that net (simple probe, its commit, the plain search, the deferred
+    /// crossing attempt). The stages fall through silently on failure, so
+    /// without this the only visible error is the last fallback's.
+    fn trace_plain_route_net() -> Option<u64> {
+        std::env::var("PHOTONIC_ROUTER_TRACE_PLAIN_ROUTE_NET")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
     }
 
     fn pending_straight_ripup_threshold() -> usize {
@@ -5908,8 +5961,12 @@ impl PyPhotonicRouter {
         }
         let source_state = State::new(source.x, source.y, source.angle);
         let target_state = State::new(target.x, target.y, target.angle);
-        let opened_search_owned =
-            self.opened_cells_without_dynamic_overlap(opened_ref, source_state, target_state);
+        let opened_search_owned = self.opened_cells_without_dynamic_overlap(
+            opened_ref,
+            source_state,
+            target_state,
+            dynamic_clearance_exempt_keys,
+        );
         let opened_search_ref = opened_search_owned.as_ref().unwrap_or(opened_ref);
         let expected_crossing_partner_ids =
             if self.crossing_context.config().allow_only_expected_pairs {
@@ -5972,6 +6029,17 @@ impl PyPhotonicRouter {
         if require_crossing_compliant_route {
             return Err("No crossing-compliant route found".to_string());
         }
+        // Set when the simple probe found a route whose commit was rejected
+        // only by other nets' clearance halos, never by another net's core
+        // (see the probe commit below). Such a conflict is a spacing problem,
+        // not a collision that a crossing could resolve, so lidar-pure must
+        // not stop at its collision-crossing search: the ordinary plain A*
+        // further down, which honors this net's clearance exemptions, gets
+        // its turn -- and the unwindowed lidar-pure collision-crossing search
+        // is skipped, since there is nothing to cross. With clearance 0 the
+        // halo *is* the core, so this can never be set there and the
+        // crossing benchmarks are unaffected.
+        let mut probe_halo_only_conflict = false;
         {
             let simple_start = collect_timing.then(Instant::now);
             let simple_result = if block_radius_cells > 0 {
@@ -5995,6 +6063,13 @@ impl PyPhotonicRouter {
                     &cfg,
                 )
             };
+            let trace_plain = Self::trace_plain_route_net() == Some(net_id);
+            if trace_plain {
+                eprintln!(
+                    "trace_plain_route net={net_id} stage=simple_probe found={}",
+                    simple_result.is_some()
+                );
+            }
             if let Some(mut result) = simple_result {
                 if let Some(simple_start) = simple_start.as_ref() {
                     simple_route_time_us += simple_start.elapsed().as_micros();
@@ -6033,6 +6108,23 @@ impl PyPhotonicRouter {
                     );
                 if let Some(commit_start) = commit_start.as_ref() {
                     commit_time_us += commit_start.elapsed().as_micros();
+                }
+                if !committed {
+                    probe_halo_only_conflict = !core_cells
+                        .iter()
+                        .any(|&(x, y)| self.obstacle_map.is_dynamic_core_blocked(x, y));
+                }
+                if trace_plain {
+                    let offending = core_cells.iter().copied().find(|&(x, y)| {
+                        self.obstacle_map.is_dynamic_blocked(x, y)
+                            && !clearance_exempt_cells.is_some_and(|cells| cells.contains(&(x, y)))
+                    });
+                    eprintln!(
+                        "trace_plain_route net={net_id} stage=simple_commit committed={committed} \
+                         core_cells={} first_non_exempt_dynamic_core_cell={offending:?} \
+                         halo_only_conflict={probe_halo_only_conflict}",
+                        core_cells.len()
+                    );
                 }
                 if committed {
                     self.remove_crossing_events_for_net(net_id);
@@ -6084,7 +6176,7 @@ impl PyPhotonicRouter {
         // above and `CollisionCrossingTryOrder`'s own doc comment): the plain
         // attempt above has now failed, so it is time to pay for the full,
         // unwindowed lidar-pure collision-crossing search.
-        if lidar_pure_crossing && deferred_crossing_attempt.is_none() {
+        if lidar_pure_crossing && deferred_crossing_attempt.is_none() && !probe_halo_only_conflict {
             let owner_lookup_partner_ids = self.lidar_pure_owner_lookup_partner_set(net_id);
             if !owner_lookup_partner_ids.is_empty() {
                 lidar_pure_crossing_attempted = true;
@@ -6195,8 +6287,13 @@ impl PyPhotonicRouter {
                 }
             }
         }
-        if lidar_pure_crossing_attempted {
+        if lidar_pure_crossing_attempted && !probe_halo_only_conflict {
             return Err("No legal LiDAR crossing route found".to_string());
+        }
+        if Self::trace_plain_route_net() == Some(net_id) {
+            eprintln!(
+                "trace_plain_route net={net_id} stage=ordinary_search lidar_pure_attempted={lidar_pure_crossing_attempted} halo_only_conflict={probe_halo_only_conflict}"
+            );
         }
         let search_cfg = if block_radius_cells > 0 {
             let mut search_cfg = self.astar_config(None, Some(false), None)?;
@@ -6437,8 +6534,12 @@ impl PyPhotonicRouter {
             .map_or(0, |start| start.elapsed().as_micros());
         let source_state = State::new(source.x, source.y, source.angle);
         let target_state = State::new(target.x, target.y, target.angle);
-        let opened_search_owned =
-            self.opened_cells_without_dynamic_overlap(opened_ref, source_state, target_state);
+        let opened_search_owned = self.opened_cells_without_dynamic_overlap(
+            opened_ref,
+            source_state,
+            target_state,
+            dynamic_clearance_exempt_keys,
+        );
         let opened_search_ref = opened_search_owned.as_ref().unwrap_or(opened_ref);
         let expected_crossing_partner_ids =
             if self.crossing_context.config().allow_only_expected_pairs {
@@ -7403,12 +7504,13 @@ impl PyPhotonicRouter {
             // Without a remembered geometry for the owner the only available
             // judgement is the grid-level one, at the granularity it was always
             // made: a cell-center hit blocks, a sampled-only cell does not.
-            let collides = owners.iter().any(|owner| {
-                match self.committed_realized_center_routes.get(owner) {
-                    Some(other) => polylines_closer_than(candidate, other, width_um, region),
-                    None => candidate_cells.is_center_cell(cell),
-                }
-            });
+            let collides =
+                owners.iter().any(
+                    |owner| match self.committed_realized_center_routes.get(owner) {
+                        Some(other) => polylines_closer_than(candidate, other, width_um, region),
+                        None => candidate_cells.is_center_cell(cell),
+                    },
+                );
             if collides {
                 result.blockers.push(cell);
             } else {
@@ -7497,7 +7599,8 @@ impl PyPhotonicRouter {
                     )
                     .blockers;
                 if trace_net {
-                    let owners = sorted_other_owners_for_cells(&self.obstacle_map, &blockers, net_id);
+                    let owners =
+                        sorted_other_owners_for_cells(&self.obstacle_map, &blockers, net_id);
                     eprintln!(
                         "endpoint_correction_trace net={net_id} candidate_points={} core_cells={} dynamic_blockers={} owners={owners:?} blocker_bbox={} candidate_bbox=({:.3},{:.3})-({:.3},{:.3})",
                         candidate.len(),
@@ -9854,6 +9957,7 @@ impl PyPhotonicRouter {
                 &victim_job.opened_cell_keys,
                 victim_source_state,
                 victim_target_state,
+                Some(&victim_job.clearance_exempt_cell_keys),
             );
             let opened_search_ref = opened_search_owned
                 .as_ref()
@@ -10094,6 +10198,7 @@ impl PyPhotonicRouter {
                 &victim_job.opened_cell_keys,
                 victim_source_state,
                 victim_target_state,
+                Some(&victim_job.clearance_exempt_cell_keys),
             );
             let opened_search_ref = opened_search_owned
                 .as_ref()
@@ -11028,6 +11133,7 @@ impl PyPhotonicRouter {
             &job.opened_cell_keys,
             source_state,
             target_state,
+            Some(&job.clearance_exempt_cell_keys),
         );
         let opened_search_ref = opened_search_owned
             .as_ref()
@@ -11978,26 +12084,24 @@ impl PyPhotonicRouter {
             .collect()
     }
 
-    #[pyo3(signature=(jobs,allow_45_degree_turns,bend_radius_cells,commit_radius_cells))]
+    #[pyo3(signature=(jobs,commit_radius_cells,min_run_in_length_cells))]
     fn build_dynamic_clearance_exempt_cells_for_routes(
         &self,
-        jobs: Vec<(u64, PyState, PyState)>,
-        allow_45_degree_turns: bool,
-        bend_radius_cells: i32,
+        jobs: Vec<(u64, PyState, PyState, Vec<(i32, i32)>)>,
         commit_radius_cells: i32,
+        min_run_in_length_cells: i32,
     ) -> Vec<(u64, Vec<(i32, i32)>)> {
-        let width = self.grid.width as i32;
-        let height = self.grid.height as i32;
+        let grid = static_grid_from_py_grid(&self.grid);
         jobs.into_iter()
-            .map(|(net_id, source, target)| {
+            .map(|(net_id, source, target, opened_cells)| {
+                let opened_cells = pack_cells(&opened_cells);
                 let cells = route_dynamic_clearance_exempt_cells(
+                    &grid,
+                    &opened_cells,
                     source,
                     target,
-                    allow_45_degree_turns,
-                    bend_radius_cells,
                     commit_radius_cells,
-                    width,
-                    height,
+                    min_run_in_length_cells,
                 );
                 (net_id, sorted_cells(cells))
             })
@@ -12457,7 +12561,8 @@ impl PyPhotonicRouter {
 
             let max_rounds = max_rounds.max(1);
             let max_victims = max_victims_per_failure.max(1);
-            let mut repair = self.prepare_repair_attempt(&mut batch, &probe, max_rounds, max_victims);
+            let mut repair =
+                self.prepare_repair_attempt(&mut batch, &probe, max_rounds, max_victims);
 
             let prefer_orthogonal_repair = probe.crossing_repair_enabled
                 && !probe.probe_realized_crossing_violations.is_empty()
@@ -12513,7 +12618,11 @@ impl PyPhotonicRouter {
                         let lidar_pure_crossing_repair = probe.crossing_repair_enabled
                             && self.use_collision_crossing_routing
                             && !self.crossing_context.config().allow_only_expected_pairs;
-                        self.ripup_repair_set_victims(&mut batch, &ripup_ids, collect_native_timing);
+                        self.ripup_repair_set_victims(
+                            &mut batch,
+                            &ripup_ids,
+                            collect_native_timing,
+                        );
 
                         let temporary_probe_reservation_added =
                             if !temporary_probe_reservation.is_empty() {
@@ -12964,11 +13073,12 @@ impl PyPhotonicRouter {
                 }
 
                 let my_slack = net_endpoint_distance_cells(&job);
-                let all_blockers_have_more_slack = probe.candidate_blockers.iter().all(|blocker_id| {
-                    job_by_id
-                        .get(blocker_id)
-                        .is_some_and(|blocker_job| net_endpoint_distance_cells(blocker_job) > my_slack)
-                });
+                let all_blockers_have_more_slack =
+                    probe.candidate_blockers.iter().all(|blocker_id| {
+                        job_by_id.get(blocker_id).is_some_and(|blocker_job| {
+                            net_endpoint_distance_cells(blocker_job) > my_slack
+                        })
+                    });
                 let displaced = !probe.candidate_blockers.is_empty()
                     && my_failed_count == 0
                     && all_blockers_have_more_slack
@@ -13001,7 +13111,8 @@ impl PyPhotonicRouter {
                 rounds_without_progress = 0;
             } else {
                 rounds_without_progress += 1;
-                if rounds_without_progress >= RESET_AFTER_ROUNDS_WITHOUT_PROGRESS && !queue.is_empty()
+                if rounds_without_progress >= RESET_AFTER_ROUNDS_WITHOUT_PROGRESS
+                    && !queue.is_empty()
                 {
                     self.obstacle_map.clear_history();
                     failed_counts.clear();
@@ -19104,15 +19215,30 @@ mod tests {
         assert!(!polylines_closer_than(&a, &far, 0.5, region));
         assert!(!polylines_closer_than(&a, &near, 0.5, region));
         assert!(polylines_closer_than(&a, &near, 0.5 + 1.0e-6, region));
-        assert!(polylines_closer_than(&a, &vec![(0.3, 0.0), (0.3, 100.0)], 0.5, region));
+        assert!(polylines_closer_than(
+            &a,
+            &vec![(0.3, 0.0), (0.3, 100.0)],
+            0.5,
+            region
+        ));
     }
 
     #[test]
     fn polylines_closer_than_only_looks_inside_the_region() {
         let a = vec![(0.0, 0.0), (0.0, 100.0)];
         let crossing = vec![(-5.0, 90.0), (5.0, 90.0)];
-        assert!(polylines_closer_than(&a, &crossing, 0.5, (-3.0, 85.0, 3.0, 95.0)));
-        assert!(!polylines_closer_than(&a, &crossing, 0.5, (-3.0, 40.0, 3.0, 60.0)));
+        assert!(polylines_closer_than(
+            &a,
+            &crossing,
+            0.5,
+            (-3.0, 85.0, 3.0, 95.0)
+        ));
+        assert!(!polylines_closer_than(
+            &a,
+            &crossing,
+            0.5,
+            (-3.0, 40.0, 3.0, 60.0)
+        ));
     }
 
     #[test]
@@ -19125,5 +19251,189 @@ mod tests {
         assert!((d - 2.0).abs() < 1.0e-9);
         let d = segment_to_segment_distance((0.0, 0.0), (1.0, 0.0), (0.5, 1.0), (0.5, 3.0));
         assert!((d - 1.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn dynamic_clearance_exempt_cells_cover_the_opened_approach_at_both_ports() {
+        let grid = PyGridSpec::new(60, 40, 1.0, 0.0, 0.0).unwrap();
+        let grid = static_grid_from_py_grid(&grid);
+        // Source approach opened 5 cells out along +x; target approach opened
+        // 8 cells back (the route arrives heading +x, so its run-in lies at
+        // smaller x).
+        let opened: FxHashSet<CellKey> = (10..=14)
+            .map(|x| pack_xy(x, 10))
+            .chain((22..=30).map(|x| pack_xy(x, 10)))
+            .collect();
+        let source = PyState {
+            x: 10,
+            y: 10,
+            angle: 0,
+        };
+        let target = PyState {
+            x: 30,
+            y: 10,
+            angle: 0,
+        };
+        let cells = route_dynamic_clearance_exempt_cells(&grid, &opened, source, target, 2, 3);
+        let has = |x: i32, y: i32| cells.contains(&pack_xy(x, y));
+        // Source corridor: step cells x=10..14 (the opened run), keepout
+        // half-width 2, the last step cell inflated by the radius too.
+        for x in 10..=16 {
+            for y in 8..=12 {
+                assert!(has(x, y), "source corridor missing ({x},{y})");
+            }
+        }
+        assert!(!has(17, 10));
+        assert!(!has(12, 13));
+        // Target corridor: step cells x=22..30 back from the port, inflated.
+        for x in 20..=30 {
+            for y in 8..=12 {
+                assert!(has(x, y), "target corridor missing ({x},{y})");
+            }
+        }
+        assert!(!has(19, 10));
+        // The endpoint box, and nothing beyond it, on the far side of a port.
+        assert!(has(32, 10));
+        assert!(!has(33, 10));
+        assert!(!has(7, 10));
+
+        let bare = route_dynamic_clearance_exempt_cells(&grid, &opened, source, target, 0, 0);
+        // Radius 0: the axis line itself, exactly the opened run.
+        assert!(bare.contains(&pack_xy(10, 10)));
+        assert!(bare.contains(&pack_xy(14, 10)));
+        assert!(!bare.contains(&pack_xy(15, 10)));
+        assert!(bare.contains(&pack_xy(22, 10)));
+        assert!(!bare.contains(&pack_xy(21, 10)));
+        assert!(!bare.contains(&pack_xy(10, 11)));
+    }
+
+    #[test]
+    fn dynamic_clearance_exempt_corridor_is_never_shorter_than_the_minimum() {
+        let grid = PyGridSpec::new(60, 40, 1.0, 0.0, 0.0).unwrap();
+        let grid = static_grid_from_py_grid(&grid);
+        // Nothing opened at all: the port lane minimum still applies.
+        let opened: FxHashSet<CellKey> = FxHashSet::default();
+        let source = PyState {
+            x: 10,
+            y: 10,
+            angle: 0,
+        };
+        let target = PyState {
+            x: 50,
+            y: 30,
+            angle: 2,
+        };
+        let cells = route_dynamic_clearance_exempt_cells(&grid, &opened, source, target, 1, 4);
+        let has = |x: i32, y: i32| cells.contains(&pack_xy(x, y));
+        assert!(has(13, 10));
+        assert!(has(14, 10)); // inflation of the last step cell (x=13)
+        assert!(!has(15, 10));
+        // Target reached heading +y: its run-in lies at smaller y.
+        assert!(has(50, 27));
+        assert!(has(50, 26));
+        assert!(!has(50, 25));
+    }
+
+    #[test]
+    fn dynamic_clearance_exempt_corridor_follows_the_arrival_heading() {
+        let grid = PyGridSpec::new(60, 40, 1.0, 0.0, 0.0).unwrap();
+        let grid = static_grid_from_py_grid(&grid);
+        let opened: FxHashSet<CellKey> = (20..=25)
+            .map(|x| pack_xy(x, 10))
+            .chain((25..=30).map(|y| pack_xy(5, y)))
+            .collect();
+        // Target reached heading -x: the route comes from larger x.
+        let source = PyState {
+            x: 5,
+            y: 30,
+            angle: 6,
+        };
+        let target = PyState {
+            x: 20,
+            y: 10,
+            angle: 4,
+        };
+        let cells = route_dynamic_clearance_exempt_cells(&grid, &opened, source, target, 1, 3);
+        let has = |x: i32, y: i32| cells.contains(&pack_xy(x, y));
+        assert!(has(25, 10));
+        assert!(has(26, 10)); // inflation of the last opened step cell
+        assert!(!has(27, 10));
+        assert!(!has(17, 10));
+        // Source leaves heading -y: the corridor runs toward smaller y.
+        assert!(has(5, 25));
+        assert!(has(5, 24));
+        assert!(!has(5, 23));
+        assert!(!has(5, 33));
+    }
+
+    #[test]
+    fn search_opened_cells_keep_exempt_cells_under_a_foreign_halo_but_not_a_core() {
+        let grid = PyGridSpec::new(40, 40, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 2, 4, 2, 1.0, false),
+            PyAStarConfig::new(
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                0.0,
+                0,
+                false,
+                false,
+                "library".to_string(),
+                "distance".to_string(),
+                1.0,
+            ),
+        );
+        // Net 1 runs along y=11; with keepout radius 1 its halo covers y=10.
+        let core: Vec<(i32, i32)> = (10..=30).map(|x| (x, 11)).collect();
+        let mut blocked = Vec::new();
+        for &(x, y) in &core {
+            for dy in -1..=1 {
+                blocked.push((x, y + dy));
+            }
+        }
+        assert!(router
+            .obstacle_map
+            .commit_route_with_clearance_and_allowed_core_overlaps(
+                1,
+                &core,
+                &blocked,
+                &[],
+                &FxHashSet::default(),
+            ));
+        // Net 2's opening: its approach along y=10 plus one cell on net 1's
+        // core row; both are under net 1's dynamic footprint.
+        let opened: FxHashSet<CellKey> = (10..=30)
+            .map(|x| pack_xy(x, 10))
+            .chain(std::iter::once(pack_xy(20, 11)))
+            .collect();
+        let exempt: FxHashSet<CellKey> = opened.clone();
+        let source = State::new(5, 10, 0);
+        let target = State::new(30, 10, 0);
+
+        let without = router
+            .opened_cells_without_dynamic_overlap(&opened, source, target, None)
+            .expect("the halo strips every opened cell but the target");
+        assert_eq!(without.len(), 1);
+        assert!(without.contains(&pack_xy(30, 10)));
+
+        let with = router
+            .opened_cells_without_dynamic_overlap(&opened, source, target, Some(&exempt))
+            .expect("the core cell is still stripped");
+        assert_eq!(with.len(), opened.len() - 1);
+        assert!(with.contains(&pack_xy(15, 10)));
+        assert!(!with.contains(&pack_xy(20, 11)));
     }
 }

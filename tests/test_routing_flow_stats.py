@@ -367,6 +367,53 @@ def test_heater_s_mod_90_degree_plm_regression(waveguide_clearance_um):
     assert verification.success, verification.as_dict()
 
 
+def _route_heater_s_mod_sibling_pair(crossing_mode: str | None):
+    """Route only the first two nets of ``heater_s_mod`` (both into ``mmi_a_0``,
+    whose inputs are 1.25 um apart) at 3 um clearance and 90 degrees."""
+    schematic = load_benchmark("heater_s_mod")
+    unrouted_layout = layout_from_schematic(schematic)
+    return route_match_and_realize(
+        unrouted_layout,
+        schematic,
+        enable_path_length_matching=False,
+        debug_dir=None,
+        debug_prefix="heater_s_mod",
+        allow_45_degree_turns=False,
+        bend_radius_um=10.0,
+        max_iterations=5_000_000,
+        routing_window_scale=0.05,
+        collect_route_stats=True,
+        include_heater_obstacles=True,
+        enable_crossings=crossing_mode is not None,
+        crossing_mode=crossing_mode or "window",
+        debug_stop_after_route_index=2,
+        obstacle_config=StaticObstacleMapConfig(
+            grid_size_um=2.0,
+            obstacle_mode="bounding_boxes",
+            clearance_um=3.0,
+            heater_clearance_um=10.0,
+            chip_add_x_um=0.0,
+            chip_add_y_um=40.0,
+            clear_port_open_cells_from_static=False,
+        ),
+    )
+
+
+@pytest.mark.parametrize("crossing_mode", [None, "lidar-pure"])
+def test_heater_s_mod_sibling_ports_route_side_by_side_inside_the_clearance(crossing_mode):
+    """Two nets serving ports closer together than the waveguide clearance must
+    still both route, without rip-up: the first net's clearance halo is waived
+    in the second net's port run-in corridor (and, in lidar-pure mode, a
+    halo-only conflict must not be mistaken for a collision needing a
+    crossing)."""
+    result = _route_heater_s_mod_sibling_pair(crossing_mode)
+    route_summary = result.debug_artifacts.route_search_summary
+
+    assert route_summary.route_count == 2
+    assert route_summary.route_failures == 0
+    assert route_summary.repair_count == 0
+
+
 def test_routing_flow_routes_single_heater_electrical_metal_end_to_end():
     routed = run_routing_flow(
         "mmi_heater",

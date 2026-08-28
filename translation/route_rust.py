@@ -1188,9 +1188,7 @@ class _RouteNetsRustSession:
             return length_cells, half_width_cells
 
         if self._is_dense_source_fanout_instance(instance_name):
-            return int(self.stub_port_lane_length_cells), int(
-                self.stub_port_lane_half_width_cells
-            )
+            return int(self.stub_port_lane_length_cells), int(self.stub_port_lane_half_width_cells)
         # A dense TARGET port with a real, pre-committed static stub
         # (`_build_static_fanout_target_anchors`) is in exactly the same
         # position as a dense source port with one: the stub's own committed
@@ -1201,9 +1199,7 @@ class _RouteNetsRustSession:
         # than introducing separate target-only ones -- see
         # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
         if f"{instance_name},{port_name}" in getattr(self, "fanout_anchor_by_port_spec", {}):
-            return int(self.stub_port_lane_length_cells), int(
-                self.stub_port_lane_half_width_cells
-            )
+            return int(self.stub_port_lane_length_cells), int(self.stub_port_lane_half_width_cells)
         return int(self.port_lane_length_cells), int(self.port_lane_half_width_cells)
 
     def _port_access_rule_for(
@@ -7522,7 +7518,7 @@ class _RouteNetsRustSession:
             t_state_opening_precompute_start,
         )
         clearance_exempt_inputs = [
-            (int(net_id), state_openings[0], state_openings[1])
+            (int(net_id), state_openings[0], state_openings[1], state_openings[4])
             for net_id, state_openings in self.route_state_openings_by_id.items()
         ]
         t_clearance_exempt_batch_start = self._pipeline_timer_start()
@@ -7530,9 +7526,8 @@ class _RouteNetsRustSession:
             int(net_id): [(int(cell[0]), int(cell[1])) for cell in cells]
             for net_id, cells in self.router.build_dynamic_clearance_exempt_cells_for_routes(
                 clearance_exempt_inputs,
-                bool(self.allow_45_degree_turns),
-                int(self.bend_radius_cells),
                 int(self.commit_radius_cells),
+                int(self.port_lane_length_cells),
             )
         }
         self._record_pipeline_timing(
