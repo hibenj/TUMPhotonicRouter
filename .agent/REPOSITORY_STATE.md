@@ -827,8 +827,22 @@ above for the full story. The real open candidates right now:
    `.agent/execplans/2026-08-28-plm-geometry-arc-sampling-and-meander-length-model.md`.
    `heater_s_mod`'s stable configuration is
    `benchmarks/heater_s_mod.py::STABLE_ROUTING_FLAGS` (90-degree, r=10,
-   PLM + outputs, heater obstacles, electrical) with the end-to-end test
-   `test_heater_s_mod_stable_configuration_routes_matches_and_wires`.
+   PLM + outputs, heater obstacles, electrical, 3 um clearance, crossings
+   off) with the end-to-end test
+   `test_heater_s_mod_stable_configuration_routes_matches_and_wires`;
+   `routing_flow.py <benchmark>` applies a benchmark's stable flags as
+   its CLI defaults. The meander model books the sampled chord length, so
+   matched paths are equal in the GDS to float precision (verified by
+   polygon area / width on `mmi_a_0 -> mmi_b_0`: 596.084 vs 596.088 um,
+   heater waveguide 320.000 um). The lower path's 20 um detour in that
+   pair is the foreign-port keepout at 0 um clearance and the waveguide
+   clearance at 3 um -- both intended; owner chose to keep the keepout
+   default (2026-08-28). **Owner decisions pending**: (1) should
+   routed electrical metal treat waveguides as obstacles (today it crosses
+   them freely, 161 crossings in the stable heater GDS) -- see that plan's
+   Surprises; (2) sibling nets leave an MMI at its 1.25 um port pitch and
+   run parallel ~35 um before bending away -- acceptable, or bend away
+   right after the port lane?
 0. **Port-adjacent clearance waiver: done (2026-08-28, commit `946dfbd`), one
    open question.** Routing fixed and ladder-validated (see Resolved
    Findings). Open: the 3 um configuration's path-length matching failure

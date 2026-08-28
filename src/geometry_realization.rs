@@ -43,6 +43,16 @@ const DEFAULT_BEND_SAMPLES_PER_90_DEG: usize = 16;
 /// length that the path-length model books.
 pub const MAX_ARC_SAGITTA_UM: f64 = 0.001;
 
+/// Length of a quarter arc of `radius_um` *as realized*: the polyline of
+/// `arc_samples_per_90_deg` chords, which is what the GDS carries and what a
+/// path length measured in it will show. Slightly shorter than `pi * r / 2`
+/// (by ~1 nm at r = 10 um). The path-length model books this, not the ideal
+/// arc, so matched paths are equal in the layout, not just on paper.
+pub fn sampled_quarter_arc_length_um(radius_um: f64) -> f64 {
+    let samples = arc_samples_per_90_deg(radius_um) as f64;
+    samples * 2.0 * radius_um * (std::f64::consts::FRAC_PI_4 / samples).sin()
+}
+
 /// Number of polyline samples per 90 degrees of arc at `radius_um` so that
 /// no chord deviates from the arc by more than [`MAX_ARC_SAGITTA_UM`], never
 /// fewer than [`DEFAULT_BEND_SAMPLES_PER_90_DEG`]. Every arc builder in the

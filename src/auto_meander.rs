@@ -1838,8 +1838,9 @@ mod tests {
 
         assert_eq!(plan.profile.depth_count, 2);
         // One U-turn (two legs) at r = 0.2 for 1.0 um of extra length:
-        // A = requested / legs - r * (pi - 4).
-        let expected_depth = 1.0 / 2.0 + 0.2 * (4.0 - std::f64::consts::PI);
+        // A = requested / legs + 4r - 2q, q the sampled quarter-arc length.
+        let expected_depth = 1.0 / 2.0 + 4.0 * 0.2
+            - 2.0 * crate::geometry_realization::sampled_quarter_arc_length_um(0.2);
         assert!((plan.selected_box_depth_um - expected_depth).abs() < 1.0e-9);
         assert!(!plan.plan.centerline.is_empty());
     }

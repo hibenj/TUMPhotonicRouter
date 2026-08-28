@@ -18,7 +18,7 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**No single active ExecPlan right now (2026-08-28; latest completed: `.agent/execplans/2026-08-28-port-adjacent-clearance-waiver.md`, commit `946dfbd`, see `.agent/REPOSITORY_STATE.md` for the one open PLM finding) -- the repository owner
+**No single active ExecPlan right now (2026-08-28; latest completed: `.agent/execplans/2026-08-28-plm-geometry-arc-sampling-and-meander-length-model.md` after `2026-08-28-port-adjacent-clearance-waiver.md`; see `.agent/REPOSITORY_STATE.md` Next Engineering Step for the two owner decisions parked there) -- the repository owner
 is directing work turn by turn, not delegating to an autonomous
 orchestration loop.** Several plans exist; do not resume any of them
 automatically without the repository owner's direction.

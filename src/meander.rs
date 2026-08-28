@@ -117,14 +117,19 @@ impl MeanderTurnModel {
     /// `quarter_turns` (= 2 * legs) quarter arcs, `legs` vertical legs of
     /// length `A - 2r`, replacing an axis run of `insertion_width_um` =
     /// `r * (2 * u_turns + 3)`:
-    ///   extra(A) = r + legs * (A - 2r) + legs * pi * r - r * (2 * u_turns + 3)
-    ///            = legs * (A - 4r + pi * r)
+    ///   extra(A) = r + legs * (A - 2r) + 2 * legs * q - r * (2 * u_turns + 3)
+    ///            = legs * (A - 4r + 2q)
+    /// where `q` is the quarter-arc length *as realized* (a polyline of
+    /// chords, `sampled_quarter_arc_length_um`; `pi * r / 2` minus ~1 nm at
+    /// r = 10 um), so the booked length is the one the GDS will measure.
     /// (Until 2026-08-28 this booked `u_turns * A + ...`, one amplitude short:
     /// every planned meander was physically `A - r` longer than the group
     /// needed -- see
     /// `.agent/execplans/2026-08-28-plm-geometry-arc-sampling-and-meander-length-model.md`.)
     pub fn fixed_extra_length_term_um(self, bend_radius_um: f64) -> f64 {
-        self.legs() as f64 * bend_radius_um * (std::f64::consts::PI - 4.0)
+        let quarter_arc_um =
+            crate::geometry_realization::sampled_quarter_arc_length_um(bend_radius_um);
+        self.legs() as f64 * (2.0 * quarter_arc_um - 4.0 * bend_radius_um)
     }
 
     pub fn inserted_extra_length_um(self, bend_radius_um: f64, amplitude_um: f64) -> f64 {
@@ -360,6 +365,17 @@ fn append_quarter_arc_local(
     a0: f64,
     a1: f64,
 ) {
+    // Start exactly on the arc, so the segment before it is the straight the
+    // length model books (not a chord cutting the corner from wherever the
+    // previous point was).
+    append_line_local(
+        out,
+        seg,
+        orientation,
+        side,
+        cx + r * a0.cos(),
+        cy + r * a0.sin(),
+    );
     let samples = crate::geometry_realization::arc_samples_per_90_deg(r);
     for i in 1..=samples {
         let t = (i as f64) / (samples as f64);
@@ -849,8 +865,9 @@ mod analytic_tests {
         let last = pts.last().unwrap();
         let replaced = ((last.x_um - first.x_um).powi(2) + (last.y_um - first.y_um).powi(2)).sqrt();
         let realized_extra = polyline - replaced;
-        // Sampled arcs are marginally shorter than true arcs (1 nm sagitta).
-        let chord_slack = 1.0e-3 * cfg.requested_extra_length_um + 1.0e-3;
+        // The model books the sampled arc length, so this is exact up to
+        // floating point.
+        let chord_slack = 1.0e-6;
         assert!(
             (realized_extra - plan.inserted_extra_length_um).abs() <= chord_slack,
             "realized extra {realized_extra} vs booked {} (requested {})",

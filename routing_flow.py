@@ -11,6 +11,7 @@ This module orchestrates the photonic routing flow:
 import argparse
 import importlib
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -592,8 +593,37 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _benchmark_stable_defaults(argv: list[str] | None) -> tuple[list[str], dict[str, str]]:
+    """The selected benchmark's `STABLE_ROUTING_FLAGS` / `STABLE_ROUTING_ENV`.
+
+    A benchmark module may declare the configuration it is known to route
+    cleanly with. Those flags become the CLI defaults for that benchmark:
+    they are parsed first, so anything given explicitly on the command line
+    still wins (argparse keeps the last occurrence). `benchmark_photonic.py`
+    and the tests pass their flags explicitly and are unaffected."""
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("benchmark", nargs="?")
+    known, _ = probe.parse_known_args(sys.argv[1:] if argv is None else argv)
+    if not known.benchmark:
+        return [], {}
+    try:
+        module = importlib.import_module(f"benchmarks.{known.benchmark}")
+    except ImportError:
+        return [], {}
+    flags = [str(flag) for flag in getattr(module, "STABLE_ROUTING_FLAGS", ())]
+    env = {str(k): str(v) for k, v in dict(getattr(module, "STABLE_ROUTING_ENV", {})).items()}
+    return flags, env
+
+
 def main(argv: list[str] | None = None) -> Component:
-    args = _build_arg_parser().parse_args(argv)
+    stable_flags, stable_env = _benchmark_stable_defaults(argv)
+    for key, value in stable_env.items():
+        os.environ.setdefault(key, value)
+    args = _build_arg_parser().parse_args(
+        stable_flags + (sys.argv[1:] if argv is None else list(argv))
+    )
+    if stable_flags:
+        print(f"      - Benchmark stable defaults applied: {' '.join(stable_flags)}")
     return run_routing_flow(
         args.benchmark,
         debug_svgs=args.debug_svgs,

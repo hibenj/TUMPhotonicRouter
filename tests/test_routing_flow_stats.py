@@ -468,7 +468,8 @@ def test_heater_s_mod_realized_meanders_leave_no_residual_mismatch(monkeypatch):
         internal_delays_um=metadata.get("internal_delays_um"),
     )
     worst = max(float(v) for v in analysis.edge_missing_lengths_um.values())
-    assert worst < 0.1, f"realized lengths still leave {worst:.3f} um of mismatch"
+    # The model books the sampled (chord) arc length, so this is float noise.
+    assert worst < 1.0e-3, f"realized lengths still leave {worst:.6f} um of mismatch"
 
 
 def test_heater_s_mod_stable_configuration_routes_matches_and_wires():
@@ -486,6 +487,13 @@ def test_heater_s_mod_stable_configuration_routes_matches_and_wires():
         path_length_match_outputs=True,
         include_heater_obstacles=True,
         enable_electrical_routing=True,
+        waveguide_clearance_um=3.0,
+        enable_crossings=False,
+        # CLI defaults that `run_routing_flow` does not share (the 1500-cell
+        # net 37 exhausts the API default of 500k iterations).
+        max_iterations=5_000_000,
+        routing_window_scale=0.05,
+        heater_clearance_um=10.0,
         collect_route_stats=True,
         stats=stats,
     )
