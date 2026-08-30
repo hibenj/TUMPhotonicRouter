@@ -18,8 +18,33 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-28 (afternoon)
-- **Latest (2026-08-28, uncommitted)**: `.agent/execplans/2026-08-28-plm-geometry-arc-sampling-and-meander-length-model.md`
+- Date: 2026-08-30
+- Branch: `crossings/verification-foundation`, HEAD `e78e8d1`. The three
+  newest commits are the PLM plan's work described in the next bullet
+  (`0f39ade` arc sampling + GDS record cap, `b9587d9` meander length
+  model, `e78e8d1` sampled-arc booking **and** a flow change worth
+  knowing: `routing_flow.py` now applies the selected benchmark's
+  `STABLE_ROUTING_FLAGS`/`STABLE_ROUTING_ENV` as CLI defaults -- explicit
+  flags still win, the applied defaults are printed -- so a bare
+  `routing_flow.py <benchmark>` is the stable configuration, not the
+  script defaults). Working tree: one uncommitted experiment in
+  `translation/route_rust.py` (`PHOTONIC_ROUTER_LAYER_ORDER=span`,
+  shortest-span-first within a layer) -- this is option (a) of the
+  router-fix plan's open decision below, left uncommitted on purpose
+  until the owner decides.
+- **2026-08-27, `.agent/execplans/2026-08-27-router-fixes-for-crossing-grid-stubs.md`**
+  (Milestones 1/1b/1c done -- `8facc36` diagonal halo honoured in the A*
+  fast path in both kernels, `4dac768`, `ce4e256`, `242eb16` route indices
+  in execution order; Milestone 2 partial -- `bba99e4` threshold-driven
+  dense fanout groups + target-anchor correction in the plain pass).
+  **Open, owner decision**: the real `benes_16x16` grid-mode blocker is
+  planar fan-out ordering (widest-span stub must take the outermost
+  lane); options (a) span-ascending order within a layer (the uncommitted
+  experiment above) or (b) victim escalation in repair -- see that plan's
+  Progress. Also open there: the endpoint corrector's missing "shift the
+  final run, absorb in the preceding bend" strategy for short run-ins to
+  anchors (it only absorbs a y delta into a vertical run).
+- **2026-08-28, committed**: `.agent/execplans/2026-08-28-plm-geometry-arc-sampling-and-meander-length-model.md`
   -- Milestone 1 done and ladder-validated: one sagitta-driven arc sampler
   (`arc_samples_per_90_deg`, 1 nm sagitta, gdsfactory-equivalent density; the verifier's self-intersection check got a vectorized bbox prefilter so the denser centerlines cost nothing -- heater stable config 15.7 -> 7.8 s) for primitive bends, endpoint-correction
   jogs (were 4 chords per arc) and meanders (were 8), plus a GDS write cap
@@ -809,14 +834,19 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
-**No ExecPlan is actively being driven by an agent right now (2026-08-26)
--- the repository owner is directing next steps turn by turn.** The most
-recent work is `.agent/execplans/2026-08-26-preplaced-crossing-grids-for-benes.md`
-(see Current Snapshot); its own open items (owner GDS review, verifier
-overlap threshold decision, PLM pass-through, retrospective) are the
-natural next steps if the owner wants to continue there. The
-`multiportmmi_16x16` `n_123` adjacent-diagonal fix (two directions, not
-yet decided) is the other live thread.
+**No ExecPlan is actively being driven by an agent right now (2026-08-30)
+-- the repository owner is directing next steps turn by turn.** Live
+threads, all waiting on an owner decision (see Current Snapshot for the
+pointers): (1) `2026-08-27-router-fixes-for-crossing-grid-stubs.md` --
+planar fan-out ordering for `benes_16x16` grid mode, option (a) span-first
+(experiment in the working tree) vs (b) repair victim escalation, plus the
+corrector strategy for short run-ins to anchors; (2)
+`2026-08-26-preplaced-crossing-grids-for-benes.md` -- verifier
+`min_route_overlap_area_um2=2.0` blind spot, PLM pass-through,
+retrospective; (3) `2026-08-28-port-adjacent-clearance-waiver.md` --
+its original acceptance check now passes since the meander length fix,
+its own checklist still says blocked; (4) the `multiportmmi_16x16`
+`n_123` adjacent-diagonal fix (two directions, not yet decided).
 
 `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
 and `.agent/execplans/2026-08-25-negotiated-repair-engine.md` are both
