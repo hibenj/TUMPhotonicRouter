@@ -2771,6 +2771,43 @@ class _RouteNetsRustSession:
         for node in all_nodes:
             resolve_depth(node, set())
 
+        if os.environ.get("PHOTONIC_ROUTER_LAYER_ORDER", "").strip().lower() == "span":
+            # EXPERIMENT (2026-08-27, off by default; decision pending in
+            # `.agent/execplans/2026-08-27-router-fixes-for-crossing-grid-stubs.md`
+            # Decision Log): within a layer, shortest nets first, so that a
+            # planar fan-out (pre-placed crossing grids, no crossings outside
+            # the grid) nests the widest-span stubs outermost. Completes
+            # `benes_16x16` grid mode (196/196) but breaks the normal
+            # router's Benes crossing discovery, so it must become a mode
+            # property (option plumbing), not stay an env var.
+
+            def span(route_job: RouteJob) -> int:
+                source_state = self.port_to_grid_state(
+                    route_job.source_port,
+                    self.origin_x_um,
+                    self.origin_y_um,
+                    float(self.grid.grid_size_um),
+                    as_target=False,
+                )
+                target_state = self.port_to_grid_state(
+                    route_job.target_port,
+                    self.origin_x_um,
+                    self.origin_y_um,
+                    float(self.grid.grid_size_um),
+                    as_target=True,
+                )
+                return abs(int(source_state.x) - int(target_state.x)) + abs(
+                    int(source_state.y) - int(target_state.y)
+                )
+
+            return sorted(
+                jobs,
+                key=lambda route_job: (
+                    depth_by_node[route_job.inst1],
+                    span(route_job),
+                    int(route_job.route_index),
+                ),
+            )
         return sorted(
             jobs,
             key=lambda route_job: (depth_by_node[route_job.inst1], int(route_job.route_index)),
