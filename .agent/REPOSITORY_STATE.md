@@ -27,11 +27,12 @@ now lives only in the referenced ExecPlan and `git log`.)
   `STABLE_ROUTING_FLAGS`/`STABLE_ROUTING_ENV` as CLI defaults -- explicit
   flags still win, the applied defaults are printed -- so a bare
   `routing_flow.py <benchmark>` is the stable configuration, not the
-  script defaults). Working tree: one uncommitted experiment in
+  script defaults). Working tree clean. The experiment in
   `translation/route_rust.py` (`PHOTONIC_ROUTER_LAYER_ORDER=span`,
-  shortest-span-first within a layer) -- this is option (a) of the
-  router-fix plan's open decision below, left uncommitted on purpose
-  until the owner decides.
+  shortest-span-first within a layer) is committed as `c01b17a`
+  (2026-08-30), env-gated and off by default -- this is option (a) of the
+  router-fix plan's open decision below; it stays an experiment until
+  the owner decides.
 - **2026-08-27, `.agent/execplans/2026-08-27-router-fixes-for-crossing-grid-stubs.md`**
   (Milestones 1/1b/1c done -- `8facc36` diagonal halo honoured in the A*
   fast path in both kernels, `4dac768`, `ce4e256`, `242eb16` route indices
@@ -39,7 +40,7 @@ now lives only in the referenced ExecPlan and `git log`.)
   dense fanout groups + target-anchor correction in the plain pass).
   **Open, owner decision**: the real `benes_16x16` grid-mode blocker is
   planar fan-out ordering (widest-span stub must take the outermost
-  lane); options (a) span-ascending order within a layer (the uncommitted
+  lane); options (a) span-ascending order within a layer (the env-gated
   experiment above) or (b) victim escalation in repair -- see that plan's
   Progress. Also open there: the endpoint corrector's missing "shift the
   final run, absorb in the preceding bend" strategy for short run-ins to
@@ -68,8 +69,8 @@ now lives only in the referenced ExecPlan and `git log`.)
   (`.agent/ORCHESTRATOR.md`, `.agent/CLAUDE_CODEX_FLOW.md`).
   **Open, owner decision needed**: `test_heater_s_mod_90_degree_plm_regression[3.0]`
   now fails in path-length matching, not routing (see Current Findings
-  item 0). The uncommitted `PHOTONIC_ROUTER_LAYER_ORDER=span` experiment in
-  `translation/route_rust.py` predates this work and is unrelated to it.
+  item 0). The env-gated `PHOTONIC_ROUTER_LAYER_ORDER=span` experiment in
+  `translation/route_rust.py` (committed `c01b17a`) predates this work and is unrelated to it.
 - Previous snapshot (2026-08-26, evening)
 - Branch: `crossings/verification-foundation`
 - Current HEAD: `946dfbd` (port-adjacent clearance waiver). Before that: the `feat: pre-place topology-derived crossing grids`
@@ -839,7 +840,7 @@ explicitly resumes it.
 threads, all waiting on an owner decision (see Current Snapshot for the
 pointers): (1) `2026-08-27-router-fixes-for-crossing-grid-stubs.md` --
 planar fan-out ordering for `benes_16x16` grid mode, option (a) span-first
-(experiment in the working tree) vs (b) repair victim escalation, plus the
+(env-gated experiment, committed off by default) vs (b) repair victim escalation, plus the
 corrector strategy for short run-ins to anchors; (2)
 `2026-08-26-preplaced-crossing-grids-for-benes.md` -- verifier
 `min_route_overlap_area_um2=2.0` blind spot, PLM pass-through,
