@@ -6691,7 +6691,18 @@ class _RouteNetsRustSession:
         ):
             self.astar_cfg.max_iterations = min(int(self.astar_cfg.max_iterations), 50_000)
         if self.allow_45_degree_turns and hasattr(self.astar_cfg, "heuristic_weight"):
-            self.astar_cfg.heuristic_weight = max(float(self.astar_cfg.heuristic_weight), 1.25)
+            # 1.25 is Weighted A*: inadmissible, up to 25% suboptimal paths
+            # (visible as chicanes/detours in the GDS), but far fewer expanded
+            # states. 1.0 is admissible A*; it routes multiportmmi_16x16
+            # completely but regresses multiportmmi_8x8/benes_16x16/mmi_heater
+            # elsewhere -- see
+            # .agent/execplans/2026-08-31-admissible-astar-heuristic-45-degree.md.
+            min_heuristic_weight = float(
+                os.environ.get("PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT", "1.25")
+            )
+            self.astar_cfg.heuristic_weight = max(
+                float(self.astar_cfg.heuristic_weight), min_heuristic_weight
+            )
         if self.allow_45_degree_turns and hasattr(self.astar_cfg, "bend_weight"):
             # A bend costs bend_weight per angle-eighth of turn (see
             # src/primitives.rs's bend_cost field); boosting it keeps 45-degree

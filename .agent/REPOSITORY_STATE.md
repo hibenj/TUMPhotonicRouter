@@ -18,7 +18,29 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
-- Date: 2026-08-30
+- Date: 2026-08-31
+- **Latest (2026-08-31), `.agent/execplans/2026-08-31-admissible-astar-heuristic-45-degree.md`**:
+  the 45-degree router's `heuristic_weight` clamp of 1.25
+  (`translation/route_rust.py`) is Weighted A* -- inadmissible, up to 25%
+  suboptimal paths, the root cause of the owner-observed wasted geometry
+  (chicanes, overshoot-and-return detours). With the clamp at 1.0
+  (admissible A*), **`multiportmmi_16x16` routes fully clean for the
+  first time ever** (223/223, both verifications 0/0, 182 s), and the
+  three pre-existing fanout defects `n_15`/`n_16`/`n_74` vanish with it.
+  But the ladder is red at 1.0: `multiportmmi_8x8` gets a physical
+  parallel-diagonal waveguide overlap (`n_13`/`n_14`, sibling fanout
+  nets on adjacent diagonal cells -- a legality hole the grid model
+  cannot see, only the photonic gate catches it), `benes_16x16` gets one
+  net of the known `crossing-aware endpoint correction produced no
+  realizable centerline` class, `benes_8x8` is 2.2x slower (55 s).
+  Landed env-gated, off by default: `PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT`
+  (default "1.25"; set 1.0 to reproduce). **Open, owner decision**: flip
+  the default to 1.0 (which first requires a parallel-diagonal-overlap
+  legality check and admissible-sized iteration budgets, then re-pinning
+  `test_multiportmmi_8x8_..._fanin_boundary`'s attempt count) vs keep
+  1.25 vs intermediate/post-smoothing. This likely interacts with -- and
+  may partly supersede -- the `n_123` fix directions (a)/(b) below, since
+  `n_123` no longer fails at 1.0.
 - Branch: `crossings/verification-foundation`, HEAD `e78e8d1`. The three
   newest commits are the PLM plan's work described in the next bullet
   (`0f39ade` arc sampling + GDS record cap, `b9587d9` meander length
@@ -482,7 +504,12 @@ restructuring; the third (below, in Resolved Findings) is fixed:
    `multiportmmi_16x16`'s `n_102` looks superficially similar but is a
    *different*, likely-unfixable benchmark-placement problem (tight real
    corridor, not a reservation-logic bug) -- do not conflate the two.
-2. **`multiportmmi_16x16` stable-baseline**: fails with `RuntimeError: No
+2. **`multiportmmi_16x16` stable-baseline**: **routes fully clean with
+   `PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT=1.0`** (2026-08-31, see the
+   admissible-heuristic plan in Current Snapshot -- the greedy 1.25
+   Weighted A* was the common root of the `n_50`/`n_49`/`n_123` failure
+   chain). At the default 1.25 the historical record below still applies:
+   fails with `RuntimeError: No
    route found for n_50` (`candidate_blockers=[49, 50]`), caused by the
    zero-event-acceptance fix (bisected: clean at `9302efd`, broken at
    `3bea008`/`HEAD`). Not root-caused to the same depth as the now-resolved
