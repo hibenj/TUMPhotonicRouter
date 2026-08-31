@@ -9,6 +9,19 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Instant;
 
+/// Opt-in gate for the per-expansion micro-timers (legality/heap/neighbor
+/// breakdowns). `collect_detailed_timing` alone keeps the cheap per-attempt
+/// timers that feed the standard timing reports; the per-expansion timers
+/// call `clock_gettime` several times per expanded state and measured 17%
+/// of total wall time on multiportmmi_16x16 (vDSO share of the profile,
+/// engine-performance plan 2026-08-31), so they now also require
+/// `PHOTONIC_ROUTER_HOT_LOOP_TIMING` to be set. Their stats fields read 0
+/// otherwise.
+fn hot_loop_timing_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("PHOTONIC_ROUTER_HOT_LOOP_TIMING").is_some())
+}
+
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, NetId, ObstacleMap};
@@ -4323,7 +4336,8 @@ mod unified_kernel {
                 primitives.grid_size_um(),
                 config.primitive_ordering,
             );
-            let neighbor_loop_start = if config.collect_detailed_timing {
+            let neighbor_loop_start = if config.collect_detailed_timing && hot_loop_timing_enabled()
+            {
                 Some(Instant::now())
             } else {
                 None
@@ -4398,7 +4412,8 @@ mod unified_kernel {
                 stats.primitive_footprint_checks += 1;
                 stats.primitive_footprint_checks_by_class[primitive_class] += 1;
                 stats.obstacle_clearance_checks += 1;
-                let footprint_free = if config.collect_detailed_timing {
+                let footprint_free = if config.collect_detailed_timing && hot_loop_timing_enabled()
+                {
                     let legality_start = Instant::now();
                     let footprint_free = dense_grid.primitive_footprint_free_with_profile(
                         state.x,
@@ -4531,7 +4546,8 @@ mod unified_kernel {
                     storage.best_generation[next_idx] = generation;
                     stats.best_cost_updates += 1;
                     stats.parent_updates += 1;
-                    let heap_start = config.collect_detailed_timing.then(Instant::now);
+                    let heap_start = (config.collect_detailed_timing && hot_loop_timing_enabled())
+                        .then(Instant::now);
                     let queued = tier1_open.push(OpenEntry {
                         f_score: tentative_g + search_heuristic.estimate(next_state),
                         tie_score: heap_tie_score(tentative_g, config.heap_tie_breaker),
@@ -4687,7 +4703,8 @@ mod unified_kernel {
                     stats.best_cost_updates += 1;
                     stats.parent_updates += 1;
                     let generation = next_search_generation(&mut counter)?;
-                    let heap_start = config.collect_detailed_timing.then(Instant::now);
+                    let heap_start = (config.collect_detailed_timing && hot_loop_timing_enabled())
+                        .then(Instant::now);
                     tier2_open.push(OpenEntry {
                         f_score: tentative_g
                             + search_heuristic.estimate(next_state)
