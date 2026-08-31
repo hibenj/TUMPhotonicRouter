@@ -294,7 +294,36 @@ everything else to cheaper-model subagents.** Division of labor:
 - Subagent prompts must be self-contained the way ExecPlans are
   self-contained: name the files, the exact commands, the expected
   observations, and the report format. Pointing the subagent at the
-  active ExecPlan plus a delta brief is the normal shape. The previous rule was: when the orchestrator is a
+  active ExecPlan plus a delta brief is the normal shape.
+
+Two standing lane definitions exist as project agents under
+`.claude/agents/` and should be preferred over ad-hoc `general-purpose`
+spawns, because they carry the guardrails below in their own system
+prompts instead of relying on every brief to restate them:
+
+- `evidence-lane` (sonnet, read-only tools): reproduction runs, log/
+  diagnostic extraction, verification-ladder measurements. Facts only,
+  compact report, no decisions.
+- `impl-lane` (sonnet): fully-specified implementation slices; stops and
+  reports on any brief-vs-reality discrepancy instead of improvising;
+  never commits; returns a verifier packet.
+
+### Subagent harness learnings (append here as they occur)
+
+- (2026-08-31) A lane given a ~6-minute benchmark run started it and then
+  ended its turn "to wait for the monitor", stranding the deliverable
+  until the lead nudged it. Long commands must run in the foreground with
+  an explicit `timeout`, and the lane must not end its turn before the
+  report exists. Now baked into both lane definitions; when writing an
+  ad-hoc brief, restate it.
+- (2026-08-31) Lane briefs must state how benchmark stable defaults
+  interact with env overrides (`STABLE_ROUTING_ENV` is applied via
+  `os.environ.setdefault`, so an explicitly exported variable wins) —
+  otherwise a lane can silently measure the wrong configuration.
+- (Codex era, still true for cheaper-model lanes) Fully-specified tasks
+  converge; architectural discovery does not — lanes invent bolt-on
+  mechanisms instead of finding the existing one. Root-causing and
+  design stay in the lead. The previous rule was: when the orchestrator is a
 Claude agent (Claude Code) working alongside Codex CLI, use
 `.agent/CLAUDE_CODEX_FLOW.md` instead of spawning further Claude subagents
 for the Implementation Engineer role: Claude keeps the Orchestrator,
