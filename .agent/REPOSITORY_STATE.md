@@ -909,7 +909,23 @@ explicitly resumes it.
    ("unsere engine sollte nicht so unterschiedlich sein"), and close the
    baseline gap; if that fails, try other approaches until it works. A
    partial failure-state GDS (through net 56, via
-   --debug-stop-after-route) is being produced for owner inspection.
+   --debug-stop-after-route) was produced for owner inspection
+   (`build/routed_benes_32x32_partial_net56.gds`).
+   **LiDAR reference results (2026-08-31/09-01, first-ever runs of these
+   cases in that repo):** `multiportmmi_16x16` routes clean in 206 s
+   (DRV 0, 30 crossings; our engine: 98 s clean -- we are 2x faster
+   there); **`multiportmmi_32x32` routes COMPLETELY clean in 1257 s
+   (DRV 0, DRV_path 0, 50 crossings, WL 15200 um)** -- the feasibility
+   proof the owner asked for. Logs: scratchpad lidar_mm16.log /
+   lidar_mm32.log of session afcc7efa; GDS artifacts under
+   LiDAR/src/picroute/result/LiDAR/main_results/. Next: run OUR
+   multiportmmi_32x32 baseline (never attempted this week -- only
+   benes_32x32 was) as the direct counterpart, and analyze the engine
+   difference; first candidate: LiDAR's A* has no perpendicularity
+   constraint (per-node crossing_budget instead) and uses 10 ripup
+   rounds with history costs and topological net order. Note benes has
+   NO LiDAR counterpart (TUM-only topology; a TUM-benes -> LiDAR-yml
+   export bridge is feasible since our importer knows the format).
    Evidence: scratchpad
    b32_retry2*.log of session afcc7efa. Original first-probe record:
    `benes_32x32` with the inherited benes_16x16 stable config reaches
