@@ -261,7 +261,40 @@ sequentially in one session using the role briefs in `.agent/roles/`.
 **Superseded 2026-08-28 by repository-owner direction: Codex is no longer
 used. The Claude agent implements directly and may spawn Claude subagents
 for bounded coding and verification lanes; `.agent/CLAUDE_CODEX_FLOW.md` is
-kept for history only.** The previous rule was: when the orchestrator is a
+kept for history only.**
+
+**Refined 2026-08-31 by repository-owner direction (token economy): the
+lead/orchestrator session runs on the most capable model (Fable), whose
+usage limit is scarce; it must conserve itself for analysis and hand
+everything else to cheaper-model subagents.** Division of labor:
+
+- The lead keeps: root-cause analysis and interpretation of evidence,
+  design decisions and owner-option framing, task specification, diff
+  review of returned work, the final validation verdict, ExecPlan and
+  `.agent/REPOSITORY_STATE.md` upkeep, and anything decision-gated.
+- Delegate to fresh `general-purpose` subagents with an explicit cheaper
+  `model` override (`sonnet` for coding/investigation lanes, `haiku` only
+  for trivial mechanical chores): bounded implementation slices with a
+  full spec, evidence gathering (run a reproduction, extract the named
+  diagnostics/log fields, return a compact report), and validation-ladder
+  runs that end in a small results table. Their tool output stays out of
+  the lead's context, which is the point.
+- Do NOT use `subagent_type: "fork"` to save tokens -- a fork inherits the
+  lead's context but runs on the lead's model, so it spends the scarce
+  budget instead of conserving it.
+- The Codex-era delegation lessons carry over unchanged (they are about
+  bounded specification, not about the tool): delegate only
+  fully-specified tasks; cheaper models are unreliable at discovering
+  "there is already a mechanism for this" on architectural work; if a
+  lane does not converge within one or two attempts, pull the work back
+  to the lead instead of iterating; independently verify a subagent's
+  claims (read the diff, re-run or spot-check the decisive command)
+  before committing; and never let a subagent make or fabricate a
+  repository-owner decision.
+- Subagent prompts must be self-contained the way ExecPlans are
+  self-contained: name the files, the exact commands, the expected
+  observations, and the report format. Pointing the subagent at the
+  active ExecPlan plus a delta brief is the normal shape. The previous rule was: when the orchestrator is a
 Claude agent (Claude Code) working alongside Codex CLI, use
 `.agent/CLAUDE_CODEX_FLOW.md` instead of spawning further Claude subagents
 for the Implementation Engineer role: Claude keeps the Orchestrator,
