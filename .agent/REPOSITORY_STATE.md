@@ -888,11 +888,25 @@ explicitly resumes it.
 
 **Roadmap set by the repository owner (2026-08-31), in order:**
 
-1. **32x32 baseline measurement** (in progress): one run each of
-   `benes_32x32` and `multiportmmi_32x32` with the inherited 16x16
-   sibling stable configs, to establish where the baseline stands at
-   this scale (neither has `STABLE_ROUTING_FLAGS` yet; the only prior
-   note is a stale "multiportmmi_32x32 slow/hanging at n_155").
+1. **32x32 baseline measurement** (first result, 2026-08-31):
+   `benes_32x32` with the inherited benes_16x16 stable config reaches
+   roughly net 57 of 320 in ~35 minutes and then thrashes in repair on
+   the adjacent-diagonal class (`native_repair_probe net=57
+   allowed_partners=12 crossing_events=3 realized_violations=9`, all
+   `not_perpendicular`, victims ripped across the whole layer,
+   `source_layer_center_out` reroutes) with no forward progress for 20+
+   minutes -- aborted per the owner's rule (no progress -> engine work
+   first). Evidence: `scratchpad/p32b_out.log` / `p32b_diag.log` of
+   session afcc7efa (2026-08-31). An earlier blind attempt burned 77
+   min CPU without finishing. So the baseline at 32x32 is not
+   practically routable at current engine speed; `multiportmmi_32x32`
+   not yet attempted this round (stale note: slow/hanging at n_155).
+   Two harness gaps found on the way: the native route batch emits no
+   progress signal at all (needs an env-gated per-net progress print),
+   and `kernel.perf_event_paranoid=4` on this machine blocks all
+   unprivileged perf profiling (needs a one-time
+   `sudo sysctl kernel.perf_event_paranoid=1` from the owner before
+   profiling sessions).
 2. **Engine performance** on the baseline — the owner: "wir müssen auf
    jeden Fall die Engine noch schneller bekommen."
 3. **Contributions on top of the baseline, deliberately NOT part of it**
