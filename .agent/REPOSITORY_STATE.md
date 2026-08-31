@@ -888,7 +888,20 @@ explicitly resumes it.
 
 **Roadmap set by the repository owner (2026-08-31), in order:**
 
-1. **32x32 baseline measurement** (first result, 2026-08-31):
+1. **32x32 baseline measurement -- CONCLUDED (2026-08-31, two runs):**
+   with the full day's engine gains (-50%) and legality fixes,
+   `benes_32x32` reaches **net 59 of 320 in 90 minutes** (timeout):
+   the repair loop CAN break each adjacent-diagonal contention after
+   ~40-50 min of grinding (net 57 eventually fell), but the dense layer
+   repeats the same pattern net after net -- structurally unusable at
+   this scale regardless of engine speed. This is the recorded baseline
+   number and the quantified motivation for both contributions
+   (preplaced crossing grids: the 16x16 grid mode routed its whole
+   lattice in 2.3 s routing time; crossing-guided A*: the search front
+   balloons against the 200 um search loss, up to 2.8M expansions per
+   net). The remaining baseline-level alternative is the owner-gated
+   lateral-diagonal repair strategy. Evidence: scratchpad
+   b32_retry2*.log of session afcc7efa. Original first-probe record:
    `benes_32x32` with the inherited benes_16x16 stable config reaches
    roughly net 57 of 320 in ~35 minutes and then thrashes in repair on
    the adjacent-diagonal class (`native_repair_probe net=57
