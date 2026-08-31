@@ -5471,6 +5471,18 @@ impl PyPhotonicRouter {
         if route_centerline.len() < 2 {
             return Vec::new();
         }
+        // Bounding-box prefilter (same idea as the photonic verifier's
+        // 2026-08-28 self-intersection prefilter): a partner whose whole
+        // centerline stays farther than the waveguide width from this
+        // route's bounding box can produce neither an intersection nor a
+        // parallel-overlap violation, so it is skipped before the O(n*m)
+        // segment-pair loop below ever sees it.
+        let Some((route_min_x, route_min_y, route_max_x, route_max_y)) =
+            polyline_bbox(route_centerline)
+        else {
+            return Vec::new();
+        };
+        let bbox_reach = self.route_width_um.max(1.0e-6);
         let partner_centerlines: Vec<(u64, Vec<(f64, f64)>)> = self
             .committed_center_routes
             .iter()
@@ -5484,10 +5496,17 @@ impl PyPhotonicRouter {
                     .cloned()
                     .unwrap_or_else(|| self.grid_waypoints_to_centerline(partner_grid_waypoints));
                 if centerline.len() < 2 {
-                    None
-                } else {
-                    Some((*partner_id, centerline))
+                    return None;
                 }
+                let (p_min_x, p_min_y, p_max_x, p_max_y) = polyline_bbox(&centerline)?;
+                if p_min_x > route_max_x + bbox_reach
+                    || p_max_x < route_min_x - bbox_reach
+                    || p_min_y > route_max_y + bbox_reach
+                    || p_max_y < route_min_y - bbox_reach
+                {
+                    return None;
+                }
+                Some((*partner_id, centerline))
             })
             .collect();
         if partner_centerlines.is_empty() {
@@ -5543,7 +5562,20 @@ impl PyPhotonicRouter {
                         // physically merge (multiportmmi_8x8 n_13/n_14 at
                         // heuristic weight 1.0). Only near-parallel pairs are
                         // tested so the chords around a legal perpendicular
-                        // crossing stay exempt.
+                        // crossing stay exempt. Cheap bbox reject first: most
+                        // pairs are nowhere near each other.
+                        let seg_reach = self.route_width_um;
+                        if route_segment[0].0.min(route_segment[1].0)
+                            > partner_segment[0].0.max(partner_segment[1].0) + seg_reach
+                            || route_segment[0].0.max(route_segment[1].0)
+                                < partner_segment[0].0.min(partner_segment[1].0) - seg_reach
+                            || route_segment[0].1.min(route_segment[1].1)
+                                > partner_segment[0].1.max(partner_segment[1].1) + seg_reach
+                            || route_segment[0].1.max(route_segment[1].1)
+                                < partner_segment[0].1.min(partner_segment[1].1) - seg_reach
+                        {
+                            continue;
+                        }
                         let route_dir = (
                             (route_segment[1].0 - route_segment[0].0) / route_len,
                             (route_segment[1].1 - route_segment[0].1) / route_len,

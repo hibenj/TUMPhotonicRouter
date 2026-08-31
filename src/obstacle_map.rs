@@ -76,6 +76,11 @@ pub struct ObstacleMap {
     dynamic_core_obstacles: FxHashMap<CellKey, u16>,
     dynamic_cell_owner: FxHashMap<CellKey, NetId>,
     net_routes: FxHashMap<NetId, Vec<CellKey>>,
+    /// Inverted index mirroring `net_routes`: for every net `N` in
+    /// `net_routes` and every cell key `K` in `N`'s cell set, the entry for
+    /// `K` here contains `N` exactly once, and no other entries exist. This
+    /// lets owner lookups avoid scanning every committed net's cell set.
+    dynamic_owner_index: FxHashMap<CellKey, Vec<NetId>>,
     net_core_routes: FxHashMap<NetId, Vec<CellKey>>,
     history_cost: FxHashMap<CellKey, u32>,
     congestion_cost: FxHashMap<CellKey, u32>,
@@ -107,6 +112,7 @@ impl ObstacleMap {
             dynamic_core_obstacles: FxHashMap::default(),
             dynamic_cell_owner: FxHashMap::default(),
             net_routes: FxHashMap::default(),
+            dynamic_owner_index: FxHashMap::default(),
             net_core_routes: FxHashMap::default(),
             history_cost: FxHashMap::default(),
             congestion_cost: FxHashMap::default(),
@@ -384,6 +390,7 @@ impl ObstacleMap {
             Self::increment_ref(&mut self.dynamic_core_obstacles, key);
             self.dynamic_cell_owner.entry(key).or_insert(net_id);
         }
+        self.add_owner_index_entries(net_id, &keys);
         self.net_core_routes.insert(net_id, keys.clone());
         self.net_routes.insert(net_id, keys);
         true
@@ -519,6 +526,7 @@ impl ObstacleMap {
         for &key in &core_keys {
             Self::increment_ref(&mut self.dynamic_core_obstacles, key);
         }
+        self.add_owner_index_entries(net_id, &keys);
         self.net_core_routes.insert(net_id, core_keys);
         self.net_routes.insert(net_id, keys);
         true
@@ -536,6 +544,7 @@ impl ObstacleMap {
             if removed && !self.dynamic_obstacles.contains_key(&key) {
                 self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
             }
+            self.remove_owner_index_entry(key, net_id);
             if self.dynamic_cell_owner.get(&key).copied() == Some(net_id) {
                 self.dynamic_cell_owner.remove(&key);
                 for (&other_net_id, route_cells) in &self.net_routes {
@@ -560,6 +569,7 @@ impl ObstacleMap {
         self.dynamic_core_obstacles.clear();
         self.dynamic_cell_owner.clear();
         self.net_routes.clear();
+        self.dynamic_owner_index.clear();
         self.net_core_routes.clear();
         for cell in &mut self.occupancy {
             *cell &= !DYNAMIC_BIT;
@@ -643,17 +653,14 @@ impl ObstacleMap {
 
     /// Return all dynamic-route owners intersecting the provided cells.
     pub fn dynamic_owners_for_cells(&self, cells: &[(i32, i32)]) -> FxHashSet<NetId> {
-        let query: FxHashSet<CellKey> = cells
-            .iter()
-            .filter_map(|&(x, y)| self.in_bounds(x, y).then_some(pack_xy(x, y)))
-            .collect();
         let mut owners = FxHashSet::default();
-        if query.is_empty() {
-            return owners;
-        }
-        for (&net_id, route_cells) in &self.net_routes {
-            if route_cells.iter().any(|cell| query.contains(cell)) {
-                owners.insert(net_id);
+        for &(x, y) in cells {
+            if !self.in_bounds(x, y) {
+                continue;
+            }
+            let key = pack_xy(x, y);
+            if let Some(net_ids) = self.dynamic_owner_index.get(&key) {
+                owners.extend(net_ids.iter().copied());
             }
         }
         owners
@@ -665,15 +672,68 @@ impl ObstacleMap {
         exclude_net_id: Option<NetId>,
     ) -> FxHashSet<NetId> {
         let mut owners = FxHashSet::default();
-        for (&net_id, route_cells) in &self.net_routes {
-            if exclude_net_id.is_some_and(|excluded| excluded == net_id) {
-                continue;
-            }
-            if route_cells.contains(&key) {
+        if let Some(net_ids) = self.dynamic_owner_index.get(&key) {
+            for &net_id in net_ids {
+                if exclude_net_id.is_some_and(|excluded| excluded == net_id) {
+                    continue;
+                }
                 owners.insert(net_id);
             }
         }
         owners
+    }
+
+    /// Add `net_id` as an owner of each key, mirroring an insertion into
+    /// `net_routes`. Each key must not already carry `net_id` in the index
+    /// (mutation sites must ripup/remove the net's old keys first).
+    fn add_owner_index_entries(&mut self, net_id: NetId, keys: &[CellKey]) {
+        for &key in keys {
+            let owners = self.dynamic_owner_index.entry(key).or_default();
+            if !owners.contains(&net_id) {
+                owners.push(net_id);
+            }
+        }
+    }
+
+    /// Remove `net_id` as an owner of `key`, mirroring a removal from
+    /// `net_routes`. No-op if `net_id` is not an owner of `key`.
+    fn remove_owner_index_entry(&mut self, key: CellKey, net_id: NetId) {
+        if let Some(owners) = self.dynamic_owner_index.get_mut(&key) {
+            if let Some(pos) = owners.iter().position(|&owner| owner == net_id) {
+                owners.swap_remove(pos);
+            }
+            if owners.is_empty() {
+                self.dynamic_owner_index.remove(&key);
+            }
+        }
+    }
+
+    /// Full O(n) check that `dynamic_owner_index` exactly mirrors `net_routes`.
+    #[cfg(test)]
+    fn owner_index_is_consistent(&self) -> bool {
+        let mut expected: FxHashMap<CellKey, FxHashSet<NetId>> = FxHashMap::default();
+        for (&net_id, cells) in &self.net_routes {
+            for &key in cells {
+                expected.entry(key).or_default().insert(net_id);
+            }
+        }
+
+        if expected.len() != self.dynamic_owner_index.len() {
+            return false;
+        }
+
+        for (key, owners) in &expected {
+            let Some(index_owners) = self.dynamic_owner_index.get(key) else {
+                return false;
+            };
+            if index_owners.len() != owners.len() {
+                return false;
+            }
+            if !index_owners.iter().all(|owner| owners.contains(owner)) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Clear dynamic blocking for cells owned only by the selected nets.
@@ -757,6 +817,7 @@ impl ObstacleMap {
             // updating large owner maps on every normal route.
             dynamic_cell_owner: FxHashMap::default(),
             net_routes: FxHashMap::default(),
+            dynamic_owner_index: FxHashMap::default(),
             net_core_routes: FxHashMap::default(),
             history_cost: self.history_cost.clone(),
             congestion_cost: self.congestion_cost.clone(),
@@ -1427,6 +1488,56 @@ mod tests {
             },
             Some(&opened)
         ));
+    }
+
+    #[test]
+    fn owner_index_stays_consistent_across_commit_ripup_recommit() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.owner_index_is_consistent());
+
+        // Two overlapping routes: net 1 and net 2 share cell (3, 2).
+        assert!(map.commit_route(1, &[(2, 2), (3, 2)]));
+        assert!(map.owner_index_is_consistent());
+        let mut allowed = FxHashSet::default();
+        allowed.insert(1);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            2,
+            &[(3, 2)],
+            &[(3, 2), (4, 2)],
+            &[],
+            &allowed,
+        ));
+        assert!(map.owner_index_is_consistent());
+
+        let owners = map.dynamic_owners_at(3, 2);
+        assert_eq!(owners.len(), 2);
+        assert!(owners.contains(&1));
+        assert!(owners.contains(&2));
+        assert_eq!(map.dynamic_owners_at(2, 2), [1].into_iter().collect());
+        assert_eq!(map.dynamic_owners_at(4, 2), [2].into_iter().collect());
+
+        // Rip up net 1: cell (3, 2) should now be owned only by net 2.
+        assert!(map.ripup_route(1));
+        assert!(map.owner_index_is_consistent());
+        assert_eq!(map.dynamic_owners_at(2, 2), FxHashSet::default());
+        assert_eq!(map.dynamic_owners_at(3, 2), [2].into_iter().collect());
+
+        // Re-commit net 2 on a disjoint set of cells: the old cells must
+        // drop out of the index and the new ones must appear.
+        assert!(map.commit_route(2, &[(5, 5), (6, 5)]));
+        assert!(map.owner_index_is_consistent());
+        assert_eq!(map.dynamic_owners_at(3, 2), FxHashSet::default());
+        assert_eq!(map.dynamic_owners_at(4, 2), FxHashSet::default());
+        assert_eq!(map.dynamic_owners_at(5, 5), [2].into_iter().collect());
+        assert_eq!(map.dynamic_owners_at(6, 5), [2].into_iter().collect());
+
+        // dynamic_owners_for_cells should agree with the per-cell queries.
+        let combined = map.dynamic_owners_for_cells(&[(5, 5), (6, 5), (0, 0)]);
+        assert_eq!(combined, [2].into_iter().collect());
+
+        map.clear_dynamic();
+        assert!(map.owner_index_is_consistent());
+        assert!(map.dynamic_owner_index.is_empty());
     }
 
     #[test]
