@@ -73,7 +73,16 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
         # it counts the first, collision-crossing attempt described above,
         # which this plan's Milestone 2 does not touch. The result is still
         # fully clean (success=True, error_count=0, 31/31 routed) either way.
-        (True, "lidar-pure", 39, 8, 0),
+        #
+        # route_attempts 39 -> 45 and repair_count 0 -> 2 with the admissible
+        # default (heuristic_weight min 1.25 -> 1.0 plus the parallel-diagonal
+        # legality fixes,
+        # .agent/execplans/2026-08-31-admissible-astar-heuristic-45-degree.md):
+        # admissible A* explores more, a few of the first 31 nets take extra
+        # attempts, and two nets resolve through a repair round instead of a
+        # (previously legal, physically overlapping) parallel-diagonal path;
+        # route_failures (8) and the fully-clean outcome are unchanged.
+        (True, "lidar-pure", 45, 8, 2),
     ],
 )
 def test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary(

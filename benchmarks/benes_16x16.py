@@ -27,6 +27,12 @@ INTERNAL_DELAYS_UM = benes_internal_delays_um(NETWORK_SIZE)
 # Static fanout stubs use the router default bend style, currently 90 degrees.
 STABLE_ROUTING_ENV: dict[str, str] = {
     "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT": "0.05",
+    # Pinned to the old Weighted-A* behavior: at the repository default of
+    # 1.0 (admissible A*) one net of this benchmark hits the known
+    # "crossing-aware endpoint correction produced no realizable centerline"
+    # hole (n_s0_6_o0_to_s1_3_i0). Remove this pin once that hole is fixed --
+    # see .agent/execplans/2026-08-31-admissible-astar-heuristic-45-degree.md.
+    "PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT": "1.25",
 }
 
 STABLE_ROUTING_FLAGS: tuple[str, ...] = (

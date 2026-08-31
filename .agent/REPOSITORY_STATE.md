@@ -33,14 +33,30 @@ now lives only in the referenced ExecPlan and `git log`.)
   cannot see, only the photonic gate catches it), `benes_16x16` gets one
   net of the known `crossing-aware endpoint correction produced no
   realizable centerline` class, `benes_8x8` is 2.2x slower (55 s).
-  Landed env-gated, off by default: `PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT`
-  (default "1.25"; set 1.0 to reproduce). **Open, owner decision**: flip
-  the default to 1.0 (which first requires a parallel-diagonal-overlap
-  legality check and admissible-sized iteration budgets, then re-pinning
-  `test_multiportmmi_8x8_..._fanin_boundary`'s attempt count) vs keep
-  1.25 vs intermediate/post-smoothing. This likely interacts with -- and
-  may partly supersede -- the `n_123` fix directions (a)/(b) below, since
-  `n_123` no longer fails at 1.0.
+  **Update, same day: 1.0 is now the default** (owner decision). The
+  regressions it exposed were themselves latent holes and are fixed
+  (commit b52a19a): the A* crossing kernel accepted parallel-diagonal
+  halo contacts that produce no crossing event; commit validation missed
+  near-parallel realized centerlines closer than the waveguide width
+  (`parallel_route_overlap`, width via new `set_route_width_um`); and the
+  checked endpoint-correction batch validated each net against stale,
+  uncorrected neighbor geometry (now: geometric sweep in
+  `realized_dynamic_blockers` -- the cell-ownership prefilter is blind to
+  the unowned corner-cell gap between adjacent diagonals -- plus
+  remembering each corrected centerline before correcting the next net).
+  The 50k `max_iterations` cap for plain 45-degree searches now applies
+  only at weights > 1.0. `benes_16x16` pins 1.25 in its
+  `STABLE_ROUTING_ENV` until its known no-candidate correction hole
+  (`crossing-aware endpoint correction produced no realizable
+  centerline`, net `n_s0_6_o0_to_s1_3_i0` at 1.0) is fixed -- that fix is
+  the agreed next step. Double ladder measured (plan Progress has the
+  table): at 1.0 everything green except that benes net; at 1.25
+  regression-free (`pytest` byte-identical 10-failure baseline,
+  `benes_16x16` 40% faster), while `multiportmmi_16x16`@1.25 now grinds
+  1139 s to fail at `n_113` -- the forbidden parallel-diagonal adjacency
+  was the illegal "solution" weighted search used to commit. The `n_123`
+  fix directions (a)/(b) below are superseded at the default; they matter
+  only for weight > 1.0 configurations.
 - Branch: `crossings/verification-foundation`, HEAD `e78e8d1`. The three
   newest commits are the PLM plan's work described in the next bullet
   (`0f39ade` arc sampling + GDS record cap, `b9587d9` meander length

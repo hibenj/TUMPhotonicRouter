@@ -6684,22 +6684,29 @@ class _RouteNetsRustSession:
             "collision",
             "lidar-pure",
         }
+        min_heuristic_weight = float(
+            os.environ.get("PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT", "1.0")
+        )
         if (
             self.allow_45_degree_turns
             and not collision_crossing_mode
+            and min_heuristic_weight > 1.0
             and hasattr(self.astar_cfg, "max_iterations")
         ):
+            # This cap was sized for Weighted A* (min weight > 1.0), which
+            # reaches targets in few expansions; admissible search (1.0)
+            # legitimately needs the caller's full iteration budget
+            # (heater_s_mod's mmi_extra_3->mmi_extra_4 net exhausts 50k).
             self.astar_cfg.max_iterations = min(int(self.astar_cfg.max_iterations), 50_000)
         if self.allow_45_degree_turns and hasattr(self.astar_cfg, "heuristic_weight"):
-            # 1.25 is Weighted A*: inadmissible, up to 25% suboptimal paths
-            # (visible as chicanes/detours in the GDS), but far fewer expanded
-            # states. 1.0 is admissible A*; it routes multiportmmi_16x16
-            # completely but regresses multiportmmi_8x8/benes_16x16/mmi_heater
-            # elsewhere -- see
+            # 1.0 is admissible A*: cheapest paths, no weighted-search
+            # geometry artifacts (chicanes, overshoot detours), and the only
+            # weight at which multiportmmi_16x16 routes completely. 1.25 is
+            # the old Weighted A* behavior (fewer expanded states, up to 25%
+            # suboptimal paths); benes_16x16 still pins it in its
+            # STABLE_ROUTING_ENV until its no-candidate endpoint-correction
+            # hole is fixed -- see
             # .agent/execplans/2026-08-31-admissible-astar-heuristic-45-degree.md.
-            min_heuristic_weight = float(
-                os.environ.get("PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT", "1.25")
-            )
             self.astar_cfg.heuristic_weight = max(
                 float(self.astar_cfg.heuristic_weight), min_heuristic_weight
             )
