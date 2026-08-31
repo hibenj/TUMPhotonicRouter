@@ -32,6 +32,14 @@ Hard rules:
   background watchdog tasks -- they strand the deliverable and generate
   stale wake-ups after completion. Never end your turn with work or validation still
   running — the verifier packet is your deliverable.
+- Every long-running command MUST set the Bash TOOL's own `timeout`
+  parameter explicitly (max 600000 ms = 10 min). The shell-level
+  `timeout NNNN` prefix does NOT prevent the harness from
+  auto-backgrounding your call when the TOOL timeout (default ~2 min)
+  elapses -- that auto-backgrounding is how deliverables get stranded.
+  For work longer than 10 minutes, split into a start plus blocking
+  wait-loop calls (`until <done-condition>; do sleep 15; done`), each
+  itself under the 10-minute tool timeout.
 - Python stdout is block-buffered when redirected; judge run liveness by
   the process, not by log growth.
 

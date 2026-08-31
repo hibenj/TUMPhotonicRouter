@@ -332,6 +332,14 @@ prompts instead of relying on every brief to restate them:
   interact with env overrides (`STABLE_ROUTING_ENV` is applied via
   `os.environ.setdefault`, so an explicitly exported variable wins) —
   otherwise a lane can silently measure the wrong configuration.
+- (2026-08-31, root cause of all three same-day stalls) The Bash TOOL's
+  own `timeout` parameter (default ~2 minutes, max 600000 ms) is separate
+  from a shell-level `timeout NNNN` prefix; when the tool timeout elapses
+  on a long benchmark command, the harness auto-backgrounds the call and
+  the lane then "waits" -- stranding the deliverable. Lanes must set the
+  tool-level timeout explicitly on every long command and split >10-min
+  work into start-plus-blocking-wait-loop calls. Now in both lane
+  definitions.
 - (Codex era, still true for cheaper-model lanes) Fully-specified tasks
   converge; architectural discovery does not — lanes invent bolt-on
   mechanisms instead of finding the existing one. Root-causing and

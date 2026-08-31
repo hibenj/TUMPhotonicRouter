@@ -25,6 +25,14 @@ Hard rules:
   your turn until the deliverable report is written. If you must poll a
   file, do it inside one blocking Bash call
   (`until <condition>; do sleep 10; done`) with a generous timeout.
+- Every long-running command MUST set the Bash TOOL's own `timeout`
+  parameter explicitly (max 600000 ms = 10 min). The shell-level
+  `timeout NNNN` prefix does NOT prevent the harness from
+  auto-backgrounding your call when the TOOL timeout (default ~2 min)
+  elapses -- that auto-backgrounding is how deliverables get stranded.
+  For work longer than 10 minutes, split into a start plus blocking
+  wait-loop calls (`until <done-condition>; do sleep 15; done`), each
+  itself under the 10-minute tool timeout.
 - Python's stdout is block-buffered when redirected to a file: a silent,
   growing-CPU process is normal; judge liveness by the process, not the log.
 - If a step fails (timeout, unexpected pass/fail), report exactly what
