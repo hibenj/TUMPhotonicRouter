@@ -28,7 +28,9 @@ Hard rules:
   `RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python3" .venv/bin/maturin develop --release`
   before any Python-side validation. `cargo fmt` before testing.
 - Long-running validation (benchmarks: 1-20 min) runs in the FOREGROUND
-  with `timeout`. Never end your turn with work or validation still
+  with `timeout`. NEVER use `run_in_background` or
+  background watchdog tasks -- they strand the deliverable and generate
+  stale wake-ups after completion. Never end your turn with work or validation still
   running — the verifier packet is your deliverable.
 - Python stdout is block-buffered when redirected; judge run liveness by
   the process, not by log growth.

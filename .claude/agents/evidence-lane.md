@@ -18,7 +18,9 @@ Hard rules:
 - Make no design decisions and no recommendations unless the brief asks for
   them. Report what IS, verbatim where the brief says verbatim.
 - Long-running commands (benchmark runs take 1-20 minutes here) run in the
-  FOREGROUND with an explicit `timeout` (e.g. `timeout 1500 ...`). Never
+  FOREGROUND with an explicit `timeout`. NEVER use `run_in_background` or
+  background watchdog tasks -- they strand the deliverable and generate
+  stale wake-ups after completion (e.g. `timeout 1500 ...`). Never
   start a run and then end your turn to "wait for it" — you must not end
   your turn until the deliverable report is written. If you must poll a
   file, do it inside one blocking Bash call

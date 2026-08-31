@@ -23,10 +23,11 @@ use crate::auto_meander::{
 };
 use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
 use crate::geometry_realization::{
+    anchored_tilt_scale_candidate as anchored_tilt_scale_candidate_rs,
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
     centerline_length_um as centerline_length_um_rs,
     centerline_to_port_corrected_centerline_with_options as centerline_to_port_corrected_centerline_with_options_rs,
-    compress_grid_waypoints as compress_grid_waypoints_rs,
+    compress_grid_waypoints as compress_grid_waypoints_rs, distance as distance_rs,
     full_straight_offset_bump_candidates as full_straight_offset_bump_candidates_rs,
     full_straight_offset_bump_candidates_for_centerline as full_straight_offset_bump_candidates_for_centerline_rs,
     generate_waveguide_polygon as generate_waveguide_polygon_rs,
@@ -48,7 +49,7 @@ use crate::geometry_realization::{
     route_to_port_corrected_centerline_with_options_and_collision_check,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
     splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs, GeometryError,
-    GeometryGridSpec, PortAccess, PortAccessConfig,
+    GeometryGridSpec, OffsetBumpCandidate, PortAccess, PortAccessConfig,
 };
 use crate::meander::{
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
@@ -1744,7 +1745,8 @@ fn polylines_parallel_overlap_point(
             if q_len <= 0.0 {
                 continue;
             }
-            let cross_sin = (p_dir.0 * (q2.1 - q1.1) / q_len - p_dir.1 * (q2.0 - q1.0) / q_len).abs();
+            let cross_sin =
+                (p_dir.0 * (q2.1 - q1.1) / q_len - p_dir.1 * (q2.0 - q1.0) / q_len).abs();
             if cross_sin >= 0.5 {
                 continue;
             }
@@ -8317,7 +8319,7 @@ impl PyPhotonicRouter {
             }
         }
 
-        let candidates = full_straight_offset_bump_candidates_for_centerline_rs(
+        let mut candidates = full_straight_offset_bump_candidates_for_centerline_rs(
             centerline,
             &self.primitives,
             source_port_um,
@@ -8326,10 +8328,59 @@ impl PyPhotonicRouter {
         .map_err(|err| err.to_string())?;
 
         if candidates.is_empty() {
-            return Err(
-                "No port endpoint correction candidates found for centerline segment".to_string(),
-            );
+            // No offset bump fits (for example a terminal axis-aligned run
+            // far shorter than 4*bend_radius). Last resort: a small rigid
+            // rotate+scale of the whole segment about whichever end is the
+            // fixed anchor, landing the moving end exactly on the true port.
+            // It still runs through the same collision/commit checks below.
+            let anchor_side = match (source_port_um, target_port_um) {
+                (Some(source), Some(target)) if centerline.len() >= 2 => {
+                    if distance_rs(source, centerline[0]) <= 1.0e-6 {
+                        Some((true, target))
+                    } else if distance_rs(target, centerline[centerline.len() - 1]) <= 1.0e-6 {
+                        Some((false, source))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            let extra = anchor_side.map(|(anchor_at_start, moving_target)| {
+                (
+                    anchor_at_start,
+                    anchored_tilt_scale_candidate_rs(centerline, anchor_at_start, moving_target),
+                )
+            });
+            match extra {
+                Some((anchor_at_start, Some(mapped_centerline))) => {
+                    candidates.push(OffsetBumpCandidate {
+                        label: "anchored_tilt_scale".to_string(),
+                        centerline: mapped_centerline,
+                        // `compact_bump_portion` drops the port-side endpoint
+                        // from the collision footprint: the moving (port) end
+                        // is the last point when the anchor is at the start,
+                        // the first point otherwise.
+                        placement_is_start: anchor_at_start,
+                    })
+                }
+                _ => {
+                    return Err(
+                        "No port endpoint correction candidates found for centerline segment"
+                            .to_string(),
+                    );
+                }
+            }
         }
+
+        // Mirror the full-route corrector's old-core exemption: cells the
+        // original (uncorrected) segment already occupies are not new static
+        // conflicts a candidate introduces. Without this, an
+        // anchored_tilt_scale candidate is rejected for the anchor cell the
+        // route itself sits on (benes_16x16 n_s0_6_o0_to_s1_3_i0).
+        let old_segment_core_keys: FxHashSet<CellKey> =
+            centerline_core_cells(centerline, width_um, &static_grid)
+                .map(|cells| pack_cells(&cells.occupied))
+                .unwrap_or_default();
 
         let mut rejection_details = Vec::new();
         let mut first_accepted: Option<NativeEndpointCorrection> = None;
@@ -8367,6 +8418,7 @@ impl PyPhotonicRouter {
                     self.obstacle_map.in_bounds(x, y)
                         && self.obstacle_map.is_static_blocked(x, y)
                         && !opened_keys.contains(&key)
+                        && !old_segment_core_keys.contains(&key)
                 })
                 .collect();
             let realized_blockers = self.realized_dynamic_blockers(

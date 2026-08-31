@@ -45,11 +45,19 @@ now lives only in the referenced ExecPlan and `git log`.)
   the unowned corner-cell gap between adjacent diagonals -- plus
   remembering each corrected centerline before correcting the next net).
   The 50k `max_iterations` cap for plain 45-degree searches now applies
-  only at weights > 1.0. `benes_16x16` pins 1.25 in its
-  `STABLE_ROUTING_ENV` until its known no-candidate correction hole
-  (`crossing-aware endpoint correction produced no realizable
-  centerline`, net `n_s0_6_o0_to_s1_3_i0` at 1.0) is fixed -- that fix is
-  the agreed next step. Double ladder measured (plan Progress has the
+  only at weights > 1.0. **The `benes_16x16` no-candidate correction hole
+  is fixed and its 1.25 pin removed (2026-08-31, same plan):** the
+  segment corrector's offset-bump generator returned empty for any
+  non-axis-aligned centerline; it now handles mixed segments (bump on the
+  terminal axis-aligned run, remainder verbatim) and, as a last resort,
+  an `anchored_tilt_scale` candidate (rigid rotate+scale about the fixed
+  cut anchor, capped at |scale-1|<=0.2 / 5 degrees, finishing in an exact
+  1 um axis-aligned port stub so `validate_target_tangent` holds); the
+  segment candidate loop also gained the full-route corrector's old-core
+  static exemption. **Every benchmark in the ladder now routes clean at
+  the admissible default with no exceptions** (mm_16x16 200 s,
+  benes_16x16 309 s at 1.0, benes_8x8 57 s, mm_8x8 52 s, heater 25 s;
+  pytest byte-identical 10-failure baseline). Double ladder measured (plan Progress has the
   table): at 1.0 everything green except that benes net; at 1.25
   regression-free (`pytest` byte-identical 10-failure baseline,
   `benes_16x16` 40% faster), while `multiportmmi_16x16`@1.25 now grinds

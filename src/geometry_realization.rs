@@ -1125,7 +1125,7 @@ pub fn full_straight_offset_bump_candidates_for_centerline(
             6u8
         }
     } else {
-        return Ok(Vec::new());
+        return mixed_axis_run_offset_bump_candidates(centerline, primitives, source, target);
     };
 
     let offset_candidates = if matches!(start_angle, 0 | 4) && (source.1 - target.1).abs() > EPS {
@@ -1164,6 +1164,315 @@ pub fn full_straight_offset_bump_candidates_for_centerline(
     }
 
     Ok(candidates)
+}
+
+/// Fallback for `full_straight_offset_bump_candidates_for_centerline` when the
+/// centerline is neither fully horizontal nor fully vertical (for example a
+/// 45-degree run followed by a straight tail, as produced by crossing-aware
+/// endpoint correction slicing a route right after its last crossing). Only
+/// one endpoint of such a mixed centerline is a "fixed cut anchor" that must
+/// stay put -- the other end is the true, possibly off-grid, port that still
+/// needs correcting. This finds the terminal (target side) or initial (source
+/// side) maximal axis-aligned straight run touching the port end, builds the
+/// same compact four-bend offset bump against that run, and splices it back
+/// onto the untouched diagonal part of the centerline verbatim.
+fn mixed_axis_run_offset_bump_candidates(
+    centerline: &[(f64, f64)],
+    primitives: &PrimitiveLibrary,
+    source: (f64, f64),
+    target: (f64, f64),
+) -> Result<Vec<OffsetBumpCandidate>, GeometryError> {
+    let last = centerline.len() - 1;
+
+    let build_axis_candidates = |local_source: (f64, f64),
+                                 local_target: (f64, f64),
+                                 start_angle: u8|
+     -> Result<Vec<OffsetBumpCandidate>, GeometryError> {
+        let offset_candidates = if matches!(start_angle, 0 | 4)
+            && (local_source.1 - local_target.1).abs() > EPS
+        {
+            [(2u8, "top"), (6u8, "bottom")]
+        } else if matches!(start_angle, 2 | 6) && (local_source.0 - local_target.0).abs() > EPS {
+            [(0u8, "right"), (4u8, "left")]
+        } else {
+            return Ok(Vec::new());
+        };
+
+        let radius_um = infer_90_bend_radius_um(primitives)?;
+        let route_dir = angle_to_unit_vector(start_angle);
+        let mut candidates = Vec::new();
+        for placement in [OffsetBumpPlacement::Start, OffsetBumpPlacement::End] {
+            let placement_label = match placement {
+                OffsetBumpPlacement::Start => "start",
+                OffsetBumpPlacement::End => "end",
+            };
+            for (offset_angle, side_label) in offset_candidates {
+                if let Ok(bump_centerline) = build_compact_four_bend_offset_bump(
+                    local_source,
+                    local_target,
+                    start_angle,
+                    offset_angle,
+                    radius_um,
+                    placement,
+                ) {
+                    validate_bump_endpoint_tangents(&bump_centerline, route_dir)?;
+                    candidates.push(OffsetBumpCandidate {
+                        label: format!("{placement_label}/{side_label}"),
+                        centerline: bump_centerline,
+                        placement_is_start: matches!(placement, OffsetBumpPlacement::Start),
+                    });
+                }
+            }
+        }
+        Ok(candidates)
+    };
+
+    // Target side: source_port_um is the fixed cut anchor (centerline[0]);
+    // find the terminal maximal axis-aligned run and correct onto it.
+    if distance(source, centerline[0]) <= 1.0e-6 {
+        let terminal_kind = if is_horizontal_segment(centerline[last - 1], centerline[last]) {
+            Some(AxisAlignedRunKind::Horizontal)
+        } else if is_vertical_segment(centerline[last - 1], centerline[last]) {
+            Some(AxisAlignedRunKind::Vertical)
+        } else {
+            None
+        };
+        if let Some(kind) = terminal_kind {
+            let mut run_start_index = last - 1;
+            while run_start_index > 0 {
+                let extends = match kind {
+                    AxisAlignedRunKind::Horizontal => is_horizontal_segment(
+                        centerline[run_start_index - 1],
+                        centerline[run_start_index],
+                    ),
+                    AxisAlignedRunKind::Vertical => is_vertical_segment(
+                        centerline[run_start_index - 1],
+                        centerline[run_start_index],
+                    ),
+                };
+                if extends {
+                    run_start_index -= 1;
+                } else {
+                    break;
+                }
+            }
+            if run_start_index > 0 {
+                let run_start = centerline[run_start_index];
+                let start_angle = match kind {
+                    AxisAlignedRunKind::Horizontal => {
+                        if target.0 >= run_start.0 {
+                            0u8
+                        } else {
+                            4u8
+                        }
+                    }
+                    AxisAlignedRunKind::Vertical => {
+                        if target.1 >= run_start.1 {
+                            2u8
+                        } else {
+                            6u8
+                        }
+                    }
+                };
+                let candidates = build_axis_candidates(run_start, target, start_angle)?;
+                let mut out = Vec::with_capacity(candidates.len());
+                for candidate in candidates {
+                    // candidate.centerline always starts exactly at run_start
+                    // (build_compact_four_bend_offset_bump pushes the literal
+                    // `local_source` argument as its first point for both
+                    // placements), so the leading part can be spliced on
+                    // without introducing a duplicate or a gap.
+                    let mut merged = centerline[..run_start_index].to_vec();
+                    merged.extend(candidate.centerline);
+                    out.push(OffsetBumpCandidate {
+                        label: candidate.label,
+                        centerline: merged,
+                        placement_is_start: candidate.placement_is_start,
+                    });
+                }
+                return Ok(out);
+            }
+        }
+    }
+
+    // Source side (mirror): target_port_um is the fixed cut anchor
+    // (centerline[last]); find the initial maximal axis-aligned run and
+    // correct the true source port onto it.
+    if distance(target, centerline[last]) <= 1.0e-6 {
+        let initial_kind = if is_horizontal_segment(centerline[0], centerline[1]) {
+            Some(AxisAlignedRunKind::Horizontal)
+        } else if is_vertical_segment(centerline[0], centerline[1]) {
+            Some(AxisAlignedRunKind::Vertical)
+        } else {
+            None
+        };
+        if let Some(kind) = initial_kind {
+            let mut run_end_index = 1;
+            while run_end_index < last {
+                let extends = match kind {
+                    AxisAlignedRunKind::Horizontal => is_horizontal_segment(
+                        centerline[run_end_index],
+                        centerline[run_end_index + 1],
+                    ),
+                    AxisAlignedRunKind::Vertical => is_vertical_segment(
+                        centerline[run_end_index],
+                        centerline[run_end_index + 1],
+                    ),
+                };
+                if extends {
+                    run_end_index += 1;
+                } else {
+                    break;
+                }
+            }
+            if run_end_index < last {
+                let run_end = centerline[run_end_index];
+                let start_angle = match kind {
+                    AxisAlignedRunKind::Horizontal => {
+                        if run_end.0 >= source.0 {
+                            0u8
+                        } else {
+                            4u8
+                        }
+                    }
+                    AxisAlignedRunKind::Vertical => {
+                        if run_end.1 >= source.1 {
+                            2u8
+                        } else {
+                            6u8
+                        }
+                    }
+                };
+                let candidates = build_axis_candidates(source, run_end, start_angle)?;
+                let mut out = Vec::with_capacity(candidates.len());
+                for mut candidate in candidates {
+                    // Unlike the target-side splice, the bump's end is only
+                    // guaranteed exact (not merely within 1e-6) here when
+                    // placement is Start; snap it to the literal run_end
+                    // value so the verbatim trailing part attaches without a
+                    // sub-EPS gap regardless of placement.
+                    if let Some(last_point) = candidate.centerline.last_mut() {
+                        *last_point = run_end;
+                    }
+                    candidate
+                        .centerline
+                        .extend(centerline[run_end_index + 1..].iter().copied());
+                    out.push(candidate);
+                }
+                return Ok(out);
+            }
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+/// Last-resort endpoint correction candidate for a segment where no offset
+/// bump can fit (for example a terminal axis-aligned run far shorter than
+/// `4 * bend_radius`): map the whole segment by a single rigid rotation about
+/// the fixed anchor plus a uniform scale, so the moving end lands exactly on
+/// `target` instead of its old (off-grid) position. Only accepted within a
+/// tight envelope (scale within +/-20%, rotation within 5 degrees) so the
+/// result still looks like "the same route, nudged," not a different path.
+pub fn anchored_tilt_scale_candidate(
+    centerline: &[(f64, f64)],
+    anchor_at_start: bool,
+    target: (f64, f64),
+) -> Option<Vec<(f64, f64)>> {
+    if centerline.len() < 2 || !is_finite_point(target) {
+        return None;
+    }
+    if centerline.iter().any(|&point| !is_finite_point(point)) {
+        return None;
+    }
+
+    let last_index = centerline.len() - 1;
+    let anchor = if anchor_at_start {
+        centerline[0]
+    } else {
+        centerline[last_index]
+    };
+    let moving_end = if anchor_at_start {
+        centerline[last_index]
+    } else {
+        centerline[0]
+    };
+
+    // Terminal-tangent constraint: the realized polyline must meet the port
+    // exactly along the route's arrival axis (`validate_target_tangent`
+    // tolerates no rotation on the final chord). So the rotate+scale maps the
+    // moving end onto a *virtual* target one stub-length short of the port
+    // along that axis, and an exact axis-aligned stub covers the last bit.
+    // The ~theta-sized kink this leaves at the stub junction is of the same
+    // class as the pre-existing corrected-tail kinks (3.5-5.3 degrees
+    // documented), while the port facet itself is met dead-on.
+    const PORT_STUB_LEN_UM: f64 = 1.0;
+    let axis_vec = if anchor_at_start {
+        sub(centerline[last_index], centerline[last_index - 1])
+    } else {
+        sub(centerline[1], centerline[0])
+    };
+    let axis_len = length(axis_vec);
+    if axis_len < 1.0e-9 {
+        return None;
+    }
+    let axis = scale(axis_vec, 1.0 / axis_len);
+    let virtual_target = if anchor_at_start {
+        sub(target, scale(axis, PORT_STUB_LEN_UM))
+    } else {
+        add(target, scale(axis, PORT_STUB_LEN_UM))
+    };
+
+    let v = sub(moving_end, anchor);
+    let w = sub(virtual_target, anchor);
+    let v_len = length(v);
+    let w_len = length(w);
+    if v_len < 1.0e-6 || w_len < 1.0e-6 {
+        return None;
+    }
+
+    let scale_factor = w_len / v_len;
+    if (scale_factor - 1.0).abs() > 0.2 {
+        return None;
+    }
+    let theta = cross(v, w).atan2(dot(v, w));
+    if theta.abs() > 5.0_f64.to_radians() {
+        return None;
+    }
+
+    let cos_t = theta.cos();
+    let sin_t = theta.sin();
+    let mut mapped: Vec<(f64, f64)> = centerline
+        .iter()
+        .map(|&point| {
+            let d = sub(point, anchor);
+            let rotated = (d.0 * cos_t - d.1 * sin_t, d.0 * sin_t + d.1 * cos_t);
+            add(anchor, scale(rotated, scale_factor))
+        })
+        .collect();
+
+    // The anchor point already maps to itself exactly (zero vector in, zero
+    // vector out); snap both ends explicitly so downstream exact-endpoint
+    // checks are immune to floating noise from the rotate/scale, then attach
+    // the exact axis-aligned port stub.
+    if anchor_at_start {
+        mapped[0] = anchor;
+        mapped[last_index] = virtual_target;
+        mapped.push(target);
+    } else {
+        mapped[0] = virtual_target;
+        mapped[last_index] = anchor;
+        mapped.insert(0, target);
+    }
+
+    let mut deduped = Vec::with_capacity(mapped.len());
+    for point in mapped {
+        push_physical_if_different(&mut deduped, point);
+    }
+    if deduped.len() < 2 {
+        return None;
+    }
+    Some(deduped)
 }
 
 fn try_apply_shared_axis_port_shift(
@@ -4646,6 +4955,107 @@ mod tests {
         )
         .unwrap();
         assert!((centerline_length_um(&mirrored).unwrap() - expected_len).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn full_straight_offset_bump_candidates_for_centerline_corrects_target_after_diagonal_run() {
+        let lib = test_lib();
+        // A 45-degree stretch followed by a horizontal tail, mirroring the
+        // benes_16x16 n_s0_6_o0_to_s1_3_i0 crossing-aware correction suffix:
+        // the source end is the fixed cut anchor, the target end is the true
+        // (off-grid) port that still needs correcting.
+        let centerline = vec![(0.0, 12.0), (6.0, 6.0), (12.0, 0.0), (52.0, 0.0)];
+        let source = (0.0, 12.0);
+        let target = (54.5, -0.4);
+
+        let candidates = full_straight_offset_bump_candidates_for_centerline(
+            &centerline,
+            &lib,
+            Some(source),
+            Some(target),
+        )
+        .unwrap();
+
+        assert!(!candidates.is_empty());
+        for candidate in &candidates {
+            assert_eq!(candidate.centerline.first().copied(), Some(source));
+            assert_eq!(&candidate.centerline[..3], &centerline[..3]);
+            assert!(distance(candidate.centerline.last().copied().unwrap(), target) <= 1.0e-6);
+            validate_source_tangent(&candidate.centerline[2..], angle_to_unit_vector(0)).unwrap();
+        }
+    }
+
+    #[test]
+    fn full_straight_offset_bump_candidates_for_centerline_corrects_source_before_diagonal_run() {
+        let lib = test_lib();
+        // Mirror of the target-side case: the target end is the fixed cut
+        // anchor, the source end is the true (off-grid) port.
+        let centerline = vec![(52.0, 0.0), (12.0, 0.0), (6.0, 6.0), (0.0, 12.0)];
+        let source = (54.5, 0.4);
+        let target = (0.0, 12.0);
+
+        let candidates = full_straight_offset_bump_candidates_for_centerline(
+            &centerline,
+            &lib,
+            Some(source),
+            Some(target),
+        )
+        .unwrap();
+
+        assert!(!candidates.is_empty());
+        for candidate in &candidates {
+            assert_eq!(candidate.centerline.first().copied(), Some(source));
+            let len = candidate.centerline.len();
+            assert_eq!(&candidate.centerline[len - 2..], &centerline[2..]);
+            validate_target_tangent(&candidate.centerline[..len - 2], angle_to_unit_vector(4))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn full_straight_offset_bump_candidates_for_centerline_returns_empty_for_pure_diagonal() {
+        let lib = test_lib();
+        let centerline = vec![(0.0, 0.0), (6.0, 6.0), (12.0, 12.0)];
+        let source = (0.0, 0.0);
+        let target = (14.0, 10.0);
+
+        let candidates = full_straight_offset_bump_candidates_for_centerline(
+            &centerline,
+            &lib,
+            Some(source),
+            Some(target),
+        )
+        .unwrap();
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn anchored_tilt_scale_candidate_maps_endpoints_and_bounds_length_ratio() {
+        // Mirrors the benes_16x16 witness: an offset-bump-infeasible segment
+        // (terminal run far shorter than 4*radius) still needs some way to
+        // land on the true, slightly off-grid port.
+        let centerline = vec![(0.0, 0.0), (12.0, 0.0), (20.0, -8.0), (22.0, -8.0)];
+        let target = (24.5, -8.4);
+
+        let candidate = anchored_tilt_scale_candidate(&centerline, true, target).unwrap();
+
+        assert_eq!(candidate.first().copied(), Some((0.0, 0.0)));
+        assert_eq!(candidate.last().copied(), Some(target));
+
+        let original_len: f64 = centerline.windows(2).map(|w| distance(w[0], w[1])).sum();
+        let candidate_len: f64 = candidate.windows(2).map(|w| distance(w[0], w[1])).sum();
+        let ratio = candidate_len / original_len;
+        assert!((0.8..=1.2).contains(&ratio), "ratio was {ratio}");
+    }
+
+    #[test]
+    fn anchored_tilt_scale_candidate_rejects_thirty_degree_rotation() {
+        let centerline = vec![(0.0, 0.0), (10.0, 0.0)];
+        let thirty_deg = 30.0_f64.to_radians();
+        let target = (10.0 * thirty_deg.cos(), 10.0 * thirty_deg.sin());
+
+        assert!(anchored_tilt_scale_candidate(&centerline, true, target).is_none());
     }
 
     #[test]

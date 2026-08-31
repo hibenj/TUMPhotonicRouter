@@ -316,6 +316,18 @@ prompts instead of relying on every brief to restate them:
   an explicit `timeout`, and the lane must not end its turn before the
   report exists. Now baked into both lane definitions; when writing an
   ad-hoc brief, restate it.
+- (2026-08-31, same day, second and third occurrence) The stall repeated
+  even with the contract text read at task start -- the tempting failure
+  shape is `run_in_background` plus a "watchdog" poller, which also keeps
+  generating stale wake-up notifications long after the lane delivered.
+  Both lane definitions now ban `run_in_background` outright. Also
+  learned: a lane's *verifier-packet on failure* can be the most valuable
+  outcome -- the impl lane's instrumented "brief-vs-reality" report (the
+  real suffix geometry vs the brief's assumed shape) redirected the whole
+  fix; and layered validation gates mean a lane's "implemented exactly as
+  specified, still red" is normal, not lane failure. Budget for the lead
+  to iterate the last mile on gate-by-gate findings (three gates here:
+  candidate generation, static old-core exemption, terminal tangent).
 - (2026-08-31) Lane briefs must state how benchmark stable defaults
   interact with env overrides (`STABLE_ROUTING_ENV` is applied via
   `os.environ.setdefault`, so an explicitly exported variable wins) —
