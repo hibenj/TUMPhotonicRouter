@@ -918,9 +918,18 @@ explicitly resumes it.
    (DRV 0, DRV_path 0, 50 crossings, WL 15200 um)** -- the feasibility
    proof the owner asked for. Logs: scratchpad lidar_mm16.log /
    lidar_mm32.log of session afcc7efa; GDS artifacts under
-   LiDAR/src/picroute/result/LiDAR/main_results/. Next: run OUR
-   multiportmmi_32x32 baseline (never attempted this week -- only
-   benes_32x32 was) as the direct counterpart, and analyze the engine
+   LiDAR/src/picroute/result/LiDAR/main_results/.
+   **Our multiportmmi_32x32 counterpart run (overnight 2026-09-01):
+   fails at net 109/447 with a clean, fast RuntimeError** -- `n_108`
+   (`mmi0_ps_array_0_heater_13,o2 -> mmi0_multiport_0_0,o14`,
+   `candidate_blockers=[108]`, "No legal LiDAR crossing route found"):
+   the adjacent-diagonal fan-in class at the FIRST dense multiport
+   group, the exact o13/o14 analogue of 16x16's old n_123/n_124 --
+   fixed at 16x16 density by the admissible default, returning at
+   32x32 density. Unlike benes there is no grind: fully-diagnosed
+   failure (logs mm32_ours*.log, session afcc7efa). LiDAR routes THIS
+   SAME topology clean, o14 groups included -- the engine-difference
+   analysis has a precise, reproducible A/B. Next: analyze the engine
    difference; first candidate: LiDAR's A* has no perpendicularity
    constraint (per-node crossing_budget instead) and uses 10 ripup
    rounds with history costs and topological net order. Note benes has
