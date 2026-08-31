@@ -6717,10 +6717,22 @@ class _RouteNetsRustSession:
             # uniformly regardless of crossing_mode -- crossing-awareness only
             # changes whether/what a *crossing* costs (see crossing_loss,
             # translation/route_rust_crossing_plan.py), not how bends are priced.
-            self.astar_cfg.bend_weight = max(float(self.astar_cfg.bend_weight), 12.0)
+            # Experiment gate for the heuristics audit
+            # (.agent/execplans/2026-08-31-heuristics-inventory.md): the
+            # magnitude 12.0 has no recorded derivation; the env var lets the
+            # neutral-value ladder run without a code edit. Default unchanged.
+            min_bend_weight = float(os.environ.get("PHOTONIC_ROUTER_MIN_BEND_WEIGHT", "12.0"))
+            self.astar_cfg.bend_weight = max(
+                float(self.astar_cfg.bend_weight), min_bend_weight
+            )
         effective_heap_tie_breaker = str(self.heap_tie_breaker)
         if self.allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":
             effective_heap_tie_breaker = "larger_g"
+        # Experiment gate (same audit): the 45-degree-only tie-break flip is
+        # unjustified in-repo; an explicit env value overrides the outcome.
+        env_tie_breaker = os.environ.get("PHOTONIC_ROUTER_HEAP_TIE_BREAKER", "").strip()
+        if env_tie_breaker in {"smaller_g", "larger_g"}:
+            effective_heap_tie_breaker = env_tie_breaker
         self.astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
         if hasattr(self.astar_cfg, "proactive_congestion_weight"):
             self.astar_cfg.proactive_congestion_weight = float(self.proactive_congestion_weight)

@@ -33,8 +33,9 @@ STABLE_ROUTING_FLAGS: tuple[str, ...] = (
     "lidar-pure",
     "--fanout-access-mode",
     "static-stubs",
-    "--routing-window-scale",
-    "0.35",
+    # --routing-window-scale 0.35 removed 2026-08-31: the CLI default
+    # 0.05 routes identically clean and 15-30% faster (heuristics-audit
+    # experiments, .agent/execplans/2026-08-31-engine-performance-baseline.md).
     "--foreign-port-keepout-cells",
     "0",
 )

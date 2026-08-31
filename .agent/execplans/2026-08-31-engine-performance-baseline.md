@@ -70,6 +70,30 @@ geometry change, not just timing):
    clock): performance-only. Proposal: keep per-attempt timers, gate the
    per-expansion micro-timers behind an opt-in; output content unchanged.
 
+### Milestone 1c experiment results (2026-08-31, owner-directed "revisit before 32x32")
+
+Neutral-value runs, bare CLI plus one env/flag change each; judged on
+verification errors first, time second:
+
+- E1 `bend_weight` floor 12 -> 1.0: `multiportmmi_16x16` FAILS (photonic
+  4 errors, repairs 8 -> 19); `benes_16x16` clean but +5% slower. The
+  boost is load-bearing, not cosmetic -- reclassified as **evidenced by
+  this experiment** (magnitude between 1 and 12 still unprobed; low
+  priority). Notably the failures are caught by this session's new
+  parallel-overlap/correction gates -- the knob prevents real bad
+  geometry.
+- E3 45-degree tie-break flip removed (`smaller_g`):
+  `multiportmmi_16x16` FAILS (1 photonic error, repairs 21) despite a
+  faster search. Flip is load-bearing; "benign tie-breaking" disproved.
+  Reclassified as evidenced.
+- E2 `routing_window_scale` on `benes_16x16`: 0.35 routes clean but
+  takes **872.9 s vs 200.7 s at the CLI default 0.05** (4.3x). The
+  effective production value 0.05 is the right one; the Rust-side
+  `AStarConfig` default 0.35 is a trap for direct API users. Follow-up
+  measured separately: `multiportmmi_16x16` at 0.05 vs its pinned 0.35.
+- New env experiment gates (default-identical):
+  `PHOTONIC_ROUTER_MIN_BEND_WEIGHT`, `PHOTONIC_ROUTER_HEAP_TIE_BREAKER`.
+
 ## Surprises & Discoveries
 
 - Observation (2026-08-31, from the probe): the `benes_32x32` failure mode is not slow-but-steady routing; it is a repair livelock signature -- `native_repair_probe net=57 allowed_partners=12 crossing_events=3 realized_violations=9`, all `not_perpendicular`, victims ripped across the whole layer. Engine speed will shorten the time to hit it; whether the baseline can pass net 57 at all may be a separate repair-strategy question. Record, do not scope-creep into it here.
