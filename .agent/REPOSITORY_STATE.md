@@ -900,7 +900,17 @@ explicitly resumes it.
    lattice in 2.3 s routing time; crossing-guided A*: the search front
    balloons against the 200 um search loss, up to 2.8M expansions per
    net). The remaining baseline-level alternative is the owner-gated
-   lateral-diagonal repair strategy. Evidence: scratchpad
+   lateral-diagonal repair strategy. **Owner correction (2026-08-31,
+   same day, supersedes the contribution framing): 32x32 under
+   lidar-pure is a BASELINE MUST** -- "eigentlich ist das ein muss, dass
+   auch die 32x32 so laufen". Agreed path: reproduce a 32x32 run in the
+   reference router (~/Documents/Repositories/working/LiDAR, which
+   claims the capability and ran the 16x16 cases), take the learnings
+   ("unsere engine sollte nicht so unterschiedlich sein"), and close the
+   baseline gap; if that fails, try other approaches until it works. A
+   partial failure-state GDS (through net 56, via
+   --debug-stop-after-route) is being produced for owner inspection.
+   Evidence: scratchpad
    b32_retry2*.log of session afcc7efa. Original first-probe record:
    `benes_32x32` with the inherited benes_16x16 stable config reaches
    roughly net 57 of 320 in ~35 minutes and then thrashes in repair on
