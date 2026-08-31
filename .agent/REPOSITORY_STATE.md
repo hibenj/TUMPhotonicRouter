@@ -886,6 +886,25 @@ explicitly resumes it.
 
 ## Next Engineering Step
 
+**Roadmap set by the repository owner (2026-08-31), in order:**
+
+1. **32x32 baseline measurement** (in progress): one run each of
+   `benes_32x32` and `multiportmmi_32x32` with the inherited 16x16
+   sibling stable configs, to establish where the baseline stands at
+   this scale (neither has `STABLE_ROUTING_FLAGS` yet; the only prior
+   note is a stale "multiportmmi_32x32 slow/hanging at n_155").
+2. **Engine performance** on the baseline — the owner: "wir müssen auf
+   jeden Fall die Engine noch schneller bekommen."
+3. **Contributions on top of the baseline, deliberately NOT part of it**
+   (owner, verbatim intent: the baseline must stay clean so these
+   measure as deltas against it): (a) precomputed/preplaced crossing
+   structures (partially implemented, opt-in
+   `--preplaced-crossing-grids`); (b) crossing-guided A* — use the
+   precomputed expected crossings to guide the search, e.g. expected
+   crossings get zero crossing cost so the intended path is reinforced.
+   Neither may leak into baseline defaults or baseline
+   `STABLE_ROUTING_FLAGS`.
+
 **No ExecPlan is actively being driven by an agent right now (2026-08-30)
 -- the repository owner is directing next steps turn by turn.** Live
 threads, all waiting on an owner decision (see Current Snapshot for the
