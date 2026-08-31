@@ -4163,9 +4163,14 @@ mod unified_kernel {
         };
 
         let mut extended_nodes: Vec<UnifiedExtendedNode> = Vec::new();
-        let mut extended_best_cost: FxHashMap<(State, CrossingExtension), f64> =
-            FxHashMap::default();
-        let mut extended_closed: FxHashSet<(State, CrossingExtension)> = FxHashSet::default();
+        // Merged best-cost + closed bookkeeping for extension-carrying states
+        // ((best_g, closed)): in lidar-pure mode the straight-run tracking
+        // makes most states extended, and the previous two separate hash
+        // structures cost two probes per touch plus rehash growth from empty
+        // (measured ~10% of kernel time). Pre-sized to skip the growth
+        // ladder; semantics identical.
+        let mut extended_state: FxHashMap<(State, CrossingExtension), (f64, bool)> =
+            FxHashMap::with_capacity_and_hasher(4096, Default::default());
 
         let mut tier1_open = OpenSet::new(config.use_indexed_heap, storage.state_count());
         let mut tier2_open: BinaryHeap<OpenEntry> = BinaryHeap::new();
@@ -4258,18 +4263,13 @@ mod unified_kernel {
                 UnifiedOpenRef::Extended(ext_idx) => {
                     let node = &extended_nodes[ext_idx];
                     let key = (node.state, node.extension);
-                    if entry.g_score
-                        > extended_best_cost
-                            .get(&key)
-                            .copied()
-                            .unwrap_or(f64::INFINITY)
-                            + 1.0e-9
-                    {
+                    let bookkeeping = extended_state.get(&key).copied();
+                    if entry.g_score > bookkeeping.map_or(f64::INFINITY, |(g, _)| g) + 1.0e-9 {
                         stats.skipped_duplicate_heap_entries += 1;
                         stats.stale_generation_heap_entries += 1;
                         continue;
                     }
-                    if extended_closed.contains(&key) {
+                    if bookkeeping.is_some_and(|(_, closed)| closed) {
                         stats.skipped_duplicate_heap_entries += 1;
                         stats.closed_heap_entries += 1;
                         continue;
@@ -4318,7 +4318,10 @@ mod unified_kernel {
             match current_ref {
                 UnifiedOpenRef::Dense(idx) => storage.closed.set(idx)?,
                 UnifiedOpenRef::Extended(_) => {
-                    extended_closed.insert((state, current_extension));
+                    extended_state
+                        .entry((state, current_extension))
+                        .and_modify(|(_, closed)| *closed = true)
+                        .or_insert((current_g, true));
                 }
             }
             stats.expanded_states += 1;
@@ -4591,7 +4594,8 @@ mod unified_kernel {
                     let next_extension = CrossingExtension::from_outcome(&outcome);
 
                     let key = (next_state, next_extension);
-                    if extended_closed.contains(&key) {
+                    let existing_bookkeeping = extended_state.get(&key).copied();
+                    if existing_bookkeeping.is_some_and(|(_, closed)| closed) {
                         stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                         continue;
                     }
@@ -4638,7 +4642,7 @@ mod unified_kernel {
                         + congestion_cost
                         + extra_cost;
                     let tentative_g = current_g + step_cost;
-                    let best_next_g = extended_best_cost.get(&key).copied();
+                    let best_next_g = existing_bookkeeping.map(|(g, _)| g);
                     if tentative_g >= best_next_g.unwrap_or(f64::INFINITY) {
                         stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                         continue;
@@ -4698,7 +4702,7 @@ mod unified_kernel {
                         active_local_reservation_keys,
                         pending_local_reservation_keys,
                     });
-                    extended_best_cost.insert(key, tentative_g);
+                    extended_state.insert(key, (tentative_g, false));
                     stats.primitive_accepted_by_class[primitive_class] += 1;
                     stats.best_cost_updates += 1;
                     stats.parent_updates += 1;
