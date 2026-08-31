@@ -757,6 +757,13 @@ pub struct PyPhotonicRouter {
     // on `benes_16x16` in practical time). See
     // `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 6.
     commit_history_weight: f64,
+    // Physical waveguide width used by the realized-crossing commit
+    // validation's parallel-overlap check: two committed centerlines closer
+    // than this overlap as polygons even when they never intersect (the
+    // multiportmmi_8x8 n_13/n_14 adjacent-diagonal case). Settable from
+    // Python via `set_route_width_um`; 0.5 um is the repository-wide
+    // realization default (`realize_routed_net_records`).
+    route_width_um: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -1713,6 +1720,57 @@ fn polylines_closer_than(
                 .iter()
                 .any(|&(q1, q2)| segment_to_segment_distance(p1, p2, q1, q2) < threshold_um)
         })
+}
+
+/// First point (segment midpoint of `a`) where a near-parallel segment pair of
+/// `a` and `b` comes closer than `threshold_um`. Near-perpendicular pairs are
+/// skipped so the chords around a legal crossing stay exempt; two parallel
+/// centerlines closer than the waveguide width always overlap as polygons.
+fn polylines_parallel_overlap_point(
+    a: &[(f64, f64)],
+    b: &[(f64, f64)],
+    threshold_um: f64,
+) -> Option<(f64, f64)> {
+    for pw in a.windows(2) {
+        let (p1, p2) = (pw[0], pw[1]);
+        let p_len = physical_segment_length(p1, p2);
+        if p_len <= 0.0 {
+            continue;
+        }
+        let p_dir = ((p2.0 - p1.0) / p_len, (p2.1 - p1.1) / p_len);
+        for qw in b.windows(2) {
+            let (q1, q2) = (qw[0], qw[1]);
+            let q_len = physical_segment_length(q1, q2);
+            if q_len <= 0.0 {
+                continue;
+            }
+            let cross_sin = (p_dir.0 * (q2.1 - q1.1) / q_len - p_dir.1 * (q2.0 - q1.0) / q_len).abs();
+            if cross_sin >= 0.5 {
+                continue;
+            }
+            if segment_to_segment_distance(p1, p2, q1, q2) < threshold_um {
+                return Some(((p1.0 + p2.0) / 2.0, (p1.1 + p2.1) / 2.0));
+            }
+        }
+    }
+    None
+}
+
+fn polyline_bbox(points: &[(f64, f64)]) -> Option<(f64, f64, f64, f64)> {
+    if points.is_empty() {
+        return None;
+    }
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for &(x, y) in points {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    Some((min_x, min_y, max_x, max_y))
 }
 
 fn cells_with_other_dynamic_owner(
@@ -5476,6 +5534,53 @@ impl PyPhotonicRouter {
                         partner_segment[0],
                         partner_segment[1],
                     ) else {
+                        // No intersection. Near-parallel segments closer than
+                        // the waveguide width still overlap as polygons: two
+                        // routes on adjacent diagonal cells share no grid cell
+                        // and never intersect, but their realized waveguides
+                        // physically merge (multiportmmi_8x8 n_13/n_14 at
+                        // heuristic weight 1.0). Only near-parallel pairs are
+                        // tested so the chords around a legal perpendicular
+                        // crossing stay exempt.
+                        let route_dir = (
+                            (route_segment[1].0 - route_segment[0].0) / route_len,
+                            (route_segment[1].1 - route_segment[0].1) / route_len,
+                        );
+                        let partner_dir = (
+                            (partner_segment[1].0 - partner_segment[0].0) / partner_len,
+                            (partner_segment[1].1 - partner_segment[0].1) / partner_len,
+                        );
+                        let cross_sin =
+                            (route_dir.0 * partner_dir.1 - route_dir.1 * partner_dir.0).abs();
+                        if cross_sin < 0.5 {
+                            let distance = segment_to_segment_distance(
+                                route_segment[0],
+                                route_segment[1],
+                                partner_segment[0],
+                                partner_segment[1],
+                            );
+                            if distance < self.route_width_um - 1.0e-6 {
+                                let mid_x = (route_segment[0].0 + route_segment[1].0) / 2.0;
+                                let mid_y = (route_segment[0].1 + route_segment[1].1) / 2.0;
+                                // Coarse (1 um) dedupe key: a long parallel run
+                                // yields one violation per micron, not one per
+                                // sampled chord pair.
+                                let pair_key = (
+                                    net_id.min(*partner_id),
+                                    net_id.max(*partner_id),
+                                    (mid_x.round() as i64) * 1_000_000,
+                                    (mid_y.round() as i64) * 1_000_000,
+                                );
+                                if seen.insert(pair_key) {
+                                    invalid.push(InvalidCrossingIntersection {
+                                        net_id,
+                                        partner_net_id: *partner_id,
+                                        point: (mid_x, mid_y),
+                                        reason: "parallel_route_overlap",
+                                    });
+                                }
+                            }
+                        }
                         continue;
                     };
                     let pair_key = (
@@ -7516,6 +7621,40 @@ impl PyPhotonicRouter {
             } else {
                 result.shared_clear_cells.insert(pack_xy(cell.0, cell.1));
                 result.shared_clear_nets.extend(owners);
+            }
+        }
+        // The cell-ownership prefilter above is structurally blind to one
+        // geometry: a candidate shifted into the corner-cell gap between two
+        // adjacent committed diagonals occupies only cells that no net owns
+        // (committed diagonals own their own cells, never the corners), so no
+        // blocker cell exists to inspect -- yet the realized waveguides
+        // physically overlap (multiportmmi_8x8 n_13/n_14 at heuristic weight
+        // 1.0: corrected centerlines 0.44 um apart with 0.5 um width). Sweep
+        // the candidate directly against every committed realized centerline
+        // whose bounding box comes near it.
+        if let Some((min_x, min_y, max_x, max_y)) = polyline_bbox(candidate) {
+            let reach = width_um;
+            for (owner, other) in &self.committed_realized_center_routes {
+                if *owner == net_id {
+                    continue;
+                }
+                let Some((o_min_x, o_min_y, o_max_x, o_max_y)) = polyline_bbox(other) else {
+                    continue;
+                };
+                if o_min_x > max_x + reach
+                    || o_max_x < min_x - reach
+                    || o_min_y > max_y + reach
+                    || o_max_y < min_y - reach
+                {
+                    continue;
+                }
+                if let Some(point) =
+                    polylines_parallel_overlap_point(candidate, other, width_um - 1.0e-6)
+                {
+                    if let Some(cell) = self.grid_cell_for_physical_point(point) {
+                        result.blockers.push(cell);
+                    }
+                }
             }
         }
         result
@@ -11554,7 +11693,18 @@ impl PyPhotonicRouter {
             commit_history_increment: 0,
             commit_history_block_radius_cells: 0,
             commit_history_weight: 0.0,
+            route_width_um: 0.5,
         }
+    }
+
+    /// Physical waveguide width for the commit validation's
+    /// parallel-overlap check (see the `route_width_um` field).
+    fn set_route_width_um(&mut self, width_um: f64) -> PyResult<()> {
+        if !width_um.is_finite() || width_um <= 0.0 {
+            return Err(PyValueError::new_err("route width must be finite and > 0"));
+        }
+        self.route_width_um = width_um;
+        Ok(())
     }
 
     fn crossing_config(&self) -> PyCrossingConfig {
@@ -13755,6 +13905,13 @@ impl PyPhotonicRouter {
                 allow_unchecked_fallback,
             ) {
                 Ok(correction) => {
+                    // Later jobs in this batch must validate their candidates
+                    // against this net's *corrected* geometry, not its stale
+                    // grid centerline: two sibling diagonals each corrected
+                    // against the other's uncorrected line can end up
+                    // physically overlapping (multiportmmi_8x8 n_13/n_14 at
+                    // heuristic weight 1.0, 0.44 um apart after correction).
+                    self.remember_corrected_realized_centerline(net_id, &correction.centerline);
                     let total_length_um = centerline_length_um_rs(&correction.centerline)
                         .map_err(|err| PyValueError::new_err(err.to_string()))?;
                     entry.set_item("error", py.None())?;

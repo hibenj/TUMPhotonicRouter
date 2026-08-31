@@ -3785,15 +3785,17 @@ mod unified_kernel {
             stats: &mut RouteSearchStats,
         ) -> Option<(CrossingMoveOutcome, f64)> {
             let current_key = current_extension.to_key(state);
-            let extra_halo_free = footprint_free
+            let halo_checked = footprint_free
                 && !self.ignore_dynamic_obstacles
-                && primitive_crossing.has_extra_witnesses
+                && primitive_crossing.has_extra_witnesses;
+            let extra_halo_free = halo_checked
                 && self.dense_grid.relative_offsets_free_with_profile(
                     state.x,
                     state.y,
                     &primitive_crossing.extra_witness_offsets,
                     &primitive_crossing.extra_witness_profile,
                 );
+            let halo_contact = halo_checked && !extra_halo_free;
             let outcome = if footprint_free
                 && !self.ignore_dynamic_obstacles
                 && (!primitive_crossing.has_extra_witnesses || extra_halo_free)
@@ -3829,7 +3831,14 @@ mod unified_kernel {
                     Some(&self.search_start),
                 )?
             };
-            if !footprint_free && outcome.crossing_count == 0 {
+            // A contact must legalize as a crossing to pass. This covers both
+            // a blocked footprint and a free footprint whose compact diagonal
+            // halo touches another net: two parallel adjacent diagonals share
+            // no cell and produce no crossing event, but their realized
+            // waveguides physically overlap (multiportmmi_8x8 n_13/n_14 at
+            // heuristic weight 1.0), so a halo contact without a crossing is
+            // rejected exactly like the crossings-disabled kernel rejects it.
+            if (!footprint_free || halo_contact) && outcome.crossing_count == 0 {
                 return None;
             }
             let extra_cost = f64::from(outcome.crossing_count) * self.crossing.crossing_loss;
@@ -9751,6 +9760,75 @@ mod tests {
                 assert!(
                     !committed_set.contains(&halo),
                     "diagonal step {start:?}->{end:?} runs adjacent to the committed diagonal"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn crossing_search_rejects_parallel_diagonal_adjacent_to_committed_diagonal() {
+        // Crossing-enabled mirror of
+        // `plain_search_rejects_diagonal_adjacent_to_committed_diagonal`: a
+        // parallel halo contact produces no crossing event, so the crossing
+        // kernel must reject the move exactly like the plain kernel does
+        // (multiportmmi_8x8's n_13/n_14 physically overlapped this way at
+        // heuristic weight 1.0). Perpendicular halo contacts still legalize
+        // as crossings and stay allowed.
+        let mut map = ObstacleMap::new(40, 40);
+        let committed: Vec<(i32, i32)> = (10..26).map(|k| (k, k)).collect();
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            1,
+            &committed,
+            &committed,
+            &[],
+            &FxHashSet::default()
+        ));
+        let committed_set: FxHashSet<(i32, i32)> = committed.iter().copied().collect();
+        let library = primitive_library();
+        let crossing = CrossingSearchConfig {
+            net_id: 2,
+            partners: vec![CrossingSearchPartner {
+                net_id: 1,
+                waypoints: vec![(10, 10), (25, 25)],
+                target_terminal_bump_guard: None,
+            }],
+            min_straight_cells: 0,
+            crossing_half_size_cells: 0,
+            bend_runout_cells: 0,
+            crossing_loss: 3.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let (route, _stats) = route_single_net_with_collision_crossing_config_with_stats(
+            &map,
+            &library,
+            State::new(2, 3, 1),
+            State::new(32, 33, 1),
+            None,
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                ..AStarConfig::default()
+            },
+            0,
+            None,
+            &crossing,
+        );
+        let route = route.expect("a route away from the committed diagonal must exist");
+        for pair in route.cells.windows(2) {
+            let (start, end) = (pair[0], pair[1]);
+            let dx = end.0 - start.0;
+            let dy = end.1 - start.1;
+            if dx == 0 || dy == 0 || dx.signum() != dy.signum() {
+                // Straights carry no halo; perpendicular diagonals may
+                // legalize a halo contact as a real crossing.
+                continue;
+            }
+            for halo in compact_diagonal_halo_cells(start, end, dx.signum(), dy.signum()) {
+                assert!(
+                    !committed_set.contains(&halo),
+                    "parallel diagonal step {start:?}->{end:?} runs adjacent to the committed diagonal"
                 );
             }
         }

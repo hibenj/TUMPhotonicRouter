@@ -6753,6 +6753,10 @@ class _RouteNetsRustSession:
         self.router = self.rust_backend.PyPhotonicRouter(
             grid_spec, self.primitive_cfg, self.astar_cfg
         )
+        if hasattr(self.router, "set_route_width_um"):
+            # The commit validation's parallel-overlap check needs the
+            # physical waveguide width (see py_router.rs `route_width_um`).
+            self.router.set_route_width_um(float(self.route_width_um))
         self._record_pipeline_timing("router_setup", t_router_setup_start)
 
         self.port_lane_length_cells = max(3, 2 * self.bend_radius_cells + 2)
