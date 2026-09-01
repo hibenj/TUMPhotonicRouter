@@ -18,6 +18,27 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
+- Date: 2026-09-01
+- **ACTIVE PLAN: `.agent/execplans/2026-09-01-forced-90-degree-route-degradation.md`**
+  (owner priority). Landed there: the orthogonal repair fallback is
+  disabled by default (commit 3592a6c) -- repair routes carry diagonals
+  again (octile excess 1.31/1.20 -> 1.07/1.03), full ladder clean, owner
+  visual sign-off on multiportmmi_16x16, and multiportmmi_32x32
+  progressed from failing at net 109 to net 156 of 447. The new front is
+  a SEARCH-COST problem: net 156's direct path needs ~8-12 crossings and
+  the 200 um-per-crossing search loss forces admissible A* to exhaust
+  the whole window first (40+ min, zero repair activity). Owner decision:
+  try lowering the search loss first (A/B at 50 in flight at handoff),
+  fall back to LiDAR-style crossing-count budget escalation. benes_32x32
+  is running its first post-fix probe and is already past its old
+  net-57 cliff. See that plan's Progress for the full evidence chain,
+  in-flight experiment pointers, artifacts, and the open tooling gap.
+- Also new since the last snapshot: engine -50% (perf plan complete
+  through its measured milestones), heuristics audit round closed,
+  LiDAR reference runs (mm16 206 s / mm32 1257 s clean, DRV 0), and the
+  resolved CLI-vs-run_routing_flow env mystery (STABLE_ROUTING_ENV is
+  only applied by main()).
+- Previous snapshot below (2026-08-31):
 - Date: 2026-08-31
 - **Latest (2026-08-31), `.agent/execplans/2026-08-31-admissible-astar-heuristic-45-degree.md`**:
   the 45-degree router's `heuristic_weight` clamp of 1.25
