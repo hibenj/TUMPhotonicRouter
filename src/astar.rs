@@ -4142,6 +4142,30 @@ mod unified_kernel {
             .collect();
         let target_tolerance = config.target_tolerance_cells.max(0);
         let accepted_target_angles = target_angle_acceptance(target, config);
+        // Per-angle angle-preserving straight primitives, longest first,
+        // used by the eager post-crossing completion chain below. Longest-
+        // fitting-first matches the decomposition the old pending-state
+        // search preferred (per-primitive history/congestion costs make
+        // many short steps slightly pricier than one long straight over
+        // the same cells).
+        let completion_straights_per_angle: [Vec<(usize, i32)>; 8] =
+            std::array::from_fn(|angle| {
+                let mut straights: Vec<(usize, i32)> = primitive_buckets[angle]
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, primitive)| {
+                        primitive.end_angle % 8 == angle as u8
+                            && primitive_class_is_straight(
+                                primitive_search_metadata[angle][*idx].transition_class,
+                            )
+                    })
+                    .map(|(idx, primitive)| {
+                        (idx, primitive.dx.abs().max(primitive.dy.abs()))
+                    })
+                    .collect();
+                straights.sort_by_key(|(_, cells)| std::cmp::Reverse(*cells));
+                straights
+            });
 
         let mut counter = 0u32;
         let source_idx = storage.state_to_idx(source)?;
@@ -4592,6 +4616,318 @@ mod unified_kernel {
                         continue;
                     };
                     let next_extension = CrossingExtension::from_outcome(&outcome);
+
+                    if next_extension.pending_after_crossing_cells > 0 {
+                        // Eager post-crossing completion: a crossing whose
+                        // min-straight-after debt is still open never becomes
+                        // a search state. Debt-carrying keys multiplied per
+                        // (pending cells x angle x partner index) and caused
+                        // the crossing-state explosion diagnosed on
+                        // multiportmmi_32x32 net 156 (~63 key variants per
+                        // cell). The debt's only legal continuation is the
+                        // straight run itself, so complete it immediately
+                        // with forced shortest-straight steps -- each
+                        // validated through the same legality hook, which
+                        // already consumes pending in both its contact and
+                        // no-contact paths and legalizes any NEW crossings
+                        // the completion run hits (the dense-bundle case,
+                        // where the debt chains across several partners).
+                        // Intermediate nodes are parent scaffolding only:
+                        // never keyed in `extended_state`, never heaped.
+                        // An illegal completion abandons the whole move --
+                        // the same rejection the old per-state bookkeeping
+                        // produced, just before any states are spawned.
+                        const EAGER_CHAIN_MAX_STEPS: usize = 512;
+                        if unified_candidate_hits_active_local_crossing_reservation(
+                            current_ref,
+                            state,
+                            primitive_crossing,
+                            &extended_nodes,
+                        ) {
+                            stats.footprint_rejects += 1;
+                            stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                            continue;
+                        }
+                        let first_history_cost = if config.history_weight > 0.0 {
+                            dense_grid.primitive_footprint_history_with_profile(
+                                state.x,
+                                state.y,
+                                &primitive.footprint,
+                                profile,
+                            ) as f64
+                                * config.history_weight
+                        } else {
+                            0.0
+                        };
+                        let first_long_straight_congestion_cost =
+                            if config.long_straight_congestion_weight > 0.0 {
+                                dense_grid.primitive_footprint_congestion_with_profile(
+                                    state.x,
+                                    state.y,
+                                    &primitive.footprint,
+                                    profile,
+                                ) as f64
+                                    * config.long_straight_congestion_weight
+                            } else {
+                                0.0
+                            };
+                        let first_congestion_cost = if config.proactive_congestion_weight > 0.0
+                            && config.proactive_congestion_radius_cells > 0
+                            && primitive_class_is_straight(primitive_class)
+                        {
+                            f64::from(dense_grid.primitive_lateral_congestion(
+                                state.x,
+                                state.y,
+                                &primitive.footprint,
+                                primitive.start_angle,
+                                config.proactive_congestion_radius_cells,
+                            )) * config.proactive_congestion_weight
+                        } else {
+                            0.0
+                        };
+                        let mut chain_g = current_g
+                            + metadata.base_step_cost
+                            + first_history_cost
+                            + first_long_straight_congestion_cost
+                            + first_congestion_cost
+                            + extra_cost;
+                        let first_parent = match current_ref {
+                            UnifiedOpenRef::Dense(idx) => UnifiedParentRef::Dense(idx),
+                            UnifiedOpenRef::Extended(ext_idx) => {
+                                UnifiedParentRef::Extended(ext_idx)
+                            }
+                        };
+                        // Keyed states never carry open debt any more, so the
+                        // first move needs no promotion from the current
+                        // node's pending keys -- only the outcome's own keys.
+                        let mut first_active_keys =
+                            Vec::with_capacity(outcome.active_reservation_keys.len());
+                        let mut first_pending_keys =
+                            Vec::with_capacity(outcome.pending_reservation_keys.len());
+                        extend_unique_keys(
+                            &mut first_active_keys,
+                            &outcome.active_reservation_keys,
+                        );
+                        extend_unique_keys(
+                            &mut first_pending_keys,
+                            &outcome.pending_reservation_keys,
+                        );
+                        let mut last_idx = extended_nodes.len();
+                        extended_nodes.push(UnifiedExtendedNode {
+                            state: next_state,
+                            extension: next_extension,
+                            parent: first_parent,
+                            primitive_id: primitive.id,
+                            g_score: chain_g,
+                            active_local_reservation_keys: first_active_keys,
+                            pending_local_reservation_keys: first_pending_keys,
+                        });
+                        let mut chain_state = next_state;
+                        let mut chain_extension = next_extension;
+                        let mut chain_completed = true;
+                        let mut chain_steps = 0usize;
+                        while chain_extension.pending_after_crossing_cells > 0 {
+                            chain_steps += 1;
+                            if chain_steps > EAGER_CHAIN_MAX_STEPS {
+                                chain_completed = false;
+                                break;
+                            }
+                            let pending_angle =
+                                chain_extension.pending_after_crossing_angle as usize;
+                            if pending_angle >= 8 || chain_state.angle as usize != pending_angle
+                            {
+                                chain_completed = false;
+                                break;
+                            }
+                            let remaining_debt =
+                                chain_extension.pending_after_crossing_cells;
+                            let Some(&(step_idx, _)) = completion_straights_per_angle
+                                [pending_angle]
+                                .iter()
+                                .find(|(_, cells)| *cells <= remaining_debt)
+                            else {
+                                chain_completed = false;
+                                break;
+                            };
+                            let step_primitive = &primitive_buckets[pending_angle][step_idx];
+                            let step_metadata =
+                                primitive_search_metadata[pending_angle][step_idx];
+                            let step_profile =
+                                &primitive_footprint_profiles[pending_angle][step_idx];
+                            let step_crossing =
+                                &primitive_crossing_metadata[pending_angle][step_idx];
+                            let (Some(step_x), Some(step_y)) = (
+                                chain_state.x.checked_add(step_primitive.dx),
+                                chain_state.y.checked_add(step_primitive.dy),
+                            ) else {
+                                chain_completed = false;
+                                break;
+                            };
+                            if !bounds.contains(step_x, step_y) {
+                                stats.window_rejects += 1;
+                                chain_completed = false;
+                                break;
+                            }
+                            stats.primitive_footprint_checks += 1;
+                            stats.obstacle_clearance_checks += 1;
+                            let step_footprint_free = dense_grid
+                                .primitive_footprint_free_with_profile(
+                                    chain_state.x,
+                                    chain_state.y,
+                                    &step_primitive.footprint,
+                                    step_profile,
+                                    stats,
+                                );
+                            let step_pending_completed =
+                                primitive_initial_straight_run_distance(
+                                    step_primitive,
+                                    chain_state.angle,
+                                ) + 1.0e-9
+                                    >= f64::from(
+                                        chain_extension.pending_after_crossing_cells,
+                                    );
+                            let Some((step_outcome, step_extra_cost)) = hook.evaluate(
+                                chain_state,
+                                chain_extension,
+                                step_primitive,
+                                true,
+                                step_crossing,
+                                step_footprint_free,
+                                stats,
+                            ) else {
+                                chain_completed = false;
+                                break;
+                            };
+                            if unified_candidate_hits_active_local_crossing_reservation(
+                                UnifiedOpenRef::Extended(last_idx),
+                                chain_state,
+                                step_crossing,
+                                &extended_nodes,
+                            ) {
+                                chain_completed = false;
+                                break;
+                            }
+                            let step_history_cost = if config.history_weight > 0.0 {
+                                dense_grid.primitive_footprint_history_with_profile(
+                                    chain_state.x,
+                                    chain_state.y,
+                                    &step_primitive.footprint,
+                                    step_profile,
+                                ) as f64
+                                    * config.history_weight
+                            } else {
+                                0.0
+                            };
+                            let step_long_straight_congestion_cost =
+                                if config.long_straight_congestion_weight > 0.0 {
+                                    dense_grid.primitive_footprint_congestion_with_profile(
+                                        chain_state.x,
+                                        chain_state.y,
+                                        &step_primitive.footprint,
+                                        step_profile,
+                                    ) as f64
+                                        * config.long_straight_congestion_weight
+                                } else {
+                                    0.0
+                                };
+                            let step_congestion_cost = if config.proactive_congestion_weight
+                                > 0.0
+                                && config.proactive_congestion_radius_cells > 0
+                            {
+                                f64::from(dense_grid.primitive_lateral_congestion(
+                                    chain_state.x,
+                                    chain_state.y,
+                                    &step_primitive.footprint,
+                                    step_primitive.start_angle,
+                                    config.proactive_congestion_radius_cells,
+                                )) * config.proactive_congestion_weight
+                            } else {
+                                0.0
+                            };
+                            chain_g += step_metadata.base_step_cost
+                                + step_history_cost
+                                + step_long_straight_congestion_cost
+                                + step_congestion_cost
+                                + step_extra_cost;
+                            let step_extension = CrossingExtension::from_outcome(&step_outcome);
+                            // Reservation-key promotion, mirroring the keyed
+                            // path: keys booked while the debt was open
+                            // become active once the debt completes, and
+                            // stay pending while it is still open.
+                            let prev_pending_keys =
+                                extended_nodes[last_idx].pending_local_reservation_keys.clone();
+                            let mut step_active_keys =
+                                Vec::with_capacity(step_outcome.active_reservation_keys.len());
+                            let mut step_pending_keys =
+                                Vec::with_capacity(step_outcome.pending_reservation_keys.len());
+                            if step_pending_completed {
+                                step_active_keys.extend(prev_pending_keys);
+                            } else {
+                                step_pending_keys.extend(prev_pending_keys);
+                            }
+                            extend_unique_keys(
+                                &mut step_active_keys,
+                                &step_outcome.active_reservation_keys,
+                            );
+                            extend_unique_keys(
+                                &mut step_pending_keys,
+                                &step_outcome.pending_reservation_keys,
+                            );
+                            let step_state = State::new(
+                                step_x,
+                                step_y,
+                                step_primitive.end_angle % 8,
+                            );
+                            let new_idx = extended_nodes.len();
+                            extended_nodes.push(UnifiedExtendedNode {
+                                state: step_state,
+                                extension: step_extension,
+                                parent: UnifiedParentRef::Extended(last_idx),
+                                primitive_id: step_primitive.id,
+                                g_score: chain_g,
+                                active_local_reservation_keys: step_active_keys,
+                                pending_local_reservation_keys: step_pending_keys,
+                            });
+                            last_idx = new_idx;
+                            chain_state = step_state;
+                            chain_extension = step_extension;
+                        }
+                        if !chain_completed {
+                            stats.crossing_reject_pending_straight += 1;
+                            continue;
+                        }
+                        let final_key = (chain_state, chain_extension);
+                        let final_bookkeeping = extended_state.get(&final_key).copied();
+                        if final_bookkeeping.is_some_and(|(_, closed)| closed) {
+                            stats.primitive_closed_rejects_by_class[primitive_class] += 1;
+                            continue;
+                        }
+                        if chain_g
+                            >= final_bookkeeping.map(|(g, _)| g).unwrap_or(f64::INFINITY)
+                        {
+                            stats.primitive_cost_pruned_by_class[primitive_class] += 1;
+                            continue;
+                        }
+                        extended_state.insert(final_key, (chain_g, false));
+                        stats.primitive_accepted_by_class[primitive_class] += 1;
+                        stats.best_cost_updates += 1;
+                        stats.parent_updates += 1;
+                        let generation = next_search_generation(&mut counter)?;
+                        tier2_open.push(OpenEntry {
+                            f_score: chain_g
+                                + search_heuristic.estimate(chain_state)
+                                + hook.heuristic_bonus(chain_state, chain_extension),
+                            tie_score: heap_tie_score(chain_g, config.heap_tie_breaker),
+                            g_score: chain_g,
+                            counter: generation,
+                            generation,
+                            idx: last_idx,
+                        });
+                        stats.heap_pushes += 1;
+                        stats.max_heap_size =
+                            stats.max_heap_size.max(tier1_open.len() + tier2_open.len());
+                        continue;
+                    }
 
                     let key = (next_state, next_extension);
                     let existing_bookkeeping = extended_state.get(&key).copied();
