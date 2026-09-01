@@ -82,7 +82,16 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
         # attempts, and two nets resolve through a repair round instead of a
         # (previously legal, physically overlapping) parallel-diagonal path;
         # route_failures (8) and the fully-clean outcome are unchanged.
-        (True, "lidar-pure", 45, 8, 2),
+        #
+        # route_attempts 45 -> 51 and route_failures 8 -> 14 with the
+        # orthogonal repair fallback disabled by default
+        # (.agent/execplans/2026-09-01-forced-90-degree-route-degradation.md):
+        # the attempts the fallback used to absorb now count as failed
+        # attempts before the diagonal-capable chain converges -- it converts
+        # every time, the fully-clean outcome is unchanged, and the resulting
+        # repair-path routes carry 45-degree bends again instead of
+        # pure-orthogonal staircase geometry.
+        (True, "lidar-pure", 51, 14, 2),
     ],
 )
 def test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary(

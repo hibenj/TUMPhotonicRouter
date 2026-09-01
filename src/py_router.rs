@@ -1855,6 +1855,24 @@ fn rust_crossing_level2_validation_disabled() -> bool {
     std::env::var_os("PHOTONIC_ROUTER_DISABLE_RUST_CROSSING_VALIDATION").is_some()
 }
 
+/// The orthogonal repair fallback is DISABLED BY DEFAULT since the
+/// forced-90-degree plan
+/// (`.agent/execplans/2026-09-01-forced-90-degree-route-degradation.md`):
+/// it committed diagonal-free routes (46 90-degree bends, zero 45s, 20-31%
+/// octile excess across multiportmmi_16x16's 14 repair-path nets) whose
+/// axis-aligned material cascaded into later nets' searches; with it off,
+/// the full ladder stays clean (repair-path excess 1.31 -> 1.07 and
+/// 1.20 -> 1.03, owner visual sign-off) and multiportmmi_32x32 progresses
+/// from failing at net 109 to net 156. Set
+/// PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK to restore the old
+/// behavior.
+fn orthogonal_repair_fallback_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK").is_some()
+    })
+}
+
 fn physical_point_near_centerline_endpoint(
     point: (f64, f64),
     centerline: &[(f64, f64)],
@@ -7276,7 +7294,7 @@ impl PyPhotonicRouter {
             source_port_um,
             target_port_um,
         );
-        if normal_result.is_ok() || !prefer_orthogonal {
+        if normal_result.is_ok() || !prefer_orthogonal || !orthogonal_repair_fallback_enabled() {
             return normal_result;
         }
         self.route_single_net_and_commit_orthogonal_native_with_repair_keepout(
