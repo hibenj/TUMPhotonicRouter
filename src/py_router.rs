@@ -1903,6 +1903,65 @@ fn physical_segments_are_perpendicular(
     (ax * bx + ay * by).abs() < 1e-6
 }
 
+fn physical_point_segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let abx = b.0 - a.0;
+    let aby = b.1 - a.1;
+    let len_sq = abx * abx + aby * aby;
+    if len_sq < 1e-18 {
+        return ((p.0 - a.0).powi(2) + (p.1 - a.1).powi(2)).sqrt();
+    }
+    let t = (((p.0 - a.0) * abx + (p.1 - a.1) * aby) / len_sq).clamp(0.0, 1.0);
+    let cx = a.0 + t * abx;
+    let cy = a.1 + t * aby;
+    ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
+}
+
+/// Distance from `p` to the nearest segment of `polyline`, plus that
+/// segment's direction in degrees folded to [0, 180). Diagnostic use only.
+fn nearest_segment_info(polyline: &[(f64, f64)], p: (f64, f64)) -> (f64, f64) {
+    let mut best = (f64::INFINITY, 0.0);
+    for segment in polyline.windows(2) {
+        let distance = physical_point_segment_distance(p, segment[0], segment[1]);
+        if distance < best.0 {
+            let angle = (segment[1].1 - segment[0].1)
+                .atan2(segment[1].0 - segment[0].0)
+                .to_degrees()
+                .rem_euclid(180.0);
+            best = (distance, angle);
+        }
+    }
+    best
+}
+
+/// Distance from `p` to the nearest intersection of any segment pair of the
+/// two polylines, considering only intersections within `radius_um` of `p`.
+/// Diagnostic use only.
+fn nearest_polyline_intersection_distance(
+    a: &[(f64, f64)],
+    b: &[(f64, f64)],
+    p: (f64, f64),
+    radius_um: f64,
+) -> Option<f64> {
+    let mut best: Option<f64> = None;
+    for sa in a.windows(2) {
+        if physical_point_segment_distance(p, sa[0], sa[1]) > radius_um {
+            continue;
+        }
+        for sb in b.windows(2) {
+            let Some((x, y, _t, _u)) =
+                physical_segment_intersection_with_params(sa[0], sa[1], sb[0], sb[1])
+            else {
+                continue;
+            };
+            let distance = ((p.0 - x).powi(2) + (p.1 - y).powi(2)).sqrt();
+            if distance <= radius_um && best.is_none_or(|b| distance < b) {
+                best = Some(distance);
+            }
+        }
+    }
+    best
+}
+
 fn physical_segment_intersection_with_params(
     a0: (f64, f64),
     a1: (f64, f64),
@@ -4920,6 +4979,13 @@ impl PyPhotonicRouter {
                 opened_cell_keys,
             )
         };
+        self.dump_crossing_mismatch(
+            net_id,
+            &result,
+            source_port_um,
+            target_port_um,
+            &realized_violations,
+        );
         if trace_crossing {
             eprintln!(
                 "collision-crossing validation net={} crossed={:?} satisfies={} realized_violations={:?}",
@@ -5724,6 +5790,92 @@ impl PyPhotonicRouter {
         None
     }
 
+    /// Diagnostic guard (owner request 2026-09-01): a route the crossing-aware
+    /// search accepted as legal must never fail realized-crossing validation --
+    /// when it does, the search's grid-polyline partner model and the realized
+    /// centerlines disagree. This dump classifies every violation point for the
+    /// three-way question "search wrong / validation wrong / geometry destroyed
+    /// along the way": `grid_hit` reports whether the two GRID polylines also
+    /// intersect near the point (search-side miss), the `route`/`partner`
+    /// blocks report each side's grid-vs-realized local distance and segment
+    /// angle at the point (who moved between search and realization), and the
+    /// realized angles expose near-perpendicular cases (validator strictness).
+    /// Enable with PHOTONIC_ROUTER_CROSSING_MISMATCH_DUMP (optionally
+    /// =<net_id> to filter).
+    fn dump_crossing_mismatch(
+        &self,
+        net_id: u64,
+        route: &RouteResult,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+        violations: &[InvalidCrossingIntersection],
+    ) {
+        let Some(filter) = std::env::var_os("PHOTONIC_ROUTER_CROSSING_MISMATCH_DUMP") else {
+            return;
+        };
+        if violations.is_empty() {
+            return;
+        }
+        if let Some(requested) = filter.to_str().and_then(|value| value.parse::<u64>().ok()) {
+            if requested != net_id {
+                return;
+            }
+        }
+        let route_grid_centerline =
+            self.grid_waypoints_to_centerline(&route.compressed_waypoints);
+        let route_realized = self
+            .routing_centerline_for_route(route, source_port_um, target_port_um)
+            .unwrap_or_default();
+        let radius_um = 12.0 * self.grid.grid_size_um;
+        for violation in violations {
+            let vp = violation.point;
+            let partner_grid_centerline = self
+                .committed_center_routes
+                .get(&violation.partner_net_id)
+                .map(|waypoints| self.grid_waypoints_to_centerline(waypoints))
+                .unwrap_or_default();
+            let partner_realized = self
+                .committed_realized_center_routes
+                .get(&violation.partner_net_id)
+                .cloned()
+                .unwrap_or_default();
+            let grid_hit = nearest_polyline_intersection_distance(
+                &route_grid_centerline,
+                &partner_grid_centerline,
+                vp,
+                radius_um,
+            );
+            let (route_grid_dist, route_grid_angle) =
+                nearest_segment_info(&route_grid_centerline, vp);
+            let (route_real_dist, route_real_angle) = nearest_segment_info(&route_realized, vp);
+            let (partner_grid_dist, partner_grid_angle) =
+                nearest_segment_info(&partner_grid_centerline, vp);
+            let (partner_real_dist, partner_real_angle) =
+                nearest_segment_info(&partner_realized, vp);
+            eprintln!(
+                "crossing-mismatch net={} partner={} reason={} point=({:.3},{:.3}) \
+                 grid_intersection_within_{:.1}um={} \
+                 route[grid_dist={:.3} grid_angle={:.1} real_dist={:.3} real_angle={:.1}] \
+                 partner[grid_dist={:.3} grid_angle={:.1} real_dist={:.3} real_angle={:.1}]",
+                net_id,
+                violation.partner_net_id,
+                violation.reason,
+                vp.0,
+                vp.1,
+                radius_um,
+                grid_hit.map_or_else(|| "NO".to_string(), |d| format!("{d:.3}")),
+                route_grid_dist,
+                route_grid_angle,
+                route_real_dist,
+                route_real_angle,
+                partner_grid_dist,
+                partner_grid_angle,
+                partner_real_dist,
+                partner_real_angle,
+            );
+        }
+    }
+
     fn validate_committed_crossings_for_route_with_ports(
         &self,
         net_id: u64,
@@ -5744,6 +5896,20 @@ impl PyPhotonicRouter {
         );
         if violations.is_empty() {
             return Ok(());
+        }
+        self.dump_crossing_mismatch(net_id, route, source_port_um, target_port_um, &violations);
+        if std::env::var_os("PHOTONIC_ROUTER_CROSSING_MISMATCH_FATAL").is_some() {
+            panic!(
+                "crossing mismatch fatal (net {}): the crossing-aware search returned a route \
+                 that fails realized-crossing validation; first violation: net {} intersects \
+                 net {} at ({:.3}, {:.3}) ({})",
+                net_id,
+                violations[0].net_id,
+                violations[0].partner_net_id,
+                violations[0].point.0,
+                violations[0].point.1,
+                violations[0].reason
+            );
         }
         let violation = &violations[0];
         Err(format!(
