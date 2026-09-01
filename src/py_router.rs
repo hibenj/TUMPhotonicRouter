@@ -5144,6 +5144,13 @@ impl PyPhotonicRouter {
                 target_port_um,
                 opened_cell_keys,
             );
+            self.dump_crossing_mismatch(
+                net_id,
+                &result,
+                source_port_um,
+                target_port_um,
+                &realized_violations,
+            );
             let covers_requested_partners =
                 Self::crossing_events_cover_partners(&crossing_events, partner_ids);
             if trace_crossing {
@@ -8911,6 +8918,13 @@ impl PyPhotonicRouter {
         } else {
             Vec::new()
         };
+        self.dump_crossing_mismatch(
+            job.net_id,
+            &probe_route,
+            job.source_port_um,
+            job.target_port_um,
+            &probe_realized_crossing_violations,
+        );
         let probe_grid_crossing_violations =
             if crossing_repair_enabled && !allowed_crossing_partners.is_empty() {
                 self.invalid_crossing_intersections_for_route(
