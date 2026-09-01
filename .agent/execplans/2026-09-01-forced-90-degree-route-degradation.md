@@ -1,0 +1,45 @@
+# Analyze and repair the forced-90-degree route degradation
+
+This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. This document must be maintained in accordance with `.agent/PLANS.md`.
+
+## Purpose / Big Picture
+
+The repository owner's prioritized finding (2026-09-01, with GDS screenshots): large parts of the multiportmmi layouts route as 90-degree Manhattan geometry where 45-degree diagonals are obviously better -- nested rectangular detours around the dense fan-in groups (32x32, and visibly also 16x16), and even the FIRST-layer fanout's upper routes, which commit early into empty space. "Die 90 grad routen verschlechtern die route qualitaet. das wuerde ich analysieren und reparieren." The reference router (LiDAR, ~/Documents/Repositories/working/LiDAR) routes the identical multiportmmi_32x32 input clean with wide diagonal fans (1257 s, DRV 0, 50 crossings) under the SAME perpendicular-crossing rule (verified in its `drc/drcmanager.py`: `(check_ori + nType) % 180 == 0`), so the degradation is our engine's behavior, not a law of the topology. LiDAR is the reference for detecting problems -- explicitly NOT a template to copy (owner direction).
+
+After this plan, routes are diagonal wherever geometry allows, 90-degree only where genuinely necessary; measurably: the Manhattan-excess of multiportmmi_16x16 drops, the first-layer fanout in the owner's screenshot routes as symmetric diagonals, and `multiportmmi_32x32` progresses past its current `n_108` collapse (net 109/447) -- ideally to clean completion, closing the "32x32 under lidar-pure is a baseline must" goal.
+
+## Progress
+
+- [x] (2026-09-01) Plan created from the day's evidence (below). SVG artifacts of the mm32 failure state exist (`scratchpad/svg_mm32/` of session afcc7efa: n_108 attempt174 probe / attempt176 repair_failed_net / FAILED.txt).
+- [x] (2026-09-01) Milestone 0, first pass (coarse, from the existing `--verbose-routes` log of multiportmmi_16x16; shape proxy = fractional length remainder, sqrt2 => contains diagonals): engine x shape over all 223 nets: **simple 57 ORTH / 65 DIAG, astar 19 ORTH / 82 DIAG.** The simple fast path produces 57 of the 76 orthogonal routes and commits them with ZERO bend penalty (cost == length on every simple net -- the catalog, not the cost model, decides the shape). Pattern in the first-layer fanout tree: outer edges route DIAG, inner edges ORTH (e.g. n_3/n_4 at exactly 146.00), and the entire 14-net heater feeder series is simple-ORTH at exactly 252.00. Also one asymmetry case: n_6 routes astar with a 48-unit bend penalty and 52 um longer than its mirror branch. Remaining for the fine pass: exact bend counts from centerline records and per-net octile lower bounds; classify the owner's screenshot nets pixel-precisely.
+- [ ] Milestone 0 (attribution, fine pass -- original scope): for every routed net of `multiportmmi_16x16`, join (a) which engine path produced it (simple fast path / plain A* / lidar_pure_probe_commit / repair buckets / orthogonal fallback) with (b) a shape metric (bend-penalty per um from cost-length; better: 90-vs-45 bend counts from the realized centerline records). Existing sources: `--verbose-routes` per-net lines carry engine + length + cost (yesterday's `rb_multiportmmi_16x16.log` already has them); centerline-based bend counting needs the record-capture pattern from `.agent/execplans/2026-08-31-...` (CLI-vs-run_routing_flow caveat: only shape statistics, not failure points, may come from direct calls). Deliverable: a table "engine path x shape quality" naming the dominant 90-degree sources, and the specific nets of the owner's first-layer screenshot classified.
+- [ ] Milestone 1: fix the dominant sources, in evidence order. Known suspects, each with its mechanism already located:
+  1. **Orthogonal repair fallback** (`orthogonal_repair_primitives`, `src/py_router.rs:7147` -- a primitive set with ALL diagonals removed), triggered via `prefer_orthogonal_local_retry = !probe.probe_realized_crossing_violations.is_empty()` (py_router.rs ~8917) and in the victim-reroute path. Self-reinforcing: every orthogonal commit adds axis-aligned material that, under the perpendicularity rule, blocks the next net's diagonals, whose probe then also fails -> Manhattan cascade. Options for the owner (repair-strategy changes are decision-gated): remove the fallback (escalate via victims/keepout variants instead); keep it but mark orthogonal commits as preferred ripup victims; retry the 45-capable search with relaxed keepout before falling back.
+  2. **Simple-route fast path** (`enable_simple_routes`, 122/223 mm16 nets route as `simple`): if its candidate shapes are orthogonal-dominant, it explains systematic early 90-degree commits in EMPTY regions (the owner's first-layer case, where the fallback cannot be the cause). Check `src/simple_routes.rs` candidate shapes; if orthogonal-only, add diagonal candidates or defer to A* when a diagonal would be shorter.
+  3. **Keepout overreach** in the probe-retry (the localized keepout can sever exactly the diagonal corridor, leaving only orthogonal legality).
+- [ ] Milestone 2 (acceptance): shape metric improves on multiportmmi_16x16 with unchanged clean verifications; the first-layer fanout screenshot region routes diagonally; `multiportmmi_32x32` re-run -- target: past n_108, ideally clean; full ladder + pytest baselines hold. benes_32x32 re-probed after (same cascade class suspected).
+
+## Surprises & Discoveries
+
+- (Carried from 2026-08-31/09-01 analysis) The perpendicularity rule does NOT forbid diagonals per se (owner's correction: diagonal x diagonal crossings are legal and occur); it forbids mixed-angle pairs. Manhattan geometry emerges where the crossed material is axis-aligned -- and our own mechanisms (orthogonal fallback commits, port-adjacent axis segments, possibly simple routes) keep producing exactly that material.
+- LiDAR comparison facts (reference only): same perpendicularity rule; its 32x32 GDS has only 3.27 um^2 total waveguide overlap (clean by our overlap standard) and no tight bundling (densest slice: 49.25 um edge gaps); it uses a per-node escalating crossing budget instead of our 200 um search loss, and 10 ripup rounds with history.
+
+## Decision Log
+
+- Decision (owner, 2026-09-01): this problem is the current priority; analyze then repair; LiDAR serves for problem detection, our fixes must fit our architecture ("wir sollten nicht unsere version umschreiben um genau wie lidar zu sein").
+
+## Outcomes & Retrospective
+
+Not started.
+
+## Context and Orientation
+
+Terms: the *simple-route fast path* is a pre-A* shortcut (`enable_simple_routes`, `src/simple_routes.rs`) that commits common easy shapes without a full search. The *probe/lidar_pure_probe_commit* path routes with dynamic obstacles ignored and commits after realized-crossing validation. The *orthogonal fallback* is described in Milestone 1.1. The perpendicularity rule lives in the crossing legality (`not_perpendicular` rejections). Shape metrics can be computed from per-net `--verbose-routes` lines (cost minus length = bend-penalty units, 12 per 45-degree eighth-pair, 24 per 90-degree bend) or exactly from captured `corrected_centerline_um` records (count 45-vs-90 vertex classes as in the 2026-08-31 heater analysis).
+
+## Plan of Work / Concrete Steps / Validation and Acceptance
+
+As in Progress; every landed fix runs the standard ladder (multiportmmi_8x8/16x16, benes_8x8/16x16, heater_s_mod, pytest 10-failure baseline) plus the mm32x32 progression check. Repair-strategy changes are presented as options, not landed unilaterally.
+
+## Idempotence and Recovery
+
+Source edits only; `git checkout` restores. All measurement artifacts live in the session scratchpad and are re-creatable from the commands recorded here and in the repository state.
