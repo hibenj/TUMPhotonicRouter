@@ -4196,6 +4196,18 @@ mod unified_kernel {
         let mut extended_state: FxHashMap<(State, CrossingExtension), (f64, bool)> =
             FxHashMap::with_capacity_and_hasher(4096, Default::default());
 
+        // Search-failure diagnosis (owner request 2026-09-01, after a failed
+        // search's "why" -- proven-empty reachable space vs iteration cap vs
+        // timeout -- was invisible and cost a day of misdirected budget
+        // experiments): under PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG=1 every
+        // failing search prints its termination kind plus the bounding box of
+        // the explored region, which localizes the wall the frontier dies at.
+        let failure_diag = std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some();
+        let mut explored_min_x = i32::MAX;
+        let mut explored_max_x = i32::MIN;
+        let mut explored_min_y = i32::MAX;
+        let mut explored_max_y = i32::MIN;
+
         let mut tier1_open = OpenSet::new(config.use_indexed_heap, storage.state_count());
         let mut tier2_open: BinaryHeap<OpenEntry> = BinaryHeap::new();
         tier1_open.push(OpenEntry {
@@ -4240,6 +4252,15 @@ mod unified_kernel {
                 if let Some(search_loop_start) = search_loop_start.as_ref() {
                     stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
                 }
+                if failure_diag {
+                    eprintln!(
+                        "search-failure kind=iteration_cap iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
+                        iterations, stats.expanded_states, stats.generated_neighbors,
+                        source.x, source.y, source.angle, target.x, target.y, target.angle,
+                        bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
+                        explored_min_x, explored_max_x, explored_min_y, explored_max_y,
+                    );
+                }
                 return None;
             }
             if should_check_timeout(iterations, config)
@@ -4255,6 +4276,15 @@ mod unified_kernel {
                     iterations,
                     tier1_open.len() + tier2_open.len(),
                 );
+                if failure_diag {
+                    eprintln!(
+                        "search-failure kind=timeout iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
+                        iterations, stats.expanded_states, stats.generated_neighbors,
+                        source.x, source.y, source.angle, target.x, target.y, target.angle,
+                        bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
+                        explored_min_x, explored_max_x, explored_min_y, explored_max_y,
+                    );
+                }
                 return None;
             }
 
@@ -4349,6 +4379,12 @@ mod unified_kernel {
                 }
             }
             stats.expanded_states += 1;
+            if failure_diag {
+                explored_min_x = explored_min_x.min(state.x);
+                explored_max_x = explored_max_x.max(state.x);
+                explored_min_y = explored_min_y.min(state.y);
+                explored_max_y = explored_max_y.max(state.y);
+            }
 
             let angle = state.angle as usize;
             let primitive_bucket = primitive_buckets[angle];
@@ -5075,6 +5111,15 @@ mod unified_kernel {
 
         if let Some(search_loop_start) = search_loop_start.as_ref() {
             stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
+        }
+        if failure_diag {
+            eprintln!(
+                "search-failure kind=open_set_exhausted iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
+                iterations, stats.expanded_states, stats.generated_neighbors,
+                source.x, source.y, source.angle, target.x, target.y, target.angle,
+                bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
+                explored_min_x, explored_max_x, explored_min_y, explored_max_y,
+            );
         }
         None
     }
