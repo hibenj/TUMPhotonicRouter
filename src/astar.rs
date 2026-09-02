@@ -4011,6 +4011,10 @@ mod unified_kernel {
         g_score: f64,
         active_local_reservation_keys: Vec<CellKey>,
         pending_local_reservation_keys: Vec<CellKey>,
+        /// Cumulative legalized crossings along this node's parent chain.
+        /// Maintained only under PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG (0
+        /// otherwise); powers the best-crossing-path dump on failure.
+        crossings: u16,
     }
 
     /// Tier 2's local self-overlap guard: today's crossing kernel's
@@ -4051,6 +4055,65 @@ mod unified_kernel {
                 }
             }
         }
+    }
+
+    /// Companion to the search-failure diagnosis (owner request 2026-09-02):
+    /// dump the accepted path that legalized the most crossings. Its
+    /// endpoint is the first crossing the search never got past.
+    fn print_best_crossing_path(
+        best_crossings: u16,
+        best_ref: Option<usize>,
+        storage: &DenseSearchStorage,
+        extended_nodes: &[UnifiedExtendedNode],
+    ) {
+        let Some(ext_idx) = best_ref else {
+            eprintln!("search-failure-bestpath crossings=0 (no crossing state ever accepted)");
+            return;
+        };
+        let endpoint = extended_nodes[ext_idx].state;
+        let mut states: Vec<State> = vec![endpoint];
+        let mut cursor = extended_nodes[ext_idx].parent;
+        loop {
+            match cursor {
+                UnifiedParentRef::Extended(i) => {
+                    states.push(extended_nodes[i].state);
+                    cursor = extended_nodes[i].parent;
+                }
+                UnifiedParentRef::Dense(idx) => {
+                    states.push(storage.idx_to_state(idx));
+                    let parent = storage.parent_idx.get(idx).copied().unwrap_or(NO_PARENT);
+                    if parent == NO_PARENT {
+                        break;
+                    }
+                    cursor = UnifiedParentRef::Dense(parent as usize);
+                }
+            }
+            if states.len() > 200_000 {
+                break;
+            }
+        }
+        states.reverse();
+        let mut waypoints: Vec<(i32, i32)> = Vec::new();
+        for state in &states {
+            let point = (state.x, state.y);
+            if waypoints.len() >= 2 {
+                let a = waypoints[waypoints.len() - 2];
+                let b = waypoints[waypoints.len() - 1];
+                let d1 = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
+                let d2 = ((point.0 - b.0).signum(), (point.1 - b.1).signum());
+                if d1 == d2 {
+                    *waypoints.last_mut().unwrap() = point;
+                    continue;
+                }
+            }
+            if waypoints.last() != Some(&point) {
+                waypoints.push(point);
+            }
+        }
+        eprintln!(
+            "search-failure-bestpath crossings={} endpoint=({},{},{}) waypoints={:?}",
+            best_crossings, endpoint.x, endpoint.y, endpoint.angle, waypoints
+        );
     }
 
     fn unified_candidate_hits_active_local_crossing_reservation(
@@ -4250,6 +4313,14 @@ mod unified_kernel {
         let mut goal_miss_angle = 0u32;
         let mut goal_miss_hook = 0u32;
         let mut ring_blocker_lines = 0u32;
+        // Best-crossing-path tracking (owner request 2026-09-02): remember
+        // the accepted state with the most legalized crossings so a failing
+        // search can dump that path -- its endpoint is the first crossing
+        // the search could not get past.
+        // (Dense/Tier-1 states are crossing-free by construction -- their
+        // parents are always dense -- so only extended nodes carry counts.)
+        let mut best_crossings: u16 = 0;
+        let mut best_crossing_ref: Option<usize> = None;
         let ring_index = |x: i32, y: i32| -> Option<usize> {
             let dx = x - target.x;
             let dy = y - target.y;
@@ -4320,6 +4391,12 @@ mod unified_kernel {
                         obstacle_map,
                         port_open_cells,
                     );
+                    print_best_crossing_path(
+                        best_crossings,
+                        best_crossing_ref,
+                        &storage,
+                        &extended_nodes,
+                    );
                 }
                 return None;
             }
@@ -4351,6 +4428,12 @@ mod unified_kernel {
                         goal_miss_hook,
                         obstacle_map,
                         port_open_cells,
+                    );
+                    print_best_crossing_path(
+                        best_crossings,
+                        best_crossing_ref,
+                        &storage,
+                        &extended_nodes,
                     );
                 }
                 return None;
@@ -4869,6 +4952,18 @@ mod unified_kernel {
                             &mut first_pending_keys,
                             &outcome.pending_reservation_keys,
                         );
+                        let first_crossings = if failure_diag {
+                            let parent_crossings = match current_ref {
+                                UnifiedOpenRef::Dense(_) => 0u16,
+                                UnifiedOpenRef::Extended(ext_idx) => {
+                                    extended_nodes[ext_idx].crossings
+                                }
+                            };
+                            parent_crossings
+                                .saturating_add(u16::try_from(outcome.crossing_count).unwrap_or(0))
+                        } else {
+                            0
+                        };
                         let mut last_idx = extended_nodes.len();
                         extended_nodes.push(UnifiedExtendedNode {
                             state: next_state,
@@ -4878,6 +4973,7 @@ mod unified_kernel {
                             g_score: chain_g,
                             active_local_reservation_keys: first_active_keys,
                             pending_local_reservation_keys: first_pending_keys,
+                            crossings: first_crossings,
                         });
                         let mut chain_state = next_state;
                         let mut chain_extension = next_extension;
@@ -5041,6 +5137,13 @@ mod unified_kernel {
                                 step_y,
                                 step_primitive.end_angle % 8,
                             );
+                            let step_crossings = if failure_diag {
+                                extended_nodes[last_idx].crossings.saturating_add(
+                                    u16::try_from(step_outcome.crossing_count).unwrap_or(0),
+                                )
+                            } else {
+                                0
+                            };
                             let new_idx = extended_nodes.len();
                             extended_nodes.push(UnifiedExtendedNode {
                                 state: step_state,
@@ -5050,6 +5153,7 @@ mod unified_kernel {
                                 g_score: chain_g,
                                 active_local_reservation_keys: step_active_keys,
                                 pending_local_reservation_keys: step_pending_keys,
+                                crossings: step_crossings,
                             });
                             last_idx = new_idx;
                             chain_state = step_state;
@@ -5082,6 +5186,13 @@ mod unified_kernel {
                         stats.primitive_accepted_by_class[primitive_class] += 1;
                         if let Some(i) = chain_ring {
                             target_ring[i][1] += 1;
+                        }
+                        if failure_diag {
+                            let count = extended_nodes[last_idx].crossings;
+                            if count > best_crossings || best_crossing_ref.is_none() {
+                                best_crossings = count;
+                                best_crossing_ref = Some(last_idx);
+                            }
                         }
                         stats.best_cost_updates += 1;
                         stats.parent_updates += 1;
@@ -5210,6 +5321,18 @@ mod unified_kernel {
                         &outcome.pending_reservation_keys,
                     );
 
+                    let node_crossings = if failure_diag {
+                        let parent_crossings = match current_ref {
+                            UnifiedOpenRef::Dense(_) => 0u16,
+                            UnifiedOpenRef::Extended(ext_idx) => {
+                                extended_nodes[ext_idx].crossings
+                            }
+                        };
+                        parent_crossings
+                            .saturating_add(u16::try_from(outcome.crossing_count).unwrap_or(0))
+                    } else {
+                        0
+                    };
                     let node_idx = extended_nodes.len();
                     extended_nodes.push(UnifiedExtendedNode {
                         state: next_state,
@@ -5219,7 +5342,14 @@ mod unified_kernel {
                         g_score: tentative_g,
                         active_local_reservation_keys,
                         pending_local_reservation_keys,
+                        crossings: node_crossings,
                     });
+                    if failure_diag
+                        && (node_crossings > best_crossings || best_crossing_ref.is_none())
+                    {
+                        best_crossings = node_crossings;
+                        best_crossing_ref = Some(node_idx);
+                    }
                     extended_state.insert(key, (tentative_g, false));
                     stats.primitive_accepted_by_class[primitive_class] += 1;
                     if let Some(i) = ring_slot {
@@ -5276,6 +5406,12 @@ mod unified_kernel {
                 goal_miss_hook,
                 obstacle_map,
                 port_open_cells,
+            );
+            print_best_crossing_path(
+                best_crossings,
+                best_crossing_ref,
+                &storage,
+                &extended_nodes,
             );
         }
         None
