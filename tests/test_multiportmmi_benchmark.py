@@ -91,7 +91,16 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
         # every time, the fully-clean outcome is unchanged, and the resulting
         # repair-path routes carry 45-degree bends again instead of
         # pure-orthogonal staircase geometry.
-        (True, "lidar-pure", 51, 14, 2),
+        # Re-pinned 2026-09-02 (was 51/14/2 since the orthogonal-fallback
+        # removal): with clean zero-crossing-event results from the
+        # collision-crossing search now ACCEPTED on the main routing path
+        # (owner decision, `accept_clean_zero_event` in
+        # `try_route_with_collision_crossings`), the o13/o14 fan-in class no
+        # longer burns failed crossing attempts and repair rounds at all --
+        # every net through the first-mmi fanin boundary routes on its first
+        # attempt: 31 routes, 31 attempts, 0 failures, 0 repairs, with the
+        # clean verification outcome unchanged.
+        (True, "lidar-pure", 31, 0, 0),
     ],
 )
 def test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary(

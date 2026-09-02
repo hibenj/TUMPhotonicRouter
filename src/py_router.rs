@@ -4621,6 +4621,7 @@ impl PyPhotonicRouter {
         source_port_um: Option<(f64, f64)>,
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
+        accept_clean_zero_event: bool,
     ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
         self.try_route_with_collision_crossings_with_loss(
             net_id,
@@ -4635,6 +4636,7 @@ impl PyPhotonicRouter {
             target_port_um,
             opened_cell_keys,
             None,
+            accept_clean_zero_event,
         )
     }
 
@@ -4657,6 +4659,7 @@ impl PyPhotonicRouter {
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
         crossing_loss_override: Option<f64>,
+        accept_clean_zero_event: bool,
     ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
         self.try_route_with_collision_crossings_using_primitives(
             &self.primitives,
@@ -4672,6 +4675,7 @@ impl PyPhotonicRouter {
             target_port_um,
             opened_cell_keys,
             crossing_loss_override,
+            accept_clean_zero_event,
         )
     }
 
@@ -4791,6 +4795,7 @@ impl PyPhotonicRouter {
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
         crossing_loss_override: Option<f64>,
+        accept_clean_zero_event: bool,
     ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
         if !self.crossing_context.is_enabled() || partner_ids.is_empty() {
             return Ok(None);
@@ -4999,6 +5004,22 @@ impl PyPhotonicRouter {
             );
         }
         if satisfies && realized_violations.is_empty() {
+            return Ok(Some((result, crossing_events)));
+        }
+        // Owner decision 2026-09-02: on the MAIN routing path (not the
+        // partner-set/victim strategies, whose purpose is to engage specific
+        // partners), a zero-event result that is clean at BOTH validation
+        // levels is simply a valid ordinary route -- the search discovered
+        // that no crossing is needed. Discarding it (the strict zero-event
+        // rule) short-circuited plain A* and sent dense-ramp fan-in nets
+        // (multiportmmi_32x32 o24 class, the clean detour found and thrown
+        // away six times per cascade) into an unwinnable repair loop. The
+        // strict rule stays the default; callers opt in explicitly.
+        if accept_clean_zero_event
+            && crossing_events.is_empty()
+            && route_has_no_unresolved_grid_crossings
+            && realized_violations.is_empty()
+        {
             return Ok(Some((result, crossing_events)));
         }
         if !crossing_events.is_empty() && satisfies && !realized_violations.is_empty() {
@@ -6336,6 +6357,7 @@ impl PyPhotonicRouter {
                 source_port_um,
                 target_port_um,
                 Some(&validation_opened_cell_keys),
+                true,
             )?
         } else if self.crossing_context.config().allow_only_expected_pairs {
             self.try_route_through_expected_crossing_partner(
@@ -6522,6 +6544,7 @@ impl PyPhotonicRouter {
                     source_port_um,
                     target_port_um,
                     Some(&validation_opened_cell_keys),
+                    true,
                 )?;
             }
         }
@@ -6907,6 +6930,7 @@ impl PyPhotonicRouter {
                 source_port_um,
                 target_port_um,
                 Some(&validation_opened_cell_keys),
+                true,
             )?
         } else if self.crossing_context.config().allow_only_expected_pairs {
             self.try_route_through_expected_crossing_partner(
@@ -10520,6 +10544,7 @@ impl PyPhotonicRouter {
                         victim_job.target_port_um,
                         Some(&victim_job.opened_cell_keys),
                         Some(0.0),
+                        false,
                     )
                     .map_err(PyRuntimeError::new_err)?;
                 let crossing_elapsed_us = native_batch_elapsed_us(crossing_start);
@@ -11586,6 +11611,7 @@ impl PyPhotonicRouter {
                     job.source_port_um,
                     job.target_port_um,
                     Some(&job.opened_cell_keys),
+                    false,
                 )
                 .map_err(PyRuntimeError::new_err)?;
             let subset_elapsed_us = native_batch_elapsed_us(subset_start);
@@ -17339,12 +17365,39 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .unwrap();
 
         assert!(
             result.is_none(),
-            "collision-crossing helper must not accept routes with zero crossing events"
+            "collision-crossing helper must not accept routes with zero crossing events \
+             unless the caller opts into clean-zero-event acceptance"
+        );
+
+        let accepted = router
+            .try_route_with_collision_crossings(
+                2,
+                State::new(0, 0, 0),
+                State::new(12, 0, 0),
+                &opened,
+                &router.astar_config(None, None, None).unwrap(),
+                0,
+                None,
+                &partner_ids,
+                None,
+                None,
+                None,
+                true,
+            )
+            .unwrap();
+        let (_, events) = accepted.expect(
+            "with accept_clean_zero_event the same clean crossing-free route \
+             must be returned as an ordinary route (owner decision 2026-09-02)",
+        );
+        assert!(
+            events.is_empty(),
+            "the accepted clean route must carry no crossing events"
         );
     }
 
