@@ -4249,6 +4249,7 @@ mod unified_kernel {
         let mut target_ring = [[0u32; 7]; 25];
         let mut goal_miss_angle = 0u32;
         let mut goal_miss_hook = 0u32;
+        let mut ring_blocker_lines = 0u32;
         let ring_index = |x: i32, y: i32| -> Option<usize> {
             let dx = x - target.x;
             let dy = y - target.y;
@@ -4746,6 +4747,25 @@ mod unified_kernel {
                             }
                             if let Some(i) = ring_slot {
                                 target_ring[i][2] += 1;
+                                // Name the actual blocking cells of this
+                                // footprint (capped), so the seal is a fact,
+                                // not an interpretation.
+                                if ring_blocker_lines < 40 {
+                                    for (dx, dy) in &primitive.footprint {
+                                        let cx = state.x + dx;
+                                        let cy = state.y + dy;
+                                        if dense_grid.is_blocked(cx, cy) {
+                                            ring_blocker_lines += 1;
+                                            eprintln!(
+                                                "search-failure-blocker landing=({},{}) from=({},{},{}) prim={} blocked_cell=({},{}) static={}",
+                                                next_x, next_y, state.x, state.y, state.angle,
+                                                primitive.id, cx, cy,
+                                                obstacle_map.is_static_blocked(cx, cy),
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                         } else if let Some(i) = ring_slot {
                             target_ring[i][3] += 1;
