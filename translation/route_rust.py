@@ -2825,6 +2825,20 @@ class _RouteNetsRustSession:
         under this knob are NOT comparable to stable runs -- ordering
         changes every downstream commit; diagnosis use only.
         """
+        raw_net_ids = os.environ.get("PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_NETS", "").strip()
+        if raw_net_ids:
+            wanted = {
+                int(token)
+                for token in raw_net_ids.split(",")
+                if token.strip().isdigit()
+            }
+            hoisted = [job for job in ordered if int(job.net_id) in wanted]
+            rest = [job for job in ordered if int(job.net_id) not in wanted]
+            print(
+                f"      - DEBUG route order: {len(hoisted)} nets from the explicit "
+                f"net-id list hoisted to the front (diagnosis only)"
+            )
+            return hoisted + rest
         instance = os.environ.get("PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE", "").strip()
         if not instance:
             return ordered
