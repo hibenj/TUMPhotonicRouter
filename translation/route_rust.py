@@ -2800,7 +2800,7 @@ class _RouteNetsRustSession:
                     int(source_state.y) - int(target_state.y)
                 )
 
-            return sorted(
+            ordered = sorted(
                 jobs,
                 key=lambda route_job: (
                     depth_by_node[route_job.inst1],
@@ -2808,10 +2808,33 @@ class _RouteNetsRustSession:
                     int(route_job.route_index),
                 ),
             )
-        return sorted(
-            jobs,
-            key=lambda route_job: (depth_by_node[route_job.inst1], int(route_job.route_index)),
+        else:
+            ordered = sorted(
+                jobs,
+                key=lambda route_job: (depth_by_node[route_job.inst1], int(route_job.route_index)),
+            )
+        return self._debug_hoist_instance_first(ordered)
+
+    @staticmethod
+    def _debug_hoist_instance_first(ordered: list[RouteJob]) -> list[RouteJob]:
+        """Debug-only reordering: `PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE=<name>`
+        hoists every net touching the named instance to the front of the
+        routing order (relative order preserved on both sides), so a dense
+        group can be routed and debugged on empty dynamics in minutes
+        instead of behind a 30-minute full-context prefix. Routing results
+        under this knob are NOT comparable to stable runs -- ordering
+        changes every downstream commit; diagnosis use only.
+        """
+        instance = os.environ.get("PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE", "").strip()
+        if not instance:
+            return ordered
+        hoisted = [job for job in ordered if instance in (job.inst1, job.inst2)]
+        rest = [job for job in ordered if instance not in (job.inst1, job.inst2)]
+        print(
+            f"      - DEBUG route order: {len(hoisted)} nets touching "
+            f"{instance!r} hoisted to the front (diagnosis only)"
         )
+        return hoisted + rest
 
     def _timing_start(self) -> float:
         return time.perf_counter() if self.collect_timing else 0.0
