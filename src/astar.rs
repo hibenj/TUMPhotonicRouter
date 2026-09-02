@@ -6979,6 +6979,45 @@ fn crossing_move_outcome_with_segments(
                     }
                     continue;
                 }
+                // Contact whose intersection with this partner lies just
+                // ahead: the crossing's own approach, not grazing -- keep
+                // the move; the move containing the intersection legalizes
+                // it under the full rules. This covers core-cell contact
+                // too: two DIAGONAL grid paths share a cell one step before
+                // their centerlines cross (cell granularity, not physical
+                // overlap -- the realized crossing component owns exactly
+                // that zone), so a halo-only gate would never fire for the
+                // diag-x-diag case this exists for. A path can never slip
+                // through unjudged: the intersection lies on its
+                // centerline, so some move always contains it. See
+                // `contact_intersection_lies_ahead` for the derivation.
+                if contact_intersection_lies_ahead(
+                        state,
+                        primitive,
+                        partner_segments
+                            .get(partner_idx)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        f64::from(capped_required_margin) + 6.0,
+                    )
+                {
+                    if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_LEVEL1").is_some() {
+                        trace_crossing_level1_intersection(
+                            crossing,
+                            partner.net_id,
+                            "defer_contact_intersection_ahead",
+                            f64::from(contact.first_witness.cell.0),
+                            f64::from(contact.first_witness.cell.1),
+                            255,
+                            255,
+                            required_margin,
+                            0.0,
+                            0.0,
+                            0,
+                        );
+                    }
+                    continue;
+                }
                 let reject = classify_unresolved_crossing_contact(
                     contact,
                     primitive_segments,
@@ -7251,6 +7290,35 @@ fn push_unique_relative_witness(
         offset,
         route_segment_idx,
     });
+}
+
+/// Rules-first contact tolerance (owner decision 2026-09-02): the crossing
+/// ruleset cares about perpendicularity and margins; "contact must have a
+/// same-move intersection" was only an implementation means of telling
+/// crossings from grazing. A diagonal route's halo touches the next
+/// parallel diagonal one step BEFORE the centerlines cross, so wherever
+/// that touch straddles a move boundary the hard reject killed a legal
+/// crossing one cell early (the multiportmmi_32x32 n_286 cascade: 38K
+/// accepted diag-x-diag crossings on one partner, zero on its neighbor a
+/// few cells over, purely by move-boundary phase). This predicate says
+/// whether the partner's centerline intersects the route's forward
+/// continuation within a short lookahead -- then the contact is the
+/// crossing's own approach, and the move that contains the intersection
+/// will judge it under the full rules (perpendicularity, margins,
+/// reservation window). Core-cell contact stays fatal regardless.
+fn contact_intersection_lies_ahead(
+    state: State,
+    primitive: &Primitive,
+    partner_segments: &[PartnerPathSegment],
+    lookahead_cells: f64,
+) -> bool {
+    let end = (state.x + primitive.dx, state.y + primitive.dy);
+    let dir = DIRECTIONS[(primitive.end_angle % 8) as usize];
+    let steps = lookahead_cells.ceil().max(1.0) as i32;
+    let ray_end = (end.0 + dir.0 * steps, end.1 + dir.1 * steps);
+    partner_segments.iter().any(|segment| {
+        grid_segment_intersection_with_params(end, ray_end, segment.start, segment.end).is_some()
+    })
 }
 
 fn classify_unresolved_crossing_contact(
