@@ -4019,6 +4019,40 @@ mod unified_kernel {
     /// arena. Tier-1 (dense) states never carry a reservation, so the walk
     /// stops as soon as it reaches one -- bounded by how far into an active
     /// crossing corridor the current state is, not by the whole route.
+    /// Companion to the search-failure diagnosis: prints, for the 5x5 cells
+    /// around the target, occupancy plus what happened to every successor
+    /// attempt landing there (see the slot legend at the counter array).
+    fn print_target_ring_report(
+        target: State,
+        target_ring: &[[u32; 7]; 25],
+        goal_miss_angle: u32,
+        goal_miss_hook: u32,
+        obstacle_map: &ObstacleMap,
+        port_open_cells: Option<&FxHashSet<CellKey>>,
+    ) {
+        eprintln!(
+            "search-failure-goalmiss angle={} hook={}",
+            goal_miss_angle, goal_miss_hook
+        );
+        for dy in -2i32..=2 {
+            for dx in -2i32..=2 {
+                let i = ((dy + 2) * 5 + (dx + 2)) as usize;
+                let c = &target_ring[i];
+                let x = target.x + dx;
+                let y = target.y + dy;
+                let static_blocked = obstacle_map.is_static_blocked(x, y);
+                let opened = port_open_cells.is_some_and(|open| open.contains(&pack_xy(x, y)));
+                if c.iter().any(|&v| v > 0) || static_blocked || opened || (dx == 0 && dy == 0) {
+                    eprintln!(
+                        "search-failure-ring cell=({},{}) off=({},{}) static={} opened={} gen={} acc={} foot={} hook={} closed={} pruned={} resv={}",
+                        x, y, dx, dy, static_blocked, opened,
+                        c[0], c[1], c[2], c[3], c[4], c[5], c[6]
+                    );
+                }
+            }
+        }
+    }
+
     fn unified_candidate_hits_active_local_crossing_reservation(
         current: UnifiedOpenRef,
         state: State,
@@ -4207,6 +4241,23 @@ mod unified_kernel {
         let mut explored_max_x = i32::MIN;
         let mut explored_min_y = i32::MAX;
         let mut explored_max_y = i32::MIN;
+        // Target-ring diagnosis (owner request 2026-09-02): for the 5x5 cells
+        // around the target, count what happened to every successor attempt
+        // landing there, so a failing search names the check that seals the
+        // goal entry instead of leaving it to interpretation.
+        // Slots: 0=generated 1=accepted 2=footprint 3=hook 4=closed 5=pruned 6=reservation
+        let mut target_ring = [[0u32; 7]; 25];
+        let mut goal_miss_angle = 0u32;
+        let mut goal_miss_hook = 0u32;
+        let ring_index = |x: i32, y: i32| -> Option<usize> {
+            let dx = x - target.x;
+            let dy = y - target.y;
+            if dx.abs() <= 2 && dy.abs() <= 2 {
+                Some(((dy + 2) * 5 + (dx + 2)) as usize)
+            } else {
+                None
+            }
+        };
 
         let mut tier1_open = OpenSet::new(config.use_indexed_heap, storage.state_count());
         let mut tier2_open: BinaryHeap<OpenEntry> = BinaryHeap::new();
@@ -4260,6 +4311,14 @@ mod unified_kernel {
                         bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
                         explored_min_x, explored_max_x, explored_min_y, explored_max_y,
                     );
+                    print_target_ring_report(
+                        target,
+                        &target_ring,
+                        goal_miss_angle,
+                        goal_miss_hook,
+                        obstacle_map,
+                        port_open_cells,
+                    );
                 }
                 return None;
             }
@@ -4283,6 +4342,14 @@ mod unified_kernel {
                         source.x, source.y, source.angle, target.x, target.y, target.angle,
                         bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
                         explored_min_x, explored_max_x, explored_min_y, explored_max_y,
+                    );
+                    print_target_ring_report(
+                        target,
+                        &target_ring,
+                        goal_miss_angle,
+                        goal_miss_hook,
+                        obstacle_map,
+                        port_open_cells,
                     );
                 }
                 return None;
@@ -4332,11 +4399,19 @@ mod unified_kernel {
                 }
             };
 
-            let goal_reached = (state.x - target.x).abs() <= target_tolerance
-                && (state.y - target.y).abs() <= target_tolerance
+            let within_target_tolerance = (state.x - target.x).abs() <= target_tolerance
+                && (state.y - target.y).abs() <= target_tolerance;
+            let goal_reached = within_target_tolerance
                 && accepted_target_angles[state.angle as usize]
                 && current_extension.pending_after_crossing_cells == 0
                 && hook.goal_extra_ok(current_extension);
+            if failure_diag && within_target_tolerance && !goal_reached {
+                if !accepted_target_angles[state.angle as usize] {
+                    goal_miss_angle += 1;
+                } else {
+                    goal_miss_hook += 1;
+                }
+            }
             if goal_reached {
                 if let Some(search_loop_start) = search_loop_start.as_ref() {
                     stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
@@ -4472,6 +4547,15 @@ mod unified_kernel {
                 }
 
                 let next_state = State::new(next_x, next_y, next_angle);
+                let ring_slot = if failure_diag {
+                    let slot = ring_index(next_x, next_y);
+                    if let Some(i) = slot {
+                        target_ring[i][0] += 1;
+                    }
+                    slot
+                } else {
+                    None
+                };
                 stats.primitive_footprint_checks += 1;
                 stats.primitive_footprint_checks_by_class[primitive_class] += 1;
                 stats.obstacle_clearance_checks += 1;
@@ -4531,12 +4615,18 @@ mod unified_kernel {
                     let next_idx = storage.in_bounds_parts_to_idx(next_x, next_y, next_angle);
                     if storage.closed.get(next_idx) {
                         stats.primitive_closed_rejects_by_class[primitive_class] += 1;
+                        if let Some(i) = ring_slot {
+                            target_ring[i][4] += 1;
+                        }
                         continue;
                     }
                     let base_step_cost = metadata.base_step_cost;
                     let tentative_g_lower_bound = current_g + base_step_cost;
                     if tentative_g_lower_bound >= storage.g_costs[next_idx] {
                         stats.primitive_cost_pruned_by_class[primitive_class] += 1;
+                        if let Some(i) = ring_slot {
+                            target_ring[i][5] += 1;
+                        }
                         continue;
                     }
                     let history_cost = if config.history_weight > 0.0 {
@@ -4583,9 +4673,15 @@ mod unified_kernel {
                     let tentative_g = current_g + step_cost;
                     if tentative_g >= storage.g_costs[next_idx] {
                         stats.primitive_cost_pruned_by_class[primitive_class] += 1;
+                        if let Some(i) = ring_slot {
+                            target_ring[i][5] += 1;
+                        }
                         continue;
                     }
                     stats.primitive_accepted_by_class[primitive_class] += 1;
+                    if let Some(i) = ring_slot {
+                        target_ring[i][1] += 1;
+                    }
                     storage.parent_idx[next_idx] = current_dense_idx as u32;
                     storage.parent_primitive[next_idx] = primitive.id;
                     storage.g_costs[next_idx] = tentative_g;
@@ -4648,6 +4744,11 @@ mod unified_kernel {
                             if profile.is_full_rect {
                                 stats.primitive_footprint_rect_rejects += 1;
                             }
+                            if let Some(i) = ring_slot {
+                                target_ring[i][2] += 1;
+                            }
+                        } else if let Some(i) = ring_slot {
+                            target_ring[i][3] += 1;
                         }
                         continue;
                     };
@@ -4831,6 +4932,9 @@ mod unified_kernel {
                                 step_footprint_free,
                                 stats,
                             ) else {
+                                if let Some(i) = ring_index(step_x, step_y) {
+                                    target_ring[i][if step_footprint_free { 3 } else { 2 }] += 1;
+                                }
                                 chain_completed = false;
                                 break;
                             };
@@ -4840,6 +4944,9 @@ mod unified_kernel {
                                 step_crossing,
                                 &extended_nodes,
                             ) {
+                                if let Some(i) = ring_index(step_x, step_y) {
+                                    target_ring[i][6] += 1;
+                                }
                                 chain_completed = false;
                                 break;
                             }
@@ -4932,20 +5039,30 @@ mod unified_kernel {
                             stats.crossing_reject_pending_straight += 1;
                             continue;
                         }
+                        let chain_ring = ring_index(chain_state.x, chain_state.y);
                         let final_key = (chain_state, chain_extension);
                         let final_bookkeeping = extended_state.get(&final_key).copied();
                         if final_bookkeeping.is_some_and(|(_, closed)| closed) {
                             stats.primitive_closed_rejects_by_class[primitive_class] += 1;
+                            if let Some(i) = chain_ring {
+                                target_ring[i][4] += 1;
+                            }
                             continue;
                         }
                         if chain_g
                             >= final_bookkeeping.map(|(g, _)| g).unwrap_or(f64::INFINITY)
                         {
                             stats.primitive_cost_pruned_by_class[primitive_class] += 1;
+                            if let Some(i) = chain_ring {
+                                target_ring[i][5] += 1;
+                            }
                             continue;
                         }
                         extended_state.insert(final_key, (chain_g, false));
                         stats.primitive_accepted_by_class[primitive_class] += 1;
+                        if let Some(i) = chain_ring {
+                            target_ring[i][1] += 1;
+                        }
                         stats.best_cost_updates += 1;
                         stats.parent_updates += 1;
                         let generation = next_search_generation(&mut counter)?;
@@ -4969,6 +5086,9 @@ mod unified_kernel {
                     let existing_bookkeeping = extended_state.get(&key).copied();
                     if existing_bookkeeping.is_some_and(|(_, closed)| closed) {
                         stats.primitive_closed_rejects_by_class[primitive_class] += 1;
+                        if let Some(i) = ring_slot {
+                            target_ring[i][4] += 1;
+                        }
                         continue;
                     }
                     let history_cost = if config.history_weight > 0.0 {
@@ -5017,6 +5137,9 @@ mod unified_kernel {
                     let best_next_g = existing_bookkeeping.map(|(g, _)| g);
                     if tentative_g >= best_next_g.unwrap_or(f64::INFINITY) {
                         stats.primitive_cost_pruned_by_class[primitive_class] += 1;
+                        if let Some(i) = ring_slot {
+                            target_ring[i][5] += 1;
+                        }
                         continue;
                     }
                     if unified_candidate_hits_active_local_crossing_reservation(
@@ -5027,6 +5150,9 @@ mod unified_kernel {
                     ) {
                         stats.footprint_rejects += 1;
                         stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                        if let Some(i) = ring_slot {
+                            target_ring[i][6] += 1;
+                        }
                         continue;
                     }
 
@@ -5076,6 +5202,9 @@ mod unified_kernel {
                     });
                     extended_state.insert(key, (tentative_g, false));
                     stats.primitive_accepted_by_class[primitive_class] += 1;
+                    if let Some(i) = ring_slot {
+                        target_ring[i][1] += 1;
+                    }
                     stats.best_cost_updates += 1;
                     stats.parent_updates += 1;
                     let generation = next_search_generation(&mut counter)?;
@@ -5119,6 +5248,14 @@ mod unified_kernel {
                 source.x, source.y, source.angle, target.x, target.y, target.angle,
                 bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
                 explored_min_x, explored_max_x, explored_min_y, explored_max_y,
+            );
+            print_target_ring_report(
+                target,
+                &target_ring,
+                goal_miss_angle,
+                goal_miss_hook,
+                obstacle_map,
+                port_open_cells,
             );
         }
         None
