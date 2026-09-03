@@ -4874,8 +4874,13 @@ impl PyPhotonicRouter {
                 |trace_net_id| trace_net_id == net_id,
             );
         if trace_crossing {
+            let mut lookup_ids: Vec<u64> = partner_ids.iter().copied().collect();
+            lookup_ids.sort_unstable();
+            let mut center_route_ids: Vec<u64> =
+                self.committed_center_routes.keys().copied().collect();
+            center_route_ids.sort_unstable();
             eprintln!(
-                "collision-crossing start net={} partners={:?} block_radius={} min_straight={} half_size={}",
+                "collision-crossing start net={} partners={:?} block_radius={} min_straight={} half_size={} lookup_partner_ids={:?} committed_center_routes={:?} net_route_entries={}",
                 net_id,
                 crossing_search
                     .partners
@@ -4885,6 +4890,9 @@ impl PyPhotonicRouter {
                 block_radius_cells,
                 crossing_search.min_straight_cells,
                 crossing_search.crossing_half_size_cells,
+                lookup_ids,
+                center_route_ids,
+                self.obstacle_map.net_route_entries().count(),
             );
             for partner in &crossing_search.partners {
                 self.trace_committed_partner_centerline_compare(net_id, partner.net_id);
