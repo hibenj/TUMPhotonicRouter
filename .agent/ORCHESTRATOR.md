@@ -18,10 +18,7 @@ read:
 6. `.agent/REPOSITORY_STATE.md`
 7. The active ExecPlan under `.agent/execplans/`
 
-**No single active ExecPlan right now (2026-08-28; latest completed: `.agent/execplans/2026-08-28-plm-geometry-arc-sampling-and-meander-length-model.md` after `2026-08-28-port-adjacent-clearance-waiver.md`; see `.agent/REPOSITORY_STATE.md` Next Engineering Step for the two owner decisions parked there) -- the repository owner
-is directing work turn by turn, not delegating to an autonomous
-orchestration loop.** Several plans exist; do not resume any of them
-automatically without the repository owner's direction.
+**Active ExecPlan (2026-09-03): `.agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md`** -- replace the 2026-09-02 "defer" stop-gap for perpendicular diagonal-x-diagonal crossings with eager insertion of the crossing (unit test first, then a sequential in-session Harness pass; no subagents for complex tasks this session by owner direction, because lanes have repeatedly stalled). Its parent, `.agent/execplans/2026-09-01-forced-90-degree-route-degradation.md`, holds the 2026-09-01/02 history (two real fixes landed there: `a6dc419` accept-clean-zero-event, `579aed2` contact tolerance) and the 2026-09-03 retrospective of what went wrong in the 2026-09-02 workflow. The repository owner is directing work turn by turn, not delegating to an autonomous orchestration loop. Several older plans exist; do not resume any of them automatically without the repository owner's direction.
 
 `.agent/execplans/2026-08-25-negotiated-repair-engine.md` (written
 2026-08-25) is **complete, all 8 milestones**, with a materially honest,
