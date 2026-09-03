@@ -5026,6 +5026,49 @@ impl PyPhotonicRouter {
                     .map(|violation| (violation.partner_net_id, violation.point, violation.reason))
                     .collect::<Vec<_>>(),
             );
+            // Sub-conditions of `crossing_events_satisfy_partner_constraints`,
+            // so a post-search reject names its rule (harness step 5).
+            let blockers =
+                self.crossing_reservation_blockers(net_id, &crossing_events, opened_cell_keys);
+            let overlapping = Self::crossing_partners_with_overlapping_reservations(&crossing_events);
+            let mut static_blocker_cells: Vec<(i32, i32)> = Vec::new();
+            let mut dynamic_blocker_cells: Vec<((i32, i32), u64)> = Vec::new();
+            for event in &crossing_events {
+                for key in &event.reservation_keys {
+                    let (x, y) = unpack_xy(*key);
+                    let is_opened = opened_cell_keys.is_some_and(|opened| opened.contains(key));
+                    if self.obstacle_map.in_bounds(x, y)
+                        && self.obstacle_map.is_static_blocked(x, y)
+                        && !is_opened
+                    {
+                        static_blocker_cells.push((x, y));
+                    }
+                    for owner in self.obstacle_map.dynamic_owners_for_cells(&[(x, y)]) {
+                        if owner != net_id && owner != event.partner_net_id {
+                            dynamic_blocker_cells.push(((x, y), owner));
+                        }
+                    }
+                }
+            }
+            static_blocker_cells.sort_unstable();
+            static_blocker_cells.dedup();
+            dynamic_blocker_cells.sort_unstable();
+            dynamic_blocker_cells.dedup();
+            eprintln!(
+                "collision-crossing partner-constraints net={} events={} disjoint_reservations={} overlapping_partners={:?} static_blocker={} static_cells={:?} dynamic_blockers={:?} dynamic_cells={:?} events_by_partner={:?}",
+                net_id,
+                crossing_events.len(),
+                Self::crossing_events_have_disjoint_reservations(&crossing_events),
+                overlapping,
+                blockers.has_static_blocker,
+                static_blocker_cells,
+                blockers.dynamic_blockers,
+                dynamic_blocker_cells,
+                crossing_events
+                    .iter()
+                    .map(|event| (event.partner_net_id, event.point))
+                    .collect::<Vec<_>>(),
+            );
         }
         if satisfies && realized_violations.is_empty() {
             return Ok(Some((result, crossing_events)));
