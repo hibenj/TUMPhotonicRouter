@@ -4389,6 +4389,10 @@ mod unified_kernel {
         // Permanent, env-gated: names the branch that abandons an eager
         // completion chain (the silent killer of consecutive crossings).
         let chain_diag = std::env::var_os("PHOTONIC_ROUTER_CHAIN_DIAG").is_some();
+        let move_diag_cell: Option<(i32, i32)> = std::env::var("PHOTONIC_ROUTER_MOVE_DIAG").ok().and_then(|v| {
+            let mut it = v.split(',');
+            Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().ok()?))
+        });
         // Per-process search sequence number so diagnostic lines from
         // different searches can be told apart in a shared stderr stream.
         static SEARCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -4940,6 +4944,10 @@ mod unified_kernel {
                     // current state already carries active post-crossing
                     // bookkeeping -- only here does the pluggable legality
                     // hook get called.
+                    // Permanent, env-gated: PHOTONIC_ROUTER_MOVE_DIAG="x,y" names the
+                    // reject counter a move landing on that cell trips inside the hook.
+                    let move_diag_hit = move_diag_cell.is_some_and(|(dx, dy)| dx == next_x && dy == next_y);
+                    let diag_before = if move_diag_hit { Some(stats.clone()) } else { None };
                     let Some((outcome, extra_cost)) = hook.evaluate(
                         state,
                         current_extension,
@@ -4949,6 +4957,25 @@ mod unified_kernel {
                         footprint_free,
                         stats,
                     ) else {
+                        if let Some(before) = diag_before {
+                            let changed = [
+                                ("unexpected_owner", before.crossing_reject_unexpected_owner, stats.crossing_reject_unexpected_owner),
+                                ("non_straight", before.crossing_reject_non_straight, stats.crossing_reject_non_straight),
+                                ("unmatched_footprint", before.crossing_reject_unmatched_footprint, stats.crossing_reject_unmatched_footprint),
+                                ("unmatched_centerline", before.crossing_reject_unmatched_centerline, stats.crossing_reject_unmatched_centerline),
+                                ("not_perpendicular", before.crossing_reject_not_perpendicular, stats.crossing_reject_not_perpendicular),
+                                ("margin", before.crossing_reject_margin, stats.crossing_reject_margin),
+                                ("pending_straight", before.crossing_reject_pending_straight, stats.crossing_reject_pending_straight),
+                                ("wrong_order", before.crossing_reject_wrong_order, stats.crossing_reject_wrong_order),
+                                ("static", before.crossing_hotpath_static_rejects, stats.crossing_hotpath_static_rejects),
+                                ("no_contact_path", before.crossing_hotpath_no_contact, stats.crossing_hotpath_no_contact),
+                                ("accepted", before.crossing_accepted, stats.crossing_accepted),
+                            ];
+                            let deltas: Vec<String> = changed.iter().filter(|(_, b, a)| a != b).map(|(n, b, a)| format!("{}+{}", n, a - b)).collect();
+                            eprintln!("move-diag seq={} landing=({},{}) from=({},{},{}) prim={} straight={} footprint_free={} pending={} straight_run={} -> hook None; counters: {:?}",
+                                search_seq, next_x, next_y, state.x, state.y, state.angle, primitive.id, primitive_class_is_straight(primitive_class), footprint_free,
+                                current_extension.pending_after_crossing_cells, current_extension.straight_run_cells, deltas);
+                        }
                         if !footprint_free {
                             stats.footprint_rejects += 1;
                             stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
@@ -6953,6 +6980,20 @@ fn crossing_move_outcome_with_segments(
         let Some(partner_idx) = partner_index_by_id.get(&owner).copied() else {
             record_crossing_hotpath_owner_count(stats, contacted_partners.len() + 1);
             stats.crossing_reject_unexpected_owner += 1;
+            if std::env::var_os("PHOTONIC_ROUTER_MOVE_DIAG").is_some() {
+                eprintln!(
+                    "unexpected-owner seq={} net={} cell=({},{}) owner={} state=({},{},{}) partners={}",
+                    current_search_seq(),
+                    crossing.net_id,
+                    cell.0,
+                    cell.1,
+                    owner,
+                    state.x,
+                    state.y,
+                    state.angle,
+                    partner_index_by_id.len()
+                );
+            }
             return None;
         };
         contacted_partners.push_witness(
