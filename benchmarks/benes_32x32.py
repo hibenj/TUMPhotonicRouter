@@ -26,7 +26,13 @@ INTERNAL_DELAYS_UM = benes_internal_delays_um(NETWORK_SIZE)
 # lidar-pure configuration the 32x32 baseline is defined on. Without it the
 # flow default (`--crossing-mode window`) is used, which is not the baseline.
 STABLE_ROUTING_ENV: dict[str, str] = {
-    "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT": "0.05",
+    # 1.0 (not the 0.05 of the other benchmarks): experiment E1 of
+    # 2026-09-03 -- with the same +-5-cell halo but this weight, stage nets
+    # no longer lay long verticals 4 cells next to an existing one (which
+    # made the pair uncrossable for every later net); the full 320-net run
+    # then passes verification-clean in 15 min. See
+    # .agent/execplans/2026-09-03-benes-32x32-lidar-pure-baseline.md.
+    "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT": "1.0",
 }
 
 STABLE_ROUTING_FLAGS: tuple[str, ...] = (
