@@ -18,6 +18,51 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
+- Date: 2026-09-03
+- **ACTIVE PLAN (complete through Milestone 4, optional follow-up open):
+  `.agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md`.**
+  `multiportmmi_32x32` under the stable defaults (lidar-pure) routes
+  **completely and verification-clean for the first time**: 447/447,
+  attempts 447, failures 0, repairs 0, 149 crossings, both verification
+  JSONs 0 errors, 469 s (LiDAR reference 2026-09-01: 1257 s). Ladder
+  green with fewer attempts/failures/repairs than before (mm16 225/2/0
+  vs 404/119/11). cargo lib 431/431; pytest 10 failed / 357 passed
+  (documented baseline). GDS snapshots
+  `build/routed_multiportmmi_32x32_P2_full.gds` and `..._P2_net287.gds`.
+- What fixed the crossing kernel (commits in evidence order): `a6dc419`
+  accept clean zero-event routes; `947e76d` the move after an
+  end-of-move crossing may re-contact the partner it just crossed;
+  `4c623ae` straight-after debt = `crossing_half_size_cells` paid by
+  pure straights (owner "Point 2"); and **predicate 2** -- a crossing's
+  +-half_size reservation window must be disjoint from the route's own
+  earlier windows *inside the search* (`crossing_reject_reservation_overlap`,
+  intra-move + node-chain check). The last one is the decisive fix: the
+  post-search `crossing_events_have_disjoint_reservations` had been
+  silently discarding the otherwise perfect `n_286` route (two crossings
+  3 cells apart on the x=3072 descent); the search now descends at
+  x=3104 and crosses the fan of parallel diagonals with one straight
+  135-degree line, 15 crossings, first attempt.
+- Crossing rule audit (in the plan): the ruleset reduces to ONE number
+  (`half_size` from the GDS crossing) and TWO predicates -- (1) only
+  straight cells inside the +-half_size window on both nets, missing
+  straights inserted eagerly by the completion chain; (2) reservation
+  windows disjoint (third nets, committed windows as static, own earlier
+  windows). Turn primitives never touch a partner (`non_straight` reject,
+  pinned by three tests). `required_margin = half_size + bend_runout` (5)
+  is a compensating number (exact for 90-degree corners, ~1-2 cells
+  over-strict at 45-degree corners) -- its replacement by explicit fillet
+  trims is an OPTIONAL simplification, not a correctness fix.
+  `min_straight_cells_per_crossing` is a dead config knob (accepted,
+  validated, ignored).
+- Diagnostics kept (env-gated): `PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG`,
+  `_CHAIN_DIAG`, `_MOVE_DIAG`, `_PROBE_CELLS`, `_POP_DIAG_BELOW_Y`,
+  `_TRACE_CROSSING_{NET,LEVEL1,CANDIDATES,PENDING}`, `_DEBUG_ROUTE_FIRST_NETS`;
+  every line carries a per-search `seq`. The collision-crossing
+  validation trace prints both `satisfies` sub-conditions. Lesson recorded
+  in the plan's retrospective: confirm which attempt (seq, partner-set
+  size) produced a failure line before analysing it -- the day's detour
+  came from reading a single-partner repair search as the full search.
+- Previous snapshot below (2026-09-01):
 - Date: 2026-09-01
 - **ACTIVE PLAN: `.agent/execplans/2026-09-01-forced-90-degree-route-degradation.md`**
   (owner priority). Landed there: the orthogonal repair fallback is
