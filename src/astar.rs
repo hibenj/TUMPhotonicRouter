@@ -3828,7 +3828,9 @@ mod unified_kernel {
             // or fully). A bend's first arm is arc when realized, so it must
             // not start before the debt is zero -- same rule as the contact
             // path in `crossing_move_outcome_with_segments`.
-            if current_extension.pending_after_crossing_cells > 0 {
+            if current_extension.pending_after_crossing_cells > 0
+                && std::env::var_os("PHOTONIC_ROUTER_BISECT_NO_EVAL_PENDING_GUARD").is_none()
+            {
                 let pure_straight_in_pending_direction = primitive_class_is_straight
                     && primitive.end_angle == state.angle
                     && state.angle == current_extension.pending_after_crossing_angle
@@ -4095,6 +4097,40 @@ mod unified_kernel {
     /// Companion to the search-failure diagnosis (owner request 2026-09-02):
     /// dump the accepted path that legalized the most crossings. Its
     /// endpoint is the first crossing the search never got past.
+
+    /// Permanent, env-gated: `PHOTONIC_ROUTER_PROBE_CELLS="x,y;x,y;..."` prints,
+    /// on every search failure, whether each listed cell is static, opened for
+    /// this search, and which dynamic owners occupy it -- the direct answer to
+    /// "what is the wall made of" at any coordinate, not just the target ring.
+    fn print_probe_cells_report(
+        search_seq: u64,
+        obstacle_map: &ObstacleMap,
+        port_open_cells: Option<&FxHashSet<CellKey>>,
+    ) {
+        let Some(spec) = std::env::var("PHOTONIC_ROUTER_PROBE_CELLS").ok() else {
+            return;
+        };
+        for item in spec.split(';') {
+            let mut it = item.split(',');
+            let (Some(xs), Some(ys)) = (it.next(), it.next()) else { continue };
+            let (Ok(x), Ok(y)) = (xs.trim().parse::<i32>(), ys.trim().parse::<i32>()) else { continue };
+            if !obstacle_map.in_bounds(x, y) {
+                eprintln!("probe-cell seq={} cell=({},{}) out_of_bounds", search_seq, x, y);
+                continue;
+            }
+            let owners: Vec<NetId> = obstacle_map.dynamic_owners_at(x, y).into_iter().collect();
+            eprintln!(
+                "probe-cell seq={} cell=({},{}) static={} opened={} dynamic_owners={:?}",
+                search_seq,
+                x,
+                y,
+                obstacle_map.is_static_blocked(x, y),
+                port_open_cells.is_some_and(|open| open.contains(&pack_xy(x, y))),
+                owners
+            );
+        }
+    }
+
     fn print_best_crossing_path(
         best_crossings: u16,
         best_ref: Option<usize>,
@@ -4444,6 +4480,7 @@ mod unified_kernel {
                         &storage,
                         &extended_nodes,
                     );
+                    print_probe_cells_report(search_seq, obstacle_map, port_open_cells);
                 }
                 return None;
             }
@@ -4482,6 +4519,7 @@ mod unified_kernel {
                         &storage,
                         &extended_nodes,
                     );
+                    print_probe_cells_report(search_seq, obstacle_map, port_open_cells);
                 }
                 return None;
             }
@@ -5483,6 +5521,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                 &storage,
                 &extended_nodes,
             );
+            print_probe_cells_report(search_seq, obstacle_map, port_open_cells);
         }
         None
     }
