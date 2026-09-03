@@ -3729,6 +3729,10 @@ mod unified_kernel {
             true
         }
 
+        fn ignores_dynamic_obstacles(&self) -> bool {
+            false
+        }
+
         /// Optional search-guidance bonus added to a next state's f-score,
         /// mirroring today's `crossing_progress_heuristic`. Zero when
         /// crossings are disabled.
@@ -3791,6 +3795,10 @@ mod unified_kernel {
 
         fn capped_required_margin(&self) -> i32 {
             self.capped_required_margin
+        }
+
+        fn ignores_dynamic_obstacles(&self) -> bool {
+            self.ignore_dynamic_obstacles
         }
 
         fn evaluate(
@@ -4343,6 +4351,11 @@ mod unified_kernel {
         // Permanent, env-gated: names the branch that abandons an eager
         // completion chain (the silent killer of consecutive crossings).
         let chain_diag = std::env::var_os("PHOTONIC_ROUTER_CHAIN_DIAG").is_some();
+        // Per-process search sequence number so diagnostic lines from
+        // different searches can be told apart in a shared stderr stream.
+        static SEARCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let search_seq = SEARCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let ignore_dyn_flag = hook.ignores_dynamic_obstacles();
         // Permanent, env-gated: PHOTONIC_ROUTER_POP_DIAG_BELOW_Y=<y> logs every
         // Tier-2 push/pop/skip whose state lies below that y (first 200).
         let pop_diag_below_y: Option<i32> = std::env::var("PHOTONIC_ROUTER_POP_DIAG_BELOW_Y").ok().and_then(|v| v.parse().ok());
@@ -4411,8 +4424,8 @@ mod unified_kernel {
                 }
                 if failure_diag {
                     eprintln!(
-                        "search-failure kind=iteration_cap iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
-                        iterations, stats.expanded_states, stats.generated_neighbors,
+                        "search-failure seq={} kind=iteration_cap iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
+                        search_seq, iterations, stats.expanded_states, stats.generated_neighbors,
                         source.x, source.y, source.angle, target.x, target.y, target.angle,
                         bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
                         explored_min_x, explored_max_x, explored_min_y, explored_max_y,
@@ -4449,8 +4462,8 @@ mod unified_kernel {
                 );
                 if failure_diag {
                     eprintln!(
-                        "search-failure kind=timeout iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
-                        iterations, stats.expanded_states, stats.generated_neighbors,
+                        "search-failure seq={} kind=timeout iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
+                        search_seq, iterations, stats.expanded_states, stats.generated_neighbors,
                         source.x, source.y, source.angle, target.x, target.y, target.angle,
                         bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
                         explored_min_x, explored_max_x, explored_min_y, explored_max_y,
@@ -4506,7 +4519,7 @@ mod unified_kernel {
                     if let Some(th) = pop_diag_below_y {
                         if node.state.y < th && pop_diag_lines < 200 {
                             pop_diag_lines += 1;
-                            eprintln!("pop-diag tier2 pop state=({},{},{}) g={:.1} bookkeeping={:?} pending={}", node.state.x, node.state.y, node.state.angle, entry.g_score, bookkeeping, node.extension.pending_after_crossing_cells);
+                            eprintln!("pop-diag seq={} ignore_dyn={} tier2 pop state=({},{},{}) g={:.1} bookkeeping={:?} pending={}", search_seq, ignore_dyn_flag, node.state.x, node.state.y, node.state.angle, entry.g_score, bookkeeping, node.extension.pending_after_crossing_cells);
                         }
                     }
                     if entry.g_score > bookkeeping.map_or(f64::INFINITY, |(g, _)| g) + 1.0e-9 {
@@ -5023,7 +5036,7 @@ mod unified_kernel {
                             chain_steps += 1;
                             let mut step_footprint_free_diag = true;
                             if chain_steps > EAGER_CHAIN_MAX_STEPS {
-if chain_diag { eprintln!("chain-break reason=max_steps state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
+if chain_diag { eprintln!("chain-break seq={} reason=max_steps state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             }
@@ -5031,7 +5044,7 @@ if chain_diag { eprintln!("chain-break reason=max_steps state=({},{},{}) pending
                                 chain_extension.pending_after_crossing_angle as usize;
                             if pending_angle >= 8 || chain_state.angle as usize != pending_angle
                             {
-if chain_diag { eprintln!("chain-break reason=angle_mismatch state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
+if chain_diag { eprintln!("chain-break seq={} reason=angle_mismatch state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             }
@@ -5042,7 +5055,7 @@ if chain_diag { eprintln!("chain-break reason=angle_mismatch state=({},{},{}) pe
                                 .iter()
                                 .find(|(_, cells)| *cells <= remaining_debt)
                             else {
-if chain_diag { eprintln!("chain-break reason=no_fitting_straight state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
+if chain_diag { eprintln!("chain-break seq={} reason=no_fitting_straight state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             };
@@ -5057,13 +5070,13 @@ if chain_diag { eprintln!("chain-break reason=no_fitting_straight state=({},{},{
                                 chain_state.x.checked_add(step_primitive.dx),
                                 chain_state.y.checked_add(step_primitive.dy),
                             ) else {
-if chain_diag { eprintln!("chain-break reason=checked_add_overflow state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
+if chain_diag { eprintln!("chain-break seq={} reason=checked_add_overflow state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             };
                             if !bounds.contains(step_x, step_y) {
                                 stats.window_rejects += 1;
-if chain_diag { eprintln!("chain-break reason=out_of_window state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
+if chain_diag { eprintln!("chain-break seq={} reason=out_of_window state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             }
@@ -5098,7 +5111,7 @@ if chain_diag { eprintln!("chain-break reason=out_of_window state=({},{},{}) pen
                                 if let Some(i) = ring_index(step_x, step_y) {
                                     target_ring[i][if step_footprint_free { 3 } else { 2 }] += 1;
                                 }
-if chain_diag { eprintln!("chain-break reason=hook_none state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
+if chain_diag { eprintln!("chain-break seq={} reason=hook_none state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             };
@@ -5111,7 +5124,7 @@ if chain_diag { eprintln!("chain-break reason=hook_none state=({},{},{}) pending
                                 if let Some(i) = ring_index(step_x, step_y) {
                                     target_ring[i][6] += 1;
                                 }
-if chain_diag { eprintln!("chain-break reason=reservation_hit state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
+if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             }
@@ -5216,7 +5229,7 @@ if chain_diag { eprintln!("chain-break reason=reservation_hit state=({},{},{}) p
                         let final_key = (chain_state, chain_extension);
                         let final_bookkeeping = extended_state.get(&final_key).copied();
                         if final_bookkeeping.is_some_and(|(_, closed)| closed) {
-                            if chain_diag { eprintln!("chain-final closed state=({},{},{}) g={:.1}", chain_state.x, chain_state.y, chain_state.angle, chain_g); }
+                            if chain_diag { eprintln!("chain-final seq={} closed state=({},{},{}) g={:.1}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_g); }
                             stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                             if let Some(i) = chain_ring {
                                 target_ring[i][4] += 1;
@@ -5226,7 +5239,7 @@ if chain_diag { eprintln!("chain-break reason=reservation_hit state=({},{},{}) p
                         if chain_g
                             >= final_bookkeeping.map(|(g, _)| g).unwrap_or(f64::INFINITY)
                         {
-                            if chain_diag { eprintln!("chain-final cost_pruned state=({},{},{}) g={:.1} existing={:.1}", chain_state.x, chain_state.y, chain_state.angle, chain_g, final_bookkeeping.map(|(g, _)| g).unwrap_or(f64::INFINITY)); }
+                            if chain_diag { eprintln!("chain-final seq={} cost_pruned state=({},{},{}) g={:.1} existing={:.1}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_g, final_bookkeeping.map(|(g, _)| g).unwrap_or(f64::INFINITY)); }
                             stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                             if let Some(i) = chain_ring {
                                 target_ring[i][5] += 1;
@@ -5237,7 +5250,7 @@ if chain_diag { eprintln!("chain-break reason=reservation_hit state=({},{},{}) p
                         if let Some(th) = pop_diag_below_y {
                             if chain_state.y < th && pop_diag_lines < 200 {
                                 pop_diag_lines += 1;
-                                eprintln!("pop-diag chain-final PUSH state=({},{},{}) g={:.1}", chain_state.x, chain_state.y, chain_state.angle, chain_g);
+                                eprintln!("pop-diag seq={} chain-final PUSH state=({},{},{}) g={:.1}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_g);
                             }
                         }
                         stats.primitive_accepted_by_class[primitive_class] += 1;
@@ -5450,8 +5463,8 @@ if chain_diag { eprintln!("chain-break reason=reservation_hit state=({},{},{}) p
         }
         if failure_diag {
             eprintln!(
-                "search-failure kind=open_set_exhausted iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
-                iterations, stats.expanded_states, stats.generated_neighbors,
+                "search-failure seq={} kind=open_set_exhausted iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
+                search_seq, iterations, stats.expanded_states, stats.generated_neighbors,
                 source.x, source.y, source.angle, target.x, target.y, target.angle,
                 bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
                 explored_min_x, explored_max_x, explored_min_y, explored_max_y,
