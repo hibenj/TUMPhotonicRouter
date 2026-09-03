@@ -8184,8 +8184,7 @@ impl PyPhotonicRouter {
                             realized_blockers.allowed_overlap_cells(),
                         )
                 } else {
-                    let mut check_map = self.obstacle_map.clone();
-                    check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
+                    self.obstacle_map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
                         net_id,
                         &corrected_core_cells,
                         &corrected_blocked_cells,
@@ -8399,8 +8398,7 @@ impl PyPhotonicRouter {
                         realized_blockers.allowed_overlap_cells(),
                     )
             } else {
-                let mut check_map = self.obstacle_map.clone();
-                check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
+                self.obstacle_map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
                     net_id,
                     &merged_core_cells,
                     &merged_blocked_cells,
@@ -8607,8 +8605,7 @@ impl PyPhotonicRouter {
             let dynamic_blockers = realized_blockers.blockers.clone();
             if out_of_bounds.is_empty() && static_blockers.is_empty() && dynamic_blockers.is_empty()
             {
-                let mut check_map = self.obstacle_map.clone();
-                if check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
+                if self.obstacle_map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
                     net_id,
                     &corrected_core_cells,
                     &corrected_blocked_cells,
@@ -8806,8 +8803,7 @@ impl PyPhotonicRouter {
                 continue;
             }
 
-            let mut check_map = self.obstacle_map.clone();
-            let commit_ok = check_map.commit_route_with_clearance_and_allowed_core_overlap_cells(
+            let commit_ok = self.obstacle_map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
                 net_id,
                 &candidate_core_cells,
                 &candidate_blocked_cells,

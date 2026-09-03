@@ -440,20 +440,29 @@ impl ObstacleMap {
         )
     }
 
-    pub fn commit_route_with_clearance_and_allowed_core_overlap_cells(
-        &mut self,
+    /// Check phase of [`Self::commit_route_with_clearance_and_allowed_core_overlap_cells`]:
+    /// bounds, dedup and the per-core-cell occupancy rule (an occupied cell is
+    /// only acceptable as the net's own previous route, a clearance-exempt
+    /// cell without foreign core, or an allowed crossing overlap). Returns the
+    /// prepared `(blocked_keys, core_keys)` when the commit would succeed.
+    /// This is the ONE implementation of the rule: `commit_` calls it and then
+    /// mutates, `can_commit_` returns only the verdict -- callers that used to
+    /// clone the whole map for a trial commit (endpoint correction, 14 % of a
+    /// multiportmmi_32x32 run) use `can_commit_` instead.
+    fn plan_commit_route_with_clearance_and_allowed_core_overlap_cells(
+        &self,
         net_id: NetId,
         core_cells: &[(i32, i32)],
         blocked_cells: &[(i32, i32)],
         clearance_exempt_cells: &[(i32, i32)],
         allowed_core_overlap_nets: &FxHashSet<NetId>,
         allowed_core_overlap_cells: Option<&FxHashSet<CellKey>>,
-    ) -> bool {
+    ) -> Option<(Vec<CellKey>, Vec<CellKey>)> {
         let mut keys = Vec::with_capacity(blocked_cells.len());
         let mut seen = FxHashSet::default();
         for &(x, y) in blocked_cells {
             if !self.in_bounds(x, y) {
-                return false;
+                return None;
             }
 
             let key = pack_xy(x, y);
@@ -480,7 +489,7 @@ impl ObstacleMap {
         let mut seen_core = FxHashSet::default();
         for &(x, y) in core_cells {
             if !self.in_bounds(x, y) {
-                return false;
+                return None;
             }
 
             let key = pack_xy(x, y);
@@ -510,9 +519,56 @@ impl ObstacleMap {
                 && !allowed_clearance_overlap
                 && !allowed_crossing_overlap
             {
-                return false;
+                return None;
             }
         }
+        Some((keys, core_keys))
+    }
+
+    /// Verdict-only twin of
+    /// [`Self::commit_route_with_clearance_and_allowed_core_overlap_cells`]:
+    /// true iff that commit would succeed, without touching the map.
+    pub fn can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+        &self,
+        net_id: NetId,
+        core_cells: &[(i32, i32)],
+        blocked_cells: &[(i32, i32)],
+        clearance_exempt_cells: &[(i32, i32)],
+        allowed_core_overlap_nets: &FxHashSet<NetId>,
+        allowed_core_overlap_cells: Option<&FxHashSet<CellKey>>,
+    ) -> bool {
+        self.plan_commit_route_with_clearance_and_allowed_core_overlap_cells(
+            net_id,
+            core_cells,
+            blocked_cells,
+            clearance_exempt_cells,
+            allowed_core_overlap_nets,
+            allowed_core_overlap_cells,
+        )
+        .is_some()
+    }
+
+    pub fn commit_route_with_clearance_and_allowed_core_overlap_cells(
+        &mut self,
+        net_id: NetId,
+        core_cells: &[(i32, i32)],
+        blocked_cells: &[(i32, i32)],
+        clearance_exempt_cells: &[(i32, i32)],
+        allowed_core_overlap_nets: &FxHashSet<NetId>,
+        allowed_core_overlap_cells: Option<&FxHashSet<CellKey>>,
+    ) -> bool {
+        let Some((keys, core_keys)) = self
+            .plan_commit_route_with_clearance_and_allowed_core_overlap_cells(
+                net_id,
+                core_cells,
+                blocked_cells,
+                clearance_exempt_cells,
+                allowed_core_overlap_nets,
+                allowed_core_overlap_cells,
+            )
+        else {
+            return false;
+        };
 
         self.ripup_route(net_id);
 
@@ -1210,6 +1266,51 @@ const DYNAMIC_BIT: u8 = 1 << 1;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `can_commit_...` must give exactly the verdict a trial commit on a
+    /// cloned map gives (the pattern endpoint correction used, 14 % of a
+    /// multiportmmi_32x32 run), and must not touch the map.
+    #[test]
+    fn can_commit_matches_trial_commit_verdict_and_leaves_map_untouched() {
+        let mut map = ObstacleMap::new(20, 20);
+        // net 1 owns a vertical at x=5 (core = blocked here, clearance 0)
+        let net1: Vec<(i32, i32)> = (0..20).map(|y| (5, y)).collect();
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            1, &net1, &net1, &[], &FxHashSet::default()
+        ));
+        let none: FxHashSet<NetId> = FxHashSet::default();
+        let cases: Vec<(&str, Vec<(i32, i32)>, Vec<(i32, i32)>, FxHashSet<NetId>)> = vec![
+            ("free horizontal", (0..5).map(|x| (x, 10)).collect(), vec![], none.clone()),
+            ("crosses net 1's core without allowance", (0..10).map(|x| (x, 10)).collect(), vec![], none.clone()),
+            ("crosses net 1's core with net 1 allowed", (0..10).map(|x| (x, 10)).collect(), vec![], [1u64].into_iter().collect()),
+            ("crosses net 1's core, cell clearance-exempt but foreign core", (0..10).map(|x| (x, 10)).collect(), vec![(5, 10)], none.clone()),
+            ("out of bounds", vec![(19, 10), (20, 10)], vec![], none.clone()),
+        ];
+        for (label, core, exempt, allowed) in cases {
+            let verdict = map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+                2, &core, &core, &exempt, &allowed, None,
+            );
+            let mut trial = map.clone();
+            let committed = trial.commit_route_with_clearance_and_allowed_core_overlap_cells(
+                2, &core, &core, &exempt, &allowed, None,
+            );
+            assert_eq!(verdict, committed, "{label}: can_commit must match the trial commit");
+            // the check must not have registered anything
+            assert!(map.net_routes.get(&2).is_none(), "{label}: can_commit mutated the map");
+            assert!(!map.is_dynamic_core_blocked(0, 10), "{label}: can_commit mutated the map");
+        }
+        // expected verdicts, so the case list itself is meaningful
+        assert!(map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+            2, &(0..5).map(|x| (x, 10)).collect::<Vec<_>>(), &(0..5).map(|x| (x, 10)).collect::<Vec<_>>(), &[], &none, None
+        ));
+        assert!(!map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+            2, &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(), &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(), &[], &none, None
+        ));
+        assert!(map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+            2, &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(), &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(), &[], &[1u64].into_iter().collect(), None
+        ));
+    }
+
 
     #[test]
     fn static_add_remove_updates_occupancy() {
