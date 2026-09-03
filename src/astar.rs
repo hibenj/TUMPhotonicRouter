@@ -4404,13 +4404,34 @@ mod unified_kernel {
         // parents are always dense -- so only extended nodes carry counts.)
         let mut best_crossings: u16 = 0;
         let mut best_crossing_ref: Option<usize> = None;
+        // Probe cells (PHOTONIC_ROUTER_PROBE_CELLS) get the same landing
+        // counters as the target ring: slot 25.. in `target_ring`-like storage.
+        let probe_cells: Vec<(i32, i32)> = std::env::var("PHOTONIC_ROUTER_PROBE_CELLS")
+            .ok()
+            .map(|spec| {
+                spec.split(';')
+                    .filter_map(|item| {
+                        let mut it = item.split(',');
+                        let x = it.next()?.trim().parse::<i32>().ok()?;
+                        let y = it.next()?.trim().parse::<i32>().ok()?;
+                        Some((x, y))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let probe_index: FxHashMap<(i32, i32), usize> = probe_cells
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| (*cell, 25 + i))
+            .collect();
+        let mut probe_ring: Vec<[u32; 7]> = vec![[0u32; 7]; probe_cells.len()];
         let ring_index = |x: i32, y: i32| -> Option<usize> {
             let dx = x - target.x;
             let dy = y - target.y;
             if dx.abs() <= 2 && dy.abs() <= 2 {
                 Some(((dy + 2) * 5 + (dx + 2)) as usize)
             } else {
-                None
+                probe_index.get(&(x, y)).copied()
             }
         };
 
@@ -4481,6 +4502,12 @@ mod unified_kernel {
                         &extended_nodes,
                     );
                     print_probe_cells_report(search_seq, obstacle_map, port_open_cells);
+                    for (i, cell) in probe_cells.iter().enumerate() {
+                        let c = probe_ring[i];
+                        if c.iter().any(|v| *v > 0) {
+                            eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
+                        }
+                    }
                 }
                 return None;
             }
@@ -4520,6 +4547,12 @@ mod unified_kernel {
                         &extended_nodes,
                     );
                     print_probe_cells_report(search_seq, obstacle_map, port_open_cells);
+                    for (i, cell) in probe_cells.iter().enumerate() {
+                        let c = probe_ring[i];
+                        if c.iter().any(|v| *v > 0) {
+                            eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
+                        }
+                    }
                 }
                 return None;
             }
@@ -4725,7 +4758,7 @@ mod unified_kernel {
                 let ring_slot = if failure_diag {
                     let slot = ring_index(next_x, next_y);
                     if let Some(i) = slot {
-                        target_ring[i][0] += 1;
+                        { if i >= 25 { probe_ring[i - 25][0] += 1; } else { target_ring[i][0] += 1; } }
                     }
                     slot
                 } else {
@@ -4791,7 +4824,7 @@ mod unified_kernel {
                     if storage.closed.get(next_idx) {
                         stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                         if let Some(i) = ring_slot {
-                            target_ring[i][4] += 1;
+                            { if i >= 25 { probe_ring[i - 25][4] += 1; } else { target_ring[i][4] += 1; } }
                         }
                         continue;
                     }
@@ -4800,7 +4833,7 @@ mod unified_kernel {
                     if tentative_g_lower_bound >= storage.g_costs[next_idx] {
                         stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                         if let Some(i) = ring_slot {
-                            target_ring[i][5] += 1;
+                            { if i >= 25 { probe_ring[i - 25][5] += 1; } else { target_ring[i][5] += 1; } }
                         }
                         continue;
                     }
@@ -4849,13 +4882,13 @@ mod unified_kernel {
                     if tentative_g >= storage.g_costs[next_idx] {
                         stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                         if let Some(i) = ring_slot {
-                            target_ring[i][5] += 1;
+                            { if i >= 25 { probe_ring[i - 25][5] += 1; } else { target_ring[i][5] += 1; } }
                         }
                         continue;
                     }
                     stats.primitive_accepted_by_class[primitive_class] += 1;
                     if let Some(i) = ring_slot {
-                        target_ring[i][1] += 1;
+                        { if i >= 25 { probe_ring[i - 25][1] += 1; } else { target_ring[i][1] += 1; } }
                     }
                     storage.parent_idx[next_idx] = current_dense_idx as u32;
                     storage.parent_primitive[next_idx] = primitive.id;
@@ -4920,7 +4953,7 @@ mod unified_kernel {
                                 stats.primitive_footprint_rect_rejects += 1;
                             }
                             if let Some(i) = ring_slot {
-                                target_ring[i][2] += 1;
+                                { if i >= 25 { probe_ring[i - 25][2] += 1; } else { target_ring[i][2] += 1; } }
                                 // Name the actual blocking cells of this
                                 // footprint (capped), so the seal is a fact,
                                 // not an interpretation.
@@ -4942,7 +4975,7 @@ mod unified_kernel {
                                 }
                             }
                         } else if let Some(i) = ring_slot {
-                            target_ring[i][3] += 1;
+                            { if i >= 25 { probe_ring[i - 25][3] += 1; } else { target_ring[i][3] += 1; } }
                         }
                         continue;
                     };
@@ -5147,7 +5180,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=out_of_window state=({},{},
                                 stats,
                             ) else {
                                 if let Some(i) = ring_index(step_x, step_y) {
-                                    target_ring[i][if step_footprint_free { 3 } else { 2 }] += 1;
+                                    { if i >= 25 { probe_ring[i - 25][if step_footprint_free { 3 } else { 2 }] += 1; } else { target_ring[i][if step_footprint_free { 3 } else { 2 }] += 1; } }
                                 }
 if chain_diag { eprintln!("chain-break seq={} reason=hook_none state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
@@ -5160,7 +5193,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=hook_none state=({},{},{}) 
                                 &extended_nodes,
                             ) {
                                 if let Some(i) = ring_index(step_x, step_y) {
-                                    target_ring[i][6] += 1;
+                                    { if i >= 25 { probe_ring[i - 25][6] += 1; } else { target_ring[i][6] += 1; } }
                                 }
 if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
@@ -5270,7 +5303,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                             if chain_diag { eprintln!("chain-final seq={} closed state=({},{},{}) g={:.1}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_g); }
                             stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                             if let Some(i) = chain_ring {
-                                target_ring[i][4] += 1;
+                                { if i >= 25 { probe_ring[i - 25][4] += 1; } else { target_ring[i][4] += 1; } }
                             }
                             continue;
                         }
@@ -5280,7 +5313,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                             if chain_diag { eprintln!("chain-final seq={} cost_pruned state=({},{},{}) g={:.1} existing={:.1}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_g, final_bookkeeping.map(|(g, _)| g).unwrap_or(f64::INFINITY)); }
                             stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                             if let Some(i) = chain_ring {
-                                target_ring[i][5] += 1;
+                                { if i >= 25 { probe_ring[i - 25][5] += 1; } else { target_ring[i][5] += 1; } }
                             }
                             continue;
                         }
@@ -5293,7 +5326,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                         }
                         stats.primitive_accepted_by_class[primitive_class] += 1;
                         if let Some(i) = chain_ring {
-                            target_ring[i][1] += 1;
+                            { if i >= 25 { probe_ring[i - 25][1] += 1; } else { target_ring[i][1] += 1; } }
                         }
                         if failure_diag {
                             let count = extended_nodes[last_idx].crossings;
@@ -5326,7 +5359,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                     if existing_bookkeeping.is_some_and(|(_, closed)| closed) {
                         stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                         if let Some(i) = ring_slot {
-                            target_ring[i][4] += 1;
+                            { if i >= 25 { probe_ring[i - 25][4] += 1; } else { target_ring[i][4] += 1; } }
                         }
                         continue;
                     }
@@ -5377,7 +5410,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                     if tentative_g >= best_next_g.unwrap_or(f64::INFINITY) {
                         stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                         if let Some(i) = ring_slot {
-                            target_ring[i][5] += 1;
+                            { if i >= 25 { probe_ring[i - 25][5] += 1; } else { target_ring[i][5] += 1; } }
                         }
                         continue;
                     }
@@ -5390,7 +5423,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                         stats.footprint_rejects += 1;
                         stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
                         if let Some(i) = ring_slot {
-                            target_ring[i][6] += 1;
+                            { if i >= 25 { probe_ring[i - 25][6] += 1; } else { target_ring[i][6] += 1; } }
                         }
                         continue;
                     }
@@ -5461,7 +5494,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                     extended_state.insert(key, (tentative_g, false));
                     stats.primitive_accepted_by_class[primitive_class] += 1;
                     if let Some(i) = ring_slot {
-                        target_ring[i][1] += 1;
+                        { if i >= 25 { probe_ring[i - 25][1] += 1; } else { target_ring[i][1] += 1; } }
                     }
                     stats.best_cost_updates += 1;
                     stats.parent_updates += 1;
@@ -5522,6 +5555,12 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                 &extended_nodes,
             );
             print_probe_cells_report(search_seq, obstacle_map, port_open_cells);
+                    for (i, cell) in probe_cells.iter().enumerate() {
+                        let c = probe_ring[i];
+                        if c.iter().any(|v| *v > 0) {
+                            eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
+                        }
+                    }
         }
         None
     }
