@@ -51,6 +51,12 @@ Variants: V0 baseline = stable (LSC 0.05, proactive 4.0 / r3) -> vertical at 115
 - (2026-09-03 19:50-20:03) Regression guard for `d9f140f` + `dd5d043`: pytest 10 failed / 357 passed (baseline); ladder heater 10 s, mm8 18 s, benes8 38 s (52/4/0), mm16 64 s (225/2/0), benes16 176 s (136/8/0) -- all verifications 0 errors, numbers identical to the P2 ladder; multiportmmi_32x32 full 447/447, 0 failures, 0 repairs, verification 0 errors, 467 s. Full benes_32x32 with V1 + 3-minute watchdog launched 20:04.
 - BASELINE (2026-09-03 20:19): full benes_32x32 with both fixes and V1: rc=0, 320/320, attempts 336 / failures 16 / repairs 0, endpoint correction 320 calls / 0 failures, crossing verification success 0 errors 420 crossings, photonic 0 errors, total 927 s. The 3-minute watchdog never fired (slowest stretch 268->283 in ~5 min for the last stage). LSC weight 1.0 promoted into `benchmarks/benes_32x32.py` `STABLE_ROUTING_ENV` so a bare `routing_flow.py benes_32x32` reproduces the baseline.
 
+## Performance pass (owner request, 2026-09-03 evening): all seven benchmarks, timing table, anomalies
+
+Run: `run_all7.sh` (sequential, `PHOTONIC_ROUTER_NATIVE_PROGRESS=1` for per-net times), analysis `analyze_all7.py`. Findings are recorded here as they appear; the table follows when all seven are done.
+
+- FINDING P1 (obvious knob): endpoint correction clones the whole `ObstacleMap` per candidate per job (`py_router.rs` `centerline_port_corrected_checked_native`: `let mut check_map = self.obstacle_map.clone();` then a trial commit; 14 clone sites in total). Cost: heater_s_mod 4.8 s of an 8 s run (81 jobs, 59 ms each; the A* search is 1 s), multiportmmi_32x32 63.8 s of 469 s (789 calls, 14 %), benes_32x32 14 s. `commit_route_with_clearance_and_allowed_core_overlap_cells` already separates a check phase (bounds / ref / overlap -> false) from the mutation phase; a `can_commit_...` with the check phase only removes the clone. Bounded, unit-testable (same verdict as clone+commit on a small map), no rule change.
+
 ## Decision Log
 
 - (2026-09-03, owner) No PR; stay on `crossings/verification-foundation`. Goal on this branch: benes_32x32 runs too -- that is the lidar-pure baseline, and it is to be recorded as such.
