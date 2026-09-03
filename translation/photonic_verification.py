@@ -573,7 +573,21 @@ def _verify_route_obstacle_overlaps(
         obstacle_region = _component_layer_region(source_component, layer)
         if obstacle_region.is_empty():
             continue
+        # Performance pass 2026-09-03 (P5): one boolean per layer over the
+        # union of all routes decides whether ANY illegal overlap exists;
+        # the per-route booleans against the whole obstacle layer (223
+        # routes x 7 layers x ~10 ms on multiportmmi_16x16 = 17 s of a 66 s
+        # run) then only run for routes that touch that residue. Issues are
+        # identical: the per-route computation below is unchanged.
+        all_routes_region = kdb.Region()
+        for route_region in route_regions_by_key.values():
+            all_routes_region.insert(route_region)
+        residue = (all_routes_region & obstacle_region) - legal_overlap_region
+        if residue.is_empty():
+            continue
         for key, route_region in route_regions_by_key.items():
+            if (route_region & residue).is_empty():
+                continue
             allowed_region = legal_overlap_region
             per_key_regions = legal_overlap_regions_by_key
             if legal_overlap_regions_by_layer is not None:
