@@ -3834,9 +3834,7 @@ mod unified_kernel {
             // or fully). A bend's first arm is arc when realized, so it must
             // not start before the debt is zero -- same rule as the contact
             // path in `crossing_move_outcome_with_segments`.
-            if current_extension.pending_after_crossing_cells > 0
-                && std::env::var_os("PHOTONIC_ROUTER_BISECT_NO_EVAL_PENDING_GUARD").is_none()
-            {
+            if current_extension.pending_after_crossing_cells > 0 {
                 let pure_straight_in_pending_direction = primitive_class_is_straight
                     && primitive.end_angle == state.angle
                     && state.angle == current_extension.pending_after_crossing_angle
@@ -6947,8 +6945,7 @@ fn crossing_move_outcome_with_segments(
         let pure_straight_in_pending_direction = is_straight
             && primitive.end_angle == state.angle
             && matches!(primitive.geometry, PrimitiveGeometry::Straight { .. });
-        let bends_may_pay = std::env::var_os("PHOTONIC_ROUTER_BISECT_BENDS_PAY").is_some();
-        if (!pure_straight_in_pending_direction && !bends_may_pay)
+        if !pure_straight_in_pending_direction
             || initial_run_distance + 1.0e-9 < pending_before
         {
             if !pure_straight_in_pending_direction {
@@ -7439,11 +7436,7 @@ fn crossing_move_outcome_with_segments(
         // debt is paid by pure straights only, so no bend-radius allowance
         // is needed here. This matches the realized validator
         // (`realized_crossing_margin_um` = half_size * grid).
-        let debt_basis = if std::env::var_os("PHOTONIC_ROUTER_BISECT_DEBT_REQUIRED_MARGIN").is_some() {
-            required_margin
-        } else {
-            crossing.crossing_half_size_cells.max(0)
-        };
+        let debt_basis = crossing.crossing_half_size_cells.max(0);
         let missing_after = (f64::from(debt_basis) - intersection.distance_after_on_segment)
             .ceil()
             .max(0.0) as i32;
