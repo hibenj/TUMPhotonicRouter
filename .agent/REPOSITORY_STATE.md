@@ -19,7 +19,8 @@ now lives only in the referenced ExecPlan and `git log`.)
 ## Current Snapshot
 
 - Date: 2026-09-03
-- **ACTIVE PLAN (complete through Milestone 4, optional follow-up open):
+- **ACTIVE PLAN (afternoon): `.agent/execplans/2026-09-03-benes-32x32-lidar-pure-baseline.md`** -- owner goal on this branch: `benes_32x32` must also route under the stable defaults; that run is the lidar-pure baseline and is to be recorded as such. No PR for now. Milestone 0 (fresh diagnostic run) launched 2026-09-03 ~12:30.
+- **Completed the same morning (through Milestone 4, optional follow-up open):
   `.agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md`.**
   `multiportmmi_32x32` under the stable defaults (lidar-pure) routes
   **completely and verification-clean for the first time**: 447/447,
