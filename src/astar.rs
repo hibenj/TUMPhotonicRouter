@@ -4056,6 +4056,26 @@ mod unified_kernel {
         /// Maintained only under PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG (0
         /// otherwise); powers the best-crossing-path dump on failure.
         crossings: u16,
+        /// True iff this node or any extended ancestor carries a reservation
+        /// key. Lets the two parent-chain walks (own-window re-entry, own
+        /// window overlap) return at once for the common key-free chain
+        /// (perf pass 2026-09-03: the walk was 8.8 % of a mm16 run).
+        chain_has_reservations: bool,
+    }
+
+    fn chain_has_reservations_from(
+        parent: UnifiedParentRef,
+        active: &[CellKey],
+        pending: &[CellKey],
+        extended_nodes: &[UnifiedExtendedNode],
+    ) -> bool {
+        if !active.is_empty() || !pending.is_empty() {
+            return true;
+        }
+        match parent {
+            UnifiedParentRef::Dense(_) => false,
+            UnifiedParentRef::Extended(idx) => extended_nodes[idx].chain_has_reservations,
+        }
     }
 
     /// Tier 2's local self-overlap guard: today's crossing kernel's
@@ -4200,6 +4220,13 @@ mod unified_kernel {
         primitive_crossing: &PrimitiveCrossingMetadata,
         extended_nodes: &[UnifiedExtendedNode],
     ) -> bool {
+        if let UnifiedOpenRef::Extended(ext_idx) = current {
+            if !extended_nodes[ext_idx].chain_has_reservations {
+                return false;
+            }
+        } else {
+            return false;
+        }
         let current_key = pack_xy(state.x, state.y);
         let mut candidate_keys = FxHashSet::default();
         for witness in &primitive_crossing.witnesses {
@@ -4251,6 +4278,10 @@ mod unified_kernel {
         if outcome.active_reservation_keys.is_empty() && outcome.pending_reservation_keys.is_empty()
         {
             return false;
+        }
+        match current {
+            UnifiedOpenRef::Extended(ext_idx) if extended_nodes[ext_idx].chain_has_reservations => {}
+            _ => return false,
         }
         let hits = |keys: &[CellKey]| {
             keys.iter().any(|key| {
@@ -5207,6 +5238,12 @@ mod unified_kernel {
                             0
                         };
                         let mut last_idx = extended_nodes.len();
+                        let first_chain_has_reservations = chain_has_reservations_from(
+                            first_parent,
+                            &first_active_keys,
+                            &first_pending_keys,
+                            &extended_nodes,
+                        );
                         extended_nodes.push(UnifiedExtendedNode {
                             state: next_state,
                             extension: next_extension,
@@ -5216,6 +5253,7 @@ mod unified_kernel {
                             active_local_reservation_keys: first_active_keys,
                             pending_local_reservation_keys: first_pending_keys,
                             crossings: first_crossings,
+                            chain_has_reservations: first_chain_has_reservations,
                         });
                         let mut chain_state = next_state;
                         let mut chain_extension = next_extension;
@@ -5406,6 +5444,12 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_overlap state=(
                                 0
                             };
                             let new_idx = extended_nodes.len();
+                            let step_chain_has_reservations = chain_has_reservations_from(
+                                UnifiedParentRef::Extended(last_idx),
+                                &step_active_keys,
+                                &step_pending_keys,
+                                &extended_nodes,
+                            );
                             extended_nodes.push(UnifiedExtendedNode {
                                 state: step_state,
                                 extension: step_extension,
@@ -5415,6 +5459,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_overlap state=(
                                 active_local_reservation_keys: step_active_keys,
                                 pending_local_reservation_keys: step_pending_keys,
                                 crossings: step_crossings,
+                                chain_has_reservations: step_chain_has_reservations,
                             });
                             last_idx = new_idx;
                             chain_state = step_state;
@@ -5614,6 +5659,12 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_overlap state=(
                         0
                     };
                     let node_idx = extended_nodes.len();
+                    let node_chain_has_reservations = chain_has_reservations_from(
+                        parent,
+                        &active_local_reservation_keys,
+                        &pending_local_reservation_keys,
+                        &extended_nodes,
+                    );
                     extended_nodes.push(UnifiedExtendedNode {
                         state: next_state,
                         extension: next_extension,
@@ -5623,6 +5674,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_overlap state=(
                         active_local_reservation_keys,
                         pending_local_reservation_keys,
                         crossings: node_crossings,
+                        chain_has_reservations: node_chain_has_reservations,
                     });
                     if failure_diag
                         && (node_crossings > best_crossings || best_crossing_ref.is_none())
