@@ -34,7 +34,21 @@ After this plan: the trial commit is replaced by a check-only `can_commit_route_
 
 ## Outcomes & Retrospective
 
-Not started.
+**Outcome (2026-09-03 23:25, final guard `run_final_guard.sh`: pytest 10 failed / 357 passed baseline, all seven benchmarks, every attempts/failures/repairs count and every verification verdict identical to the start of the pass):**
+
+| benchmark | wall before -> after | flow total after | A* search | endpoint corr. | non-routing (layout+verif+GDS) |
+|---|---|---|---|---|---|
+| heater_s_mod | 10.7 -> 5.6 s | 4 | 1 | 0.1 (was 4.8) | 2 |
+| multiportmmi_8x8 | 18.4 -> 13.3 s | 11 | 8 | 0.3 | 2 (was 5) |
+| benes_8x8 | 38.4 -> 33.7 s | 32 | 31 | 0.0 | 0 |
+| multiportmmi_16x16 | 66.6 -> 39.3 s | 37 | 29 (was 37) | 1.3 (was 7.3) | 6 (was 19) |
+| benes_16x16 | 190.7 -> 152.8 s | 151 | 148 (was 179) | 0.2 | 1 (was 7) |
+| multiportmmi_32x32 | 490.5 -> 298.2 s | 296 | 264 (was 340) | 6.3 (was 66.6) | 22 (was 78) |
+| benes_32x32 | 944.7 -> 815.4 s | 813 | 801 (was 883) | 0.8 (was 14.7) | 8 (was 41) |
+
+Four changes, none touching a routing rule: P1 check-only commit instead of a whole-map clone per endpoint-correction candidate (`a94795a`); P5 verification booleans once per layer over the union of routes (`b2086df`); K3 scanline candidate rows for the polygon rasterizer with `point_in_polygon` as the unchanged oracle (`ba03ca1`); K1 `chain_has_reservations` flag short-circuiting the own-window chain walks (`7932dd4`). Refuted on the way: the crossing search loss as a time driver (P3), a small-rect bitset fast path (K2, slower).
+
+**Retrospective:** the timing pass paid off because it started with a table and a per-net rate check (no anomaly -> look at phases, not nets), then a profiler per phase (cProfile for the Python phases, perf for the Rust engine). Each knob was measured on mm16 (the fastest benchmark that exercises every phase) before the full guard. What remains is structural (P4): search time is expansion count, and expansion count is cost slack vs the heuristic plus Tier-2 key multiplicity -- an owner decision (predicate-1 simplification would shrink the key), not a knob.
 
 ## Validation and Acceptance
 
