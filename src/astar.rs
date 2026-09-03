@@ -6789,7 +6789,8 @@ fn crossing_move_outcome_with_segments(
         let pure_straight_in_pending_direction = is_straight
             && primitive.end_angle == state.angle
             && matches!(primitive.geometry, PrimitiveGeometry::Straight { .. });
-        if !pure_straight_in_pending_direction
+        let bends_may_pay = std::env::var_os("PHOTONIC_ROUTER_BISECT_BENDS_PAY").is_some();
+        if (!pure_straight_in_pending_direction && !bends_may_pay)
             || initial_run_distance + 1.0e-9 < pending_before
         {
             if !pure_straight_in_pending_direction {
@@ -7266,8 +7267,12 @@ fn crossing_move_outcome_with_segments(
         // debt is paid by pure straights only, so no bend-radius allowance
         // is needed here. This matches the realized validator
         // (`realized_crossing_margin_um` = half_size * grid).
-        let missing_after = (f64::from(crossing.crossing_half_size_cells.max(0))
-            - intersection.distance_after_on_segment)
+        let debt_basis = if std::env::var_os("PHOTONIC_ROUTER_BISECT_DEBT_REQUIRED_MARGIN").is_some() {
+            required_margin
+        } else {
+            crossing.crossing_half_size_cells.max(0)
+        };
+        let missing_after = (f64::from(debt_basis) - intersection.distance_after_on_segment)
             .ceil()
             .max(0.0) as i32;
         let reservation_keys = local_crossing_reservation_window_keys(
