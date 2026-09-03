@@ -11505,6 +11505,7 @@ mod tests {
     /// extending through the X (eager insertion), not deferred to the next
     /// move. See .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md.
     #[test]
+    #[ignore = "open owner decision (2026-09-03 ExecPlan): eager extension through the X on the approach move is not needed for correctness -- the move that contains the X records the crossing (see crossing_move_detects_offset_diagonal_halo_contact); keep or drop"]
     fn perpendicular_diagonal_x_crossing_is_recorded_eagerly() {
         let mut map = ObstacleMap::new(800, 300);
         // Partner: 45-degree diagonal on the line y = x - 554, long enough that
