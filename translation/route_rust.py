@@ -6688,6 +6688,16 @@ class _RouteNetsRustSession:
         """
         t_router_setup_start = self._pipeline_timer_start()
         self.origin_x_um, self.origin_y_um = _grid_origin_xy(self.grid)
+        if os.environ.get("PHOTONIC_ROUTER_TRACE_GRID"):
+            # Path-investigation harness: the grid<->um mapping must come from
+            # the tool, never from a hand conversion (see
+            # .agent/PATH_INVESTIGATION_HARNESS.md). um = origin + (cell + 0.5) * grid_size.
+            print(
+                f"      - grid: origin=({self.origin_x_um:.3f}, {self.origin_y_um:.3f}) um "
+                f"size={float(self.grid.grid_size_um):.3f} um "
+                f"cells={int(self.grid.width)}x{int(self.grid.height)}",
+                flush=True,
+            )
         grid_spec = self.rust_backend.GridSpec(
             int(self.grid.width),
             int(self.grid.height),
