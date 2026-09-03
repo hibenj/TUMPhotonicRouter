@@ -4992,11 +4992,27 @@ impl PyPhotonicRouter {
             &realized_violations,
         );
         if trace_crossing {
+            let unresolved = if skip_rust_level2_validation {
+                Vec::new()
+            } else {
+                self.invalid_crossing_intersections_for_route(net_id, &result, &search_partner_ids)
+            };
             eprintln!(
-                "collision-crossing validation net={} crossed={:?} satisfies={} realized_violations={:?}",
+                "collision-crossing validation net={} crossed={:?} satisfies={} no_unresolved_grid_crossings={} partner_constraints={} unresolved={:?} realized_violations={:?}",
                 net_id,
                 crossed_partner_ids,
                 satisfies,
+                route_has_no_unresolved_grid_crossings,
+                self.crossing_events_satisfy_partner_constraints(
+                    net_id,
+                    required_partner_ids,
+                    &crossing_events,
+                    opened_cell_keys,
+                ),
+                unresolved
+                    .iter()
+                    .map(|v| (v.partner_net_id, v.point, v.reason))
+                    .collect::<Vec<_>>(),
                 realized_violations
                     .iter()
                     .map(|violation| (violation.partner_net_id, violation.point, violation.reason))
