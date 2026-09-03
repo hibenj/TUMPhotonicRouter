@@ -16428,6 +16428,7 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             crossing_reject_unmatched_route_footprint: route
                 .crossing_reject_unmatched_route_footprint,
             crossing_reject_pending_straight: route.crossing_reject_pending_straight,
+            crossing_reject_reservation_overlap: 0,
             crossing_perpendicular_reject_by_partner: FxHashMap::default(),
             crossing_after_margin_by_partner: FxHashMap::default(),
             crossing_pending_straight_by_partner: FxHashMap::default(),

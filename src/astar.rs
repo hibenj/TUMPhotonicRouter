@@ -312,6 +312,11 @@ pub struct RouteSearchStats {
     pub crossing_reject_unmatched_route_centerline: usize,
     pub crossing_reject_unmatched_route_footprint: usize,
     pub crossing_reject_pending_straight: usize,
+    /// Crossing rejected because its +-half_size reservation window overlaps
+    /// a window of an earlier crossing of the same route (elements would
+    /// overlap; the post-search `crossing_events_have_disjoint_reservations`
+    /// check would discard the whole route).
+    pub crossing_reject_reservation_overlap: usize,
     // Analysis-only partner breakdowns. These are disabled in normal routing
     // unless PHOTONIC_ROUTER_ANALYSIS_CROSSING_PARTNER_COUNTERS=1 is set.
     pub crossing_perpendicular_reject_by_partner: FxHashMap<NetId, usize>,
@@ -4230,6 +4235,49 @@ mod unified_kernel {
 
     /// The unified kernel. See this module's own doc comment above for the
     /// full design summary.
+    /// Reservation-window disjointness across moves: the windows the
+    /// candidate move reserves (`outcome.active_reservation_keys` and
+    /// `outcome.pending_reservation_keys`, one +-half_size box per new
+    /// crossing) must not share a cell with any window reserved earlier on
+    /// this route -- active or still pending -- so two crossing elements
+    /// never overlap. Walks the parent chain like
+    /// `unified_candidate_hits_active_local_crossing_reservation` and stops
+    /// at the first Tier-1 ancestor (which never carries a reservation).
+    fn unified_outcome_windows_overlap_own_reservations(
+        current: UnifiedOpenRef,
+        outcome: &CrossingMoveOutcome,
+        extended_nodes: &[UnifiedExtendedNode],
+    ) -> bool {
+        if outcome.active_reservation_keys.is_empty() && outcome.pending_reservation_keys.is_empty()
+        {
+            return false;
+        }
+        let hits = |keys: &[CellKey]| {
+            keys.iter().any(|key| {
+                outcome.active_reservation_keys.contains(key)
+                    || outcome.pending_reservation_keys.contains(key)
+            })
+        };
+        let mut cursor = current;
+        loop {
+            let UnifiedOpenRef::Extended(ext_idx) = cursor else {
+                return false;
+            };
+            let Some(node) = extended_nodes.get(ext_idx) else {
+                return false;
+            };
+            if hits(&node.active_local_reservation_keys)
+                || hits(&node.pending_local_reservation_keys)
+            {
+                return true;
+            }
+            cursor = match node.parent {
+                UnifiedParentRef::Dense(idx) => UnifiedOpenRef::Dense(idx),
+                UnifiedParentRef::Extended(idx) => UnifiedOpenRef::Extended(idx),
+            };
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
         obstacle_map: &ObstacleMap,
@@ -5042,6 +5090,14 @@ mod unified_kernel {
                             stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
                             continue;
                         }
+                        if unified_outcome_windows_overlap_own_reservations(
+                            current_ref,
+                            &outcome,
+                            &extended_nodes,
+                        ) {
+                            stats.crossing_reject_reservation_overlap += 1;
+                            continue;
+                        }
                         let first_history_cost = if config.history_weight > 0.0 {
                             dense_grid.primitive_footprint_history_with_profile(
                                 state.x,
@@ -5226,6 +5282,16 @@ if chain_diag { eprintln!("chain-break seq={} reason=hook_none state=({},{},{}) 
                                     { if i >= 25 { probe_ring[i - 25][6] += 1; } else { target_ring[i][6] += 1; } }
                                 }
 if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
+                                chain_completed = false;
+                                break;
+                            }
+                            if unified_outcome_windows_overlap_own_reservations(
+                                UnifiedOpenRef::Extended(last_idx),
+                                &step_outcome,
+                                &extended_nodes,
+                            ) {
+                                stats.crossing_reject_reservation_overlap += 1;
+if chain_diag { eprintln!("chain-break seq={} reason=reservation_overlap state=({},{},{}) pending={} step={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps); }
                                 chain_completed = false;
                                 break;
                             }
@@ -5452,6 +5518,17 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_hit state=({},{
                     ) {
                         stats.footprint_rejects += 1;
                         stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
+                        if let Some(i) = ring_slot {
+                            { if i >= 25 { probe_ring[i - 25][6] += 1; } else { target_ring[i][6] += 1; } }
+                        }
+                        continue;
+                    }
+                    if unified_outcome_windows_overlap_own_reservations(
+                        current_ref,
+                        &outcome,
+                        &extended_nodes,
+                    ) {
+                        stats.crossing_reject_reservation_overlap += 1;
                         if let Some(i) = ring_slot {
                             { if i >= 25 { probe_ring[i - 25][6] += 1; } else { target_ring[i][6] += 1; } }
                         }
@@ -7377,6 +7454,32 @@ fn crossing_move_outcome_with_segments(
             obstacle_map.width(),
             obstacle_map.height(),
         );
+        // Two crossing elements of one route must not overlap: the new
+        // window must be disjoint from every window this move already
+        // reserved (earlier moves are checked by the kernel against the
+        // node chain). Same predicate as the post-search
+        // `crossing_events_have_disjoint_reservations`.
+        if reservation_keys.iter().any(|key| {
+            active_reservation_keys.contains(key) || pending_reservation_keys.contains(key)
+        }) {
+            let partner = &crossing.partners[intersection.partner_idx];
+            record_perpendicular_crossing_reject(stats, crossing, partner.net_id, search_start);
+            trace_crossing_candidate(
+                crossing,
+                partner.net_id,
+                "reservation_overlap",
+                intersection.x,
+                intersection.y,
+                intersection.route_angle,
+                intersection.partner_angle,
+                required_margin,
+                0.0,
+                intersection.distance_before_on_segment,
+                intersection.distance_after_on_segment,
+            );
+            stats.crossing_reject_reservation_overlap += 1;
+            return None;
+        }
         if missing_after > 0 {
             if !intersection.segment_is_terminal {
                 let partner = &crossing.partners[intersection.partner_idx];
@@ -11942,25 +12045,23 @@ mod tests {
         assert!(route.is_some(), "vertical descent across two horizontal partners 19 cells apart must route (pending-straight rejects: {}, margin rejects: {}, accepted: {})", stats.crossing_reject_pending_straight, stats.crossing_reject_margin, stats.crossing_accepted);
     }
 
-    /// The multiportmmi_32x32 descent wall as found on 2026-09-03: two
-    /// horizontal partners only THREE cells apart (n_285's lower run at
-    /// y=1520 and n_284 at y=1517 near x=3060), crossed vertically with the
-    /// benchmark margin (half_size 2, bend_runout 3 -> required 5) and the
-    /// half-size straight-after debt. After crossing the first partner the
-    /// debt run (2 cells) ends exactly on the second partner's cell.
-    #[test]
-    fn vertical_route_crosses_two_horizontal_partners_three_cells_apart() {
+    /// Vertical descent across two full-width horizontal partners `gap`
+    /// cells apart, benchmark crossing config (half_size 2). Returns the
+    /// route (if any) and the search stats.
+    fn vertical_descent_across_two_horizontals(gap: i32) -> (Option<RouteResult>, RouteSearchStats) {
         let mut map = ObstacleMap::new(60, 80);
-        let partner_a: Vec<(i32, i32)> = (0..60).map(|k| (k, 40)).collect();
-        let partner_b: Vec<(i32, i32)> = (0..60).map(|k| (k, 37)).collect();
+        let y_a = 40;
+        let y_b = 40 - gap;
+        let partner_a: Vec<(i32, i32)> = (0..60).map(|k| (k, y_a)).collect();
+        let partner_b: Vec<(i32, i32)> = (0..60).map(|k| (k, y_b)).collect();
         assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(1, &partner_a, &partner_a, &[], &FxHashSet::default()));
         assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &partner_b, &partner_b, &[], &FxHashSet::default()));
         let library = primitive_library();
         let crossing = CrossingSearchConfig {
             net_id: 3,
             partners: vec![
-                CrossingSearchPartner { net_id: 1, waypoints: vec![(0, 40), (59, 40)], target_terminal_bump_guard: None },
-                CrossingSearchPartner { net_id: 2, waypoints: vec![(0, 37), (59, 37)], target_terminal_bump_guard: None },
+                CrossingSearchPartner { net_id: 1, waypoints: vec![(0, y_a), (59, y_a)], target_terminal_bump_guard: None },
+                CrossingSearchPartner { net_id: 2, waypoints: vec![(0, y_b), (59, y_b)], target_terminal_bump_guard: None },
             ],
             min_straight_cells: 2,
             crossing_half_size_cells: 2,
@@ -11969,16 +12070,40 @@ mod tests {
             require_all_partners: false,
             terminal_bump_guard: None,
         };
-        let (route, stats) = route_single_net_with_collision_crossing_config_with_stats(
+        route_single_net_with_collision_crossing_config_with_stats(
             &map, &library, State::new(30, 70, 6), State::new(30, 10, 6), None, None,
             &AStarConfig { use_routing_window: false, enable_simple_routes: false, ..AStarConfig::default() },
             0, None, &crossing,
-        );
-        assert!(
-            route.is_some(),
-            "vertical descent across two horizontal partners 3 cells apart must route (pending-straight rejects: {}, margin rejects: {}, accepted: {})",
-            stats.crossing_reject_pending_straight, stats.crossing_reject_margin, stats.crossing_accepted
-        );
+        )
+    }
+
+    /// The multiportmmi_32x32 finding of 2026-09-03: n_285 and n_284 only
+    /// THREE cells apart at x=3072. Two crossing elements (+-half_size = 5
+    /// cells each) cannot sit 3 cells apart -- their reservation windows
+    /// overlap, and the post-search `crossing_events_have_disjoint_reservations`
+    /// would discard the whole route. The search itself must refuse the
+    /// pair (predicate 2), so the full-width partners make this unroutable.
+    #[test]
+    fn vertical_descent_refuses_two_crossings_three_cells_apart() {
+        let (route, stats) = vertical_descent_across_two_horizontals(3);
+        assert!(stats.crossing_reject_reservation_overlap > 0, "the second crossing must be rejected for window overlap");
+        assert!(route.is_none(), "two crossing elements 3 cells apart cannot both be realized");
+    }
+
+    /// Four cells apart the windows [38,42] and [34,38] still share y=38.
+    #[test]
+    fn vertical_descent_refuses_two_crossings_four_cells_apart() {
+        let (route, stats) = vertical_descent_across_two_horizontals(4);
+        assert!(stats.crossing_reject_reservation_overlap > 0);
+        assert!(route.is_none());
+    }
+
+    /// Five cells apart (2*half_size + 1) the windows are disjoint: routes.
+    #[test]
+    fn vertical_descent_crosses_two_partners_five_cells_apart() {
+        let (route, stats) = vertical_descent_across_two_horizontals(5);
+        assert!(route.is_some(), "disjoint windows must route (overlap rejects: {}, accepted: {})", stats.crossing_reject_reservation_overlap, stats.crossing_accepted);
+        assert_eq!(stats.crossing_reject_reservation_overlap, 0);
     }
 
     #[test]
@@ -12719,7 +12844,7 @@ mod tests {
     }
 
     #[test]
-    fn crossing_pending_after_keeps_largest_missing_runout() {
+    fn crossing_move_rejects_two_crossings_with_overlapping_windows_in_one_move() {
         let mut map = ObstacleMap::new(32, 16);
         let partner_a = vec![(4, 0), (4, 11)];
         let partner_b = vec![(7, 0), (7, 11)];
@@ -12754,15 +12879,99 @@ mod tests {
                 },
             ],
             min_straight_cells: 0,
-            // Re-pinned 2026-09-03: the straight-after debt now derives from
-            // the crossing element's half size (measured from each
-            // intersection), no longer from required_margin = half_size +
-            // bend_runout. The 8-cell straight from x=0 crosses partner A at
-            // x=4 (4 cells after) and partner B at x=7 (1 cell after); with
-            // half_size 5 the debts are 1 and 4 and the larger one is kept.
-            // The explicit required_margin argument (5) still governs the
-            // partner-side and route-before checks.
+            // Predicate 2 (2026-09-03): partners 3 cells apart with
+            // half_size 5 have +-5 reservation windows that overlap -- two
+            // crossing elements cannot both be realized, so the move that
+            // would cross both is rejected (intra-move window check).
             crossing_half_size_cells: 5,
+            bend_runout_cells: 0,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0), (3, 1)].into_iter().collect();
+        let primitive = Primitive {
+            id: 0,
+            start_angle: 0,
+            end_angle: 0,
+            dx: 8,
+            dy: 0,
+            footprint: (0..=8).map(|x| (x, 0)).collect(),
+            length_um: 8.0,
+            bend_cost: 0.0,
+            geometry: PrimitiveGeometry::Straight { length_um: 8.0 },
+        };
+
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(0, 5, 0),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 10,
+                pending_after_crossing_cells: 0,
+                pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+            },
+            State::new(0, 5, 0),
+            &primitive,
+            true,
+            5,
+            5,
+            0,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        )
+        ;
+        assert!(outcome.is_none(), "overlapping reservation windows must reject the move");
+        assert_eq!(stats.crossing_reject_reservation_overlap, 1);
+    }
+
+    #[test]
+    fn crossing_pending_after_keeps_debt_of_the_later_crossing() {
+        let mut map = ObstacleMap::new(32, 16);
+        let partner_a = vec![(2, 0), (2, 11)];
+        let partner_b = vec![(7, 0), (7, 11)];
+        let cells_a = rasterize_waypoints_for_test(&partner_a);
+        let cells_b = rasterize_waypoints_for_test(&partner_b);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            2,
+            &cells_a,
+            &cells_a,
+            &[],
+            &FxHashSet::default()
+        ));
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            3,
+            &cells_b,
+            &cells_b,
+            &[],
+            &FxHashSet::default()
+        ));
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: vec![
+                CrossingSearchPartner {
+                    net_id: 2,
+                    waypoints: partner_a,
+                    target_terminal_bump_guard: None,
+                },
+                CrossingSearchPartner {
+                    net_id: 3,
+                    waypoints: partner_b,
+                    target_terminal_bump_guard: None,
+                },
+            ],
+            min_straight_cells: 0,
+            // Re-pinned 2026-09-03 (predicate 2): partners 5 cells apart
+            // (x=2 and x=7) so the +-2 windows are disjoint. The 8-cell
+            // straight from x=0 crosses A with 6 cells after (no debt) and B
+            // with 1 cell after (debt 1); the open debt of the later
+            // crossing is what the outcome carries.
+            crossing_half_size_cells: 2,
             bend_runout_cells: 0,
             crossing_loss: 0.0,
             require_all_partners: false,
@@ -12807,7 +13016,8 @@ mod tests {
         .expect("both perpendicular crossings should be accepted with pending runout");
 
         assert_eq!(outcome.crossing_count, 2);
-        assert_eq!(outcome.pending_after_crossing_cells, 4);
+        assert_eq!(outcome.pending_after_crossing_cells, 1);
+        assert_eq!(outcome.pending_after_crossing_partner_index, 1);
     }
 
     #[test]
