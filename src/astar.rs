@@ -3196,6 +3196,12 @@ struct CrossingMoveOutcome {
     crossing_count: u32,
     active_reservation_keys: Vec<CellKey>,
     pending_reservation_keys: Vec<CellKey>,
+    /// True when the move touched committed cells but every touched cell
+    /// belonged to the partner whose straight-after debt this move is
+    /// paying -- the crossing's own neighbourhood, not a new contact.
+    /// `LiveCrossingHook::evaluate` exempts such moves from its
+    /// "contact without a recorded crossing" rejection.
+    contact_only_pending_partner: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3851,7 +3857,13 @@ mod unified_kernel {
             // waveguides physically overlap (multiportmmi_8x8 n_13/n_14 at
             // heuristic weight 1.0), so a halo contact without a crossing is
             // rejected exactly like the crossings-disabled kernel rejects it.
-            if (!footprint_free || halo_contact) && outcome.crossing_count == 0 {
+            // Contact without a recorded crossing is grazing -- unless every
+            // touched cell belongs to the partner whose straight-after debt
+            // this move is paying (the crossing's own neighbourhood).
+            if (!footprint_free || halo_contact)
+                && outcome.crossing_count == 0
+                && !outcome.contact_only_pending_partner
+            {
                 return None;
             }
             let extra_cost = f64::from(outcome.crossing_count) * self.crossing.crossing_loss;
@@ -6485,6 +6497,7 @@ fn crossing_no_contact_outcome(
         crossing_count: 0,
         active_reservation_keys: Vec::new(),
         pending_reservation_keys: Vec::new(),
+        contact_only_pending_partner: false,
     }
 }
 
@@ -6636,6 +6649,7 @@ fn crossing_move_outcome_with_segments(
     let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
     let pending_before = f64::from(current_key.pending_after_crossing_cells);
     let initial_run_distance = primitive_initial_straight_run_distance(primitive, state.angle);
+    let mut partial_pending_carry: i32 = 0;
     if pending_before > 0.0 {
         if current_key.pending_after_crossing_angle != state.angle {
             trace_crossing_pending(
@@ -6657,10 +6671,47 @@ fn crossing_move_outcome_with_segments(
             );
             return None;
         }
+        // A pure straight in the pending direction that is shorter than the
+        // remaining debt pays PART of it and carries the rest (4 + 1 = 5):
+        // the rule is "straight for `required_margin` cells after the
+        // crossing", and consecutive straight moves satisfy it exactly as
+        // one long move would. Only a move that would BEND before the debt
+        // is paid (or leaves the pending direction) is rejected. Without
+        // this, a debt larger than the longest straight primitive is
+        // unpayable whenever the crossing lands in the last cell of its
+        // move -- the multiportmmi_32x32 fan wall (see
+        // .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md).
         if initial_run_distance + 1.0e-9 < pending_before {
+            let pure_straight_in_pending_direction = is_straight
+                && primitive.end_angle == state.angle
+                && matches!(primitive.geometry, PrimitiveGeometry::Straight { .. });
+            if !pure_straight_in_pending_direction {
+                trace_crossing_pending(
+                    crossing,
+                    "reject_pending_initial_run",
+                    state,
+                    primitive,
+                    current_key.pending_after_crossing_cells,
+                    initial_run_distance,
+                    Some(current_key.pending_after_crossing_angle),
+                    None,
+                );
+                stats.crossing_reject_pending_straight += 1;
+                record_pending_after_crossing_reject(
+                    stats,
+                    crossing,
+                    current_key.pending_after_crossing_partner_index,
+                    search_start,
+                );
+                return None;
+            }
+            partial_pending_carry = current_key
+                .pending_after_crossing_cells
+                .saturating_sub(initial_run_distance.floor() as i32)
+                .max(1);
             trace_crossing_pending(
                 crossing,
-                "reject_pending_initial_run",
+                "consume_pending_partial",
                 state,
                 primitive,
                 current_key.pending_after_crossing_cells,
@@ -6668,14 +6719,6 @@ fn crossing_move_outcome_with_segments(
                 Some(current_key.pending_after_crossing_angle),
                 None,
             );
-            stats.crossing_reject_pending_straight += 1;
-            record_pending_after_crossing_reject(
-                stats,
-                crossing,
-                current_key.pending_after_crossing_partner_index,
-                search_start,
-            );
-            return None;
         }
         trace_crossing_pending(
             crossing,
@@ -6699,6 +6742,11 @@ fn crossing_move_outcome_with_segments(
     let mut pending_after = 0;
     let mut pending_after_angle = NO_PENDING_CROSSING_ANGLE;
     let mut pending_after_partner_index = NO_PENDING_CROSSING_PARTNER_INDEX;
+    if partial_pending_carry > 0 {
+        pending_after = partial_pending_carry;
+        pending_after_angle = current_key.pending_after_crossing_angle;
+        pending_after_partner_index = current_key.pending_after_crossing_partner_index;
+    }
     let mut active_reservation_keys = Vec::new();
     let mut pending_reservation_keys = Vec::new();
     let mut crossed_mask = current_key.crossed_mask;
@@ -6805,6 +6853,22 @@ fn crossing_move_outcome_with_segments(
                         route_segment.distance_before_segment + distance_on_segment;
                     if track_crossed_partners
                         && crossed_mask & bit != 0
+                        && distance_from_primitive_start <= 1.0e-9
+                    {
+                        continue;
+                    }
+                    // Same situation without partner tracking (lidar-pure):
+                    // when a crossing sat at the END cell of the move that
+                    // recorded it, the move paying its straight-after debt
+                    // starts ON that cell and re-finds the same intersection
+                    // at t=0. That is the crossing just recorded, not a new
+                    // one inside the pending zone -- skip it. Without this
+                    // every end-of-move crossing was rejected one move later
+                    // (the multiportmmi_32x32 fan wall, where each crossing's
+                    // debt run lands exactly on the next partner).
+                    if pending_before > 0.0
+                        && partner_idx
+                            == usize::from(current_key.pending_after_crossing_partner_index)
                         && distance_from_primitive_start <= 1.0e-9
                     {
                         continue;
@@ -6977,6 +7041,21 @@ fn crossing_move_outcome_with_segments(
                         stats.crossing_reject_non_straight += 1;
                         return None;
                     }
+                    continue;
+                }
+                // Contact with the partner whose straight-after debt this
+                // move is paying is the crossing's own neighbourhood: the
+                // partner's centerline continues from the crossing cell in
+                // both directions and its cells sit in this straight move's
+                // diagonal halo. The partner-margin check already guarantees
+                // the partner is straight throughout the pending zone, so a
+                // second genuine intersection here is geometrically
+                // impossible -- this is the lidar-pure counterpart of the
+                // tracked-partner `continue` above.
+                if pending_before > 0.0
+                    && partner_idx
+                        == usize::from(current_key.pending_after_crossing_partner_index)
+                {
                     continue;
                 }
                 // Contact whose intersection with this partner lies just
@@ -7238,6 +7317,12 @@ fn crossing_move_outcome_with_segments(
         crossing_count,
         active_reservation_keys,
         pending_reservation_keys,
+        contact_only_pending_partner: dynamic_owner_count > 0
+            && contacted_partners.iter().all(|contact| {
+                pending_before > 0.0
+                    && contact.partner_idx
+                        == usize::from(current_key.pending_after_crossing_partner_index)
+            }),
     });
     if let Some(hotpath_total_start) = hotpath_total_start {
         stats.crossing_hotpath_total_time_us += hotpath_total_start.elapsed().as_micros();
@@ -11409,6 +11494,235 @@ mod tests {
         assert!(rejected.is_none());
         assert_eq!(rejected_stats.crossing_accepted, 0);
         assert_eq!(rejected_stats.crossing_reject_margin, 1);
+    }
+
+    /// The "X between cells" case, one cell EARLIER than
+    /// `crossing_move_detects_offset_diagonal_halo_contact`: the perpendicular
+    /// partner's centerline crosses the route half a cell PAST this move's
+    /// end, so no in-move intersection exists, but the diagonal halo
+    /// (`compact_diagonal_halo_cells`: end+(dx,0) and end+(0,dy)) already
+    /// touches the partner. The crossing must be recorded on THIS move by
+    /// extending through the X (eager insertion), not deferred to the next
+    /// move. See .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md.
+    #[test]
+    fn perpendicular_diagonal_x_crossing_is_recorded_eagerly() {
+        let mut map = ObstacleMap::new(800, 300);
+        // Partner: 45-degree diagonal on the line y = x - 554, long enough that
+        // partner margin is never the limiting factor at the crossing point.
+        let partner_waypoints = vec![(700, 146), (753, 199)];
+        let partner_cells = rasterize_waypoints_for_test(&partner_waypoints);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            32,
+            &partner_cells,
+            &partner_cells,
+            &[],
+            &FxHashSet::default()
+        ));
+        let crossing = CrossingSearchConfig {
+            net_id: 33,
+            partners: vec![CrossingSearchPartner {
+                net_id: 32,
+                waypoints: partner_waypoints,
+                target_terminal_bump_guard: None,
+            }],
+            min_straight_cells: 2,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 0,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = [(32, 0)].into_iter().collect();
+        let primitive = Primitive {
+            id: 0,
+            start_angle: 7,
+            end_angle: 7,
+            dx: 1,
+            dy: -1,
+            footprint: vec![(0, 0), (1, -1)],
+            length_um: 2.0_f64.sqrt(),
+            bend_cost: 0.0,
+            geometry: PrimitiveGeometry::Straight {
+                length_um: 2.0_f64.sqrt(),
+            },
+        };
+        // Route line through (716,165) at angle 7 is y = -x + 881; it meets the
+        // partner at x = (881 + 554) / 2 = 717.5, y = 163.5 -- half a cell past
+        // the move's end (717,164).
+        let state = State::new(716, 165, 7);
+
+        // Fixture guard: the move must make halo contact with the partner, so
+        // that a different halo shape shows up here as a fixture error rather
+        // than as a false pass further down.
+        let metadata = primitive_crossing_metadata(&primitive);
+        let contact_cells: Vec<(i32, i32)> = metadata
+            .witnesses
+            .iter()
+            .map(|w| (state.x + w.offset.0, state.y + w.offset.1))
+            .filter(|&(x, y)| map.dynamic_owners_at(x, y).contains(&32))
+            .collect();
+        assert!(
+            !contact_cells.is_empty(),
+            "fixture must produce halo contact with the partner one cell before the X"
+        );
+
+        let required_margin = crossing_required_margin_cells(2, 2, 0);
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state,
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 10,
+                pending_after_crossing_cells: 0,
+                pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+            },
+            state,
+            &primitive,
+            true,
+            required_margin,
+            required_margin,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        )
+        .expect("the approach to a legal perpendicular crossing must not be rejected");
+        assert_eq!(
+            outcome.crossing_count, 1,
+            "the perpendicular X crossing half a cell ahead must be recorded on this move (eager insertion), not deferred"
+        );
+        assert_eq!(outcome.pending_after_crossing_partner_index, 0);
+        assert_eq!(outcome.pending_after_crossing_cells, 2);
+        assert_eq!(stats.crossing_accepted, 1);
+    }
+
+    /// Two parallel 45-degree partners 11 cells apart in line offset (7.8
+    /// cells perpendicular -- the multiportmmi_32x32 fan spacing) that each
+    /// split the map, crossed by the shortest possible route: one straight
+    /// 135-degree line from source to target. On that line the first crossing
+    /// is an X between cells and the second shares a cell. A correct kernel
+    /// keeps the straight line and records both crossings; a kernel that
+    /// cannot complete the X crossing must bend or fail.
+    #[test]
+    fn consecutive_perpendicular_diagonal_crossings_on_one_line() {
+        let mut map = ObstacleMap::new(90, 90);
+        let partner_a: Vec<(i32, i32)> = (0..90).map(|k| (k, k)).collect();
+        let partner_b: Vec<(i32, i32)> = (11..90).map(|k| (k, k - 11)).collect();
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            1,
+            &partner_a,
+            &partner_a,
+            &[],
+            &FxHashSet::default()
+        ));
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            2,
+            &partner_b,
+            &partner_b,
+            &[],
+            &FxHashSet::default()
+        ));
+        let library = primitive_library();
+        let crossing = CrossingSearchConfig {
+            net_id: 3,
+            partners: vec![
+                CrossingSearchPartner {
+                    net_id: 1,
+                    waypoints: vec![(0, 0), (89, 89)],
+                    target_terminal_bump_guard: None,
+                },
+                CrossingSearchPartner {
+                    net_id: 2,
+                    waypoints: vec![(11, 0), (89, 78)],
+                    target_terminal_bump_guard: None,
+                },
+            ],
+            min_straight_cells: 2,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 0,
+            crossing_loss: 1.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        // Source and target both lie on y = -x + 45; that line meets partner A
+        // at (22.5, 22.5) (X between cells) and partner B at (28, 17) (shared
+        // cell). Both partners separate source from target, so every route
+        // must cross both; the straight line is the cheapest.
+        let (route, stats) = route_single_net_with_collision_crossing_config_with_stats(
+            &map,
+            &library,
+            State::new(5, 40, 7),
+            State::new(40, 5, 7),
+            None,
+            None,
+            &AStarConfig {
+                use_routing_window: false,
+                enable_simple_routes: false,
+                ..AStarConfig::default()
+            },
+            0,
+            None,
+            &crossing,
+        );
+        let route = route.expect("a straight perpendicular line across two parallel diagonals must route");
+        let off_line: Vec<(i32, i32)> = route
+            .cells
+            .iter()
+            .copied()
+            .filter(|(x, y)| x + y != 45)
+            .collect();
+        assert!(
+            off_line.is_empty(),
+            "route must stay on the straight line y = -x + 45 through both crossings; off-line cells: {off_line:?} (pending-straight rejects during search: {})",
+            stats.crossing_reject_pending_straight
+        );
+    }
+
+    /// Same geometry as `consecutive_perpendicular_diagonal_crossings_on_one_line`
+    /// but with the benchmark's crossing margin (half_size 2 + bend_runout 3 =
+    /// required_margin 5): two crossings 7.8 cells apart on one straight line
+    /// each need 5 cells of straight route on both sides.
+    #[test]
+    fn consecutive_perpendicular_diagonal_crossings_with_benchmark_margin() {
+        let mut map = ObstacleMap::new(90, 90);
+        let partner_a: Vec<(i32, i32)> = (0..90).map(|k| (k, k)).collect();
+        let partner_b: Vec<(i32, i32)> = (11..90).map(|k| (k, k - 11)).collect();
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            1, &partner_a, &partner_a, &[], &FxHashSet::default()
+        ));
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            2, &partner_b, &partner_b, &[], &FxHashSet::default()
+        ));
+        let library = primitive_library();
+        let crossing = CrossingSearchConfig {
+            net_id: 3,
+            partners: vec![
+                CrossingSearchPartner { net_id: 1, waypoints: vec![(0, 0), (89, 89)], target_terminal_bump_guard: None },
+                CrossingSearchPartner { net_id: 2, waypoints: vec![(11, 0), (89, 78)], target_terminal_bump_guard: None },
+            ],
+            min_straight_cells: 2,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 3,
+            crossing_loss: 1.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let (route, stats) = route_single_net_with_collision_crossing_config_with_stats(
+            &map, &library, State::new(5, 40, 7), State::new(40, 5, 7), None, None,
+            &AStarConfig { use_routing_window: false, enable_simple_routes: false, ..AStarConfig::default() },
+            0, None, &crossing,
+        );
+        let route = route.expect("a straight perpendicular line across two parallel diagonals must route with margin 5 too");
+        let off_line: Vec<(i32, i32)> = route.cells.iter().copied().filter(|(x, y)| x + y != 45).collect();
+        assert!(
+            off_line.is_empty(),
+            "route must stay on y = -x + 45 through both crossings with margin 5; off-line cells: {off_line:?} (pending-straight rejects: {}, margin rejects: {})",
+            stats.crossing_reject_pending_straight, stats.crossing_reject_margin
+        );
     }
 
     #[test]
