@@ -735,6 +735,7 @@ def _load_benchmark_stage(
         stats.net_count = len(schematic.netlist.routes)
         stats.step_times_s["load_benchmark"] = step_load_end - step_load_start
     print("      \u2713 Schematic loaded")
+    print(f"      - Load time: {step_load_end - step_load_start:.4f} s")
     if debug_meanders:
         print(f"      - Instances: {list(schematic.netlist.instances.keys())}")
         print(f"      - Placements: {list(schematic.placements.keys())}")
@@ -1099,6 +1100,7 @@ def run_routing_flow(
         )
     electrical_result: ElectricalRoutingResult | None = None
 
+    t_verify_start = time.perf_counter()
     verify_and_attach_photonic_reports(
         benchmark_name=benchmark_name,
         schematic=schematic,
@@ -1109,12 +1111,19 @@ def run_routing_flow(
         debug_stop_after_route_index=debug_stop_after_route_index,
         extra_report_metadata=preplaced_report_metadata,
     )
+    if debug_timing:
+        # Performance pass 2026-09-03 (P5): the non-routing phases were an
+        # un-itemised 16 % of a multiportmmi_32x32 run.
+        print(f"      - Verification time: {time.perf_counter() - t_verify_start:.4f} s")
 
+    t_plm_start = time.perf_counter()
     attach_and_report_path_length_matching(
         routed_layout=routed_layout,
         route_result=route_result,
         debug_meanders=debug_meanders,
     )
+    if debug_timing:
+        print(f"      - Path-length-matching report time: {time.perf_counter() - t_plm_start:.4f} s")
 
     if enable_electrical_routing:
         routed_layout, electrical_result = run_electrical_routing_step(
@@ -1136,11 +1145,14 @@ def run_routing_flow(
             debug_route_indices=debug_route_indices,
         )
 
+    t_write_start = time.perf_counter()
     write_or_show_routed_layout(
         benchmark_name=benchmark_name,
         routed_layout=routed_layout,
         show_klayout=show_klayout,
     )
+    if debug_timing:
+        print(f"      - GDS write time: {time.perf_counter() - t_write_start:.4f} s")
 
     if debug_timing:
         t_end = time.perf_counter()

@@ -13,12 +13,14 @@ After this plan: the trial commit is replaced by a check-only `can_commit_route_
 
 ## Progress
 
-- [ ] Milestone 1 (P1): `ObstacleMap::plan_commit_...` (check phase, returns the prepared key lists) + `can_commit_...`; `commit_...` calls `plan_` then mutates; unit test in `obstacle_map.rs`; the four `check_map` clone sites use `can_commit_`; cargo suite; ladder; seven-benchmark re-measure (endpoint correction column and totals).
+- [x] Milestone 1 (P1, `a94795a`, re-measured 22:09-22:37, all attempts/failures/repairs and verifications identical): `ObstacleMap::plan_commit_...` (check phase, returns the prepared key lists) + `can_commit_...`; `commit_...` calls `plan_` then mutates; unit test in `obstacle_map.rs`; the four `check_map` clone sites use `can_commit_`; cargo suite; ladder; seven-benchmark re-measure (endpoint correction column and totals).
 - [ ] Milestone 2 (P5): itemise layout / verification / GDS-write time per benchmark (timing prints exist for the routing stage only); record; decide with the owner.
 
 ## Surprises & Discoveries
 
 (none yet)
+- P1 RESULT (2026-09-03 22:37): totals before -> after (s): heater_s_mod 8.5 -> 5.7, multiportmmi_8x8 16.4 -> 15.7, benes_8x8 36.3 -> 36.0, multiportmmi_16x16 64.5 -> 61.8, benes_16x16 188.5 -> 174.6, multiportmmi_32x32 488 -> 444, benes_32x32 942 -> 910. Endpoint-correction bucket: heater 4.8 -> 1.9, mm16 7.3 -> 5.9, mm32 66.6 -> 48.2 (native part 26.7 -> 18.0), benes32 14.7 -> 2.0. Remaining ~60 ms per correction call on mm32 (789 calls) is a second cost inside the same function -- to be profiled (perf on heater).
+- P5 ITEMISED (new prints in routing_flow.py: load / translation / verification / PLM report / GDS write): benes_32x32: verification 40.4 s, GDS write 0.3 s, load 0.1 s -- the non-routing block IS the verification step.
 
 ## Decision Log
 
