@@ -7052,10 +7052,16 @@ fn crossing_move_outcome_with_segments(
     let mut crossing_count = 0u32;
     let primitive_segments = &primitive_crossing.segments;
     let mut contacted_partners = ContactedPartners::default();
+    // A free footprint only needs its halo witnesses (the between-cells X
+    // of each diagonal step). A BLOCKED footprint must still scan the halo
+    // too: a multi-cell diagonal can carry a footprint contact with one
+    // partner and, on another step, a between-cells X with a second partner
+    // -- scanning footprint witnesses only let that second crossing pass
+    // unregistered (benes_32x32 net 273, two parallel diagonals 2.5 steps
+    // apart, 2026-09-03). `require_dynamic_owner_contact` keeps its meaning:
+    // at least one owner must be found.
     let witness_scan = if scan_extra_witnesses_only {
         primitive_crossing.extra_witnesses.as_slice()
-    } else if require_dynamic_owner_contact {
-        primitive_crossing.footprint_witnesses.as_slice()
     } else {
         primitive_crossing.witnesses.as_slice()
     };
@@ -12113,6 +12119,66 @@ mod tests {
             &AStarConfig { use_routing_window: false, enable_simple_routes: false, ..AStarConfig::default() },
             0, None, &crossing,
         )
+    }
+
+    /// benes_32x32 net 273 (2026-09-03): the route's "/" diagonal crosses the
+    /// two parallel "\\" diagonals of a port-pair (nets 271 and 270, x+y =
+    /// 4820 and 4825, i.e. 2.5 diagonal steps apart). Both crossings are
+    /// perpendicular, but their +-half_size windows overlap in 9 cells --
+    /// predicate 2 must refuse the second one in the SEARCH (the post-search
+    /// `crossing_events_have_disjoint_reservations` discarded the whole
+    /// route). Partners span the whole map so no detour exists.
+    fn diagonal_route_across_two_parallel_backslash_partners(gap_xy: i32) -> (Option<RouteResult>, RouteSearchStats) {
+        let size = 80;
+        let mut map = ObstacleMap::new(size, size);
+        // "\\" partner A: x + y = 78 ; partner B: x + y = 78 + gap_xy
+        let cells_a: Vec<(i32, i32)> = (0..size).map(|x| (x, 78 - x)).filter(|&(_, y)| y >= 0 && y < size).collect();
+        let cells_b: Vec<(i32, i32)> = (0..size).map(|x| (x, 78 + gap_xy - x)).filter(|&(_, y)| y >= 0 && y < size).collect();
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(1, &cells_a, &cells_a, &[], &FxHashSet::default()));
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &cells_b, &cells_b, &[], &FxHashSet::default()));
+        let library = primitive_library_bend3();
+        let a0 = cells_a[0]; let a1 = *cells_a.last().unwrap();
+        let b0 = cells_b[0]; let b1 = *cells_b.last().unwrap();
+        let crossing = CrossingSearchConfig {
+            net_id: 3,
+            partners: vec![
+                CrossingSearchPartner { net_id: 1, waypoints: vec![a0, a1], target_terminal_bump_guard: None },
+                CrossingSearchPartner { net_id: 2, waypoints: vec![b0, b1], target_terminal_bump_guard: None },
+            ],
+            min_straight_cells: 2,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 3,
+            crossing_loss: 1.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        // "/" route on x - y = -10 from the lower left to the upper right
+        route_single_net_with_collision_crossing_config_with_stats(
+            &map, &library, State::new(10, 20, 1), State::new(55, 65, 1), None, None,
+            &AStarConfig { use_routing_window: false, enable_simple_routes: false, ..AStarConfig::default() },
+            0, None, &crossing,
+        )
+    }
+
+    #[test]
+    fn diagonal_route_refuses_two_parallel_diagonal_crossings_two_and_a_half_steps_apart() {
+        let (route, stats) = diagonal_route_across_two_parallel_backslash_partners(5);
+        assert!(route.is_none(), "two crossing elements 2.5 diagonal steps apart cannot both be realized; got {:?}", route.map(|r| r.compressed_waypoints));
+        // the second crossing is refused either by the third-net window rule
+        // (the first partner's cells lie inside the second window) or by the
+        // own-window overlap rule -- both are predicate 2
+        assert!(
+            stats.crossing_reject_reservation_overlap + stats.crossing_reject_unmatched_footprint > 0,
+            "the second crossing must be refused inside the search (accepted={})",
+            stats.crossing_accepted
+        );
+    }
+
+    /// x+y gap 10 = 5 diagonal steps: windows disjoint, routes.
+    #[test]
+    fn diagonal_route_crosses_two_parallel_diagonals_five_steps_apart() {
+        let (route, stats) = diagonal_route_across_two_parallel_backslash_partners(10);
+        assert!(route.is_some(), "disjoint windows must route (overlap rejects: {})", stats.crossing_reject_reservation_overlap);
     }
 
     /// The multiportmmi_32x32 finding of 2026-09-03: n_285 and n_284 only
