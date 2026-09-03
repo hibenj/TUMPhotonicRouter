@@ -17303,6 +17303,92 @@ mod tests {
         );
     }
 
+    /// Owner-requested check (2026-09-03, .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md):
+    /// after a crossing the search now inserts exactly `crossing_half_size_cells`
+    /// of pure straight (the crossing element's own extent) and then lets a
+    /// bend follow. This pins, at the realized level, that a 90-degree arc
+    /// starting two cells after the crossing point yields a valid crossing
+    /// (the crossing lies on a straight segment with margin >= half_size on
+    /// both sides), while an arc starting one cell after it does not.
+    #[test]
+    fn realized_crossing_accepts_bend_two_cells_after_crossing_and_rejects_one() {
+        fn route_with_bend_after(cells_after_crossing: usize) -> Vec<(f64, f64)> {
+            // Horizontal from x=0 through the crossing at x=10, straight for
+            // `cells_after_crossing`, then a quarter circle of radius 3
+            // turning north (sampled like the realizer does), then vertical.
+            let bend_start_x = 10.0 + cells_after_crossing as f64;
+            let radius = 3.0;
+            let mut points = vec![(0.0, 10.0), (bend_start_x, 10.0)];
+            let samples = 12;
+            for step in 1..=samples {
+                let theta = std::f64::consts::FRAC_PI_2 * step as f64 / samples as f64;
+                points.push((
+                    bend_start_x + radius * theta.sin(),
+                    10.0 + radius * (1.0 - theta.cos()),
+                ));
+            }
+            points.push((bend_start_x + radius, 25.0));
+            points
+        }
+
+        let grid = PyGridSpec::new(40, 40, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 3, 1.0, true),
+            PyAStarConfig::new(
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                0.0,
+                0,
+                false,
+                false,
+                "library".to_string(),
+                "distance".to_string(),
+                1.0,
+            ),
+        );
+        router.crossing_context = CrossingContext::new(
+            CrossingConfig {
+                enabled: true,
+                allow_only_expected_pairs: false,
+                crossing_half_size_cells: 2,
+                min_straight_cells_per_crossing: 2,
+                ..CrossingConfig::default()
+            },
+            Vec::new(),
+        );
+        // Partner: vertical through x=10, long enough for its own margin.
+        router
+            .committed_center_routes
+            .insert(1, vec![(10, 0), (10, 30)]);
+        router
+            .committed_realized_center_routes
+            .insert(1, vec![(10.0, 0.0), (10.0, 30.0)]);
+
+        let valid = router.crossing_violations_for_realized_centerline(2, &route_with_bend_after(2));
+        assert!(
+            valid.is_empty(),
+            "two pure straight cells after the crossing point, then a bend, must realize a valid crossing; got {valid:?}"
+        );
+
+        let invalid = router.crossing_violations_for_realized_centerline(2, &route_with_bend_after(1));
+        assert_eq!(invalid.len(), 1, "one straight cell after the crossing is inside the crossing element");
+        assert_eq!(invalid[0].partner_net_id, 1);
+        assert_eq!(invalid[0].reason, "insufficient_straight_margin");
+    }
+
     #[test]
     fn collision_crossing_route_without_event_is_not_accepted() {
         let grid = PyGridSpec::new(64, 64, 1.0, 0.0, 0.0).unwrap();

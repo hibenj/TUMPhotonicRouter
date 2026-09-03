@@ -3815,6 +3815,21 @@ mod unified_kernel {
                     &primitive_crossing.extra_witness_profile,
                 );
             let halo_contact = halo_checked && !extra_halo_free;
+            // While a crossing's straight-after debt is open, only a pure
+            // straight in the pending direction may move (and pay it, partially
+            // or fully). A bend's first arm is arc when realized, so it must
+            // not start before the debt is zero -- same rule as the contact
+            // path in `crossing_move_outcome_with_segments`.
+            if current_extension.pending_after_crossing_cells > 0 {
+                let pure_straight_in_pending_direction = primitive_class_is_straight
+                    && primitive.end_angle == state.angle
+                    && state.angle == current_extension.pending_after_crossing_angle
+                    && matches!(primitive.geometry, PrimitiveGeometry::Straight { .. });
+                if !pure_straight_in_pending_direction {
+                    stats.crossing_reject_pending_straight += 1;
+                    return None;
+                }
+            }
             let outcome = if footprint_free
                 && !self.ignore_dynamic_obstacles
                 && (!primitive_crossing.has_extra_witnesses || extra_halo_free)
@@ -6681,10 +6696,20 @@ fn crossing_move_outcome_with_segments(
         // unpayable whenever the crossing lands in the last cell of its
         // move -- the multiportmmi_32x32 fan wall (see
         // .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md).
-        if initial_run_distance + 1.0e-9 < pending_before {
-            let pure_straight_in_pending_direction = is_straight
-                && primitive.end_angle == state.angle
-                && matches!(primitive.geometry, PrimitiveGeometry::Straight { .. });
+        // The debt is the crossing element's own straight (+-half_size around
+        // the point) and is paid ONLY by pure straight primitives in the
+        // pending direction, partially if the primitive is shorter than the
+        // remaining debt (4 + 1 pays 5). A bend never pays: its first arm is
+        // `bend_radius` cells of ARC when realized (make_turn arms equal the
+        // radius), so counting it as straight would let the arc start on the
+        // crossing point. Once the debt is zero a bend may follow -- its arc
+        // lies inside its own footprint and never reaches back.
+        let pure_straight_in_pending_direction = is_straight
+            && primitive.end_angle == state.angle
+            && matches!(primitive.geometry, PrimitiveGeometry::Straight { .. });
+        if !pure_straight_in_pending_direction
+            || initial_run_distance + 1.0e-9 < pending_before
+        {
             if !pure_straight_in_pending_direction {
                 trace_crossing_pending(
                     crossing,
@@ -7058,45 +7083,6 @@ fn crossing_move_outcome_with_segments(
                 {
                     continue;
                 }
-                // Contact whose intersection with this partner lies just
-                // ahead: the crossing's own approach, not grazing -- keep
-                // the move; the move containing the intersection legalizes
-                // it under the full rules. This covers core-cell contact
-                // too: two DIAGONAL grid paths share a cell one step before
-                // their centerlines cross (cell granularity, not physical
-                // overlap -- the realized crossing component owns exactly
-                // that zone), so a halo-only gate would never fire for the
-                // diag-x-diag case this exists for. A path can never slip
-                // through unjudged: the intersection lies on its
-                // centerline, so some move always contains it. See
-                // `contact_intersection_lies_ahead` for the derivation.
-                if contact_intersection_lies_ahead(
-                        state,
-                        primitive,
-                        partner_segments
-                            .get(partner_idx)
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[]),
-                        f64::from(capped_required_margin) + 6.0,
-                    )
-                {
-                    if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_LEVEL1").is_some() {
-                        trace_crossing_level1_intersection(
-                            crossing,
-                            partner.net_id,
-                            "defer_contact_intersection_ahead",
-                            f64::from(contact.first_witness.cell.0),
-                            f64::from(contact.first_witness.cell.1),
-                            255,
-                            255,
-                            required_margin,
-                            0.0,
-                            0.0,
-                            0,
-                        );
-                    }
-                    continue;
-                }
                 let reject = classify_unresolved_crossing_contact(
                     contact,
                     primitive_segments,
@@ -7189,7 +7175,17 @@ fn crossing_move_outcome_with_segments(
             stats.crossing_reject_margin += 1;
             return None;
         }
-        let missing_after = (f64::from(required_margin) - intersection.distance_after_on_segment)
+        // Straight-after debt = what the crossing element needs (+-half_size
+        // around the point), measured from the intersection itself, not from
+        // the halo contact or the move end. `required_margin` (half_size +
+        // bend_radius) stays the rule for the PARTNER's straight and for
+        // `route_before` (where a preceding bend's terminal arm is counted
+        // as straight run but is arc when realized); after the crossing the
+        // debt is paid by pure straights only, so no bend-radius allowance
+        // is needed here. This matches the realized validator
+        // (`realized_crossing_margin_um` = half_size * grid).
+        let missing_after = (f64::from(crossing.crossing_half_size_cells.max(0))
+            - intersection.distance_after_on_segment)
             .ceil()
             .max(0.0) as i32;
         let reservation_keys = local_crossing_reservation_window_keys(
@@ -7375,35 +7371,6 @@ fn push_unique_relative_witness(
         offset,
         route_segment_idx,
     });
-}
-
-/// Rules-first contact tolerance (owner decision 2026-09-02): the crossing
-/// ruleset cares about perpendicularity and margins; "contact must have a
-/// same-move intersection" was only an implementation means of telling
-/// crossings from grazing. A diagonal route's halo touches the next
-/// parallel diagonal one step BEFORE the centerlines cross, so wherever
-/// that touch straddles a move boundary the hard reject killed a legal
-/// crossing one cell early (the multiportmmi_32x32 n_286 cascade: 38K
-/// accepted diag-x-diag crossings on one partner, zero on its neighbor a
-/// few cells over, purely by move-boundary phase). This predicate says
-/// whether the partner's centerline intersects the route's forward
-/// continuation within a short lookahead -- then the contact is the
-/// crossing's own approach, and the move that contains the intersection
-/// will judge it under the full rules (perpendicularity, margins,
-/// reservation window). Core-cell contact stays fatal regardless.
-fn contact_intersection_lies_ahead(
-    state: State,
-    primitive: &Primitive,
-    partner_segments: &[PartnerPathSegment],
-    lookahead_cells: f64,
-) -> bool {
-    let end = (state.x + primitive.dx, state.y + primitive.dy);
-    let dir = DIRECTIONS[(primitive.end_angle % 8) as usize];
-    let steps = lookahead_cells.ceil().max(1.0) as i32;
-    let ray_end = (end.0 + dir.0 * steps, end.1 + dir.1 * steps);
-    partner_segments.iter().any(|segment| {
-        grid_segment_intersection_with_params(end, ray_end, segment.start, segment.end).is_some()
-    })
 }
 
 fn classify_unresolved_crossing_contact(
@@ -11501,12 +11468,14 @@ mod tests {
     /// partner's centerline crosses the route half a cell PAST this move's
     /// end, so no in-move intersection exists, but the diagonal halo
     /// (`compact_diagonal_halo_cells`: end+(dx,0) and end+(0,dy)) already
-    /// touches the partner. The crossing must be recorded on THIS move by
-    /// extending through the X (eager insertion), not deferred to the next
-    /// move. See .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md.
+    /// touches the partner. Owner decision 2026-09-03 (see
+    /// .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md): this
+    /// approach move is REJECTED as contact without a crossing -- no defer, no
+    /// eager extension -- and the move that contains the X (one cell later,
+    /// same fixture) records the crossing. The search reaches the X through
+    /// that containing move; no second mechanism is needed.
     #[test]
-    #[ignore = "open owner decision (2026-09-03 ExecPlan): eager extension through the X on the approach move is not needed for correctness -- the move that contains the X records the crossing (see crossing_move_detects_offset_diagonal_halo_contact); keep or drop"]
-    fn perpendicular_diagonal_x_crossing_is_recorded_eagerly() {
+    fn perpendicular_diagonal_x_approach_move_is_rejected_and_containing_move_accepts() {
         let mut map = ObstacleMap::new(800, 300);
         // Partner: 45-degree diagonal on the line y = x - 554, long enough that
         // partner margin is never the limiting factor at the crossing point.
@@ -11590,15 +11559,45 @@ mod tests {
             None,
             &partner_index_by_id,
             &mut stats,
-        )
-        .expect("the approach to a legal perpendicular crossing must not be rejected");
-        assert_eq!(
-            outcome.crossing_count, 1,
-            "the perpendicular X crossing half a cell ahead must be recorded on this move (eager insertion), not deferred"
         );
-        assert_eq!(outcome.pending_after_crossing_partner_index, 0);
-        assert_eq!(outcome.pending_after_crossing_cells, 2);
-        assert_eq!(stats.crossing_accepted, 1);
+        assert!(
+            outcome.is_none(),
+            "the approach move (halo contact, intersection half a cell past its end) is contact without a crossing"
+        );
+        assert_eq!(stats.crossing_accepted, 0);
+
+        // One cell later the same 1-cell move contains the X at t = 0.5.
+        let containing = State::new(717, 164, 7);
+        let mut containing_stats = RouteSearchStats::default();
+        let accepted = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: containing,
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 10,
+                pending_after_crossing_cells: 0,
+                pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+            },
+            containing,
+            &primitive,
+            true,
+            required_margin,
+            required_margin,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut containing_stats,
+        )
+        .expect("the move that contains the half-cell X records the crossing");
+        assert_eq!(accepted.crossing_count, 1);
+        assert_eq!(accepted.pending_after_crossing_partner_index, 0);
+        // Debt = half_size (2) minus the 0.5 cells of this move past the X,
+        // rounded up = 2 pure straight cells still to insert.
+        assert_eq!(accepted.pending_after_crossing_cells, 2);
+        assert_eq!(containing_stats.crossing_accepted, 1);
     }
 
     /// Two parallel 45-degree partners 11 cells apart in line offset (7.8
@@ -11865,8 +11864,14 @@ mod tests {
         assert_eq!(stats.crossing_reject_non_straight, 1);
     }
 
+    /// Re-pinned 2026-09-03 (owner decision, .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md):
+    /// the straight-after debt is the crossing element's own straight and is
+    /// paid by pure straights only. A bend's first arm equals the bend radius
+    /// and is ARC when realized (`make_turn`), so it never pays -- even when
+    /// the arm is as long as the remaining debt (the old rule accepted that).
+    /// Once the debt is zero the same bend is accepted.
     #[test]
-    fn crossing_pending_margin_allows_bend_after_initial_arm() {
+    fn crossing_pending_rejects_bend_while_debt_open() {
         let map = ObstacleMap::new(16, 16);
         let library = primitive_library_no45_bend2();
         let primitive = library
@@ -11907,10 +11912,39 @@ mod tests {
             &FxHashMap::default(),
             &mut stats,
         )
-        .expect("bend first arm should satisfy pending crossing margin");
+;
+        assert!(
+            outcome.is_none(),
+            "a bend must not start while the crossing's straight-after debt is open"
+        );
+        assert_eq!(stats.crossing_reject_pending_straight, 1);
 
-        assert_eq!(outcome.pending_after_crossing_cells, 0);
-        assert_eq!(stats.crossing_reject_pending_straight, 0);
+        let mut paid_stats = RouteSearchStats::default();
+        let paid = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(4, 4, 0),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 2,
+                pending_after_crossing_cells: 0,
+                pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+            },
+            State::new(4, 4, 0),
+            primitive,
+            false,
+            2,
+            2,
+            0,
+            None,
+            &FxHashMap::default(),
+            &mut paid_stats,
+        )
+        .expect("once the debt is paid the bend is an ordinary move");
+        assert_eq!(paid.pending_after_crossing_cells, 0);
+        assert_eq!(paid_stats.crossing_reject_pending_straight, 0);
     }
 
     #[test]
@@ -12084,8 +12118,14 @@ mod tests {
         assert_eq!(stats.crossing_reject_non_straight, 1);
     }
 
+    /// Re-pinned 2026-09-03 (owner decision, .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md):
+    /// a bend never pays the straight-after debt, whatever its arm length --
+    /// the arm is arc when realized. Previously a three-cell diagonal arm was
+    /// allowed to satisfy a three-cell pending margin; now both the
+    /// too-short (4 pending) and the exactly-matching (3 pending) cases are
+    /// rejected, and only a zero debt lets the bend move.
     #[test]
-    fn crossing_pending_margin_counts_diagonal_arm_as_grid_cells() {
+    fn crossing_pending_rejects_bend_regardless_of_diagonal_arm_length() {
         let map = ObstacleMap::new(16, 16);
         let primitive = Primitive {
             id: 0,
@@ -12161,11 +12201,13 @@ mod tests {
             None,
             &FxHashMap::default(),
             &mut accepted_stats,
-        )
-        .expect("three-cell diagonal arm should satisfy a three-cell pending margin");
+        );
 
-        assert_eq!(accepted.pending_after_crossing_cells, 0);
-        assert_eq!(accepted_stats.crossing_reject_pending_straight, 0);
+        assert!(
+            accepted.is_none(),
+            "a bend arm never pays the crossing's straight-after debt, even when it is as long as the debt"
+        );
+        assert_eq!(accepted_stats.crossing_reject_pending_straight, 1);
     }
 
     fn terminal_bump_guard_test_setup(
@@ -12456,7 +12498,15 @@ mod tests {
                 },
             ],
             min_straight_cells: 0,
-            crossing_half_size_cells: 0,
+            // Re-pinned 2026-09-03: the straight-after debt now derives from
+            // the crossing element's half size (measured from each
+            // intersection), no longer from required_margin = half_size +
+            // bend_runout. The 8-cell straight from x=0 crosses partner A at
+            // x=4 (4 cells after) and partner B at x=7 (1 cell after); with
+            // half_size 5 the debts are 1 and 4 and the larger one is kept.
+            // The explicit required_margin argument (5) still governs the
+            // partner-side and route-before checks.
+            crossing_half_size_cells: 5,
             bend_runout_cells: 0,
             crossing_loss: 0.0,
             require_all_partners: false,
@@ -12571,7 +12621,11 @@ mod tests {
         .expect("perpendicular n35/n32 crossing should be recognized by A*");
 
         assert_eq!(outcome.crossing_count, 1);
-        assert_eq!(outcome.pending_after_crossing_cells, 4);
+        // Re-pinned 2026-09-03: the intersection lies 1 cell before the move
+        // end; the straight-after debt is the crossing element's half size
+        // (3) minus that 1 cell = 2 (was 4 when it derived from
+        // required_margin = half_size 3 + bend_runout 2).
+        assert_eq!(outcome.pending_after_crossing_cells, 2);
         assert_eq!(stats.crossing_accepted, 1);
     }
 
