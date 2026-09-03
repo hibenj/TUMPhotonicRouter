@@ -70,7 +70,20 @@ Run: `run_all7.sh` (sequential, `PHOTONIC_ROUTER_NATIVE_PROGRESS=1` for per-net 
 
 ## Outcomes & Retrospective
 
-Not started.
+**Outcome (2026-09-03 20:19):** benes_32x32 routes completely under the stable defaults: 320/320, attempts 336 / failures 16 (first-window only) / repairs 0, 420 crossings, both verifications 0 errors, 927 s (all-seven rerun: 945 s wall). Together with multiportmmi_32x32 (447/447, 0/0, 490 s) the lidar-pure 32x32 baseline the owner set on 2026-08-31 is reached. Reproducible by a bare `python routing_flow.py benes_32x32` (stable block now carries lidar-pure flags, `--max-iterations 20000000` and LSC weight 1.0).
+
+**What it took (in order, each with its evidence above):**
+1. The first run of the day was not even lidar-pure -- benes_32x32.py had no stable flags (window mode). Rule: read the "stable defaults applied" line before anything else.
+2. Net 59 (5M cap -> exhausted at 20M) was blocked by a 4-cell-spaced vertical net 57 had laid next to the bundle; the crossing rule (windows disjoint, >= 5 cells) is correct, the placement was the problem. Owner experiment E1: same halo, weight 0.05 -> 1.0 -- the vertical disappears, net 57 gets shorter, net 59 routes in 30 s. Costs steer placement; rules do not.
+3. Net 273 was killed by two post-search/kernel inconsistencies of the same family as the morning's n_286: (a) the grid-level check demanded 5 cells AFTER a crossing where kernel and realized validator want half_size = 2 (`d9f140f`); (b) a move with a blocked footprint skipped its halo witnesses and slid over a second partner's between-cells X unregistered (`dd5d043`). Both found on a 47-second layer-only testbed (owner's idea), both pinned by unit tests built from the real geometry BEFORE the fix.
+4. Process: the 3-minute per-net watchdog (owner) replaced 3-hour timeouts; the path-investigation harness was written from the day's mistakes and applied from step 0 for net 273; every finding, retraction and run verdict went into this plan before the next run.
+
+**Retrospective -- what would have caught things earlier:**
+- Post-search rejects must name their sub-condition and be mirrored as search-time rules (harness step 5). Three of the day's four blockers were exactly this class. The `collision-crossing partner-constraints` trace and the `unresolved=` list now exist; the remaining asymmetry is structural: post-search events are recomputed from realized geometry, the kernel works on grid polylines -- any rule applied only post-search will keep discarding kernel-legal routes.
+- A trace that is capped (40 blocker lines, 120 candidate lines) hides the relevant side; per-slot caps fixed the first, the second is still global.
+- Layer-only testbeds (same geometry in 47 s instead of 12 min) should be the default for any last-stage investigation; the runner script is in `scripts/path_investigation/`.
+- The performance pass showed no engine anomaly; the remaining cost is structural (cost slack vs heuristic, Tier-2 key multiplicity) plus two obvious knobs (P1 obstacle-map clone, P5 non-routing phases).
+
 
 ## Context and Orientation
 
