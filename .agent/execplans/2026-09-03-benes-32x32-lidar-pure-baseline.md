@@ -32,6 +32,7 @@ After this plan: `benes_32x32` routes completely under the stable defaults with 
 ## Decision Log
 
 - (2026-09-03, owner) No PR; stay on `crossings/verification-foundation`. Goal on this branch: benes_32x32 runs too -- that is the lidar-pure baseline, and it is to be recorded as such.
+- (2026-09-03 12:55, owner) The 5M-cap run was stopped after 29 minutes: nets 1-58 in 6 min, then net 59 in the repair cascade with 151 failure lines (51x `iteration_cap` at 5M, 100x single-partner exhausted), victims 34, 36, 38 ripped up in turn and each reroute hitting the cap as well -- no progress for 23 minutes. Owner decision: restart with `--max-iterations 20000000` (added to benes_32x32.py's stable block, same reasoning as multiportmmi_32x32), nothing else changed.
 
 ## Outcomes & Retrospective
 

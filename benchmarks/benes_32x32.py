@@ -42,6 +42,12 @@ STABLE_ROUTING_FLAGS: tuple[str, ...] = (
     "4.0",
     "--proactive-congestion-radius-cells",
     "3",
+    # Same reasoning as multiportmmi_32x32: stage-2 nets with 10+ mandatory
+    # crossings need 5M-20M expansions in their saturated windows; at the
+    # 5M default net 59 hits the cap and the repair cascade grinds
+    # (see .agent/execplans/2026-09-03-benes-32x32-lidar-pure-baseline.md).
+    "--max-iterations",
+    "20000000",
 )
 
 
