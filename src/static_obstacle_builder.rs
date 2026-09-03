@@ -518,8 +518,79 @@ fn rasterize_polygon_into(
         return;
     }
 
-    for gx in gx_min..=gx_max {
-        for gy in gy_min..=gy_max {
+    // Performance pass 2026-09-03: testing every bbox cell with
+    // `point_in_polygon` (O(vertices) each) made a 500x900 um route polygon
+    // cost ~80M operations per endpoint-correction candidate (8 % of a
+    // multiportmmi_16x16 run). A scanline over the polygon edges yields, per
+    // cell-centre row, the even-odd x-intervals; only cells inside those
+    // intervals (widened by one cell for rounding and boundary cases) are
+    // handed to `point_in_polygon`, which stays the single oracle -- so the
+    // result is identical to the exhaustive scan (a cell whose centre is
+    // inside or on the boundary always lies within a widened interval: the
+    // edges adjacent to a boundary point cross that row at the point).
+    let count = polygon.len();
+    let mut crossings: Vec<f64> = Vec::with_capacity(8);
+    // candidate x-spans on the current row: even-odd fill intervals plus the
+    // boundary cases the strict crossing rule cannot see (a vertex exactly on
+    // the row at a local extremum, a horizontal edge exactly on the row)
+    let mut spans: Vec<(f64, f64)> = Vec::with_capacity(8);
+    for gy in gy_min..=gy_max {
+        let (_, cy) = grid_cell_center(gx_min, gy, grid);
+        crossings.clear();
+        spans.clear();
+        for i in 0..count {
+            let (x1, y1) = polygon[i];
+            let (x2, y2) = polygon[(i + 1) % count];
+            if (y1 > cy) != (y2 > cy) {
+                crossings.push((x2 - x1) * (cy - y1) / (y2 - y1) + x1);
+            }
+            if y1 == cy && y2 == cy {
+                spans.push((x1.min(x2), x1.max(x2)));
+            } else if y1 == cy {
+                spans.push((x1, x1));
+            }
+        }
+        crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        for pair in crossings.chunks(2) {
+            spans.push((pair[0], *pair.last().unwrap_or(&pair[0])));
+        }
+        for &(x_lo, x_hi) in &spans {
+            let (cx_lo, _) = physical_to_grid(x_lo, cy, grid);
+            let (cx_hi, _) = physical_to_grid(x_hi, cy, grid);
+            let start = (cx_lo - 1).max(gx_min);
+            let end = (cx_hi + 1).min(gx_max);
+            for gx in start..=end {
+                if point_in_polygon(grid_cell_center(gx, gy, grid), polygon) {
+                    cells.insert(pack_xy(gx, gy));
+                }
+            }
+        }
+    }
+}
+
+/// Exhaustive reference for [`rasterize_polygon_into`] (every bbox cell through
+/// `point_in_polygon`); kept for the equivalence test.
+#[cfg(test)]
+fn rasterize_polygon_into_exhaustive(
+    polygon: &Polygon,
+    grid: &StaticGridSpec,
+    cells: &mut FxHashSet<CellKey>,
+) {
+    if polygon.len() < 3 || grid.width <= 0 || grid.height <= 0 {
+        return;
+    }
+    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in polygon {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    let (gx_min, gy_min) = physical_to_grid(min_x, min_y, grid);
+    let (gx_max, gy_max) = physical_to_grid(max_x, max_y, grid);
+    for gx in gx_min.max(0)..=gx_max.min(grid.width - 1) {
+        for gy in gy_min.max(0)..=gy_max.min(grid.height - 1) {
             if point_in_polygon(grid_cell_center(gx, gy, grid), polygon) {
                 cells.insert(pack_xy(gx, gy));
             }
@@ -1085,6 +1156,75 @@ fn pyo3_value_error(message: String) -> PyErr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scanline rasterizer must produce exactly the cells of the
+    /// exhaustive bbox scan (same `point_in_polygon` oracle): rectangles,
+    /// thin route-like polygons (diagonal, with bends), a concave shape and
+    /// a polygon with vertices on cell centres.
+    #[test]
+    fn scanline_rasterizer_matches_exhaustive_scan() {
+        let grid = make_grid_spec((0.0, 0.0, 120.0, 120.0), 2.0).expect("grid");
+        let waveguide = |centerline: &[(f64, f64)], half: f64| -> Polygon {
+            // a crude thick polyline: offset both sides, no fillets
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            for pair in centerline.windows(2) {
+                let (x0, y0) = pair[0];
+                let (x1, y1) = pair[1];
+                let len = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+                let (nx, ny) = (-(y1 - y0) / len * half, (x1 - x0) / len * half);
+                left.push((x0 + nx, y0 + ny));
+                left.push((x1 + nx, y1 + ny));
+                right.push((x0 - nx, y0 - ny));
+                right.push((x1 - nx, y1 - ny));
+            }
+            right.reverse();
+            left.extend(right);
+            left
+        };
+        let polygons: Vec<Polygon> = vec![
+            vec![(10.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)],
+            vec![(11.0, 11.0), (51.0, 11.0), (51.0, 31.0), (11.0, 31.0)],
+            waveguide(&[(5.0, 5.0), (60.0, 60.0)], 0.25),
+            waveguide(&[(5.0, 40.0), (40.0, 40.0), (70.0, 70.0), (70.0, 110.0)], 0.25),
+            waveguide(&[(3.3, 100.7), (90.1, 12.4)], 0.6),
+            vec![(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (50.0, 50.0), (20.0, 80.0)],
+            vec![(21.0, 21.0), (81.0, 21.0), (81.0, 81.0), (51.0, 51.0), (21.0, 81.0)],
+        ];
+        for (idx, polygon) in polygons.iter().enumerate() {
+            let mut fast = FxHashSet::default();
+            let mut slow = FxHashSet::default();
+            rasterize_polygon_into(polygon, &grid, &mut fast);
+            rasterize_polygon_into_exhaustive(polygon, &grid, &mut slow);
+            assert_eq!(fast, slow, "polygon {idx}: scanline and exhaustive rasterization differ");
+            assert!(!slow.is_empty(), "polygon {idx}: test polygon must cover cells");
+        }
+        // deterministic pseudo-random thick polylines, vertices snapped to a
+        // quarter-cell lattice so that cell-centre coincidences happen often
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for case in 0..300 {
+            let points = 2 + (next() % 5) as usize;
+            let centerline: Vec<(f64, f64)> = (0..points)
+                .map(|_| (((next() % 220) as f64) * 0.5 + 5.0, ((next() % 220) as f64) * 0.5 + 5.0))
+                .collect();
+            if centerline.windows(2).any(|w| w[0] == w[1]) {
+                continue;
+            }
+            let half = [0.25, 0.5, 1.0, 3.0][(next() % 4) as usize];
+            let polygon = waveguide(&centerline, half);
+            let mut fast = FxHashSet::default();
+            let mut slow = FxHashSet::default();
+            rasterize_polygon_into(&polygon, &grid, &mut fast);
+            rasterize_polygon_into_exhaustive(&polygon, &grid, &mut slow);
+            assert_eq!(fast, slow, "random case {case}: scanline and exhaustive rasterization differ for {centerline:?} half={half}");
+        }
+    }
 
     fn test_grid() -> StaticGridSpec {
         StaticGridSpec {
