@@ -4343,6 +4343,10 @@ mod unified_kernel {
         // Permanent, env-gated: names the branch that abandons an eager
         // completion chain (the silent killer of consecutive crossings).
         let chain_diag = std::env::var_os("PHOTONIC_ROUTER_CHAIN_DIAG").is_some();
+        // Permanent, env-gated: PHOTONIC_ROUTER_POP_DIAG_BELOW_Y=<y> logs every
+        // Tier-2 push/pop/skip whose state lies below that y (first 200).
+        let pop_diag_below_y: Option<i32> = std::env::var("PHOTONIC_ROUTER_POP_DIAG_BELOW_Y").ok().and_then(|v| v.parse().ok());
+        let mut pop_diag_lines = 0u32;
         // Best-crossing-path tracking (owner request 2026-09-02): remember
         // the accepted state with the most legalized crossings so a failing
         // search can dump that path -- its endpoint is the first crossing
@@ -4499,6 +4503,12 @@ mod unified_kernel {
                     let node = &extended_nodes[ext_idx];
                     let key = (node.state, node.extension);
                     let bookkeeping = extended_state.get(&key).copied();
+                    if let Some(th) = pop_diag_below_y {
+                        if node.state.y < th && pop_diag_lines < 200 {
+                            pop_diag_lines += 1;
+                            eprintln!("pop-diag tier2 pop state=({},{},{}) g={:.1} bookkeeping={:?} pending={}", node.state.x, node.state.y, node.state.angle, entry.g_score, bookkeeping, node.extension.pending_after_crossing_cells);
+                        }
+                    }
                     if entry.g_score > bookkeeping.map_or(f64::INFINITY, |(g, _)| g) + 1.0e-9 {
                         stats.skipped_duplicate_heap_entries += 1;
                         stats.stale_generation_heap_entries += 1;
@@ -5224,6 +5234,12 @@ if chain_diag { eprintln!("chain-break reason=reservation_hit state=({},{},{}) p
                             continue;
                         }
                         extended_state.insert(final_key, (chain_g, false));
+                        if let Some(th) = pop_diag_below_y {
+                            if chain_state.y < th && pop_diag_lines < 200 {
+                                pop_diag_lines += 1;
+                                eprintln!("pop-diag chain-final PUSH state=({},{},{}) g={:.1}", chain_state.x, chain_state.y, chain_state.angle, chain_g);
+                            }
+                        }
                         stats.primitive_accepted_by_class[primitive_class] += 1;
                         if let Some(i) = chain_ring {
                             target_ring[i][1] += 1;
