@@ -4121,13 +4121,14 @@ mod unified_kernel {
             }
             let owners: Vec<NetId> = obstacle_map.dynamic_owners_at(x, y).into_iter().collect();
             eprintln!(
-                "probe-cell seq={} cell=({},{}) static={} opened={} dynamic_owners={:?}",
+                "probe-cell seq={} cell=({},{}) static={} opened={} dynamic_owners={:?} core={}",
                 search_seq,
                 x,
                 y,
                 obstacle_map.is_static_blocked(x, y),
                 port_open_cells.is_some_and(|open| open.contains(&pack_xy(x, y))),
-                owners
+                owners,
+                obstacle_map.is_dynamic_core_blocked(x, y)
             );
         }
     }
