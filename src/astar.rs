@@ -8657,6 +8657,17 @@ mod tests {
         })
     }
 
+    /// Benchmark-like library: grid 1.0, bend radius 3, 45-degree turns.
+    fn primitive_library_bend3() -> PrimitiveLibrary {
+        create_photonic_primitive_library(PrimitiveLibraryConfig {
+            grid_size_um: 1.0,
+            straight_short_cells: 1,
+            straight_long_cells: 4,
+            bend_radius_cells: 3,
+            allow_45_degree_turns: true,
+        })
+    }
+
     fn primitive_library_no45_bend2() -> PrimitiveLibrary {
         create_photonic_primitive_library(PrimitiveLibraryConfig {
             grid_size_um: 1.0,
@@ -12104,6 +12115,95 @@ mod tests {
         let (route, stats) = vertical_descent_across_two_horizontals(5);
         assert!(route.is_some(), "disjoint windows must route (overlap rejects: {}, accepted: {})", stats.crossing_reject_reservation_overlap, stats.crossing_accepted);
         assert_eq!(stats.crossing_reject_reservation_overlap, 0);
+    }
+
+
+    /// Predicate 1 (only straight cells inside the crossing window), route
+    /// side: a turn primitive never crosses. Route heads east from (2,5)
+    /// into a radius-3 turn (arms of 3 cells, corner at (5,5)); the partner
+    /// would be met inside an arm, where the realized fillet (`R*tan(theta/2)`)
+    /// leaves fewer than half_size real straight cells. The kernel refuses
+    /// any partner contact of a non-straight primitive outright
+    /// (`crossing_reject_non_straight`), before any intersection math --
+    /// so this cannot depend on how arm cells are counted. These tests pin
+    /// that rule for the 90-degree first arm, the 45-degree first arm and
+    /// the 90-degree second arm (2026-09-03 audit: the suspected "crossing
+    /// inside an arm" hole does not exist).
+    fn crossing_inside_turn_arm(end_angle: u8, partner_waypoints: Vec<(i32, i32)>) -> (Option<CrossingMoveOutcome>, RouteSearchStats) {
+        let mut map = ObstacleMap::new(16, 16);
+        let partner_cells = rasterize_waypoints_for_test(&partner_waypoints);
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &partner_cells, &partner_cells, &[], &FxHashSet::default()));
+        let library = primitive_library_bend3();
+        let primitive = library
+            .get_primitives_for_angle(0)
+            .iter()
+            .find(|primitive| primitive.end_angle == end_angle)
+            .expect("turn primitive should exist");
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: vec![CrossingSearchPartner { net_id: 2, waypoints: partner_waypoints, target_terminal_bump_guard: None }],
+            min_straight_cells: 2,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 3,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: State::new(2, 5, 0),
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 5,
+                pending_after_crossing_cells: 0,
+                pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+            },
+            State::new(2, 5, 0),
+            primitive,
+            false,
+            5,
+            5,
+            2,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        );
+        (outcome, stats)
+    }
+
+    #[test]
+    fn crossing_inside_first_arm_of_90_degree_turn_is_rejected() {
+        let (outcome, stats) = crossing_inside_turn_arm(2, vec![(3, 0), (3, 15)]);
+        assert!(outcome.is_none(), "no straight cell after a crossing inside a 90-degree arc");
+        assert_eq!(stats.crossing_reject_non_straight, 1, "turn primitives never touch a partner");
+        assert_eq!(stats.crossing_accepted, 0);
+    }
+
+    /// Same for a 45-degree turn: the fillet trims `R*tan(22.5)` = 1.24
+    /// cells before the corner, leaving 0.76 real straight cells after a
+    /// crossing 2 cells before the corner -- less than half_size.
+    #[test]
+    fn crossing_inside_first_arm_of_45_degree_turn_is_rejected() {
+        let (outcome, stats) = crossing_inside_turn_arm(1, vec![(3, 0), (3, 15)]);
+        assert!(outcome.is_none(), "0.76 real straight cells after the crossing are not enough");
+        assert_eq!(stats.crossing_reject_non_straight, 1);
+        assert_eq!(stats.crossing_accepted, 0);
+    }
+
+    /// Crossing in the SECOND arm of the 90-degree turn (horizontal partner
+    /// at y=7, crossed at (5,7), 2 cells after the corner): the arc covers
+    /// the whole arm, so the real straight before the crossing is 0.
+    #[test]
+    fn crossing_inside_second_arm_of_90_degree_turn_is_rejected() {
+        let (outcome, stats) = crossing_inside_turn_arm(2, vec![(0, 7), (15, 7)]);
+        assert!(outcome.is_none(), "no straight cell before a crossing inside a 90-degree arc");
+        assert_eq!(stats.crossing_reject_non_straight, 1);
+        assert_eq!(stats.crossing_accepted, 0);
     }
 
     #[test]
