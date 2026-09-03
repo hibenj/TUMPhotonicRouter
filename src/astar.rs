@@ -4340,6 +4340,9 @@ mod unified_kernel {
         let mut goal_miss_angle = 0u32;
         let mut goal_miss_hook = 0u32;
         let mut ring_blocker_lines = 0u32;
+        // Permanent, env-gated: names the branch that abandons an eager
+        // completion chain (the silent killer of consecutive crossings).
+        let chain_diag = std::env::var_os("PHOTONIC_ROUTER_CHAIN_DIAG").is_some();
         // Best-crossing-path tracking (owner request 2026-09-02): remember
         // the accepted state with the most legalized crossings so a failing
         // search can dump that path -- its endpoint is the first crossing
@@ -5008,7 +5011,9 @@ mod unified_kernel {
                         let mut chain_steps = 0usize;
                         while chain_extension.pending_after_crossing_cells > 0 {
                             chain_steps += 1;
+                            let mut step_footprint_free_diag = true;
                             if chain_steps > EAGER_CHAIN_MAX_STEPS {
+if chain_diag { eprintln!("chain-break reason=max_steps state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             }
@@ -5016,6 +5021,7 @@ mod unified_kernel {
                                 chain_extension.pending_after_crossing_angle as usize;
                             if pending_angle >= 8 || chain_state.angle as usize != pending_angle
                             {
+if chain_diag { eprintln!("chain-break reason=angle_mismatch state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             }
@@ -5026,6 +5032,7 @@ mod unified_kernel {
                                 .iter()
                                 .find(|(_, cells)| *cells <= remaining_debt)
                             else {
+if chain_diag { eprintln!("chain-break reason=no_fitting_straight state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             };
@@ -5040,11 +5047,13 @@ mod unified_kernel {
                                 chain_state.x.checked_add(step_primitive.dx),
                                 chain_state.y.checked_add(step_primitive.dy),
                             ) else {
+if chain_diag { eprintln!("chain-break reason=checked_add_overflow state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             };
                             if !bounds.contains(step_x, step_y) {
                                 stats.window_rejects += 1;
+if chain_diag { eprintln!("chain-break reason=out_of_window state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             }
@@ -5058,6 +5067,7 @@ mod unified_kernel {
                                     step_profile,
                                     stats,
                                 );
+                            step_footprint_free_diag = step_footprint_free;
                             let step_pending_completed =
                                 primitive_initial_straight_run_distance(
                                     step_primitive,
@@ -5078,6 +5088,7 @@ mod unified_kernel {
                                 if let Some(i) = ring_index(step_x, step_y) {
                                     target_ring[i][if step_footprint_free { 3 } else { 2 }] += 1;
                                 }
+if chain_diag { eprintln!("chain-break reason=hook_none state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             };
@@ -5090,6 +5101,7 @@ mod unified_kernel {
                                 if let Some(i) = ring_index(step_x, step_y) {
                                     target_ring[i][6] += 1;
                                 }
+if chain_diag { eprintln!("chain-break reason=reservation_hit state=({},{},{}) pending={} step={} footprint_free={}", chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag); }
                                 chain_completed = false;
                                 break;
                             }
@@ -5194,6 +5206,7 @@ mod unified_kernel {
                         let final_key = (chain_state, chain_extension);
                         let final_bookkeeping = extended_state.get(&final_key).copied();
                         if final_bookkeeping.is_some_and(|(_, closed)| closed) {
+                            if chain_diag { eprintln!("chain-final closed state=({},{},{}) g={:.1}", chain_state.x, chain_state.y, chain_state.angle, chain_g); }
                             stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                             if let Some(i) = chain_ring {
                                 target_ring[i][4] += 1;
@@ -5203,6 +5216,7 @@ mod unified_kernel {
                         if chain_g
                             >= final_bookkeeping.map(|(g, _)| g).unwrap_or(f64::INFINITY)
                         {
+                            if chain_diag { eprintln!("chain-final cost_pruned state=({},{},{}) g={:.1} existing={:.1}", chain_state.x, chain_state.y, chain_state.angle, chain_g, final_bookkeeping.map(|(g, _)| g).unwrap_or(f64::INFINITY)); }
                             stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                             if let Some(i) = chain_ring {
                                 target_ring[i][5] += 1;
@@ -11723,6 +11737,40 @@ mod tests {
             "route must stay on y = -x + 45 through both crossings with margin 5; off-line cells: {off_line:?} (pending-straight rejects: {}, margin rejects: {})",
             stats.crossing_reject_pending_straight, stats.crossing_reject_margin
         );
+    }
+
+    /// Vertical route crossing two horizontal partners 19 cells apart with
+    /// the benchmark margin (the multiportmmi_32x32 descent column through
+    /// n_285/n_284). Routes in isolation; kept because the real net stopped
+    /// descending here after the half-size-debt change (2026-09-03), which
+    /// means the real blocker is contextual, not this geometry.
+    #[test]
+    fn vertical_route_crosses_two_horizontal_partners_with_benchmark_margin() {
+        let mut map = ObstacleMap::new(60, 80);
+        let partner_a: Vec<(i32, i32)> = (0..60).map(|k| (k, 50)).collect();
+        let partner_b: Vec<(i32, i32)> = (0..60).map(|k| (k, 31)).collect();
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(1, &partner_a, &partner_a, &[], &FxHashSet::default()));
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &partner_b, &partner_b, &[], &FxHashSet::default()));
+        let library = primitive_library();
+        let crossing = CrossingSearchConfig {
+            net_id: 3,
+            partners: vec![
+                CrossingSearchPartner { net_id: 1, waypoints: vec![(0, 50), (59, 50)], target_terminal_bump_guard: None },
+                CrossingSearchPartner { net_id: 2, waypoints: vec![(0, 31), (59, 31)], target_terminal_bump_guard: None },
+            ],
+            min_straight_cells: 2,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 3,
+            crossing_loss: 1.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let (route, stats) = route_single_net_with_collision_crossing_config_with_stats(
+            &map, &library, State::new(30, 70, 6), State::new(30, 10, 6), None, None,
+            &AStarConfig { use_routing_window: false, enable_simple_routes: false, ..AStarConfig::default() },
+            0, None, &crossing,
+        );
+        assert!(route.is_some(), "vertical descent across two horizontal partners 19 cells apart must route (pending-straight rejects: {}, margin rejects: {}, accepted: {})", stats.crossing_reject_pending_straight, stats.crossing_reject_margin, stats.crossing_accepted);
     }
 
     #[test]
