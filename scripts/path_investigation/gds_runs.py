@@ -33,6 +33,34 @@ def main() -> int:
     top = ly.top_cell()
     dbu = ly.dbu
     runs: dict[tuple[float, float, float], float] = {}
+
+    def collinear_runs(poly: db.Polygon):
+        """Merge consecutive collinear edges (route polygons are finely sampled:
+        a straight diagonal is many 11 um edges) into (x0, y0, x1, y1) runs."""
+        pts = [(pt.x * dbu, pt.y * dbu) for pt in poly.each_point_hull()]
+        if len(pts) < 2:
+            return
+        n = len(pts)
+        # find a corner to start from so a run is not split at index 0
+        def direction(i):
+            x0, y0 = pts[i]; x1, y1 = pts[(i + 1) % n]
+            dx, dy = x1 - x0, y1 - y0
+            l = (dx * dx + dy * dy) ** 0.5
+            return (round(dx / l, 3), round(dy / l, 3)) if l > 1e-9 else None
+        start = 0
+        for i in range(n):
+            if direction(i) != direction((i - 1) % n):
+                start = i
+                break
+        run_start = pts[start]; run_dir = direction(start)
+        for k in range(1, n + 1):
+            i = (start + k) % n
+            d = direction(i)
+            if d != run_dir:
+                x0, y0 = run_start; x1, y1 = pts[i]
+                yield x0, y0, x1, y1
+                run_start = pts[i]; run_dir = d
+
     for li in ly.layer_indexes():
         if ly.get_info(li).to_s() != a.layer:
             continue
@@ -41,21 +69,19 @@ def main() -> int:
             if not (s.is_path() or s.is_polygon() or s.is_box()):
                 continue
             poly = s.polygon.transformed(sh.trans())
-            for e in poly.each_edge():
-                dx, dy = e.dx() * dbu, e.dy() * dbu
-                if a.dir == "v" and dx == 0 and abs(dy) >= a.min_len:
-                    pos, lo, hi = e.x1 * dbu, min(e.y1, e.y2) * dbu, max(e.y1, e.y2) * dbu
-                elif a.dir == "h" and dy == 0 and abs(dx) >= a.min_len:
-                    pos, lo, hi = e.y1 * dbu, min(e.x1, e.x2) * dbu, max(e.x1, e.x2) * dbu
-                elif a.dir == "d" and abs(abs(dx) - abs(dy)) < 1e-6 and abs(dx) >= a.min_len / 1.4142:
-                    # diagonal: report start/end instead of a position
-                    x0, y0, x1, y1 = e.x1 * dbu, e.y1 * dbu, e.x2 * dbu, e.y2 * dbu
+            for x0, y0, x1, y1 in collinear_runs(poly):
+                dx, dy = x1 - x0, y1 - y0
+                if a.dir == "v" and abs(dx) < 1e-6 and abs(dy) >= a.min_len:
+                    pos, lo, hi = x0, min(y0, y1), max(y0, y1)
+                elif a.dir == "h" and abs(dy) < 1e-6 and abs(dx) >= a.min_len:
+                    pos, lo, hi = y0, min(x0, x1), max(x0, x1)
+                elif a.dir == "d" and abs(abs(dx) - abs(dy)) < 0.05 and abs(dx) >= a.min_len / 1.4142:
                     if a.x and not (a.x[0] <= min(x0, x1) and max(x0, x1) <= a.x[1]):
                         continue
                     if a.y and not (a.y[0] <= min(y0, y1) and max(y0, y1) <= a.y[1]):
                         continue
                     key = (round(min(x0, x1), 1), round(min(y0, y1), 1), round(max(x0, x1), 1))
-                    runs[key] = max(runs.get(key, 0.0), (abs(dx) ** 2 + abs(dy) ** 2) ** 0.5)
+                    runs[key] = max(runs.get(key, 0.0), (dx * dx + dy * dy) ** 0.5)
                     continue
                 else:
                     continue
@@ -69,13 +95,18 @@ def main() -> int:
                         continue
                     if a.x and not (a.x[0] <= lo and hi <= a.x[1]):
                         continue
-                # waveguide edges come in pairs (width ~0.5 um): merge to one run per 1 um bucket
                 key = (round(pos, 2), round(lo), round(hi))
                 runs[key] = max(runs.get(key, 0.0), hi - lo)
 
     if a.dir == "d":
-        for (x0, y0, x1), length in sorted(runs.items()):
-            print(f"diag from x={x0} y={y0} to x={x1}  length={length:.1f} um")
+        # merge the two edges of one waveguide (offset ~0.35 um along both axes)
+        items = sorted(runs.items())
+        shown: list[tuple[float, float, float, float]] = []
+        for (x0, y0, x1), length in items:
+            if shown and abs(shown[-1][0] - x0) <= 0.6 and abs(shown[-1][1] - y0) <= 0.6 and abs(shown[-1][3] - length) <= 1.0:
+                continue
+            shown.append((x0, y0, x1, length))
+            print(f"diag from x={x0:.1f} y={y0:.1f}  dx={x1 - x0:.0f} um  length={length:.0f} um")
         return 0
 
     # Waveguide edges come in pairs (one per side of the ~0.5 um core): merge
