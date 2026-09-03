@@ -3093,7 +3093,8 @@ fn trace_crossing_pending(
         return;
     }
     eprintln!(
-        "crossing-pending net={} event={} state=({}, {}, {}) primitive_id={} primitive_start={} primitive_end={} pending_cells={} initial_run={:.3} intersection_angle={:?} intersection_after={:?}",
+        "crossing-pending seq={} net={} event={} state=({}, {}, {}) primitive_id={} primitive_start={} primitive_end={} pending_cells={} initial_run={:.3} intersection_angle={:?} intersection_after={:?}",
+        current_search_seq(),
         crossing.net_id,
         event,
         state.x,
@@ -4391,6 +4392,7 @@ mod unified_kernel {
         // different searches can be told apart in a shared stderr stream.
         static SEARCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let search_seq = SEARCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        CURRENT_SEARCH_SEQ.with(|c| c.set(search_seq));
         let ignore_dyn_flag = hook.ignores_dynamic_obstacles();
         // Permanent, env-gated: PHOTONIC_ROUTER_POP_DIAG_BELOW_Y=<y> logs every
         // Tier-2 push/pop/skip whose state lies below that y (first 200).
@@ -6468,7 +6470,8 @@ fn trace_crossing_candidate(
         return;
     }
     eprintln!(
-        "crossing-candidate net={} partner={} reason={} grid=({:.3},{:.3}) route_angle={} partner_angle={} required_margin={} partner_margin={:.3} route_before={:.3} route_after={:.3}",
+        "crossing-candidate seq={} net={} partner={} reason={} grid=({:.3},{:.3}) route_angle={} partner_angle={} required_margin={} partner_margin={:.3} route_before={:.3} route_after={:.3}",
+        current_search_seq(),
         crossing.net_id,
         partner_net_id,
         reason,
@@ -6484,6 +6487,16 @@ fn trace_crossing_candidate(
 }
 
 #[allow(clippy::too_many_arguments)]
+thread_local! {
+    /// Sequence number of the search currently running on this thread, so
+    /// every crossing trace line can be attributed to one search.
+    static CURRENT_SEARCH_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+}
+
+fn current_search_seq() -> u64 {
+    CURRENT_SEARCH_SEQ.with(|c| c.get())
+}
+
 fn trace_crossing_level1_intersection(
     crossing: &CrossingSearchConfig,
     partner_net_id: u64,
@@ -6517,7 +6530,8 @@ fn trace_crossing_level1_intersection(
         }
     }
     eprintln!(
-        "crossing-level1 net={} partner={} event={} grid=({:.3},{:.3}) route_angle={} partner_angle={} required_margin={} route_before={:.3} route_after={:.3} pending_after={}",
+        "crossing-level1 seq={} net={} partner={} event={} grid=({:.3},{:.3}) route_angle={} partner_angle={} required_margin={} route_before={:.3} route_after={:.3} pending_after={}",
+        current_search_seq(),
         crossing.net_id,
         partner_net_id,
         event,
@@ -7369,7 +7383,8 @@ fn crossing_move_outcome_with_segments(
             );
             if trace_crossing_pending_enabled(crossing) {
                 eprintln!(
-                    "crossing-pending net={} event=set_pending_partner partner={} point=({:.3},{:.3}) required={} distance_after={:.3}",
+                    "crossing-pending seq={} net={} event=set_pending_partner partner={} point=({:.3},{:.3}) required={} distance_after={:.3}",
+                    current_search_seq(),
                     crossing.net_id,
                     partner.net_id,
                     intersection.x,
@@ -11883,6 +11898,45 @@ mod tests {
             0, None, &crossing,
         );
         assert!(route.is_some(), "vertical descent across two horizontal partners 19 cells apart must route (pending-straight rejects: {}, margin rejects: {}, accepted: {})", stats.crossing_reject_pending_straight, stats.crossing_reject_margin, stats.crossing_accepted);
+    }
+
+    /// The multiportmmi_32x32 descent wall as found on 2026-09-03: two
+    /// horizontal partners only THREE cells apart (n_285's lower run at
+    /// y=1520 and n_284 at y=1517 near x=3060), crossed vertically with the
+    /// benchmark margin (half_size 2, bend_runout 3 -> required 5) and the
+    /// half-size straight-after debt. After crossing the first partner the
+    /// debt run (2 cells) ends exactly on the second partner's cell.
+    #[test]
+    fn vertical_route_crosses_two_horizontal_partners_three_cells_apart() {
+        let mut map = ObstacleMap::new(60, 80);
+        let partner_a: Vec<(i32, i32)> = (0..60).map(|k| (k, 40)).collect();
+        let partner_b: Vec<(i32, i32)> = (0..60).map(|k| (k, 37)).collect();
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(1, &partner_a, &partner_a, &[], &FxHashSet::default()));
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &partner_b, &partner_b, &[], &FxHashSet::default()));
+        let library = primitive_library();
+        let crossing = CrossingSearchConfig {
+            net_id: 3,
+            partners: vec![
+                CrossingSearchPartner { net_id: 1, waypoints: vec![(0, 40), (59, 40)], target_terminal_bump_guard: None },
+                CrossingSearchPartner { net_id: 2, waypoints: vec![(0, 37), (59, 37)], target_terminal_bump_guard: None },
+            ],
+            min_straight_cells: 2,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 3,
+            crossing_loss: 1.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let (route, stats) = route_single_net_with_collision_crossing_config_with_stats(
+            &map, &library, State::new(30, 70, 6), State::new(30, 10, 6), None, None,
+            &AStarConfig { use_routing_window: false, enable_simple_routes: false, ..AStarConfig::default() },
+            0, None, &crossing,
+        );
+        assert!(
+            route.is_some(),
+            "vertical descent across two horizontal partners 3 cells apart must route (pending-straight rejects: {}, margin rejects: {}, accepted: {})",
+            stats.crossing_reject_pending_straight, stats.crossing_reject_margin, stats.crossing_accepted
+        );
     }
 
     #[test]
