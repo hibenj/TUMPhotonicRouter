@@ -5295,11 +5295,20 @@ impl PyPhotonicRouter {
             return Vec::new();
         }
         let config = self.crossing_context.config();
+        // Same rule as the search kernel (`crossing_move_outcome_with_segments`)
+        // and the realized validator: BEFORE the crossing point the counted
+        // straight run must reach `required_margin` (half_size + bend radius,
+        // compensating a preceding bend arm counted as straight); AFTER it
+        // only the crossing element's own `half_size` pure straight cells are
+        // required (Point 2, 2026-09-03) -- a bend may follow. Demanding
+        // `required_margin` on both sides discarded kernel-legal,
+        // realized-clean routes (benes_32x32 net 273).
         let required_margin = f64::from(crossing_required_margin_cells(
             config.crossing_half_size_cells,
             config.min_straight_cells_per_crossing,
             self.primitive_cfg.bend_radius_cells,
         ));
+        let required_after = f64::from(config.crossing_half_size_cells.max(0));
         let mut invalid = Vec::new();
         let mut seen_centers = FxHashSet::default();
         for route_segment in route.compressed_waypoints.windows(2) {
@@ -5337,9 +5346,11 @@ impl PyPhotonicRouter {
                     ) else {
                         continue;
                     };
-                    let route_margin = (t * route_len).min((1.0 - t) * route_len);
+                    let route_before = t * route_len;
+                    let route_after = (1.0 - t) * route_len;
                     let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
-                    if route_margin + 1e-9 >= required_margin
+                    if route_before + 1e-9 >= required_margin
+                        && route_after + 1e-9 >= required_after
                         && partner_margin + 1e-9 >= required_margin
                     {
                         continue;
@@ -17412,6 +17423,93 @@ mod tests {
         assert_eq!(invalid.len(), 1, "one straight cell after the crossing is inside the crossing element");
         assert_eq!(invalid[0].partner_net_id, 1);
         assert_eq!(invalid[0].reason, "insufficient_straight_margin");
+    }
+
+    /// Post-search grid-level check (`invalid_crossing_intersections_for_route`)
+    /// must apply the same rule as the search kernel and the realized
+    /// validator: after the crossing point the route needs `half_size` pure
+    /// straight cells (Point 2), not `half_size + bend_radius`. Found on
+    /// benes_32x32 net 273 (2026-09-03): the search accepted a crossing 3.5
+    /// cells before a 45-degree corner, the realized centerline was clean,
+    /// and this check discarded the whole route with
+    /// `insufficient_straight_margin` because it demanded 5.
+    #[test]
+    fn grid_crossing_check_accepts_half_size_straight_after_crossing_before_a_bend() {
+        let grid = PyGridSpec::new(40, 40, 1.0, 0.0, 0.0).unwrap();
+        let mut router = PyPhotonicRouter::new(
+            grid,
+            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 3, 1.0, true),
+            PyAStarConfig::new(
+                10000,
+                1.0,
+                0,
+                true,
+                None,
+                true,
+                12,
+                0.35,
+                3,
+                true,
+                0.5,
+                10_000_000,
+                false,
+                0.0,
+                0.0,
+                0,
+                false,
+                false,
+                "library".to_string(),
+                "distance".to_string(),
+                1.0,
+            ),
+        );
+        router.crossing_context = CrossingContext::new(
+            CrossingConfig {
+                enabled: true,
+                allow_only_expected_pairs: false,
+                crossing_half_size_cells: 2,
+                min_straight_cells_per_crossing: 2,
+                ..CrossingConfig::default()
+            },
+            Vec::new(),
+        );
+        router
+            .committed_center_routes
+            .insert(1, vec![(10, 0), (10, 30)]);
+        let partner_ids: FxHashSet<u64> = [1u64].into_iter().collect();
+        let route_with_corner_at = |corner_x: i32| RouteResult {
+            states: Vec::new(),
+            primitives: Vec::new(),
+            cells: Vec::new(),
+            // eastbound straight from x=0 crossing the vertical partner at
+            // x=10, then a 45-degree corner at `corner_x` and a diagonal
+            compressed_waypoints: vec![(0, 10), (corner_x, 10), (corner_x + 8, 18)],
+            total_length_um: 0.0,
+            total_cost: 0.0,
+            requested_target: State::new(corner_x + 8, 18, 1),
+            reached_target: State::new(corner_x + 8, 18, 1),
+            stats: RouteSearchStats::default(),
+        };
+
+        // 3 cells after the crossing point: >= half_size (2) -> legal, as the
+        // kernel and the realized validator already say
+        let invalid = router.invalid_crossing_intersections_for_route(2, &route_with_corner_at(13), &partner_ids);
+        assert!(invalid.is_empty(), "3 straight cells after the crossing must pass the grid check; got {invalid:?}");
+        // exactly half_size: still legal
+        let invalid = router.invalid_crossing_intersections_for_route(2, &route_with_corner_at(12), &partner_ids);
+        assert!(invalid.is_empty(), "2 straight cells after the crossing must pass the grid check; got {invalid:?}");
+        // 1 cell: inside the crossing element -> invalid
+        let invalid = router.invalid_crossing_intersections_for_route(2, &route_with_corner_at(11), &partner_ids);
+        assert_eq!(invalid.len(), 1);
+        assert_eq!(invalid[0].reason, "insufficient_straight_margin");
+        // before the crossing the kernel still counts required_margin (5):
+        // a route starting 3 cells before the partner is rejected there too
+        let short_before = RouteResult {
+            compressed_waypoints: vec![(7, 10), (20, 10)],
+            ..route_with_corner_at(13)
+        };
+        let invalid = router.invalid_crossing_intersections_for_route(2, &short_before, &partner_ids);
+        assert_eq!(invalid.len(), 1, "3 cells before the crossing are less than required_margin");
     }
 
     #[test]
