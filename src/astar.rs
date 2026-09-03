@@ -4110,6 +4110,7 @@ mod unified_kernel {
         search_seq: u64,
         obstacle_map: &ObstacleMap,
         port_open_cells: Option<&FxHashSet<CellKey>>,
+        dense_grid: &DenseRoutingGrid,
     ) {
         let Some(spec) = std::env::var("PHOTONIC_ROUTER_PROBE_CELLS").ok() else {
             return;
@@ -4124,14 +4125,15 @@ mod unified_kernel {
             }
             let owners: Vec<NetId> = obstacle_map.dynamic_owners_at(x, y).into_iter().collect();
             eprintln!(
-                "probe-cell seq={} cell=({},{}) static={} opened={} dynamic_owners={:?} core={}",
+                "probe-cell seq={} cell=({},{}) static={} opened={} dynamic_owners={:?} core={} dense_blocked={}",
                 search_seq,
                 x,
                 y,
                 obstacle_map.is_static_blocked(x, y),
                 port_open_cells.is_some_and(|open| open.contains(&pack_xy(x, y))),
                 owners,
-                obstacle_map.is_dynamic_core_blocked(x, y)
+                obstacle_map.is_dynamic_core_blocked(x, y),
+                dense_grid.is_blocked(x, y),
             );
         }
     }
@@ -4431,7 +4433,9 @@ mod unified_kernel {
         let mut target_ring = [[0u32; 7]; 25];
         let mut goal_miss_angle = 0u32;
         let mut goal_miss_hook = 0u32;
-        let mut ring_blocker_lines = 0u32;
+        // Blocker lines are capped PER ring/probe slot (not globally), so
+        // landings from one side cannot starve the others of diagnostics.
+        let mut ring_blocker_lines: FxHashMap<usize, u32> = FxHashMap::default();
         // Permanent, env-gated: names the branch that abandons an eager
         // completion chain (the silent killer of consecutive crossings).
         let chain_diag = std::env::var_os("PHOTONIC_ROUTER_CHAIN_DIAG").is_some();
@@ -4554,7 +4558,7 @@ mod unified_kernel {
                         &storage,
                         &extended_nodes,
                     );
-                    print_probe_cells_report(search_seq, obstacle_map, port_open_cells);
+                    print_probe_cells_report(search_seq, obstacle_map, port_open_cells, &dense_grid);
                     for (i, cell) in probe_cells.iter().enumerate() {
                         let c = probe_ring[i];
                         if c.iter().any(|v| *v > 0) {
@@ -4599,7 +4603,7 @@ mod unified_kernel {
                         &storage,
                         &extended_nodes,
                     );
-                    print_probe_cells_report(search_seq, obstacle_map, port_open_cells);
+                    print_probe_cells_report(search_seq, obstacle_map, port_open_cells, &dense_grid);
                     for (i, cell) in probe_cells.iter().enumerate() {
                         let c = probe_ring[i];
                         if c.iter().any(|v| *v > 0) {
@@ -5033,12 +5037,14 @@ mod unified_kernel {
                                 // Name the actual blocking cells of this
                                 // footprint (capped), so the seal is a fact,
                                 // not an interpretation.
-                                if ring_blocker_lines < 40 {
+                                if *ring_blocker_lines.get(&i).unwrap_or(&0) < 3 {
+                                    let mut named = false;
                                     for (dx, dy) in &primitive.footprint {
                                         let cx = state.x + dx;
                                         let cy = state.y + dy;
                                         if dense_grid.is_blocked(cx, cy) {
-                                            ring_blocker_lines += 1;
+                                            *ring_blocker_lines.entry(i).or_insert(0) += 1;
+                                            named = true;
                                             eprintln!(
                                                 "search-failure-blocker landing=({},{}) from=({},{},{}) prim={} blocked_cell=({},{}) static={}",
                                                 next_x, next_y, state.x, state.y, state.angle,
@@ -5046,6 +5052,34 @@ mod unified_kernel {
                                                 obstacle_map.is_static_blocked(cx, cy),
                                             );
                                             break;
+                                        }
+                                    }
+                                    // No core cell blocked: the clearance
+                                    // profile did. Name the first blocked
+                                    // profile cell with its obstacle-map view.
+                                    if !named {
+                                        'profile: for dy in profile.min_dy..=profile.max_dy {
+                                            for dx in profile.min_dx..=profile.max_dx {
+                                                let cx = state.x + dx;
+                                                let cy = state.y + dy;
+                                                if dense_grid.is_blocked(cx, cy) {
+                                                    *ring_blocker_lines.entry(i).or_insert(0) += 1;
+                                                    let owners: Vec<NetId> = obstacle_map
+                                                        .dynamic_owners_at(cx, cy)
+                                                        .into_iter()
+                                                        .collect();
+                                                    eprintln!(
+                                                        "search-failure-blocker-profile landing=({},{}) from=({},{},{}) prim={} blocked_cell=({},{}) static={} opened={} owners={:?} core={}",
+                                                        next_x, next_y, state.x, state.y, state.angle,
+                                                        primitive.id, cx, cy,
+                                                        obstacle_map.is_static_blocked(cx, cy),
+                                                        port_open_cells.is_some_and(|open| open.contains(&pack_xy(cx, cy))),
+                                                        owners,
+                                                        obstacle_map.is_dynamic_core_blocked(cx, cy),
+                                                    );
+                                                    break 'profile;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -5659,7 +5693,7 @@ if chain_diag { eprintln!("chain-break seq={} reason=reservation_overlap state=(
                 &storage,
                 &extended_nodes,
             );
-            print_probe_cells_report(search_seq, obstacle_map, port_open_cells);
+            print_probe_cells_report(search_seq, obstacle_map, port_open_cells, &dense_grid);
                     for (i, cell) in probe_cells.iter().enumerate() {
                         let c = probe_ring[i];
                         if c.iter().any(|v| *v > 0) {
