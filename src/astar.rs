@@ -7327,7 +7327,10 @@ fn crossing_move_outcome_with_segments(
                     // end minus the fillet trim of the corner there
                     let partner_margin = (u * partner_segment.length - partner_segment.trim_start)
                         .min((1.0 - u) * partner_segment.length - partner_segment.trim_end);
-                    if partner_margin + 1.0e-9 < f64::from(required_margin) {
+                    // The point must lie strictly inside the partner's straight
+                    // (a segment END is where it bends or terminates), and the
+                    // straight on each side must reach half_size.
+                    if partner_margin <= 1.0e-9 || partner_margin + 1.0e-9 < f64::from(required_margin) {
                         record_perpendicular_crossing_reject(
                             stats,
                             crossing,
@@ -12480,6 +12483,59 @@ mod tests {
             );
             assert_eq!(outcome.is_some(), expect_accept, "{label}: margin rejects {}", stats.crossing_reject_margin);
         }
+    }
+
+    /// A crossing point at a partner segment's END is never a crossing of a
+    /// straight (the partner bends or terminates there) -- refused even with
+    /// `half_size` 0, where the straight requirement itself is void.
+    #[test]
+    fn crossing_at_a_partner_endpoint_is_refused_even_with_half_size_zero() {
+        let mut map = ObstacleMap::new(20, 14);
+        let partner_cells = vec![(8, 6), (8, 7)];
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(1, &partner_cells, &partner_cells, &[], &FxHashSet::default()));
+        let library = primitive_library_no45_bend1();
+        let crossing = CrossingSearchConfig {
+            net_id: 2,
+            partners: vec![CrossingSearchPartner { net_id: 1, waypoints: vec![(8, 6), (8, 7)], target_terminal_bump_guard: None }],
+            min_straight_cells: 1,
+            crossing_half_size_cells: 0,
+            bend_runout_cells: 1,
+            crossing_loss: 3.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = [(1, 0)].into_iter().collect();
+        let straight = library
+            .get_primitives_for_angle(0)
+            .iter()
+            .find(|p| p.end_angle == 0 && p.dx == 4)
+            .expect("4-cell east straight");
+        let start = State::new(6, 6, 0);
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: start,
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 4,
+                pending_after_crossing_cells: 0,
+                pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+            },
+            start,
+            straight,
+            true,
+            0,
+            1,
+            0,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        );
+        assert!(outcome.is_none(), "the partner's straight has zero extent at its endpoint (8,6)");
+        assert_eq!(stats.crossing_reject_margin, 1);
     }
 
     /// The multiportmmi_32x32 finding of 2026-09-03: n_285 and n_284 only

@@ -2343,7 +2343,7 @@ fn crossing_events_for_partner(
             let (trim_b_start, trim_b_end) = partner_trims[idx_b];
             let margin_a = (t * len_a - trim_a_start).min((1.0 - t) * len_a - trim_a_end);
             let margin_b = (u * len_b - trim_b_start).min((1.0 - u) * len_b - trim_b_end);
-            if margin_a + 1e-9 < required_margin || margin_b + 1e-9 < required_margin {
+            if margin_b <= 1e-9 || margin_a + 1e-9 < required_margin || margin_b + 1e-9 < required_margin {
                 continue;
             }
             let rounded_center = (
@@ -5435,6 +5435,7 @@ impl PyPhotonicRouter {
                         .min((1.0 - u) * partner_len - partner_trim_end);
                     if route_before + 1e-9 >= required_margin
                         && route_after + 1e-9 >= required_after
+                        && partner_margin > 1e-9
                         && partner_margin + 1e-9 >= required_margin
                     {
                         continue;
