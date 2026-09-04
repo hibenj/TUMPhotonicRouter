@@ -12,11 +12,16 @@ Owner decisions taken: 2026-09-03 "Punkt 2" (debt = half_size after the crossing
 
 ## Progress
 
-- [x] S1 (`85944aa`) kernel: real straight run after turn primitives (`primitive_terminal_straight_run_cells` minus trim); route-before requirement = `half_size`. Tests: crossing 1/2 cells after a 90-degree turn (reject/accept), 1 cell after a 45-degree turn (accept: 1 real + 1), H/V and diagonal.
-- [x] S2 (`6d9d613`) kernel: partner margin = polyline margin minus corner trim (bend radius from the crossing config), requirement `half_size`. Tests: partner 90-degree corner at 4/5 cells (reject/accept), 45-degree corner at 3/4 cells (reject/accept).
-- [x] S3 (`a68a7fd`) kernel: key cap `half_size` (straight_run, pending), pre-hook arm-pays gate removed, `required_margin`/`capped_required_margin` plumbing replaced by `half_size`; traces print `half_size`.
-- [x] S4 (`5b92b30`) post-search: `invalid_crossing_intersections_for_route` uses the same trims and `half_size` on both sides; repair keepout radius stays `half_size + bend_radius` explicitly.
-- [ ] S5 validation: cargo suite, pytest baseline, ladder, both 32x32 full (verification-clean, attempts/failures/repairs recorded), timing table vs the 2026-09-03 final guard.
+Restructured 2026-09-04 10:15 (owner): predicate 1 is NOT the same logic differently implemented -- it flips verdicts. So: Step 1 = baseline rule code + the difference matrix as tests pinned to BASELINE verdicts (each names its predicate-1 target); Step 2 = flip one row at a time with benchmark evidence. The first attempt (S1-S4 as one change) lives on branch `pred1-rework-wip` (`51c5545`) for reuse; it regressed multiportmmi_32x32 at net 261 because the relaxed rows let the ramp nets 257-260 take other legal routes that closed net 261's approach corridor (35 966 `not_perpendicular` contacts).
+
+- [x] Step 1 (2026-09-04): rule code = `baseline-2026-09-03` (`git checkout baseline-2026-09-03 -- src/astar.rs src/py_router.rs`); matrix tests `matrix_row1..4` in astar.rs (turn arm counted as straight; 5 counted cells before a crossing on a pure straight; partner margin on the raw polyline incl. 45-degree corner at 4 cells = reject; endpoint with half_size 0 = reject); rows already pinned by existing tests: lateral-jog case (`vertical_descent_refuses_two_crossings_four_cells_apart` = no route), post-search grid check (`grid_crossing_check_accepts_half_size_straight_after_crossing_before_a_bend`: after 2, before/partner 5). Suite 440/440. Benchmarks = baseline by construction.
+- [ ] Step 2, one row per slice, each: flip the test verdict first, implement, cargo, ladder, mm32 + benes32 full with attempts/failures/repairs and timings recorded, owner decides keep/drop:
+  - Row A (partner 45-degree corner: 5 -> 4 cells) -- smallest relaxation.
+  - Row B (route after a 45-degree turn: 2 -> 1 real cell).
+  - Row C (pure-straight approach: 5 -> 2 cells) -- the large one; enables the lateral-jog case and is what re-laid the ramp nets.
+  - Row D (Tier-2 key cap 5 -> 2) -- only meaningful with C.
+  - Post-search grid check follows whichever rows are adopted (same arithmetic).
+- [ ] Step 3: record the adopted rule set in the plan + REPOSITORY_STATE; retrospective.
 
 ## Surprises & Discoveries
 

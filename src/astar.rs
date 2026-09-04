@@ -3070,31 +3070,6 @@ fn primitive_terminal_straight_run_cells(primitive: &Primitive, end_angle: u8) -
     run_cells
 }
 
-/// Cells of a turn arm that the realized fillet consumes: `arm * tan(theta/2)`,
-/// rounded up (kernel stays conservative against the realized validator,
-/// which measures the exact fillet). `make_turn` arms equal the bend radius,
-/// so a 90-degree arm is arc from end to end and a 45-degree arm of 3 cells
-/// loses 2. Predicate 1 (2026-09-04): only the cells outside the fillet are
-/// straight.
-fn turn_arm_trim_cells(arm_cells: i32, angle_delta: i8) -> i32 {
-    if arm_cells <= 0 {
-        return 0;
-    }
-    let theta = f64::from(angle_delta.unsigned_abs()) * std::f64::consts::FRAC_PI_4;
-    let trim = f64::from(arm_cells) * (theta / 2.0).tan();
-    ((trim - 1.0e-9).ceil() as i32).clamp(0, arm_cells)
-}
-
-/// REAL straight cells at the end of a primitive: the terminal collinear arm
-/// minus the fillet trim of the turn that precedes it (0 for a straight).
-fn primitive_terminal_real_straight_cells(primitive: &Primitive, end_angle: u8) -> i32 {
-    let arm = primitive_terminal_straight_run_cells(primitive, end_angle);
-    match primitive.geometry {
-        PrimitiveGeometry::Straight { .. } => arm,
-        PrimitiveGeometry::Bend { angle_delta, .. } => arm - turn_arm_trim_cells(arm, angle_delta),
-    }
-}
-
 fn trace_crossing_pending_enabled(crossing: &CrossingSearchConfig) -> bool {
     if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_PENDING").is_none() {
         return false;
@@ -3282,25 +3257,6 @@ struct PartnerPathSegment {
     max_x: i32,
     min_y: i32,
     max_y: i32,
-    /// Cells at the segment's start/end consumed by the realized fillet of
-    /// the corner there (`radius * tan(theta/2)`; 0 at a terminal). Predicate
-    /// 1: only the cells outside the fillets are straight, so the partner's
-    /// straight margin around a crossing point subtracts them.
-    trim_start: f64,
-    trim_end: f64,
-}
-
-/// Fillet trim in cells at a polyline corner between two grid headings
-/// (45-degree units): `radius * tan(theta/2)`.
-fn corner_trim_cells(angle_in: u8, angle_out: u8, bend_radius_cells: i32) -> f64 {
-    let delta = ((i32::from(angle_out) - i32::from(angle_in)).rem_euclid(8)).min(
-        (i32::from(angle_in) - i32::from(angle_out)).rem_euclid(8),
-    );
-    if delta == 0 || bend_radius_cells <= 0 {
-        return 0.0;
-    }
-    let theta = f64::from(delta) * std::f64::consts::FRAC_PI_4;
-    f64::from(bend_radius_cells) * (theta / 2.0).tan()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3522,12 +3478,11 @@ fn max_crossing_witness_offset(metadata: &[Vec<PrimitiveCrossingMetadata>]) -> i
 }
 
 fn crossing_partner_path_segments(crossing: &CrossingSearchConfig) -> Vec<Vec<PartnerPathSegment>> {
-    let bend_radius_cells = crossing.bend_runout_cells;
     crossing
         .partners
         .iter()
         .map(|partner| {
-            let mut segments: Vec<PartnerPathSegment> = partner
+            partner
                 .waypoints
                 .windows(2)
                 .filter_map(|segment| {
@@ -3543,17 +3498,9 @@ fn crossing_partner_path_segments(crossing: &CrossingSearchConfig) -> Vec<Vec<Pa
                         max_x: start.0.max(end.0),
                         min_y: start.1.min(end.1),
                         max_y: start.1.max(end.1),
-                        trim_start: 0.0,
-                        trim_end: 0.0,
                     })
                 })
-                .collect();
-            for i in 1..segments.len() {
-                let trim = corner_trim_cells(segments[i - 1].angle, segments[i].angle, bend_radius_cells);
-                segments[i - 1].trim_end = trim;
-                segments[i].trim_start = trim;
-            }
-            segments
+                .collect()
         })
         .collect()
 }
@@ -4017,14 +3964,11 @@ mod unified_kernel {
             let dynamic_core_owners =
                 DenseDynamicCoreOwnerGrid::from_obstacle_map(obstacle_map, crossing_lookup_bounds)
                     .expect("owner grid should build for a valid obstacle map");
-            // Predicate 1 (2026-09-04): ONE number. The straight required on
-            // either side of a crossing point, on the route and on the
-            // partner, is the crossing element's half size in REAL straight
-            // cells (turn arms minus their fillet trim, partner polylines minus
-            // their corner trims). `bend_runout_cells` is the bend radius those
-            // trims are computed from, no longer an additive margin. The same
-            // number caps the Tier-2 key's `straight_run_cells`/`pending`.
-            let required_margin = crossing.crossing_half_size_cells.max(0);
+            let required_margin = crossing_required_margin_cells(
+                crossing.crossing_half_size_cells,
+                crossing.min_straight_cells,
+                crossing.bend_runout_cells,
+            );
             let capped_required_margin = required_margin.max(1);
             let all_partner_mask = if crossing.require_all_partners {
                 (1u64 << crossing.partners.len()) - 1
@@ -4851,15 +4795,15 @@ mod unified_kernel {
                     continue;
                 }
 
-                // A state with an open straight-after debt may only continue
-                // with a pure straight in the pending direction (owner's
-                // "Point 2", 2026-09-03: the debt is the crossing element's own
-                // half_size, paid by straight cells only -- a bend's arm is
-                // arc when realized). This is the single pre-hook rule; the
-                // hook applies the same rule on the contact path, and
-                // `crossing_no_contact_outcome` does not check it on its own.
-                // Predicate 1 (2026-09-04) removed the old "a bend arm may
-                // complete the debt" branch that the hook contradicted anyway.
+                // Mirrors today's crossing kernel: a state already inside an
+                // active post-crossing corridor may only continue with a
+                // primitive that keeps heading the required direction and
+                // either completes or correctly extends the required
+                // straight run. This is checked here, before the hook is
+                // even consulted, exactly like today's crossing kernel --
+                // not solely inside the reused legality functions, one of
+                // which (`crossing_no_contact_outcome`) does not perform
+                // this check on its own.
                 let pending_initial_run =
                     primitive_initial_straight_run_distance(primitive, state.angle);
                 let pending_completed_by_primitive = current_extension.pending_after_crossing_cells
@@ -4867,12 +4811,15 @@ mod unified_kernel {
                     && pending_initial_run + 1.0e-9
                         >= f64::from(current_extension.pending_after_crossing_cells);
                 if current_extension.pending_after_crossing_cells > 0 {
-                    let pure_straight_in_pending_direction = primitive_class_is_straight(primitive_class)
-                        && primitive.end_angle % 8 == state.angle
-                        && state.angle == current_extension.pending_after_crossing_angle
-                        && matches!(primitive.geometry, PrimitiveGeometry::Straight { .. })
-                        && pending_initial_run > 0.0;
-                    if !pure_straight_in_pending_direction {
+                    if current_extension.pending_after_crossing_angle != state.angle {
+                        stats.crossing_reject_pending_straight += 1;
+                        continue;
+                    }
+                    if !pending_completed_by_primitive
+                        && !(primitive_class_is_straight(primitive_class)
+                            && primitive.end_angle % 8 == state.angle
+                            && pending_initial_run > 0.0)
+                    {
                         stats.crossing_reject_pending_straight += 1;
                         continue;
                     }
@@ -4952,20 +4899,14 @@ mod unified_kernel {
                     stats.diagonal_halo_contacts += 1;
                 }
 
-                // Tier 1 needs a dense parent: since predicate 1 (2026-09-04) a
-                // Tier-2 node can carry a default extension again (a 90-degree
-                // turn leaves 0 real straight cells), and such a node stays on
-                // the Tier-2 path -- dense storage cannot point at an extended
-                // parent.
-                if footprint_free
-                    && halo_free
-                    && current_extension.is_default()
-                    && matches!(current_ref, UnifiedOpenRef::Dense(_))
-                {
+                if footprint_free && halo_free && current_extension.is_default() {
                     // Tier 1: identical fast path to today's plain kernel --
                     // dense array storage, no crossing bookkeeping, no hook call.
                     let UnifiedOpenRef::Dense(current_dense_idx) = current_ref else {
-                        unreachable!("guarded by the matches! above");
+                        unreachable!(
+                            "tier-1 fast path only runs from a default-extension \
+                             state, which is always stored densely"
+                        );
                     };
                     let next_idx = storage.in_bounds_parts_to_idx(next_x, next_y, next_angle);
                     if storage.closed.get(next_idx) {
@@ -5049,7 +4990,7 @@ mod unified_kernel {
                                     .saturating_add(primitive.dx.abs().max(primitive.dy.abs()))
                                     .min(capped_required_margin)
                             } else {
-                                primitive_terminal_real_straight_cells(
+                                primitive_terminal_straight_run_cells(
                                     primitive,
                                     primitive.end_angle,
                                 )
@@ -6866,7 +6807,7 @@ fn crossing_no_contact_outcome(
         0
     };
     if !is_straight {
-        straight_run = primitive_terminal_real_straight_cells(primitive, primitive.end_angle)
+        straight_run = primitive_terminal_straight_run_cells(primitive, primitive.end_angle)
             .min(capped_required_margin);
     }
     let pending_initial_run = primitive_initial_straight_run_distance(primitive, state.angle);
@@ -7322,15 +7263,9 @@ fn crossing_move_outcome_with_segments(
                         stats.crossing_reject_not_perpendicular += 1;
                         return None;
                     }
-                    // predicate 1: the partner's straight on each side of the
-                    // crossing point is the polyline distance to the segment
-                    // end minus the fillet trim of the corner there
-                    let partner_margin = (u * partner_segment.length - partner_segment.trim_start)
-                        .min((1.0 - u) * partner_segment.length - partner_segment.trim_end);
-                    // The point must lie strictly inside the partner's straight
-                    // (a segment END is where it bends or terminates), and the
-                    // straight on each side must reach half_size.
-                    if partner_margin <= 1.0e-9 || partner_margin + 1.0e-9 < f64::from(required_margin) {
+                    let partner_margin =
+                        (u * partner_segment.length).min((1.0 - u) * partner_segment.length);
+                    if partner_margin + 1.0e-9 < f64::from(required_margin) {
                         record_perpendicular_crossing_reject(
                             stats,
                             crossing,
@@ -7727,7 +7662,7 @@ fn crossing_move_outcome_with_segments(
     }
 
     if !is_straight {
-        straight_run = primitive_terminal_real_straight_cells(primitive, primitive.end_angle)
+        straight_run = primitive_terminal_straight_run_cells(primitive, primitive.end_angle)
             .min(capped_required_margin);
     }
 
@@ -12298,246 +12233,6 @@ mod tests {
         assert!(route.is_some(), "disjoint windows must route (overlap rejects: {})", stats.crossing_reject_reservation_overlap);
     }
 
-    /// Predicate 1, S1: after a turn primitive the carried straight run must
-    /// count REAL straight cells -- a 90-degree arm (radius 3) is arc from
-    /// end to end (0 real cells), a 45-degree arm keeps 3 - ceil(3*tan(22.5))
-    /// = 1 real cell. Before this rule the whole arm (3) counted and the
-    /// route-before requirement carried a +3 compensation (required_margin 5).
-    #[test]
-    fn turn_primitives_carry_real_straight_cells_only() {
-        let map = ObstacleMap::new(32, 32);
-        let library = primitive_library_bend3();
-        let crossing = CrossingSearchConfig {
-            net_id: 1,
-            partners: Vec::new(),
-            min_straight_cells: 2,
-            crossing_half_size_cells: 2,
-            bend_runout_cells: 3,
-            crossing_loss: 0.0,
-            require_all_partners: false,
-            terminal_bump_guard: None,
-        };
-        for (end_angle, expected_real_cells) in [(2u8, 0i32), (1u8, 1i32)] {
-            let primitive = library
-                .get_primitives_for_angle(0)
-                .iter()
-                .find(|primitive| primitive.end_angle == end_angle)
-                .expect("turn primitive");
-            let mut stats = RouteSearchStats::default();
-            let outcome = crossing_move_outcome(
-                &map,
-                &crossing,
-                CrossingAStarKey {
-                    state: State::new(5, 5, 0),
-                    crossed_mask: 0,
-                    next_partner_index: 0,
-                    straight_run_cells: 2,
-                    pending_after_crossing_cells: 0,
-                    pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
-                    pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
-                },
-                State::new(5, 5, 0),
-                primitive,
-                false,
-                2,
-                2,
-                2,
-                None,
-                &FxHashMap::default(),
-                &mut stats,
-            )
-            .expect("a turn without contact is an ordinary move");
-            assert_eq!(
-                outcome.straight_run_cells, expected_real_cells,
-                "turn to angle {end_angle}: only the arm cells outside the fillet are straight"
-            );
-        }
-    }
-
-    /// Predicate 1, S1: the straight required BEFORE a crossing is
-    /// `half_size` real cells. A route coming out of a 90-degree turn
-    /// (0 real cells carried) and crossing a vertical partner 2 cells later
-    /// is legal (2 >= 2); 1 cell later is not. Same for a diagonal route.
-    #[test]
-    fn route_before_margin_is_half_size_of_real_straight_cells() {
-        let cases = [
-            // (state angle, partner cells, partner waypoints, crossing distance)
-            (0u8, (0..32).map(|y| (12, y)).collect::<Vec<_>>(), vec![(12, 0), (12, 31)]),
-            (1u8, (0..32).map(|x| (x, 24 - x)).filter(|&(_, y)| y >= 0).collect::<Vec<_>>(), vec![(0, 24), (24, 0)]),
-        ];
-        for (angle, partner_cells, partner_waypoints) in cases {
-            let mut map = ObstacleMap::new(32, 32);
-            assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &partner_cells, &partner_cells, &[], &FxHashSet::default()));
-            let library = primitive_library_bend3();
-            let crossing = CrossingSearchConfig {
-                net_id: 1,
-                partners: vec![CrossingSearchPartner { net_id: 2, waypoints: partner_waypoints, target_terminal_bump_guard: None }],
-                min_straight_cells: 2,
-                crossing_half_size_cells: 2,
-                bend_runout_cells: 3,
-                crossing_loss: 0.0,
-                require_all_partners: false,
-                terminal_bump_guard: None,
-            };
-            let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
-            // a 4-cell straight in `angle`; the partner is crossed 2 (accept)
-            // or 1 (reject) cells after the move start with 0 carried cells
-            let straight = library
-                .get_primitives_for_angle(angle)
-                .iter()
-                .find(|p| p.end_angle == angle && p.dx.abs().max(p.dy.abs()) == 4)
-                .expect("4-cell straight");
-            // partner at x=12 resp. x+y=24: from (10,10)/(9,11) the crossing is 2 cells away, from (11,10)/(10,12) only 1
-            for (start, expect_accept) in [(if angle == 0 { State::new(10, 10, 0) } else { State::new(9, 11, 1) }, true), (if angle == 0 { State::new(11, 10, 0) } else { State::new(10, 12, 1) }, false)] {
-                let mut stats = RouteSearchStats::default();
-                let outcome = crossing_move_outcome(
-                    &map,
-                    &crossing,
-                    CrossingAStarKey {
-                        state: start,
-                        crossed_mask: 0,
-                        next_partner_index: 0,
-                        straight_run_cells: 0,
-                        pending_after_crossing_cells: 0,
-                        pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
-                        pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
-                    },
-                    start,
-                    straight,
-                    true,
-                    2,
-                    2,
-                    2,
-                    None,
-                    &partner_index_by_id,
-                    &mut stats,
-                );
-                assert_eq!(
-                    outcome.is_some(), expect_accept,
-                    "angle {angle} from {:?}: crossing with 0 carried cells must be {} (margin rejects {})",
-                    start, if expect_accept { "accepted (2 real cells before)" } else { "rejected (1 real cell before)" }, stats.crossing_reject_margin
-                );
-            }
-        }
-    }
-
-    /// Predicate 1, S2: the partner's straight around the crossing point is
-    /// measured on real cells -- the polyline distance to a corner minus the
-    /// fillet trim there (radius 3: 3 cells at a 90-degree corner, 1.24 at a
-    /// 45-degree corner). A vertical route crosses a horizontal partner run
-    /// that ends in a corner at x=12.
-    #[test]
-    fn partner_margin_subtracts_the_corner_trim() {
-        // (corner angle label, partner waypoints, crossing x, expect accept)
-        let cases = [
-            ("90deg corner, 4 cells before it (4-3=1 < 2)", vec![(2, 10), (12, 10), (12, 20)], 8, false),
-            ("90deg corner, 5 cells before it (5-3=2)", vec![(2, 10), (12, 10), (12, 20)], 7, true),
-            ("45deg corner, 3 cells before it (3-1.24 < 2)", vec![(2, 10), (12, 10), (20, 18)], 9, false),
-            ("45deg corner, 4 cells before it (4-1.24=2.76)", vec![(2, 10), (12, 10), (20, 18)], 8, true),
-        ];
-        for (label, waypoints, cross_x, expect_accept) in cases {
-            let mut map = ObstacleMap::new(32, 32);
-            let cells = rasterize_waypoints_for_test(&waypoints);
-            assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &cells, &cells, &[], &FxHashSet::default()));
-            let library = primitive_library_bend3();
-            let crossing = CrossingSearchConfig {
-                net_id: 1,
-                partners: vec![CrossingSearchPartner { net_id: 2, waypoints: waypoints.clone(), target_terminal_bump_guard: None }],
-                min_straight_cells: 2,
-                crossing_half_size_cells: 2,
-                bend_runout_cells: 3,
-                crossing_loss: 0.0,
-                require_all_partners: false,
-                terminal_bump_guard: None,
-            };
-            let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
-            let straight = library
-                .get_primitives_for_angle(2)
-                .iter()
-                .find(|p| p.end_angle == 2 && p.dy == 4)
-                .expect("4-cell north straight");
-            // start 2 cells below the partner row with 5 carried straight cells
-            let start = State::new(cross_x, 8, 2);
-            let mut stats = RouteSearchStats::default();
-            let outcome = crossing_move_outcome(
-                &map,
-                &crossing,
-                CrossingAStarKey {
-                    state: start,
-                    crossed_mask: 0,
-                    next_partner_index: 0,
-                    straight_run_cells: 5,
-                    pending_after_crossing_cells: 0,
-                    pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
-                    pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
-                },
-                start,
-                straight,
-                true,
-                2,
-                2,
-                2,
-                None,
-                &partner_index_by_id,
-                &mut stats,
-            );
-            assert_eq!(outcome.is_some(), expect_accept, "{label}: margin rejects {}", stats.crossing_reject_margin);
-        }
-    }
-
-    /// A crossing point at a partner segment's END is never a crossing of a
-    /// straight (the partner bends or terminates there) -- refused even with
-    /// `half_size` 0, where the straight requirement itself is void.
-    #[test]
-    fn crossing_at_a_partner_endpoint_is_refused_even_with_half_size_zero() {
-        let mut map = ObstacleMap::new(20, 14);
-        let partner_cells = vec![(8, 6), (8, 7)];
-        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(1, &partner_cells, &partner_cells, &[], &FxHashSet::default()));
-        let library = primitive_library_no45_bend1();
-        let crossing = CrossingSearchConfig {
-            net_id: 2,
-            partners: vec![CrossingSearchPartner { net_id: 1, waypoints: vec![(8, 6), (8, 7)], target_terminal_bump_guard: None }],
-            min_straight_cells: 1,
-            crossing_half_size_cells: 0,
-            bend_runout_cells: 1,
-            crossing_loss: 3.0,
-            require_all_partners: false,
-            terminal_bump_guard: None,
-        };
-        let partner_index_by_id: FxHashMap<NetId, usize> = [(1, 0)].into_iter().collect();
-        let straight = library
-            .get_primitives_for_angle(0)
-            .iter()
-            .find(|p| p.end_angle == 0 && p.dx == 4)
-            .expect("4-cell east straight");
-        let start = State::new(6, 6, 0);
-        let mut stats = RouteSearchStats::default();
-        let outcome = crossing_move_outcome(
-            &map,
-            &crossing,
-            CrossingAStarKey {
-                state: start,
-                crossed_mask: 0,
-                next_partner_index: 0,
-                straight_run_cells: 4,
-                pending_after_crossing_cells: 0,
-                pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
-                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
-            },
-            start,
-            straight,
-            true,
-            0,
-            1,
-            0,
-            None,
-            &partner_index_by_id,
-            &mut stats,
-        );
-        assert!(outcome.is_none(), "the partner's straight has zero extent at its endpoint (8,6)");
-        assert_eq!(stats.crossing_reject_margin, 1);
-    }
-
     /// The multiportmmi_32x32 finding of 2026-09-03: n_285 and n_284 only
     /// THREE cells apart at x=3072. Two crossing elements (+-half_size = 5
     /// cells each) cannot sit 3 cells apart -- their reservation windows
@@ -12551,24 +12246,12 @@ mod tests {
         assert!(route.is_none(), "two crossing elements 3 cells apart cannot both be realized");
     }
 
-    /// Four cells apart the windows [38,42] and [34,38] share y=38 for
-    /// crossings at the same x -- those attempts are refused. Since
-    /// predicate 1 (real straight cells, half_size before a crossing) the
-    /// search finds the legal alternative: a lateral jog of >= 5 cells
-    /// between the two crossings, so that the two +-2 windows are disjoint
-    /// (re-pinned 2026-09-04; the old required_margin of 5 made the jog's
-    /// short straights illegal and the case looked unroutable).
+    /// Four cells apart the windows [38,42] and [34,38] still share y=38.
     #[test]
-    fn vertical_descent_four_cells_apart_jogs_so_the_windows_are_disjoint() {
+    fn vertical_descent_refuses_two_crossings_four_cells_apart() {
         let (route, stats) = vertical_descent_across_two_horizontals(4);
-        assert!(stats.crossing_reject_reservation_overlap > 0, "same-x crossings must be refused");
-        let route = route.expect("a route with laterally offset crossings exists");
-        let x_at_row = |row: i32| -> Option<i32> {
-            route.cells.iter().find(|&&(_, y)| y == row).map(|&(x, _)| x)
-        };
-        let xa = x_at_row(40).expect("crosses partner A at y=40");
-        let xb = x_at_row(36).expect("crosses partner B at y=36");
-        assert!((xa - xb).abs() >= 5, "crossings at x={xa} and x={xb} must be >= 5 cells apart for disjoint windows; route {:?}", route.compressed_waypoints);
+        assert!(stats.crossing_reject_reservation_overlap > 0);
+        assert!(route.is_none());
     }
 
     /// Five cells apart (2*half_size + 1) the windows are disjoint: routes.
@@ -12666,6 +12349,241 @@ mod tests {
         assert!(outcome.is_none(), "no straight cell before a crossing inside a 90-degree arc");
         assert_eq!(stats.crossing_reject_non_straight, 1);
         assert_eq!(stats.crossing_accepted, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // DIFFERENCE MATRIX baseline vs predicate 1 (2026-09-04). Each test pins
+    // the BASELINE verdict (required_margin = half_size + bend_radius = 5 on
+    // counted cells, turn arms counted as straight, partner margins on the
+    // raw polyline) and names, in its comment, the verdict predicate 1
+    // (half_size on REAL straight cells, fillet trims) will flip it to.
+    // Step 2 of the rework flips one row at a time, with benchmark evidence.
+    // ------------------------------------------------------------------
+
+    /// Row 1: cells a turn primitive carries as "straight run" into the next
+    /// move. Baseline: the whole terminal arm (3). Predicate 1: 90 degrees
+    /// -> 0 (the arm is arc), 45 degrees -> 1 (3 - ceil(3*tan(22.5))).
+    #[test]
+    fn matrix_row1_turn_arm_counts_as_straight_run() {
+        let map = ObstacleMap::new(32, 32);
+        let library = primitive_library_bend3();
+        let crossing = CrossingSearchConfig {
+            net_id: 1,
+            partners: Vec::new(),
+            min_straight_cells: 2,
+            crossing_half_size_cells: 2,
+            bend_runout_cells: 3,
+            crossing_loss: 0.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        for (end_angle, baseline_cells) in [(2u8, 3i32), (1u8, 3i32)] {
+            let primitive = library
+                .get_primitives_for_angle(0)
+                .iter()
+                .find(|primitive| primitive.end_angle == end_angle)
+                .expect("turn primitive");
+            let mut stats = RouteSearchStats::default();
+            let outcome = crossing_move_outcome(
+                &map,
+                &crossing,
+                CrossingAStarKey {
+                    state: State::new(5, 5, 0),
+                    crossed_mask: 0,
+                    next_partner_index: 0,
+                    straight_run_cells: 2,
+                    pending_after_crossing_cells: 0,
+                    pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                    pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+                },
+                State::new(5, 5, 0),
+                primitive,
+                false,
+                5,
+                5,
+                2,
+                None,
+                &FxHashMap::default(),
+                &mut stats,
+            )
+            .expect("a turn without contact is an ordinary move");
+            assert_eq!(outcome.straight_run_cells, baseline_cells, "turn to angle {end_angle}: baseline counts the whole arm");
+        }
+    }
+
+    /// Row 2: straight required BEFORE a crossing on a route with no turn
+    /// anywhere (carried run 0, pure straight approach). Baseline: 5 counted
+    /// cells (the +3 compensation is applied even without a bend). Predicate
+    /// 1: 2 real cells. Same geometry H/V and diagonal.
+    #[test]
+    fn matrix_row2_before_margin_on_a_pure_straight_approach() {
+        let cases = [
+            (0u8, (0..32).map(|y| (12, y)).collect::<Vec<_>>(), vec![(12, 0), (12, 31)]),
+            (1u8, (0..32).map(|x| (x, 24 - x)).filter(|&(_, y)| y >= 0).collect::<Vec<_>>(), vec![(0, 24), (24, 0)]),
+        ];
+        for (angle, partner_cells, partner_waypoints) in cases {
+            let mut map = ObstacleMap::new(32, 32);
+            assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &partner_cells, &partner_cells, &[], &FxHashSet::default()));
+            let library = primitive_library_bend3();
+            let crossing = CrossingSearchConfig {
+                net_id: 1,
+                partners: vec![CrossingSearchPartner { net_id: 2, waypoints: partner_waypoints, target_terminal_bump_guard: None }],
+                min_straight_cells: 2,
+                crossing_half_size_cells: 2,
+                bend_runout_cells: 3,
+                crossing_loss: 0.0,
+                require_all_partners: false,
+                terminal_bump_guard: None,
+            };
+            let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
+            let straight = library
+                .get_primitives_for_angle(angle)
+                .iter()
+                .find(|p| p.end_angle == angle && p.dx.abs().max(p.dy.abs()) == 4)
+                .expect("4-cell straight");
+            // crossing 2 cells after the move start with 0 carried cells:
+            // baseline rejects (2 < 5); predicate 1 accepts (2 >= 2)
+            let start = if angle == 0 { State::new(10, 10, 0) } else { State::new(9, 11, 1) };
+            let mut stats = RouteSearchStats::default();
+            let outcome = crossing_move_outcome(
+                &map,
+                &crossing,
+                CrossingAStarKey {
+                    state: start,
+                    crossed_mask: 0,
+                    next_partner_index: 0,
+                    straight_run_cells: 0,
+                    pending_after_crossing_cells: 0,
+                    pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                    pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+                },
+                start,
+                straight,
+                true,
+                5,
+                5,
+                2,
+                None,
+                &partner_index_by_id,
+                &mut stats,
+            );
+            assert!(outcome.is_none(), "angle {angle}: baseline demands 5 counted cells before a crossing (margin rejects {})", stats.crossing_reject_margin);
+        }
+    }
+
+    /// Row 3: partner straight around the crossing point measured on the
+    /// raw polyline. Baseline: 5 cells to any corner. Predicate 1: 5 to a
+    /// 90-degree corner (2 + trim 3), 4 to a 45-degree corner (2 + 1.24).
+    #[test]
+    fn matrix_row3_partner_margin_on_the_raw_polyline() {
+        let cases = [
+            ("90deg corner, 4 cells before it", vec![(2, 10), (12, 10), (12, 20)], 8, false),
+            ("90deg corner, 5 cells before it", vec![(2, 10), (12, 10), (12, 20)], 7, true),
+            ("45deg corner, 3 cells before it", vec![(2, 10), (12, 10), (20, 18)], 9, false),
+            // predicate 1 target: accept (4 - 1.24 = 2.76 >= 2)
+            ("45deg corner, 4 cells before it", vec![(2, 10), (12, 10), (20, 18)], 8, false),
+        ];
+        for (label, waypoints, cross_x, baseline_accept) in cases {
+            let mut map = ObstacleMap::new(32, 32);
+            let cells = rasterize_waypoints_for_test(&waypoints);
+            assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &cells, &cells, &[], &FxHashSet::default()));
+            let library = primitive_library_bend3();
+            let crossing = CrossingSearchConfig {
+                net_id: 1,
+                partners: vec![CrossingSearchPartner { net_id: 2, waypoints: waypoints.clone(), target_terminal_bump_guard: None }],
+                min_straight_cells: 2,
+                crossing_half_size_cells: 2,
+                bend_runout_cells: 3,
+                crossing_loss: 0.0,
+                require_all_partners: false,
+                terminal_bump_guard: None,
+            };
+            let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
+            let straight = library
+                .get_primitives_for_angle(2)
+                .iter()
+                .find(|p| p.end_angle == 2 && p.dy == 4)
+                .expect("4-cell north straight");
+            let start = State::new(cross_x, 8, 2);
+            let mut stats = RouteSearchStats::default();
+            let outcome = crossing_move_outcome(
+                &map,
+                &crossing,
+                CrossingAStarKey {
+                    state: start,
+                    crossed_mask: 0,
+                    next_partner_index: 0,
+                    straight_run_cells: 5,
+                    pending_after_crossing_cells: 0,
+                    pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                    pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+                },
+                start,
+                straight,
+                true,
+                5,
+                5,
+                2,
+                None,
+                &partner_index_by_id,
+                &mut stats,
+            );
+            assert_eq!(outcome.is_some(), baseline_accept, "{label}: margin rejects {}", stats.crossing_reject_margin);
+        }
+    }
+
+    /// Row 4: a crossing point at a partner segment END with `half_size` 0.
+    /// Baseline rejects via the bend_runout fallback (required 0 + 1 = 1 >
+    /// margin 0). Predicate 1 keeps the rejection through an explicit
+    /// "strictly inside the partner's straight" rule.
+    #[test]
+    fn matrix_row4_crossing_at_a_partner_endpoint_with_half_size_zero() {
+        let mut map = ObstacleMap::new(20, 14);
+        let partner_cells = vec![(8, 6), (8, 7)];
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(1, &partner_cells, &partner_cells, &[], &FxHashSet::default()));
+        let library = primitive_library_no45_bend1();
+        let crossing = CrossingSearchConfig {
+            net_id: 2,
+            partners: vec![CrossingSearchPartner { net_id: 1, waypoints: vec![(8, 6), (8, 7)], target_terminal_bump_guard: None }],
+            min_straight_cells: 1,
+            crossing_half_size_cells: 0,
+            bend_runout_cells: 1,
+            crossing_loss: 3.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let partner_index_by_id: FxHashMap<NetId, usize> = [(1, 0)].into_iter().collect();
+        let straight = library
+            .get_primitives_for_angle(0)
+            .iter()
+            .find(|p| p.end_angle == 0 && p.dx == 4)
+            .expect("4-cell east straight");
+        let start = State::new(6, 6, 0);
+        let mut stats = RouteSearchStats::default();
+        let outcome = crossing_move_outcome(
+            &map,
+            &crossing,
+            CrossingAStarKey {
+                state: start,
+                crossed_mask: 0,
+                next_partner_index: 0,
+                straight_run_cells: 4,
+                pending_after_crossing_cells: 0,
+                pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+            },
+            start,
+            straight,
+            true,
+            1,
+            1,
+            0,
+            None,
+            &partner_index_by_id,
+            &mut stats,
+        );
+        assert!(outcome.is_none(), "the partner's straight has zero extent at its endpoint (8,6)");
+        assert_eq!(stats.crossing_reject_margin, 1);
     }
 
     #[test]
@@ -13710,11 +13628,7 @@ mod tests {
             &mut stats,
         )
         .expect("bend without crossing should remain legal");
-        // Predicate 1 (2026-09-04): the 90-degree arm (radius 2) is arc from
-        // end to end -- 0 REAL straight cells are carried out of the bend
-        // (the old rule counted the arm, 2, and compensated with a
-        // required_margin of half_size + bend radius).
-        assert_eq!(bend_outcome.straight_run_cells, 0);
+        assert_eq!(bend_outcome.straight_run_cells, 2);
 
         let crossing = CrossingSearchConfig {
             net_id: 1,
@@ -13751,16 +13665,14 @@ mod tests {
             State::new(6, 6, 2),
             straight,
             true,
-            // predicate 1: the straight before the crossing is half_size (2)
-            // real cells -- (6,6)->(6,8) after the arc's tangent point
-            2,
-            2,
+            4,
+            4,
             0,
             None,
             &partner_index_by_id,
             &mut stats,
         )
-        .expect("two real straight cells after the arc satisfy the half_size straight-before rule");
+        .expect("terminal bend arm should satisfy pre-crossing runout");
 
         assert_eq!(crossing_outcome.crossing_count, 1);
         assert_eq!(stats.crossing_accepted, 1);
