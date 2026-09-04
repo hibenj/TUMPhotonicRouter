@@ -38,6 +38,8 @@ Restructured 2026-09-04 10:15 (owner): predicate 1 is NOT the same logic differe
 
 ## Decision Log
 
+- (2026-09-04 10:30, owner) PARKED after Step 1: continue on the working baseline first; Step 2 (rows A-D) resumes on the owner's word.
+
 - (2026-09-04) Trim of a turn arm in cells: `ceil(arm_cells * tan(theta/2) - 1e-9)` with theta = 45 or 90 degrees; for make_turn primitives arm = bend radius, so 90 degrees -> arm (0 real cells), 45 degrees with radius 3 -> 2 (1 real cell). Rounding up keeps the kernel conservative against the realized validator (which measures the exact fillet).
 
 ## Outcomes & Retrospective
