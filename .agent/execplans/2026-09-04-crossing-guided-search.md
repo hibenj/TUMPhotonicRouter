@@ -60,7 +60,24 @@ Later ideas, not now: use the plan when routing the EARLIER net of a pair (it kn
   - Context: `CrossingGuidance { planned_pairs, planned_crossing_loss }` on `CrossingContext`, separate from constraints; `PyPhotonicRouter.set_crossing_guidance / clear_crossing_guidance / crossing_guidance_planned_pair_count`; applied in `crossing_search_config` (the one config-build site) as partner overrides. BUG found by the mm8 smoke (identical A* counters, `accepted_planned=0`): `replace_constraints` rebuilt the context and dropped the guidance, and the flow calls `set_crossing_constraints([])` right after `set_crossing_guidance` -> guidance now survives constraint/config replacement (pinned in `guidance_is_soft_and_separate_from_constraints`).
   - Python: `translation/crossing_modes.py` (`normalize_crossing_mode`, `is_lidar_mode`, `is_guided_mode`, `is_collision_mode`; every former `== "lidar-pure"` site now uses the helper so lidar-guided inherits the lidar-pure mechanics exactly); `_build_crossing_plan_info` builds the plan in lidar-guided and hands it over ONLY via `set_crossing_guidance` (constraints stay `[]`), `PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM` (default 0); flow `--crossing-mode lidar-guided`, rejects the combination with `--preplaced-crossing-grids`; stdout line `crossing search: mode=… search_loss=… planned_pairs=… planned_loss=…`; report: each crossing `planned: true/false/None`, metrics `planned_crossing_count / realized_planned_crossing_count / realized_unplanned_crossing_count / plan_unrealized_pair_count`, `Crossing hot path: … accepted_planned=…`. Tests: `test_lidar_guided_builds_the_plan_as_guidance_not_constraints`, `test_lidar_pure_still_ignores_the_topology_plan`, `test_planned_crossing_search_loss_env_override`, `test_lidar_guided_shares_the_lidar_pure_search_penalty`, `test_flow_rejects_guided_search_combined_with_preplaced_crossing_grids`. cargo 443/443, pytest 366 passed / same 10 baseline failures.
   - Smoke mm8 (16:17, same build, back to back): lidar-pure expanded 2 838 915, astar_loop 8.9 s; **lidar-guided expanded 1 566 887 (-45 %), astar_loop 5.0 s, accepted_planned 21 726 of 25 178 accepted moves**; both 111/0/0, 33 crossings (guided: 33 planned / 0 unplanned / 0 unrealized), identical total route length 24 823.0 um, verifications 0 errors.
-- [ ] S1 A/B on the six crossing benchmarks (lidar-pure vs lidar-guided, same build, back to back, 3-minute watchdog): attempts/failures/repairs, crossings planned/unplanned, total length, expanded states, astar_loop, wall.
+- [x] S1 A/B (16:20-17:10, `scratchpad/c1ab.summary` + `c1ab_table.py`, build `a94750b`, same machine, back to back, 3-minute watchdog never fired; every run rc=0, crossing AND photonic verification 0 errors):
+
+| benchmark | mode | att/fail/rep | expanded | A* s | wall s | crossings (planned/unplanned/unrealized) | total length um |
+|---|---|---|---|---|---|---|---|
+| mm8 | lidar-pure | 111/0/0 | 2 838 915 | 8.8 | 14.2 | 33 | 24 823.0 |
+| mm8 | lidar-guided | 111/0/0 | 1 566 887 (-45 %) | 5.1 | 10.4 | 33 (33/0/0) | 24 823.0 |
+| benes8 | lidar-pure | 52/4/0 | 5 786 027 | 33.1 | 35.8 | 16 | 26 159.7 |
+| benes8 | lidar-guided | 52/4/0 | 3 650 808 (-37 %) | 25.2 | 27.9 | 16 (16/0/0) | 26 171.0 |
+| mm16 | lidar-pure | 227/2/1 | 11 951 295 | 32.0 | 42.7 | 65 | 89 534.9 |
+| mm16 | lidar-guided | 227/2/1 | 6 903 182 (-42 %) | 18.5 | 29.4 | 65 (63/2/0) | 89 506.8 |
+| benes16 | lidar-pure | 136/8/0 | 33 011 532 | 161.2 | 165.8 | 88 | 77 177.0 |
+| benes16 | lidar-guided | 136/8/0 | 18 862 560 (-43 %) | 99.1 | 103.7 | 88 (88/0/0) | 77 202.4 |
+| mm32 | lidar-pure | 457/0/5 | 82 225 492 | 268.9 | 303.0 | 121 | 334 671.9 |
+| mm32 | lidar-guided | 457/0/5 | 45 996 755 (-44 %) | 138.9 | 172.6 | 121 (121/0/0) | 334 726.8 |
+| benes32 | lidar-pure | 340/16/2 | 187 628 317 | 977.4 | 991.9 | 416 | 229 985.6 |
+| benes32 | lidar-guided | 340/16/2 | 124 581 451 (-34 %) | 654.7 | 669.5 | 416 (416/0/0) | 230 083.9 |
+
+  Reading: identical attempts/failures/repairs and identical crossing counts on every benchmark (the mm16 braid pair is reported as the 2 unplanned crossings -- exactly what O2 would price); total route length within +-0.05 % (guided is 11-98 um longer on four benchmarks, 28 um shorter on mm16: with free planned crossings A* no longer trades a few cells of detour against the 200 um price); search effort -34 % to -45 % expansions, A* time -24 % (benes8) to -48 % (mm32), benes32 977 -> 655 s. Unplanned crossings remained possible throughout (price 200 um) and none were needed.
 - [ ] S2 (optional): O2 per-pair budget; S3 (optional): O3 plan-driven order.
 
 ## Surprises & Discoveries
@@ -75,4 +92,8 @@ Later ideas, not now: use the plan when routing the EARLIER net of a pair (it kn
 
 ## Outcomes & Retrospective
 
-Not started.
+**Outcome (2026-09-04 17:15, S1 complete):** contribution 1 is in as `--crossing-mode lidar-guided`, opt-in, with the baseline untouched (empty guidance == baseline pricing, pinned by kernel test; lidar-pure verdicts in the A/B identical to this morning's). Effect on all six crossing benchmarks: same routes in every verdict that matters (attempts/failures/repairs, crossing count, both verifications clean), route length within +-0.05 %, and 34-45 % fewer A* expansions (benes32 977 -> 655 s, mm32 269 -> 139 s of search). The plan's prediction quality is the whole story: it is exact on these benchmarks, so paying nothing for planned crossings removes the detour space A* used to explore before accepting each of them.
+
+**Retrospective:** measuring the plan against the realized crossings BEFORE designing settled what the contribution can and cannot claim (not crossing counts; search effort). The one bug (guidance dropped by `replace_constraints`) was caught by the cheapest possible check -- identical A* counters between the two modes on mm8 -- which argues for always printing the effective configuration and a mode-specific counter (`accepted_planned`) in the summary line. `is_lidar_mode` instead of string equality keeps the two lidar modes from drifting apart.
+
+**Open for the owner:** S2 (per-pair budget, O2) would price the mm16 braid inside the search instead of the post-hoc repair; S3 (plan-driven order, O3) is untested. Neither is needed for the S1 claim.
