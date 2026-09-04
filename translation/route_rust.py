@@ -2827,16 +2827,22 @@ class _RouteNetsRustSession:
         """
         raw_net_ids = os.environ.get("PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_NETS", "").strip()
         if raw_net_ids:
-            wanted = {
+            wanted_order = [
                 int(token)
                 for token in raw_net_ids.split(",")
                 if token.strip().isdigit()
-            }
-            hoisted = [job for job in ordered if int(job.net_id) in wanted]
+            ]
+            wanted = set(wanted_order)
+            # the list's own order is binding (ordering experiments, 2026-09-04)
+            rank = {net_id: position for position, net_id in enumerate(wanted_order)}
+            hoisted = sorted(
+                (job for job in ordered if int(job.net_id) in wanted),
+                key=lambda job: rank[int(job.net_id)],
+            )
             rest = [job for job in ordered if int(job.net_id) not in wanted]
             print(
                 f"      - DEBUG route order: {len(hoisted)} nets from the explicit "
-                f"net-id list hoisted to the front (diagnosis only)"
+                f"net-id list hoisted to the front, in list order (diagnosis only)"
             )
             return hoisted + rest
         instance = os.environ.get("PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE", "").strip()
