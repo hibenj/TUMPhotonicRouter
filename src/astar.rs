@@ -3282,6 +3282,25 @@ struct PartnerPathSegment {
     max_x: i32,
     min_y: i32,
     max_y: i32,
+    /// Cells at the segment's start/end consumed by the realized fillet of
+    /// the corner there (`radius * tan(theta/2)`; 0 at a terminal). Predicate
+    /// 1: only the cells outside the fillets are straight, so the partner's
+    /// straight margin around a crossing point subtracts them.
+    trim_start: f64,
+    trim_end: f64,
+}
+
+/// Fillet trim in cells at a polyline corner between two grid headings
+/// (45-degree units): `radius * tan(theta/2)`.
+fn corner_trim_cells(angle_in: u8, angle_out: u8, bend_radius_cells: i32) -> f64 {
+    let delta = ((i32::from(angle_out) - i32::from(angle_in)).rem_euclid(8)).min(
+        (i32::from(angle_in) - i32::from(angle_out)).rem_euclid(8),
+    );
+    if delta == 0 || bend_radius_cells <= 0 {
+        return 0.0;
+    }
+    let theta = f64::from(delta) * std::f64::consts::FRAC_PI_4;
+    f64::from(bend_radius_cells) * (theta / 2.0).tan()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3503,11 +3522,12 @@ fn max_crossing_witness_offset(metadata: &[Vec<PrimitiveCrossingMetadata>]) -> i
 }
 
 fn crossing_partner_path_segments(crossing: &CrossingSearchConfig) -> Vec<Vec<PartnerPathSegment>> {
+    let bend_radius_cells = crossing.bend_runout_cells;
     crossing
         .partners
         .iter()
         .map(|partner| {
-            partner
+            let mut segments: Vec<PartnerPathSegment> = partner
                 .waypoints
                 .windows(2)
                 .filter_map(|segment| {
@@ -3523,9 +3543,17 @@ fn crossing_partner_path_segments(crossing: &CrossingSearchConfig) -> Vec<Vec<Pa
                         max_x: start.0.max(end.0),
                         min_y: start.1.min(end.1),
                         max_y: start.1.max(end.1),
+                        trim_start: 0.0,
+                        trim_end: 0.0,
                     })
                 })
-                .collect()
+                .collect();
+            for i in 1..segments.len() {
+                let trim = corner_trim_cells(segments[i - 1].angle, segments[i].angle, bend_radius_cells);
+                segments[i - 1].trim_end = trim;
+                segments[i].trim_start = trim;
+            }
+            segments
         })
         .collect()
 }
@@ -7294,8 +7322,11 @@ fn crossing_move_outcome_with_segments(
                         stats.crossing_reject_not_perpendicular += 1;
                         return None;
                     }
-                    let partner_margin =
-                        (u * partner_segment.length).min((1.0 - u) * partner_segment.length);
+                    // predicate 1: the partner's straight on each side of the
+                    // crossing point is the polyline distance to the segment
+                    // end minus the fillet trim of the corner there
+                    let partner_margin = (u * partner_segment.length - partner_segment.trim_start)
+                        .min((1.0 - u) * partner_segment.length - partner_segment.trim_end);
                     if partner_margin + 1.0e-9 < f64::from(required_margin) {
                         record_perpendicular_crossing_reject(
                             stats,
@@ -12384,6 +12415,70 @@ mod tests {
                     start, if expect_accept { "accepted (2 real cells before)" } else { "rejected (1 real cell before)" }, stats.crossing_reject_margin
                 );
             }
+        }
+    }
+
+    /// Predicate 1, S2: the partner's straight around the crossing point is
+    /// measured on real cells -- the polyline distance to a corner minus the
+    /// fillet trim there (radius 3: 3 cells at a 90-degree corner, 1.24 at a
+    /// 45-degree corner). A vertical route crosses a horizontal partner run
+    /// that ends in a corner at x=12.
+    #[test]
+    fn partner_margin_subtracts_the_corner_trim() {
+        // (corner angle label, partner waypoints, crossing x, expect accept)
+        let cases = [
+            ("90deg corner, 4 cells before it (4-3=1 < 2)", vec![(2, 10), (12, 10), (12, 20)], 8, false),
+            ("90deg corner, 5 cells before it (5-3=2)", vec![(2, 10), (12, 10), (12, 20)], 7, true),
+            ("45deg corner, 3 cells before it (3-1.24 < 2)", vec![(2, 10), (12, 10), (20, 18)], 9, false),
+            ("45deg corner, 4 cells before it (4-1.24=2.76)", vec![(2, 10), (12, 10), (20, 18)], 8, true),
+        ];
+        for (label, waypoints, cross_x, expect_accept) in cases {
+            let mut map = ObstacleMap::new(32, 32);
+            let cells = rasterize_waypoints_for_test(&waypoints);
+            assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(2, &cells, &cells, &[], &FxHashSet::default()));
+            let library = primitive_library_bend3();
+            let crossing = CrossingSearchConfig {
+                net_id: 1,
+                partners: vec![CrossingSearchPartner { net_id: 2, waypoints: waypoints.clone(), target_terminal_bump_guard: None }],
+                min_straight_cells: 2,
+                crossing_half_size_cells: 2,
+                bend_runout_cells: 3,
+                crossing_loss: 0.0,
+                require_all_partners: false,
+                terminal_bump_guard: None,
+            };
+            let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
+            let straight = library
+                .get_primitives_for_angle(2)
+                .iter()
+                .find(|p| p.end_angle == 2 && p.dy == 4)
+                .expect("4-cell north straight");
+            // start 2 cells below the partner row with 5 carried straight cells
+            let start = State::new(cross_x, 8, 2);
+            let mut stats = RouteSearchStats::default();
+            let outcome = crossing_move_outcome(
+                &map,
+                &crossing,
+                CrossingAStarKey {
+                    state: start,
+                    crossed_mask: 0,
+                    next_partner_index: 0,
+                    straight_run_cells: 5,
+                    pending_after_crossing_cells: 0,
+                    pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
+                    pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
+                },
+                start,
+                straight,
+                true,
+                2,
+                2,
+                2,
+                None,
+                &partner_index_by_id,
+                &mut stats,
+            );
+            assert_eq!(outcome.is_some(), expect_accept, "{label}: margin rejects {}", stats.crossing_reject_margin);
         }
     }
 
