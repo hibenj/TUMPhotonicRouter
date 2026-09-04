@@ -2828,9 +2828,7 @@ class _RouteNetsRustSession:
         raw_net_ids = os.environ.get("PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_NETS", "").strip()
         if raw_net_ids:
             wanted_order = [
-                int(token)
-                for token in raw_net_ids.split(",")
-                if token.strip().isdigit()
+                int(token) for token in raw_net_ids.split(",") if token.strip().isdigit()
             ]
             wanted = set(wanted_order)
             # the list's own order is binding (ordering experiments, 2026-09-04)
@@ -6737,9 +6735,7 @@ class _RouteNetsRustSession:
             "collision",
             "lidar-pure",
         }
-        min_heuristic_weight = float(
-            os.environ.get("PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT", "1.0")
-        )
+        min_heuristic_weight = float(os.environ.get("PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT", "1.0"))
         if (
             self.allow_45_degree_turns
             and not collision_crossing_mode
@@ -6775,9 +6771,7 @@ class _RouteNetsRustSession:
             # magnitude 12.0 has no recorded derivation; the env var lets the
             # neutral-value ladder run without a code edit. Default unchanged.
             min_bend_weight = float(os.environ.get("PHOTONIC_ROUTER_MIN_BEND_WEIGHT", "12.0"))
-            self.astar_cfg.bend_weight = max(
-                float(self.astar_cfg.bend_weight), min_bend_weight
-            )
+            self.astar_cfg.bend_weight = max(float(self.astar_cfg.bend_weight), min_bend_weight)
         effective_heap_tie_breaker = str(self.heap_tie_breaker)
         if self.allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":
             effective_heap_tie_breaker = "larger_g"
@@ -7549,6 +7543,30 @@ class _RouteNetsRustSession:
                     | self.fanout_stub_static_cells
                 )
             )
+        # Chip-boundary keepout: the grid padding outside the routable die
+        # (`StaticObstacleMapData.routable_bbox`) is static, so no route can
+        # leave the chip (e.g. east of the output couplers) and come back.
+        chip_boundary_rects = [
+            (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+            for rect in getattr(obstacle_map, "chip_boundary_rects", ())
+            if len(rect) == 4
+        ]
+        self.chip_boundary_static_rects: list[tuple[int, int, int, int]] = chip_boundary_rects
+        if chip_boundary_rects:
+            if not hasattr(self.router, "add_static_rects"):
+                raise RuntimeError(
+                    "The loaded photonic_router._rust extension does not expose "
+                    "PyPhotonicRouter.add_static_rects. Rebuild it with "
+                    "`maturin develop --release`."
+                )
+            self.router.add_static_rects(chip_boundary_rects)
+            self.blocked_static_rects_for_diagnostics.extend(chip_boundary_rects)
+            if self.verbose_route_diagnostics:
+                print(
+                    "  Chip-boundary keepout: "
+                    f"routable_bbox={getattr(obstacle_map, 'routable_bbox', None)} "
+                    f"rects={chip_boundary_rects}"
+                )
         self._record_pipeline_timing("static_map_handoff", t_static_handoff_start)
 
         full_route_jobs = list(route_jobs)

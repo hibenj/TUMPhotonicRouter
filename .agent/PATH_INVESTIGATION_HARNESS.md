@@ -18,7 +18,11 @@ parallel-neighbour pitch from the GDS), the env-gated diagnostics in
   the build of that commit? Never copy the .so while a flow process runs
   (`ps aux | grep routing_flow.py` first) -- a mapped .so overwritten under a
   running process dies with SIGBUS (exit 135). *Mistake: 12:23, killed the
-  Milestone-0 run.*
+  Milestone-0 run.* The same for the Python modules: no `git stash` /
+  `git checkout` of tracked sources while a flow process runs or a runner
+  script is between benchmarks -- the next process imports whatever is on
+  disk at that moment. *Mistake: 2026-09-04 12:37, a 40 s stash for a lint
+  comparison overlapped the start of multiportmmi_16x16 in a guard ladder.*
 - The exact configuration: the stdout must contain the line
   `Benchmark stable defaults applied: ...` with the expected flags (crossing
   mode, fanout access, iteration cap, congestion weights) and every env var

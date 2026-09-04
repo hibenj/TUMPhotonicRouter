@@ -79,6 +79,12 @@ class StaticObstacleMapData:
     backend: str = "python"
     build_stats: dict[str, Any] | None = None
     rust_blocked_cell_handle: Any | None = None
+    # Chip-boundary keepout: static bands over every grid cell outside
+    # `routable_bbox` (see `resolve_routable_bbox`). Handed to the router in
+    # addition to `blocked_static_rects`; empty until `build_static_obstacle_map`
+    # attaches it.
+    routable_bbox: BBox | None = None
+    chip_boundary_rects: tuple[GridRect, ...] = ()
 
     def rust_static_cells(self) -> List[GridCell]:
         """Return deterministic `(x, y)` cells suitable for `ObstacleMap.add_static_cells`."""
@@ -123,6 +129,14 @@ def build_static_obstacle_map(
     """
 
     config = config or StaticObstacleMapConfig()
+    data = _build_static_obstacle_map_data(component, config)
+    return _attach_chip_boundary_keepout(data, config)
+
+
+def _build_static_obstacle_map_data(
+    component: object,
+    config: StaticObstacleMapConfig,
+) -> StaticObstacleMapData:
     split_layers = _split_obstacle_layers_for_heater_clearance(config)
     if split_layers is not None:
         return _build_static_obstacle_map_split_by_heater_clearance(
@@ -142,6 +156,18 @@ def build_static_obstacle_map(
         return _build_static_obstacle_map_rust(benchmark, config, rust_backend)
 
     return build_static_obstacle_map_python_from_extracted(benchmark, config)
+
+
+def _attach_chip_boundary_keepout(
+    data: StaticObstacleMapData,
+    config: StaticObstacleMapConfig,
+) -> StaticObstacleMapData:
+    routable_bbox = resolve_routable_bbox(data.benchmark, config)
+    return replace(
+        data,
+        routable_bbox=routable_bbox,
+        chip_boundary_rects=chip_boundary_keepout_rects(data.grid, routable_bbox),
+    )
 
 
 def _split_obstacle_layers_for_heater_clearance(
@@ -815,6 +841,79 @@ def expand_bbox_xy(
         xmax + add_x,
         ymax + add_y,
     )
+
+
+def resolve_routable_bbox(
+    benchmark: ExtractedBenchmark,
+    config: StaticObstacleMapConfig,
+) -> BBox:
+    """Return the chip area routes may use, in micrometers.
+
+    An explicit `die_bbox` is routable as a whole. Otherwise the routable area
+    is the component bbox (polygons and ports) plus the explicit
+    `chip_add_x_um`/`chip_add_y_um` margins. The `security_margin_um` padding
+    that `make_grid_spec` adds around it is grid slack for clearances and
+    port stubs, never routing space: without this rule a route could leave
+    the chip east of the output couplers and come back.
+    """
+
+    if config.die_bbox is not None:
+        return config.die_bbox
+    return expand_bbox_xy(
+        benchmark.bbox,
+        chip_add_x_um=config.chip_add_x_um,
+        chip_add_y_um=config.chip_add_y_um,
+    )
+
+
+def _outside_cell_counts(
+    origin: float,
+    grid_size_um: float,
+    cells: int,
+    lo: float,
+    hi: float,
+) -> tuple[int, int]:
+    """Cells on one axis below the cell of `lo` / above the cell of `hi` (count, count).
+
+    `lo`/`hi` snap to cells exactly like port coordinates (`floor_snap_to_grid`),
+    so a port sitting on the routable bbox keeps its cell.
+    """
+
+    below = min(max(floor_snap_to_grid(lo, origin, grid_size_um), 0), cells)
+    first_above = floor_snap_to_grid(hi, origin, grid_size_um) + 1
+    first_above = min(max(first_above, below), cells)
+    return below, cells - first_above
+
+
+def chip_boundary_keepout_rects(grid: GridSpec, routable_bbox: BBox) -> tuple[GridRect, ...]:
+    """Static rects covering every grid cell outside `routable_bbox`.
+
+    At most four disjoint bands (west, east, south, north). The bbox bounds
+    snap to cells like ports do, so a port sitting on the component bbox keeps
+    its cell routable.
+    """
+
+    if grid.width <= 0 or grid.height <= 0:
+        return ()
+    xmin, ymin, xmax, ymax = routable_bbox
+    ox, oy = grid.origin
+    west, east = _outside_cell_counts(ox, grid.grid_size_um, grid.width, xmin, xmax)
+    south, north = _outside_cell_counts(oy, grid.grid_size_um, grid.height, ymin, ymax)
+    x_hi = grid.width - 1
+    y_hi = grid.height - 1
+    rects: list[GridRect] = []
+    if west > 0:
+        rects.append((0, 0, west - 1, y_hi))
+    if east > 0:
+        rects.append((grid.width - east, 0, x_hi, y_hi))
+    inner_x_lo = west
+    inner_x_hi = grid.width - east - 1
+    if inner_x_hi >= inner_x_lo:
+        if south > 0:
+            rects.append((inner_x_lo, 0, inner_x_hi, south - 1))
+        if north > 0:
+            rects.append((inner_x_lo, grid.height - north, inner_x_hi, y_hi))
+    return tuple(rects)
 
 
 def _validate_nonnegative_margin(value: float, name: str) -> float:

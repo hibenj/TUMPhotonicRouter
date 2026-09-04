@@ -198,6 +198,8 @@ class RustRouteDebugArtifacts:
     realization_allow_45_degree_turns: bool = True
     realization_bend_radius_cells: int = 4
     crossing_plan_info: dict[str, object] | None = None
+    # Chip-boundary keepout: the die routes may use (`StaticObstacleMapData.routable_bbox`).
+    routable_bbox_um: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)

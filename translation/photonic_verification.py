@@ -103,6 +103,7 @@ def verify_photonic_routing(
     min_crossing_component_route_overlap_area_um2: float = 0.25,
     min_crossing_component_overlap_area_um2: float = 0.25,
     check_endpoint_connectivity: bool = True,
+    routable_bbox_um: tuple[float, float, float, float] | None = None,
 ) -> PhotonicVerificationResult:
     """Verify routed optical topology and realized waveguide geometry.
 
@@ -257,6 +258,12 @@ def verify_photonic_routing(
         issues,
         record_by_key.values(),
     )
+    outside_chip_route_count = _verify_routes_inside_routable_bbox(
+        issues,
+        record_by_key.values(),
+        routable_bbox_um=routable_bbox_um,
+        tolerance_um=0.5 * float(realization_grid_spec[2]) + 1e-6,
+    )
 
     return PhotonicVerificationResult(
         issues=tuple(issues),
@@ -269,6 +276,7 @@ def verify_photonic_routing(
             "crossing_component_route_overlap_count": (crossing_component_route_overlap_count),
             "crossing_component_overlap_count": crossing_component_overlap_count,
             "self_intersecting_route_count": self_intersecting_route_count,
+            "outside_chip_route_count": outside_chip_route_count,
         },
     )
 
@@ -781,6 +789,66 @@ def _verify_self_intersecting_routes(
             )
         )
     return self_intersecting_route_count
+
+
+def _verify_routes_inside_routable_bbox(
+    issues: list[PhotonicVerificationIssue],
+    records: Iterable[RoutedNetRecord],
+    *,
+    routable_bbox_um: tuple[float, float, float, float] | None,
+    tolerance_um: float,
+) -> int:
+    """Every realized centerline must stay inside the routable die.
+
+    Defense in depth for the chip-boundary keepout
+    (`static_obstacle_builder.chip_boundary_keepout_rects`): the router marks
+    the grid padding outside `routable_bbox` static, this checks the final
+    centerlines against the same bbox. `tolerance_um` is half a grid cell: the
+    keepout snaps the bbox bounds to cells like ports do, so a centerline may
+    legitimately sit on the center of the cell that holds the bound (at most
+    half a cell beyond it), never further. Found necessary by a
+    real layout: a multiportmmi_32x32 route ran east of the output couplers
+    through the 20 um `security_margin_um` padding and came back.
+    """
+    if routable_bbox_um is None:
+        return 0
+    xmin, ymin, xmax, ymax = (float(value) for value in routable_bbox_um)
+    outside_route_count = 0
+    for record in records:
+        centerline = record.corrected_centerline_um
+        if not centerline:
+            continue
+        offending = None
+        for point in centerline:
+            x, y = float(point[0]), float(point[1])
+            if (
+                x < xmin - tolerance_um
+                or x > xmax + tolerance_um
+                or y < ymin - tolerance_um
+                or y > ymax + tolerance_um
+            ):
+                offending = (x, y)
+                break
+        if offending is None:
+            continue
+        outside_route_count += 1
+        issues.append(
+            PhotonicVerificationIssue(
+                code="route_outside_chip",
+                message=(
+                    f"Route for net {record.net_name!r} leaves the routable die "
+                    f"at {offending} (bbox {routable_bbox_um})."
+                ),
+                net_name=record.net_name,
+                details={
+                    "net_id": record.net_id,
+                    "point_um": offending,
+                    "routable_bbox_um": tuple(routable_bbox_um),
+                    "tolerance_um": tolerance_um,
+                },
+            )
+        )
+    return outside_route_count
 
 
 def _polyline_self_intersects_um(

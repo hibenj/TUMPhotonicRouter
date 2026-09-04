@@ -12686,6 +12686,21 @@ impl PyPhotonicRouter {
         *self.last_meander_registration_profile.borrow_mut() = Some(profile);
         Ok((indices, open_counts, unique_route_cell_count))
     }
+    /// Add compact static rectangles on top of the current static map (rects
+    /// and cells alike stay in place). Used for the chip-boundary keepout.
+    fn add_static_rects(&mut self, rects: Vec<(i32, i32, i32, i32)>) {
+        self.invalidate_meander_base_prefix();
+        let obstacle_rects: Vec<GridRect> = rects
+            .into_iter()
+            .map(|(x_min, y_min, x_max, y_max)| GridRect {
+                x_min,
+                y_min,
+                x_max,
+                y_max,
+            })
+            .collect();
+        self.obstacle_map.add_static_rects(&obstacle_rects);
+    }
     fn set_static_rects(&mut self, rects: Vec<(i32, i32, i32, i32)>) {
         self.clear_static_cells();
         let obstacle_rects: Vec<GridRect> = rects

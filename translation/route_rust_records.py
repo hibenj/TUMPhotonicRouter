@@ -466,4 +466,12 @@ def build_route_debug_artifacts(
         realization_grid_spec=realization_grid_spec,
         realization_allow_45_degree_turns=allow_45_degree_turns,
         realization_bend_radius_cells=bend_radius_cells,
+        routable_bbox_um=_routable_bbox_from_map(obstacle_map),
     )
+
+
+def _routable_bbox_from_map(obstacle_map: object) -> tuple[float, float, float, float] | None:
+    bbox = getattr(obstacle_map, "routable_bbox", None)
+    if bbox is None or len(bbox) != 4:
+        return None
+    return (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))

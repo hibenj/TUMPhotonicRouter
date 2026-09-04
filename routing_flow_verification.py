@@ -100,6 +100,7 @@ def verify_and_attach_photonic_reports(
         ),
         check_route_coverage=route_coverage_check_enabled,
         check_endpoint_connectivity=True,
+        routable_bbox_um=getattr(debug_artifacts, "routable_bbox_um", None),
     )
     photonic_report = _write_photonic_verification_report(
         benchmark_name=benchmark_name,

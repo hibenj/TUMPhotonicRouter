@@ -23,6 +23,7 @@ from photonic_router.static_obstacle_builder import (
     build_static_obstacle_map_python_from_extracted,
     build_port_open_cells,
     build_static_obstacle_map,
+    chip_boundary_keepout_rects,
     expand_bbox,
     grid_cell_center,
     grid_to_svg,
@@ -30,6 +31,7 @@ from photonic_router.static_obstacle_builder import (
     make_grid_spec,
     physical_to_grid,
     rasterize_polygon,
+    resolve_routable_bbox,
 )
 
 get_generic_pdk().activate()
@@ -646,3 +648,80 @@ def test_rust_obstacle_builder_compat_with_legacy_signature_keeps_default_behavi
 
     assert (1, 1) in default_data.blocked_cells
     assert (1, 1) in strict_data.blocked_cells
+
+
+def test_chip_boundary_keepout_covers_only_cells_outside_the_routable_bbox():
+    # 2 um grid, security margin 20 um => 10 padding cells per side; the
+    # component bbox is 40 x 20 um => 20 x 10 inner cells.
+    benchmark = ExtractedBenchmark(
+        polygons=[[(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)]],
+        ports=[],
+        bbox=(0.0, 0.0, 40.0, 20.0),
+    )
+    config = StaticObstacleMapConfig(grid_size_um=2.0, security_margin_um=20.0)
+    grid = make_grid_spec(benchmark, grid_size_um=2.0, security_margin_um=20.0)
+    assert (grid.width, grid.height) == (40, 30)
+
+    routable = resolve_routable_bbox(benchmark, config)
+    assert routable == benchmark.bbox
+    rects = chip_boundary_keepout_rects(grid, routable)
+    # The bbox bounds snap to cells like ports (floor): the cells holding
+    # (0, 0) and (40, 20) stay routable, everything beyond them is static.
+    assert physical_to_grid(0.0, 0.0, grid) == (10, 10)
+    assert physical_to_grid(40.0, 20.0, grid) == (30, 20)
+    assert rects == (
+        (0, 0, 9, 29),  # west band
+        (31, 0, 39, 29),  # east band
+        (10, 0, 30, 9),  # south band (inner x range only: bands are disjoint)
+        (10, 21, 30, 29),  # north band
+    )
+    covered = {
+        (x, y) for x0, y0, x1, y1 in rects for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)
+    }
+    assert len(covered) == 40 * 30 - 21 * 11
+    for x in range(grid.width):
+        for y in range(grid.height):
+            outside = x < 10 or x > 30 or y < 10 or y > 20
+            assert ((x, y) in covered) == outside
+
+    # chip_add_* widen the routable area; the security margin never does.
+    widened = StaticObstacleMapConfig(
+        grid_size_um=2.0, security_margin_um=20.0, chip_add_x_um=0.0, chip_add_y_um=4.0
+    )
+    grid_y = make_grid_spec(benchmark, grid_size_um=2.0, security_margin_um=20.0, chip_add_y_um=4.0)
+    rects_y = chip_boundary_keepout_rects(grid_y, resolve_routable_bbox(benchmark, widened))
+    assert rects_y == ((0, 0, 9, 33), (31, 0, 39, 33), (10, 0, 30, 9), (10, 25, 30, 33))
+
+    # An explicit die bbox is routable as a whole: no keepout.
+    explicit = StaticObstacleMapConfig(grid_size_um=2.0, die_bbox=(-5.0, -5.0, 45.0, 25.0))
+    grid_e = make_grid_spec(
+        benchmark, grid_size_um=2.0, security_margin_um=0.0, die_bbox=explicit.die_bbox
+    )
+    assert resolve_routable_bbox(benchmark, explicit) == explicit.die_bbox
+    assert chip_boundary_keepout_rects(grid_e, explicit.die_bbox) == ()
+
+
+def test_chip_boundary_keepout_keeps_a_port_on_the_component_edge_routable():
+    # A waveguide whose output port sits exactly on the east edge of the
+    # component bbox: the port cell (center 1 um inside) must not be part of
+    # the boundary bands, and the built map must carry the bands.
+    component = gf.Component("chip_boundary_test")
+    component.add_polygon([(0.0, -0.5), (20.0, -0.5), (20.0, 0.5), (0.0, 0.5)], layer=(1, 0))
+    component.add_port(
+        "o1", center=(20.0, 0.0), width=1.0, orientation=0, layer=(1, 0), port_type="optical"
+    )
+    config = StaticObstacleMapConfig(grid_size_um=2.0, security_margin_um=20.0, clearance_um=0.0)
+    data = build_static_obstacle_map(component, config)
+
+    assert data.routable_bbox == (0.0, -0.5, 20.0, 0.5)
+    assert data.chip_boundary_rects
+    port_cell = physical_to_grid(20.0, 0.0, data.grid)
+    boundary_cells = {
+        (x, y)
+        for x0, y0, x1, y1 in data.chip_boundary_rects
+        for x in range(x0, x1 + 1)
+        for y in range(y0, y1 + 1)
+    }
+    assert port_cell not in boundary_cells
+    east_of_port = (port_cell[0] + 1, port_cell[1])
+    assert east_of_port in boundary_cells

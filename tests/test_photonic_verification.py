@@ -17,6 +17,7 @@ from translation.photonic_verification import (
     _verify_cross_net_route_overlaps,
     _verify_record_coverage,
     _verify_route_obstacle_overlaps,
+    _verify_routes_inside_routable_bbox,
     _verify_self_intersecting_routes,
     _polyline_self_intersects_um,
     verify_photonic_routing,
@@ -506,18 +507,14 @@ def test_polyline_self_intersects_um_accepts_simple_paths():
     assert _polyline_self_intersects_um(((0.0, 0.0),)) is None
     assert _polyline_self_intersects_um(((0.0, 0.0), (5.0, 0.0), (5.0, 5.0))) is None
     assert (
-        _polyline_self_intersects_um(
-            ((0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (8.0, 4.0), (8.0, 8.0))
-        )
+        _polyline_self_intersects_um(((0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (8.0, 4.0), (8.0, 8.0)))
         is None
     )
 
 
 def test_polyline_self_intersects_um_rejects_a_genuine_crossing():
 
-    point = _polyline_self_intersects_um(
-        ((0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0))
-    )
+    point = _polyline_self_intersects_um(((0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0)))
     assert point is not None
     assert point == (5.0, 5.0)
 
@@ -592,3 +589,53 @@ def test_photonic_verifier_allows_clean_route_with_no_self_intersection():
 
     assert count == 0
     assert issues == []
+
+
+def test_photonic_verifier_reports_route_outside_the_routable_die():
+    # Shape of the multiportmmi_32x32 finding: the chip ends at x = 11424.164 um,
+    # the route detours through the padding east of the output couplers.
+    issues: list[PhotonicVerificationIssue] = []
+    bbox = (0.0, 1622.125, 11424.164, 4778.125)
+    record = _routed_record(
+        net_name="n_430",
+        centerline=((11000.0, 3300.0), (11425.25, 3300.0), (11425.25, 3200.0), (11400.0, 3200.0)),
+    )
+
+    count = _verify_routes_inside_routable_bbox(
+        issues, [record], routable_bbox_um=bbox, tolerance_um=1.0
+    )
+
+    assert count == 1
+    assert [issue.code for issue in issues] == ["route_outside_chip"]
+    assert issues[0].net_name == "n_430"
+    assert issues[0].severity == "error"
+    assert issues[0].details["point_um"] == (11425.25, 3300.0)
+
+
+def test_photonic_verifier_allows_centerline_in_the_cell_holding_the_bound():
+    # A centerline on the center of the cell that holds the bound (at most half
+    # a cell beyond it) is legal; without a routable bbox nothing is checked.
+    issues: list[PhotonicVerificationIssue] = []
+    bbox = (0.0, 0.0, 100.0, 50.0)
+    inside = _routed_record(centerline=((0.5, 25.0), (100.9, 25.0), (100.9, 50.9)))
+    outside = _routed_record(net_name="n2", centerline=((0.5, 25.0), (101.1, 25.0)))
+
+    assert (
+        _verify_routes_inside_routable_bbox(
+            issues, [inside], routable_bbox_um=bbox, tolerance_um=1.0
+        )
+        == 0
+    )
+    assert issues == []
+    assert (
+        _verify_routes_inside_routable_bbox(
+            issues, [outside], routable_bbox_um=None, tolerance_um=1.0
+        )
+        == 0
+    )
+    assert (
+        _verify_routes_inside_routable_bbox(
+            issues, [outside], routable_bbox_um=bbox, tolerance_um=1.0
+        )
+        == 1
+    )
