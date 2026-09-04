@@ -4712,6 +4712,18 @@ mod unified_kernel {
                 if let Some(search_loop_start) = search_loop_start.as_ref() {
                     stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
                 }
+                // Harness: probe cells report on SUCCESS too (where did the
+                // search go / not go), not only on failure.
+                if !probe_cells.is_empty() {
+                    eprintln!("probe-success seq={} goal=({},{},{})", search_seq, state.x, state.y, state.angle);
+                    print_probe_cells_report(search_seq, obstacle_map, port_open_cells, &dense_grid);
+                    for (i, cell) in probe_cells.iter().enumerate() {
+                        let c = probe_ring[i];
+                        if c.iter().any(|v| *v > 0) {
+                            eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
+                        }
+                    }
+                }
                 if config.collect_detailed_timing {
                     let reconstruction_start = Instant::now();
                     let mut route = reconstruct_route_unified(
