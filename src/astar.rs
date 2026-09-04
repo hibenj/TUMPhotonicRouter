@@ -3711,21 +3711,6 @@ mod unified_kernel {
             *self == Self::default()
         }
 
-        /// Tier-1 eligibility: no crossing bookkeeping at all. `straight_run_cells`
-        /// is deliberately NOT part of this -- Tier-1 states track it in the
-        /// dense side array (see the module doc). Comparing the whole struct
-        /// (`is_default`) sent every state with a straight run > 0 to Tier 2,
-        /// i.e. the crossing-mode search ran almost entirely on the hashed
-        /// tier (found in the 2026-09-04 predicate-1 timing: ~2.3x
-        /// re-expansions per cell).
-        fn is_tier1(&self) -> bool {
-            self.crossed_mask == 0
-                && self.next_partner_index == 0
-                && self.pending_after_crossing_cells == 0
-                && self.pending_after_crossing_angle == NO_PENDING_CROSSING_ANGLE
-                && self.pending_after_crossing_partner_index == NO_PENDING_CROSSING_PARTNER_INDEX
-        }
-
         fn to_key(self, state: State) -> CrossingAStarKey {
             CrossingAStarKey {
                 state,
@@ -4974,7 +4959,7 @@ mod unified_kernel {
                 // parent.
                 if footprint_free
                     && halo_free
-                    && current_extension.is_tier1()
+                    && current_extension.is_default()
                     && matches!(current_ref, UnifiedOpenRef::Dense(_))
                 {
                     // Tier 1: identical fast path to today's plain kernel --
