@@ -77,6 +77,11 @@ impl CrossingPair {
 pub struct CrossingGuidance {
     planned_pairs: FxHashSet<CrossingPair>,
     pub planned_crossing_loss: f64,
+    /// S2: the plan predicts exactly one crossing per pair -- only the first
+    /// crossing of a planned partner on a path is discounted, a second one
+    /// (a braid) pays the full search price. `false` = every crossing of a
+    /// planned partner is discounted (S1 behaviour).
+    pub single_discounted_crossing_per_pair: bool,
 }
 
 impl CrossingGuidance {
@@ -87,7 +92,13 @@ impl CrossingGuidance {
                 .map(|&(a, b)| CrossingPair::new(a, b))
                 .collect(),
             planned_crossing_loss,
+            single_discounted_crossing_per_pair: true,
         }
+    }
+
+    pub fn with_single_discounted_crossing_per_pair(mut self, enabled: bool) -> Self {
+        self.single_discounted_crossing_per_pair = enabled;
+        self
     }
 
     #[inline]
@@ -318,7 +329,8 @@ mod tests {
         assert!(guidance.is_planned_pair(5, 3));
         assert!(!guidance.is_planned_pair(3, 7));
         assert_eq!(guidance.planned_crossing_loss, 0.0);
-        // guidance never becomes a constraint / expectation / whitelist
+        assert!(guidance.single_discounted_crossing_per_pair); // S2 default
+                                                               // guidance never becomes a constraint / expectation / whitelist
         assert_eq!(context.expected_crossing_count(5), 0);
         assert!(!context.has_expected_pair(5, 3));
         assert!(context.constraints().is_empty());
@@ -335,5 +347,15 @@ mod tests {
 
         context.clear_guidance();
         assert!(context.guidance().is_none());
+
+        context.set_guidance(
+            CrossingGuidance::new(&[(1, 2)], 0.0).with_single_discounted_crossing_per_pair(false),
+        );
+        assert!(
+            !context
+                .guidance()
+                .unwrap()
+                .single_discounted_crossing_per_pair
+        );
     }
 }

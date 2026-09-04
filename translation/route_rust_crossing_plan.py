@@ -34,6 +34,10 @@ COLLISION_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_
 # unplanned ones keep `COLLISION_CROSSING_SEARCH_LOSS`.
 DEFAULT_PLANNED_CROSSING_SEARCH_LOSS_UM = 0.0
 PLANNED_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM"
+# S2: how many crossings of one planned pair are discounted: 1 (default, the
+# plan predicts exactly one per pair; a second one is a braid and pays the
+# full price) or 0 = unlimited (S1 behaviour).
+PLANNED_CROSSING_BUDGET_ENV = "PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET"
 
 
 def _routed_records_by_net_id(
@@ -153,6 +157,20 @@ def _effective_planned_crossing_search_loss() -> float:
     if not math.isfinite(value) or value < 0.0:
         raise ValueError(f"{PLANNED_CROSSING_SEARCH_LOSS_ENV} must be finite and non-negative")
     return value
+
+
+def _effective_single_discounted_crossing_per_pair() -> bool:
+    """S2 switch: True = one discounted crossing per planned pair (default)."""
+
+    raw = os.environ.get(PLANNED_CROSSING_BUDGET_ENV)
+    if raw is None:
+        return True
+    value = raw.strip()
+    if value == "1":
+        return True
+    if value == "0":
+        return False
+    raise ValueError(f"{PLANNED_CROSSING_BUDGET_ENV} must be 0 (unlimited) or 1 (one per pair)")
 
 
 def _build_crossing_plan_info(
@@ -332,10 +350,12 @@ def _build_crossing_plan_info(
             if record.get("loaded")
         ]
         planned_loss = _effective_planned_crossing_search_loss()
-        router.set_crossing_guidance(planned_pairs, planned_loss)
+        single_per_pair = _effective_single_discounted_crossing_per_pair()
+        router.set_crossing_guidance(planned_pairs, planned_loss, single_per_pair)
         info["guidance"] = {
             "planned_pair_count": len(planned_pairs),
             "planned_crossing_loss": float(planned_loss),
+            "single_discounted_crossing_per_pair": bool(single_per_pair),
         }
         constraints = []
     router.set_crossing_constraints(constraints)

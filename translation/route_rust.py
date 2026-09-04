@@ -7134,6 +7134,7 @@ class _RouteNetsRustSession:
             guidance_text = (
                 f" planned_pairs={guidance['planned_pair_count']}"
                 f" planned_loss={guidance['planned_crossing_loss']:.1f}"
+                f" budget={'1/pair' if guidance.get('single_discounted_crossing_per_pair', True) else 'unlimited'}"
                 if isinstance(guidance, dict)
                 else ""
             )

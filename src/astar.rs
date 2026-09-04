@@ -210,6 +210,13 @@ pub struct CrossingSearchPartner {
     /// when set. A planned pair (topology plan) gets its own, normally zero,
     /// price; `None` keeps the baseline price, so lidar-pure is unchanged.
     pub crossing_loss_override: Option<f64>,
+    /// S2 of contribution 1: the plan predicts exactly ONE crossing per
+    /// planned pair, so only the first crossing of this partner on a path
+    /// gets `crossing_loss_override`; every further one (a braid) pays
+    /// `CrossingSearchConfig::crossing_loss`. Tracked per partner in the
+    /// search key (`crossed_mask`, one bit per budgeted partner, at most 64
+    /// -- partners beyond that stay unbudgeted).
+    pub single_discounted_crossing: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -314,6 +321,9 @@ pub struct RouteSearchStats {
     /// Accepted crossings with a partner carrying a `crossing_loss_override`
     /// (a planned pair in crossing-guided mode).
     pub crossing_accepted_planned: usize,
+    /// Accepted crossings with a budgeted planned partner that was already
+    /// crossed on the path (priced at the full `crossing_loss`).
+    pub crossing_accepted_over_budget: usize,
     pub crossing_reject_unmatched_owner: usize,
     pub crossing_reject_unmatched_centerline: usize,
     pub crossing_reject_unmatched_footprint: usize,
@@ -3798,6 +3808,7 @@ mod unified_kernel {
         pub(super) reservation_open_cells: Option<&'a FxHashSet<CellKey>>,
         pub(super) port_open_cells: Option<&'a FxHashSet<CellKey>>,
         pub(super) partner_index_by_id: &'a FxHashMap<NetId, usize>,
+        pub(super) partner_budget_bits: &'a [u64],
         pub(super) partner_segments: &'a [Vec<PartnerPathSegment>],
         pub(super) dynamic_core_owners: &'a DenseDynamicCoreOwnerGrid,
         pub(super) ignore_dynamic_obstacles: bool,
@@ -3880,6 +3891,7 @@ mod unified_kernel {
                     self.reservation_margin,
                     self.reservation_open_cells.or(self.port_open_cells),
                     self.partner_index_by_id,
+                    self.partner_budget_bits,
                     self.partner_segments,
                     self.dynamic_core_owners,
                     primitive_crossing,
@@ -3933,6 +3945,7 @@ mod unified_kernel {
         dense_grid: DenseRoutingGrid,
         dynamic_core_owners: DenseDynamicCoreOwnerGrid,
         partner_index_by_id: FxHashMap<NetId, usize>,
+        partner_budget_bits: Vec<u64>,
         partner_segments: Vec<Vec<PartnerPathSegment>>,
         required_margin: i32,
         capped_required_margin: i32,
@@ -3998,6 +4011,7 @@ mod unified_kernel {
                 dense_grid,
                 dynamic_core_owners,
                 partner_index_by_id,
+                partner_budget_bits: crossing_partner_budget_bits(crossing),
                 partner_segments,
                 required_margin,
                 capped_required_margin,
@@ -4026,6 +4040,7 @@ mod unified_kernel {
                 reservation_open_cells,
                 port_open_cells,
                 partner_index_by_id: &self.partner_index_by_id,
+                partner_budget_bits: &self.partner_budget_bits,
                 partner_segments: &self.partner_segments,
                 dynamic_core_owners: &self.dynamic_core_owners,
                 ignore_dynamic_obstacles: config.ignore_dynamic_obstacles,
@@ -6631,6 +6646,7 @@ mod unified_kernel {
                     waypoints: vec![(8, 2), (8, 10)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 }],
                 min_straight_cells: 1,
                 crossing_half_size_cells: 0,
@@ -6743,6 +6759,7 @@ mod unified_kernel {
                     waypoints: vec![(1, 1), (1, 2)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 }],
                 min_straight_cells: 1,
                 crossing_half_size_cells: 0,
@@ -7007,6 +7024,7 @@ fn crossing_move_outcome(
         reservation_margin,
         port_open_cells,
         partner_index_by_id,
+        &crossing_partner_budget_bits(crossing),
         &partner_segments,
         &dynamic_core_owners,
         &primitive_crossing,
@@ -7190,6 +7208,27 @@ fn record_perpendicular_crossing_reject(
     );
 }
 
+/// One `crossed_mask` bit per partner with `single_discounted_crossing`
+/// (0 for the others and for budgeted partners beyond the 64th). In lidar
+/// modes `crossed_mask` is otherwise unused (window-mode partner tracking is
+/// off), so the budget bits can live in the same key field.
+fn crossing_partner_budget_bits(crossing: &CrossingSearchConfig) -> Vec<u64> {
+    let mut next_bit = 0u32;
+    crossing
+        .partners
+        .iter()
+        .map(|partner| {
+            if partner.single_discounted_crossing && next_bit < 64 {
+                let bit = 1u64 << next_bit;
+                next_bit += 1;
+                bit
+            } else {
+                0
+            }
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn crossing_move_outcome_with_segments(
     obstacle_map: &ObstacleMap,
@@ -7203,6 +7242,7 @@ fn crossing_move_outcome_with_segments(
     reservation_margin: i32,
     port_open_cells: Option<&FxHashSet<CellKey>>,
     partner_index_by_id: &FxHashMap<NetId, usize>,
+    partner_budget_bits: &[u64],
     partner_segments: &[Vec<PartnerPathSegment>],
     dynamic_core_owners: &DenseDynamicCoreOwnerGrid,
     primitive_crossing: &PrimitiveCrossingMetadata,
@@ -7883,9 +7923,20 @@ fn crossing_move_outcome_with_segments(
         }
         crossing_count += 1;
         stats.crossing_accepted += 1;
+        let budget_bit = partner_budget_bits
+            .get(intersection.partner_idx)
+            .copied()
+            .unwrap_or(0);
         match partner.crossing_loss_override {
+            Some(_) if budget_bit != 0 && crossed_mask & budget_bit != 0 => {
+                // S2: the planned crossing with this partner was already
+                // spent on this path -- a braid pays the full price.
+                crossing_cost += crossing.crossing_loss;
+                stats.crossing_accepted_over_budget += 1;
+            }
             Some(price) => {
                 crossing_cost += price;
+                crossed_mask |= budget_bit;
                 stats.crossing_accepted_planned += 1;
             }
             None => crossing_cost += crossing.crossing_loss,
@@ -9084,6 +9135,7 @@ mod tests {
                 waypoints: vec![(8, 2), (8, 10)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 1,
             crossing_half_size_cells: 0,
@@ -10100,6 +10152,7 @@ mod tests {
                 waypoints: vec![(12, 12), (14, 12)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 2,
             crossing_half_size_cells: 0,
@@ -11226,6 +11279,7 @@ mod tests {
                 waypoints: vec![(10, 10), (25, 25)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 0,
@@ -11619,6 +11673,7 @@ mod tests {
                 waypoints: vec![(8, 2), (8, 10)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 1,
             crossing_half_size_cells: 0,
@@ -11712,12 +11767,14 @@ mod tests {
                     waypoints: vec![(7, 2), (7, 10)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: Some(0.0),
+                    single_discounted_crossing: false,
                 },
                 CrossingSearchPartner {
                     net_id: 2,
                     waypoints: vec![(13, 2), (13, 10)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
             ],
             min_straight_cells: 1,
@@ -11738,6 +11795,106 @@ mod tests {
         assert!((route.total_cost - (route.total_length_um + 3.0)).abs() < 1e-9);
     }
 
+    /// S2 fixture: ONE planned partner (net 1) shaped like a U -- down at
+    /// x=7, along y=10, up at x=13 -- so the straight route on y=6 crosses
+    /// the same partner twice (a braid in the plan's eyes: the plan predicts
+    /// exactly one crossing per pair).
+    fn guided_budget_fixture() -> (ObstacleMap, PrimitiveLibrary) {
+        let mut map = ObstacleMap::new(24, 14);
+        for x in 3..=17 {
+            map.add_static_cell(x, 5);
+            map.add_static_cell(x, 7);
+        }
+        let mut cells: Vec<(i32, i32)> = (2..=10).map(|y| (7, y)).collect();
+        cells.extend((8..=12).map(|x| (x, 10)));
+        cells.extend((2..=10).rev().map(|y| (13, y)));
+        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+            1,
+            &cells,
+            &cells,
+            &[],
+            &FxHashSet::default()
+        ));
+        (map, primitive_library_no45_bend1())
+    }
+
+    fn u_partner(single_discounted_crossing: bool) -> CrossingSearchPartner {
+        CrossingSearchPartner {
+            net_id: 1,
+            waypoints: vec![(7, 2), (7, 10), (13, 10), (13, 2)],
+            target_terminal_bump_guard: None,
+            crossing_loss_override: Some(0.0),
+            single_discounted_crossing,
+        }
+    }
+
+    fn budget_config(partner: CrossingSearchPartner) -> CrossingSearchConfig {
+        CrossingSearchConfig {
+            net_id: 3,
+            partners: vec![partner],
+            min_straight_cells: 1,
+            crossing_half_size_cells: 0,
+            bend_runout_cells: 0,
+            crossing_loss: 3.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        }
+    }
+
+    #[test]
+    fn second_crossing_of_a_budgeted_planned_partner_pays_the_full_price() {
+        let (map, library) = guided_budget_fixture();
+        let route = guided_pricing_route(&map, &library, &budget_config(u_partner(true)));
+        assert_eq!(route.compressed_waypoints, vec![(2, 6), (18, 6)]);
+        // first crossing of net 1 discounted (0), the second one is a braid: 3.0
+        assert!((route.total_cost - (route.total_length_um + 3.0)).abs() < 1e-9);
+        assert!(route.stats.crossing_accepted_over_budget >= 1);
+    }
+
+    #[test]
+    fn without_the_budget_every_crossing_of_a_planned_partner_is_discounted() {
+        let (map, library) = guided_budget_fixture();
+        let route = guided_pricing_route(&map, &library, &budget_config(u_partner(false)));
+        assert_eq!(route.compressed_waypoints, vec![(2, 6), (18, 6)]);
+        assert!((route.total_cost - route.total_length_um).abs() < 1e-9);
+        assert_eq!(route.stats.crossing_accepted_over_budget, 0);
+    }
+
+    #[test]
+    fn budget_is_per_partner_two_planned_partners_are_both_discounted() {
+        let (map, library) = guided_pricing_fixture();
+        let crossing = CrossingSearchConfig {
+            net_id: 3,
+            partners: vec![
+                CrossingSearchPartner {
+                    net_id: 1,
+                    waypoints: vec![(7, 2), (7, 10)],
+                    target_terminal_bump_guard: None,
+                    crossing_loss_override: Some(0.0),
+                    single_discounted_crossing: true,
+                },
+                CrossingSearchPartner {
+                    net_id: 2,
+                    waypoints: vec![(13, 2), (13, 10)],
+                    target_terminal_bump_guard: None,
+                    crossing_loss_override: Some(0.0),
+                    single_discounted_crossing: true,
+                },
+            ],
+            min_straight_cells: 1,
+            crossing_half_size_cells: 0,
+            bend_runout_cells: 0,
+            crossing_loss: 3.0,
+            require_all_partners: false,
+            terminal_bump_guard: None,
+        };
+        let route = guided_pricing_route(&map, &library, &crossing);
+        // both first crossings are discounted on the final path (the
+        // search-wide over-budget counter may still tick on explored
+        // detours that re-cross a partner outside the corridor)
+        assert!((route.total_cost - route.total_length_um).abs() < 1e-9);
+    }
+
     #[test]
     fn partners_without_price_override_price_like_the_baseline() {
         let (map, library) = guided_pricing_fixture();
@@ -11749,12 +11906,14 @@ mod tests {
                     waypoints: vec![(7, 2), (7, 10)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
                 CrossingSearchPartner {
                     net_id: 2,
                     waypoints: vec![(13, 2), (13, 10)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
             ],
             min_straight_cells: 1,
@@ -11832,18 +11991,21 @@ mod tests {
                 waypoints: vec![(364, 168), (444, 168), (553, 59), (634, 59)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             },
             CrossingSearchPartner {
                 net_id: 12,
                 waypoints: vec![(364, 278), (444, 278), (554, 168), (634, 168)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             },
             CrossingSearchPartner {
                 net_id: 10,
                 waypoints: vec![(364, 388), (414, 388), (627, 175), (634, 169)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             },
         ];
         let mut committed_partner_ids = FxHashSet::default();
@@ -11943,12 +12105,14 @@ mod tests {
                 waypoints: vec![(364, 278), (444, 278), (554, 168), (634, 168)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             },
             CrossingSearchPartner {
                 net_id: 10,
                 waypoints: vec![(364, 388), (414, 388), (627, 175), (634, 169)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             },
         ];
         let mut committed_partner_ids = FxHashSet::default();
@@ -12055,6 +12219,7 @@ mod tests {
                 waypoints: vec![(6, 5), (6, 7)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 1,
             crossing_half_size_cells: 0,
@@ -12131,6 +12296,7 @@ mod tests {
                 waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 0,
@@ -12241,6 +12407,7 @@ mod tests {
                 waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 2,
             crossing_half_size_cells: 2,
@@ -12382,12 +12549,14 @@ mod tests {
                     waypoints: vec![(0, 0), (89, 89)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
                 CrossingSearchPartner {
                     net_id: 2,
                     waypoints: vec![(11, 0), (89, 78)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
             ],
             min_straight_cells: 2,
@@ -12464,12 +12633,14 @@ mod tests {
                     waypoints: vec![(0, 0), (89, 89)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
                 CrossingSearchPartner {
                     net_id: 2,
                     waypoints: vec![(11, 0), (89, 78)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
             ],
             min_straight_cells: 2,
@@ -12542,12 +12713,14 @@ mod tests {
                     waypoints: vec![(0, 50), (59, 50)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
                 CrossingSearchPartner {
                     net_id: 2,
                     waypoints: vec![(0, 31), (59, 31)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
             ],
             min_straight_cells: 2,
@@ -12610,12 +12783,14 @@ mod tests {
                     waypoints: vec![(0, y_a), (59, y_a)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
                 CrossingSearchPartner {
                     net_id: 2,
                     waypoints: vec![(0, y_b), (59, y_b)],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
             ],
             min_straight_cells: 2,
@@ -12691,12 +12866,14 @@ mod tests {
                     waypoints: vec![a0, a1],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
                 CrossingSearchPartner {
                     net_id: 2,
                     waypoints: vec![b0, b1],
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
             ],
             min_straight_cells: 2,
@@ -12832,6 +13009,7 @@ mod tests {
                 waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 2,
             crossing_half_size_cells: 2,
@@ -13010,6 +13188,7 @@ mod tests {
                     waypoints: partner_waypoints,
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 }],
                 min_straight_cells: 2,
                 crossing_half_size_cells: 2,
@@ -13108,6 +13287,7 @@ mod tests {
                     waypoints: waypoints.clone(),
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 }],
                 min_straight_cells: 2,
                 crossing_half_size_cells: 2,
@@ -13178,6 +13358,7 @@ mod tests {
                 waypoints: vec![(8, 6), (8, 7)],
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 1,
             crossing_half_size_cells: 0,
@@ -13242,6 +13423,7 @@ mod tests {
                 waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 0,
@@ -13319,6 +13501,7 @@ mod tests {
                 waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 0,
@@ -13579,6 +13762,7 @@ mod tests {
                 waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 1,
@@ -13736,6 +13920,7 @@ mod tests {
                 waypoints: partner,
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 2,
@@ -13992,12 +14177,14 @@ mod tests {
                     waypoints: partner_a,
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
                 CrossingSearchPartner {
                     net_id: 3,
                     waypoints: partner_b,
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
             ],
             min_straight_cells: 0,
@@ -14083,12 +14270,14 @@ mod tests {
                     waypoints: partner_a,
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
                 CrossingSearchPartner {
                     net_id: 3,
                     waypoints: partner_b,
                     target_terminal_bump_guard: None,
                     crossing_loss_override: None,
+                    single_discounted_crossing: false,
                 },
             ],
             min_straight_cells: 0,
@@ -14165,6 +14354,7 @@ mod tests {
                 waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 3,
@@ -14284,6 +14474,7 @@ mod tests {
                 waypoints: partner_waypoints,
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
+                single_discounted_crossing: false,
             }],
             min_straight_cells: 0,
             crossing_half_size_cells: 2,

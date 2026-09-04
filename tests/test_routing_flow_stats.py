@@ -1289,6 +1289,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "crossing_candidate_checks": 12,
             "crossing_accepted": 3,
             "crossing_accepted_planned": 0,
+            "crossing_accepted_over_budget": 0,
             "crossing_reject_non_straight": 0,
             "crossing_reject_not_perpendicular": 4,
             "crossing_reject_margin": 5,
@@ -1512,10 +1513,14 @@ def _fake_crossing_plan_router_and_backend(captured: dict[str, object]):
             return 0
 
         def set_crossing_guidance(
-            self, planned_pairs: object, planned_crossing_loss: float
+            self,
+            planned_pairs: object,
+            planned_crossing_loss: float,
+            single_discounted_crossing_per_pair: bool,
         ) -> None:
             captured["guidance_pairs"] = planned_pairs
             captured["guidance_loss"] = planned_crossing_loss
+            captured["guidance_single"] = single_discounted_crossing_per_pair
 
     backend = SimpleNamespace(
         CrossingConfig=FakeCrossingConfig,
@@ -1580,8 +1585,10 @@ def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
     assert info["event_count"] == 33  # the multiportmmi_8x8 plan
     assert info["guidance"]["planned_pair_count"] == 33
     assert info["guidance"]["planned_crossing_loss"] == pytest.approx(0.0)
+    assert info["guidance"]["single_discounted_crossing_per_pair"] is True  # S2 default
     assert len(cast(list, captured["guidance_pairs"])) == 33
     assert captured["guidance_loss"] == pytest.approx(0.0)
+    assert captured["guidance_single"] is True
     assert captured["constraints"] == []  # never hard constraints
     assert captured["config"]["allow_only_expected_pairs"] is False
     assert captured["config"]["crossing_loss"] == pytest.approx(
@@ -1629,6 +1636,47 @@ def test_planned_crossing_search_loss_env_override(monkeypatch):
     monkeypatch.setenv(PLANNED_CROSSING_SEARCH_LOSS_ENV, "-1")
     with pytest.raises(ValueError):
         _effective_planned_crossing_search_loss()
+
+
+def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
+    """`PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET=0` = every crossing of a planned
+    partner discounted (S1 behaviour); default / `1` = one per pair (S2)."""
+    from translation.route_rust_crossing_plan import (
+        PLANNED_CROSSING_BUDGET_ENV,
+        _effective_single_discounted_crossing_per_pair,
+    )
+
+    assert _effective_single_discounted_crossing_per_pair() is True
+    monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "0")
+    assert _effective_single_discounted_crossing_per_pair() is False
+    monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "1")
+    assert _effective_single_discounted_crossing_per_pair() is True
+    monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "2")
+    with pytest.raises(ValueError):
+        _effective_single_discounted_crossing_per_pair()
+
+    captured: dict[str, object] = {}
+    router, backend = _fake_crossing_plan_router_and_backend(captured)
+    jobs, schematic = _mm8_route_jobs()
+    monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "0")
+    info = _build_crossing_plan_info(
+        rust_backend=backend,
+        router=router,
+        schematic=schematic,
+        route_jobs=jobs,
+        enable_crossings=True,
+        crossing_mode="lidar-guided",
+        node_depths={},
+        node_ranks={},
+        edge_ranks={},
+        crossing_loss=0.0,
+        crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+        crossing_half_size_cells=3,
+        min_straight_cells_per_crossing=0,
+        allow_only_expected_crossings=False,
+    )
+    assert info["guidance"]["single_discounted_crossing_per_pair"] is False
+    assert captured["guidance_single"] is False
 
 
 def test_lidar_guided_shares_the_lidar_pure_search_penalty():

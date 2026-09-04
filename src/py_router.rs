@@ -602,6 +602,8 @@ pub struct PyRouteResult {
     #[pyo3(get)]
     pub crossing_accepted_planned: usize,
     #[pyo3(get)]
+    pub crossing_accepted_over_budget: usize,
+    #[pyo3(get)]
     pub crossing_reject_unmatched_owner: usize,
     #[pyo3(get)]
     pub crossing_reject_unmatched_centerline: usize,
@@ -3308,6 +3310,8 @@ impl PyPhotonicRouter {
             for partner in &mut partners {
                 if guidance.is_planned_pair(net_id, partner.net_id) {
                     partner.crossing_loss_override = Some(guidance.planned_crossing_loss);
+                    partner.single_discounted_crossing =
+                        guidance.single_discounted_crossing_per_pair;
                 }
             }
         }
@@ -4840,6 +4844,7 @@ impl PyPhotonicRouter {
                                     .get(&partner_id)
                                     .copied(),
                                 crossing_loss_override: None,
+                                single_discounted_crossing: false,
                             })
                     })
                     .collect()
@@ -4857,6 +4862,7 @@ impl PyPhotonicRouter {
                                     .get(partner_id)
                                     .copied(),
                                 crossing_loss_override: None,
+                                single_discounted_crossing: false,
                             })
                     })
                     .collect()
@@ -5154,6 +5160,7 @@ impl PyPhotonicRouter {
                             .get(partner_id)
                             .copied(),
                         crossing_loss_override: None,
+                        single_discounted_crossing: false,
                     })
             })
             .collect();
@@ -6213,6 +6220,7 @@ impl PyPhotonicRouter {
                             .get(&partner_id)
                             .copied(),
                         crossing_loss_override: None,
+                        single_discounted_crossing: false,
                     })
             })
             .collect();
@@ -12266,19 +12274,22 @@ impl PyPhotonicRouter {
     /// topology plan and the search price of a planned crossing. Soft
     /// guidance only -- pricing in `crossing_search_config`; never a
     /// whitelist (unplanned crossings stay possible at `crossing_loss`).
-    #[pyo3(signature=(planned_pairs, planned_crossing_loss=0.0))]
+    #[pyo3(signature=(planned_pairs, planned_crossing_loss=0.0, single_discounted_crossing_per_pair=true))]
     fn set_crossing_guidance(
         &mut self,
         planned_pairs: Vec<(u64, u64)>,
         planned_crossing_loss: f64,
+        single_discounted_crossing_per_pair: bool,
     ) -> PyResult<()> {
         if !planned_crossing_loss.is_finite() || planned_crossing_loss < 0.0 {
             return Err(PyValueError::new_err(
                 "planned_crossing_loss must be finite and non-negative",
             ));
         }
-        self.crossing_context
-            .set_guidance(CrossingGuidance::new(&planned_pairs, planned_crossing_loss));
+        self.crossing_context.set_guidance(
+            CrossingGuidance::new(&planned_pairs, planned_crossing_loss)
+                .with_single_discounted_crossing_per_pair(single_discounted_crossing_per_pair),
+        );
         Ok(())
     }
 
@@ -16508,6 +16519,7 @@ fn convert_result(
         crossing_reject_wrong_order: r.stats.crossing_reject_wrong_order,
         crossing_reject_unexpected_owner: r.stats.crossing_reject_unexpected_owner,
         crossing_accepted_planned: r.stats.crossing_accepted_planned,
+        crossing_accepted_over_budget: r.stats.crossing_accepted_over_budget,
         crossing_reject_unmatched_owner: r.stats.crossing_reject_unmatched_owner,
         crossing_reject_unmatched_centerline: r.stats.crossing_reject_unmatched_centerline,
         crossing_reject_unmatched_footprint: r.stats.crossing_reject_unmatched_footprint,
@@ -16679,6 +16691,7 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             crossing_reject_wrong_order: route.crossing_reject_wrong_order,
             crossing_reject_unexpected_owner: route.crossing_reject_unexpected_owner,
             crossing_accepted_planned: route.crossing_accepted_planned,
+            crossing_accepted_over_budget: route.crossing_accepted_over_budget,
             crossing_reject_unmatched_owner: route.crossing_reject_unmatched_owner,
             crossing_reject_unmatched_centerline: route.crossing_reject_unmatched_centerline,
             crossing_reject_unmatched_footprint: route.crossing_reject_unmatched_footprint,
