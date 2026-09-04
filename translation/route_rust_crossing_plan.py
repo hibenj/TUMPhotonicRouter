@@ -34,10 +34,12 @@ COLLISION_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_
 # unplanned ones keep `COLLISION_CROSSING_SEARCH_LOSS`.
 DEFAULT_PLANNED_CROSSING_SEARCH_LOSS_UM = 0.0
 PLANNED_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM"
-# S2: how many crossings of one planned pair are discounted: 1 (default, the
-# plan predicts exactly one per pair; a second one is a braid and pays the
-# full price) or 0 = unlimited (S1 behaviour).
+# S2: how many crossings of one planned pair are discounted: 0 = unlimited
+# (default, owner decision 2026-09-04: the budget changed no route on any
+# benchmark and cost +7.5 % search on benes_32x32) or 1 = exactly one per
+# pair (the plan's semantics; a second one is a braid and pays the full price).
 PLANNED_CROSSING_BUDGET_ENV = "PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET"
+DEFAULT_SINGLE_DISCOUNTED_CROSSING_PER_PAIR = False
 
 
 def _routed_records_by_net_id(
@@ -160,11 +162,11 @@ def _effective_planned_crossing_search_loss() -> float:
 
 
 def _effective_single_discounted_crossing_per_pair() -> bool:
-    """S2 switch: True = one discounted crossing per planned pair (default)."""
+    """S2 switch: True = one discounted crossing per planned pair (default: off)."""
 
     raw = os.environ.get(PLANNED_CROSSING_BUDGET_ENV)
     if raw is None:
-        return True
+        return DEFAULT_SINGLE_DISCOUNTED_CROSSING_PER_PAIR
     value = raw.strip()
     if value == "1":
         return True
