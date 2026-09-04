@@ -27,6 +27,7 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 from translation.crossing_modes import CROSSING_MODES, is_guided_mode
+from translation.route_order import NET_ORDERS
 from translation.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import RipupRerouteConfig
@@ -587,6 +588,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Dense A* heuristic mode (default: heading_aware).",
     )
     parser.add_argument(
+        "--net-order",
+        choices=NET_ORDERS,
+        default="topological",
+        help=(
+            "Net routing order within the topological layers: 'topological' = "
+            "declaration order (default, the baseline); 'topological-span' = "
+            "shortest grid span first (LiDAR-like); 'plan-crossings-desc' / "
+            "'plan-crossings-asc' = most / fewest planned crossings first "
+            "(contribution 1 S3, needs --crossing-mode lidar-guided)."
+        ),
+    )
+    parser.add_argument(
         "--heap-tie-breaker",
         choices=("smaller_g", "larger_g"),
         default="smaller_g",
@@ -642,6 +655,7 @@ def main(argv: list[str] | None = None) -> Component:
         use_indexed_heap=args.use_indexed_heap,
         primitive_ordering=args.primitive_ordering,
         heuristic_mode=args.heuristic_mode,
+        net_order=args.net_order,
         heap_tie_breaker=args.heap_tie_breaker,
         bend_radius_um=args.bend_radius_um,
         enable_path_length_matching=args.path_length_matching,
@@ -863,6 +877,7 @@ def run_routing_flow(
     enable_simple_routes: bool = True,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
+    net_order: str = "topological",
     heap_tie_breaker: str = "smaller_g",
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
@@ -1077,6 +1092,7 @@ def run_routing_flow(
         enable_simple_routes=enable_simple_routes,
         primitive_ordering=primitive_ordering,
         heuristic_mode=heuristic_mode,
+        net_order=net_order,
         heap_tie_breaker=heap_tie_breaker,
         max_iterations=max_iterations,
         routing_window_scale=routing_window_scale,

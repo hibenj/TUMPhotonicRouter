@@ -1703,3 +1703,21 @@ def test_flow_rejects_guided_search_combined_with_preplaced_crossing_grids():
             crossing_mode="lidar-guided",
             preplaced_crossing_grids=True,
         )
+
+
+def test_plan_crossing_net_order_needs_the_guided_mode():
+    """S3: the plan-based orders read planned crossing counts, which only
+    lidar-guided builds; under lidar-pure (plan withheld) the flow must fail
+    loudly instead of silently falling back to declaration order."""
+    with pytest.raises(ValueError, match="topology plan"):
+        run_routing_flow(
+            "benes_4x4",
+            show_unrouted=False,
+            show_routed=False,
+            show_static_obstacles_svg=False,
+            enable_path_length_matching=False,
+            path_length_match_outputs=False,
+            enable_crossings=True,
+            crossing_mode="lidar-pure",
+            net_order="plan-crossings-desc",
+        )

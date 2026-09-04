@@ -44,6 +44,7 @@ class OpticalRoutingStageConfig:
     enable_simple_routes: bool
     primitive_ordering: str
     heuristic_mode: str
+    net_order: str
     heap_tie_breaker: str
     max_iterations: int
     routing_window_scale: float | None
@@ -113,6 +114,7 @@ def run_photonic_routing_stage(
             enable_simple_routes=config.enable_simple_routes,
             primitive_ordering=config.primitive_ordering,
             heuristic_mode=config.heuristic_mode,
+            net_order=config.net_order,
             heap_tie_breaker=config.heap_tie_breaker,
             proactive_congestion_weight=float(config.proactive_congestion_weight),
             proactive_congestion_radius_cells=int(config.proactive_congestion_radius_cells),

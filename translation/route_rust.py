@@ -110,6 +110,11 @@ from translation.route_rust_crossing_components import (
     _shared_crossing_peer_indices,
 )
 from translation.crossing_modes import is_collision_mode, is_lidar_mode, normalize_crossing_mode
+from translation.route_order import (
+    depth_by_node_from_jobs,
+    normalize_net_order,
+    order_route_jobs,
+)
 from translation.route_rust_crossing_plan import (
     COLLISION_CROSSING_SEARCH_LOSS_ENV,
     DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
@@ -255,6 +260,7 @@ def route_match_and_realize(
     enable_simple_routes: bool = True,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
+    net_order: str = "topological",
     heap_tie_breaker: str = "smaller_g",
     proactive_congestion_weight: float = 0.0,
     proactive_congestion_radius_cells: int = 0,
@@ -297,6 +303,7 @@ def route_match_and_realize(
         enable_simple_routes=enable_simple_routes,
         primitive_ordering=primitive_ordering,
         heuristic_mode=heuristic_mode,
+        net_order=net_order,
         heap_tie_breaker=heap_tie_breaker,
         proactive_congestion_weight=proactive_congestion_weight,
         proactive_congestion_radius_cells=proactive_congestion_radius_cells,
@@ -626,6 +633,7 @@ class _RouteNetsRustSession:
         enable_simple_routes: bool = True,
         primitive_ordering: str = "library",
         heuristic_mode: str = "heading_aware",
+        net_order: str = "topological",
         heap_tie_breaker: str = "smaller_g",
         proactive_congestion_weight: float = 0.0,
         proactive_congestion_radius_cells: int = 0,
@@ -793,6 +801,7 @@ class _RouteNetsRustSession:
         self.enable_simple_routes = enable_simple_routes
         self.primitive_ordering = primitive_ordering
         self.heuristic_mode = heuristic_mode
+        self.net_order = normalize_net_order(net_order)
         self.heap_tie_breaker = heap_tie_breaker
         self.proactive_congestion_weight = proactive_congestion_weight
         self.proactive_congestion_radius_cells = proactive_congestion_radius_cells
@@ -2721,97 +2730,56 @@ class _RouteNetsRustSession:
         )
 
     def _topological_net_route_order(self, jobs: list[RouteJob]) -> list[RouteJob]:
-        """Route nets in topological order (source-instance depth), tiebroken by declaration order.
-
-        Depth is derived directly from this batch's own net graph (`inst1 ->
-        inst2` edges across `jobs`), not from any benchmark's optional
-        `NODE_DEPTHS` metadata (`self.node_depths`) or the crossing-plan
-        topology analysis in `route_rust_crossing_plan.py`. Net ordering
-        needs a depth signal unconditionally, for every benchmark and every
-        crossing mode: `self.node_depths` is `{}` (not derived) for every
-        benchmark that does not hardcode `NODE_DEPTHS`, and the crossing-plan
-        topology metadata is deliberately withheld entirely in `lidar-pure`
-        mode (`_build_crossing_plan_info`'s own early return, protecting the
-        router-discovered crossing path from topology-precomputed hints) --
-        neither is a usable ordering signal in general. A net's depth is its
-        source instance's depth (how many hops from a true source, an
-        instance with no incoming net in this batch); nets sharing a source
-        instance share a depth and so keep their relative declaration order,
-        matching LiDAR's own `Nets.__lt__` (`comp_dist` primary key,
-        declaration order tiebreak).
+        """Route nets by `self.net_order` (`translation/route_order.py`):
+        source-instance depth first, then declaration order / grid span /
+        planned crossing count. Depth comes from this batch's own net graph
+        (`inst1 -> inst2` edges), not from optional benchmark metadata or the
+        crossing plan, so every mode has it. The plan-based orders need the
+        topology plan, which only `lidar-guided` builds
+        (`crossing_plan_info["expected_crossings_by_net_id"]`).
         """
-        incoming: dict[str, set[str]] = {}
-        all_nodes: set[str] = set()
-        for job in jobs:
-            all_nodes.add(job.inst1)
-            all_nodes.add(job.inst2)
-            incoming.setdefault(job.inst2, set()).add(job.inst1)
-
-        depth_by_node: dict[str, int] = {}
-
-        def resolve_depth(node: str, visiting: set[str]) -> int:
-            if node in depth_by_node:
-                return depth_by_node[node]
-            sources = incoming.get(node)
-            if not sources or node in visiting:
-                # No incoming edges (a true source), or a cycle in the net
-                # graph -- a real photonic netlist's signal flow is a DAG,
-                # so a cycle should not happen, but treat a cycle member as
-                # depth 0 rather than recursing forever.
-                depth_by_node[node] = 0
-                return 0
-            visiting.add(node)
-            depth = 1 + max(resolve_depth(source, visiting) for source in sources)
-            visiting.discard(node)
-            depth_by_node[node] = depth
-            return depth
-
-        for node in all_nodes:
-            resolve_depth(node, set())
-
-        if os.environ.get("PHOTONIC_ROUTER_LAYER_ORDER", "").strip().lower() == "span":
-            # EXPERIMENT (2026-08-27, off by default; decision pending in
-            # `.agent/execplans/2026-08-27-router-fixes-for-crossing-grid-stubs.md`
-            # Decision Log): within a layer, shortest nets first, so that a
-            # planar fan-out (pre-placed crossing grids, no crossings outside
-            # the grid) nests the widest-span stubs outermost. Completes
-            # `benes_16x16` grid mode (196/196) but breaks the normal
-            # router's Benes crossing discovery, so it must become a mode
-            # property (option plumbing), not stay an env var.
-
-            def span(route_job: RouteJob) -> int:
-                source_state = self.port_to_grid_state(
-                    route_job.source_port,
-                    self.origin_x_um,
-                    self.origin_y_um,
-                    float(self.grid.grid_size_um),
-                    as_target=False,
+        depth_by_node = depth_by_node_from_jobs(jobs)
+        span_by_net_id: dict[int, int] | None = None
+        if self.net_order == "topological-span":
+            span_by_net_id = {int(job.net_id): self._route_job_grid_span(job) for job in jobs}
+        planned_by_net_id: dict[int, int] | None = None
+        if self.net_order.startswith("plan-crossings"):
+            raw_counts = self.crossing_plan_info.get("expected_crossings_by_net_id")
+            if not isinstance(raw_counts, dict) or not self.crossing_plan_info.get("event_count"):
+                raise ValueError(
+                    f"net_order {self.net_order!r} needs the topology plan: run with "
+                    "--crossing-mode lidar-guided"
                 )
-                target_state = self.port_to_grid_state(
-                    route_job.target_port,
-                    self.origin_x_um,
-                    self.origin_y_um,
-                    float(self.grid.grid_size_um),
-                    as_target=True,
-                )
-                return abs(int(source_state.x) - int(target_state.x)) + abs(
-                    int(source_state.y) - int(target_state.y)
-                )
-
-            ordered = sorted(
-                jobs,
-                key=lambda route_job: (
-                    depth_by_node[route_job.inst1],
-                    span(route_job),
-                    int(route_job.route_index),
-                ),
-            )
-        else:
-            ordered = sorted(
-                jobs,
-                key=lambda route_job: (depth_by_node[route_job.inst1], int(route_job.route_index)),
-            )
+            planned_by_net_id = {int(key): int(value) for key, value in raw_counts.items()}
+        ordered = order_route_jobs(
+            jobs,
+            net_order=self.net_order,
+            depth_by_node=depth_by_node,
+            span_by_net_id=span_by_net_id,
+            planned_crossings_by_net_id=planned_by_net_id,
+        )
+        if self.net_order != "topological":
+            print(f"      - net order: {self.net_order}")
         return self._debug_hoist_instance_first(ordered)
+
+    def _route_job_grid_span(self, route_job: RouteJob) -> int:
+        source_state = self.port_to_grid_state(
+            route_job.source_port,
+            self.origin_x_um,
+            self.origin_y_um,
+            float(self.grid.grid_size_um),
+            as_target=False,
+        )
+        target_state = self.port_to_grid_state(
+            route_job.target_port,
+            self.origin_x_um,
+            self.origin_y_um,
+            float(self.grid.grid_size_um),
+            as_target=True,
+        )
+        return abs(int(source_state.x) - int(target_state.x)) + abs(
+            int(source_state.y) - int(target_state.y)
+        )
 
     @staticmethod
     def _debug_hoist_instance_first(ordered: list[RouteJob]) -> list[RouteJob]:
@@ -8117,6 +8085,7 @@ def route_nets_rust(
     enable_simple_routes: bool = True,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
+    net_order: str = "topological",
     heap_tie_breaker: str = "smaller_g",
     proactive_congestion_weight: float = 0.0,
     proactive_congestion_radius_cells: int = 0,
@@ -8161,6 +8130,7 @@ def route_nets_rust(
         enable_simple_routes=enable_simple_routes,
         primitive_ordering=primitive_ordering,
         heuristic_mode=heuristic_mode,
+        net_order=net_order,
         heap_tie_breaker=heap_tie_breaker,
         proactive_congestion_weight=proactive_congestion_weight,
         proactive_congestion_radius_cells=proactive_congestion_radius_cells,
