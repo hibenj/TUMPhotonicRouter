@@ -4017,11 +4017,14 @@ mod unified_kernel {
             let dynamic_core_owners =
                 DenseDynamicCoreOwnerGrid::from_obstacle_map(obstacle_map, crossing_lookup_bounds)
                     .expect("owner grid should build for a valid obstacle map");
-            let required_margin = crossing_required_margin_cells(
-                crossing.crossing_half_size_cells,
-                crossing.min_straight_cells,
-                crossing.bend_runout_cells,
-            );
+            // Predicate 1 (2026-09-04): ONE number. The straight required on
+            // either side of a crossing point, on the route and on the
+            // partner, is the crossing element's half size in REAL straight
+            // cells (turn arms minus their fillet trim, partner polylines minus
+            // their corner trims). `bend_runout_cells` is the bend radius those
+            // trims are computed from, no longer an additive margin. The same
+            // number caps the Tier-2 key's `straight_run_cells`/`pending`.
+            let required_margin = crossing.crossing_half_size_cells.max(0);
             let capped_required_margin = required_margin.max(1);
             let all_partner_mask = if crossing.require_all_partners {
                 (1u64 << crossing.partners.len()) - 1
@@ -4848,15 +4851,15 @@ mod unified_kernel {
                     continue;
                 }
 
-                // Mirrors today's crossing kernel: a state already inside an
-                // active post-crossing corridor may only continue with a
-                // primitive that keeps heading the required direction and
-                // either completes or correctly extends the required
-                // straight run. This is checked here, before the hook is
-                // even consulted, exactly like today's crossing kernel --
-                // not solely inside the reused legality functions, one of
-                // which (`crossing_no_contact_outcome`) does not perform
-                // this check on its own.
+                // A state with an open straight-after debt may only continue
+                // with a pure straight in the pending direction (owner's
+                // "Point 2", 2026-09-03: the debt is the crossing element's own
+                // half_size, paid by straight cells only -- a bend's arm is
+                // arc when realized). This is the single pre-hook rule; the
+                // hook applies the same rule on the contact path, and
+                // `crossing_no_contact_outcome` does not check it on its own.
+                // Predicate 1 (2026-09-04) removed the old "a bend arm may
+                // complete the debt" branch that the hook contradicted anyway.
                 let pending_initial_run =
                     primitive_initial_straight_run_distance(primitive, state.angle);
                 let pending_completed_by_primitive = current_extension.pending_after_crossing_cells
@@ -4864,15 +4867,12 @@ mod unified_kernel {
                     && pending_initial_run + 1.0e-9
                         >= f64::from(current_extension.pending_after_crossing_cells);
                 if current_extension.pending_after_crossing_cells > 0 {
-                    if current_extension.pending_after_crossing_angle != state.angle {
-                        stats.crossing_reject_pending_straight += 1;
-                        continue;
-                    }
-                    if !pending_completed_by_primitive
-                        && !(primitive_class_is_straight(primitive_class)
-                            && primitive.end_angle % 8 == state.angle
-                            && pending_initial_run > 0.0)
-                    {
+                    let pure_straight_in_pending_direction = primitive_class_is_straight(primitive_class)
+                        && primitive.end_angle % 8 == state.angle
+                        && state.angle == current_extension.pending_after_crossing_angle
+                        && matches!(primitive.geometry, PrimitiveGeometry::Straight { .. })
+                        && pending_initial_run > 0.0;
+                    if !pure_straight_in_pending_direction {
                         stats.crossing_reject_pending_straight += 1;
                         continue;
                     }
@@ -12495,12 +12495,24 @@ mod tests {
         assert!(route.is_none(), "two crossing elements 3 cells apart cannot both be realized");
     }
 
-    /// Four cells apart the windows [38,42] and [34,38] still share y=38.
+    /// Four cells apart the windows [38,42] and [34,38] share y=38 for
+    /// crossings at the same x -- those attempts are refused. Since
+    /// predicate 1 (real straight cells, half_size before a crossing) the
+    /// search finds the legal alternative: a lateral jog of >= 5 cells
+    /// between the two crossings, so that the two +-2 windows are disjoint
+    /// (re-pinned 2026-09-04; the old required_margin of 5 made the jog's
+    /// short straights illegal and the case looked unroutable).
     #[test]
-    fn vertical_descent_refuses_two_crossings_four_cells_apart() {
+    fn vertical_descent_four_cells_apart_jogs_so_the_windows_are_disjoint() {
         let (route, stats) = vertical_descent_across_two_horizontals(4);
-        assert!(stats.crossing_reject_reservation_overlap > 0);
-        assert!(route.is_none());
+        assert!(stats.crossing_reject_reservation_overlap > 0, "same-x crossings must be refused");
+        let route = route.expect("a route with laterally offset crossings exists");
+        let x_at_row = |row: i32| -> Option<i32> {
+            route.cells.iter().find(|&&(_, y)| y == row).map(|&(x, _)| x)
+        };
+        let xa = x_at_row(40).expect("crosses partner A at y=40");
+        let xb = x_at_row(36).expect("crosses partner B at y=36");
+        assert!((xa - xb).abs() >= 5, "crossings at x={xa} and x={xb} must be >= 5 cells apart for disjoint windows; route {:?}", route.compressed_waypoints);
     }
 
     /// Five cells apart (2*half_size + 1) the windows are disjoint: routes.
