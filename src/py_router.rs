@@ -1814,6 +1814,36 @@ fn axes_are_perpendicular(angle_a: u8, angle_b: u8) -> bool {
     (i16::from(angle_a % 4) - i16::from(angle_b % 4)).rem_euclid(4) == 2
 }
 
+/// Per-segment fillet trims (start, end) in cells of a grid polyline: at every
+/// interior corner both adjacent segments lose `radius * tan(theta/2)` cells
+/// to the realized arc; terminals lose nothing. Predicate 1 (2026-09-04).
+fn polyline_corner_trims(waypoints: &[(i32, i32)], bend_radius_cells: i32) -> Vec<(f64, f64)> {
+    let segment_count = waypoints.len().saturating_sub(1);
+    let mut trims = vec![(0.0f64, 0.0f64); segment_count];
+    if bend_radius_cells <= 0 {
+        return trims;
+    }
+    let angles: Vec<Option<u8>> = waypoints
+        .windows(2)
+        .map(|segment| direction_angle_between_cells(segment[0], segment[1]))
+        .collect();
+    for i in 1..segment_count {
+        let (Some(a_in), Some(a_out)) = (angles[i - 1], angles[i]) else {
+            continue;
+        };
+        let delta = ((i32::from(a_out) - i32::from(a_in)).rem_euclid(8))
+            .min((i32::from(a_in) - i32::from(a_out)).rem_euclid(8));
+        if delta == 0 {
+            continue;
+        }
+        let theta = f64::from(delta) * std::f64::consts::FRAC_PI_4;
+        let trim = f64::from(bend_radius_cells) * (theta / 2.0).tan();
+        trims[i - 1].1 = trim;
+        trims[i].0 = trim;
+    }
+    trims
+}
+
 fn segment_length_cells(a: (i32, i32), b: (i32, i32)) -> f64 {
     f64::from((a.0 - b.0).abs().max((a.1 - b.1).abs()))
 }
@@ -2276,14 +2306,16 @@ fn crossing_events_for_partner(
     if route_waypoints.len() < 2 || partner_waypoints.len() < 2 {
         return Vec::new();
     }
-    let required_margin = f64::from(crossing_required_margin_cells(
-        half_size_cells,
-        min_straight_cells,
-        bend_runout_cells,
-    ));
+    // Predicate 1 (2026-09-04): half_size real straight cells on both nets,
+    // polyline corners minus their fillet trim (`bend_runout_cells` is the
+    // bend radius the trims are computed from).
+    let _ = min_straight_cells;
+    let required_margin = f64::from(half_size_cells.max(0));
+    let route_trims = polyline_corner_trims(route_waypoints, bend_runout_cells);
+    let partner_trims = polyline_corner_trims(partner_waypoints, bend_runout_cells);
     let mut events = Vec::new();
     let mut seen_centers = FxHashSet::default();
-    for seg_a in route_waypoints.windows(2) {
+    for (idx_a, seg_a) in route_waypoints.windows(2).enumerate() {
         let Some(angle_a) = direction_angle_between_cells(seg_a[0], seg_a[1]) else {
             continue;
         };
@@ -2291,7 +2323,8 @@ fn crossing_events_for_partner(
         if len_a <= 0.0 {
             continue;
         }
-        for seg_b in partner_waypoints.windows(2) {
+        let (trim_a_start, trim_a_end) = route_trims[idx_a];
+        for (idx_b, seg_b) in partner_waypoints.windows(2).enumerate() {
             let Some(angle_b) = direction_angle_between_cells(seg_b[0], seg_b[1]) else {
                 continue;
             };
@@ -2307,8 +2340,9 @@ fn crossing_events_for_partner(
             else {
                 continue;
             };
-            let margin_a = (t * len_a).min((1.0 - t) * len_a);
-            let margin_b = (u * len_b).min((1.0 - u) * len_b);
+            let (trim_b_start, trim_b_end) = partner_trims[idx_b];
+            let margin_a = (t * len_a - trim_a_start).min((1.0 - t) * len_a - trim_a_end);
+            let margin_b = (u * len_b - trim_b_start).min((1.0 - u) * len_b - trim_b_end);
             if margin_a + 1e-9 < required_margin || margin_b + 1e-9 < required_margin {
                 continue;
             }
@@ -5346,15 +5380,18 @@ impl PyPhotonicRouter {
         // required (Point 2, 2026-09-03) -- a bend may follow. Demanding
         // `required_margin` on both sides discarded kernel-legal,
         // realized-clean routes (benes_32x32 net 273).
-        let required_margin = f64::from(crossing_required_margin_cells(
-            config.crossing_half_size_cells,
-            config.min_straight_cells_per_crossing,
-            self.primitive_cfg.bend_radius_cells,
-        ));
-        let required_after = f64::from(config.crossing_half_size_cells.max(0));
+        // Predicate 1 (2026-09-04): the same rule as the search kernel and the
+        // realized validator -- `half_size` REAL straight cells on both sides
+        // of the crossing point, on the route and on the partner, where a
+        // polyline corner consumes `radius * tan(theta/2)` cells of the
+        // adjacent segments (the fillet). One number, no compensation.
+        let required_margin = f64::from(config.crossing_half_size_cells.max(0));
+        let required_after = required_margin;
+        let bend_radius_cells = self.primitive_cfg.bend_radius_cells;
+        let route_trims = polyline_corner_trims(&route.compressed_waypoints, bend_radius_cells);
         let mut invalid = Vec::new();
         let mut seen_centers = FxHashSet::default();
-        for route_segment in route.compressed_waypoints.windows(2) {
+        for (route_idx, route_segment) in route.compressed_waypoints.windows(2).enumerate() {
             let Some(route_angle) =
                 direction_angle_between_cells(route_segment[0], route_segment[1])
             else {
@@ -5364,11 +5401,13 @@ impl PyPhotonicRouter {
             if route_len <= 0.0 {
                 continue;
             }
+            let (route_trim_start, route_trim_end) = route_trims[route_idx];
             for partner_id in partner_ids {
                 let Some(partner_waypoints) = self.committed_center_routes.get(partner_id) else {
                     continue;
                 };
-                for partner_segment in partner_waypoints.windows(2) {
+                let partner_trims = polyline_corner_trims(partner_waypoints, bend_radius_cells);
+                for (partner_idx, partner_segment) in partner_waypoints.windows(2).enumerate() {
                     let Some(partner_angle) =
                         direction_angle_between_cells(partner_segment[0], partner_segment[1])
                     else {
@@ -5381,6 +5420,7 @@ impl PyPhotonicRouter {
                     if partner_len <= 0.0 {
                         continue;
                     }
+                    let (partner_trim_start, partner_trim_end) = partner_trims[partner_idx];
                     let Some((x, y, t, u)) = segment_intersection_with_params(
                         route_segment[0],
                         route_segment[1],
@@ -5389,9 +5429,10 @@ impl PyPhotonicRouter {
                     ) else {
                         continue;
                     };
-                    let route_before = t * route_len;
-                    let route_after = (1.0 - t) * route_len;
-                    let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
+                    let route_before = t * route_len - route_trim_start;
+                    let route_after = (1.0 - t) * route_len - route_trim_end;
+                    let partner_margin = (u * partner_len - partner_trim_start)
+                        .min((1.0 - u) * partner_len - partner_trim_end);
                     if route_before + 1e-9 >= required_margin
                         && route_after + 1e-9 >= required_after
                         && partner_margin + 1e-9 >= required_margin
@@ -17465,15 +17506,13 @@ mod tests {
     }
 
     /// Post-search grid-level check (`invalid_crossing_intersections_for_route`)
-    /// must apply the same rule as the search kernel and the realized
-    /// validator: after the crossing point the route needs `half_size` pure
-    /// straight cells (Point 2), not `half_size + bend_radius`. Found on
-    /// benes_32x32 net 273 (2026-09-03): the search accepted a crossing 3.5
-    /// cells before a 45-degree corner, the realized centerline was clean,
-    /// and this check discarded the whole route with
-    /// `insufficient_straight_margin` because it demanded 5.
+    /// applies predicate 1 exactly like the kernel and the realized
+    /// validator: `half_size` (2) REAL straight cells on both sides of the
+    /// crossing point, where a polyline corner consumes `radius*tan(theta/2)`
+    /// cells (radius 3: 3 at 90 degrees, 1.24 at 45 degrees). Found on
+    /// benes_32x32 net 273 (2026-09-03) when this check still demanded 5.
     #[test]
-    fn grid_crossing_check_accepts_half_size_straight_after_crossing_before_a_bend() {
+    fn grid_crossing_check_uses_half_size_real_straight_cells_with_corner_trims() {
         let grid = PyGridSpec::new(40, 40, 1.0, 0.0, 0.0).unwrap();
         let mut router = PyPhotonicRouter::new(
             grid,
@@ -17512,43 +17551,37 @@ mod tests {
             },
             Vec::new(),
         );
+        // vertical partner at x=10, terminals far away (no partner corner near)
         router
             .committed_center_routes
             .insert(1, vec![(10, 0), (10, 30)]);
         let partner_ids: FxHashSet<u64> = [1u64].into_iter().collect();
-        let route_with_corner_at = |corner_x: i32| RouteResult {
+        let route = |waypoints: Vec<(i32, i32)>| RouteResult {
             states: Vec::new(),
             primitives: Vec::new(),
             cells: Vec::new(),
-            // eastbound straight from x=0 crossing the vertical partner at
-            // x=10, then a 45-degree corner at `corner_x` and a diagonal
-            compressed_waypoints: vec![(0, 10), (corner_x, 10), (corner_x + 8, 18)],
+            compressed_waypoints: waypoints,
             total_length_um: 0.0,
             total_cost: 0.0,
-            requested_target: State::new(corner_x + 8, 18, 1),
-            reached_target: State::new(corner_x + 8, 18, 1),
+            requested_target: State::new(0, 0, 0),
+            reached_target: State::new(0, 0, 0),
             stats: RouteSearchStats::default(),
         };
-
-        // 3 cells after the crossing point: >= half_size (2) -> legal, as the
-        // kernel and the realized validator already say
-        let invalid = router.invalid_crossing_intersections_for_route(2, &route_with_corner_at(13), &partner_ids);
-        assert!(invalid.is_empty(), "3 straight cells after the crossing must pass the grid check; got {invalid:?}");
-        // exactly half_size: still legal
-        let invalid = router.invalid_crossing_intersections_for_route(2, &route_with_corner_at(12), &partner_ids);
-        assert!(invalid.is_empty(), "2 straight cells after the crossing must pass the grid check; got {invalid:?}");
-        // 1 cell: inside the crossing element -> invalid
-        let invalid = router.invalid_crossing_intersections_for_route(2, &route_with_corner_at(11), &partner_ids);
-        assert_eq!(invalid.len(), 1);
-        assert_eq!(invalid[0].reason, "insufficient_straight_margin");
-        // before the crossing the kernel still counts required_margin (5):
-        // a route starting 3 cells before the partner is rejected there too
-        let short_before = RouteResult {
-            compressed_waypoints: vec![(7, 10), (20, 10)],
-            ..route_with_corner_at(13)
-        };
-        let invalid = router.invalid_crossing_intersections_for_route(2, &short_before, &partner_ids);
-        assert_eq!(invalid.len(), 1, "3 cells before the crossing are less than required_margin");
+        let cases: Vec<(&str, Vec<(i32, i32)>, bool)> = vec![
+            ("45deg corner 4 cells after the crossing: 4-1.24=2.76", vec![(0, 10), (14, 10), (22, 18)], true),
+            ("45deg corner 3 cells after: 1.76 < 2", vec![(0, 10), (13, 10), (21, 18)], false),
+            ("90deg corner 5 cells after: 5-3=2", vec![(0, 10), (15, 10), (15, 25)], true),
+            ("90deg corner 4 cells after: 1 < 2", vec![(0, 10), (14, 10), (14, 25)], false),
+            ("straight to a terminal, 2 cells before the crossing", vec![(8, 10), (20, 10)], true),
+            ("straight to a terminal, 1 cell before the crossing", vec![(9, 10), (20, 10)], false),
+        ];
+        for (label, waypoints, expect_ok) in cases {
+            let invalid = router.invalid_crossing_intersections_for_route(2, &route(waypoints), &partner_ids);
+            assert_eq!(invalid.is_empty(), expect_ok, "{label}: got {invalid:?}");
+            if !expect_ok {
+                assert_eq!(invalid[0].reason, "insufficient_straight_margin");
+            }
+        }
     }
 
     #[test]
