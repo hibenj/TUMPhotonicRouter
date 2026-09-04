@@ -11573,6 +11573,122 @@ impl PyPhotonicRouter {
         Ok(SourceLayerCenterOutOutcome::NotAttempted)
     }
 
+    /// Number of crossing events between two nets in the committed state.
+    fn crossing_event_count_between(&self, a: u64, b: u64) -> usize {
+        self.crossing_events
+            .iter()
+            .filter(|event| {
+                (event.net_id == a && event.partner_net_id == b)
+                    || (event.net_id == b && event.partner_net_id == a)
+            })
+            .count()
+    }
+
+    /// Braid repair (2026-09-04, multiportmmi_32x32 first layer vs LiDAR):
+    /// a net that crosses the SAME partner twice swapped sides and swapped
+    /// back -- never necessary; it means the pair was routed in the wrong
+    /// order (the earlier net's greedy shortest path sealed the later net's
+    /// target pocket, or laid its axial run where the later net had to
+    /// pass). Fix the order locally: rip up both, route this net first, then
+    /// the partner; keep the result only if the crossings between the two
+    /// went down and both nets routed, otherwise restore. One bounded
+    /// reroute per braid, no geometry assumption.
+    #[allow(clippy::too_many_arguments)]
+    fn try_braid_repair(
+        &mut self,
+        batch: &mut RepairBatchState,
+        job: &NativeRouteJob,
+        job_by_id: &FxHashMap<u64, NativeRouteJob>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        collect_native_timing: bool,
+        trace_native_repair: bool,
+    ) -> bool {
+        if std::env::var_os("PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR").is_some() {
+            return false;
+        }
+        let mut counts: FxHashMap<u64, usize> = FxHashMap::default();
+        for event in &self.crossing_events {
+            let partner = if event.net_id == job.net_id {
+                event.partner_net_id
+            } else if event.partner_net_id == job.net_id {
+                event.net_id
+            } else {
+                continue;
+            };
+            *counts.entry(partner).or_insert(0) += 1;
+        }
+        let Some((&victim_id, &before)) = counts
+            .iter()
+            .filter(|(_, count)| **count >= 2)
+            .max_by_key(|(partner, count)| (**count, std::cmp::Reverse(**partner)))
+        else {
+            return false;
+        };
+        let Some(victim_job) = job_by_id.get(&victim_id) else {
+            return false;
+        };
+        if !batch.final_routes.contains_key(&victim_id) {
+            return false;
+        }
+        if trace_native_repair {
+            eprintln!(
+                "native_repair_braid_start net={} partner={} crossings_between={}",
+                job.net_id, victim_id, before
+            );
+        }
+        // snapshot with both nets committed
+        let base_map = self.obstacle_map.clone();
+        let base_center_routes = self.committed_center_routes.clone();
+        let base_realized_center_routes = self.committed_realized_center_routes.clone();
+        let base_target_terminal_bump_guards = self.committed_target_terminal_bump_guards.clone();
+        let base_opened_cell_keys = self.committed_opened_cell_keys.clone();
+        let base_crossing_events = self.crossing_events.clone();
+        let base_routes = batch.final_routes.clone();
+        let base_attempts = batch.attempts.len();
+
+        // rip up this net; the helper rips up the partner, routes this net
+        // first and the partner second (restoring itself on failure)
+        self.rollback_committed_route(job.net_id);
+        batch.final_routes.remove(&job.net_id);
+        let swapped = self.try_ripup_single_victim_and_reroute(
+            batch,
+            job,
+            victim_job,
+            "braid_ripup",
+            block_radius_cells,
+            commit_radius_cells,
+            core_radius_cells,
+            0.0,
+            collect_native_timing,
+        );
+        let after = self.crossing_event_count_between(job.net_id, victim_id);
+        let keep = swapped
+            && batch.final_routes.contains_key(&job.net_id)
+            && batch.final_routes.contains_key(&victim_id)
+            && after < before;
+        if trace_native_repair {
+            eprintln!(
+                "native_repair_braid_result net={} partner={} swapped={} crossings_between={}->{} keep={}",
+                job.net_id, victim_id, swapped, before, after, keep
+            );
+        }
+        if keep {
+            return true;
+        }
+        self.obstacle_map = base_map;
+        self.committed_center_routes = base_center_routes;
+        self.committed_realized_center_routes = base_realized_center_routes;
+        self.committed_target_terminal_bump_guards = base_target_terminal_bump_guards;
+        self.committed_opened_cell_keys = base_opened_cell_keys;
+        self.crossing_events = base_crossing_events;
+        batch.final_routes = base_routes;
+        batch.attempts.truncate(base_attempts);
+        self.invalidate_meander_base_prefix();
+        false
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Single-victim rip/reroute-both repair, structurally identical to
     /// [`Self::try_preemptive_crossing_ripup`] (same snapshot/rip/reroute-
@@ -12979,7 +13095,19 @@ impl PyPhotonicRouter {
                 core_radius_cells,
                 collect_native_timing,
             ) {
-                PlainRouteOutcome::Routed => continue 'route_jobs,
+                PlainRouteOutcome::Routed => {
+                    self.try_braid_repair(
+                        &mut batch,
+                        job,
+                        &job_by_id,
+                        block_radius_cells,
+                        commit_radius_cells,
+                        core_radius_cells,
+                        collect_native_timing,
+                        trace_native_repair,
+                    );
+                    continue 'route_jobs;
+                }
                 PlainRouteOutcome::NotResolved => {}
             }
 
