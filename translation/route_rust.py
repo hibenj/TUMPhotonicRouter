@@ -109,6 +109,7 @@ from translation.route_rust_crossing_components import (
     _shared_crossing_component_clusters,
     _shared_crossing_peer_indices,
 )
+from translation.crossing_modes import is_collision_mode, is_lidar_mode, normalize_crossing_mode
 from translation.route_rust_crossing_plan import (
     COLLISION_CROSSING_SEARCH_LOSS_ENV,
     DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
@@ -722,13 +723,10 @@ class _RouteNetsRustSession:
             raise ValueError("proactive_congestion_radius_cells must be non-negative")
         if crossing_loss < 0:
             raise ValueError("crossing_loss must be non-negative")
-        crossing_mode = str(crossing_mode).strip().lower()
-        if crossing_mode in {"pure", "lidar"}:
-            crossing_mode = "lidar-pure"
-        if crossing_mode not in {"window", "collision", "lidar-pure"}:
-            raise ValueError("crossing_mode must be one of 'window', 'collision', or 'lidar-pure'")
+        crossing_mode = normalize_crossing_mode(crossing_mode)
         effective_allow_only_expected_crossings = bool(allow_only_expected_crossings)
-        if crossing_mode == "lidar-pure":
+        if is_lidar_mode(crossing_mode):
+            # lidar-pure and lidar-guided: crossings are never a whitelist
             effective_allow_only_expected_crossings = False
         crossing_search_loss = _effective_crossing_search_loss(
             enable_crossings=bool(enable_crossings),
@@ -6731,10 +6729,9 @@ class _RouteNetsRustSession:
         if self.allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
             effective_heuristic_mode = "diagonal_aware"
         self.astar_cfg.heuristic_mode = effective_heuristic_mode
-        collision_crossing_mode = bool(self.enable_crossings) and self.crossing_mode in {
-            "collision",
-            "lidar-pure",
-        }
+        collision_crossing_mode = bool(self.enable_crossings) and is_collision_mode(
+            self.crossing_mode
+        )
         min_heuristic_weight = float(os.environ.get("PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT", "1.0"))
         if (
             self.allow_45_degree_turns
@@ -7130,6 +7127,21 @@ class _RouteNetsRustSession:
             allow_only_expected_crossings=self.effective_allow_only_expected_crossings,
         )
         self.crossing_plan_info["crossing_mode"] = self.crossing_mode
+        if bool(self.enable_crossings):
+            # The exact configuration must be visible in stdout (harness step 0):
+            # which of baseline / contribution 1 ran, and with which prices.
+            guidance = self.crossing_plan_info.get("guidance")
+            guidance_text = (
+                f" planned_pairs={guidance['planned_pair_count']}"
+                f" planned_loss={guidance['planned_crossing_loss']:.1f}"
+                if isinstance(guidance, dict)
+                else ""
+            )
+            print(
+                f"      - crossing search: mode={self.crossing_mode}"
+                f" search_loss={float(self.crossing_plan_info.get('crossing_search_loss', 0.0)):.1f}"
+                f"{guidance_text}"
+            )
         self.crossing_plan_info["requested_allow_only_expected_crossings"] = bool(
             self.allow_only_expected_crossings
         )
@@ -7170,7 +7182,7 @@ class _RouteNetsRustSession:
             )
         ]
         self.crossing_plan_info["crossing_device"] = crossing_device_info
-        if bool(self.enable_crossings) and self.crossing_mode in {"collision", "lidar-pure"}:
+        if bool(self.enable_crossings) and is_collision_mode(self.crossing_mode):
             if not hasattr(self.router, "set_collision_crossing_routing"):
                 extension_path = getattr(self.rust_backend, "__file__", "<unknown>")
                 raise RuntimeError(

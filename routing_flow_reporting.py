@@ -306,7 +306,8 @@ def report_optical_timing(
         f"single_owner={int(getattr(route_summary, 'crossing_hotpath_single_owner_contacts', 0))}, "
         f"multi_owner={int(getattr(route_summary, 'crossing_hotpath_multi_owner_contacts', 0))}, "
         f"candidate_checks={int(route_summary.crossing_candidate_checks)}, "
-        f"accepted={int(route_summary.crossing_accepted)}"
+        f"accepted={int(route_summary.crossing_accepted)}, "
+        f"accepted_planned={int(getattr(route_summary, 'crossing_accepted_planned', 0))}"
     )
     print(
         "          Crossing hot path detail: "

@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping, cast
 from gdsfactory.schematic import Schematic
 
 from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
+from translation.crossing_modes import is_collision_mode, is_guided_mode, is_lidar_mode
 from photonic_router.topology_analysis import analyze_schematic_topology
 from translation.route_rust_crossing_components import _crossing_component_bbox_size_um
 from translation.route_rust_geometry import _first_perpendicular_route_intersection
@@ -28,6 +29,11 @@ def _ensure_dir(path: Path) -> None:
 
 DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM = 200.0
 COLLISION_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_LOSS_UM"
+# Contribution 1 (lidar-guided): search price of a crossing with a PLANNED
+# partner (topology plan). 0 = planned crossings are free in the search;
+# unplanned ones keep `COLLISION_CROSSING_SEARCH_LOSS`.
+DEFAULT_PLANNED_CROSSING_SEARCH_LOSS_UM = 0.0
+PLANNED_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM"
 
 
 def _routed_records_by_net_id(
@@ -124,7 +130,7 @@ def _effective_crossing_search_loss(
         return physical_loss
     if physical_loss > 0.0:
         return physical_loss
-    if str(crossing_mode).strip().lower() in {"collision", "lidar-pure"}:
+    if is_collision_mode(crossing_mode):
         override = os.environ.get(COLLISION_CROSSING_SEARCH_LOSS_ENV)
         if override is not None:
             override_value = float(override)
@@ -135,6 +141,18 @@ def _effective_crossing_search_loss(
             return override_value
         return DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
     return physical_loss
+
+
+def _effective_planned_crossing_search_loss() -> float:
+    """Search price of a planned crossing in lidar-guided mode (env override)."""
+
+    override = os.environ.get(PLANNED_CROSSING_SEARCH_LOSS_ENV)
+    if override is None:
+        return DEFAULT_PLANNED_CROSSING_SEARCH_LOSS_UM
+    value = float(override)
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"{PLANNED_CROSSING_SEARCH_LOSS_ENV} must be finite and non-negative")
+    return value
 
 
 def _build_crossing_plan_info(
@@ -201,7 +219,8 @@ def _build_crossing_plan_info(
         )
     )
 
-    if crossing_mode == "lidar-pure":
+    guided = is_guided_mode(crossing_mode)
+    if is_lidar_mode(crossing_mode) and not guided:
         # "lidar-pure" is the router-discovered crossing path: A* explores
         # and decides, live, whether a collision it finds can legally
         # become a crossing -- it must not be informed by a precomputed
@@ -295,6 +314,30 @@ def _build_crossing_plan_info(
         crossing_counts_by_net_name[str(job_a.net_name)] += 1
         crossing_counts_by_net_name[str(job_b.net_name)] += 1
 
+    if guided:
+        # Contribution 1: the plan reaches the router ONLY as soft guidance
+        # (planned pairs + planned search price). The hard window-mode
+        # constraints stay empty, so expected counts, whitelists and the
+        # spacing history never see the plan; the search keeps the lidar-pure
+        # mechanics and may still add unplanned crossings at the full price.
+        if not hasattr(router, "set_crossing_guidance"):
+            raise RuntimeError(
+                "The loaded photonic_router._rust extension does not expose "
+                "PyPhotonicRouter.set_crossing_guidance. Rebuild it with "
+                "`maturin develop --release`."
+            )
+        planned_pairs = [
+            (int(cast(int, record["net_id_a"])), int(cast(int, record["net_id_b"])))
+            for record in event_records
+            if record.get("loaded")
+        ]
+        planned_loss = _effective_planned_crossing_search_loss()
+        router.set_crossing_guidance(planned_pairs, planned_loss)
+        info["guidance"] = {
+            "planned_pair_count": len(planned_pairs),
+            "planned_crossing_loss": float(planned_loss),
+        }
+        constraints = []
     router.set_crossing_constraints(constraints)
 
     info["constraint_count"] = len(constraints)

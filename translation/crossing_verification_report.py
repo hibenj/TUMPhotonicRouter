@@ -556,6 +556,7 @@ def _build_metrics(
         "error_count": sum(1 for issue in issue_list if issue.severity == "error"),
         "warning_count": sum(1 for issue in issue_list if issue.severity == "warning"),
         "protected_segment_issue_count": protected_issue_count,
+        **_plan_coverage_metrics(plan_info, crossing_list),
         "route_cost_count": len(cost_list),
         "total_physical_insertion_loss": sum(
             cost.total_physical_insertion_loss for cost in cost_list
@@ -588,6 +589,49 @@ def _build_metrics(
         and not attempt.get("endpoint_correction_failed_net_ids")
     )
     return metrics
+
+
+def _plan_coverage_metrics(
+    plan_info: Mapping[str, object],
+    crossings: list[CrossingRecord],
+) -> dict[str, object]:
+    """Realized crossings vs the topology plan (contribution 1 reporting).
+
+    Only when a plan was built (window/collision/lidar-guided; lidar-pure
+    withholds it): how many planned pairs exist, how many realized crossings
+    are planned / unplanned, and how many planned pairs were never realized.
+    `planned` on a crossing is None without a plan and is then not counted.
+    """
+    planned_pairs: set[frozenset[int]] = set()
+    for event in _iter_mappings(plan_info.get("events")):
+        if not event.get("loaded"):
+            continue
+        net_id_a = _as_int(event.get("net_id_a"))
+        net_id_b = _as_int(event.get("net_id_b"))
+        if net_id_a is None or net_id_b is None:
+            continue
+        planned_pairs.add(frozenset((net_id_a, net_id_b)))
+    if not planned_pairs and not plan_info.get("event_count"):
+        return {}
+    realized_pairs: set[frozenset[int]] = set()
+    planned_count = 0
+    unplanned_count = 0
+    for crossing in crossings:
+        if not crossing.legal:
+            continue
+        planned = crossing.details.get("planned")
+        if planned is True:
+            planned_count += 1
+        elif planned is False:
+            unplanned_count += 1
+        if crossing.net_id_a is not None and crossing.net_id_b is not None:
+            realized_pairs.add(frozenset((crossing.net_id_a, crossing.net_id_b)))
+    return {
+        "planned_crossing_count": len(planned_pairs),
+        "realized_planned_crossing_count": planned_count,
+        "realized_unplanned_crossing_count": unplanned_count,
+        "plan_unrealized_pair_count": len(planned_pairs - realized_pairs),
+    }
 
 
 def _nearest_component(

@@ -66,12 +66,48 @@ impl CrossingPair {
     }
 }
 
+/// Contribution 1 (crossing-guided search): the topology plan's crossing
+/// pairs as SOFT guidance. Unlike `CrossingConstraint`s (window mode: a
+/// whitelist plus per-net expectations that shape the search), guidance
+/// only changes the search price of a crossing with a planned partner
+/// (`planned_crossing_loss`, normally 0); unplanned crossings stay
+/// possible at the configured `crossing_loss`, and nothing else in the
+/// router consults it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CrossingGuidance {
+    planned_pairs: FxHashSet<CrossingPair>,
+    pub planned_crossing_loss: f64,
+}
+
+impl CrossingGuidance {
+    pub fn new(planned_pairs: &[(NetId, NetId)], planned_crossing_loss: f64) -> Self {
+        Self {
+            planned_pairs: planned_pairs
+                .iter()
+                .map(|&(a, b)| CrossingPair::new(a, b))
+                .collect(),
+            planned_crossing_loss,
+        }
+    }
+
+    #[inline]
+    pub fn is_planned_pair(&self, net_id: NetId, partner_net_id: NetId) -> bool {
+        self.planned_pairs
+            .contains(&CrossingPair::new(net_id, partner_net_id))
+    }
+
+    pub fn planned_pair_count(&self) -> usize {
+        self.planned_pairs.len()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CrossingContext {
     config: CrossingConfig,
     constraints: Vec<CrossingConstraint>,
     allowed_pairs: FxHashSet<CrossingPair>,
     expected_crossings_by_net: FxHashMap<NetId, u32>,
+    guidance: Option<CrossingGuidance>,
 }
 
 impl CrossingContext {
@@ -92,7 +128,21 @@ impl CrossingContext {
             constraints,
             allowed_pairs,
             expected_crossings_by_net,
+            guidance: None,
         }
+    }
+
+    #[inline]
+    pub fn guidance(&self) -> Option<&CrossingGuidance> {
+        self.guidance.as_ref()
+    }
+
+    pub fn set_guidance(&mut self, guidance: CrossingGuidance) {
+        self.guidance = Some(guidance);
+    }
+
+    pub fn clear_guidance(&mut self) {
+        self.guidance = None;
     }
 
     #[inline]
@@ -111,7 +161,12 @@ impl CrossingContext {
 
     pub fn replace_constraints(&mut self, constraints: Vec<CrossingConstraint>) {
         let config = self.config.clone();
+        // Guidance is independent of the constraints (contribution 1 vs
+        // window mode) and must survive a constraint replacement -- the
+        // flow sets guidance and then replaces the (empty) constraints.
+        let guidance = self.guidance.take();
         *self = Self::new(config, constraints);
+        self.guidance = guidance;
     }
 
     pub fn clear_constraints(&mut self) {
@@ -249,5 +304,36 @@ mod tests {
 
         assert!(context.has_expected_pair(1, 2));
         assert!(!context.allows_pair(1, 2));
+    }
+
+    #[test]
+    fn guidance_is_soft_and_separate_from_constraints() {
+        let mut context = CrossingContext::new(CrossingConfig::default(), Vec::new());
+        assert!(context.guidance().is_none());
+
+        context.set_guidance(CrossingGuidance::new(&[(5, 3), (7, 9)], 0.0));
+        let guidance = context.guidance().expect("guidance set");
+        assert_eq!(guidance.planned_pair_count(), 2);
+        assert!(guidance.is_planned_pair(3, 5)); // unordered pair
+        assert!(guidance.is_planned_pair(5, 3));
+        assert!(!guidance.is_planned_pair(3, 7));
+        assert_eq!(guidance.planned_crossing_loss, 0.0);
+        // guidance never becomes a constraint / expectation / whitelist
+        assert_eq!(context.expected_crossing_count(5), 0);
+        assert!(!context.has_expected_pair(5, 3));
+        assert!(context.constraints().is_empty());
+
+        // constraints and config may be replaced without losing the guidance
+        context.replace_constraints(Vec::new());
+        context.set_config(CrossingConfig::default());
+        assert_eq!(
+            context
+                .guidance()
+                .map(|guidance| guidance.planned_pair_count()),
+            Some(2)
+        );
+
+        context.clear_guidance();
+        assert!(context.guidance().is_none());
     }
 }

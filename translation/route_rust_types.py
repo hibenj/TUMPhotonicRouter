@@ -382,6 +382,7 @@ class RouteTimingBucket:
     crossing_hotpath_reservation_time_us: int = 0
     crossing_candidate_checks: int = 0
     crossing_accepted: int = 0
+    crossing_accepted_planned: int = 0
     crossing_reject_non_straight: int = 0
     crossing_reject_not_perpendicular: int = 0
     crossing_reject_margin: int = 0
@@ -550,6 +551,9 @@ class RouteTimingBucket:
             route_obj, "crossing_candidate_checks"
         )
         self.crossing_accepted += _get_route_int_stat(route_obj, "crossing_accepted")
+        self.crossing_accepted_planned += _get_route_int_stat(
+            route_obj, "crossing_accepted_planned"
+        )
         self.crossing_reject_non_straight += _get_route_int_stat(
             route_obj, "crossing_reject_non_straight"
         )
@@ -711,6 +715,7 @@ class RouteAttemptRecord:
     crossing_hotpath_reservation_time_us: int = 0
     crossing_candidate_checks: int = 0
     crossing_accepted: int = 0
+    crossing_accepted_planned: int = 0
     crossing_reject_non_straight: int = 0
     crossing_reject_not_perpendicular: int = 0
     crossing_reject_margin: int = 0
@@ -804,6 +809,7 @@ class RouteAttemptRecord:
             / 1_000_000.0,
             "crossing_candidate_checks": self.crossing_candidate_checks,
             "crossing_accepted": self.crossing_accepted,
+            "crossing_accepted_planned": self.crossing_accepted_planned,
             "crossing_reject_non_straight": self.crossing_reject_non_straight,
             "crossing_reject_not_perpendicular": (self.crossing_reject_not_perpendicular),
             "crossing_reject_margin": self.crossing_reject_margin,
@@ -982,6 +988,7 @@ def route_attempt_record_from_route(
         ),
         crossing_candidate_checks=_get_route_int_stat(route_obj, "crossing_candidate_checks"),
         crossing_accepted=_get_route_int_stat(route_obj, "crossing_accepted"),
+        crossing_accepted_planned=_get_route_int_stat(route_obj, "crossing_accepted_planned"),
         crossing_reject_non_straight=_get_route_int_stat(route_obj, "crossing_reject_non_straight"),
         crossing_reject_not_perpendicular=_get_route_int_stat(
             route_obj, "crossing_reject_not_perpendicular"
@@ -1126,6 +1133,7 @@ class RouteSearchSummary:
     crossing_hotpath_reservation_time_us: int = 0
     crossing_candidate_checks: int = 0
     crossing_accepted: int = 0
+    crossing_accepted_planned: int = 0
     crossing_reject_non_straight: int = 0
     crossing_reject_not_perpendicular: int = 0
     crossing_reject_margin: int = 0
@@ -1268,6 +1276,7 @@ def summarize_route_search(
         ),
         crossing_candidate_checks=sum(bucket.crossing_candidate_checks for bucket in buckets),
         crossing_accepted=sum(bucket.crossing_accepted for bucket in buckets),
+        crossing_accepted_planned=sum(bucket.crossing_accepted_planned for bucket in buckets),
         crossing_reject_non_straight=sum(bucket.crossing_reject_non_straight for bucket in buckets),
         crossing_reject_not_perpendicular=sum(
             bucket.crossing_reject_not_perpendicular for bucket in buckets

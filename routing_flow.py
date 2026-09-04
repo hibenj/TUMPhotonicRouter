@@ -26,6 +26,7 @@ if "MPLCONFIGDIR" not in os.environ:
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
+from translation.crossing_modes import CROSSING_MODES, is_guided_mode
 from translation.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import RipupRerouteConfig
@@ -247,13 +248,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--crossing-mode",
-        choices=("window", "collision", "lidar-pure"),
+        choices=CROSSING_MODES,
         default=SCRIPT_CROSSING_MODE,
         help=(
             "Crossing search mode. 'window' preserves the existing expected-partner "
             "window search; 'collision' enables LiDAR-style collision-driven "
             "crossing legalization constrained by topology; 'lidar-pure' enables "
             "collision-driven crossing legalization without topology pair permissions "
+            "(the baseline); 'lidar-guided' is contribution 1: lidar-pure mechanics "
+            "plus the precomputed topology crossings as soft search guidance "
+            "(planned crossings cost PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM, "
+            "default 0, in the search; unplanned ones keep the collision price) "
             f"(default: {SCRIPT_CROSSING_MODE})."
         ),
     )
@@ -910,7 +915,11 @@ def run_routing_flow(
                       expected-partner crossing search; "collision" legalizes
                       crossings after A* collides with topology-allowed route
                       geometry; "lidar-pure" uses dynamic DRC-style crossing
-                      permission against any committed route.
+                      permission against any committed route (the baseline);
+                      "lidar-guided" is contribution 1: lidar-pure mechanics plus
+                      the precomputed topology crossings as soft search guidance.
+                      Exactly one of lidar-pure / lidar-guided /
+                      preplaced_crossing_grids (contribution 2) runs at a time.
         preplaced_crossing_grids: If True, derive every interstage layer's
                       crossings from the benchmark topology, place one
                       pre-wired crossing grid per layer into the layout before
@@ -1029,6 +1038,12 @@ def run_routing_flow(
     )
     preplaced_report_metadata: dict[str, object] | None = None
     if preplaced_crossing_grids:
+        if is_guided_mode(crossing_mode):
+            raise ValueError(
+                "preplaced_crossing_grids (contribution 2) and crossing_mode "
+                "'lidar-guided' (contribution 1) are alternative contributions; "
+                "run exactly one of lidar-pure / lidar-guided / preplaced grids."
+            )
         if enable_crossings:
             raise ValueError(
                 "preplaced_crossing_grids and enable_crossings are mutually exclusive: "
@@ -1123,7 +1138,9 @@ def run_routing_flow(
         debug_meanders=debug_meanders,
     )
     if debug_timing:
-        print(f"      - Path-length-matching report time: {time.perf_counter() - t_plm_start:.4f} s")
+        print(
+            f"      - Path-length-matching report time: {time.perf_counter() - t_plm_start:.4f} s"
+        )
 
     if enable_electrical_routing:
         routed_layout, electrical_result = run_electrical_routing_step(

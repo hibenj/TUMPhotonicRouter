@@ -47,6 +47,7 @@ from translation.route_rust_types import (
     DEFAULT_MEANDER_MAX_HEIGHT_UM,
     MeanderInsertionConfig,
     RouteAttemptRecord,
+    RouteJob,
     RouteSearchSummary,
     bend_radius_cells_from_um,
 )
@@ -1287,6 +1288,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             "crossing_hotpath_reservation_time_s": 0.0,
             "crossing_candidate_checks": 12,
             "crossing_accepted": 3,
+            "crossing_accepted_planned": 0,
             "crossing_reject_non_straight": 0,
             "crossing_reject_not_perpendicular": 4,
             "crossing_reject_margin": 5,
@@ -1485,3 +1487,171 @@ def test_lidar_multiportmmi_yaml_benchmarks_load(
     assert len(schematic.netlist.instances) == expected_instances
     assert len(schematic.placements) == expected_instances
     assert len(schematic.netlist.routes) == expected_nets
+
+
+# --- contribution 1: crossing-guided search (`--crossing-mode lidar-guided`) ---
+
+
+def _fake_crossing_plan_router_and_backend(captured: dict[str, object]):
+    class FakeCrossingConfig:
+        def __init__(self, **kwargs: object) -> None:
+            captured["config"] = dict(kwargs)
+
+    class FakeCrossingConstraint:
+        def __init__(self, net_id_a: int, net_id_b: int, **kwargs: object) -> None:
+            self.pair = (net_id_a, net_id_b)
+
+    class FakeRouter:
+        def set_crossing_constraints(self, constraints: object) -> None:
+            captured["constraints"] = constraints
+
+        def set_crossing_config(self, config: object) -> None:
+            captured["set_config"] = config
+
+        def crossing_expected_count(self, _net_id: object) -> int:
+            return 0
+
+        def set_crossing_guidance(
+            self, planned_pairs: object, planned_crossing_loss: float
+        ) -> None:
+            captured["guidance_pairs"] = planned_pairs
+            captured["guidance_loss"] = planned_crossing_loss
+
+    backend = SimpleNamespace(
+        CrossingConfig=FakeCrossingConfig,
+        CrossingConstraint=FakeCrossingConstraint,
+    )
+    return FakeRouter(), backend
+
+
+def _mm8_route_jobs() -> tuple[list[RouteJob], object]:
+    from benchmarks.multiportmmi_8x8 import build_schematic as build_mm8
+
+    schematic = build_mm8()
+    jobs: list[RouteJob] = []
+    # same job build as `translation/route_rust.py` (net name = route name)
+    for net_name, bundle in schematic.netlist.routes.items():
+        for port1_spec, port2_spec in bundle.links.items():
+            inst1, port1 = port1_spec.split(",")
+            inst2, port2 = port2_spec.split(",")
+            index = len(jobs)
+            jobs.append(
+                RouteJob(
+                    net_id=index + 1,
+                    route_index=index + 1,
+                    net_name=str(net_name),
+                    inst1=inst1,
+                    port1=port1,
+                    inst2=inst2,
+                    port2=port2,
+                    source_port=cast(object, None),  # type: ignore[arg-type]
+                    target_port=cast(object, None),  # type: ignore[arg-type]
+                )
+            )
+    return jobs, schematic
+
+
+def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
+    """Contribution 1: the topology plan reaches the router ONLY as soft
+    guidance (planned pairs + planned price); the window-mode constraints stay
+    empty, so nothing else in the router (expected counts, whitelists, spacing
+    history) can see the plan."""
+    captured: dict[str, object] = {}
+    router, backend = _fake_crossing_plan_router_and_backend(captured)
+    jobs, schematic = _mm8_route_jobs()
+
+    info = _build_crossing_plan_info(
+        rust_backend=backend,
+        router=router,
+        schematic=schematic,
+        route_jobs=jobs,
+        enable_crossings=True,
+        crossing_mode="lidar-guided",
+        node_depths={},
+        node_ranks={},
+        edge_ranks={},
+        crossing_loss=0.0,
+        crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+        crossing_half_size_cells=3,
+        min_straight_cells_per_crossing=0,
+        allow_only_expected_crossings=False,
+    )
+
+    assert info["event_count"] == 33  # the multiportmmi_8x8 plan
+    assert info["guidance"]["planned_pair_count"] == 33
+    assert info["guidance"]["planned_crossing_loss"] == pytest.approx(0.0)
+    assert len(cast(list, captured["guidance_pairs"])) == 33
+    assert captured["guidance_loss"] == pytest.approx(0.0)
+    assert captured["constraints"] == []  # never hard constraints
+    assert captured["config"]["allow_only_expected_pairs"] is False
+    assert captured["config"]["crossing_loss"] == pytest.approx(
+        DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
+    )  # unplanned crossings keep the baseline search price
+
+
+def test_lidar_pure_still_ignores_the_topology_plan():
+    captured: dict[str, object] = {}
+    router, backend = _fake_crossing_plan_router_and_backend(captured)
+    jobs, schematic = _mm8_route_jobs()
+
+    info = _build_crossing_plan_info(
+        rust_backend=backend,
+        router=router,
+        schematic=schematic,
+        route_jobs=jobs,
+        enable_crossings=True,
+        crossing_mode="lidar-pure",
+        node_depths={},
+        node_ranks={},
+        edge_ranks={},
+        crossing_loss=0.0,
+        crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+        crossing_half_size_cells=3,
+        min_straight_cells_per_crossing=0,
+        allow_only_expected_crossings=False,
+    )
+
+    assert info["reason"] == "lidar_pure_mode_ignores_topology_plan"
+    assert info["event_count"] == 0
+    assert "guidance_pairs" not in captured
+    assert captured["constraints"] == []
+
+
+def test_planned_crossing_search_loss_env_override(monkeypatch):
+    from translation.route_rust_crossing_plan import (
+        PLANNED_CROSSING_SEARCH_LOSS_ENV,
+        _effective_planned_crossing_search_loss,
+    )
+
+    assert _effective_planned_crossing_search_loss() == pytest.approx(0.0)
+    monkeypatch.setenv(PLANNED_CROSSING_SEARCH_LOSS_ENV, "1.5")
+    assert _effective_planned_crossing_search_loss() == pytest.approx(1.5)
+    monkeypatch.setenv(PLANNED_CROSSING_SEARCH_LOSS_ENV, "-1")
+    with pytest.raises(ValueError):
+        _effective_planned_crossing_search_loss()
+
+
+def test_lidar_guided_shares_the_lidar_pure_search_penalty():
+    assert _effective_crossing_search_loss(
+        enable_crossings=True,
+        crossing_mode="lidar-guided",
+        crossing_loss=0.0,
+    ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
+
+
+def test_flow_rejects_guided_search_combined_with_preplaced_crossing_grids():
+    """Owner rule: baseline lidar-pure, contribution 1 (guided A*) and
+    contribution 2 (preplaced crossing structures) are alternatives; exactly
+    one runs at a time."""
+    with pytest.raises(ValueError, match="lidar-guided"):
+        run_routing_flow(
+            "benes_4x4",
+            show_unrouted=False,
+            show_routed=False,
+            show_static_obstacles_svg=False,
+            enable_path_length_matching=False,
+            path_length_match_outputs=False,
+            enable_crossings=True,
+            crossing_mode="lidar-guided",
+            preplaced_crossing_grids=True,
+        )

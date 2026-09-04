@@ -30,7 +30,36 @@ from translation.route_rust_geometry import (
     _segments_are_perpendicular,
     _um_bboxes_overlap,
 )
+from translation.crossing_modes import is_lidar_mode
 from translation.route_rust_types import RoutedNetRecord
+
+
+def _planned_pairs_from_plan_info(
+    crossing_plan_info: Mapping[str, object],
+) -> set[frozenset[int]] | None:
+    """Loaded topology-plan pairs, or None when the mode carries no plan.
+
+    Used to label realized crossings `planned` (contribution 1 reporting):
+    None in lidar-pure (plan deliberately withheld), a set -- possibly empty
+    -- whenever a plan was built (window, collision, lidar-guided).
+    """
+    if not crossing_plan_info.get("events") and not crossing_plan_info.get("event_count"):
+        return None
+    pairs: set[frozenset[int]] = set()
+    for raw_event in cast(Iterable[object], crossing_plan_info.get("events", [])):
+        event = dict(cast(dict[str, object], raw_event))
+        if not event.get("loaded"):
+            continue
+        pairs.add(frozenset((int(cast(int, event["net_id_a"])), int(cast(int, event["net_id_b"])))))
+    return pairs
+
+
+def _planned_flag(
+    planned_pairs: set[frozenset[int]] | None, net_id_a: int, net_id_b: int
+) -> bool | None:
+    if planned_pairs is None:
+        return None
+    return frozenset((net_id_a, net_id_b)) in planned_pairs
 
 
 def _verify_realized_route_intersections(
@@ -65,6 +94,8 @@ def _verify_realized_route_intersections(
         allowed_pairs.add(frozenset((net_id_a, net_id_b)))
         net_names[net_id_a] = str(event.get("net_name_a", net_id_a))
         net_names[net_id_b] = str(event.get("net_name_b", net_id_b))
+
+    planned_pairs = _planned_pairs_from_plan_info(crossing_plan_info)
 
     records = sorted(routed_records_by_net_id.items())
     centerlines_by_id: dict[int, tuple[tuple[float, float], ...]] = {}
@@ -129,7 +160,7 @@ def _verify_realized_route_intersections(
     }
 
     crossing_mode = str(crossing_plan_info.get("crossing_mode", "") or "").strip().lower()
-    allow_unexpected = crossing_mode == "lidar-pure" or not bool(
+    allow_unexpected = is_lidar_mode(crossing_mode) or not bool(
         crossing_plan_info.get("allow_only_expected_crossings", True)
     )
     realized: list[dict[str, object]] = []
@@ -240,6 +271,7 @@ def _verify_realized_route_intersections(
                             "crossing_footprint_polygon_um": [],
                             "crossing_footprint_blockers": [],
                             "expected_pair": bool(pair_expected),
+                            "planned": _planned_flag(planned_pairs, net_id_a, net_id_b),
                             "perpendicular": False,
                             "classification": "illegal_unexpected_crossing",
                             "reason": "collinear_route_overlap",
@@ -416,7 +448,7 @@ def _verify_realized_route_intersections(
                         footprint_axis_u = axis_u
                         footprint_axis_v = axis_v
                         if (
-                            crossing_mode == "lidar-pure"
+                            is_lidar_mode(crossing_mode)
                             and pair_allowed
                             and (not perpendicular or not footprint_straight)
                         ):
@@ -549,6 +581,7 @@ def _verify_realized_route_intersections(
                         ],
                         "crossing_footprint_blockers": footprint_blockers,
                         "expected_pair": bool(pair_expected),
+                        "planned": _planned_flag(planned_pairs, net_id_a, net_id_b),
                         "perpendicular": bool(perpendicular),
                         "classification": classification,
                     }
@@ -637,7 +670,7 @@ def _verify_realized_route_intersections(
                 if isinstance(value, int)
             }
             if (
-                crossing_mode == "lidar-pure"
+                is_lidar_mode(crossing_mode)
                 and crossing_a.get("degraded_reason") is not None
                 and crossing_b.get("degraded_reason") is not None
                 and ids_a.intersection(ids_b)
@@ -714,6 +747,7 @@ def _populate_realized_intersections_from_native_crossing_events(
         crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0
     )
 
+    planned_pairs = _planned_pairs_from_plan_info(crossing_plan_info)
     realized: list[dict[str, object]] = []
     seen: set[tuple[int, int, int, int]] = set()
     for raw_event in native_crossing_events:
@@ -864,6 +898,7 @@ def _populate_realized_intersections_from_native_crossing_events(
                 ],
                 "crossing_footprint_blockers": [],
                 "expected_pair": True,
+                "planned": _planned_flag(planned_pairs, net_id_a, net_id_b),
                 "perpendicular": True,
                 "classification": "legal_native_crossing",
                 "source": "native_crossing_events",

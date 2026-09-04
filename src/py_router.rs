@@ -21,7 +21,7 @@ use crate::auto_meander::{
     AutoMeanderConfig, AutoMeanderPlanningProfile, AutoMeanderSidePolicy, DenseOccupancyPrefix,
     SparseCellIndex,
 };
-use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext};
+use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext, CrossingGuidance};
 use crate::geometry_realization::{
     anchored_tilt_scale_candidate as anchored_tilt_scale_candidate_rs,
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
@@ -599,6 +599,8 @@ pub struct PyRouteResult {
     pub crossing_reject_wrong_order: usize,
     #[pyo3(get)]
     pub crossing_reject_unexpected_owner: usize,
+    #[pyo3(get)]
+    pub crossing_accepted_planned: usize,
     #[pyo3(get)]
     pub crossing_reject_unmatched_owner: usize,
     #[pyo3(get)]
@@ -3287,16 +3289,28 @@ impl PyPhotonicRouter {
         Ok(cfg)
     }
 
+    /// Builds the per-search crossing config. Contribution 1 (crossing-guided
+    /// search) enters here and only here: when guidance is set, every partner
+    /// that forms a planned pair with `net_id` gets the planned crossing
+    /// price as its `crossing_loss_override`; without guidance (lidar-pure)
+    /// no partner carries an override and pricing is the baseline's.
     fn crossing_search_config(
         &self,
         net_id: u64,
-        partners: Vec<CrossingSearchPartner>,
+        mut partners: Vec<CrossingSearchPartner>,
         crossing_cfg: &CrossingConfig,
         target: State,
         target_port_um: Option<(f64, f64)>,
         crossing_loss_override: Option<f64>,
         require_all_partners_override: Option<bool>,
     ) -> CrossingSearchConfig {
+        if let Some(guidance) = self.crossing_context.guidance() {
+            for partner in &mut partners {
+                if guidance.is_planned_pair(net_id, partner.net_id) {
+                    partner.crossing_loss_override = Some(guidance.planned_crossing_loss);
+                }
+            }
+        }
         CrossingSearchConfig {
             net_id,
             partners,
@@ -4825,6 +4839,7 @@ impl PyPhotonicRouter {
                                     .committed_target_terminal_bump_guards
                                     .get(&partner_id)
                                     .copied(),
+                                crossing_loss_override: None,
                             })
                     })
                     .collect()
@@ -4841,6 +4856,7 @@ impl PyPhotonicRouter {
                                     .committed_target_terminal_bump_guards
                                     .get(partner_id)
                                     .copied(),
+                                crossing_loss_override: None,
                             })
                     })
                     .collect()
@@ -5030,7 +5046,8 @@ impl PyPhotonicRouter {
             // so a post-search reject names its rule (harness step 5).
             let blockers =
                 self.crossing_reservation_blockers(net_id, &crossing_events, opened_cell_keys);
-            let overlapping = Self::crossing_partners_with_overlapping_reservations(&crossing_events);
+            let overlapping =
+                Self::crossing_partners_with_overlapping_reservations(&crossing_events);
             let mut static_blocker_cells: Vec<(i32, i32)> = Vec::new();
             let mut dynamic_blocker_cells: Vec<((i32, i32), u64)> = Vec::new();
             for event in &crossing_events {
@@ -5136,6 +5153,7 @@ impl PyPhotonicRouter {
                             .committed_target_terminal_bump_guards
                             .get(partner_id)
                             .copied(),
+                        crossing_loss_override: None,
                     })
             })
             .collect();
@@ -5927,8 +5945,7 @@ impl PyPhotonicRouter {
                 return;
             }
         }
-        let route_grid_centerline =
-            self.grid_waypoints_to_centerline(&route.compressed_waypoints);
+        let route_grid_centerline = self.grid_waypoints_to_centerline(&route.compressed_waypoints);
         let route_realized = self
             .routing_centerline_for_route(route, source_port_um, target_port_um)
             .unwrap_or_default();
@@ -6195,6 +6212,7 @@ impl PyPhotonicRouter {
                             .committed_target_terminal_bump_guards
                             .get(&partner_id)
                             .copied(),
+                        crossing_loss_override: None,
                     })
             })
             .collect();
@@ -8184,14 +8202,15 @@ impl PyPhotonicRouter {
                             realized_blockers.allowed_overlap_cells(),
                         )
                 } else {
-                    self.obstacle_map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
-                        net_id,
-                        &corrected_core_cells,
-                        &corrected_blocked_cells,
-                        clearance_exempt_cells,
-                        &realized_blockers.shared_clear_nets,
-                        realized_blockers.allowed_overlap_cells(),
-                    )
+                    self.obstacle_map
+                        .can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+                            net_id,
+                            &corrected_core_cells,
+                            &corrected_blocked_cells,
+                            clearance_exempt_cells,
+                            &realized_blockers.shared_clear_nets,
+                            realized_blockers.allowed_overlap_cells(),
+                        )
                 };
             if !commit_ok {
                 let owners = sorted_other_owners_for_cells(
@@ -8398,14 +8417,15 @@ impl PyPhotonicRouter {
                         realized_blockers.allowed_overlap_cells(),
                     )
             } else {
-                self.obstacle_map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
-                    net_id,
-                    &merged_core_cells,
-                    &merged_blocked_cells,
-                    &commit_clearance_exempt_cell_vec,
-                    &realized_blockers.shared_clear_nets,
-                    realized_blockers.allowed_overlap_cells(),
-                )
+                self.obstacle_map
+                    .can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+                        net_id,
+                        &merged_core_cells,
+                        &merged_blocked_cells,
+                        &commit_clearance_exempt_cell_vec,
+                        &realized_blockers.shared_clear_nets,
+                        realized_blockers.allowed_overlap_cells(),
+                    )
             };
             if commit_ok {
                 if trace_endpoint_bumps {
@@ -8605,14 +8625,17 @@ impl PyPhotonicRouter {
             let dynamic_blockers = realized_blockers.blockers.clone();
             if out_of_bounds.is_empty() && static_blockers.is_empty() && dynamic_blockers.is_empty()
             {
-                if self.obstacle_map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
-                    net_id,
-                    &corrected_core_cells,
-                    &corrected_blocked_cells,
-                    &correction_clearance_exempt_cells,
-                    &realized_blockers.shared_clear_nets,
-                    realized_blockers.allowed_overlap_cells(),
-                ) {
+                if self
+                    .obstacle_map
+                    .can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+                        net_id,
+                        &corrected_core_cells,
+                        &corrected_blocked_cells,
+                        &correction_clearance_exempt_cells,
+                        &realized_blockers.shared_clear_nets,
+                        realized_blockers.allowed_overlap_cells(),
+                    )
+                {
                     if trace_endpoint_bumps {
                         println!(
                             "endpoint_bump_trace net_id={net_id} candidate=normal_segment label=normal_segment status=accept core_cells={} core_bbox={} blocked_cells={} blocked_bbox={}",
@@ -8803,14 +8826,16 @@ impl PyPhotonicRouter {
                 continue;
             }
 
-            let commit_ok = self.obstacle_map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
-                net_id,
-                &candidate_core_cells,
-                &candidate_blocked_cells,
-                clearance_exempt_cells,
-                &realized_blockers.shared_clear_nets,
-                realized_blockers.allowed_overlap_cells(),
-            );
+            let commit_ok = self
+                .obstacle_map
+                .can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+                    net_id,
+                    &candidate_core_cells,
+                    &candidate_blocked_cells,
+                    clearance_exempt_cells,
+                    &realized_blockers.shared_clear_nets,
+                    realized_blockers.allowed_overlap_cells(),
+                );
             if commit_ok {
                 if trace_endpoint_bumps {
                     println!(
@@ -12235,6 +12260,37 @@ impl PyPhotonicRouter {
 
     fn clear_crossing_constraints(&mut self) {
         self.crossing_context.clear_constraints();
+    }
+
+    /// Contribution 1 (crossing-guided search): planned pairs from the
+    /// topology plan and the search price of a planned crossing. Soft
+    /// guidance only -- pricing in `crossing_search_config`; never a
+    /// whitelist (unplanned crossings stay possible at `crossing_loss`).
+    #[pyo3(signature=(planned_pairs, planned_crossing_loss=0.0))]
+    fn set_crossing_guidance(
+        &mut self,
+        planned_pairs: Vec<(u64, u64)>,
+        planned_crossing_loss: f64,
+    ) -> PyResult<()> {
+        if !planned_crossing_loss.is_finite() || planned_crossing_loss < 0.0 {
+            return Err(PyValueError::new_err(
+                "planned_crossing_loss must be finite and non-negative",
+            ));
+        }
+        self.crossing_context
+            .set_guidance(CrossingGuidance::new(&planned_pairs, planned_crossing_loss));
+        Ok(())
+    }
+
+    fn clear_crossing_guidance(&mut self) {
+        self.crossing_context.clear_guidance();
+    }
+
+    fn crossing_guidance_planned_pair_count(&self) -> usize {
+        self.crossing_context
+            .guidance()
+            .map(|guidance| guidance.planned_pair_count())
+            .unwrap_or(0)
     }
 
     fn crossing_expected_count(&self, net_id: u64) -> u32 {
@@ -16451,6 +16507,7 @@ fn convert_result(
         crossing_reject_margin: r.stats.crossing_reject_margin,
         crossing_reject_wrong_order: r.stats.crossing_reject_wrong_order,
         crossing_reject_unexpected_owner: r.stats.crossing_reject_unexpected_owner,
+        crossing_accepted_planned: r.stats.crossing_accepted_planned,
         crossing_reject_unmatched_owner: r.stats.crossing_reject_unmatched_owner,
         crossing_reject_unmatched_centerline: r.stats.crossing_reject_unmatched_centerline,
         crossing_reject_unmatched_footprint: r.stats.crossing_reject_unmatched_footprint,
@@ -16621,6 +16678,7 @@ fn to_route_result(route: &PyRouteResult) -> RouteResult {
             crossing_reject_margin: route.crossing_reject_margin,
             crossing_reject_wrong_order: route.crossing_reject_wrong_order,
             crossing_reject_unexpected_owner: route.crossing_reject_unexpected_owner,
+            crossing_accepted_planned: route.crossing_accepted_planned,
             crossing_reject_unmatched_owner: route.crossing_reject_unmatched_owner,
             crossing_reject_unmatched_centerline: route.crossing_reject_unmatched_centerline,
             crossing_reject_unmatched_footprint: route.crossing_reject_unmatched_footprint,
@@ -17595,14 +17653,20 @@ mod tests {
             .committed_realized_center_routes
             .insert(1, vec![(10.0, 0.0), (10.0, 30.0)]);
 
-        let valid = router.crossing_violations_for_realized_centerline(2, &route_with_bend_after(2));
+        let valid =
+            router.crossing_violations_for_realized_centerline(2, &route_with_bend_after(2));
         assert!(
             valid.is_empty(),
             "two pure straight cells after the crossing point, then a bend, must realize a valid crossing; got {valid:?}"
         );
 
-        let invalid = router.crossing_violations_for_realized_centerline(2, &route_with_bend_after(1));
-        assert_eq!(invalid.len(), 1, "one straight cell after the crossing is inside the crossing element");
+        let invalid =
+            router.crossing_violations_for_realized_centerline(2, &route_with_bend_after(1));
+        assert_eq!(
+            invalid.len(),
+            1,
+            "one straight cell after the crossing is inside the crossing element"
+        );
         assert_eq!(invalid[0].partner_net_id, 1);
         assert_eq!(invalid[0].reason, "insufficient_straight_margin");
     }
@@ -17675,13 +17739,31 @@ mod tests {
 
         // 3 cells after the crossing point: >= half_size (2) -> legal, as the
         // kernel and the realized validator already say
-        let invalid = router.invalid_crossing_intersections_for_route(2, &route_with_corner_at(13), &partner_ids);
-        assert!(invalid.is_empty(), "3 straight cells after the crossing must pass the grid check; got {invalid:?}");
+        let invalid = router.invalid_crossing_intersections_for_route(
+            2,
+            &route_with_corner_at(13),
+            &partner_ids,
+        );
+        assert!(
+            invalid.is_empty(),
+            "3 straight cells after the crossing must pass the grid check; got {invalid:?}"
+        );
         // exactly half_size: still legal
-        let invalid = router.invalid_crossing_intersections_for_route(2, &route_with_corner_at(12), &partner_ids);
-        assert!(invalid.is_empty(), "2 straight cells after the crossing must pass the grid check; got {invalid:?}");
+        let invalid = router.invalid_crossing_intersections_for_route(
+            2,
+            &route_with_corner_at(12),
+            &partner_ids,
+        );
+        assert!(
+            invalid.is_empty(),
+            "2 straight cells after the crossing must pass the grid check; got {invalid:?}"
+        );
         // 1 cell: inside the crossing element -> invalid
-        let invalid = router.invalid_crossing_intersections_for_route(2, &route_with_corner_at(11), &partner_ids);
+        let invalid = router.invalid_crossing_intersections_for_route(
+            2,
+            &route_with_corner_at(11),
+            &partner_ids,
+        );
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0].reason, "insufficient_straight_margin");
         // before the crossing the kernel still counts required_margin (5):
@@ -17690,8 +17772,13 @@ mod tests {
             compressed_waypoints: vec![(7, 10), (20, 10)],
             ..route_with_corner_at(13)
         };
-        let invalid = router.invalid_crossing_intersections_for_route(2, &short_before, &partner_ids);
-        assert_eq!(invalid.len(), 1, "3 cells before the crossing are less than required_margin");
+        let invalid =
+            router.invalid_crossing_intersections_for_route(2, &short_before, &partner_ids);
+        assert_eq!(
+            invalid.len(),
+            1,
+            "3 cells before the crossing are less than required_margin"
+        );
     }
 
     #[test]
