@@ -85,16 +85,21 @@ def analyze_graph_topology(
     node_ranks: Mapping[str, int] | None = None,
     edge_ranks: Mapping[str, Mapping[str, int]] | None = None,
 ) -> TopologyAnalysisResult:
-    """Analyze topology annotations on an existing Python routing graph."""
+    """Analyze topology annotations on an existing Python routing graph.
+
+    Explicit depths/ranks are used when given; `None` OR an empty mapping
+    means "not provided, derive" (the multiportmmi benchmarks ship empty
+    metadata dicts, and an empty mapping cannot rank anything anyway).
+    """
     order = graph.topological_order()
     resolved_depths = (
         {str(name): int(depth) for name, depth in node_depths.items()}
-        if node_depths is not None
+        if node_depths
         else _derive_node_depths(order, graph.incoming_edges, graph.edges)
     )
     resolved_ranks = (
         {str(name): int(rank) for name, rank in node_ranks.items()}
-        if node_ranks is not None
+        if node_ranks
         else _derive_node_ranks_from_placements(schematic, resolved_depths)
     )
 
