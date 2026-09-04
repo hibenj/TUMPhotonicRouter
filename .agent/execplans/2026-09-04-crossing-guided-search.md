@@ -93,7 +93,29 @@ Later ideas, not now: use the plan when routing the EARLIER net of a pair (it kn
 
   Reading: S2 changes NO route on any benchmark (lengths equal to 0.1 um) -- no final path ever crossed a planned partner twice under S1 either; the budget only re-prices explored detours. Its cost is the mask in the Tier-2 key: negligible up to mm32, +7.5 % expansions / +86 s on benes32 (the most partners per net, the most over-budget detours). So S2 buys exact plan semantics in the cost function and nothing measurable in the layouts; the owner decides the default of `PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET` (1 = exact, 0 = S1 pricing).
 - [x] S3 implementation (18:10-18:40, owner "mach S3, tests zuerst"): `translation/route_order.py` -- `depth_by_node_from_jobs` (the batch-graph depth, extracted from the session) and `order_route_jobs(net_order=…)` with `topological` (default = baseline: depth, declaration), `topological-span` (depth, shortest grid span first = the 2026-08-27 `PHOTONIC_ROUTER_LAYER_ORDER=span` experiment, now an option and the env var is gone), `plan-crossings-desc` / `plan-crossings-asc` (depth, most/fewest planned crossings first; needs the lidar-guided plan, otherwise a loud ValueError). Flow flag `--net-order`, plumbed like `heuristic_mode`; stdout `net order: …` when not default. Tests first: `tests/test_route_order.py` (6: depth, each rule, tiebreaks, input guards), flow test `test_plan_crossing_net_order_needs_the_guided_mode`. Prior evidence to keep in mind: on 2026-08-27 (old kernel) span-ascending as a global default broke lidar-pure Benes crossing discovery (8/16 verification errors) -- the legal kernel of 2026-09-03 may or may not have changed that.
-- [ ] S3 experiment (guided mode, budget default): orders `topological-span`, `plan-crossings-desc`, `plan-crossings-asc` on the ladder first (`scratchpad/s3.summary`), the 32x32s for whatever survives; compare with the S1 `topological` runs (attempts/failures/repairs, crossings, length, expansions).
+- [x] S3 ladder (21:00-21:15, guided mode, budget default 0, `scratchpad/s3.summary`, all rc=0, all verifications 0 errors, watchdog never fired; "topological" = the S1 runs of 16:20):
+
+| benchmark | order | att/fail/rep | expanded (vs topological) | A* s | crossings (unplanned) | length um |
+|---|---|---|---|---|---|---|
+| mm8 | topological | 111/0/0 | 1 566 887 | 5.1 | 33 (0) | 24 823.0 |
+| mm8 | topological-span | 111/0/0 | 1 706 511 (+9 %) | 5.6 | 33 (0) | 24 693.9 |
+| mm8 | **plan-crossings-desc** | 111/0/0 | 1 280 318 (-18 %) | 3.9 | 33 (0) | 24 811.7 |
+| mm8 | plan-crossings-asc | 119/5/1 | 2 326 103 (+48 %) | 27.0 | 35 (2) | 24 832.4 |
+| benes8 | topological | 52/4/0 | 3 650 808 | 25.2 | 16 (0) | 26 171.0 |
+| benes8 | topological-span | 48/0/0 | 7 586 465 (+108 %) | 27.5 | 16 (0) | 26 208.7 |
+| benes8 | **plan-crossings-desc** | 48/0/0 | 190 890 (-95 %) | 0.5 | 16 (0) | 26 064.1 |
+| benes8 | plan-crossings-asc | 48/0/0 | 7 586 465 (+108 %) | 27.4 | 16 (0) | 26 208.7 |
+| mm16 | topological | 227/2/1 | 6 903 182 | 18.5 | 65 (2) | 89 506.8 |
+| mm16 | topological-span | 224/1/0 | 4 597 433 (-33 %) | 13.3 | 63 (0) | 89 397.1 |
+| mm16 | **plan-crossings-desc** | 223/0/0 | 5 335 411 (-23 %) | 14.6 | 63 (0) | 89 497.8 |
+| mm16 | plan-crossings-asc | 228/1/2 | 6 016 243 (-13 %) | 67 (4) | 89 515.3 |
+| benes16 | topological | 136/8/0 | 18 862 560 | 99.1 | 88 (0) | 77 202.4 |
+| benes16 | topological-span | 128/0/0 | 23 633 102 (+25 %) | 94.5 | 88 (0) | 77 221.0 |
+| benes16 | **plan-crossings-desc** | 129/1/0 | 10 342 960 (-45 %) | 38.7 | 88 (0) | 76 993.4 |
+| benes16 | plan-crossings-asc | 128/0/0 | 23 633 102 (+25 %) | 94.3 | 88 (0) | 77 221.0 |
+
+  Reading: `plan-crossings-desc` (most planned crossings first) wins on every benchmark -- fewer expansions (-18 % to -95 %), fewer failed attempts (benes8 4 -> 0, benes16 8 -> 1, mm16 2 -> 0), no repairs, and on mm16 the braid is gone: 63 crossings = the plan's minimum, 0 unplanned, without any braid repair. Route length equal or shorter (benes16 -209 um). Mechanism: a net with many planned crossings routed first is a greedy straight line with nothing to legalize; each partner later crosses one committed straight once. `asc` is the mirror image (worse); `span` is mixed (+108 % on benes8 -- the 2026-08-27 finding in a milder form, no verification errors on the legal kernel). benes8 asc == span exactly (the same order there).
+- [ ] S3 32x32 with `plan-crossings-desc` (`scratchpad/s3b.summary`).
 
 ## Surprises & Discoveries
 
