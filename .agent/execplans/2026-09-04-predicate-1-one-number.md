@@ -12,15 +12,18 @@ Owner decisions taken: 2026-09-03 "Punkt 2" (debt = half_size after the crossing
 
 ## Progress
 
-- [ ] S1 kernel: real straight run after turn primitives (`primitive_terminal_straight_run_cells` minus trim); route-before requirement = `half_size`. Tests: crossing 1/2 cells after a 90-degree turn (reject/accept), 1 cell after a 45-degree turn (accept: 1 real + 1), H/V and diagonal.
-- [ ] S2 kernel: partner margin = polyline margin minus corner trim (bend radius from the crossing config), requirement `half_size`. Tests: partner 90-degree corner at 4/5 cells (reject/accept), 45-degree corner at 3/4 cells (reject/accept).
-- [ ] S3 kernel: key cap `half_size` (straight_run, pending), pre-hook arm-pays gate removed, `required_margin`/`capped_required_margin` plumbing replaced by `half_size`; traces print `half_size`.
-- [ ] S4 post-search: `invalid_crossing_intersections_for_route` uses the same trims and `half_size` on both sides; repair keepout radius stays `half_size + bend_radius` explicitly.
+- [x] S1 (`85944aa`) kernel: real straight run after turn primitives (`primitive_terminal_straight_run_cells` minus trim); route-before requirement = `half_size`. Tests: crossing 1/2 cells after a 90-degree turn (reject/accept), 1 cell after a 45-degree turn (accept: 1 real + 1), H/V and diagonal.
+- [x] S2 (`6d9d613`) kernel: partner margin = polyline margin minus corner trim (bend radius from the crossing config), requirement `half_size`. Tests: partner 90-degree corner at 4/5 cells (reject/accept), 45-degree corner at 3/4 cells (reject/accept).
+- [x] S3 (`a68a7fd`) kernel: key cap `half_size` (straight_run, pending), pre-hook arm-pays gate removed, `required_margin`/`capped_required_margin` plumbing replaced by `half_size`; traces print `half_size`.
+- [x] S4 (`5b92b30`) post-search: `invalid_crossing_intersections_for_route` uses the same trims and `half_size` on both sides; repair keepout radius stays `half_size + bend_radius` explicitly.
 - [ ] S5 validation: cargo suite, pytest baseline, ladder, both 32x32 full (verification-clean, attempts/failures/repairs recorded), timing table vs the 2026-09-03 final guard.
 
 ## Surprises & Discoveries
 
-(none yet)
+- (2026-09-04, S1) The Tier-1/Tier-2 invariant "default extension <=> stored densely" broke: after a 90-degree turn a Tier-2 node now carries 0 real straight cells (default extension) and hit the Tier-1 fast path's `unreachable!`. Fix: the fast path additionally requires a dense parent; Tier-2 nodes with a default extension stay on the Tier-2 path (as they did before with straight_run 3). No semantic change.
+- (2026-09-04, S3) `vertical_descent_refuses_two_crossings_four_cells_apart` was pinned to the OLD over-strict rule: with half_size real straight cells the search finds the legal alternative -- crossing partner A at x=30 and partner B at x=35, a lateral jog of 5 cells, so both +-2 windows are disjoint. Re-pinned as `vertical_descent_four_cells_apart_jogs_so_the_windows_are_disjoint` (route exists, crossings >= 5 cells apart laterally, same-x attempts still refused). The 3-cell case stays unroutable (no room for the jog).
+- (2026-09-04, S4) Yesterday's grid-check test assumed 3 grid cells before a 45-degree corner suffice; with the fillet trim (1.24 cells at radius 3) that is 1.76 real cells -- the realized validator's verdict too. Re-pinned: 45-degree corner at 4/3 cells (pass/fail), 90-degree at 5/4, terminal 2/1. Kernel routes always satisfy this (debt half_size + a full turn arm before any corner).
+- Not changed (by design): `crossing_required_margin_cells` (= half_size + bend radius) survives only as a DISTANCE for repair keepout radius, partner lookup bbox expansion, candidate-key/spacing-history heuristics -- never as a straight requirement. `min_straight_cells_per_crossing` untouched (open question for the owner).
 
 ## Decision Log
 
