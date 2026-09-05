@@ -141,7 +141,11 @@ silently.*
 - Runs: `--debug-stop-after-route` granularity, and a per-net watchdog of
   3 minutes -- a net that has not advanced in 3 minutes is the finding; a 3 h
   timeout is not. *Mistake: 3 h timeouts and repair cascades that grind for
-  half an hour with zero information.*
+  half an hour with zero information.* The watchdog must read the SAME log
+  file the run writes (`native_route_start index=` lines) -- check its file
+  pattern before trusting a kill. *Mistake: 2026-09-04 21:11, a watchdog
+  on a non-existent file name killed a healthy benes32 run after 200 s of
+  "no progress"; only the rerun produced the real finding (net 282).*
 
 ## Step 7 -- Record
 

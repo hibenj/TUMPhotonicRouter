@@ -8,6 +8,7 @@ Usage:
   python scripts/path_investigation/grid_um.py OX OY SIZE cell X Y      # cell centre -> um
   python scripts/path_investigation/grid_um.py OX OY SIZE um X_UM Y_UM  # um -> cell
 """
+
 from __future__ import annotations
 
 import sys
