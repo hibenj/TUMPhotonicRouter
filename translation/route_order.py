@@ -14,6 +14,9 @@ earlier net's greedy shortest path can seal a sibling's target pocket
 - ``plan-crossings-desc`` / ``plan-crossings-asc``: depth, then the number
   of planned crossings of the net (topology plan; needs ``lidar-guided``),
   most/fewest first, declaration tiebreak.
+- ``plan-crossings-hybrid``: ``plan-crossings-desc`` inside depth layers of
+  at most ``HYBRID_DESC_MAX_LAYER_NETS`` nets, ``topological`` in larger
+  layers (the 32x32 cases).
 
 Depth is derived from the batch's own net graph so every benchmark and
 every crossing mode has it (benchmark ``NODE_DEPTHS`` metadata is optional
@@ -39,7 +42,16 @@ NET_ORDERS: tuple[str, ...] = (
     "topological-span",
     "plan-crossings-asc",
     "plan-crossings-desc",
+    "plan-crossings-hybrid",
 )
+
+# plan-crossings-hybrid: most planned crossings first inside a depth layer
+# with at most this many nets, declaration order in larger layers. The S3
+# ladder (2026-09-04) showed desc winning on every layer of up to 16 nets
+# (benes8 -95 %, mm16 -23 % expansions, the mm16 braid gone) and stalling
+# benes_32x32's 32-net middle stage, where the widest-span nets committed
+# first form a dense pack of steep diagonals the shorter nets cannot cross.
+HYBRID_DESC_MAX_LAYER_NETS = 16
 
 
 def default_net_order(*, preplaced_crossing_grids: bool) -> str:
@@ -130,13 +142,22 @@ def order_route_jobs(
         raise ValueError(
             f"net_order {order!r} needs the topology plan (planned_crossings_by_net_id)"
         )
-    sign = -1 if order == "plan-crossings-desc" else 1
+    sign = 1 if order == "plan-crossings-asc" else -1
+    nets_per_depth: dict[int, int] = {}
+    for job in jobs:
+        nets_per_depth[depth(job)] = nets_per_depth.get(depth(job), 0) + 1
+
+    def planned_key(job: RouteJob) -> int:
+        large_layer = nets_per_depth[depth(job)] > HYBRID_DESC_MAX_LAYER_NETS
+        if order == "plan-crossings-hybrid" and large_layer:
+            return 0  # large layer: declaration order decides
+        return sign * int(planned_crossings_by_net_id.get(int(job.net_id), 0))
 
     return sorted(
         jobs,
         key=lambda job: (
             depth(job),
-            sign * int(planned_crossings_by_net_id.get(int(job.net_id), 0)),
+            planned_key(job),
             int(job.route_index),
         ),
     )

@@ -155,3 +155,15 @@ Later ideas, not now: use the plan when routing the EARLIER net of a pair (it kn
 | benes_32x32 | lidar-pure | 340/16/2 | 187,628,317 | 984.7 | 416 | 229,985.6 |
 | benes_32x32 | lidar-guided | 340/16/2 | 124,581,451 | 653.4 | 416 | 230,083.9 |
 
+**S3 follow-up, 2026-09-07 evening (owner: tackle the open parts on the side): `--net-order plan-crossings-hybrid`** = `plan-crossings-desc` inside depth layers of at most `HYBRID_DESC_MAX_LAYER_NETS` = 16 nets, declaration order in larger layers (`translation/route_order.py`; unit test `test_hybrid_order_is_desc_in_small_layers_and_declaration_in_large_ones`). Rationale: the S3 evidence separates by layer size, not by benchmark -- desc won on every layer of up to 16 nets and stalled the 32-net middle stage of benes_32x32. Measured on the paper base, lidar-guided, all verifications 0 errors:
+
+| benchmark | S1 guided (topological) expanded / att/fail/rep / crossings | hybrid expanded / att/fail/rep / crossings | change |
+|---|---|---|---|
+| multiportmmi_8x8 | 1 566 887 / 111/0/0 / 33 | 1 280 318 / 111/0/0 / 33 | -18 % |
+| benes_8x8 | 3 650 808 / 52/4/0 / 16 | 190 890 / 48/0/0 / 16 | -95 %, no failures |
+| multiportmmi_16x16 | 6 903 182 / 227/2/1 / 65 | 5 335 411 / 223/0/0 / 63 | -23 %, braid gone, no repair |
+| benes_16x16 | 18 862 560 / 136/8/0 / 88 | 10 342 960 / 129/1/0 / 88 | -45 %, 1 failure instead of 8 |
+| multiportmmi_32x32 | 45 996 755 / 457/0/5 / 121 | identical (32-net layers -> declaration order) | 0 |
+| benes_32x32 | 124 581 451 / 340/16/2 / 416 | identical, 657 s | 0 |
+
+Verdict: strictly better than S1 on every ladder benchmark and identical on the 32x32 cases -- a safe candidate for contribution 1's default net order. Left opt-in: making it the default changes contribution 1's ladder layouts (mm16 65 -> 63 crossings), which is the owner's call for the paper (the S1 claim "identical layouts to the baseline with fewer expansions" would become "fewer crossings, fewer failures and fewer expansions"). The net-282 harness investigation is not needed for this rule and stays open.

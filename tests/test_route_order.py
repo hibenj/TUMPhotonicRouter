@@ -106,6 +106,7 @@ def test_orders_require_their_inputs_and_reject_unknown_names():
         "topological-span",
         "plan-crossings-asc",
         "plan-crossings-desc",
+        "plan-crossings-hybrid",
     )
 
 
@@ -115,3 +116,29 @@ def test_default_net_order_is_span_only_for_preplaced_crossing_grids() -> None:
     assert default_net_order(preplaced_crossing_grids=True) == "topological-span"
     assert default_net_order(preplaced_crossing_grids=False) == "topological"
     assert normalize_net_order(default_net_order(preplaced_crossing_grids=True)) in NET_ORDERS
+
+
+def test_hybrid_order_is_desc_in_small_layers_and_declaration_in_large_ones() -> None:
+    """plan-crossings-hybrid: desc where the layer has at most
+    HYBRID_DESC_MAX_LAYER_NETS nets, declaration order otherwise."""
+    from translation.route_order import HYBRID_DESC_MAX_LAYER_NETS
+
+    big = [_job(100 + i, f"a{i}", f"b{i}") for i in range(HYBRID_DESC_MAX_LAYER_NETS + 1)]
+    small = [_job(200 + i, f"c{i}", f"d{i}") for i in range(3)]
+    for i, job in enumerate(big):
+        object.__setattr__(job, "route_index", i)
+    for i, job in enumerate(small):
+        object.__setattr__(job, "route_index", 100 + i)
+    jobs = big + small
+    depths = {job.inst1: 0 for job in big} | {job.inst1: 1 for job in small}
+    planned = {job.net_id: (job.net_id % 7) for job in jobs}
+    ordered = order_route_jobs(
+        jobs, net_order="plan-crossings-hybrid", depth_by_node=depths,
+        planned_crossings_by_net_id=planned,
+    )
+    big_out = [job.net_id for job in ordered[: len(big)]]
+    small_out = [job.net_id for job in ordered[len(big) :]]
+    assert big_out == [job.net_id for job in big]  # declaration order kept
+    assert [planned[n] for n in small_out] == sorted(
+        (planned[job.net_id] for job in small), reverse=True
+    )
