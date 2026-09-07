@@ -24,7 +24,7 @@ from translation.layout_from_schematic import layout_from_schematic
 
 get_generic_pdk().activate()
 
-BENES_EXPECTED_CROSSINGS = {"benes_4x4": 2, "benes_8x8": 16, "benes_16x16": 88}
+BENES_EXPECTED_CROSSINGS = {"benes_4x4": 2, "benes_8x8": 16, "benes_16x16": 88, "benes_32x32": 416}
 
 
 def _benchmark(name: str):
@@ -80,10 +80,14 @@ def test_participating_runs_cover_every_crossing(name: str) -> None:
 
 @pytest.mark.parametrize("name", sorted(BENES_EXPECTED_CROSSINGS))
 def test_grid_ports_and_crossings_match_the_stage_plan(name: str) -> None:
+    """Compact lattice (fan_mode "router"); the stretched mode's ports are
+    covered by test_stretched_grid_puts_every_crossing_at_the_midpoint..."""
     _schematic, plan = _benchmark(name)
     for stage_plan in plan.stages.values():
         for run in pcg.split_stage_into_participating_runs(stage_plan):
-            build = pcg.build_crossing_grid_component(run)
+            build = pcg.build_crossing_grid_component(
+                run, pcg.CrossingGridGeometry(fan_mode="router")
+            )
             component = build.component
             lane_count = len(run.initial_edge_order)
             assert build.crossing_count == len(run.events)
@@ -103,20 +107,87 @@ def test_grid_ports_and_crossings_match_the_stage_plan(name: str) -> None:
             assert all(length > 0.0 for length in build.lane_length_um_by_net_name.values())
 
 
+@pytest.mark.parametrize("fan_mode", ["router", "stretched"])
 @pytest.mark.parametrize("name", sorted(BENES_EXPECTED_CROSSINGS))
-def test_derived_grids_have_no_internal_waveguide_collisions(name: str) -> None:
+def test_derived_grids_have_no_internal_waveguide_collisions(name: str, fan_mode: str) -> None:
     schematic, plan = _benchmark(name)
-    derived = pcg.derive_preplaced_crossing_layout(schematic, layout_from_schematic(schematic), plan)
+    geometry = pcg.CrossingGridGeometry(fan_mode=fan_mode)
+    derived = pcg.derive_preplaced_crossing_layout(
+        schematic, layout_from_schematic(schematic), plan, geometry=geometry
+    )
     assert derived.placed_crossing_count == BENES_EXPECTED_CROSSINGS[name]
     assert derived.expected_crossing_count == BENES_EXPECTED_CROSSINGS[name]
     for instance_name, build in derived.grid_builds.items():
         assert _internal_overlap_count(build.component) == 0, instance_name
 
 
+def _crossing_centers(component) -> list[tuple[float, float]]:
+    centers = []
+    for inst in component.insts:
+        if "crossing" in inst.cell.name:
+            box = inst.dbbox()
+            centers.append((round(float(box.center().x), 3), round(float(box.center().y), 3)))
+    return centers
+
+
+def test_stretched_grid_puts_every_crossing_at_the_midpoint_of_the_rows_it_swaps() -> None:
+    """Owner rule (2026-09-07): a crossing sits at the average position of the
+    two lanes it swaps -- the midpoint of their slot rows -- and the swap
+    levels are columns spread evenly over the band."""
+    _schematic, plan = _benchmark("benes_8x8")
+    stage_plan = next(p for p in plan.stages.values() if len(p.events) == 6)
+    run = pcg.split_stage_into_participating_runs(stage_plan)[0]
+    rows = {
+        edge.net_name: 300.0 - 110.0 * i - (11.0 if i % 2 else -11.0)
+        for i, edge in enumerate(run.initial_edge_order)
+    }
+    geometry = pcg.CrossingGridGeometry(fan_mode="stretched")
+    build = pcg.build_crossing_grid_component(
+        run, geometry, entry_row_by_net=rows, band_width_um=544.5
+    )
+    centers = _crossing_centers(build.component)
+    assert len(centers) == 6
+    usable = 544.5 - 2 * geometry.band_margin_um
+    pitch = usable / 3
+    slot_rows = [rows[edge.net_name] for edge in run.initial_edge_order]
+    _movement, crossings = pcg._lane_movement(run)
+    expected = set()
+    for level, upper_slot, _upper, _lower in crossings:
+        x = -usable / 2 + (level + 0.5) * pitch
+        y = 0.5 * (slot_rows[upper_slot] + slot_rows[upper_slot + 1])
+        expected.add((round(x, 3), round(y, 3)))
+    assert set(centers) == expected
+    assert build.width_um == pytest.approx(usable)
+    assert _internal_overlap_count(build.component) == 0
+    # every lane enters on its own row and leaves on its final slot row
+    for index in range(len(run.initial_edge_order)):
+        port = build.component.ports[f"in_{index}"]
+        assert float(port.dcenter[1]) == pytest.approx(slot_rows[index])
+    for index in range(len(run.final_edge_order)):
+        port = build.component.ports[f"out_{index}"]
+        assert float(port.dcenter[1]) == pytest.approx(slot_rows[index])
+
+
+def test_stretched_grid_rejects_a_band_too_narrow_for_its_levels() -> None:
+    _schematic, plan = _benchmark("benes_8x8")
+    stage_plan = next(p for p in plan.stages.values() if len(p.events) == 6)
+    run = pcg.split_stage_into_participating_runs(stage_plan)[0]
+    rows = {edge.net_name: 300.0 - 110.0 * i for i, edge in enumerate(run.initial_edge_order)}
+    with pytest.raises(ValueError, match="per level"):
+        pcg.build_crossing_grid_component(
+            run,
+            pcg.CrossingGridGeometry(fan_mode="stretched"),
+            entry_row_by_net=rows,
+            band_width_um=100.0,
+        )
+
+
 @pytest.mark.parametrize("name", sorted(BENES_EXPECTED_CROSSINGS))
 def test_derived_schematic_splits_only_crossing_lanes(name: str) -> None:
     schematic, plan = _benchmark(name)
-    derived = pcg.derive_preplaced_crossing_layout(schematic, layout_from_schematic(schematic), plan)
+    derived = pcg.derive_preplaced_crossing_layout(
+        schematic, layout_from_schematic(schematic), plan
+    )
     original_nets = set(schematic.netlist.routes)
     derived_nets = set(derived.schematic.netlist.routes)
     split = set(derived.stub_nets_by_original_net)
@@ -127,7 +198,14 @@ def test_derived_schematic_splits_only_crossing_lanes(name: str) -> None:
         assert net_name not in derived_nets
         assert to_name in derived_nets and from_name in derived_nets
         assert derived.grid_internal_length_um_by_original_net[net_name] > 0.0
-    assert len(derived_nets) == len(original_nets) + len(split)
+    # Every added net is a segment of a split lane (tiles mode adds one
+    # ``__via<i>`` net per extra crossing of a lane; the lattice modes add
+    # exactly two nets per lane).
+    added = derived_nets - original_nets
+    assert len(added) >= 2 * len(split)
+    for net_name in added:
+        base = net_name.split("__")[0]
+        assert base in split, net_name
     for instance_name in derived.grid_instance_names:
         assert instance_name in derived.unrouted_layout.insts
     # Every grid must fit in the free band between switch columns (~535 um).

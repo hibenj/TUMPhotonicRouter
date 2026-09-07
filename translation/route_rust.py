@@ -1402,9 +1402,22 @@ class _RouteNetsRustSession:
                 count += 1
         return count
 
+    def _dense_fanout_min_ports_for(self, instance_name: str) -> int:
+        """Per-instance threshold: instances listed in
+        `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES` (comma separated) get static
+        stubs from two ports up -- the pre-placed crossing column grid needs
+        every crossing lane of a multiport MMI on a spread row, also when
+        only two of its outputs cross in a layer -- while everything else
+        (e.g. the 1x2 splitter tree) keeps the global threshold."""
+        raw = os.environ.get("PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES", "").strip()
+        if raw and instance_name in {name.strip() for name in raw.split(",") if name.strip()}:
+            return 2
+        return self._dense_fanout_min_ports()
+
     def _is_dense_source_fanout_instance(self, instance_name: str) -> bool:
         return any(
-            self._dense_fanout_group_size(port_specs) >= self._dense_fanout_min_ports()
+            self._dense_fanout_group_size(port_specs)
+            >= self._dense_fanout_min_ports_for(instance_name)
             for (
                 group_instance,
                 _angle,
@@ -1417,7 +1430,7 @@ class _RouteNetsRustSession:
             self._dense_fanout_group_size(
                 self.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set())
             )
-            >= self._dense_fanout_min_ports()
+            >= self._dense_fanout_min_ports_for(instance_name)
         )
 
     def _is_dense_target_fanout_instance(self, instance_name: str) -> bool:
@@ -2173,7 +2186,7 @@ class _RouteNetsRustSession:
                     ordered_items.append((port_spec, lateral_cell, state))
                 ordered_items.sort(key=lambda item: (item[1], item[0]))
                 count = len(ordered_items)
-                if count < self._dense_fanout_min_ports() or step_y != 0:
+                if count < self._dense_fanout_min_ports_for(instance_name) or step_y != 0:
                     continue
 
                 def add_two_bend_anchor(
@@ -8065,6 +8078,34 @@ class _RouteNetsRustSession:
                 route_nets_timings_s=dict(self.route_nets_timings_s),
             )
         return debug_artifacts
+
+
+def static_fanout_anchors_um(
+    unrouted_layout: Component,
+    schematic: Schematic,
+    **session_kwargs: Any,
+) -> dict[str, tuple[float, float]]:
+    """The router's static fan-out anchors for ``unrouted_layout`` WITHOUT routing.
+
+    Runs the same setup a routing session performs before its first search
+    (static obstacle map, grid, route jobs, dense-port clustering) and returns
+    ``{port_spec: (x_um, y_um)}`` for every port that gets a static stub -- the
+    point a route to/from that port actually starts from. Pre-placed crossing
+    structures (contribution 2) put their entry tiles on these rows so the
+    stub and the tile line up without a jog. ``session_kwargs`` must match the
+    routing run's configuration (fanout_access_mode, bend radius, obstacle
+    config), otherwise the anchors differ.
+    """
+    session = _RouteNetsRustSession(
+        unrouted_layout=unrouted_layout, schematic=schematic, **session_kwargs
+    )
+    obstacle_map, _crossing_device_info, _svg = session._build_static_obstacle_context()
+    session._configure_router_and_grid(obstacle_map)
+    session._build_route_jobs_and_fanout_clustering(schematic.netlist.routes)
+    return {
+        spec: (float(anchor.center_um[0]), float(anchor.center_um[1]))
+        for spec, anchor in session.fanout_anchor_by_port_spec.items()
+    }
 
 
 def route_nets_rust(
