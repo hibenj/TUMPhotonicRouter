@@ -137,3 +137,21 @@ Later ideas, not now: use the plan when routing the EARLIER net of a pair (it kn
 **Retrospective:** measuring the plan against the realized crossings BEFORE designing settled what the contribution can and cannot claim (not crossing counts; search effort). The one bug (guidance dropped by `replace_constraints`) was caught by the cheapest possible check -- identical A* counters between the two modes on mm8 -- which argues for always printing the effective configuration and a mode-specific counter (`accepted_planned`) in the summary line. `is_lidar_mode` instead of string equality keeps the two lidar modes from drifting apart.
 
 **S2/S3 outcome (2026-09-04 evening):** S2 (per-pair budget) landed, off by default (identical layouts, +7.5 % search on benes32). S3 (`--net-order`) landed, `topological` default; `plan-crossings-desc` is a large win on the four ladder benchmarks (up to -95 % expansions, mm16 braid gone) but neutral on mm32 and breaks the benes32 middle stage (net 282 > 3 min) -- an opt-in knob with a documented failure case, and the next question for the owner (hybrid order or net-282 investigation).
+
+**Re-measured 2026-09-07 on the paper base (tag `paper-base-2026-09-07`, after the contribution 2 work; same machine, lidar-pure ladder and lidar-guided ladder back to back, benes_32x32 in the background):** every expansion count and verdict is bit-identical to the 2026-09-04 A/B table; the search is deterministic.
+
+| benchmark | mode | att/fail/rep | expanded | A* s | crossings | length um |
+|---|---|---|---|---|---|---|
+| multiportmmi_8x8 | lidar-pure | 111/0/0 | 2,838,915 | 8.7 | 33 | 24,823.0 |
+| multiportmmi_8x8 | lidar-guided | 111/0/0 | 1,566,887 | 5.0 | 33 | 24,823.0 |
+| benes_8x8 | lidar-pure | 52/4/0 | 5,786,027 | 33.7 | 16 | 26,159.7 |
+| benes_8x8 | lidar-guided | 52/4/0 | 3,650,808 | 25.6 | 16 | 26,171.0 |
+| multiportmmi_16x16 | lidar-pure | 227/2/1 | 11,951,295 | 33.1 | 65 | 89,534.9 |
+| multiportmmi_16x16 | lidar-guided | 227/2/1 | 6,903,182 | 18.8 | 65 | 89,506.8 |
+| benes_16x16 | lidar-pure | 136/8/0 | 33,011,532 | 165.1 | 88 | 77,177.0 |
+| benes_16x16 | lidar-guided | 136/8/0 | 18,862,560 | 103.4 | 88 | 77,202.4 |
+| multiportmmi_32x32 | lidar-pure | 457/0/5 | 82,225,492 | 272.3 | 121 | 334,671.9 |
+| multiportmmi_32x32 | lidar-guided | 457/0/5 | 45,996,755 | 143.4 | 121 | 334,726.8 |
+| benes_32x32 | lidar-pure | 340/16/2 | 187,628,317 | 984.7 | 416 | 229,985.6 |
+| benes_32x32 | lidar-guided | 340/16/2 | 124,581,451 | 653.4 | 416 | 230,083.9 |
+
