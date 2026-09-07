@@ -510,12 +510,16 @@ def _verify_cross_net_route_overlaps(
     min_overlap_area_um2: float = 0.0,
 ) -> int:
     overlap_count = 0
-    items = list(route_regions_by_key.items())
+    items = [(key, region) for key, region in route_regions_by_key.items() if not region.is_empty()]
+    # Bounding-box prefilter: two waveguides can only overlap where their
+    # bounding boxes do. Without it every pair pays a polygon boolean --
+    # 663k pairs and 90 s on benes_32x32 in grid mode (1152 routes) for a
+    # check that ends up empty in all but a handful of pairs.
+    bboxes = [region.bbox() for _key, region in items]
     for index, (left_key, left_region) in enumerate(items):
-        if left_region.is_empty():
-            continue
-        for right_key, right_region in items[index + 1 :]:
-            if right_region.is_empty():
+        left_bbox = bboxes[index]
+        for offset, (right_key, right_region) in enumerate(items[index + 1 :], start=index + 1):
+            if not left_bbox.overlaps(bboxes[offset]) and not left_bbox.touches(bboxes[offset]):
                 continue
             allowed_region = legal_overlap_region
             if (
@@ -594,21 +598,24 @@ def _verify_route_obstacle_overlaps(
         if residue.is_empty():
             continue
         for key, route_region in route_regions_by_key.items():
-            if (route_region & residue).is_empty():
+            touching = route_region & residue
+            if touching.is_empty():
                 continue
-            allowed_region = legal_overlap_region
             per_key_regions = legal_overlap_regions_by_key
             if legal_overlap_regions_by_layer is not None:
                 per_key_regions = legal_overlap_regions_by_layer.get(
                     layer,
                     per_key_regions,
                 )
+            # (route & obstacle) - (legal_global | per_key) equals
+            # (route & residue) - per_key, because residue already excludes
+            # legal_global and the route is part of all_routes_region; the
+            # residue is tiny while the obstacle layer is the whole chip
+            # (2026-09-07: 916 grid-mode routes on multiportmmi_32x32 spent
+            # 16 s here).
+            overlap = touching
             if per_key_regions is not None:
-                allowed_region = _combined_region(
-                    legal_overlap_region,
-                    per_key_regions.get(key, kdb.Region()),
-                )
-            overlap = (route_region & obstacle_region) - allowed_region
+                overlap = touching - per_key_regions.get(key, kdb.Region())
             if overlap.is_empty():
                 continue
             overlap_area_um2 = _region_area_um2(overlap, dbu)
