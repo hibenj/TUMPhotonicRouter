@@ -8,7 +8,8 @@ Owner (2026-09-04): first contribution on top of the lidar-pure baseline. The to
 
 **Switchability (owner, 2026-09-04 14:30, verbatim intent): the contribution must be clearly switchable on and off. Exactly one of three configurations runs at a time: (a) lidar-pure = the baseline (`--crossing-mode lidar-pure`, today's stable defaults), (b) contribution 1 = this plan, crossing-guided A* (`--crossing-mode lidar-guided`, opt-in), (c) contribution 2 = the precomputed crossing STRUCTURES (`--preplaced-crossing-grids true`, opt-in, forces router crossings off). Nothing of (b) or (c) leaks into (a): the guidance code path is entered only in the `lidar-guided` mode, `STABLE_ROUTING_FLAGS` of the benchmarks stay baseline, and the flow rejects `lidar-guided` combined with preplaced grids (they are alternative contributions, measured separately against the same baseline). Pinned by: a kernel test (empty guidance == baseline pricing), a flow test (mode combination rejected), and the benchmark verdicts under lidar-pure staying identical after the contribution lands.**
 
-Status: DESIGN DRAFT -- nothing implemented; the owner chooses the slices.
+Status: COMPLETE (S1 landed `a94750b` and is the contribution; S2 landed off by default; S3 landed opt-in) -- see Outcome at the end. The line below is the original draft header.
+Original status: DESIGN DRAFT -- nothing implemented; the owner chooses the slices.
 
 ## What the plan knows, and how good it is (measured 2026-09-04 14:20)
 

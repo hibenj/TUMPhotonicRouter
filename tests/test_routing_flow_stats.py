@@ -1721,3 +1721,71 @@ def test_plan_crossing_net_order_needs_the_guided_mode():
             crossing_mode="lidar-pure",
             net_order="plan-crossings-desc",
         )
+
+
+class _StopAtRoutingStage(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("preplaced_crossing_grids", "explicit", "expected"),
+    [
+        (True, None, "topological-span"),
+        (False, None, "topological"),
+        (True, "topological", "topological"),
+    ],
+)
+def test_flow_net_order_default_follows_the_configuration(
+    monkeypatch, preplaced_crossing_grids, explicit, expected
+):
+    """Contribution 2 routes planar stubs, so its default is span order;
+    the baseline keeps declaration order; an explicit order always wins."""
+    import routing_flow
+
+    seen: dict[str, str] = {}
+
+    def capture(*args, **kwargs):
+        seen["net_order"] = kwargs["config"].net_order
+        raise _StopAtRoutingStage()
+
+    monkeypatch.setattr(routing_flow, "run_photonic_routing_stage", capture)
+    with pytest.raises(_StopAtRoutingStage):
+        run_routing_flow(
+            "benes_4x4",
+            show_unrouted=False,
+            show_routed=False,
+            show_static_obstacles_svg=False,
+            enable_path_length_matching=False,
+            path_length_match_outputs=False,
+            enable_crossings=False,
+            crossing_mode="lidar-pure",
+            preplaced_crossing_grids=preplaced_crossing_grids,
+            net_order=explicit,
+        )
+    assert seen["net_order"] == expected
+
+
+def test_stable_flags_drop_crossing_discovery_under_preplaced_grids():
+    """`--preplaced-crossing-grids true` alone must be a complete
+    contribution-2 configuration on a benchmark whose stable block routes
+    the lidar-pure baseline: the crossing-discovery flags are dropped, the
+    rest of the block stays."""
+    from routing_flow import stable_flags_for_configuration
+
+    block = [
+        "--crossings",
+        "true",
+        "--crossing-mode",
+        "lidar-pure",
+        "--fanout-access-mode",
+        "static-stubs",
+        "--max-iterations",
+        "20000000",
+    ]
+    assert stable_flags_for_configuration(block, preplaced_crossing_grids=False) == block
+    assert stable_flags_for_configuration(block, preplaced_crossing_grids=True) == [
+        "--fanout-access-mode",
+        "static-stubs",
+        "--max-iterations",
+        "20000000",
+    ]

@@ -45,7 +45,7 @@ After this plan: no two routes may occupy adjacent diagonal cells in any search 
 
 ## Outcomes & Retrospective
 
-Not yet applicable.
+Closed 2026-09-07 by `.agent/execplans/2026-09-07-preplaced-crossing-grids-all-benes.md`: Milestones 1, 1b and 1c above are the lasting router fixes; the open ordering decision was resolved as Option 1 (the flow selects `topological-span` whenever pre-placed grids are on, via `translation/route_order.py::default_net_order`); Milestone 2's remaining case and Milestone 3 (straight run-in reservation) were not needed -- the whole Benes ladder, including `benes_32x32`, routes clean in grid mode with the 2026-09-07 defaults. They stay optional geometry-quality work.
 
 ## Context and Orientation
 

@@ -86,7 +86,7 @@ This is scoped to the three currently-working Benes benchmarks only: `benes_4x4`
 
 ## Outcomes & Retrospective
 
-Not yet applicable -- no milestone complete.
+Closed 2026-09-07 by `.agent/execplans/2026-09-07-preplaced-crossing-grids-all-benes.md`: the lattice-only (`fan_mode="router"`) grid mode routes `benes_4x4`, `benes_8x8`, `benes_16x16` AND `benes_32x32` verification-clean with one flag (`--preplaced-crossing-grids true`), after the lane pitch default went 20 -> 14 um (the 32x32 stage-1 grid at 20 um consumed the interstage band) and the flow started selecting span order for grid mode. Milestone 4's PLM pass-through remains prepared-only (no Benes benchmark needs it); the owner's visual review of the final geometry is still open.
 
 ## Context and Orientation
 

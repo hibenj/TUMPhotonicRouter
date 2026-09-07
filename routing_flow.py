@@ -27,7 +27,7 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 from translation.crossing_modes import CROSSING_MODES, is_guided_mode
-from translation.route_order import NET_ORDERS
+from translation.route_order import NET_ORDERS, default_net_order
 from translation.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import RipupRerouteConfig
@@ -227,12 +227,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--crossings",
         type=_parse_bool_flag,
-        default=SCRIPT_ENABLE_CROSSINGS,
+        default=None,
         metavar="BOOL",
         help=(
             "Build and pass topology-derived crossing constraints to the Rust "
             "router (default: "
-            f"{str(SCRIPT_ENABLE_CROSSINGS).lower()})."
+            f"{str(SCRIPT_ENABLE_CROSSINGS).lower()}; false when "
+            "--preplaced-crossing-grids is on, whose grids resolve every crossing)."
         ),
     )
     parser.add_argument(
@@ -590,13 +591,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--net-order",
         choices=NET_ORDERS,
-        default="topological",
+        default=None,
         help=(
             "Net routing order within the topological layers: 'topological' = "
-            "declaration order (default, the baseline); 'topological-span' = "
-            "shortest grid span first (LiDAR-like); 'plan-crossings-desc' / "
-            "'plan-crossings-asc' = most / fewest planned crossings first "
-            "(contribution 1 S3, needs --crossing-mode lidar-guided)."
+            "declaration order (default for the baseline and contribution 1); "
+            "'topological-span' = shortest grid span first (LiDAR-like; default "
+            "for --preplaced-crossing-grids, whose planar stubs need it); "
+            "'plan-crossings-desc' / 'plan-crossings-asc' = most / fewest "
+            "planned crossings first (contribution 1 S3, needs --crossing-mode "
+            "lidar-guided)."
         ),
     )
     parser.add_argument(
@@ -633,13 +636,50 @@ def _benchmark_stable_defaults(argv: list[str] | None) -> tuple[list[str], dict[
     return flags, env
 
 
+_CROSSING_DISCOVERY_FLAGS: frozenset[str] = frozenset({"--crossings", "--crossing-mode"})
+
+
+def stable_flags_for_configuration(
+    stable_flags: list[str], *, preplaced_crossing_grids: bool
+) -> list[str]:
+    """A benchmark's stable block describes its lidar-pure baseline; under
+    contribution 2 (pre-placed crossing grids) the crossing-discovery flags
+    of that block (`--crossings`, `--crossing-mode`) are dropped and every
+    other stable flag (fan-out access, congestion, iteration caps) stays.
+    Without this, `--preplaced-crossing-grids true` alone would inherit
+    `--crossings true` and be rejected as a contradictory configuration."""
+    if not preplaced_crossing_grids:
+        return list(stable_flags)
+    kept: list[str] = []
+    skip_value = False
+    for flag in stable_flags:
+        if skip_value:
+            skip_value = False
+            continue
+        if flag in _CROSSING_DISCOVERY_FLAGS:
+            skip_value = True
+            continue
+        kept.append(flag)
+    return kept
+
+
+def _requests_preplaced_crossing_grids(argv: list[str]) -> bool:
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("--preplaced-crossing-grids", type=_parse_bool_flag, default=False)
+    known, _ = probe.parse_known_args(argv)
+    return bool(known.preplaced_crossing_grids)
+
+
 def main(argv: list[str] | None = None) -> Component:
+    user_argv = sys.argv[1:] if argv is None else list(argv)
     stable_flags, stable_env = _benchmark_stable_defaults(argv)
+    stable_flags = stable_flags_for_configuration(
+        stable_flags,
+        preplaced_crossing_grids=_requests_preplaced_crossing_grids(user_argv),
+    )
     for key, value in stable_env.items():
         os.environ.setdefault(key, value)
-    args = _build_arg_parser().parse_args(
-        stable_flags + (sys.argv[1:] if argv is None else list(argv))
-    )
+    args = _build_arg_parser().parse_args(stable_flags + user_argv)
     if stable_flags:
         print(f"      - Benchmark stable defaults applied: {' '.join(stable_flags)}")
     return run_routing_flow(
@@ -661,7 +701,11 @@ def main(argv: list[str] | None = None) -> Component:
         enable_path_length_matching=args.path_length_matching,
         path_length_match_outputs=args.path_length_match_outputs,
         path_length_meander_height_um=args.path_length_meander_height_um,
-        enable_crossings=args.crossings,
+        enable_crossings=(
+            args.crossings
+            if args.crossings is not None
+            else (False if args.preplaced_crossing_grids else SCRIPT_ENABLE_CROSSINGS)
+        ),
         crossing_mode=args.crossing_mode,
         preplaced_crossing_grids=args.preplaced_crossing_grids,
         min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
@@ -805,6 +849,7 @@ def _preplaced_crossing_grids_stage(
     unrouted_layout: Component,
     total_steps: int,
     stats: RoutingFlowStats | None,
+    router_probe_kwargs: dict[str, object] | None = None,
 ) -> tuple[Schematic, Component, dict[str, object]]:
     """Replace the schematic/layout with the crossing-grid-derived pair.
 
@@ -824,7 +869,9 @@ def _preplaced_crossing_grids_stage(
     t_start = time.perf_counter()
     metadata = load_benchmark_metadata(benchmark_name, schematic=schematic)
     crossing_plan = build_crossing_plan_for_benchmark(schematic, metadata)
-    derived = derive_preplaced_crossing_layout(schematic, unrouted_layout, crossing_plan)
+    derived = derive_preplaced_crossing_layout(
+        schematic, unrouted_layout, crossing_plan, router_probe_kwargs=router_probe_kwargs
+    )
     metrics = preplaced_crossing_grid_metrics(derived)
     if derived.placed_crossing_count != derived.expected_crossing_count:
         raise RuntimeError(
@@ -877,7 +924,7 @@ def run_routing_flow(
     enable_simple_routes: bool = True,
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
-    net_order: str = "topological",
+    net_order: str | None = None,
     heap_tie_breaker: str = "smaller_g",
     max_iterations: int = 500_000,
     routing_window_scale: float | None = None,
@@ -942,6 +989,11 @@ def run_routing_flow(
                       stubs to/from the grid, and route with crossings disabled.
                       Mutually exclusive with enable_crossings. See
                       translation/preplaced_crossing_grids.py.
+        net_order: Net routing order within the topological layers (see
+                      translation/route_order.py). None selects the
+                      configuration's default: "topological-span" with
+                      preplaced_crossing_grids (planar stubs), "topological"
+                      otherwise.
         min_straight_cells_per_crossing: Minimum straight access length on each
                       side of a crossing in grid cells.
         fanout_access_mode: Dense multi-port access strategy passed to the Rust
@@ -1051,6 +1103,8 @@ def run_routing_flow(
         stats=stats,
         debug_timing=debug_timing,
     )
+    if net_order is None:
+        net_order = default_net_order(preplaced_crossing_grids=preplaced_crossing_grids)
     preplaced_report_metadata: dict[str, object] | None = None
     if preplaced_crossing_grids:
         if is_guided_mode(crossing_mode):
@@ -1071,6 +1125,15 @@ def run_routing_flow(
             unrouted_layout=unrouted_layout,
             total_steps=total_steps,
             stats=stats,
+            # The column grid puts its entry tiles on the router's static
+            # fan-out anchors, so the probe must see the routing run's
+            # configuration.
+            router_probe_kwargs={
+                "obstacle_config": route_static_obstacle_config,
+                "fanout_access_mode": fanout_access_mode,
+                "bend_radius_um": bend_radius_um,
+                "include_heater_obstacles": include_heater_obstacles,
+            },
         )
     record_initial_route_stats(stats)
     optical_config = build_optical_routing_stage_config(

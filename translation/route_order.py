@@ -18,6 +18,14 @@ earlier net's greedy shortest path can seal a sibling's target pocket
 Depth is derived from the batch's own net graph so every benchmark and
 every crossing mode has it (benchmark ``NODE_DEPTHS`` metadata is optional
 and the plan is withheld in lidar-pure).
+
+The default depends on the configuration (``default_net_order``): the
+baseline and contribution 1 route in ``topological`` order; contribution 2
+(pre-placed crossing grids, crossings off) routes in ``topological-span``
+order, because its stubs must fan into the grid planarly and planar nesting
+needs the widest span routed last (2026-08-27 finding: ``benes_16x16`` and
+``benes_32x32`` grid mode fail under declaration order and complete under
+span order). An explicit ``--net-order`` always wins.
 """
 
 from __future__ import annotations
@@ -32,6 +40,17 @@ NET_ORDERS: tuple[str, ...] = (
     "plan-crossings-asc",
     "plan-crossings-desc",
 )
+
+
+def default_net_order(*, preplaced_crossing_grids: bool) -> str:
+    """The net order a configuration uses when none is given explicitly.
+
+    Contribution 2 (pre-placed crossing grids) routes crossing-free stubs
+    that must nest planarly around the grids: shortest span first. Every
+    other configuration keeps the baseline declaration order, which Benes
+    crossing discovery under lidar-pure depends on (widest span first).
+    """
+    return "topological-span" if preplaced_crossing_grids else "topological"
 
 
 def normalize_net_order(net_order: object) -> str:

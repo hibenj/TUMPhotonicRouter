@@ -6,7 +6,9 @@ import pytest
 
 from translation.route_order import (
     NET_ORDERS,
+    default_net_order,
     depth_by_node_from_jobs,
+    normalize_net_order,
     order_route_jobs,
 )
 from translation.route_rust_types import RouteJob
@@ -105,3 +107,11 @@ def test_orders_require_their_inputs_and_reject_unknown_names():
         "plan-crossings-asc",
         "plan-crossings-desc",
     )
+
+
+def test_default_net_order_is_span_only_for_preplaced_crossing_grids() -> None:
+    """Contribution 2 routes planar stubs (shortest span first); the
+    baseline and contribution 1 keep declaration order."""
+    assert default_net_order(preplaced_crossing_grids=True) == "topological-span"
+    assert default_net_order(preplaced_crossing_grids=False) == "topological"
+    assert normalize_net_order(default_net_order(preplaced_crossing_grids=True)) in NET_ORDERS
