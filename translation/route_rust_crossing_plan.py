@@ -191,7 +191,12 @@ def _build_crossing_plan_info(
     crossing_half_size_cells: int,
     min_straight_cells_per_crossing: int,
     allow_only_expected_crossings: bool,
+    guidance_net_names: frozenset[str] | None = None,
 ) -> dict[str, object]:
+    """``guidance_net_names``: when given, only plan events between two of
+    these nets are loaded (counts, guidance pairs); the others are dropped
+    silently. Contribution 2's router fallback uses it so that the guided
+    search only sees the layers it routes, not the tiled ones."""
     info: dict[str, object] = {
         "enabled": bool(enable_crossings),
         "constraint_count": 0,
@@ -288,6 +293,13 @@ def _build_crossing_plan_info(
     for event in crossing_plan.events:
         job_a = jobs_by_edge.get(event.edge_a)
         job_b = jobs_by_edge.get(event.edge_b)
+        if guidance_net_names is not None and (
+            job_a is None
+            or job_b is None
+            or str(job_a.net_name) not in guidance_net_names
+            or str(job_b.net_name) not in guidance_net_names
+        ):
+            continue
         event_record: dict[str, object] = {
             "edge_a": _edge_key_to_info(event.edge_a),
             "edge_b": _edge_key_to_info(event.edge_b),

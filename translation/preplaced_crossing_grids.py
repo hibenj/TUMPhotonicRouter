@@ -136,6 +136,10 @@ class CrossingGridGeometry:
     # route as a net.
     column_pitch_um: float = 16.0
     column_lead_um: float = 14.0
+    # tiles mode: a layer without a feasible pre-placed alignment keeps its
+    # original nets and is routed by the guided search (router fallback);
+    # False makes such a layer stop the run instead.
+    router_fallback: bool = True
     # 9 um: crossing half-extent (4) + straight window (4) + the start of a
     # 45-degree bend; 12 um rejected one multiportmmi_32x32 pair whose
     # anchor row is 9 um from a heater row, 9 um routes and verifies clean.
@@ -187,6 +191,10 @@ class DerivedCrossingLayout:
     # tiles mode: the selector's decision per crossing layer (see
     # translation/crossing_structures.py), in stage order
     layer_decisions: list[object] = field(default_factory=list)
+    # tiles mode: original nets of the layers left to the guided router
+    router_fallback_net_names: set[str] = field(default_factory=set)
+    # every planned crossing of the whole plan (tiled + fallback layers)
+    plan_event_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1452,6 +1460,7 @@ def _derive_crossing_tiles(
     placed = 0
     decisions: list[object] = []
     fallback_layers: list[object] = []
+    fallback_nets: set[str] = set()
     for stage_key in sorted(crossing_plan.stages):
         stage_plan = crossing_plan.stages[stage_key]
         if not stage_plan.initial_edge_order or not stage_plan.events:
@@ -1489,6 +1498,7 @@ def _derive_crossing_tiles(
         print(f"      - crossing structure {decision.describe()}")
         if decision.chosen == ROUTER:
             fallback_layers.append(decision)
+            fallback_nets.update(edge.net_name for edge in stage_plan.initial_edge_order)
             continue
         if decision.chosen == COLUMN_GRID:
             stage_result = _column_grid_stage(
@@ -1566,14 +1576,20 @@ def _derive_crossing_tiles(
             stub_nets[net_name] = (names[0], names[-1])
             lengths[net_name] = pass_length_um * (last - first + 1)
             split.add(net_name)
-    if fallback_layers:
-        # Step 2 of the builder plan hands these layers to the guided router;
-        # until then a layer without a feasible alignment stops the run.
+    if fallback_layers and not geometry.router_fallback:
         raise ValueError(
             "no pre-placed crossing structure fits: "
             + " | ".join(d.describe() for d in fallback_layers)  # type: ignore[attr-defined]
         )
-    return tile_names, builds, stub_nets, lengths, nets, split, expected, placed, decisions
+    if fallback_layers:
+        print(
+            f"      - crossing structure: {len(fallback_layers)} layer(s) with "
+            f"{len(fallback_nets)} net(s) left to the guided router"
+        )
+    return (
+        tile_names, builds, stub_nets, lengths, nets, split, expected, placed, decisions,
+        fallback_nets,
+    )
 
 
 def _line_intersection(
@@ -2425,6 +2441,7 @@ def derive_preplaced_crossing_layout(
             placed_crossings,
         ) = tiles_result[:8]
         layer_decisions = list(tiles_result[8]) if len(tiles_result) > 8 else []
+        fallback_net_names = set(tiles_result[9]) if len(tiles_result) > 9 else set()
         for net_name in schematic.netlist.routes:
             if net_name in interstage_net_names:
                 continue
@@ -2443,6 +2460,8 @@ def derive_preplaced_crossing_layout(
             placed_crossing_count=placed_crossings,
             grid_builds=grid_builds,
             layer_decisions=layer_decisions,
+            router_fallback_net_names=fallback_net_names,
+            plan_event_count=sum(len(stage.events) for stage in crossing_plan.stages.values()),
         )
 
     for stage_key in sorted(crossing_plan.stages):
@@ -2530,6 +2549,8 @@ def preplaced_crossing_grid_metrics(derived: DerivedCrossingLayout) -> dict[str,
             decision.describe() if hasattr(decision, "describe") else str(decision)
             for decision in derived.layer_decisions
         ],
+        "router_fallback_net_count": len(derived.router_fallback_net_names),
+        "plan_event_count": int(derived.plan_event_count),
     }
 
 

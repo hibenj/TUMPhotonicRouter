@@ -222,6 +222,7 @@ def build_optical_routing_stage_config(
     collect_route_stats: bool,
     collect_attempt_diagnostics: bool,
     stats: object | None,
+    crossing_guidance_net_names: frozenset[str] | None = None,
 ) -> OpticalRoutingStageConfig:
     """Collect public flow arguments into the optical-stage config object."""
     return OpticalRoutingStageConfig(
@@ -230,6 +231,7 @@ def build_optical_routing_stage_config(
         path_length_meander_height_um=path_length_meander_height_um,
         enable_crossings=enable_crossings,
         crossing_mode=crossing_mode,
+        crossing_guidance_net_names=crossing_guidance_net_names,
         crossing_half_size_cells=crossing_half_size_cells,
         min_straight_cells_per_crossing=min_straight_cells_per_crossing,
         foreign_port_keepout_cells=foreign_port_keepout_cells,

@@ -60,6 +60,9 @@ class OpticalRoutingStageConfig:
     debug_svgs_enabled: bool
     collect_route_stats: bool
     collect_attempt_diagnostics: bool
+    # contribution 2 router fallback: nets of layers without a pre-placed
+    # structure; the guided search only sees plan events between them
+    crossing_guidance_net_names: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,7 @@ def run_photonic_routing_stage(
             internal_delays_um=metadata.get("internal_delays_um"),
             enable_crossings=config.enable_crossings,
             crossing_mode=config.crossing_mode,
+            crossing_guidance_net_names=config.crossing_guidance_net_names,
             crossing_half_size_cells=int(config.crossing_half_size_cells),
             min_straight_cells_per_crossing=int(config.min_straight_cells_per_crossing),
             foreign_port_keepout_cells=int(config.foreign_port_keepout_cells),

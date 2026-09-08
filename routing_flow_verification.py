@@ -63,6 +63,7 @@ def verify_and_attach_photonic_reports(
                     f"{crossing_report.get('error_count', 0)} error(s). "
                     f"{_crossing_verification_failure_preview(crossing_report)}"
                 )
+            _check_mixed_run_crossing_budget(crossing_report, extra_report_metadata)
     elif crossing_plan_info is not None:
         routed_info["crossing_plan"] = crossing_plan_info
 
@@ -183,6 +184,31 @@ def _write_crossing_verification_report(
     )
     payload["path"] = str(output_path)
     return payload
+
+
+def _check_mixed_run_crossing_budget(
+    crossing_report: Mapping[str, object],
+    extra_report_metadata: Mapping[str, object] | None,
+) -> None:
+    """Contribution 2 with router fallback: the pre-placed tiles plus the
+    crossings the guided search realized in the fallback layers must equal
+    the plan's crossing count -- every planned crossing resolved exactly once."""
+    grids = (extra_report_metadata or {}).get("preplaced_crossing_grids")
+    if not isinstance(grids, Mapping) or not grids.get("router_fallback_net_count"):
+        return
+    metrics = crossing_report.get("metrics")
+    realized = int(metrics.get("crossing_count", 0)) if isinstance(metrics, Mapping) else 0
+    tiles = int(grids.get("crossing_component_count", 0))
+    plan = int(grids.get("plan_event_count", 0))
+    print(
+        f"      - mixed run: {tiles} pre-placed tile(s) + {realized} router crossing(s) "
+        f"= {tiles + realized} of {plan} planned"
+    )
+    if tiles + realized != plan:
+        raise RuntimeError(
+            f"mixed run resolved {tiles + realized} crossings ({tiles} tiles + {realized} "
+            f"router crossings) but the plan has {plan}"
+        )
 
 
 def _crossing_verification_failure_preview(payload: Mapping[str, object]) -> str:

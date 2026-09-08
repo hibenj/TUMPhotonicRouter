@@ -850,8 +850,11 @@ def _preplaced_crossing_grids_stage(
     total_steps: int,
     stats: RoutingFlowStats | None,
     router_probe_kwargs: dict[str, object] | None = None,
-) -> tuple[Schematic, Component, dict[str, object]]:
+) -> tuple[Schematic, Component, dict[str, object], frozenset[str]]:
     """Replace the schematic/layout with the crossing-grid-derived pair.
+
+    The fourth element names the nets of layers without a feasible pre-placed
+    structure; the flow routes them with the guided crossing search.
 
     Every interstage crossing of the benchmark is computed from its topology
     metadata, realized as a pre-wired crossing grid instance placed in the
@@ -889,7 +892,12 @@ def _preplaced_crossing_grids_stage(
         f"{metrics['split_net_count']} interstage net(s) split into stubs; "
         f"{len(derived.schematic.netlist.routes)} route(s) to route ({elapsed:.2f}s)"
     )
-    return derived.schematic, derived.unrouted_layout, {"preplaced_crossing_grids": metrics}
+    return (
+        derived.schematic,
+        derived.unrouted_layout,
+        {"preplaced_crossing_grids": metrics},
+        frozenset(derived.router_fallback_net_names),
+    )
 
 
 def run_routing_flow(
@@ -1106,6 +1114,7 @@ def run_routing_flow(
     if net_order is None:
         net_order = default_net_order(preplaced_crossing_grids=preplaced_crossing_grids)
     preplaced_report_metadata: dict[str, object] | None = None
+    crossing_guidance_net_names: frozenset[str] | None = None
     if preplaced_crossing_grids:
         if is_guided_mode(crossing_mode):
             raise ValueError(
@@ -1119,7 +1128,12 @@ def run_routing_flow(
                 "pre-placed grids resolve every crossing before routing, so the router "
                 "must run with crossings disabled."
             )
-        schematic, unrouted_layout, preplaced_report_metadata = _preplaced_crossing_grids_stage(
+        (
+            schematic,
+            unrouted_layout,
+            preplaced_report_metadata,
+            crossing_guidance_net_names,
+        ) = _preplaced_crossing_grids_stage(
             benchmark_name=benchmark_name,
             schematic=schematic,
             unrouted_layout=unrouted_layout,
@@ -1135,6 +1149,16 @@ def run_routing_flow(
                 "include_heater_obstacles": include_heater_obstacles,
             },
         )
+        if crossing_guidance_net_names:
+            # Mixed run: tiled layers stay crossing-free, the fallback layers
+            # get contribution 1's guided search restricted to their nets.
+            enable_crossings = True
+            crossing_mode = "lidar-guided"
+            print(
+                "      - crossing structure: router fallback for "
+                f"{len(crossing_guidance_net_names)} net(s) -> crossings enabled "
+                "(lidar-guided, guidance restricted to those nets)"
+            )
     record_initial_route_stats(stats)
     optical_config = build_optical_routing_stage_config(
         enable_path_length_matching=enable_path_length_matching,
@@ -1142,6 +1166,7 @@ def run_routing_flow(
         path_length_meander_height_um=path_length_meander_height_um,
         enable_crossings=enable_crossings,
         crossing_mode=crossing_mode,
+        crossing_guidance_net_names=crossing_guidance_net_names,
         crossing_half_size_cells=crossing_half_size_cells,
         min_straight_cells_per_crossing=min_straight_cells_per_crossing,
         foreign_port_keepout_cells=foreign_port_keepout_cells,

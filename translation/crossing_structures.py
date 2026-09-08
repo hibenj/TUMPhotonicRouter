@@ -220,6 +220,19 @@ def select_layer_structure(
 ) -> LayerDecision:
     """Evaluate every allowed alignment on the layer and pick the cheapest
     feasible one; ROUTER when none is feasible."""
+    import os
+
+    forced = {
+        int(v)
+        for v in os.environ.get("PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS", "").split(",")
+        if v.strip().isdigit()
+    }
+    if stage_key[0] in forced:
+        return LayerDecision(
+            stage_key,
+            ROUTER,
+            (StructureCandidate("forced", False, "PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS"),),
+        )
     candidates: list[StructureCandidate] = []
     if X_ARRAY in allowed:
         candidates.append(evaluate_x_array(schematic, unrouted_layout, stage_plan, geometry))

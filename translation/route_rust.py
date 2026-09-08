@@ -246,6 +246,7 @@ def route_match_and_realize(
     foreign_port_keepout_cells: int = 0,
     fanout_access_mode: str | None = None,
     allow_only_expected_crossings: bool = True,
+    crossing_guidance_net_names: frozenset[str] | None = None,
     obstacle_config: object | None = None,
     debug_dir: str | Path | None = None,
     debug_prefix: str = "route",
@@ -327,6 +328,7 @@ def route_match_and_realize(
         foreign_port_keepout_cells=foreign_port_keepout_cells,
         fanout_access_mode=fanout_access_mode,
         allow_only_expected_crossings=allow_only_expected_crossings,
+        crossing_guidance_net_names=crossing_guidance_net_names,
         defer_realization=True,
         enable_checked_endpoint_correction=enable_grid_endpoint_correction,
     )
@@ -657,6 +659,7 @@ class _RouteNetsRustSession:
         foreign_port_keepout_cells: int = 0,
         fanout_access_mode: str | None = None,
         allow_only_expected_crossings: bool = True,
+        crossing_guidance_net_names: frozenset[str] | None = None,
         defer_realization: bool = False,
         enable_checked_endpoint_correction: bool = True,
     ):
@@ -826,6 +829,11 @@ class _RouteNetsRustSession:
         self.min_straight_cells_per_crossing = min_straight_cells_per_crossing
         self.foreign_port_keepout_cells = foreign_port_keepout_cells
         self.allow_only_expected_crossings = allow_only_expected_crossings
+        self.crossing_guidance_net_names = (
+            frozenset(crossing_guidance_net_names)
+            if crossing_guidance_net_names is not None
+            else None
+        )
         self.defer_realization = defer_realization
         self.enable_checked_endpoint_correction = enable_checked_endpoint_correction
         self.effective_allow_only_expected_crossings = effective_allow_only_expected_crossings
@@ -7106,6 +7114,7 @@ class _RouteNetsRustSession:
             crossing_half_size_cells=int(self.resolved_crossing_half_size_cells),
             min_straight_cells_per_crossing=int(self.min_straight_cells_per_crossing),
             allow_only_expected_crossings=self.effective_allow_only_expected_crossings,
+            guidance_net_names=self.crossing_guidance_net_names,
         )
         self.crossing_plan_info["crossing_mode"] = self.crossing_mode
         if bool(self.enable_crossings):
@@ -8150,6 +8159,7 @@ def route_nets_rust(
     foreign_port_keepout_cells: int = 0,
     fanout_access_mode: str | None = None,
     allow_only_expected_crossings: bool = True,
+    crossing_guidance_net_names: frozenset[str] | None = None,
     defer_realization: bool = False,
     enable_checked_endpoint_correction: bool = True,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
@@ -8195,6 +8205,7 @@ def route_nets_rust(
         foreign_port_keepout_cells=foreign_port_keepout_cells,
         fanout_access_mode=fanout_access_mode,
         allow_only_expected_crossings=allow_only_expected_crossings,
+        crossing_guidance_net_names=crossing_guidance_net_names,
         defer_realization=defer_realization,
         enable_checked_endpoint_correction=enable_checked_endpoint_correction,
     )

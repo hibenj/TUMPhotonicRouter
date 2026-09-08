@@ -84,5 +84,14 @@ def test_a_layer_nothing_fits_is_a_router_fallback_with_reasons(monkeypatch) -> 
     )
     assert decision.chosen == cs.ROUTER
     assert all(not c.feasible and c.reason for c in decision.candidates)
+    # default: the layer's nets are left to the guided router, unsplit
+    derived = pcg.derive_preplaced_crossing_layout(schematic, layout, plan)
+    assert derived.router_fallback_net_names == {e.net_name for e in stage.initial_edge_order}
+    assert derived.placed_crossing_count == 0
+    assert all(
+        name in derived.schematic.netlist.routes for name in derived.router_fallback_net_names
+    )
     with pytest.raises(ValueError, match="no pre-placed crossing structure fits"):
-        pcg.derive_preplaced_crossing_layout(schematic, layout, plan)
+        pcg.derive_preplaced_crossing_layout(
+            schematic, layout, plan, geometry=pcg.CrossingGridGeometry(router_fallback=False)
+        )
