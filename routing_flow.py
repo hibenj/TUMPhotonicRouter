@@ -1112,7 +1112,10 @@ def run_routing_flow(
         debug_timing=debug_timing,
     )
     if net_order is None:
-        net_order = default_net_order(preplaced_crossing_grids=preplaced_crossing_grids)
+        net_order = default_net_order(
+            preplaced_crossing_grids=preplaced_crossing_grids,
+            guided=bool(enable_crossings) and is_guided_mode(crossing_mode),
+        )
     preplaced_report_metadata: dict[str, object] | None = None
     crossing_guidance_net_names: frozenset[str] | None = None
     if preplaced_crossing_grids:

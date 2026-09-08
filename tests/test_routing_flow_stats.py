@@ -1728,18 +1728,23 @@ class _StopAtRoutingStage(Exception):
 
 
 @pytest.mark.parametrize(
-    ("preplaced_crossing_grids", "explicit", "expected"),
+    ("preplaced_crossing_grids", "crossings", "explicit", "expected"),
     [
-        (True, None, "topological-span"),
-        (False, None, "topological"),
-        (True, "topological", "topological"),
+        (True, ("lidar-pure", False), None, "topological-span"),
+        (False, ("lidar-pure", False), None, "topological"),
+        (False, ("lidar-pure", True), None, "topological"),
+        (False, ("lidar-guided", True), None, "plan-crossings-hybrid"),
+        (False, ("lidar-guided", True), "topological", "topological"),
+        (True, ("lidar-pure", False), "topological", "topological"),
     ],
 )
 def test_flow_net_order_default_follows_the_configuration(
-    monkeypatch, preplaced_crossing_grids, explicit, expected
+    monkeypatch, preplaced_crossing_grids, crossings, explicit, expected
 ):
     """Contribution 2 routes planar stubs, so its default is span order;
-    the baseline keeps declaration order; an explicit order always wins."""
+    contribution 1 (guided) defaults to the hybrid order; the baseline keeps
+    declaration order; an explicit order always wins."""
+    crossing_mode, enable_crossings = crossings
     import routing_flow
 
     seen: dict[str, str] = {}
@@ -1757,8 +1762,8 @@ def test_flow_net_order_default_follows_the_configuration(
             show_static_obstacles_svg=False,
             enable_path_length_matching=False,
             path_length_match_outputs=False,
-            enable_crossings=False,
-            crossing_mode="lidar-pure",
+            enable_crossings=enable_crossings,
+            crossing_mode=crossing_mode,
             preplaced_crossing_grids=preplaced_crossing_grids,
             net_order=explicit,
         )

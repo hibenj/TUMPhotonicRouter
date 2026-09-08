@@ -115,6 +115,9 @@ def test_default_net_order_is_span_only_for_preplaced_crossing_grids() -> None:
     baseline and contribution 1 keep declaration order."""
     assert default_net_order(preplaced_crossing_grids=True) == "topological-span"
     assert default_net_order(preplaced_crossing_grids=False) == "topological"
+    # contribution 1: the hybrid order is its default (owner decision 2026-09-08)
+    assert default_net_order(preplaced_crossing_grids=False, guided=True) == "plan-crossings-hybrid"
+    assert default_net_order(preplaced_crossing_grids=True, guided=True) == "topological-span"
     assert normalize_net_order(default_net_order(preplaced_crossing_grids=True)) in NET_ORDERS
 
 
@@ -133,7 +136,9 @@ def test_hybrid_order_is_desc_in_small_layers_and_declaration_in_large_ones() ->
     depths = {job.inst1: 0 for job in big} | {job.inst1: 1 for job in small}
     planned = {job.net_id: (job.net_id % 7) for job in jobs}
     ordered = order_route_jobs(
-        jobs, net_order="plan-crossings-hybrid", depth_by_node=depths,
+        jobs,
+        net_order="plan-crossings-hybrid",
+        depth_by_node=depths,
         planned_crossings_by_net_id=planned,
     )
     big_out = [job.net_id for job in ordered[: len(big)]]

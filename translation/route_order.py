@@ -23,7 +23,8 @@ every crossing mode has it (benchmark ``NODE_DEPTHS`` metadata is optional
 and the plan is withheld in lidar-pure).
 
 The default depends on the configuration (``default_net_order``): the
-baseline and contribution 1 route in ``topological`` order; contribution 2
+baseline routes in ``topological`` order, contribution 1 (guided crossing
+search) in ``plan-crossings-hybrid`` order; contribution 2
 (pre-placed crossing grids, crossings off) routes in ``topological-span``
 order, because its stubs must fan into the grid planarly and planar nesting
 needs the widest span routed last (2026-08-27 finding: ``benes_16x16`` and
@@ -54,15 +55,23 @@ NET_ORDERS: tuple[str, ...] = (
 HYBRID_DESC_MAX_LAYER_NETS = 16
 
 
-def default_net_order(*, preplaced_crossing_grids: bool) -> str:
+def default_net_order(*, preplaced_crossing_grids: bool, guided: bool = False) -> str:
     """The net order a configuration uses when none is given explicitly.
 
     Contribution 2 (pre-placed crossing grids) routes crossing-free stubs
-    that must nest planarly around the grids: shortest span first. Every
-    other configuration keeps the baseline declaration order, which Benes
-    crossing discovery under lidar-pure depends on (widest span first).
+    that must nest planarly around the grids: shortest span first.
+    Contribution 1 (guided crossing search, ``guided=True``) routes the
+    planned-crossing-rich nets first inside small layers
+    (``plan-crossings-hybrid``; owner decision 2026-09-08: strictly better
+    or identical on every benchmark). The baseline keeps the declaration
+    order, which Benes crossing discovery under lidar-pure depends on
+    (widest span first).
     """
-    return "topological-span" if preplaced_crossing_grids else "topological"
+    if preplaced_crossing_grids:
+        return "topological-span"
+    if guided:
+        return "plan-crossings-hybrid"
+    return "topological"
 
 
 def normalize_net_order(net_order: object) -> str:
