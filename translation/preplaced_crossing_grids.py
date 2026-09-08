@@ -184,6 +184,9 @@ class DerivedCrossingLayout:
     expected_crossing_count: int
     placed_crossing_count: int
     grid_builds: dict[str, CrossingGridBuildResult] = field(default_factory=dict)
+    # tiles mode: the selector's decision per crossing layer (see
+    # translation/crossing_structures.py), in stage order
+    layer_decisions: list[object] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1373,16 +1376,7 @@ def _derive_crossing_tiles(
     geometry: CrossingGridGeometry,
     derived: Schematic,
     router_probe_kwargs: Mapping[str, object] | None = None,
-) -> tuple[
-    list[str],
-    dict[str, CrossingGridBuildResult],
-    dict[str, tuple[str, str]],
-    dict[str, float],
-    list[Net],
-    set[str],
-    int,
-    int,
-]:
+) -> tuple:
     """Place one crossing tile per planned crossing and split every crossing
     lane into router nets between its tiles (see ``crossing_tile_component``).
 
@@ -1408,6 +1402,7 @@ def _derive_crossing_tiles(
     if geometry.tile_placement in ("auto", "column-grid"):
         import os
 
+        from translation.crossing_structures import evaluate_x_array
         from translation.route_rust import static_fanout_anchors_um
 
         # Every source instance with two or more crossing lanes in a
@@ -1416,11 +1411,17 @@ def _derive_crossing_tiles(
         # router reads the same variable in the routing run. X-array layers
         # (Benes) keep the router's default: their tiles sit on the natural
         # rows and a stub would move the lane away from them.
+
         dense: set[str] = set()
         for stage_plan in crossing_plan.stages.values():
             if not stage_plan.events:
                 continue
-            if not _stage_uses_column_grid(schematic, unrouted_layout, stage_plan, geometry):
+            # A layer the X array can take keeps the router's default stubs
+            # (its tiles sit on the natural rows); every other crossing layer
+            # is a column-grid candidate and needs its lanes on spread rows.
+            if geometry.tile_placement != "column-grid" and evaluate_x_array(
+                schematic, unrouted_layout, stage_plan, geometry
+            ).feasible:
                 continue
             count: dict[str, int] = {}
             for edge in stage_plan.initial_edge_order:
@@ -1449,6 +1450,8 @@ def _derive_crossing_tiles(
     split: set[str] = set()
     expected = 0
     placed = 0
+    decisions: list[object] = []
+    fallback_layers: list[object] = []
     for stage_key in sorted(crossing_plan.stages):
         stage_plan = crossing_plan.stages[stage_key]
         if not stage_plan.initial_edge_order or not stage_plan.events:
@@ -1466,8 +1469,28 @@ def _derive_crossing_tiles(
             source_xs.append(float(source.dcenter[0]))
             target_xs.append(float(target.dcenter[0]))
             target_rows.append(float(target.dcenter[1]))
-        use_column_grid = _stage_uses_column_grid(schematic, unrouted_layout, stage_plan, geometry)
-        if use_column_grid:
+        from translation.crossing_structures import (
+            COLUMN_GRID,
+            ROUTER,
+            X_ARRAY,
+            select_layer_structure,
+        )
+
+        allowed = {
+            "column-grid": (COLUMN_GRID,),
+            "columns": (X_ARRAY,),
+            "auto": (X_ARRAY, COLUMN_GRID),
+        }[geometry.tile_placement]
+        decision = select_layer_structure(
+            schematic, unrouted_layout, stage_plan, geometry, anchors,
+            stage_key=tuple(stage_key), allowed=allowed,
+        )
+        decisions.append(decision)
+        print(f"      - crossing structure {decision.describe()}")
+        if decision.chosen == ROUTER:
+            fallback_layers.append(decision)
+            continue
+        if decision.chosen == COLUMN_GRID:
             stage_result = _column_grid_stage(
                 schematic, unrouted_layout, stage_plan, geometry, derived, plus_tile, anchors
             )
@@ -1543,7 +1566,14 @@ def _derive_crossing_tiles(
             stub_nets[net_name] = (names[0], names[-1])
             lengths[net_name] = pass_length_um * (last - first + 1)
             split.add(net_name)
-    return tile_names, builds, stub_nets, lengths, nets, split, expected, placed
+    if fallback_layers:
+        # Step 2 of the builder plan hands these layers to the guided router;
+        # until then a layer without a feasible alignment stops the run.
+        raise ValueError(
+            "no pre-placed crossing structure fits: "
+            + " | ".join(d.describe() for d in fallback_layers)  # type: ignore[attr-defined]
+        )
+    return tile_names, builds, stub_nets, lengths, nets, split, expected, placed, decisions
 
 
 def _line_intersection(
@@ -1853,66 +1883,6 @@ def plain_corner_component(
     return component
 
 
-def _stage_uses_column_grid(
-    schematic: Schematic,
-    unrouted_layout: Component,
-    stage_plan: CrossingStagePlan,
-    geometry: CrossingGridGeometry,
-) -> bool:
-    """The X array (45-degree tiles on level columns) needs every planned pair
-    to move in opposite directions and enough band for its level columns;
-    otherwise the stage gets the column grid ("+" tiles)."""
-    if geometry.tile_placement == "column-grid":
-        return True
-    if geometry.tile_placement != "auto":
-        return False
-    rows: dict[str, float] = {}
-    target_rows: dict[str, float] = {}
-    source_xs: list[float] = []
-    target_xs: list[float] = []
-    for edge in stage_plan.initial_edge_order:
-        p1, p2 = _net_endpoints(schematic, edge.net_name)
-        source = get_port_from_instance(unrouted_layout, *p1.split(","))
-        target = get_port_from_instance(unrouted_layout, *p2.split(","))
-        rows[edge.net_name] = float(source.dcenter[1])
-        target_rows[edge.net_name] = float(target.dcenter[1])
-        source_xs.append(float(source.dcenter[0]))
-        target_xs.append(float(target.dcenter[0]))
-    all_opposite = all(
-        (target_rows[ev.edge_a.net_name] - rows[ev.edge_a.net_name])
-        * (target_rows[ev.edge_b.net_name] - rows[ev.edge_b.net_name])
-        < 0.0
-        for ev in stage_plan.events
-    )
-    if not all_opposite:
-        return True
-    # The X array puts its tiles on the lanes' natural rows and gets no
-    # static stubs; a source whose ports sit closer than a crossing cell
-    # (a dense MMI-like group) needs the column grid, which starts from the
-    # router's spread anchors.
-    by_source: dict[str, list[tuple[float, float]]] = {}
-    for edge in stage_plan.initial_edge_order:
-        by_source.setdefault(edge.source.instance, []).append(
-            (rows[edge.net_name], target_rows[edge.net_name] - rows[edge.net_name])
-        )
-    for group in by_source.values():
-        group.sort()
-        for (row_a, _move_a), (row_b, _move_b) in itertools.pairwise(group):
-            # Ports one to a few routing cells apart (an MMI's 5 um pitch)
-            # need the router's static stubs, which X-array layers do not
-            # get; a Benes switch pair 1.25 um apart shares one cell and
-            # routes as a pair.
-            if 2.0 <= row_b - row_a < 10.0:
-                return True
-    try:
-        _movement, crossings = _lane_movement(stage_plan)
-    except ValueError:
-        return True  # a lane reverses or pauses: no straight-diagonal array
-    levels = max(level for level, *_ in crossings) + 1
-    usable = (min(target_xs) - max(source_xs)) - 2.0 * float(geometry.band_margin_um)
-    return usable / float(levels) < float(geometry.column_pitch_um)
-
-
 def _column_grid_stage(
     schematic: Schematic,
     unrouted_layout: Component,
@@ -1933,13 +1903,14 @@ def _column_grid_stage(
         int,
         int,
     ]
-    | float
+    | dict[str, float | int]
 ):
     """Column grid for one stage: axis-aligned "+" crossings only.
 
-    With ``probe_only`` nothing is placed; the return value is the smallest
-    corner clearance any planned crossing gets (inf when every pair fits in
-    some order), and infeasible geometry still raises ``ValueError``.
+    With ``probe_only`` nothing is placed; the return value is a summary
+    dict (smallest corner clearance, columns, needed and available band,
+    moving lanes, planned crossings, extra length over the octile minimum),
+    and infeasible geometry still raises ``ValueError``.
 
     Every lane is horizontal (on its entry row: the router's static fan-out
     anchor if the port has one, else the port row), then vertical in its own
@@ -2096,7 +2067,20 @@ def _column_grid_stage(
     x_start = 0.5 * (band_x0 + band_x1 - needed)
     column_x = {n: x_start + column_of[n] * pitch for n in moving}
     if probe_only:
-        return min_clearance
+        extra = sum(
+            min(abs(span[n][0] - span[n][1]), band_x1 - band_x0) * (2.0 - math.sqrt(2.0))
+            for n in moving
+        )
+        return {
+            "min_clearance": min_clearance,
+            "columns": len(columns),
+            "needed_um": needed,
+            "band_um": band_x1 - band_x0,
+            "moving": len(moving),
+            "lanes": len(lanes),
+            "planned": len(planned),
+            "extra_length_um": extra,
+        }
     print(
         f"      - column grid stage {stage_plan.source_depth}: {len(lanes)} lanes, "
         f"{len(moving)} moving, {len(columns)} columns at {pitch:.0f} um "
@@ -2427,6 +2411,9 @@ def derive_preplaced_crossing_layout(
     placed_crossings = 0
 
     if geometry.fan_mode == "tiles":
+        tiles_result = _derive_crossing_tiles(
+            schematic, unrouted_layout, crossing_plan, geometry, derived, router_probe_kwargs
+        )
         (
             grid_instance_names,
             grid_builds,
@@ -2436,9 +2423,8 @@ def derive_preplaced_crossing_layout(
             interstage_net_names,
             expected_crossings,
             placed_crossings,
-        ) = _derive_crossing_tiles(
-            schematic, unrouted_layout, crossing_plan, geometry, derived, router_probe_kwargs
-        )
+        ) = tiles_result[:8]
+        layer_decisions = list(tiles_result[8]) if len(tiles_result) > 8 else []
         for net_name in schematic.netlist.routes:
             if net_name in interstage_net_names:
                 continue
@@ -2456,6 +2442,7 @@ def derive_preplaced_crossing_layout(
             expected_crossing_count=expected_crossings,
             placed_crossing_count=placed_crossings,
             grid_builds=grid_builds,
+            layer_decisions=layer_decisions,
         )
 
     for stage_key in sorted(crossing_plan.stages):
@@ -2539,6 +2526,10 @@ def preplaced_crossing_grid_metrics(derived: DerivedCrossingLayout) -> dict[str,
         "grid_heights_um": {
             name: round(build.height_um, 3) for name, build in derived.grid_builds.items()
         },
+        "layer_structures": [
+            decision.describe() if hasattr(decision, "describe") else str(decision)
+            for decision in derived.layer_decisions
+        ],
     }
 
 
