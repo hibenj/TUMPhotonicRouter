@@ -98,7 +98,7 @@ def verify_photonic_routing(
         Mapping[str, object] | Iterable[tuple[float, float]]
     ] = (),
     check_route_coverage: bool = True,
-    min_route_overlap_area_um2: float = 2.0,
+    min_route_overlap_area_um2: float = 0.05,
     min_obstacle_overlap_area_um2: float = 2.0,
     min_crossing_component_route_overlap_area_um2: float = 0.25,
     min_crossing_component_overlap_area_um2: float = 0.25,

@@ -41,6 +41,17 @@ def _schematic_with_one_net():
     )
 
 
+def _schematic_with_two_nets():
+    return SimpleNamespace(
+        netlist=SimpleNamespace(
+            routes={
+                "n1": SimpleNamespace(links={"src,o1": "dst,o2"}),
+                "n2": SimpleNamespace(links={"src,o1": "dst,o2"}),
+            }
+        )
+    )
+
+
 def _routed_record(
     *,
     net_name: str = "n1",
@@ -124,6 +135,89 @@ def test_photonic_verifier_reports_cross_net_waveguide_overlap():
     assert overlap_count == 1
     assert [issue.code for issue in issues] == ["cross_net_waveguide_overlap"]
     assert issues[0].details["overlap_area_um2"] == 10.0
+
+
+def _perpendicular_crossing_route_regions(record, **_kwargs) -> kdb.Region:
+    """Two 0.5 um wide waveguides crossing perpendicularly at the origin,
+    with no legal-overlap region: n1 runs along x, n2 along y, so their
+    route polygons overlap on exactly a 0.5 x 0.5 um square (0.25 um2) --
+    the case B2 of
+    `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
+    says the old `min_route_overlap_area_um2 = 2.0` default hid.
+    """
+    if record.net_name == "n1":
+        return _box_region(-10_000, -250, 10_000, 250)
+    return _box_region(-250, -10_000, 250, 10_000)
+
+
+def test_photonic_verifier_reports_perpendicular_crossing_overlap_at_default_threshold(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        photonic_verification_module,
+        "_realized_record_region",
+        _perpendicular_crossing_route_regions,
+    )
+
+    result = verify_photonic_routing(
+        Component(),
+        _schematic_with_two_nets(),
+        routed_net_records=[
+            _routed_record(
+                net_name="n1",
+                centerline=((-10.0, 0.0), (10.0, 0.0)),
+                source_port_center_um=(-10.0, 0.0),
+                target_port_center_um=(10.0, 0.0),
+            ),
+            _routed_record(
+                net_name="n2",
+                centerline=((0.0, -10.0), (0.0, 10.0)),
+                source_port_center_um=(0.0, -10.0),
+                target_port_center_um=(0.0, 10.0),
+            ),
+        ],
+        route_width_um=0.5,
+        realization_grid_spec=(40, 40, 1.0, -20.0, -20.0),
+        check_endpoint_connectivity=False,
+    )
+
+    assert [issue.code for issue in result.issues] == ["cross_net_waveguide_overlap"]
+    assert result.issues[0].details["overlap_area_um2"] == 0.25
+
+
+def test_photonic_verifier_old_threshold_hid_the_perpendicular_crossing_overlap(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        photonic_verification_module,
+        "_realized_record_region",
+        _perpendicular_crossing_route_regions,
+    )
+
+    result = verify_photonic_routing(
+        Component(),
+        _schematic_with_two_nets(),
+        routed_net_records=[
+            _routed_record(
+                net_name="n1",
+                centerline=((-10.0, 0.0), (10.0, 0.0)),
+                source_port_center_um=(-10.0, 0.0),
+                target_port_center_um=(10.0, 0.0),
+            ),
+            _routed_record(
+                net_name="n2",
+                centerline=((0.0, -10.0), (0.0, 10.0)),
+                source_port_center_um=(0.0, -10.0),
+                target_port_center_um=(0.0, 10.0),
+            ),
+        ],
+        route_width_um=0.5,
+        realization_grid_spec=(40, 40, 1.0, -20.0, -20.0),
+        check_endpoint_connectivity=False,
+        min_route_overlap_area_um2=2.0,
+    )
+
+    assert result.issues == ()
 
 
 def test_photonic_verifier_allows_pair_specific_legal_crossing_overlap():
