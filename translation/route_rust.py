@@ -216,6 +216,16 @@ _load_rust_backend = _sob._load_rust_backend
 
 DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING = 2
 
+# `route_many_with_negotiated_repair_and_commit`'s own round budget --
+# LiDAR's `runNRR` default (`.agent/execplans/2026-09-14-lidar-style-
+# negotiated-ripup-endgame.md`, Milestone 3). Kept separate from
+# `RipupRerouteConfig.max_rounds` (default 4, the chain's per-net
+# `--ripup-max-rounds`), which is a different knob for a different engine:
+# the negotiated engine's "round" is a whole-queue pass with a global
+# rip-up at the end (LiDAR's `ripupfailedNets`), not a per-net repair-set
+# retry count, so the chain's smaller default does not carry over.
+NEGOTIATED_MAX_ROUNDS = 10
+
 
 def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
     _meander_impl._load_rust_backend = _load_rust_backend
@@ -614,6 +624,20 @@ def route_match_and_realize(
         pipeline_timings_s=pipeline_timings_s,
     )
 
+
+
+DENSE_OBSTACLE_CELL_CAP_MARGIN = 2
+
+
+def dense_obstacle_cell_cap(grid_width: int, grid_height: int, default_cap: int) -> int:
+    """Return the kernel's dense-grid cell cap sized for this obstacle map.
+
+    The crossing hook of the lidar modes rasterizes the full routing bounds;
+    the cap must therefore cover the whole map (with a margin for the
+    clamped bound expansion), or the kernel refuses the grid and panics.
+    Maps that fit the default cap keep it, so small benchmarks are unchanged.
+    """
+    return max(int(default_cap), DENSE_OBSTACLE_CELL_CAP_MARGIN * int(grid_width) * int(grid_height))
 
 class _RouteNetsRustSession:
     def __init__(
@@ -4405,7 +4429,7 @@ class _RouteNetsRustSession:
                     self.block_radius_cells,
                     self.commit_radius_cells,
                     self.core_commit_radius_cells,
-                    int(self.repair_config.max_rounds),
+                    NEGOTIATED_MAX_ROUNDS,
                     float(self.repair_config.history_weight),
                     int(self.repair_config.history_increment),
                 )
@@ -4511,6 +4535,7 @@ class _RouteNetsRustSession:
                     )
 
             self.repair_count += int(batch_result.get("repair_count", 0) or 0)
+            self.deferred_count += int(batch_result.get("deferred_count", 0) or 0)
             raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
             for raw_entry in raw_routes:
                 entry = dict(raw_entry)
@@ -6707,6 +6732,14 @@ class _RouteNetsRustSession:
         )
         self.bend_radius_cells = int(self.primitive_cfg.bend_radius_cells)
         self.astar_cfg = self.rust_backend.AStarConfig(max_iterations=int(self.max_iterations))
+        # The crossing search (lidar modes) builds a dense grid over the full
+        # routing bounds and panics when that exceeds the kernel's cap
+        # (default 10M cells; benes_64x64 needs 29M, multiportmmi_64x64 83M,
+        # 2026-09-13). Size the cap from the obstacle map so the whole die
+        # always fits; dies below the default keep the default.
+        self.astar_cfg.max_dense_obstacle_cells = dense_obstacle_cell_cap(
+            int(self.grid.width), int(self.grid.height), int(self.astar_cfg.max_dense_obstacle_cells)
+        )
         self.astar_cfg.enable_simple_routes = bool(self.enable_simple_routes)
         self.astar_cfg.enable_jps4 = bool(self.enable_jps4)
         self.astar_cfg.use_indexed_heap = bool(self.use_indexed_heap or self.allow_45_degree_turns)
@@ -7628,6 +7661,7 @@ class _RouteNetsRustSession:
         self.total_expanded_states = 0
         self.simple_route_count = 0
         self.repair_count = 0
+        self.deferred_count = 0
         self.route_attempt_records = []
         self.native_repair_trace_records: list[dict[str, object]] = []
         self.route_timing_buckets: dict[str, RouteTimingBucket] = {
@@ -7796,7 +7830,8 @@ class _RouteNetsRustSession:
                 "      - Route search stats: "
                 f"simple={self.simple_route_count}/{len(route_jobs)}, "
                 f"expanded_states={self.total_expanded_states}, "
-                f"repairs={self.repair_count}"
+                f"repairs={self.repair_count}, "
+                f"deferred={self.deferred_count}"
             )
             print("      - A* timing breakdown by operation:")
             for bucket_name in (
@@ -8071,6 +8106,7 @@ class _RouteNetsRustSession:
                 route_count=len(route_jobs),
                 simple_route_count=self.simple_route_count,
                 repair_count=self.repair_count,
+                deferred_count=self.deferred_count,
                 astar_elapsed_s=astar_elapsed_s,
             ),
             route_attempt_records=self.route_attempt_records,

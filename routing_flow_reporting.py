@@ -278,6 +278,7 @@ def report_optical_timing(
         f"simple={int(route_summary.simple_route_count)}/"
         f"{int(route_summary.route_count)}, "
         f"repairs={int(route_summary.repair_count)}"
+        f", deferred={int(getattr(route_summary, 'deferred_count', 0))}"
     )
     endpoint_correction_time_s = float(getattr(route_summary, "endpoint_correction_time_s", 0.0))
     if endpoint_correction_time_s > 0.0:

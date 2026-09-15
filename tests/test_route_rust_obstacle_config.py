@@ -95,3 +95,14 @@ def test_resolve_obstacle_config_preserves_clear_port_opening_option():
 
     assert isinstance(resolved, StaticObstacleMapConfig)
     assert resolved.clear_port_open_cells_from_static is False
+
+
+def test_dense_obstacle_cell_cap_covers_the_whole_map_and_keeps_the_default_for_small_maps():
+    """The lidar-mode crossing hook rasterizes the full routing bounds; the
+    kernel cap must cover the map (benes_64x64: 8380 x 3439 cells = 28.8M >
+    the 10M default, which panicked on 2026-09-13)."""
+    from translation.route_rust import DENSE_OBSTACLE_CELL_CAP_MARGIN, dense_obstacle_cell_cap
+
+    assert dense_obstacle_cell_cap(1000, 500, 10_000_000) == 10_000_000
+    assert dense_obstacle_cell_cap(8380, 3439, 10_000_000) == DENSE_OBSTACLE_CELL_CAP_MARGIN * 8380 * 3439
+    assert dense_obstacle_cell_cap(8380, 3439, 10_000_000) > 28_800_000

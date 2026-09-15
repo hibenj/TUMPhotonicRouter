@@ -92,6 +92,20 @@ pub struct AStarConfig {
     pub heap_tie_breaker: HeapTieBreaker,
     pub require_terminal_straights: bool,
     pub max_search_time_ms: u64,
+    // Caps the TOTAL expanded states of one windowed search call -- every
+    // routing-window attempt (`routing_window_max_expansions`) plus the
+    // full-grid fallback (`routing_window_fallback_full_grid`) together, not
+    // any single attempt's own `max_iterations` -- so a search that cannot
+    // find a route stops well short of retrying every window at the full
+    // per-window cap. `None` (the default) leaves every window/fallback
+    // attempt bounded only by `max_iterations`, as before this field
+    // existed. Only `route_many_with_negotiated_repair_and_commit` in
+    // `py_router.rs` ever sets this (via its own `negotiated_search_budget`
+    // field, read by `PyPhotonicRouter::astar_config`); every other caller,
+    // including the older repair chain, leaves it `None`. See
+    // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
+    // Milestone 5.
+    pub total_expansion_budget: Option<u64>,
 }
 
 impl Default for AStarConfig {
@@ -127,6 +141,7 @@ impl Default for AStarConfig {
             heap_tie_breaker: HeapTieBreaker::SmallerG,
             require_terminal_straights: false,
             max_search_time_ms: 0,
+            total_expansion_budget: None,
         }
     }
 }
@@ -2245,6 +2260,43 @@ pub fn route_single_net_with_crossing_config(
     )
 }
 
+/// `true` once `stats.expanded_states` (accumulated across every window and
+/// fallback attempt this search call has already made) has reached `budget`.
+/// `budget = None` never exhausts. Checked between attempts, not inside one,
+/// so a single attempt already in flight can still overshoot `budget` by its
+/// own expansion count -- see `total_expansion_budget`'s doc comment.
+fn budget_exhausted(budget: Option<u64>, stats: &RouteSearchStats) -> bool {
+    match budget {
+        Some(budget) => stats.expanded_states as u64 >= budget,
+        None => false,
+    }
+}
+
+/// The `max_iterations` cap for one window or full-grid attempt: the
+/// smaller of the configured per-attempt cap (`config.max_iterations`) and
+/// whatever `total_expansion_budget` still allows given what earlier
+/// attempts in this same search call already expanded (`stats`). Without
+/// this, a search whose cumulative budget is nearly spent could still let
+/// its next attempt run up to the full per-window cap before the
+/// between-attempt `budget_exhausted` check ever saw it -- observed as a
+/// failing search with a 2,000,000-state budget still taking 96-132 s
+/// because each window ran under the unrelated 20,000,000 `max_iterations`
+/// cap. `budget_exhausted` already keeps an attempt from launching at all
+/// once no budget remains, so `remaining` here is always >= 1 in practice;
+/// `.max(1)` only guards against a caller skipping that check. `None`
+/// (no budget) leaves `config.max_iterations` unchanged. See
+/// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
+/// Milestone 5.
+fn effective_max_iterations(config: &AStarConfig, stats: &RouteSearchStats) -> usize {
+    match config.total_expansion_budget {
+        Some(budget) => {
+            let remaining = budget.saturating_sub(stats.expanded_states as u64).max(1);
+            (config.max_iterations as u64).min(remaining) as usize
+        }
+        None => config.max_iterations,
+    }
+}
+
 fn run_windowed_single_net_search<F>(
     obstacle_map: &ObstacleMap,
     source: State,
@@ -2254,14 +2306,22 @@ fn run_windowed_single_net_search<F>(
     mut try_bounds: F,
 ) -> Option<RouteResult>
 where
-    F: FnMut(&ObstacleMap, Option<RoutingBounds>, &mut RouteSearchStats) -> Option<RouteResult>,
+    F: FnMut(
+        &ObstacleMap,
+        Option<RoutingBounds>,
+        &mut RouteSearchStats,
+        usize,
+    ) -> Option<RouteResult>,
 {
     if !config.use_routing_window {
-        return try_bounds(obstacle_map, None, stats);
+        return try_bounds(obstacle_map, None, stats, config.max_iterations);
     }
 
     let mut last_bounds: Option<RoutingBounds> = None;
     for expansion_idx in 0..=config.routing_window_max_expansions {
+        if budget_exhausted(config.total_expansion_budget, stats) {
+            return None;
+        }
         let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
         if last_bounds == Some(bounds) {
             continue;
@@ -2275,12 +2335,15 @@ where
         stats.last_window_max_y = bounds.max_y;
         stats.last_window_area_cells = window_area(bounds);
 
-        if let Some(route) = try_bounds(obstacle_map, Some(bounds), stats) {
+        let effective_cap = effective_max_iterations(config, stats);
+        if let Some(route) = try_bounds(obstacle_map, Some(bounds), stats, effective_cap) {
             return Some(route);
         }
     }
 
-    if config.routing_window_fallback_full_grid {
+    if config.routing_window_fallback_full_grid
+        && !budget_exhausted(config.total_expansion_budget, stats)
+    {
         stats.window_attempts += 1;
         stats.used_full_grid_fallback = true;
         let full_bounds = RoutingBounds {
@@ -2295,7 +2358,8 @@ where
         stats.last_window_max_y = full_bounds.max_y;
         stats.last_window_area_cells = window_area(full_bounds);
         stats.max_window_area_cells = stats.max_window_area_cells.max(window_area(full_bounds));
-        return try_bounds(obstacle_map, None, stats);
+        let effective_cap = effective_max_iterations(config, stats);
+        return try_bounds(obstacle_map, None, stats, effective_cap);
     }
 
     None
@@ -6217,14 +6281,16 @@ mod unified_kernel {
             target,
             config,
             &mut stats,
-            |obstacle_map, bounds, stats| {
+            |obstacle_map, bounds, stats, effective_max_iterations| {
+                let mut attempt_config = config.clone();
+                attempt_config.max_iterations = effective_max_iterations;
                 route_single_net_with_bounds_unified(
                     obstacle_map,
                     primitives,
                     source,
                     target,
                     Some(&anchor_open_cells),
-                    config,
+                    &attempt_config,
                     bounds,
                     stats,
                     0,
@@ -6296,14 +6362,16 @@ mod unified_kernel {
             target,
             config,
             &mut stats,
-            |obstacle_map, bounds, stats| {
+            |obstacle_map, bounds, stats, effective_max_iterations| {
+                let mut attempt_config = config.clone();
+                attempt_config.max_iterations = effective_max_iterations;
                 route_single_net_with_bounds_unified(
                     obstacle_map,
                     primitives,
                     source,
                     target,
                     Some(&anchor_open_cells),
-                    config,
+                    &attempt_config,
                     bounds,
                     stats,
                     dynamic_expansion_radius_cells,
@@ -6383,7 +6451,10 @@ mod unified_kernel {
             target,
             config,
             &mut stats,
-            |obstacle_map, bounds, stats| {
+            |obstacle_map, bounds, stats, effective_max_iterations| {
+                let mut attempt_config = config.clone();
+                attempt_config.max_iterations = effective_max_iterations;
+                let config = &attempt_config;
                 let resolved_bounds = bounds.unwrap_or(RoutingBounds {
                     min_x: 0,
                     max_x: obstacle_map.width() - 1,
@@ -6484,7 +6555,10 @@ mod unified_kernel {
             target,
             config,
             &mut stats,
-            |obstacle_map, bounds, stats| {
+            |obstacle_map, bounds, stats, effective_max_iterations| {
+                let mut attempt_config = config.clone();
+                attempt_config.max_iterations = effective_max_iterations;
+                let config = &attempt_config;
                 let resolved_bounds = bounds.unwrap_or(RoutingBounds {
                     min_x: 0,
                     max_x: obstacle_map.width() - 1,
@@ -9231,7 +9305,7 @@ mod tests {
             target,
             &config,
             &mut stats,
-            |_obstacle_map, bounds, _stats| {
+            |_obstacle_map, bounds, _stats, _effective_max_iterations| {
                 calls.push(bounds);
                 Some(stub_route_result(source, target))
             },
@@ -9262,7 +9336,7 @@ mod tests {
             target,
             &config,
             &mut stats,
-            |_obstacle_map, bounds, _stats| {
+            |_obstacle_map, bounds, _stats, _effective_max_iterations| {
                 call_count += 1;
                 assert!(bounds.is_some(), "windowed attempts must pass Some(bounds)");
                 Some(stub_route_result(source, target))
@@ -9295,7 +9369,7 @@ mod tests {
             target,
             &config,
             &mut stats,
-            |_obstacle_map, bounds, _stats| {
+            |_obstacle_map, bounds, _stats, _effective_max_iterations| {
                 calls.push(bounds);
                 None
             },
@@ -9341,7 +9415,7 @@ mod tests {
             target,
             &config,
             &mut stats,
-            |_obstacle_map, bounds, _stats| {
+            |_obstacle_map, bounds, _stats, _effective_max_iterations| {
                 calls.push(bounds);
                 None
             },
@@ -9350,6 +9424,181 @@ mod tests {
         assert!(result.is_none());
         assert!(calls.iter().all(Option::is_some), "no full-grid fallback attempt should occur when routing_window_fallback_full_grid is false, got {calls:?}");
         assert!(!stats.used_full_grid_fallback);
+    }
+
+    /// A window config whose margin grows enough between successive
+    /// `expansion_idx` values that `compute_routing_bounds` never produces
+    /// the same bounds twice (so the windowed loop's last-bounds dedup never
+    /// skips an attempt) -- used by the `total_expansion_budget` tests below
+    /// to exercise several real window attempts before the budget can stop
+    /// the loop between them. See Milestone 5 of
+    /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`.
+    fn wide_growth_window_config() -> (ObstacleMap, State, State, AStarConfig) {
+        let map = ObstacleMap::new(1000, 20);
+        let source = State::new(10, 10, 0);
+        let target = State::new(400, 10, 0);
+        let config = AStarConfig {
+            use_routing_window: true,
+            routing_window_min_margin_cells: 5,
+            routing_window_scale: 0.1,
+            routing_window_growth: 1.0,
+            routing_window_max_expansions: 5,
+            routing_window_fallback_full_grid: true,
+            ..AStarConfig::default()
+        };
+        (map, source, target, config)
+    }
+
+    #[test]
+    fn total_expansion_budget_stops_the_windowed_loop_once_reached() {
+        let (map, source, target, mut config) = wide_growth_window_config();
+        config.total_expansion_budget = Some(100);
+        let mut stats = RouteSearchStats::default();
+        let mut calls: Vec<Option<RoutingBounds>> = Vec::new();
+
+        let result = run_windowed_single_net_search(
+            &map,
+            source,
+            target,
+            &config,
+            &mut stats,
+            |_obstacle_map, bounds, stats, _effective_max_iterations| {
+                calls.push(bounds);
+                // Never finds a route, however many expansions it is given --
+                // stands in for a net whose route genuinely needs more
+                // expansions than the budget allows.
+                stats.expanded_states += 80;
+                None
+            },
+        );
+
+        assert!(
+            result.is_none(),
+            "a budget smaller than what the route needs must fail fast, not eventually succeed"
+        );
+        assert_eq!(
+            calls.len(),
+            2,
+            "the loop must stop once the cumulative budget is spent, before a third window or the full-grid fallback, got {calls:?}"
+        );
+        assert!(
+            (stats.expanded_states as u64) <= 100 + 80,
+            "cumulative expansions must not exceed the budget by more than one window's own overshoot, got {}",
+            stats.expanded_states
+        );
+        assert!(
+            !stats.used_full_grid_fallback,
+            "the full-grid fallback must not run once the budget is already exhausted"
+        );
+    }
+
+    #[test]
+    fn total_expansion_budget_none_lets_the_windowed_loop_run_to_success() {
+        let (map, source, target, config) = wide_growth_window_config();
+        assert_eq!(
+            config.total_expansion_budget, None,
+            "this test's baseline must be the unbudgeted default"
+        );
+        let mut stats = RouteSearchStats::default();
+        let mut call_count = 0;
+
+        let result = run_windowed_single_net_search(
+            &map,
+            source,
+            target,
+            &config,
+            &mut stats,
+            |_obstacle_map, bounds, stats, _effective_max_iterations| {
+                call_count += 1;
+                stats.expanded_states += 80;
+                assert!(bounds.is_some(), "windowed attempts must pass Some(bounds)");
+                // Succeeds only on the third distinct window -- an unbudgeted
+                // search must be allowed to reach it, unlike the budgeted
+                // test above which is cut off after the second.
+                (call_count >= 3).then(|| stub_route_result(source, target))
+            },
+        );
+
+        assert!(
+            result.is_some(),
+            "without a budget the loop must keep trying windows until one finds the route"
+        );
+        assert_eq!(call_count, 3);
+    }
+
+    #[test]
+    fn total_expansion_budget_caps_each_attempts_own_max_iterations() {
+        // A large open map with the target sealed behind a one-cell ring of
+        // static obstacles, so no primitive can ever reach it and the real
+        // kernel must keep expanding reachable cells until either the open
+        // set is empty or `max_iterations` is hit -- there are ~12,000
+        // reachable cells here (the whole window), far more than the 5,000
+        // budget below, so if the per-attempt cap were not applied the
+        // attempt would run under its full `max_iterations` (100,000, from
+        // `AStarConfig::default()`) instead of stopping near the budget.
+        let mut map = ObstacleMap::new(200, 60);
+        let (tx, ty) = (100, 30);
+        for dx in -1..=1i32 {
+            for dy in -1..=1i32 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                map.add_static_cell(tx + dx, ty + dy);
+            }
+        }
+        let library = primitive_library();
+        let source = State::new(5, 5, 0);
+        let target = State::new(tx, ty, 0);
+        let config = AStarConfig {
+            use_routing_window: true,
+            routing_window_min_margin_cells: 500,
+            routing_window_max_expansions: 0,
+            routing_window_fallback_full_grid: false,
+            total_expansion_budget: Some(5_000),
+            ..AStarConfig::default()
+        };
+        let mut stats = RouteSearchStats::default();
+
+        let result = run_windowed_single_net_search(
+            &map,
+            source,
+            target,
+            &config,
+            &mut stats,
+            |obstacle_map, bounds, stats, effective_max_iterations| {
+                let mut attempt_config = config.clone();
+                attempt_config.max_iterations = effective_max_iterations;
+                unified_kernel::route_single_net_with_bounds_unified(
+                    obstacle_map,
+                    &library,
+                    source,
+                    target,
+                    None,
+                    &attempt_config,
+                    bounds,
+                    stats,
+                    0,
+                    None,
+                    &unified_kernel::NoCrossingHook,
+                )
+            },
+        );
+
+        assert!(
+            result.is_none(),
+            "the sealed-off target must never be reached"
+        );
+        assert!(
+            (stats.expanded_states as u64) <= 5_000,
+            "the attempt's own expansion count must be bounded by the budget, got {}",
+            stats.expanded_states
+        );
+        assert!(
+            (stats.expanded_states as usize) < config.max_iterations,
+            "the attempt must stop well short of the window's own max_iterations cap, got {} of {}",
+            stats.expanded_states,
+            config.max_iterations
+        );
     }
 
     #[test]

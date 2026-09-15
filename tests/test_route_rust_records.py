@@ -8,7 +8,12 @@ from translation.route_rust_records import (
     RouteBookkeeping,
     routed_edge_lengths_from_records,
 )
-from translation.route_rust_types import RouteJob, RoutedNetRecord
+from translation.route_rust_types import (
+    RouteJob,
+    RouteSearchSummary,
+    RoutedNetRecord,
+    summarize_route_search,
+)
 
 
 def _job(net_id: int, net_name: str) -> RouteJob:
@@ -23,6 +28,35 @@ def _job(net_id: int, net_name: str) -> RouteJob:
         source_port=cast(Port, cast(object, SimpleNamespace())),
         target_port=cast(Port, cast(object, SimpleNamespace())),
     )
+
+
+def test_route_search_summary_deferred_count_defaults_to_zero():
+    assert RouteSearchSummary().deferred_count == 0
+    assert RouteSearchSummary(deferred_count=3).deferred_count == 3
+
+
+def test_summarize_route_search_without_deferred_count_yields_zero():
+    # Mirrors a native batch_result dict that predates the deferred_count
+    # key (or omits it because nothing was deferred): the summary object
+    # should still come back with deferred_count=0.
+    summary = summarize_route_search(
+        {},
+        route_count=0,
+        simple_route_count=0,
+        repair_count=0,
+        astar_elapsed_s=0.0,
+    )
+    assert summary.deferred_count == 0
+
+    summary_with_deferrals = summarize_route_search(
+        {},
+        route_count=0,
+        simple_route_count=0,
+        repair_count=0,
+        astar_elapsed_s=0.0,
+        deferred_count=2,
+    )
+    assert summary_with_deferrals.deferred_count == 2
 
 
 def test_route_bookkeeping_preserves_route_order_and_edge_lengths():

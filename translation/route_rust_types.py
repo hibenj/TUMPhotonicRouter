@@ -1083,6 +1083,7 @@ class RouteSearchSummary:
     route_failures: int = 0
     simple_route_count: int = 0
     repair_count: int = 0
+    deferred_count: int = 0
     astar_elapsed_s: float = 0.0
     endpoint_correction_time_s: float = 0.0
     endpoint_correction_calls: int = 0
@@ -1178,6 +1179,7 @@ def summarize_route_search(
     simple_route_count: int,
     repair_count: int,
     astar_elapsed_s: float,
+    deferred_count: int = 0,
 ) -> RouteSearchSummary:
     """Aggregate route-search counters used by quiet benchmark reporting."""
     non_route_bucket_names = {"endpoint_correction"}
@@ -1199,6 +1201,7 @@ def summarize_route_search(
         route_failures=sum(bucket.failures for bucket in buckets),
         simple_route_count=int(simple_route_count),
         repair_count=int(repair_count),
+        deferred_count=int(deferred_count),
         astar_elapsed_s=float(astar_elapsed_s),
         endpoint_correction_time_s=float(
             route_timing_buckets.get("endpoint_correction", RouteTimingBucket()).elapsed_s

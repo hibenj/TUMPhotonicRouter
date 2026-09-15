@@ -110,6 +110,19 @@ impl CrossingGuidance {
     pub fn planned_pair_count(&self) -> usize {
         self.planned_pairs.len()
     }
+
+    /// The plan's pairs as `(net_id, net_id)` tuples, in no particular
+    /// order. Exists only so a caller can rebuild a union guidance (e.g.
+    /// the probe-guided search in `py_router.rs`'s negotiated engine,
+    /// unioning the topology plan's pairs with a probe's own crossing
+    /// partners) via `CrossingGuidance::new` -- nothing else needs to
+    /// enumerate the set.
+    pub fn pairs(&self) -> Vec<(NetId, NetId)> {
+        self.planned_pairs
+            .iter()
+            .map(|pair| (pair.low_net_id, pair.high_net_id))
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
