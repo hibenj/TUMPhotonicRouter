@@ -795,6 +795,18 @@ pub struct PyPhotonicRouter {
     // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
     // Milestone 5.
     negotiated_search_budget: Option<u64>,
+    // Contribution 1's crossing-free search for unplanned nets (owner
+    // decision 2026-09-16 00:10, see
+    // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
+    // Milestone 7): `true` only while
+    // `route_many_with_negotiated_repair_and_commit` searches a net whose
+    // topology plan has no crossing at all. `route_single_net_and_commit_native`
+    // then skips its deferred lidar-pure crossing search entirely, so the
+    // net's plain search is the ordinary crossing-free A* -- every committed
+    // net stays an obstacle. Never set by the older chain, never set for
+    // the probe search, and reset to `false` right after every search that
+    // set it.
+    negotiated_crossing_free_search: bool,
     // Expanded-states count of the most recent single-net search
     // `route_single_net_and_commit_native` ran, success or failure. Set
     // right after that search returns (before its `Option<RouteResult>` is
@@ -1158,6 +1170,42 @@ const NEGOTIATED_BRAID_MAX_PASSES: u32 = 4;
 // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`.
 const NEGOTIATED_PROBE_GUIDANCE_LOSS: f64 = 0.0;
 
+/// Contribution 1's crossing-free search for unplanned nets (owner decision
+/// 2026-09-16 00:10, Milestone 7 of
+/// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`):
+/// under `lidar-guided`, a net that has no crossing at all in the topology
+/// plan (no planned pair of the crossing guidance names it) is searched
+/// crossing-free -- every committed net is an obstacle, no crossing is
+/// priced or accepted -- and when that fails, every net the probe's free
+/// path crosses is ripped up (not only the illegal partners) and the net
+/// is searched crossing-free again. The 64x64 mesh's input fan-out (bands
+/// 1-2, 0 planned crossings) is where both 64x64 mesh runs realized their
+/// 8 unplanned crossings; the plan already says those nets need none. The
+/// last round keeps the baseline behaviour (crossings allowed) so the
+/// rule can never lose a route the priced search would have found.
+/// `PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED=0` turns the rule
+/// off for A/B runs; without guidance (lidar-pure) it never applies.
+fn negotiated_crossing_free_unplanned_enabled() -> bool {
+    std::env::var("PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED")
+        .map(|value| value != "0")
+        .unwrap_or(true)
+}
+
+/// The rule itself: `planned_net_ids` is the set of nets that appear in at
+/// least one planned pair of the current guidance (`None` = no guidance,
+/// lidar-pure); the last round is always exempt.
+fn negotiated_crossing_free_net(
+    planned_net_ids: Option<&FxHashSet<u64>>,
+    net_id: u64,
+    round: u32,
+    max_rounds: u32,
+) -> bool {
+    match planned_net_ids {
+        Some(planned) => round < max_rounds && !planned.contains(&net_id),
+        None => false,
+    }
+}
+
 /// Picks the expansion budget for one plain-search attempt of
 /// `route_many_with_negotiated_repair_and_commit`'s per-net loop.
 /// `attempt_index` is 0 for a net's first try this round, 1 for the retry
@@ -1331,6 +1379,47 @@ enum CommitIfCleanOutcome {
 enum PlainRouteOutcome {
     Routed,
     NotResolved,
+}
+
+/// Result of `try_ripup_single_victim_and_reroute_with`: both nets routed
+/// (`Both`), the net routed but the victim could not be rerouted and, on
+/// request, stays ripped with the net's new route kept (`NetOnly`), or the
+/// attempt was rolled back entirely (`Failed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VictimRerouteOutcome {
+    Both,
+    NetOnly,
+    Failed,
+}
+
+/// Result of one `try_braid_repair` pass: the pair was repaired (`Kept`),
+/// rolled back to the braid (`Failed`), or -- the negotiated engine's
+/// escalation (2026-09-15 fan-out analysis, Milestone 8 of
+/// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`)
+/// -- the net now holds its braid-free route and the partner stays ripped
+/// for the caller to re-queue (`VictimRipped`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BraidRepairOutcome {
+    Kept(u64),
+    Failed(u64),
+    VictimRipped(u64),
+}
+
+/// Re-queues the partners a braid escalation left ripped: each goes to the
+/// front of the queue with its failed count raised and is marked as ripped
+/// this epoch (LiDAR's once-per-epoch rule), exactly like a local rip-up's
+/// victims in `route_many_with_negotiated_repair_and_commit`.
+fn requeue_braid_victims(
+    queue: &mut std::collections::VecDeque<u64>,
+    failed_counts: &mut FxHashMap<u64, u32>,
+    ripped_once: &mut FxHashSet<u64>,
+    victims: &[u64],
+) {
+    for &victim_id in victims.iter().rev() {
+        *failed_counts.entry(victim_id).or_insert(0) += 1;
+        ripped_once.insert(victim_id);
+        queue.push_front(victim_id);
+    }
 }
 
 enum SourceLayerCenterOutOutcome {
@@ -6845,7 +6934,12 @@ impl PyPhotonicRouter {
             && !self.use_collision_crossing_routing
             && self.crossing_context.config().allow_only_expected_pairs
             && !expected_crossing_partner_ids.is_empty();
-        let lidar_pure_crossing = self.lidar_pure_crossing_enabled();
+        // `negotiated_crossing_free_search`: contribution 1's crossing-free
+        // search for a net without any planned crossing -- the deferred
+        // lidar-pure crossing search below is skipped, so a failed simple
+        // probe falls through to the ordinary (crossing-free) search.
+        let lidar_pure_crossing =
+            self.lidar_pure_crossing_enabled() && !self.negotiated_crossing_free_search;
         // Fresh/native routing: try the plain, non-crossing attempt first
         // (see the simple-route block below); a lidar-pure collision-crossing
         // search only happens later, deferred, if that plain attempt fails
@@ -10355,6 +10449,11 @@ impl PyPhotonicRouter {
     /// Returns the ids actually ripped, in the order they were found --
     /// possibly empty when every implicated net was already ripped this
     /// epoch.
+    /// `rip_every_probe_partner`: the crossing-free rule for unplanned nets
+    /// (`negotiated_crossing_free_net`) -- the net may cross nothing, so
+    /// the partners of the probe's *legal* crossings
+    /// (`probe_crossing_events`) are ripped as well, after the illegal ones.
+    #[allow(clippy::too_many_arguments)]
     fn ripup_illegal_crossing_partners(
         &mut self,
         batch: &mut RepairBatchState,
@@ -10363,12 +10462,26 @@ impl PyPhotonicRouter {
         net_id: u64,
         round: u32,
         trace_native_repair: bool,
+        rip_every_probe_partner: bool,
     ) -> Vec<u64> {
         let mut ripped_ids: Vec<u64> = Vec::new();
         let mut seen: FxHashSet<u64> = FxHashSet::default();
-        for violation in &probe.probe_realized_crossing_violations {
-            let partner_id = violation.partner_net_id;
-            if ripped_once.contains(&partner_id) || !seen.insert(partner_id) {
+        let mut partner_ids: Vec<u64> = probe
+            .probe_realized_crossing_violations
+            .iter()
+            .map(|violation| violation.partner_net_id)
+            .collect();
+        if rip_every_probe_partner {
+            partner_ids.extend(
+                probe
+                    .probe_crossing_events
+                    .iter()
+                    .map(|event| event.partner_net_id),
+            );
+        }
+        for partner_id in partner_ids {
+            if partner_id == net_id || ripped_once.contains(&partner_id) || !seen.insert(partner_id)
+            {
                 continue;
             }
             ripped_once.insert(partner_id);
@@ -11918,6 +12031,38 @@ impl PyPhotonicRouter {
         history_weight: f64,
         collect_native_timing: bool,
     ) -> bool {
+        self.try_ripup_single_victim_and_reroute_with(
+            batch,
+            job,
+            victim_job,
+            bucket_name,
+            block_radius_cells,
+            commit_radius_cells,
+            core_radius_cells,
+            history_weight,
+            collect_native_timing,
+            false,
+        ) == VictimRerouteOutcome::Both
+    }
+
+    /// `keep_net_on_victim_failure`: when the net routes without the victim
+    /// but the victim cannot be rerouted afterwards, keep the net's new
+    /// route committed and leave the victim ripped (`NetOnly`) instead of
+    /// rolling both back -- the braid escalation of the negotiated engine.
+    #[allow(clippy::too_many_arguments)]
+    fn try_ripup_single_victim_and_reroute_with(
+        &mut self,
+        batch: &mut RepairBatchState,
+        job: &NativeRouteJob,
+        victim_job: &NativeRouteJob,
+        bucket_name: &'static str,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        history_weight: f64,
+        collect_native_timing: bool,
+        keep_net_on_victim_failure: bool,
+    ) -> VictimRerouteOutcome {
         let victim_id = victim_job.net_id;
         let base_map = self.obstacle_map.clone();
         let base_center_routes = self.committed_center_routes.clone();
@@ -11983,7 +12128,7 @@ impl PyPhotonicRouter {
                 self.crossing_events = base_crossing_events;
                 batch.final_routes = base_routes;
                 self.invalidate_meander_base_prefix();
-                return false;
+                return VictimRerouteOutcome::Failed;
             }
         };
 
@@ -12042,6 +12187,18 @@ impl PyPhotonicRouter {
                     }
                     Err(error) => {
                         batch.timings.reroute_victims_failed_wall_us += repair_elapsed_us;
+                        if std::env::var_os("PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG").is_some() {
+                            eprintln!(
+                                "{}native_repair_victim_reroute_failed bucket={} net={} victim={} net_waypoints={:?} normal_error={} repair_error={}",
+                                trace_t(self.negotiated_batch_start),
+                                bucket_name,
+                                job.net_id,
+                                victim_id,
+                                current_route.compressed_waypoints,
+                                normal_error,
+                                error
+                            );
+                        }
                         batch.attempts.push(NativeRouteAttempt {
                             bucket_name,
                             net_id: victim_job.net_id,
@@ -12052,6 +12209,21 @@ impl PyPhotonicRouter {
                             candidate_blockers: vec![victim_id],
                             ripup_ids: vec![victim_id],
                         });
+                        if keep_net_on_victim_failure {
+                            batch.attempts.push(NativeRouteAttempt {
+                                bucket_name,
+                                net_id: job.net_id,
+                                route: Some(current_route.clone()),
+                                failed: false,
+                                error: None,
+                                repair_round: Some(0),
+                                candidate_blockers: vec![victim_id],
+                                ripup_ids: vec![victim_id],
+                            });
+                            batch.final_routes.insert(job.net_id, current_route);
+                            batch.repair_count = batch.repair_count.saturating_add(1);
+                            return VictimRerouteOutcome::NetOnly;
+                        }
                         self.obstacle_map = base_map;
                         self.committed_center_routes = base_center_routes;
                         self.committed_realized_center_routes = base_realized_center_routes;
@@ -12061,7 +12233,7 @@ impl PyPhotonicRouter {
                         self.crossing_events = base_crossing_events;
                         batch.final_routes = base_routes;
                         self.invalidate_meander_base_prefix();
-                        return false;
+                        return VictimRerouteOutcome::Failed;
                     }
                 }
             }
@@ -12090,7 +12262,7 @@ impl PyPhotonicRouter {
         batch.final_routes.insert(job.net_id, current_route);
         batch.final_routes.insert(victim_job.net_id, victim_route);
         batch.repair_count = batch.repair_count.saturating_add(1);
-        true
+        VictimRerouteOutcome::Both
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -12368,7 +12540,8 @@ impl PyPhotonicRouter {
         collect_native_timing: bool,
         trace_native_repair: bool,
         skip_pairs: Option<&FxHashSet<(u64, u64)>>,
-    ) -> Option<(u64, bool)> {
+        escalate_victim: bool,
+    ) -> Option<BraidRepairOutcome> {
         if std::env::var_os("PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR").is_some() {
             return None;
         }
@@ -12412,6 +12585,54 @@ impl PyPhotonicRouter {
                 before,
                 trace_budget_str(self.negotiated_search_budget)
             );
+            // Braid geometry (2026-09-15 fan-out analysis): the crossing
+            // points between the two nets and both routes' waypoints.
+            let points: Vec<(f64, f64)> = self
+                .crossing_events
+                .iter()
+                .filter(|event| {
+                    (event.net_id == job.net_id && event.partner_net_id == victim_id)
+                        || (event.net_id == victim_id && event.partner_net_id == job.net_id)
+                })
+                .map(|event| event.point)
+                .collect();
+            let net_waypoints = batch
+                .final_routes
+                .get(&job.net_id)
+                .map(|route| route.compressed_waypoints.clone())
+                .unwrap_or_default();
+            let partner_waypoints = batch
+                .final_routes
+                .get(&victim_id)
+                .map(|route| route.compressed_waypoints.clone())
+                .unwrap_or_default();
+            eprintln!(
+                "native_repair_braid_geometry net={} partner={} points={:?} net_waypoints={:?} partner_waypoints={:?}",
+                job.net_id, victim_id, points, net_waypoints, partner_waypoints
+            );
+            // Every other committed route inside the pair's bounding box.
+            let bbox = net_waypoints
+                .iter()
+                .chain(partner_waypoints.iter())
+                .fold((i32::MAX, i32::MAX, i32::MIN, i32::MIN), |acc, &(x, y)| {
+                    (acc.0.min(x), acc.1.min(y), acc.2.max(x), acc.3.max(y))
+                });
+            let mut neighbours: Vec<(u64, Vec<(i32, i32)>)> = batch
+                .final_routes
+                .iter()
+                .filter(|(id, _)| **id != job.net_id && **id != victim_id)
+                .filter(|(_, route)| {
+                    route.compressed_waypoints.iter().any(|&(x, y)| {
+                        x >= bbox.0 - 8 && x <= bbox.2 + 8 && y >= bbox.1 - 8 && y <= bbox.3 + 8
+                    })
+                })
+                .map(|(id, route)| (*id, route.compressed_waypoints.clone()))
+                .collect();
+            neighbours.sort_by_key(|(id, _)| *id);
+            eprintln!(
+                "native_repair_braid_neighbours net={} partner={} bbox={:?} neighbours={:?}",
+                job.net_id, victim_id, bbox, neighbours
+            );
         }
         // snapshot with both nets committed
         let base_map = self.obstacle_map.clone();
@@ -12427,7 +12648,7 @@ impl PyPhotonicRouter {
         // first and the partner second (restoring itself on failure)
         self.rollback_committed_route(job.net_id);
         batch.final_routes.remove(&job.net_id);
-        let swapped = self.try_ripup_single_victim_and_reroute(
+        let reroute_outcome = self.try_ripup_single_victim_and_reroute_with(
             batch,
             job,
             victim_job,
@@ -12437,20 +12658,34 @@ impl PyPhotonicRouter {
             core_radius_cells,
             0.0,
             collect_native_timing,
+            escalate_victim,
         );
+        let swapped = reroute_outcome == VictimRerouteOutcome::Both;
         let after = self.crossing_event_count_between(job.net_id, victim_id);
         let keep = swapped
             && batch.final_routes.contains_key(&job.net_id)
             && batch.final_routes.contains_key(&victim_id)
             && after < before;
+        // Escalation: the net holds a braid-free route, the partner could
+        // not be rerouted around it -- keep the net, hand the partner back
+        // to the negotiation (its own blockers get ripped there) instead of
+        // rolling back to the braid. Only if the net's new route really
+        // lost the braid; otherwise fall through to the rollback.
+        let escalated = reroute_outcome == VictimRerouteOutcome::NetOnly
+            && batch.final_routes.contains_key(&job.net_id)
+            && !batch.final_routes.contains_key(&victim_id)
+            && after == 0;
         if trace_native_repair {
             eprintln!(
-                "native_repair_braid_result net={} partner={} swapped={} crossings_between={}->{} keep={}",
-                job.net_id, victim_id, swapped, before, after, keep
+                "native_repair_braid_result net={} partner={} swapped={} crossings_between={}->{} keep={} escalated={}",
+                job.net_id, victim_id, swapped, before, after, keep, escalated
             );
         }
         if keep {
-            return Some((victim_id, true));
+            return Some(BraidRepairOutcome::Kept(victim_id));
+        }
+        if escalated {
+            return Some(BraidRepairOutcome::VictimRipped(victim_id));
         }
         self.obstacle_map = base_map;
         self.committed_center_routes = base_center_routes;
@@ -12461,7 +12696,7 @@ impl PyPhotonicRouter {
         batch.final_routes = base_routes;
         batch.attempts.truncate(base_attempts);
         self.invalidate_meander_base_prefix();
-        Some((victim_id, false))
+        Some(BraidRepairOutcome::Failed(victim_id))
     }
 
     /// Loops [`Self::try_braid_repair`] over every braided partner of one
@@ -12492,6 +12727,7 @@ impl PyPhotonicRouter {
         collect_native_timing: bool,
         trace_native_repair: bool,
         braid_failed_pairs: &mut FxHashSet<(u64, u64)>,
+        ripped_victims: &mut Vec<u64>,
     ) -> u32 {
         let mut kept_count = 0u32;
         self.negotiated_search_budget = Some(NEGOTIATED_BUDGET_BRAID);
@@ -12506,13 +12742,17 @@ impl PyPhotonicRouter {
                 collect_native_timing,
                 trace_native_repair,
                 Some(braid_failed_pairs),
+                true,
             );
             match braid_outcome {
                 None => break,
-                Some((_, true)) => kept_count += 1,
-                Some((partner_id, false)) => {
+                Some(BraidRepairOutcome::Kept(_)) => kept_count += 1,
+                Some(BraidRepairOutcome::Failed(partner_id)) => {
                     braid_failed_pairs
                         .insert((job.net_id.min(partner_id), job.net_id.max(partner_id)));
+                }
+                Some(BraidRepairOutcome::VictimRipped(partner_id)) => {
+                    ripped_victims.push(partner_id);
                 }
             }
         }
@@ -13038,6 +13278,7 @@ impl PyPhotonicRouter {
             route_width_um: 0.5,
             negotiated_batch_start: None,
             negotiated_search_budget: None,
+            negotiated_crossing_free_search: false,
             last_search_expanded_states: 0,
         }
     }
@@ -14021,6 +14262,7 @@ impl PyPhotonicRouter {
                         collect_native_timing,
                         trace_native_repair,
                         None,
+                        false,
                     );
                     continue 'route_jobs;
                 }
@@ -14583,6 +14825,24 @@ impl PyPhotonicRouter {
                 .push(index);
         }
 
+        // Contribution 1's crossing-free rule for unplanned nets
+        // (`negotiated_crossing_free_net`): the nets named by at least one
+        // planned pair of the guidance, `None` without guidance.
+        let planned_net_ids: Option<FxHashSet<u64>> =
+            if negotiated_crossing_free_unplanned_enabled() {
+                self.crossing_context.guidance().map(|guidance| {
+                    guidance
+                        .pairs()
+                        .into_iter()
+                        .flat_map(|(a, b)| [a, b])
+                        .collect::<FxHashSet<u64>>()
+                })
+            } else {
+                None
+            };
+        // How many nets the crossing-free rule routed (plain or post-rip-up).
+        let mut crossing_free_count: u32 = 0;
+
         const RESET_AFTER_ROUNDS_WITHOUT_PROGRESS: u32 = 2;
         // Milestone 5's fail-fast search budgets
         // (`.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`,
@@ -14696,20 +14956,32 @@ impl PyPhotonicRouter {
                 // `net_search_budget`.
                 let net_search_budget =
                     negotiated_search_budget(my_failed_count, round, max_rounds, 0);
+                let crossing_free = negotiated_crossing_free_net(
+                    planned_net_ids.as_ref(),
+                    net_id,
+                    round,
+                    max_rounds,
+                );
+                // Partners a braid escalation of this net left ripped
+                // (`BraidRepairOutcome::VictimRipped`); re-queued right after
+                // the braid passes via `requeue_braid_victims`.
+                let mut braid_ripped_victims: Vec<u64> = Vec::new();
 
                 if trace_native_repair {
                     eprintln!(
-                        "{}native_negotiated_net index={} round={} net={} failed_count={}",
+                        "{}native_negotiated_net index={} round={} net={} failed_count={} crossing_free={}",
                         trace_t(self.negotiated_batch_start),
                         round_position + 1,
                         round,
                         net_id,
-                        my_failed_count
+                        my_failed_count,
+                        u8::from(crossing_free)
                     );
                 }
 
                 let plain_search_start = Instant::now();
                 self.negotiated_search_budget = net_search_budget;
+                self.negotiated_crossing_free_search = crossing_free;
                 let mut plain_outcome = self.try_plain_normal_route(
                     &mut batch,
                     &job,
@@ -14719,6 +14991,7 @@ impl PyPhotonicRouter {
                     collect_native_timing,
                 );
                 self.negotiated_search_budget = None;
+                self.negotiated_crossing_free_search = false;
                 if trace_native_repair {
                     let (outcome_str, expanded_str) = match &plain_outcome {
                         PlainRouteOutcome::Routed => (
@@ -14756,6 +15029,7 @@ impl PyPhotonicRouter {
                         negotiated_search_budget(my_failed_count, round, max_rounds, 1);
                     let plain_retry_start = Instant::now();
                     self.negotiated_search_budget = plain_retry_budget;
+                    self.negotiated_crossing_free_search = crossing_free;
                     plain_outcome = self.try_plain_normal_route(
                         &mut batch,
                         &job,
@@ -14765,6 +15039,7 @@ impl PyPhotonicRouter {
                         collect_native_timing,
                     );
                     self.negotiated_search_budget = None;
+                    self.negotiated_crossing_free_search = false;
                     if trace_native_repair {
                         let (outcome_str, expanded_str) = match &plain_outcome {
                             PlainRouteOutcome::Routed => (
@@ -14791,6 +15066,9 @@ impl PyPhotonicRouter {
                     }
                 }
                 if let PlainRouteOutcome::Routed = plain_outcome {
+                    if crossing_free {
+                        crossing_free_count += 1;
+                    }
                     self.run_braid_repair_passes(
                         &mut batch,
                         &job,
@@ -14801,6 +15079,13 @@ impl PyPhotonicRouter {
                         collect_native_timing,
                         trace_native_repair,
                         &mut braid_failed_pairs,
+                        &mut braid_ripped_victims,
+                    );
+                    requeue_braid_victims(
+                        &mut queue,
+                        &mut failed_counts,
+                        &mut ripped_once,
+                        &braid_ripped_victims,
                     );
                     made_progress = true;
                     continue;
@@ -14838,7 +15123,7 @@ impl PyPhotonicRouter {
                     Err(()) => {
                         if trace_native_repair {
                             eprintln!(
-                                "native_negotiated_done t={:.1} rounds={} global_ripups={} local_ripups={} commit_rejected={} unrouted={} probe_guided={}",
+                                "native_negotiated_done t={:.1} rounds={} global_ripups={} local_ripups={} commit_rejected={} unrouted={} probe_guided={} crossing_free={}",
                                 self.negotiated_batch_start
                                     .map(|start| start.elapsed().as_secs_f64())
                                     .unwrap_or(0.0),
@@ -14847,7 +15132,8 @@ impl PyPhotonicRouter {
                                 local_ripups,
                                 commit_rejected_count,
                                 queue.len(),
-                                probe_guided_count
+                                probe_guided_count,
+                                crossing_free_count
                             );
                         }
                         self.negotiated_batch_start = None;
@@ -14870,6 +15156,15 @@ impl PyPhotonicRouter {
                     for violation in &probe.probe_realized_crossing_violations {
                         if !blockers.contains(&violation.partner_net_id) {
                             blockers.push(violation.partner_net_id);
+                        }
+                    }
+                    if crossing_free {
+                        // A crossing-free net may cross nobody: the probe's
+                        // legal partners block it just as much.
+                        for event in &probe.probe_crossing_events {
+                            if !blockers.contains(&event.partner_net_id) {
+                                blockers.push(event.partner_net_id);
+                            }
                         }
                     }
                     last_blockers.insert(net_id, blockers);
@@ -14895,6 +15190,16 @@ impl PyPhotonicRouter {
                 let (legal_partner_ids, all_illegal_partner_ids) = split_probe_partners(&probe);
                 let illegal_partner_ids: Vec<u64> =
                     all_illegal_partner_ids.into_iter().take(3).collect();
+                // The crossing-free rule (`negotiated_crossing_free_net`)
+                // skips both crossing-accepting steps below (probe-guided
+                // search, direct crossing) and goes straight to the rip-up
+                // of every probe partner; its post-rip-up search is the
+                // plain crossing-free one.
+                let (legal_partner_ids, illegal_partner_ids) = if crossing_free {
+                    (Vec::new(), Vec::new())
+                } else {
+                    (legal_partner_ids, illegal_partner_ids)
+                };
 
                 // Probe-guided search (2026-09-15 15:00 Decision Log entry
                 // of
@@ -14992,6 +15297,13 @@ impl PyPhotonicRouter {
                             collect_native_timing,
                             trace_native_repair,
                             &mut braid_failed_pairs,
+                            &mut braid_ripped_victims,
+                        );
+                        requeue_braid_victims(
+                            &mut queue,
+                            &mut failed_counts,
+                            &mut ripped_once,
+                            &braid_ripped_victims,
                         );
                         made_progress = true;
                         continue;
@@ -15050,6 +15362,13 @@ impl PyPhotonicRouter {
                                 collect_native_timing,
                                 trace_native_repair,
                                 &mut braid_failed_pairs,
+                                &mut braid_ripped_victims,
+                            );
+                            requeue_braid_victims(
+                                &mut queue,
+                                &mut failed_counts,
+                                &mut ripped_once,
+                                &braid_ripped_victims,
                             );
                             made_progress = true;
                             continue;
@@ -15073,6 +15392,7 @@ impl PyPhotonicRouter {
                     net_id,
                     round,
                     trace_native_repair,
+                    crossing_free,
                 );
 
                 if !ripped.is_empty() {
@@ -15117,6 +15437,7 @@ impl PyPhotonicRouter {
                     }
                     let post_ripup_search_start = Instant::now();
                     self.negotiated_search_budget = net_search_budget;
+                    self.negotiated_crossing_free_search = crossing_free;
                     let post_ripup_outcome = if widened_legal_partner_ids.is_empty() {
                         self.try_plain_normal_route(
                             &mut batch,
@@ -15143,7 +15464,10 @@ impl PyPhotonicRouter {
                         )
                     };
                     self.negotiated_search_budget = None;
-                    let post_ripup_kind = if widened_legal_partner_ids.is_empty() {
+                    self.negotiated_crossing_free_search = false;
+                    let post_ripup_kind = if crossing_free {
+                        "post_ripup_crossing_free"
+                    } else if widened_legal_partner_ids.is_empty() {
                         "post_ripup_plain"
                     } else {
                         "post_ripup_guided"
@@ -15177,6 +15501,9 @@ impl PyPhotonicRouter {
                         if !widened_legal_partner_ids.is_empty() {
                             probe_guided_count += 1;
                         }
+                        if crossing_free {
+                            crossing_free_count += 1;
+                        }
                         self.run_braid_repair_passes(
                             &mut batch,
                             &job,
@@ -15187,6 +15514,13 @@ impl PyPhotonicRouter {
                             collect_native_timing,
                             trace_native_repair,
                             &mut braid_failed_pairs,
+                            &mut braid_ripped_victims,
+                        );
+                        requeue_braid_victims(
+                            &mut queue,
+                            &mut failed_counts,
+                            &mut ripped_once,
+                            &braid_ripped_victims,
                         );
                         made_progress = true;
                     } else {
@@ -15256,7 +15590,7 @@ impl PyPhotonicRouter {
 
         if trace_native_repair {
             eprintln!(
-                "native_negotiated_done t={:.1} rounds={} global_ripups={} local_ripups={} commit_rejected={} unrouted={} probe_guided={}",
+                "native_negotiated_done t={:.1} rounds={} global_ripups={} local_ripups={} commit_rejected={} unrouted={} probe_guided={} crossing_free={}",
                 self.negotiated_batch_start
                     .map(|start| start.elapsed().as_secs_f64())
                     .unwrap_or(0.0),
@@ -15265,7 +15599,8 @@ impl PyPhotonicRouter {
                 local_ripups,
                 commit_rejected_count,
                 queue.len(),
-                probe_guided_count
+                probe_guided_count,
+                crossing_free_count
             );
         }
         self.negotiated_batch_start = None;
@@ -19067,6 +19402,7 @@ mod tests {
             false,
             true,
             Some(&skip_pairs),
+            true,
         );
 
         assert_eq!(
@@ -19246,6 +19582,7 @@ mod tests {
             false,
             true,
             &mut braid_failed_pairs,
+            &mut Vec::new(),
         );
 
         assert_eq!(
@@ -19413,6 +19750,7 @@ mod tests {
             false,
             true,
             &mut braid_failed_pairs,
+            &mut Vec::new(),
         );
 
         assert_eq!(
@@ -19968,6 +20306,7 @@ mod tests {
             vertical.net_id,
             1,
             false,
+            false,
         );
 
         assert_eq!(
@@ -20023,6 +20362,279 @@ mod tests {
     }
 
     #[test]
+    fn negotiated_crossing_free_net_applies_only_to_unplanned_nets_before_the_last_round() {
+        let planned: FxHashSet<u64> = [1u64, 2].into_iter().collect();
+        assert!(
+            negotiated_crossing_free_net(Some(&planned), 3, 1, 10),
+            "a net without any planned pair is searched crossing-free"
+        );
+        assert!(
+            !negotiated_crossing_free_net(Some(&planned), 1, 1, 10),
+            "a net with a planned pair keeps the priced crossing search"
+        );
+        assert!(
+            !negotiated_crossing_free_net(Some(&planned), 3, 10, 10),
+            "the last round keeps the baseline behaviour for every net"
+        );
+        assert!(
+            !negotiated_crossing_free_net(None, 3, 1, 10),
+            "without guidance (lidar-pure) the rule never applies"
+        );
+    }
+
+    #[test]
+    fn negotiated_local_ripup_rips_the_probes_legal_partners_too_when_asked() {
+        let (mut router, mut batch, vertical, probe) = crossing_conflict_probe_fixture();
+        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
+        let mut legal_partner_ids: Vec<u64> = probe
+            .probe_crossing_events
+            .iter()
+            .map(|event| event.partner_net_id)
+            .collect();
+        legal_partner_ids.sort_unstable();
+        legal_partner_ids.dedup();
+        assert!(
+            !legal_partner_ids.is_empty(),
+            "this fixture's probe crosses the two horizontal nets legally"
+        );
+
+        let ripped = router.ripup_illegal_crossing_partners(
+            &mut batch,
+            &probe,
+            &mut ripped_once,
+            vertical.net_id,
+            1,
+            false,
+            true,
+        );
+
+        assert_eq!(
+            ripped[0], 3,
+            "the illegal partner is still ripped first: {ripped:?}"
+        );
+        for partner_id in &legal_partner_ids {
+            assert!(
+                ripped.contains(partner_id),
+                "legal probe partner {partner_id} must be ripped as well: {ripped:?}"
+            );
+            assert!(
+                !batch.final_routes.contains_key(partner_id),
+                "ripped net {partner_id} must leave final_routes"
+            );
+            assert!(
+                router.obstacle_map.get_net_cells(*partner_id).is_none(),
+                "ripped net {partner_id} must leave the obstacle map"
+            );
+        }
+        assert_eq!(
+            ripped.len(),
+            1 + legal_partner_ids.len(),
+            "every partner is ripped exactly once: {ripped:?}"
+        );
+    }
+
+    /// One horizontal net across the middle, then a vertical net that can
+    /// only reach its target by crossing it (perpendicular, legal).
+    fn single_horizontal_crossing_fixture() -> (PyPhotonicRouter, RepairBatchState, NativeRouteJob)
+    {
+        let mut router = missing_crossing_event_fixture_router();
+        let mut border_cells: Vec<(i32, i32)> = Vec::new();
+        for y in 0..60 {
+            for x in 0..5 {
+                border_cells.push((x, y));
+            }
+            for x in 55..60 {
+                border_cells.push((x, y));
+            }
+        }
+        router.obstacle_map.add_static_cells(&border_cells);
+        let mut batch = fresh_repair_batch_state();
+        let horizontal = NativeRouteJob::new(
+            1,
+            PyState::new(5, 30, 0),
+            PyState::new(54, 30, 0),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        );
+        let outcome = router.try_plain_normal_route(
+            &mut batch,
+            &horizontal,
+            FIXTURE_CLEARANCE_RADIUS_CELLS,
+            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            false,
+        );
+        assert!(
+            matches!(outcome, PlainRouteOutcome::Routed),
+            "fixture setup: the horizontal net must route: {:?}",
+            batch.attempts.last().and_then(|a| a.error.clone())
+        );
+        let vertical = NativeRouteJob::new(
+            2,
+            PyState::new(30, 0, 2),
+            PyState::new(30, 59, 2),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        );
+        (router, batch, vertical)
+    }
+
+    #[test]
+    fn crossing_free_search_flag_skips_the_lidar_pure_crossing_search() {
+        // The flag's observable effect on a fresh route: the vertical net
+        // can only reach its target across net 1. Crossing-free, its search
+        // is the ordinary A* (fails with the plain "No route found ..."
+        // diagnostics, nothing committed, no crossing event); with the flag
+        // off the same call reaches the deferred lidar-pure crossing search
+        // ("No legal LiDAR crossing route found" -- this 60x60 fixture is
+        // too tight for a legal crossing at the default crossing config,
+        // same as `crossing_conflict_fixture`'s own NOTE; the search's
+        // *dispatch* is what this test pins).
+        let (mut router, mut batch, vertical) = single_horizontal_crossing_fixture();
+
+        router.negotiated_crossing_free_search = true;
+        let crossing_free_outcome = router.try_plain_normal_route(
+            &mut batch,
+            &vertical,
+            FIXTURE_CLEARANCE_RADIUS_CELLS,
+            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            false,
+        );
+        router.negotiated_crossing_free_search = false;
+        let crossing_free_error = batch
+            .attempts
+            .last()
+            .and_then(|a| a.error.clone())
+            .unwrap_or_default();
+        assert!(
+            matches!(crossing_free_outcome, PlainRouteOutcome::NotResolved),
+            "with the crossing-free flag the vertical net must not route through net 1"
+        );
+        assert!(
+            crossing_free_error.starts_with("No route found"),
+            "the crossing-free search is the ordinary A*: {crossing_free_error}"
+        );
+        assert!(
+            router.obstacle_map.get_net_cells(2).is_none(),
+            "a refused crossing-free search commits nothing"
+        );
+        assert!(
+            !router.crossing_events.iter().any(|event| event.net_id == 2),
+            "a refused crossing-free search registers no crossing event"
+        );
+
+        let priced_outcome = router.try_plain_normal_route(
+            &mut batch,
+            &vertical,
+            FIXTURE_CLEARANCE_RADIUS_CELLS,
+            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            false,
+        );
+        let priced_error = batch
+            .attempts
+            .last()
+            .and_then(|a| a.error.clone())
+            .unwrap_or_default();
+        assert!(
+            matches!(priced_outcome, PlainRouteOutcome::Routed)
+                || priced_error == "No legal LiDAR crossing route found",
+            "without the flag the same call dispatches the lidar-pure crossing search: {priced_error}"
+        );
+    }
+
+    #[test]
+    fn requeue_braid_victims_pushes_front_raises_failed_count_and_marks_ripped() {
+        let mut queue: std::collections::VecDeque<u64> = [9u64, 10].into_iter().collect();
+        let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
+        failed_counts.insert(7, 1);
+        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
+
+        requeue_braid_victims(&mut queue, &mut failed_counts, &mut ripped_once, &[7, 8]);
+
+        assert_eq!(
+            queue.iter().copied().collect::<Vec<u64>>(),
+            vec![7, 8, 9, 10],
+            "victims go to the front in their original order"
+        );
+        assert_eq!(failed_counts.get(&7), Some(&2));
+        assert_eq!(failed_counts.get(&8), Some(&1));
+        assert!(ripped_once.contains(&7) && ripped_once.contains(&8));
+    }
+
+    /// Crossings disabled: the vertical net routes straight down once the
+    /// horizontal partner is ripped, and the partner can then not be
+    /// rerouted (it would have to cross the vertical). With
+    /// `keep_net_on_victim_failure` the net's route survives and the
+    /// partner stays ripped; without it everything rolls back.
+    #[test]
+    fn victim_reroute_keeps_the_net_and_leaves_the_victim_ripped_when_asked() {
+        for keep in [false, true] {
+            let (mut router, mut batch, vertical) = single_horizontal_crossing_fixture();
+            router.set_collision_crossing_routing(false);
+            router.crossing_context.set_config(CrossingConfig {
+                enabled: false,
+                ..CrossingConfig::default()
+            });
+            let horizontal = NativeRouteJob::new(
+                1,
+                PyState::new(5, 30, 0),
+                PyState::new(54, 30, 0),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                None,
+            );
+
+            let outcome = router.try_ripup_single_victim_and_reroute_with(
+                &mut batch,
+                &vertical,
+                &horizontal,
+                "braid_ripup",
+                FIXTURE_CLEARANCE_RADIUS_CELLS,
+                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                0.0,
+                false,
+                keep,
+            );
+
+            if keep {
+                assert_eq!(outcome, VictimRerouteOutcome::NetOnly);
+                assert!(
+                    batch.final_routes.contains_key(&2)
+                        && router.obstacle_map.get_net_cells(2).is_some(),
+                    "the net's braid-free route is kept"
+                );
+                assert!(
+                    !batch.final_routes.contains_key(&1)
+                        && router.obstacle_map.get_net_cells(1).is_none(),
+                    "the victim stays ripped for the caller to re-queue"
+                );
+            } else {
+                assert_eq!(outcome, VictimRerouteOutcome::Failed);
+                assert!(
+                    !batch.final_routes.contains_key(&2)
+                        && router.obstacle_map.get_net_cells(2).is_none(),
+                    "without the flag the net's attempt rolls back"
+                );
+                assert!(
+                    router.obstacle_map.get_net_cells(1).is_some(),
+                    "without the flag the victim is restored"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn negotiated_local_ripup_rips_each_partner_once_per_epoch() {
         let (mut router, mut batch, vertical, probe) = crossing_conflict_probe_fixture();
         let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
@@ -20034,6 +20646,7 @@ mod tests {
             &mut ripped_once,
             vertical.net_id,
             1,
+            false,
             false,
         );
 
@@ -20063,6 +20676,7 @@ mod tests {
             &mut ripped_once,
             vertical.net_id,
             1,
+            false,
             false,
         );
         assert_eq!(ripped, vec![3]);
