@@ -1377,6 +1377,79 @@ def crossing_tile_component(
     return component
 
 
+def _router_grid_origin(
+    unrouted_layout: Component, router_probe_kwargs: Mapping[str, object] | None
+) -> tuple[float, float, float] | None:
+    """The routing grid's (origin_x, origin_y, cell size) the flow will use.
+
+    Mirrors `photonic_router.static_obstacle_builder.make_grid_spec`: the
+    layout's bounding box expanded by the obstacle config's security margin,
+    unless the config pins a die bbox. None when no probe config is given
+    (unit tests without a router configuration): tiles then stay unsnapped.
+    """
+    if not router_probe_kwargs:
+        return None
+    config = router_probe_kwargs.get("obstacle_config")
+    if config is None:
+        return None
+    grid = float(getattr(config, "grid_size_um", 0.0) or 0.0)
+    if grid <= 0.0:
+        return None
+    die_bbox = getattr(config, "die_bbox", None)
+    if die_bbox is not None:
+        return float(die_bbox[0]), float(die_bbox[1]), grid
+    margin = float(getattr(config, "security_margin_um", 20.0))
+    bbox = unrouted_layout.dbbox()
+    return float(bbox.left) - margin, float(bbox.bottom) - margin, grid
+
+
+def _port_cells_stay_inside_footprint(center: float, origin: float, grid: float) -> bool:
+    """True when both 45-degree port cells on this axis coincide with the
+    edge cells of the tile's rasterized footprint.
+
+    A crossing tile's arms end at `crossing_half / sqrt 2` from the centre and
+    carry the waveguide's half width beyond that. If the half width crosses a
+    cell boundary that the port position does not cross, the footprint owns
+    one extra cell next to the port, and the router's diagonal halo rule
+    rejects the last 45-degree step into the port (seen on benes_64x64,
+    2026-09-11). The condition is sub-cell parity, so it is checked per axis.
+    """
+    arm = _crossing_half_extent_um(_crossing_component()) / math.sqrt(2.0)
+    half_width = 0.5 * float(getattr(_crossing_component().ports[0], "width", 0.5) or 0.5)
+
+    def cell(v: float) -> int:
+        return math.floor((v - origin) / grid)
+
+    return (
+        cell(center - arm - half_width) == cell(center - arm)
+        and cell(center + arm + half_width) == cell(center + arm)
+    )
+
+
+def _snap_x_tile_center(
+    x: float, y: float, grid_origin: tuple[float, float, float] | None
+) -> tuple[float, float]:
+    """Snap an X-array tile centre so its port cells are the footprint's edge
+    cells (see `_port_cells_stay_inside_footprint`).
+
+    x is a free parameter of the structure (any position on the level column
+    is octile-optimal), so it always goes to the nearest cell boundary, where
+    the condition holds for the standard tile. y is the midpoint of the two
+    swapped rows; it moves to the nearest cell boundary only when the
+    condition fails there (at most half a cell)."""
+    if grid_origin is None:
+        return x, y
+    ox, oy, g = grid_origin
+
+    def to_boundary(v: float, origin: float) -> float:
+        return origin + round((v - origin) / g) * g
+
+    x = to_boundary(x, ox)
+    if not _port_cells_stay_inside_footprint(y, oy, g):
+        y = to_boundary(y, oy)
+    return x, y
+
+
 def _derive_crossing_tiles(
     schematic: Schematic,
     unrouted_layout: Component,
@@ -1530,10 +1603,12 @@ def _derive_crossing_tiles(
         tile_by_key: dict[tuple[int, int], str] = {}
         key_by_lane_level: dict[tuple[str, int], tuple[int, int]] = {}
         depth = stage_plan.source_depth
+        grid_origin = _router_grid_origin(unrouted_layout, router_probe_kwargs)
         for level, upper_slot, upper, lower in crossings:
             name = f"{CROSSING_TILE_PREFIX}stage{depth}_l{level}_s{upper_slot}"
             x = band_x0 + float(geometry.band_margin_um) + (level + 0.5) * pitch
             y = 0.5 * (rows[upper_slot] + rows[upper_slot + 1])
+            x, y = _snap_x_tile_center(x, y, grid_origin)
             derived.add_instance(
                 name, Instance(component=tile.name), Placement(x=round(x, 3), y=round(y, 3))
             )

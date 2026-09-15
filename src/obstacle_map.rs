@@ -1276,15 +1276,44 @@ mod tests {
         // net 1 owns a vertical at x=5 (core = blocked here, clearance 0)
         let net1: Vec<(i32, i32)> = (0..20).map(|y| (5, y)).collect();
         assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
-            1, &net1, &net1, &[], &FxHashSet::default()
+            1,
+            &net1,
+            &net1,
+            &[],
+            &FxHashSet::default()
         ));
         let none: FxHashSet<NetId> = FxHashSet::default();
         let cases: Vec<(&str, Vec<(i32, i32)>, Vec<(i32, i32)>, FxHashSet<NetId>)> = vec![
-            ("free horizontal", (0..5).map(|x| (x, 10)).collect(), vec![], none.clone()),
-            ("crosses net 1's core without allowance", (0..10).map(|x| (x, 10)).collect(), vec![], none.clone()),
-            ("crosses net 1's core with net 1 allowed", (0..10).map(|x| (x, 10)).collect(), vec![], [1u64].into_iter().collect()),
-            ("crosses net 1's core, cell clearance-exempt but foreign core", (0..10).map(|x| (x, 10)).collect(), vec![(5, 10)], none.clone()),
-            ("out of bounds", vec![(19, 10), (20, 10)], vec![], none.clone()),
+            (
+                "free horizontal",
+                (0..5).map(|x| (x, 10)).collect(),
+                vec![],
+                none.clone(),
+            ),
+            (
+                "crosses net 1's core without allowance",
+                (0..10).map(|x| (x, 10)).collect(),
+                vec![],
+                none.clone(),
+            ),
+            (
+                "crosses net 1's core with net 1 allowed",
+                (0..10).map(|x| (x, 10)).collect(),
+                vec![],
+                [1u64].into_iter().collect(),
+            ),
+            (
+                "crosses net 1's core, cell clearance-exempt but foreign core",
+                (0..10).map(|x| (x, 10)).collect(),
+                vec![(5, 10)],
+                none.clone(),
+            ),
+            (
+                "out of bounds",
+                vec![(19, 10), (20, 10)],
+                vec![],
+                none.clone(),
+            ),
         ];
         for (label, core, exempt, allowed) in cases {
             let verdict = map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
@@ -1294,23 +1323,52 @@ mod tests {
             let committed = trial.commit_route_with_clearance_and_allowed_core_overlap_cells(
                 2, &core, &core, &exempt, &allowed, None,
             );
-            assert_eq!(verdict, committed, "{label}: can_commit must match the trial commit");
+            assert_eq!(
+                verdict, committed,
+                "{label}: can_commit must match the trial commit"
+            );
             // the check must not have registered anything
-            assert!(map.net_routes.get(&2).is_none(), "{label}: can_commit mutated the map");
-            assert!(!map.is_dynamic_core_blocked(0, 10), "{label}: can_commit mutated the map");
+            assert!(
+                map.net_routes.get(&2).is_none(),
+                "{label}: can_commit mutated the map"
+            );
+            assert!(
+                !map.is_dynamic_core_blocked(0, 10),
+                "{label}: can_commit mutated the map"
+            );
         }
         // expected verdicts, so the case list itself is meaningful
-        assert!(map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
-            2, &(0..5).map(|x| (x, 10)).collect::<Vec<_>>(), &(0..5).map(|x| (x, 10)).collect::<Vec<_>>(), &[], &none, None
-        ));
-        assert!(!map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
-            2, &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(), &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(), &[], &none, None
-        ));
-        assert!(map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
-            2, &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(), &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(), &[], &[1u64].into_iter().collect(), None
-        ));
+        assert!(
+            map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+                2,
+                &(0..5).map(|x| (x, 10)).collect::<Vec<_>>(),
+                &(0..5).map(|x| (x, 10)).collect::<Vec<_>>(),
+                &[],
+                &none,
+                None
+            )
+        );
+        assert!(
+            !map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+                2,
+                &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(),
+                &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(),
+                &[],
+                &none,
+                None
+            )
+        );
+        assert!(
+            map.can_commit_route_with_clearance_and_allowed_core_overlap_cells(
+                2,
+                &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(),
+                &(0..10).map(|x| (x, 10)).collect::<Vec<_>>(),
+                &[],
+                &[1u64].into_iter().collect(),
+                None
+            )
+        );
     }
-
 
     #[test]
     fn static_add_remove_updates_occupancy() {

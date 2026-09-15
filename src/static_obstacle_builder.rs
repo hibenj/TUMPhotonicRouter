@@ -1186,18 +1186,39 @@ mod tests {
             vec![(10.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)],
             vec![(11.0, 11.0), (51.0, 11.0), (51.0, 31.0), (11.0, 31.0)],
             waveguide(&[(5.0, 5.0), (60.0, 60.0)], 0.25),
-            waveguide(&[(5.0, 40.0), (40.0, 40.0), (70.0, 70.0), (70.0, 110.0)], 0.25),
+            waveguide(
+                &[(5.0, 40.0), (40.0, 40.0), (70.0, 70.0), (70.0, 110.0)],
+                0.25,
+            ),
             waveguide(&[(3.3, 100.7), (90.1, 12.4)], 0.6),
-            vec![(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (50.0, 50.0), (20.0, 80.0)],
-            vec![(21.0, 21.0), (81.0, 21.0), (81.0, 81.0), (51.0, 51.0), (21.0, 81.0)],
+            vec![
+                (20.0, 20.0),
+                (80.0, 20.0),
+                (80.0, 80.0),
+                (50.0, 50.0),
+                (20.0, 80.0),
+            ],
+            vec![
+                (21.0, 21.0),
+                (81.0, 21.0),
+                (81.0, 81.0),
+                (51.0, 51.0),
+                (21.0, 81.0),
+            ],
         ];
         for (idx, polygon) in polygons.iter().enumerate() {
             let mut fast = FxHashSet::default();
             let mut slow = FxHashSet::default();
             rasterize_polygon_into(polygon, &grid, &mut fast);
             rasterize_polygon_into_exhaustive(polygon, &grid, &mut slow);
-            assert_eq!(fast, slow, "polygon {idx}: scanline and exhaustive rasterization differ");
-            assert!(!slow.is_empty(), "polygon {idx}: test polygon must cover cells");
+            assert_eq!(
+                fast, slow,
+                "polygon {idx}: scanline and exhaustive rasterization differ"
+            );
+            assert!(
+                !slow.is_empty(),
+                "polygon {idx}: test polygon must cover cells"
+            );
         }
         // deterministic pseudo-random thick polylines, vertices snapped to a
         // quarter-cell lattice so that cell-centre coincidences happen often
@@ -1211,7 +1232,12 @@ mod tests {
         for case in 0..300 {
             let points = 2 + (next() % 5) as usize;
             let centerline: Vec<(f64, f64)> = (0..points)
-                .map(|_| (((next() % 220) as f64) * 0.5 + 5.0, ((next() % 220) as f64) * 0.5 + 5.0))
+                .map(|_| {
+                    (
+                        ((next() % 220) as f64) * 0.5 + 5.0,
+                        ((next() % 220) as f64) * 0.5 + 5.0,
+                    )
+                })
                 .collect();
             if centerline.windows(2).any(|w| w[0] == w[1]) {
                 continue;

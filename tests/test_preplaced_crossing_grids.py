@@ -16,9 +16,9 @@ from dataclasses import replace
 import klayout.db as kdb
 import pytest
 from gdsfactory.gpdk import get_generic_pdk
+from photonic_router.crossing_plan import CrossingStagePlan
 
 from benchmark_metadata import load_benchmark_metadata
-from photonic_router.crossing_plan import CrossingEvent, CrossingStagePlan
 from translation import preplaced_crossing_grids as pcg
 from translation.layout_from_schematic import layout_from_schematic
 
@@ -259,3 +259,53 @@ def test_grid_geometry_rejects_pitch_too_small_for_bends() -> None:
     run = pcg.split_stage_into_participating_runs(stage_plan)[0]
     with pytest.raises(ValueError):
         pcg.build_crossing_grid_component(run, pcg.CrossingGridGeometry(lane_pitch_um=6.0))
+
+
+def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge_cells():
+    """benes_64x64 (2026-09-11): a tile whose centre sat mid-cell pushed its
+    footprint one cell past the port cell, and the router's diagonal halo
+    rule rejected the last 45-degree step into the port. With the routing
+    configuration known, every X-array tile centre lies on a grid cell
+    boundary in x, and both port cells on each axis are the footprint's edge
+    cells."""
+    import importlib
+    import math
+
+    from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
+    from benchmark_metadata import load_benchmark_metadata
+    from translation.layout_from_schematic import layout_from_schematic
+    from translation.preplaced_crossing_grids import (
+        CROSSING_TILE_PREFIX,
+        _port_cells_stay_inside_footprint,
+        build_crossing_plan_for_benchmark,
+        derive_preplaced_crossing_layout,
+    )
+
+    probe = {
+        "fanout_access_mode": "static-stubs",
+        "bend_radius_um": 5.0,
+        "obstacle_config": StaticObstacleMapConfig(grid_size_um=2.0),
+    }
+    module = importlib.import_module("benchmarks.benes_8x8")
+    schematic = module.build_schematic()
+    layout = layout_from_schematic(schematic)
+    plan = build_crossing_plan_for_benchmark(
+        schematic, load_benchmark_metadata("benes_8x8", schematic=schematic)
+    )
+    derived = derive_preplaced_crossing_layout(schematic, layout, plan, router_probe_kwargs=probe)
+    grid = 2.0
+    origin_x = float(layout.dbbox().left) - 20.0
+    origin_y = float(layout.dbbox().bottom) - 20.0
+    tiles = [
+        r
+        for r in derived.unrouted_layout.insts
+        if str(r.name).startswith(f"{CROSSING_TILE_PREFIX}stage")
+    ]
+    assert len(tiles) == 16
+    for ref in tiles:
+        cx, cy = ref.dcenter
+        cells = (cx - origin_x) / grid
+        assert math.isclose(cells, round(cells), abs_tol=1e-6), (ref.name, cx)
+        assert _port_cells_stay_inside_footprint(cx, origin_x, grid), (ref.name, "x")
+        assert _port_cells_stay_inside_footprint(cy, origin_y, grid), (ref.name, "y")
