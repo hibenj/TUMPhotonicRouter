@@ -122,7 +122,15 @@ impl Default for AStarConfig {
             routing_window_max_expansions: 3,
             routing_window_fallback_full_grid: false,
             routing_window_growth: 0.5,
-            max_dense_states: 20_000_000,
+            // 100 M states = about 1.7 GB of eagerly allocated per-attempt
+            // storage at the largest allowed window (f64 g-cost, u32
+            // generation, u32 parent, primitive id, closed bit per state).
+            // Was 20 M until 2026-09-16: the 128x128 mesh's heater-to-MMI
+            // nets need 22-28 M states for their routing windows and every
+            // window failed silently (`dense_storage_cap` diagnostic).
+            // `PHOTONIC_ROUTER_MAX_DENSE_STATES` overrides it at router
+            // construction (`configured_max_dense_states` in py_router.rs).
+            max_dense_states: 100_000_000,
             max_dense_obstacle_cells: 10_000_000,
             enable_simple_routes: true,
             simple_route_max_offset_cells: 96,
@@ -2317,12 +2325,29 @@ where
         return try_bounds(obstacle_map, None, stats, config.max_iterations);
     }
 
+    let diag = std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some();
     let mut last_bounds: Option<RoutingBounds> = None;
     for expansion_idx in 0..=config.routing_window_max_expansions {
         if budget_exhausted(config.total_expansion_budget, stats) {
+            if diag {
+                eprintln!(
+                    "search-failure kind=budget_exhausted_before_window expansion_idx={} expanded={} budget={:?}",
+                    expansion_idx, stats.expanded_states, config.total_expansion_budget
+                );
+            }
             return None;
         }
-        let bounds = compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)?;
+        let Some(bounds) =
+            compute_routing_bounds(obstacle_map, source, target, config, expansion_idx)
+        else {
+            if diag {
+                eprintln!(
+                    "search-failure kind=no_routing_bounds expansion_idx={} source=({},{}) target=({},{}) map={}x{}",
+                    expansion_idx, source.x, source.y, target.x, target.y, obstacle_map.width(), obstacle_map.height()
+                );
+            }
+            return None;
+        };
         if last_bounds == Some(bounds) {
             continue;
         }
@@ -2362,6 +2387,12 @@ where
         return try_bounds(obstacle_map, None, stats, effective_cap);
     }
 
+    if diag {
+        eprintln!(
+            "search-failure kind=windows_exhausted_no_fallback window_attempts={} expanded={} fallback_full_grid={} budget={:?}",
+            stats.window_attempts, stats.expanded_states, config.routing_window_fallback_full_grid, config.total_expansion_budget
+        );
+    }
     None
 }
 
@@ -2470,7 +2501,7 @@ fn route_single_net_jps4(
         min_y: 0,
         max_y: obstacle_map.height() - 1,
     };
-    let dense_grid = DenseRoutingGrid::from_obstacle_map(
+    let Some(dense_grid) = DenseRoutingGrid::from_obstacle_map(
         obstacle_map,
         bounds,
         port_open_cells,
@@ -2478,12 +2509,44 @@ fn route_single_net_jps4(
         config.ignore_dynamic_obstacles,
         false,
         false,
-    )?;
+    ) else {
+        if std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some() {
+            eprintln!(
+                "search-failure kind=dense_grid_not_built window=[{}..{}]x[{}..{}] area_cells={} max_dense_obstacle_cells={} source=({},{}) target=({},{})",
+                bounds.min_x,
+                bounds.max_x,
+                bounds.min_y,
+                bounds.max_y,
+                window_area(bounds),
+                config.max_dense_obstacle_cells,
+                source.x,
+                source.y,
+                target.x,
+                target.y
+            );
+        }
+        return None;
+    };
     stats.dense_grid_cells = dense_grid.blocked_count();
     stats.dense_grid_build_time_us = dense_grid.build_time_us();
     stats.window_attempts = 1;
 
     if dense_grid.is_blocked(source.x, source.y) || dense_grid.is_blocked(target.x, target.y) {
+        if std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some() {
+            eprintln!(
+                "search-failure kind=endpoint_blocked source=({},{}) source_blocked={} source_static={} source_dynamic={} target=({},{}) target_blocked={} target_static={} target_dynamic={}",
+                source.x,
+                source.y,
+                dense_grid.is_blocked(source.x, source.y),
+                obstacle_map.is_static_blocked(source.x, source.y),
+                obstacle_map.is_dynamic_blocked(source.x, source.y),
+                target.x,
+                target.y,
+                dense_grid.is_blocked(target.x, target.y),
+                obstacle_map.is_static_blocked(target.x, target.y),
+                obstacle_map.is_dynamic_blocked(target.x, target.y)
+            );
+        }
         return None;
     }
 
@@ -4255,6 +4318,95 @@ mod unified_kernel {
         }
     }
 
+    /// `PHOTONIC_ROUTER_SEARCH_FAILURE_MAP`: an ASCII picture of the obstacle
+    /// map around a failed search. `1` = the source/target bounding box plus
+    /// a margin, downsampled so a row fits about 150 characters;
+    /// `cx,cy,half_w,half_h[,step]` = an explicit window in cells and block
+    /// size. Per block: `D` any dynamic (routed) cell, `#` static only, `.`
+    /// free, `S`/`T` source/target block. Rows top (max y) to bottom.
+    fn print_failure_map_window(
+        search_seq: u64,
+        obstacle_map: &ObstacleMap,
+        source: State,
+        target: State,
+    ) {
+        let Some(spec) = std::env::var("PHOTONIC_ROUTER_SEARCH_FAILURE_MAP").ok() else {
+            return;
+        };
+        let nums: Vec<i32> = spec
+            .split(',')
+            .filter_map(|v| v.trim().parse::<i32>().ok())
+            .collect();
+        let (min_x, max_x, min_y, max_y, step) = if nums.len() >= 4 {
+            let step = nums.get(4).copied().unwrap_or(1).max(1);
+            (
+                nums[0] - nums[2],
+                nums[0] + nums[2],
+                nums[1] - nums[3],
+                nums[1] + nums[3],
+                step,
+            )
+        } else {
+            let margin = 40;
+            let min_x = source.x.min(target.x) - margin;
+            let max_x = source.x.max(target.x) + margin;
+            let min_y = source.y.min(target.y) - margin;
+            let max_y = source.y.max(target.y) + margin;
+            let step = (((max_x - min_x) as f64) / 150.0).ceil().max(1.0) as i32;
+            (min_x, max_x, min_y, max_y, step)
+        };
+        eprintln!(
+            "search-failure-map seq={} window=[{}..{}]x[{}..{}] step={} legend=D:dynamic #:static .:free S:source T:target",
+            search_seq, min_x, max_x, min_y, max_y, step
+        );
+        let mut y = max_y;
+        while y >= min_y {
+            let mut row = String::with_capacity(((max_x - min_x) / step + 2) as usize);
+            let mut x = min_x;
+            while x <= max_x {
+                let mut ch = '.';
+                let mut any_static = false;
+                let mut any_dynamic = false;
+                let mut has_source = false;
+                let mut has_target = false;
+                for dx in 0..step {
+                    for dy in 0..step {
+                        let cx = x + dx;
+                        let cy = y - dy;
+                        if cx == source.x && cy == source.y {
+                            has_source = true;
+                        }
+                        if cx == target.x && cy == target.y {
+                            has_target = true;
+                        }
+                        if !obstacle_map.in_bounds(cx, cy) {
+                            continue;
+                        }
+                        if obstacle_map.is_dynamic_blocked(cx, cy) {
+                            any_dynamic = true;
+                        } else if obstacle_map.is_static_blocked(cx, cy) {
+                            any_static = true;
+                        }
+                    }
+                }
+                if any_dynamic {
+                    ch = 'D';
+                } else if any_static {
+                    ch = '#';
+                }
+                if has_target {
+                    ch = 'T';
+                } else if has_source {
+                    ch = 'S';
+                }
+                row.push(ch);
+                x += step;
+            }
+            eprintln!("map y={:>6} {}", y, row);
+            y -= step;
+        }
+    }
+
     fn print_best_crossing_path(
         best_crossings: u16,
         best_ref: Option<usize>,
@@ -4435,7 +4587,31 @@ mod unified_kernel {
             }
         };
 
-        let mut storage = DenseSearchStorage::new(bounds, config.max_dense_states)?;
+        let Some(mut storage) = DenseSearchStorage::new(bounds, config.max_dense_states) else {
+            // Silent before 2026-09-16: a window whose 8 x area exceeds
+            // `max_dense_states` failed with 0 expansions and no trace
+            // (multiportmmi_128x128, heater-to-MMI nets). Now counted and,
+            // under PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG, reported.
+            stats.dense_grid_build_failures += 1;
+            if std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some() {
+                let area = window_area(bounds) as u64;
+                eprintln!(
+                    "search-failure kind=dense_storage_cap window=[{}..{}]x[{}..{}] area_cells={} states={} max_dense_states={} source=({},{}) target=({},{})",
+                    bounds.min_x,
+                    bounds.max_x,
+                    bounds.min_y,
+                    bounds.max_y,
+                    area,
+                    area * 8,
+                    config.max_dense_states,
+                    source.x,
+                    source.y,
+                    target.x,
+                    target.y
+                );
+            }
+            return None;
+        };
         stats.dense_search_states = storage.state_count();
         stats.dense_search_storage_bytes = storage.allocated_bytes();
         let dense_grid = match DenseRoutingGrid::from_obstacle_map_with_dynamic_expansion(
@@ -4697,6 +4873,7 @@ mod unified_kernel {
                         port_open_cells,
                         &dense_grid,
                     );
+                    print_failure_map_window(search_seq, obstacle_map, source, target);
                     for (i, cell) in probe_cells.iter().enumerate() {
                         let c = probe_ring[i];
                         if c.iter().any(|v| *v > 0) {
@@ -4747,6 +4924,7 @@ mod unified_kernel {
                         port_open_cells,
                         &dense_grid,
                     );
+                    print_failure_map_window(search_seq, obstacle_map, source, target);
                     for (i, cell) in probe_cells.iter().enumerate() {
                         let c = probe_ring[i];
                         if c.iter().any(|v| *v > 0) {
@@ -4837,6 +5015,7 @@ mod unified_kernel {
                         port_open_cells,
                         &dense_grid,
                     );
+                    print_failure_map_window(search_seq, obstacle_map, source, target);
                     for (i, cell) in probe_cells.iter().enumerate() {
                         let c = probe_ring[i];
                         if c.iter().any(|v| *v > 0) {
@@ -6051,6 +6230,7 @@ mod unified_kernel {
             );
             print_best_crossing_path(best_crossings, best_crossing_ref, &storage, &extended_nodes);
             print_probe_cells_report(search_seq, obstacle_map, port_open_cells, &dense_grid);
+            print_failure_map_window(search_seq, obstacle_map, source, target);
             for (i, cell) in probe_cells.iter().enumerate() {
                 let c = probe_ring[i];
                 if c.iter().any(|v| *v > 0) {

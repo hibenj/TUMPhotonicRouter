@@ -1197,6 +1197,30 @@ fn negotiated_braid_escalation_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// `PHOTONIC_ROUTER_MAX_DENSE_STATES`: per-attempt cap on dense search
+/// states (8 per window cell) for the A* kernel, default
+/// `AStarConfig::default().max_dense_states`. See the 2026-09-16 entry in
+/// `.agent/execplans/2026-09-10-64x64-scaling-benchmarks.md` (128x128 mesh).
+fn configured_max_dense_states() -> usize {
+    max_dense_states_from_env_value(
+        std::env::var("PHOTONIC_ROUTER_MAX_DENSE_STATES")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn max_dense_states_from_env_value(value: Option<&str>) -> usize {
+    let default = AStarConfig::default().max_dense_states;
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => v
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n > 0)
+            .unwrap_or(default),
+        None => default,
+    }
+}
+
 fn negotiated_crossing_free_unplanned_enabled() -> bool {
     std::env::var("PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED")
         .map(|value| value != "0")
@@ -2911,7 +2935,7 @@ fn astar_config_from_py(
         routing_window_max_expansions: astar_cfg.routing_window_max_expansions,
         routing_window_fallback_full_grid: astar_cfg.routing_window_fallback_full_grid,
         routing_window_growth: astar_cfg.routing_window_growth,
-        max_dense_states: AStarConfig::default().max_dense_states,
+        max_dense_states: configured_max_dense_states(),
         max_dense_obstacle_cells: astar_cfg.max_dense_obstacle_cells,
         enable_simple_routes: enable_simple_routes.unwrap_or(astar_cfg.enable_simple_routes),
         simple_route_max_offset_cells: astar_cfg.simple_route_max_offset_cells,
@@ -15020,13 +15044,14 @@ impl PyPhotonicRouter {
                         }
                     };
                     eprintln!(
-                        "{}native_negotiated_search net={} kind=plain elapsed_s={:.3} expanded={} outcome={} budget={}",
+                        "{}native_negotiated_search net={} kind=plain elapsed_s={:.3} expanded={} outcome={} budget={} error={:?}",
                         trace_t(self.negotiated_batch_start),
                         net_id,
                         plain_search_start.elapsed().as_secs_f64(),
                         expanded_str,
                         outcome_str,
-                        trace_budget_str(net_search_budget)
+                        trace_budget_str(net_search_budget),
+                        batch.attempts.last().and_then(|a| a.error.as_deref()).unwrap_or("")
                     );
                 }
                 // 2026-09-15 01:30 owner decision: a fresh net's failed
@@ -20372,6 +20397,20 @@ mod tests {
                 batch.attempts.last().and_then(|a| a.error.clone())
             );
         }
+    }
+
+    #[test]
+    fn max_dense_states_env_value_overrides_only_with_a_positive_integer() {
+        let default = AStarConfig::default().max_dense_states;
+        assert_eq!(default, 100_000_000);
+        assert_eq!(max_dense_states_from_env_value(None), default);
+        assert_eq!(max_dense_states_from_env_value(Some("")), default);
+        assert_eq!(max_dense_states_from_env_value(Some("abc")), default);
+        assert_eq!(max_dense_states_from_env_value(Some("0")), default);
+        assert_eq!(
+            max_dense_states_from_env_value(Some(" 30000000 ")),
+            30_000_000
+        );
     }
 
     #[test]
