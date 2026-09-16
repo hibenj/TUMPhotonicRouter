@@ -45,7 +45,58 @@ def summarize(archive: Path) -> dict:
         if crossings_per_net:
             out["max_crossings_per_net"] = max(crossings_per_net.values())
             out["nets_with_crossings"] = len(crossings_per_net)
+    out.update(log_metrics(archive / "run.log"))
     (archive / "metrics.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+    return out
+
+
+_LOG_PATTERNS = {
+    # `route search: astar_loop=2201.9764s, attempts=1077, failures=62, simple=465/895, repairs=26, deferred=0`
+    "search_astar_loop_s": r"route search: astar_loop=([0-9.]+)s",
+    "search_attempts": r"route search: .*?attempts=(\d+)",
+    "search_failures": r"route search: .*?failures=(\d+)",
+    "search_repairs": r"route search: .*?repairs=(\d+)",
+    "search_deferred": r"route search: .*?deferred=(\d+)",
+    "search_simple_routes": r"route search: .*?simple=(\d+)/",
+    # `native_negotiated_done t=1136.4 rounds=3 global_ripups=1 local_ripups=17 ...` (PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG)
+    "negotiated_rounds": r"native_negotiated_done .*?rounds=(\d+)",
+    "negotiated_global_ripups": r"native_negotiated_done .*?global_ripups=(\d+)",
+    "negotiated_local_ripups": r"native_negotiated_done .*?local_ripups=(\d+)",
+    "negotiated_probe_guided": r"native_negotiated_done .*?probe_guided=(\d+)",
+    "negotiated_crossing_free": r"native_negotiated_done .*?crossing_free=(\d+)",
+    "negotiated_wall_s": r"native_negotiated_done t=([0-9.]+)",
+    # contribution 2: `Grids: 209 placed, 209 crossing component(s) ... (7.63s)`
+    "preplaced_grid_count": r"Grids: (\d+) placed",
+    "preplaced_crossing_components": r"Grids: \d+ placed, (\d+) crossing component",
+    "preplaced_build_s": r"Grids: .*?\(([0-9.]+)s\)",
+}
+
+
+def log_metrics(log_path: Path) -> dict:
+    """Search-effort counters from the run log: attempts, failures, repairs,
+    A* loop seconds (every run), the negotiated engine's rounds and rip-ups
+    (runs with PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG), contribution 2's grid
+    counts and structure build time. Counters that occur several times
+    (several routing batches) are summed; seconds too."""
+    import re
+
+    if not log_path.exists():
+        return {}
+    text = log_path.read_text(errors="replace")
+    out: dict = {}
+    for key, pattern in _LOG_PATTERNS.items():
+        values = re.findall(pattern, text)
+        if not values:
+            continue
+        if key.endswith("_s"):
+            out[key] = round(sum(float(v) for v in values), 3)
+        elif key in ("negotiated_rounds", "preplaced_grid_count", "preplaced_crossing_components"):
+            out[key] = max(int(v) for v in values)
+        else:
+            out[key] = sum(int(v) for v in values)
+    braids = len(re.findall(r"native_repair_braid_result .*?keep=true", text))
+    if braids:
+        out["braid_repairs_kept"] = braids
     return out
 
 
