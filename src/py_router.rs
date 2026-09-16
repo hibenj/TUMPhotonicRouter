@@ -1185,6 +1185,18 @@ const NEGOTIATED_PROBE_GUIDANCE_LOSS: f64 = 0.0;
 /// rule can never lose a route the priced search would have found.
 /// `PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED=0` turns the rule
 /// off for A/B runs; without guidance (lidar-pure) it never applies.
+/// Milestone 8's braid escalation (`BraidRepairOutcome::VictimRipped`) can
+/// be switched off for A/B runs with
+/// `PHOTONIC_ROUTER_NEGOTIATED_BRAID_ESCALATION=0`; the braid repair then
+/// rolls back to the braid as before (measured 2026-09-16: on the 64x64
+/// mesh in lidar-pure the escalation turned one braid into three single
+/// crossings, 218 vs 217 -- the owner decides its default).
+fn negotiated_braid_escalation_enabled() -> bool {
+    std::env::var("PHOTONIC_ROUTER_NEGOTIATED_BRAID_ESCALATION")
+        .map(|value| value != "0")
+        .unwrap_or(true)
+}
+
 fn negotiated_crossing_free_unplanned_enabled() -> bool {
     std::env::var("PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED")
         .map(|value| value != "0")
@@ -12730,6 +12742,7 @@ impl PyPhotonicRouter {
         ripped_victims: &mut Vec<u64>,
     ) -> u32 {
         let mut kept_count = 0u32;
+        let escalate = negotiated_braid_escalation_enabled();
         self.negotiated_search_budget = Some(NEGOTIATED_BUDGET_BRAID);
         for _ in 0..NEGOTIATED_BRAID_MAX_PASSES {
             let braid_outcome = self.try_braid_repair(
@@ -12742,7 +12755,7 @@ impl PyPhotonicRouter {
                 collect_native_timing,
                 trace_native_repair,
                 Some(braid_failed_pairs),
-                true,
+                escalate,
             );
             match braid_outcome {
                 None => break,
