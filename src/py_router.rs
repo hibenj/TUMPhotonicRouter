@@ -1260,13 +1260,34 @@ fn negotiated_search_budget(
     }
     if failed_count == 0 {
         if attempt_index == 0 {
-            Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT)
+            Some(budget_env_override(
+                "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST",
+                NEGOTIATED_BUDGET_FIRST_ATTEMPT,
+            ))
         } else {
-            Some(NEGOTIATED_BUDGET_FIRST_RETRY)
+            Some(budget_env_override(
+                "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY",
+                NEGOTIATED_BUDGET_FIRST_RETRY,
+            ))
         }
     } else {
-        Some(NEGOTIATED_BUDGET_RETRY)
+        Some(budget_env_override(
+            "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY",
+            NEGOTIATED_BUDGET_RETRY,
+        ))
     }
+}
+
+/// Experiment knobs for the three negotiated search budgets (2026-09-16,
+/// multiportmmi_128x128: the fan-in nets need 7-9 M expansions, above the
+/// 2 M first / 10 M retry defaults). A positive integer in the variable
+/// replaces the default; anything else keeps it.
+fn budget_env_override(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
 }
 
 impl CrossingReservationBlockers {

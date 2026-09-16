@@ -272,6 +272,7 @@ def route_match_and_realize(
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
     net_order: str = "topological",
+    net_order_depth_by_node: dict[str, int] | None = None,
     heap_tie_breaker: str = "smaller_g",
     proactive_congestion_weight: float = 0.0,
     proactive_congestion_radius_cells: int = 0,
@@ -315,6 +316,7 @@ def route_match_and_realize(
         primitive_ordering=primitive_ordering,
         heuristic_mode=heuristic_mode,
         net_order=net_order,
+        net_order_depth_by_node=net_order_depth_by_node,
         heap_tie_breaker=heap_tie_breaker,
         proactive_congestion_weight=proactive_congestion_weight,
         proactive_congestion_radius_cells=proactive_congestion_radius_cells,
@@ -660,6 +662,7 @@ class _RouteNetsRustSession:
         primitive_ordering: str = "library",
         heuristic_mode: str = "heading_aware",
         net_order: str = "topological",
+    net_order_depth_by_node: dict[str, int] | None = None,
         heap_tie_breaker: str = "smaller_g",
         proactive_congestion_weight: float = 0.0,
         proactive_congestion_radius_cells: int = 0,
@@ -829,6 +832,13 @@ class _RouteNetsRustSession:
         self.primitive_ordering = primitive_ordering
         self.heuristic_mode = heuristic_mode
         self.net_order = normalize_net_order(net_order)
+        # Optional depth map (instance -> hops from a true source) computed
+        # on the benchmark's original netlist; contribution 2 passes it so
+        # that the tile stubs of the derived netlist do not scramble the
+        # depth layers of the surrounding bands (2026-09-16, mm128 fan-in).
+        self.net_order_depth_by_node: dict[str, int] | None = (
+            dict(net_order_depth_by_node) if net_order_depth_by_node else None
+        )
         self.heap_tie_breaker = heap_tie_breaker
         self.proactive_congestion_weight = proactive_congestion_weight
         self.proactive_congestion_radius_cells = proactive_congestion_radius_cells
@@ -2783,10 +2793,24 @@ class _RouteNetsRustSession:
         topology plan, which only `lidar-guided` builds
         (`crossing_plan_info["expected_crossings_by_net_id"]`).
         """
-        depth_by_node = depth_by_node_from_jobs(jobs)
+        depth_by_node = (
+            self.net_order_depth_by_node
+            if self.net_order_depth_by_node is not None
+            else depth_by_node_from_jobs(jobs)
+        )
         span_by_net_id: dict[int, int] | None = None
         if self.net_order == "topological-span":
             span_by_net_id = {int(job.net_id): self._route_job_grid_span(job) for job in jobs}
+        runway_by_net_id: dict[int, int] | None = None
+        if self.net_order == "topological-runway":
+            runway_by_net_id = {}
+            for job in jobs:
+                source_spec = f"{job.inst1},{job.port1}"
+                target_spec = f"{job.inst2},{job.port2}"
+                runway_by_net_id[int(job.net_id)] = max(
+                    int(self.dense_source_port_runway_length_by_spec.get(source_spec, 0)),
+                    int(self.dense_target_port_runway_length_by_spec.get(target_spec, 0)),
+                )
         planned_by_net_id: dict[int, int] | None = None
         if self.net_order.startswith("plan-crossings"):
             raw_counts = self.crossing_plan_info.get("expected_crossings_by_net_id")
@@ -2802,6 +2826,7 @@ class _RouteNetsRustSession:
             depth_by_node=depth_by_node,
             span_by_net_id=span_by_net_id,
             planned_crossings_by_net_id=planned_by_net_id,
+            runway_by_net_id=runway_by_net_id,
         )
         if self.net_order != "topological":
             print(f"      - net order: {self.net_order}")
@@ -8172,6 +8197,7 @@ def route_nets_rust(
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
     net_order: str = "topological",
+    net_order_depth_by_node: dict[str, int] | None = None,
     heap_tie_breaker: str = "smaller_g",
     proactive_congestion_weight: float = 0.0,
     proactive_congestion_radius_cells: int = 0,
@@ -8218,6 +8244,7 @@ def route_nets_rust(
         primitive_ordering=primitive_ordering,
         heuristic_mode=heuristic_mode,
         net_order=net_order,
+        net_order_depth_by_node=net_order_depth_by_node,
         heap_tie_breaker=heap_tie_breaker,
         proactive_congestion_weight=proactive_congestion_weight,
         proactive_congestion_radius_cells=proactive_congestion_radius_cells,

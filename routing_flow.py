@@ -747,6 +747,22 @@ def main(argv: list[str] | None = None) -> Component:
     )
 
 
+def _depth_by_node_from_schematic(schematic: Schematic) -> dict[str, int]:
+    """Instance depth (hops from a true source) on the benchmark's own
+    netlist, before any contribution 2 splitting."""
+    from types import SimpleNamespace
+
+    from translation.route_order import depth_by_node_from_jobs
+
+    jobs = []
+    for bundle in schematic.netlist.routes.values():
+        for port1_spec, port2_spec in bundle.links.items():
+            inst1 = str(port1_spec).split(",")[0]
+            inst2 = str(port2_spec).split(",")[0]
+            jobs.append(SimpleNamespace(inst1=inst1, inst2=inst2))
+    return depth_by_node_from_jobs(jobs)
+
+
 def load_benchmark(benchmark_name: str) -> Schematic:
     """Load a benchmark schematic from the benchmarks directory.
 
@@ -1116,6 +1132,11 @@ def run_routing_flow(
             preplaced_crossing_grids=preplaced_crossing_grids,
             guided=bool(enable_crossings) and is_guided_mode(crossing_mode),
         )
+    # Contribution 2 splits nets into tile stubs; keep the net order's depth
+    # layers those of the original netlist (see route_rust.net_order_depth_by_node).
+    net_order_depth_by_node: dict[str, int] | None = (
+        _depth_by_node_from_schematic(schematic) if preplaced_crossing_grids else None
+    )
     preplaced_report_metadata: dict[str, object] | None = None
     crossing_guidance_net_names: frozenset[str] | None = None
     if preplaced_crossing_grids:
@@ -1184,6 +1205,7 @@ def run_routing_flow(
         primitive_ordering=primitive_ordering,
         heuristic_mode=heuristic_mode,
         net_order=net_order,
+        net_order_depth_by_node=net_order_depth_by_node,
         heap_tie_breaker=heap_tie_breaker,
         max_iterations=max_iterations,
         routing_window_scale=routing_window_scale,

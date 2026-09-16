@@ -63,6 +63,9 @@ class OpticalRoutingStageConfig:
     # contribution 2 router fallback: nets of layers without a pre-placed
     # structure; the guided search only sees plan events between them
     crossing_guidance_net_names: frozenset[str] | None = None
+    # contribution 2: instance depths of the original netlist for the net
+    # order (the derived netlist's tile stubs would scramble the layers)
+    net_order_depth_by_node: dict[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,7 @@ def run_photonic_routing_stage(
             primitive_ordering=config.primitive_ordering,
             heuristic_mode=config.heuristic_mode,
             net_order=config.net_order,
+            net_order_depth_by_node=config.net_order_depth_by_node,
             heap_tie_breaker=config.heap_tie_breaker,
             proactive_congestion_weight=float(config.proactive_congestion_weight),
             proactive_congestion_radius_cells=int(config.proactive_congestion_radius_cells),

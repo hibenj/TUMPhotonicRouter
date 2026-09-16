@@ -55,6 +55,25 @@ def test_topological_order_is_depth_then_declaration_order():
     assert _ids(ordered) == [4, 5, 1, 2, 3]
 
 
+def test_topological_reverse_order_is_depth_then_reversed_declaration_order():
+    jobs = [_job(0, "a", "b"), _job(1, "a", "c"), _job(2, "b", "d")]
+    depth = {"a": 0, "b": 1, "c": 1, "d": 2}
+    ordered = order_route_jobs(jobs, net_order="topological-reverse", depth_by_node=depth)
+    assert [job.route_index for job in ordered] == [1, 0, 2]
+
+
+def test_topological_runway_order_routes_shortest_port_runway_first_within_a_layer():
+    jobs = [_job(0, "a", "b"), _job(1, "a", "c"), _job(2, "a", "d")]
+    depth = {"a": 0, "b": 1, "c": 1, "d": 1}
+    runway = {0: 30, 1: 10, 2: 20}
+    ordered = order_route_jobs(
+        jobs, net_order="topological-runway", depth_by_node=depth, runway_by_net_id=runway
+    )
+    assert [job.route_index for job in ordered] == [1, 2, 0]
+    with pytest.raises(ValueError, match="runway"):
+        order_route_jobs(jobs, net_order="topological-runway", depth_by_node=depth)
+
+
 def test_topological_span_order_routes_shortest_nets_first_within_a_layer():
     span = {4: 10, 5: 5, 1: 30, 2: 20, 3: 25}
     ordered = order_route_jobs(
@@ -103,6 +122,8 @@ def test_orders_require_their_inputs_and_reject_unknown_names():
         order_route_jobs(JOBS, net_order="random", depth_by_node=depths)
     assert NET_ORDERS == (
         "topological",
+        "topological-reverse",
+        "topological-runway",
         "topological-span",
         "plan-crossings-asc",
         "plan-crossings-desc",

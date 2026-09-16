@@ -8,6 +8,15 @@ earlier net's greedy shortest path can seal a sibling's target pocket
 - ``topological`` (default, the baseline): source-instance depth, then
   declaration order -- LiDAR's ``comp_dist`` primary key with declaration
   tiebreak.
+- ``topological-reverse``: depth, then declaration order reversed (the
+  last declared net of a layer first; for fan-in/fan-out bands of a
+  multi-port instance whose port stubs form a staircase).
+- ``topological-runway``: depth, then the length of the net's static port
+  runway (the fan-out stub of a dense multi-port instance) ascending, then
+  declaration order. In the staircase of stubs in front of a 128-port MMI
+  the shortest stub is the innermost corridor, which must be routed first
+  (2026-09-16, multiportmmi_128x128). Nets without a runway keep
+  declaration order.
 - ``topological-span``: depth, then grid Manhattan span ascending (shortest
   first) -- the former ``PHOTONIC_ROUTER_LAYER_ORDER=span`` experiment
   (2026-08-27), now an option.
@@ -40,6 +49,8 @@ from translation.route_rust_types import RouteJob
 
 NET_ORDERS: tuple[str, ...] = (
     "topological",
+    "topological-reverse",
+    "topological-runway",
     "topological-span",
     "plan-crossings-asc",
     "plan-crossings-desc",
@@ -125,6 +136,7 @@ def order_route_jobs(
     depth_by_node: Mapping[str, int],
     span_by_net_id: Mapping[int, int] | None = None,
     planned_crossings_by_net_id: Mapping[int, int] | None = None,
+    runway_by_net_id: Mapping[int, int] | None = None,
 ) -> list[RouteJob]:
     """Sort `jobs` by the named rule; every rule starts with source depth and
     ends with declaration order (`route_index`)."""
@@ -136,6 +148,24 @@ def order_route_jobs(
 
     if order == "topological":
         return sorted(jobs, key=lambda job: (depth(job), int(job.route_index)))
+    if order == "topological-reverse":
+        # Declaration order reversed inside a depth layer (2026-09-16,
+        # multiportmmi_128x128 fan-in bands): the port stubs of a
+        # multi-port instance form a staircase, the first route into it takes
+        # the innermost corridor, so the band must be routed from the last
+        # declared port back to the first.
+        return sorted(jobs, key=lambda job: (depth(job), -int(job.route_index)))
+    if order == "topological-runway":
+        if runway_by_net_id is None:
+            raise ValueError("net_order 'topological-runway' needs runway_by_net_id")
+        return sorted(
+            jobs,
+            key=lambda job: (
+                depth(job),
+                int(runway_by_net_id.get(int(job.net_id), 0)),
+                int(job.route_index),
+            ),
+        )
     if order == "topological-span":
         if span_by_net_id is None:
             raise ValueError("net_order 'topological-span' needs span_by_net_id")
