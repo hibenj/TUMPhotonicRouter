@@ -22,6 +22,11 @@ def summarize(archive: Path) -> dict:
         out["photonic_error_count"] = p.get("error_count")
         out["routed_record_count"] = p.get("routed_record_count")
         out["expected_route_count"] = p.get("expected_route_count")
+        grids = (p.get("metrics") or {}).get("preplaced_crossing_grids") or {}
+        if grids:
+            # contribution 2: the crossings are the placed components
+            out["crossing_count"] = grids.get("crossing_component_count")
+            out["preplaced_expected_crossings"] = grids.get("expected_crossing_count")
     if crossing is not None:
         c = json.loads(crossing.read_text())
         m = c.get("metrics", {})
@@ -97,6 +102,20 @@ def log_metrics(log_path: Path) -> dict:
     braids = len(re.findall(r"native_repair_braid_result .*?keep=true", text))
     if braids:
         out["braid_repairs_kept"] = braids
+    # --verbose-routes: `ok astar length=2464.565um ...` / `ok simple length=146.000um ...`
+    route_lengths = [float(v) for v in re.findall(r"^ok (?:astar|simple) length=([0-9.]+)um", text, re.M)]
+    if route_lengths and "total_length_um" not in out:
+        out["route_cost_count"] = len(route_lengths)
+        out["total_length_um"] = round(sum(route_lengths), 3)
+        out["mean_length_um"] = round(sum(route_lengths) / len(route_lengths), 3)
+        out["max_length_um"] = round(max(route_lengths), 3)
+        out["length_source"] = "verbose_routes"
+    # contribution 2: `column-grid: ok, +14968 um, ...` / x-array lines carry the structure's waveguide length
+    structure_um = [float(v) for v in re.findall(r"ok, \+([0-9.]+) um", text)]
+    if structure_um:
+        out["structure_length_um"] = round(sum(structure_um), 3)
+        if "total_length_um" in out:
+            out["total_length_with_structures_um"] = round(out["total_length_um"] + out["structure_length_um"], 3)
     return out
 
 
