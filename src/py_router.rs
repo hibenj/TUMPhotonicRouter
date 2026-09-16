@@ -1186,15 +1186,18 @@ const NEGOTIATED_PROBE_GUIDANCE_LOSS: f64 = 0.0;
 /// `PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED=0` turns the rule
 /// off for A/B runs; without guidance (lidar-pure) it never applies.
 /// Milestone 8's braid escalation (`BraidRepairOutcome::VictimRipped`) can
-/// be switched off for A/B runs with
-/// `PHOTONIC_ROUTER_NEGOTIATED_BRAID_ESCALATION=0`; the braid repair then
+/// is off by default and switched on for A/B runs with
+/// `PHOTONIC_ROUTER_NEGOTIATED_BRAID_ESCALATION=1`; off, the braid repair
 /// rolls back to the braid as before (measured 2026-09-16: on the 64x64
 /// mesh in lidar-pure the escalation turned one braid into three single
 /// crossings, 218 vs 217 -- the owner decides its default).
 fn negotiated_braid_escalation_enabled() -> bool {
+    // Off by default since the 2026-09-16 baseline freeze (measured
+    // neutral to slightly negative for lidar-pure: 218 vs 217 crossings on
+    // the 64x64 mesh); `=1` enables it for A/B runs.
     std::env::var("PHOTONIC_ROUTER_NEGOTIATED_BRAID_ESCALATION")
-        .map(|value| value != "0")
-        .unwrap_or(true)
+        .map(|value| value == "1")
+        .unwrap_or(false)
 }
 
 /// `PHOTONIC_ROUTER_MAX_DENSE_STATES`: per-attempt cap on dense search

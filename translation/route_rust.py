@@ -631,6 +631,15 @@ def route_match_and_realize(
 DENSE_OBSTACLE_CELL_CAP_MARGIN = 2
 
 
+def negotiated_repair_engine_enabled() -> bool:
+    """The negotiated rip-up engine is the default repair engine since the
+    2026-09-16 baseline freeze; `PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN=1` or
+    `PHOTONIC_ROUTER_NEGOTIATED_REPAIR=0` selects the older repair chain."""
+    if os.environ.get("PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN", "") == "1":
+        return False
+    return os.environ.get("PHOTONIC_ROUTER_NEGOTIATED_REPAIR", "1") != "0"
+
+
 def dense_obstacle_cell_cap(grid_width: int, grid_height: int, default_cap: int) -> int:
     """Return the kernel's dense-grid cell cap sized for this obstacle map.
 
@@ -4433,16 +4442,15 @@ class _RouteNetsRustSession:
             self._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
 
             batch_start = self._timing_start()
-            if os.environ.get("PHOTONIC_ROUTER_NEGOTIATED_REPAIR", "") == "1":
-                # A/B comparison path for
-                # .agent/execplans/2026-08-25-negotiated-repair-engine.md
-                # Milestone 5's new negotiated-congestion loop, kept
-                # opt-in behind this env var specifically so the
-                # existing, validated `route_many_with_repair_and_commit`
-                # stays the default until the new loop's own coverage
-                # (crossing-specific repair strategies, dense-source-
-                # fanout static cleanup) closes the gap documented in
-                # that milestone's Surprises & Discoveries.
+            if negotiated_repair_engine_enabled():
+                # Default since 2026-09-16 (owner decision, baseline
+                # freeze): the LiDAR-style negotiated rip-up loop of
+                # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
+                # (the only engine that routes the 64x64 mesh). The older
+                # 17-strategy chain `route_many_with_repair_and_commit`
+                # stays available for A/B runs via
+                # PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN=1 (or
+                # PHOTONIC_ROUTER_NEGOTIATED_REPAIR=0).
                 if not hasattr(self.router, "route_many_with_negotiated_repair_and_commit"):
                     raise RuntimeError(
                         "The loaded photonic_router._rust extension does not expose "
