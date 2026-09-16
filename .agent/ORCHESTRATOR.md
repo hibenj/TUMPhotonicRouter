@@ -653,6 +653,17 @@ For crossing work, the orchestrator should prefer this evidence chain:
 
 Do not accept screenshots alone as proof.
 
+**Archive rule (owner, 2026-09-16): every benchmark run that may feed the
+paper is stored separately per configuration**, via
+`scripts/results/run_and_archive.sh <config> <benchmark> [args]` -> 
+`results/<benchmark>/<config>/<timestamp>/` (routed GDS, both verification
+JSONs, run log, `run.txt` with commit/args/rc/wall, `metrics.json` from
+`scripts/results/summarize_run.py`: route count, total/mean/max waveguide
+length, crossing count, crossings per net, verifier errors). Never let two
+configurations of one benchmark overwrite each other in `build/`. The final
+paper table is produced by rerunning every configuration through this
+script and reading the archived metrics, not from `build/`.
+
 When screenshots reveal a failure, convert them into structured evidence before
 continuing substantial implementation: identify the produced artifact, route
 indices/net names if possible, verification report counters, and the missing
