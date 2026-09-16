@@ -1388,6 +1388,13 @@ struct ProbeState {
     probe_grid_crossing_violations: Vec<InvalidCrossingIntersection>,
     probe_repair_keepout_keys: FxHashSet<CellKey>,
     candidate_blockers: Vec<u64>,
+    /// Crossings disabled (contribution 2, or crossings off): the
+    /// committed nets whose centerline the probe's free path geometrically
+    /// intersects. Every one of them must move for this net to route, so
+    /// `ripup_illegal_crossing_partners` rips them all (2026-09-16,
+    /// multiportmmi_128x128 fan-out: the old single-candidate fallback
+    /// ripped a halo neighbour and 17 of 20 post-rip-up searches failed).
+    probe_intersecting_partners: Vec<u64>,
 }
 
 struct RepairModeAttemptState {
@@ -9480,6 +9487,84 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Committed nets (other than `net_id`) whose realized centerline the
+    /// route's centerline intersects (proper crossing or collinear overlap),
+    /// regardless of the crossing context -- the geometric core of
+    /// `crossing_violations_for_realized_centerline` without its legality
+    /// classification. Empty when the route has no centerline.
+    fn committed_partners_intersecting_route(
+        &self,
+        net_id: u64,
+        route: &RouteResult,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) -> Vec<u64> {
+        let Ok(route_centerline) =
+            self.routing_centerline_for_route(route, source_port_um, target_port_um)
+        else {
+            return Vec::new();
+        };
+        if route_centerline.len() < 2 {
+            return Vec::new();
+        }
+        let Some((route_min_x, route_min_y, route_max_x, route_max_y)) =
+            polyline_bbox(&route_centerline)
+        else {
+            return Vec::new();
+        };
+        let bbox_reach = self.route_width_um.max(1.0e-6);
+        let mut partners: Vec<u64> = Vec::new();
+        let mut ids: Vec<&u64> = self.committed_center_routes.keys().collect();
+        ids.sort_unstable();
+        for partner_id in ids {
+            if *partner_id == net_id {
+                continue;
+            }
+            let centerline = self
+                .committed_realized_center_routes
+                .get(partner_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    self.grid_waypoints_to_centerline(&self.committed_center_routes[partner_id])
+                });
+            if centerline.len() < 2 {
+                continue;
+            }
+            let Some((p_min_x, p_min_y, p_max_x, p_max_y)) = polyline_bbox(&centerline) else {
+                continue;
+            };
+            if p_min_x > route_max_x + bbox_reach
+                || p_max_x < route_min_x - bbox_reach
+                || p_min_y > route_max_y + bbox_reach
+                || p_max_y < route_min_y - bbox_reach
+            {
+                continue;
+            }
+            let intersects = route_centerline.windows(2).any(|route_segment| {
+                centerline.windows(2).any(|partner_segment| {
+                    physical_collinear_segment_overlap_midpoint(
+                        route_segment[0],
+                        route_segment[1],
+                        partner_segment[0],
+                        partner_segment[1],
+                    )
+                    .is_some()
+                        || physical_segment_intersection_with_params(
+                            route_segment[0],
+                            route_segment[1],
+                            partner_segment[0],
+                            partner_segment[1],
+                        )
+                        .is_some()
+                })
+            });
+            if intersects {
+                partners.push(*partner_id);
+            }
+        }
+        partners
+    }
+
     fn probe_net_for_repair(
         &mut self,
         batch: &mut RepairBatchState,
@@ -9687,9 +9772,26 @@ impl PyPhotonicRouter {
             }
         } else {
             for owner in dynamic_probe_owners {
-                add_candidate_blocker(owner, 0);
+                add_candidate_blocker(owner, 1);
             }
         }
+        let probe_intersecting_partners: Vec<u64> = if crossing_repair_enabled {
+            Vec::new()
+        } else {
+            let partners = self.committed_partners_intersecting_route(
+                job.net_id,
+                &probe_route,
+                job.source_port_um,
+                job.target_port_um,
+            );
+            for partner_id in &partners {
+                add_candidate_blocker(*partner_id, 0);
+            }
+            partners
+                .into_iter()
+                .filter(|partner_id| batch.final_routes.contains_key(partner_id))
+                .collect()
+        };
         let mut candidate_blockers: Vec<u64> = candidate_blocker_priority.keys().copied().collect();
         candidate_blockers.sort_unstable_by_key(|owner| {
             (
@@ -9711,6 +9813,7 @@ impl PyPhotonicRouter {
             probe_grid_crossing_violations,
             probe_repair_keepout_keys,
             candidate_blockers,
+            probe_intersecting_partners,
         };
         if trace_native_repair {
             eprintln!(
@@ -10514,6 +10617,9 @@ impl PyPhotonicRouter {
                     .iter()
                     .map(|event| event.partner_net_id),
             );
+        }
+        if !probe.crossing_repair_enabled {
+            partner_ids.extend(probe.probe_intersecting_partners.iter().copied());
         }
         for partner_id in partner_ids {
             if partner_id == net_id || ripped_once.contains(&partner_id) || !seen.insert(partner_id)
@@ -19038,6 +19144,7 @@ mod tests {
             probe_grid_crossing_violations: Vec::new(),
             probe_repair_keepout_keys: FxHashSet::default(),
             candidate_blockers: Vec::new(),
+            probe_intersecting_partners: Vec::new(),
         };
 
         let (legal, illegal) = split_probe_partners(&probe);
@@ -20303,6 +20410,7 @@ mod tests {
             // Blanked: this is what routes `try_commit_clean_probe` into
             // its clean-commit branch instead of returning `NotResolved`.
             candidate_blockers: Vec::new(),
+            probe_intersecting_partners: Vec::new(),
         };
         let mut batch = fresh_repair_batch_state();
 
@@ -20410,6 +20518,42 @@ mod tests {
         assert_eq!(
             max_dense_states_from_env_value(Some(" 30000000 ")),
             30_000_000
+        );
+    }
+
+    #[test]
+    fn committed_partners_intersecting_route_names_the_crossed_net_with_crossings_disabled() {
+        let (mut router, batch, vertical) = single_horizontal_crossing_fixture();
+        router.set_collision_crossing_routing(false);
+        router.crossing_context.set_config(CrossingConfig {
+            enabled: false,
+            ..CrossingConfig::default()
+        });
+        assert!(batch.final_routes.contains_key(&1));
+        // A straight vertical probe route through the committed horizontal net 1.
+        let probe_route = RouteResult {
+            states: Vec::new(),
+            primitives: Vec::new(),
+            cells: (0..=59).map(|y| (30, y)).collect(),
+            compressed_waypoints: vec![(30, 0), (30, 59)],
+            total_length_um: 59.0,
+            total_cost: 59.0,
+            requested_target: State::new(30, 59, 2),
+            reached_target: State::new(30, 59, 2),
+            stats: RouteSearchStats::default(),
+        };
+        let partners =
+            router.committed_partners_intersecting_route(vertical.net_id, &probe_route, None, None);
+        assert_eq!(
+            partners,
+            vec![1],
+            "the horizontal net is the one the probe must cross"
+        );
+        assert!(
+            router
+                .crossing_violations_for_route_with_ports(vertical.net_id, &probe_route, None, None, None, true)
+                .is_empty(),
+            "the legality helper stays silent with crossings disabled -- which is why the probe needs the geometric list"
         );
     }
 
