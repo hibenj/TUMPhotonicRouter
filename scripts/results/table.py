@@ -1,6 +1,6 @@
 """Markdown table over the archived runs in results/: latest run per
 (benchmark, config). Columns: rc, wall, crossings, verifier errors, total
-waveguide length, mean length, search attempts/failures/repairs, negotiated
+waveguide length (contribution 2: routes plus the placed structures), mean length, search attempts/failures/repairs, negotiated
 rounds and rip-ups. Usage: table.py [results_dir]"""
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def main() -> int:
         rip = ""
         if "negotiated_global_ripups" in m:
             rip = f"{m['negotiated_global_ripups']}/{m['negotiated_local_ripups']}"
-        tl = m.get("total_length_um")
+        tl = m.get("total_length_with_structures_um", m.get("total_length_um"))
         print(f"| {b} | {c} | {m['rc']} | {m.get('wall_s','')} | {m.get('crossing_count','')} | {err} | "
               f"{round(tl) if isinstance(tl,(int,float)) else ''} | {m.get('mean_length_um','')} | "
               f"{m.get('search_attempts','')} | {m.get('search_failures','')} | {m.get('search_repairs','')} | "
