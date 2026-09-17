@@ -342,13 +342,24 @@ def build_benes_schematic(
     switch_pitch_um: float = 220.0,
     io_dx_um: float = 220.0,
     lane_separation_um: float = 90.0,
+    stage_limit: int | None = None,
 ) -> Schematic:
-    """Build an unrouted size x size Benes schematic."""
+    """Build an unrouted size x size Benes schematic.
+
+    `stage_limit` keeps only the inputs and the first `stage_limit` switch
+    stages (and the nets between them; no outputs) -- a slice benchmark
+    for the first shuffle stages, where the 64x64 network's loss-driven
+    runs stall (2026-09-17, see `benes_64x64_stages2.py`).
+    """
     validate_benes_size(size)
     register_benes_cells()
 
     metadata = benes_topology_metadata(size)
-    stage_count = int(metadata["stage_count"])
+    full_stage_count = int(metadata["stage_count"])
+    stage_count = full_stage_count if stage_limit is None else min(full_stage_count, int(stage_limit))
+    if stage_count < 1:
+        raise ValueError("stage_limit must keep at least one switch stage")
+    keep_outputs = stage_count == full_stage_count
     switches_per_stage = int(metadata["switches_per_stage"])
     schematic = Schematic()
     switch_instance = Instance(component=SWITCH_COMPONENT)
@@ -369,14 +380,15 @@ def build_benes_schematic(
             io_instance,
             Placement(x=0.0, y=lane_y(index), mirror=True),
         )
-        schematic.add_instance(
-            output_name(index),
-            io_instance,
-            Placement(
-                x=io_dx_um + stage_pitch_um * stage_count,
-                y=lane_y(index),
-            ),
-        )
+        if keep_outputs:
+            schematic.add_instance(
+                output_name(index),
+                io_instance,
+                Placement(
+                    x=io_dx_um + stage_pitch_um * stage_count,
+                    y=lane_y(index),
+                ),
+            )
 
     for stage in range(stage_count):
         for switch_index in range(switches_per_stage):
@@ -401,6 +413,8 @@ def build_benes_schematic(
         )
 
     for edge in _iter_interstage_edges(size):
+        if edge.target_depth > stage_count:
+            continue
         schematic.add_net(
             Net(
                 p1=f"{edge.source_instance},{edge.source_port}",
@@ -410,7 +424,7 @@ def build_benes_schematic(
         )
 
     last_stage = stage_count - 1
-    for index in range(size):
+    for index in range(size if keep_outputs else 0):
         switch_index = index // 2
         source_port = SWITCH_TOP_OUTPUT_PORT if index % 2 == 0 else SWITCH_BOTTOM_OUTPUT_PORT
         schematic.add_net(

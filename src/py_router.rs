@@ -1224,6 +1224,30 @@ fn max_dense_states_from_env_value(value: Option<&str>) -> usize {
     }
 }
 
+/// 2026-09-17 (benes_64x64 first shuffle stage): a plain search that fails
+/// while the probe's free path crosses nothing and names no blocker is a
+/// budget failure, not a blockade -- there is nothing to rip. The loop then
+/// searches again at the retry budget right away instead of deferring the
+/// net to the next round (which cost the Benes 64 its 4 h cap twice: 40
+/// first-stage nets needing 1.3-13.7 M expansions, median 8.7 M, against a
+/// 2 M / 10 M ladder). `PHOTONIC_ROUTER_NEGOTIATED_CLEAN_PROBE_ESCALATION=0`
+/// turns it off for A/B runs.
+fn negotiated_clean_probe_escalation_enabled() -> bool {
+    std::env::var("PHOTONIC_ROUTER_NEGOTIATED_CLEAN_PROBE_ESCALATION")
+        .map(|value| value != "0")
+        .unwrap_or(true)
+}
+
+/// True when the probe found a free path that crosses no committed net and
+/// reports no candidate blocker of any kind.
+fn probe_names_no_blocker(probe: &ProbeState) -> bool {
+    probe.probe_crossing_events.is_empty()
+        && probe.probe_realized_crossing_violations.is_empty()
+        && probe.probe_grid_crossing_violations.is_empty()
+        && probe.candidate_blockers.is_empty()
+        && probe.probe_intersecting_partners.is_empty()
+}
+
 fn negotiated_crossing_free_unplanned_enabled() -> bool {
     std::env::var("PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED")
         .map(|value| value != "0")
@@ -1252,33 +1276,55 @@ fn negotiated_crossing_free_net(
 /// a net with `failed_count >= 1` gets a single attempt at the larger retry
 /// budget regardless of `attempt_index`. The last round (`round ==
 /// max_rounds`) is always unbounded.
+/// Expansions of first-attempt budget per Manhattan cell of the net's
+/// source-to-target span (2026-09-17): a net spanning 4250 cells (Benes 64
+/// first shuffle stage, 1.3-13.7 M expansions needed, median 8.7 M) gets
+/// 8.5 M on its first try instead of 2 M; the 128x128 mesh's heater-to-MMI
+/// nets (span 3340, 2.8-8.6 M needed) 6.7 M; ladder nets below 1000 cells
+/// keep the 2 M default. Retry budgets are at least three times the first.
+const NEGOTIATED_BUDGET_PER_SPAN_CELL: u64 = 2_000;
+
 fn negotiated_search_budget(
     failed_count: u32,
     round: u32,
     max_rounds: u32,
     attempt_index: u32,
+    span_cells: u64,
 ) -> Option<u64> {
     if round == max_rounds {
         return None;
     }
+    let first = budget_env_override(
+        "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST",
+        NEGOTIATED_BUDGET_FIRST_ATTEMPT,
+    )
+    .max(span_cells.saturating_mul(NEGOTIATED_BUDGET_PER_SPAN_CELL));
     if failed_count == 0 {
         if attempt_index == 0 {
-            Some(budget_env_override(
-                "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST",
-                NEGOTIATED_BUDGET_FIRST_ATTEMPT,
-            ))
+            Some(first)
         } else {
-            Some(budget_env_override(
-                "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY",
-                NEGOTIATED_BUDGET_FIRST_RETRY,
-            ))
+            Some(
+                budget_env_override(
+                    "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY",
+                    NEGOTIATED_BUDGET_FIRST_RETRY,
+                )
+                .max(first.saturating_mul(3)),
+            )
         }
     } else {
-        Some(budget_env_override(
-            "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY",
-            NEGOTIATED_BUDGET_RETRY,
-        ))
+        Some(
+            budget_env_override(
+                "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY",
+                NEGOTIATED_BUDGET_RETRY,
+            )
+            .max(first.saturating_mul(3)),
+        )
     }
+}
+
+fn manhattan_span_cells(job: &NativeRouteJob) -> u64 {
+    ((job.source.x - job.target.x).unsigned_abs() as u64)
+        + ((job.source.y - job.target.y).unsigned_abs() as u64)
 }
 
 /// Experiment knobs for the three negotiated search budgets (2026-09-16,
@@ -15121,8 +15167,9 @@ impl PyPhotonicRouter {
                 // post-rip-up one) -- the direct-crossing step below always
                 // uses the smaller first-attempt budget regardless of
                 // `net_search_budget`.
+                let span_cells = manhattan_span_cells(&job);
                 let net_search_budget =
-                    negotiated_search_budget(my_failed_count, round, max_rounds, 0);
+                    negotiated_search_budget(my_failed_count, round, max_rounds, 0, span_cells);
                 let crossing_free = negotiated_crossing_free_net(
                     planned_net_ids.as_ref(),
                     net_id,
@@ -15184,55 +15231,13 @@ impl PyPhotonicRouter {
                         batch.attempts.last().and_then(|a| a.error.as_deref()).unwrap_or("")
                     );
                 }
-                // 2026-09-15 01:30 owner decision: a fresh net's failed
-                // first attempt gets one retry at a larger budget before
-                // probe/rip-up runs at all -- most first-attempt failures
-                // on the Benes meshes are just under-budgeted, not actually
-                // blocked (2026-09-15 00:00 Surprises).
-                if matches!(plain_outcome, PlainRouteOutcome::NotResolved)
-                    && my_failed_count == 0
-                    && round != max_rounds
-                {
-                    let plain_retry_budget =
-                        negotiated_search_budget(my_failed_count, round, max_rounds, 1);
-                    let plain_retry_start = Instant::now();
-                    self.negotiated_search_budget = plain_retry_budget;
-                    self.negotiated_crossing_free_search = crossing_free;
-                    plain_outcome = self.try_plain_normal_route(
-                        &mut batch,
-                        &job,
-                        block_radius_cells,
-                        commit_radius_cells,
-                        core_radius_cells,
-                        collect_native_timing,
-                    );
-                    self.negotiated_search_budget = None;
-                    self.negotiated_crossing_free_search = false;
-                    if trace_native_repair {
-                        let (outcome_str, expanded_str) = match &plain_outcome {
-                            PlainRouteOutcome::Routed => (
-                                "routed",
-                                batch
-                                    .final_routes
-                                    .get(&net_id)
-                                    .map(|route| route.stats.expanded_states.to_string())
-                                    .unwrap_or_else(|| "?".to_string()),
-                            ),
-                            PlainRouteOutcome::NotResolved => {
-                                ("failed", self.last_search_expanded_states.to_string())
-                            }
-                        };
-                        eprintln!(
-                            "{}native_negotiated_search net={} kind=plain_retry elapsed_s={:.3} expanded={} outcome={} budget={}",
-                            trace_t(self.negotiated_batch_start),
-                            net_id,
-                            plain_retry_start.elapsed().as_secs_f64(),
-                            expanded_str,
-                            outcome_str,
-                            trace_budget_str(plain_retry_budget)
-                        );
-                    }
-                }
+                // Since 2026-09-17 the retry of a failed first attempt runs
+                // after the probe and only when the probe names no blocker
+                // (`negotiated_clean_probe_escalation_enabled`): with the
+                // span-scaled first budget a first-attempt failure on a long
+                // net usually means the corridor is taken, and the 3x retry
+                // before the probe (2026-09-15 01:30 decision) cost the
+                // Benes 64 first stage 53 s per net for nothing.
                 if let PlainRouteOutcome::Routed = plain_outcome {
                     if crossing_free {
                         crossing_free_count += 1;
@@ -15368,6 +15373,82 @@ impl PyPhotonicRouter {
                 } else {
                     (legal_partner_ids, illegal_partner_ids)
                 };
+
+                // Budget failure, not a blockade: see
+                // `negotiated_clean_probe_escalation_enabled`.
+                if negotiated_clean_probe_escalation_enabled() && probe_names_no_blocker(&probe) {
+                    let escalated_budget =
+                        negotiated_search_budget(my_failed_count, round, max_rounds, 1, span_cells)
+                            .unwrap_or(u64::MAX)
+                            .max(budget_env_override(
+                                "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY",
+                                NEGOTIATED_BUDGET_RETRY,
+                            ));
+                    if net_search_budget.is_some_and(|budget| budget < escalated_budget) {
+                        let escalation_start = Instant::now();
+                        self.negotiated_search_budget = Some(escalated_budget);
+                        self.negotiated_crossing_free_search = crossing_free;
+                        let escalated_outcome = self.try_plain_normal_route(
+                            &mut batch,
+                            &job,
+                            block_radius_cells,
+                            commit_radius_cells,
+                            core_radius_cells,
+                            collect_native_timing,
+                        );
+                        self.negotiated_search_budget = None;
+                        self.negotiated_crossing_free_search = false;
+                        if trace_native_repair {
+                            let (outcome_str, expanded_str) = match &escalated_outcome {
+                                PlainRouteOutcome::Routed => (
+                                    "routed",
+                                    batch
+                                        .final_routes
+                                        .get(&net_id)
+                                        .map(|route| route.stats.expanded_states.to_string())
+                                        .unwrap_or_else(|| "?".to_string()),
+                                ),
+                                PlainRouteOutcome::NotResolved => {
+                                    ("failed", self.last_search_expanded_states.to_string())
+                                }
+                            };
+                            eprintln!(
+                                "{}native_negotiated_search net={} kind=clean_probe_escalation elapsed_s={:.3} expanded={} outcome={} budget={}",
+                                trace_t(self.negotiated_batch_start),
+                                net_id,
+                                escalation_start.elapsed().as_secs_f64(),
+                                expanded_str,
+                                outcome_str,
+                                trace_budget_str(Some(escalated_budget))
+                            );
+                        }
+                        if let PlainRouteOutcome::Routed = escalated_outcome {
+                            if crossing_free {
+                                crossing_free_count += 1;
+                            }
+                            self.run_braid_repair_passes(
+                                &mut batch,
+                                &job,
+                                &job_by_id,
+                                block_radius_cells,
+                                commit_radius_cells,
+                                core_radius_cells,
+                                collect_native_timing,
+                                trace_native_repair,
+                                &mut braid_failed_pairs,
+                                &mut braid_ripped_victims,
+                            );
+                            requeue_braid_victims(
+                                &mut queue,
+                                &mut failed_counts,
+                                &mut ripped_once,
+                                &braid_ripped_victims,
+                            );
+                            made_progress = true;
+                            continue;
+                        }
+                    }
+                }
 
                 // Probe-guided search (2026-09-15 15:00 Decision Log entry
                 // of
@@ -15604,7 +15685,18 @@ impl PyPhotonicRouter {
                         );
                     }
                     let post_ripup_search_start = Instant::now();
-                    self.negotiated_search_budget = net_search_budget;
+                    // After a rip-up the search gets at least the retry
+                    // budget (2026-09-17): searching the freed corridor
+                    // with the 2 M first budget wasted the rip-up on the
+                    // Benes 64 first stage (`post_ripup_plain` failed 5/5).
+                    let post_ripup_budget = negotiated_search_budget(
+                        my_failed_count.max(1),
+                        round,
+                        max_rounds,
+                        0,
+                        span_cells,
+                    );
+                    self.negotiated_search_budget = post_ripup_budget;
                     self.negotiated_crossing_free_search = crossing_free;
                     let post_ripup_outcome = if widened_legal_partner_ids.is_empty() {
                         self.try_plain_normal_route(
@@ -15662,7 +15754,7 @@ impl PyPhotonicRouter {
                             post_ripup_search_start.elapsed().as_secs_f64(),
                             expanded_str,
                             outcome_str,
-                            trace_budget_str(net_search_budget)
+                            trace_budget_str(post_ripup_budget)
                         );
                     }
                     if let PlainRouteOutcome::Routed = post_ripup_outcome {
@@ -18724,26 +18816,26 @@ mod tests {
     fn negotiated_search_budget_sequence_matches_failed_count() {
         // Fresh net, mid-run round: (2 M, 10 M).
         assert_eq!(
-            negotiated_search_budget(0, 1, 8, 0),
+            negotiated_search_budget(0, 1, 8, 0, 0),
             Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT)
         );
         assert_eq!(
-            negotiated_search_budget(0, 1, 8, 1),
+            negotiated_search_budget(0, 1, 8, 1, 0),
             Some(NEGOTIATED_BUDGET_FIRST_RETRY)
         );
         // A net that has already failed once this epoch: a single attempt
         // at the larger retry budget, regardless of attempt_index.
         assert_eq!(
-            negotiated_search_budget(1, 1, 8, 0),
+            negotiated_search_budget(1, 1, 8, 0, 0),
             Some(NEGOTIATED_BUDGET_RETRY)
         );
         assert_eq!(
-            negotiated_search_budget(1, 1, 8, 1),
+            negotiated_search_budget(1, 1, 8, 1, 0),
             Some(NEGOTIATED_BUDGET_RETRY)
         );
         // The last round is always unbounded, fresh or already-failed.
-        assert_eq!(negotiated_search_budget(0, 8, 8, 0), None);
-        assert_eq!(negotiated_search_budget(1, 8, 8, 0), None);
+        assert_eq!(negotiated_search_budget(0, 8, 8, 0, 0), None);
+        assert_eq!(negotiated_search_budget(1, 8, 8, 0, 0), None);
     }
 
     /// Milestone 5 of
@@ -20579,6 +20671,47 @@ mod tests {
                 .is_empty(),
             "the legality helper stays silent with crossings disabled -- which is why the probe needs the geometric list"
         );
+    }
+
+    #[test]
+    fn negotiated_search_budget_scales_with_the_span_and_keeps_the_defaults_for_short_nets() {
+        assert_eq!(
+            negotiated_search_budget(0, 1, 8, 0, 900),
+            Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT)
+        );
+        assert_eq!(negotiated_search_budget(0, 1, 8, 0, 4250), Some(8_500_000));
+        assert_eq!(negotiated_search_budget(0, 1, 8, 1, 4250), Some(25_500_000));
+        assert_eq!(negotiated_search_budget(1, 1, 8, 0, 4250), Some(30_000_000));
+        assert_eq!(negotiated_search_budget(1, 1, 8, 0, 6000), Some(36_000_000));
+        assert_eq!(negotiated_search_budget(0, 8, 8, 0, 6000), None);
+    }
+
+    #[test]
+    fn probe_names_no_blocker_only_when_every_blocker_list_is_empty() {
+        let (_router, _batch, _vertical, probe) = crossing_conflict_probe_fixture();
+        assert!(
+            !probe_names_no_blocker(&probe),
+            "this fixture's probe blames net 3 (candidate blocker + not_perpendicular violation)"
+        );
+        let clean = ProbeState {
+            probe_route: empty_test_route(),
+            crossing_repair_enabled: true,
+            allowed_crossing_partners: FxHashSet::default(),
+            probe_crossing_events: Vec::new(),
+            strict_expected_crossing_probe: false,
+            probe_crossing_compliant: true,
+            probe_realized_crossing_violations: Vec::new(),
+            probe_grid_crossing_violations: Vec::new(),
+            probe_repair_keepout_keys: FxHashSet::default(),
+            candidate_blockers: Vec::new(),
+            probe_intersecting_partners: Vec::new(),
+        };
+        assert!(probe_names_no_blocker(&clean));
+        let intersecting = ProbeState {
+            probe_intersecting_partners: vec![7],
+            ..clean
+        };
+        assert!(!probe_names_no_blocker(&intersecting));
     }
 
     #[test]
