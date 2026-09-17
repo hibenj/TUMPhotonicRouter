@@ -807,6 +807,17 @@ pub struct PyPhotonicRouter {
     // the probe search, and reset to `false` right after every search that
     // set it.
     negotiated_crossing_free_search: bool,
+    // Nets searched with `long_straight_congestion_weight = 0` by the
+    // negotiated loop (2026-09-17, multiportmmi_128x128): the fan-in /
+    // fan-out bands of dense multi-port instances must pack their lanes
+    // tightly in parallel, which the penalty forbids (with it: bundle
+    // rip-ups every round; without it: 0 rip-ups in both bands). Filled by
+    // `set_long_straight_exempt_net_ids` (Python: the nets with a static
+    // fan-out anchor, env PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT=1).
+    long_straight_exempt_net_ids: FxHashSet<u64>,
+    // `Some(weight)` while the negotiated loop searches an exempt net:
+    // `astar_config` then uses it instead of the environment's weight.
+    long_straight_weight_override: Option<f64>,
     // Expanded-states count of the most recent single-net search
     // `route_single_net_and_commit_native` ran, success or failure. Set
     // right after that search returns (before its `Option<RouteResult>` is
@@ -2979,6 +2990,7 @@ fn astar_config_from_py(
     ignore_dynamic_obstacles: Option<bool>,
     enable_simple_routes: Option<bool>,
     history_weight: Option<f64>,
+    long_straight_weight_override: Option<f64>,
 ) -> PyResult<AStarConfig> {
     let allowed_target_angles_mask =
         allowed_angles_to_mask(astar_cfg.allowed_target_angles.as_ref())?;
@@ -2986,8 +2998,10 @@ fn astar_config_from_py(
     let heuristic_mode = parse_heuristic_mode(&astar_cfg.heuristic_mode)?;
     let heap_tie_breaker = parse_heap_tie_breaker(&astar_cfg.heap_tie_breaker)?;
     let max_search_time_ms = astar_timeout_ms_from_env()?.unwrap_or(astar_cfg.max_search_time_ms);
-    let long_straight_congestion_weight =
-        long_straight_congestion_weight_from_env()?.unwrap_or(0.0);
+    let long_straight_congestion_weight = match long_straight_weight_override {
+        Some(weight) => weight,
+        None => long_straight_congestion_weight_from_env()?.unwrap_or(0.0),
+    };
     if !astar_cfg.proactive_congestion_weight.is_finite()
         || astar_cfg.proactive_congestion_weight < 0.0
     {
@@ -3715,6 +3729,9 @@ impl PyPhotonicRouter {
         }
         if let Some(budget) = self.negotiated_search_budget {
             cfg.total_expansion_budget = Some(budget);
+        }
+        if let Some(weight) = self.long_straight_weight_override {
+            cfg.long_straight_congestion_weight = weight;
         }
         Ok(cfg)
     }
@@ -13462,7 +13479,7 @@ impl PyPhotonicRouter {
             })
         };
         let astar_cfg_cached =
-            astar_config_from_py(&astar_config, &primitive_config, None, None, None)
+            astar_config_from_py(&astar_config, &primitive_config, None, None, None, None)
                 .map_err(|err| err.to_string());
         Self {
             obstacle_map: ObstacleMap::new(grid_spec.width as i32, grid_spec.height as i32),
@@ -13492,6 +13509,8 @@ impl PyPhotonicRouter {
             negotiated_batch_start: None,
             negotiated_search_budget: None,
             negotiated_crossing_free_search: false,
+            long_straight_exempt_net_ids: FxHashSet::default(),
+            long_straight_weight_override: None,
             last_search_expanded_states: 0,
         }
     }
@@ -13583,6 +13602,10 @@ impl PyPhotonicRouter {
 
     fn crossing_allows_pair(&self, net_id: u64, partner_net_id: u64) -> bool {
         self.crossing_context.allows_pair(net_id, partner_net_id)
+    }
+
+    fn set_long_straight_exempt_net_ids(&mut self, net_ids: Vec<u64>) {
+        self.long_straight_exempt_net_ids = net_ids.into_iter().collect();
     }
 
     fn set_collision_crossing_routing(&mut self, enabled: bool) {
@@ -15168,6 +15191,15 @@ impl PyPhotonicRouter {
                 // uses the smaller first-attempt budget regardless of
                 // `net_search_budget`.
                 let span_cells = manhattan_span_cells(&job);
+                // Per-net long-straight penalty: 0 for the exempt dense
+                // fan-out nets, the environment's weight for every other net
+                // (`long_straight_weight_override`, cleared on every return).
+                self.long_straight_weight_override =
+                    if self.long_straight_exempt_net_ids.contains(&net_id) {
+                        Some(0.0)
+                    } else {
+                        None
+                    };
                 let net_search_budget =
                     negotiated_search_budget(my_failed_count, round, max_rounds, 0, span_cells);
                 let crossing_free = negotiated_crossing_free_net(
@@ -15309,6 +15341,7 @@ impl PyPhotonicRouter {
                                 crossing_free_count
                             );
                         }
+                        self.long_straight_weight_override = None;
                         self.negotiated_batch_start = None;
                         return self.build_native_batch_result_dict(
                             py,
@@ -15863,7 +15896,8 @@ impl PyPhotonicRouter {
                 crossing_free_count
             );
         }
-        self.negotiated_batch_start = None;
+        self.long_straight_weight_override = None;
+                        self.negotiated_batch_start = None;
 
         self.build_native_batch_result_dict(py, &native_jobs, &mut batch, collect_native_timing)
     }

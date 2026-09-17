@@ -7933,6 +7933,18 @@ class _RouteNetsRustSession:
         route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec = (
             self._build_route_jobs_and_fanout_clustering(nets)
         )
+        if os.environ.get("PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT", "") == "1":
+            # 2026-09-17 (multiportmmi_128x128): the fan-in / fan-out bands of
+            # dense multi-port instances route without the long-straight
+            # penalty, so their lanes may pack in parallel; every other net
+            # keeps the configured weight. See PyPhotonicRouter's
+            # `long_straight_exempt_net_ids`.
+            exempt_ids = sorted(
+                set(self.fanout_anchor_source_net_ids) | set(self.fanout_anchor_target_net_ids)
+            )
+            if hasattr(self.router, "set_long_straight_exempt_net_ids"):
+                self.router.set_long_straight_exempt_net_ids(exempt_ids)
+                print(f"      - long-straight penalty exempt for {len(exempt_ids)} dense fan-out net(s)")
         route_jobs, foreign_port_keepout_cells_by_instance = (
             self._build_crossing_plan_and_port_footprints(
                 route_jobs,

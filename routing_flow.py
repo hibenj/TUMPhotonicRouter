@@ -1132,6 +1132,15 @@ def run_routing_flow(
             preplaced_crossing_grids=preplaced_crossing_grids,
             guided=bool(enable_crossings) and is_guided_mode(crossing_mode),
         )
+    if preplaced_crossing_grids:
+        # Contribution 2 (2026-09-17, multiportmmi_128x128): the fan-in /
+        # fan-out nets of dense multi-port instances route without the
+        # long-straight congestion penalty so that their lanes can pack in
+        # parallel; every other net keeps the benchmark's weight. Part of the
+        # configuration since the ADEPT 128x128 run that only converged this
+        # way; `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT=0` in the
+        # shell keeps the old behaviour.
+        os.environ.setdefault("PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT", "1")
     # Contribution 2 splits nets into tile stubs; keep the net order's depth
     # layers those of the original netlist (see route_rust.net_order_depth_by_node).
     net_order_depth_by_node: dict[str, int] | None = (
