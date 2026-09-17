@@ -2810,16 +2810,16 @@ class _RouteNetsRustSession:
         span_by_net_id: dict[int, int] | None = None
         if self.net_order == "topological-span":
             span_by_net_id = {int(job.net_id): self._route_job_grid_span(job) for job in jobs}
-        runway_by_net_id: dict[int, int] | None = None
-        if self.net_order == "topological-runway":
-            runway_by_net_id = {}
+        stub_by_net_id: dict[int, int] | None = None
+        if self.net_order == "topological-stub":
+            stub_by_net_id = {}
             for job in jobs:
-                source_spec = f"{job.inst1},{job.port1}"
-                target_spec = f"{job.inst2},{job.port2}"
-                runway_by_net_id[int(job.net_id)] = max(
-                    int(self.dense_source_port_runway_length_by_spec.get(source_spec, 0)),
-                    int(self.dense_target_port_runway_length_by_spec.get(target_spec, 0)),
-                )
+                lengths = []
+                for spec in (f"{job.inst1},{job.port1}", f"{job.inst2},{job.port2}"):
+                    anchor = self.fanout_anchor_by_port_spec.get(spec)
+                    if anchor is not None:
+                        lengths.append(len(anchor.stub_center_cells))
+                stub_by_net_id[int(job.net_id)] = max(lengths) if lengths else 0
         planned_by_net_id: dict[int, int] | None = None
         if self.net_order.startswith("plan-crossings"):
             raw_counts = self.crossing_plan_info.get("expected_crossings_by_net_id")
@@ -2835,7 +2835,7 @@ class _RouteNetsRustSession:
             depth_by_node=depth_by_node,
             span_by_net_id=span_by_net_id,
             planned_crossings_by_net_id=planned_by_net_id,
-            runway_by_net_id=runway_by_net_id,
+            stub_by_net_id=stub_by_net_id,
         )
         if self.net_order != "topological":
             print(f"      - net order: {self.net_order}")
