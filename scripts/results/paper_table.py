@@ -101,7 +101,7 @@ def build(results: Path) -> tuple[str, dict]:
     \setlength{\tabcolsep}{1.5pt}
     \renewcommand{\arraystretch}{0.9}
     \begin{adjustbox}{max width=\textwidth}
-        \begin{tabular}{@{}lrrr|rrrrrrrrrrrrrrrr@{}}
+        \begin{tabular}{@{}lrrrrrrrrrrrrrrrrrrr@{}}
             \toprule
             & \multicolumn{3}{c}{\textsc{LiDAR}~\cite{zhou2025lidar}} & \multicolumn{4}{c}{\textsc{lidar-pure}} & \multicolumn{6}{c}{\textsc{Contribution 1}} & \multicolumn{6}{c}{\textsc{Contribution 2}} \\
             \cmidrule(lr){2-4} \cmidrule(lr){5-8} \cmidrule(lr){9-14} \cmidrule(l){15-20}
