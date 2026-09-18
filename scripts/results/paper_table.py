@@ -32,6 +32,13 @@ BENCH = [
     ("multiportmmi_128x128", "ADEPT $128\\times128$"),
 ]
 MEAN_EXCLUDED = {"benes_4x4"}  # 0.02 s A* times give meaningless ratios
+# Manual DRV corrections for LiDAR rows (owner inspection in KLayout, 2026-09-18):
+# LiDAR's own DRV counter does not check the die boundary. ADEPT 8x8 at the
+# matched price routes four output nets (n_105, n_106, n_108, n_110) outside
+# the die, to the right of the grating-coupler array, and thereby avoids
+# three of the 33 planned crossings (30 realized). That is one illegal
+# route region -> DRV 1.
+LIDAR_DRV_OVERRIDES = {("multiportmmi_8x8", "lidar_p300"): "1"}
 
 
 def ok(m: dict | None) -> bool:
@@ -67,7 +74,8 @@ def build(results: Path) -> tuple[str, dict]:
         for c in ("lidar_p300_12h", "lidar_p300"):
             m = rows.get((b, c))
             if m is not None and m.get("rc") == "0" and m.get("routed_record_count"):
-                return [str(m["wall_s"]), str(m.get("crossing_count", "")), str(m.get("drv_nets", ""))]
+                drv = LIDAR_DRV_OVERRIDES.get((b, c), str(m.get("drv_nets", "")))
+                return [str(m["wall_s"]), str(m.get("crossing_count", "")), drv]
         return ["--"] * 3
 
     for b, label in BENCH:
