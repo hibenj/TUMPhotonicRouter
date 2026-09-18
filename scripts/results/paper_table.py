@@ -58,13 +58,21 @@ def fmt_pct(ratio: float) -> str:
 def build(results: Path) -> tuple[str, dict]:
     rows = {}
     for b, c, run in latest_runs(results):
-        if c in ("lidar-pure", "contribution1", "contribution2"):
+        if c in ("lidar-pure", "contribution1", "contribution2", "lidar_p300", "lidar_p300_12h"):
             rows[(b, c)] = read(run)
     lines: list[str] = []
     logs: dict[str, list[float]] = {"c1_t": [], "c1_l": [], "c2_t": [], "c2_l": []}
+    def lidar_cells(b: str) -> list[str]:
+        # matched-price LiDAR: the 12 h archive when it completed, else the 4 h one; "--" for timeout / crash / not run
+        for c in ("lidar_p300_12h", "lidar_p300"):
+            m = rows.get((b, c))
+            if m is not None and m.get("rc") == "0" and m.get("routed_record_count"):
+                return [str(m["wall_s"]), str(m.get("crossing_count", "")), str(m.get("drv_nets", ""))]
+        return ["--"] * 3
+
     for b, label in BENCH:
         p = rows.get((b, "lidar-pure"))
-        cells = [label]
+        cells = [label] + lidar_cells(b)
         cells += [fmt_t(astar(p)), f"{length_mm(p):.1f}", str(p.get("search_repairs", 0)), str(p.get("crossing_count", ""))] if ok(p) else ["--"] * 4
         for key, c in (("c1", "contribution1"), ("c2", "contribution2")):
             m = rows.get((b, c))
@@ -83,21 +91,21 @@ def build(results: Path) -> tuple[str, dict]:
             logs["c2_t"].append(math.log(astar(c2) / astar(p))); logs["c2_l"].append(math.log(length_mm(c2) / length_mm(p)))
     gm = {k: math.exp(sum(v) / len(v)) for k, v in logs.items()}
     n = len(logs["c1_t"])
-    mean_row = ("            \\emph{Geometric mean} & & & & & & " + fmt_pct(gm["c1_t"]) + " & & " + fmt_pct(gm["c1_l"])
+    mean_row = ("            \\emph{Geometric mean} & & & & & & & & & " + fmt_pct(gm["c1_t"]) + " & & " + fmt_pct(gm["c1_l"])
                 + " & & & & " + fmt_pct(gm["c2_t"]) + " & & " + fmt_pct(gm["c2_l"]) + " & & \\\\")
     table = r"""\begin{table*}[!t]
-    \caption{Routing results of the LiDAR-style baseline (lidar-pure) and the two crossing-aware contributions, one run per cell on the same frozen engine. $t$: A* search time; $L$: total waveguide length (Contribution~2 including the placed crossing structures); Rep.: repairs; Cross.: realized crossings. $\Delta t$ and $\Delta L$ are relative to lidar-pure (negative is better); the last row is the geometric mean over the %d benchmarks from $8\times8$ upwards that all three configurations complete. ``--'': not run or not completed within the time limit.}
+    \caption{Routing results of public LiDAR at the matched crossing price (wall time, realized crossings, nets with design-rule violations; \SI{12}{\hour} limit), of the LiDAR-style baseline (lidar-pure), and of the two crossing-aware contributions, one run per cell on the same frozen engine. $t$: A* search time; $L$: total waveguide length (Contribution~2 including the placed crossing structures); Rep.: repairs; Cross.: realized crossings. $\Delta t$ and $\Delta L$ are relative to lidar-pure (negative is better); the last row is the geometric mean over the %d benchmarks from $8\times8$ upwards that all three configurations complete. ``--'': not run, not completed within the time limit, or (LiDAR, ADEPT $16\times16$) aborted by a LiDAR post-processing error.}
     \label{tab:routing-results}
     \centering
     \scriptsize
     \setlength{\tabcolsep}{1.5pt}
     \renewcommand{\arraystretch}{0.9}
     \begin{adjustbox}{max width=\textwidth}
-        \begin{tabular}{@{}lrrrrrrrrrrrrrrrr@{}}
+        \begin{tabular}{@{}lrrr|rrrrrrrrrrrrrrrr@{}}
             \toprule
-            & \multicolumn{4}{c}{\textsc{lidar-pure}} & \multicolumn{6}{c}{\textsc{Contribution 1}} & \multicolumn{6}{c}{\textsc{Contribution 2}} \\
-            \cmidrule(lr){2-5} \cmidrule(lr){6-11} \cmidrule(l){12-17}
-            Benchmark & $t$ [s] & $L$ [mm] & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. \\
+            & \multicolumn{3}{c}{\textsc{LiDAR}~\cite{zhou2025lidar}} & \multicolumn{4}{c}{\textsc{lidar-pure}} & \multicolumn{6}{c}{\textsc{Contribution 1}} & \multicolumn{6}{c}{\textsc{Contribution 2}} \\
+            \cmidrule(lr){2-4} \cmidrule(lr){5-8} \cmidrule(lr){9-14} \cmidrule(l){15-20}
+            Benchmark & $t_\mathrm{wall}$ [s] & Cross. & DRV & $t$ [s] & $L$ [mm] & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. \\
             \midrule
 %s
             \midrule
