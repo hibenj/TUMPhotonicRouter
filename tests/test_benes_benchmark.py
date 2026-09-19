@@ -612,3 +612,74 @@ def test_benes_4x4_top_level_placements_do_not_overlap():
                 left.dbbox(),
                 right.dbbox(),
             )
+
+
+def test_flat_benes_8x8_is_the_netlist_of_the_lidar_bridge():
+    """Expanded switches: 16 couplers + 20 switches x 4 primitives, 48 routed
+    nets of the switch benchmark + 80 switch-internal nets (LiDAR's 128)."""
+    from benchmarks.benes import SWITCH_INTERNAL_NETS, primitive_name
+    from benchmarks.benes_8x8_flat import build_schematic as build_flat_8x8
+
+    flat = build_flat_8x8()
+    parent = build_schematic_8x8()
+    assert len(flat.netlist.instances) == 16 + 20 * 4
+    assert len(flat.nets) == len(parent.nets) + 20 * len(SWITCH_INTERNAL_NETS) == 128
+    assert SWITCH_COMPONENT not in {inst.component for inst in flat.netlist.instances.values()}
+    endpoints = {net.p1 for net in flat.nets} | {net.p2 for net in flat.nets}
+    for switch in ("sw_s0_0", "sw_s4_3"):
+        for primitive, port in (("mmi_in", "o3"), ("heater_top", "o2"), ("mmi_out", "o1")):
+            assert f"{primitive_name(switch, primitive)},{port}" in endpoints
+
+
+def test_flat_benes_primitives_sit_where_the_switch_cell_puts_them():
+    from benchmarks.benes_4x4_flat import build_schematic as build_flat_4x4
+
+    parent_layout = layout_from_schematic(build_schematic())
+    flat_layout = layout_from_schematic(build_flat_4x4())
+    flat_ports = {
+        (str(ref.name), port.name): (round(port.dx, 3), round(port.dy, 3))
+        for ref in flat_layout.insts
+        for port in ref.ports
+    }
+    checked = 0
+    for ref in parent_layout.insts:
+        if not ref.cell.name.startswith(SWITCH_COMPONENT):
+            continue
+        for sub in ref.cell.insts:
+            if sub.name not in ("mmi_in", "mmi_out", "heater_top", "heater_bottom"):
+                continue
+            for port in sub.ports:
+                if port.port_type != "optical":
+                    continue
+                absolute = ref.dcplx_trans * port.dcplx_trans
+                expected = (round(absolute.disp.x, 3), round(absolute.disp.y, 3))
+                assert flat_ports[(f"{ref.name}__{sub.name}", port.name)] == expected
+                checked += 1
+    assert checked == 6 * (4 + 4 + 2 + 2)  # 6 switches: MMI 4 optical ports, heater 2
+
+
+def test_flat_benes_topology_keeps_the_switch_level_crossing_oracle():
+    from benchmarks import benes_8x8_flat
+
+    flat = analyze_schematic_topology(
+        benes_8x8_flat.build_schematic(),
+        node_depths=benes_8x8_flat.NODE_DEPTHS,
+        node_ranks=benes_8x8_flat.NODE_RANKS,
+        edge_ranks=benes_8x8_flat.EDGE_RANKS,
+    )
+    parent = analyze_schematic_topology(
+        build_schematic_8x8(),
+        node_depths=NODE_DEPTHS_8X8,
+        node_ranks=NODE_RANKS_8X8,
+        edge_ranks=EDGE_RANKS_8X8,
+    )
+    pairs = lambda result: {  # noqa: E731
+        frozenset((c.edge_a.net_name, c.edge_b.net_name)) for c in result.crossings
+    }
+    assert pairs(flat) == pairs(parent)
+    assert len(pairs(flat)) == len(EXPECTED_CROSSINGS_8X8) == 16
+    internal = [c for c in flat.crossings if "__" in c.edge_a.net_name or "__" in c.edge_b.net_name]
+    assert internal == []
+    assert build_crossing_plan(flat).events and len(build_crossing_plan(flat).events) == len(
+        build_crossing_plan(parent).events
+    )

@@ -24,6 +24,52 @@ SWITCH_TOP_OUTPUT_PORT = "o3"
 SWITCH_BOTTOM_OUTPUT_PORT = "o4"
 IO_PORT = "o1"
 
+# Geometry of `benes_mmi_heater_switch` (the LiDAR-style 2x2 switch): both MMIs
+# on the switch baseline, the heater arms above and below it.
+SWITCH_HEATER_SEPARATION_UM = 35.0
+SWITCH_HEATER_INPUT_X_UM = 70.0
+SWITCH_SECOND_MMI_X_UM = 430.0
+
+# The switch expanded into its primitives (`build_benes_schematic(...,
+# expand_switches=True)`): primitive name, component, offset from the switch
+# origin; the four switch-internal connections; where the switch ports end up.
+# Names and connections are those of the LiDAR bridge
+# (`scripts/lidar_bridge/export_benes_spec.py`), so the expanded benchmark is
+# exactly the netlist the reference router routes (2026-09-19, owner decision:
+# the comparison needs identical netlists).
+SWITCH_PRIMITIVES: tuple[tuple[str, str, float, float], ...] = (
+    ("mmi_in", "mmi2x2", 0.0, 0.0),
+    ("mmi_out", "mmi2x2", SWITCH_SECOND_MMI_X_UM, 0.0),
+    ("heater_top", "straight_heater_metal", SWITCH_HEATER_INPUT_X_UM, SWITCH_HEATER_SEPARATION_UM),
+    (
+        "heater_bottom",
+        "straight_heater_metal",
+        SWITCH_HEATER_INPUT_X_UM,
+        -SWITCH_HEATER_SEPARATION_UM,
+    ),
+)
+SWITCH_INTERNAL_NETS: tuple[tuple[str, str, str, str], ...] = (
+    ("mmi_in", "o3", "heater_top", "o1"),
+    ("heater_top", "o2", "mmi_out", "o2"),
+    ("mmi_in", "o4", "heater_bottom", "o1"),
+    ("heater_bottom", "o2", "mmi_out", "o1"),
+)
+SWITCH_PORT_MAP: dict[str, tuple[str, str]] = {
+    "o1": ("mmi_in", "o1"),
+    "o2": ("mmi_in", "o2"),
+    "o3": ("mmi_out", "o3"),
+    "o4": ("mmi_out", "o4"),
+}
+
+
+def primitive_name(switch: str, primitive: str) -> str:
+    """Instance name of one primitive of an expanded switch (LiDAR bridge naming)."""
+    return f"{switch}__{primitive}"
+
+
+def internal_net_name(switch: str, source_primitive: str, target_primitive: str) -> str:
+    return f"n_{switch}__{source_primitive}_to_{target_primitive}"
+
 
 @dataclass(frozen=True)
 class BenesLayerEdge:
@@ -72,9 +118,9 @@ def validate_benes_size(size: int) -> None:
 
 @gf.cell
 def benes_mmi_heater_switch(
-    heater_separation_um: float = 35.0,
-    heater_input_x_um: float = 70.0,
-    second_mmi_x_um: float = 430.0,
+    heater_separation_um: float = SWITCH_HEATER_SEPARATION_UM,
+    heater_input_x_um: float = SWITCH_HEATER_INPUT_X_UM,
+    second_mmi_x_um: float = SWITCH_SECOND_MMI_X_UM,
 ) -> gf.Component:
     """LiDAR-style 2x2 Benes switch cell with two MMIs and two heater arms."""
     get_generic_pdk().activate()
@@ -184,7 +230,7 @@ def _iter_interstage_edges(size: int) -> tuple[BenesLayerEdge, ...]:
     edges: list[BenesLayerEdge] = []
 
     for stage, stage_connections in enumerate(connections):
-        incoming_count_by_switch = {index: 0 for index in range(size // 2)}
+        incoming_count_by_switch = dict.fromkeys(range(size // 2), 0)
         for source_switch, destinations in enumerate(stage_connections):
             source_instance = switch_name(stage, source_switch)
             for output_index, target_switch in enumerate(destinations):
@@ -335,6 +381,96 @@ def benes_internal_delays_um(size: int) -> dict[str, float | str]:
     return internal_delays
 
 
+def benes_flat_topology_metadata(size: int) -> dict[str, Any]:
+    """Topology metadata of the expanded Benes (every switch = its primitives).
+
+    A switch at depth d becomes its input MMI at depth 3d-2, the two heater
+    arms at 3d-1 and the output MMI at 3d, so the inter-stage edges keep
+    their names, ranks and rank inversions (the crossing oracle is unchanged)
+    and the switch-internal edges are rank-preserving, i.e. crossing-free.
+    """
+    metadata = benes_topology_metadata(size)
+    stage_count = int(metadata["stage_count"])
+    switches_per_stage = int(metadata["switches_per_stage"])
+
+    node_depths: dict[str, int] = {}
+    node_ranks: dict[str, int] = {}
+    for index in range(size):
+        node_depths[input_name(index)] = 0
+        node_ranks[input_name(index)] = index
+        node_depths[output_name(index)] = 3 * stage_count + 1
+        node_ranks[output_name(index)] = index
+
+    edge_ranks: dict[str, dict[str, int]] = {}
+    for stage in range(stage_count):
+        depth = stage + 1
+        for switch_index in range(switches_per_stage):
+            switch = switch_name(stage, switch_index)
+            primitive_depths = {
+                "mmi_in": 3 * depth - 2,
+                "heater_top": 3 * depth - 1,
+                "heater_bottom": 3 * depth - 1,
+                "mmi_out": 3 * depth,
+            }
+            primitive_ranks = {
+                "mmi_in": switch_index,
+                "heater_top": 2 * switch_index,
+                "heater_bottom": 2 * switch_index + 1,
+                "mmi_out": switch_index,
+            }
+            for primitive, primitive_depth in primitive_depths.items():
+                node_depths[primitive_name(switch, primitive)] = primitive_depth
+                node_ranks[primitive_name(switch, primitive)] = primitive_ranks[primitive]
+            for source, _, target, _ in SWITCH_INTERNAL_NETS:
+                lane = 2 * switch_index + (0 if "top" in (source + target) else 1)
+                edge_ranks[internal_net_name(switch, source, target)] = {
+                    "source_rank": lane,
+                    "target_rank": lane,
+                    "source_depth": primitive_depths[source],
+                    "target_depth": primitive_depths[target],
+                }
+    for name, ranks in metadata["edge_ranks"].items():
+        edge_ranks[name] = {
+            "source_rank": int(ranks["source_rank"]),
+            "target_rank": int(ranks["target_rank"]),
+            "source_depth": 3 * int(ranks["source_depth"]),
+            "target_depth": 3 * int(ranks["target_depth"]) - 2,
+        }
+
+    return dict(metadata) | {
+        "expanded_switches": True,
+        "stage_depth_stride": 3,
+        "node_depths": node_depths,
+        "node_ranks": node_ranks,
+        "edge_ranks": edge_ranks,
+    }
+
+
+def benes_flat_node_types(size: int) -> dict[str, str]:
+    metadata = benes_topology_metadata(size)
+    node_types = {input_name(index): "input" for index in range(size)} | {
+        output_name(index): "output" for index in range(size)
+    }
+    for stage in range(int(metadata["stage_count"])):
+        for switch_index in range(int(metadata["switches_per_stage"])):
+            for primitive, _, _, _ in SWITCH_PRIMITIVES:
+                node_types[primitive_name(switch_name(stage, switch_index), primitive)] = "gate"
+    return node_types
+
+
+def benes_flat_internal_delays_um(size: int) -> dict[str, float | str]:
+    metadata = benes_topology_metadata(size)
+    io_names = [input_name(index) for index in range(size)] + [
+        output_name(index) for index in range(size)
+    ]
+    delays: dict[str, float | str] = dict.fromkeys(io_names, 0.0)
+    for stage in range(int(metadata["stage_count"])):
+        for switch_index in range(int(metadata["switches_per_stage"])):
+            for primitive, _, _, _ in SWITCH_PRIMITIVES:
+                delays[primitive_name(switch_name(stage, switch_index), primitive)] = "auto"
+    return delays
+
+
 def build_benes_schematic(
     size: int,
     *,
@@ -343,8 +479,14 @@ def build_benes_schematic(
     io_dx_um: float = 220.0,
     lane_separation_um: float = 90.0,
     stage_limit: int | None = None,
+    expand_switches: bool = False,
 ) -> Schematic:
     """Build an unrouted size x size Benes schematic.
+
+    `expand_switches` replaces every switch cell by its four primitives
+    (`SWITCH_PRIMITIVES`, placed where the cell puts them) and adds the four
+    switch-internal connections as nets: the netlist the LiDAR bridge hands
+    to the reference router, so both routers solve the same problem.
 
     `stage_limit` keeps only the inputs and the first `stage_limit` switch
     stages (and the nets between them; no outputs) -- a slice benchmark
@@ -356,7 +498,9 @@ def build_benes_schematic(
 
     metadata = benes_topology_metadata(size)
     full_stage_count = int(metadata["stage_count"])
-    stage_count = full_stage_count if stage_limit is None else min(full_stage_count, int(stage_limit))
+    stage_count = (
+        full_stage_count if stage_limit is None else min(full_stage_count, int(stage_limit))
+    )
     if stage_count < 1:
         raise ValueError("stage_limit must keep at least one switch stage")
     keep_outputs = stage_count == full_stage_count
@@ -364,6 +508,11 @@ def build_benes_schematic(
     schematic = Schematic()
     switch_instance = Instance(component=SWITCH_COMPONENT)
     io_instance = Instance(component=IO_COMPONENT)
+
+    def add_net(p1: str, p2: str, name: str) -> None:
+        if expand_switches:
+            p1, p2 = (_expanded_endpoint(endpoint) for endpoint in (p1, p2))
+        schematic.add_net(Net(p1=p1, p2=p2, name=name))
 
     def switch_y(index: int) -> float:
         return (switches_per_stage - 1 - index) * switch_pitch_um
@@ -392,47 +541,63 @@ def build_benes_schematic(
 
     for stage in range(stage_count):
         for switch_index in range(switches_per_stage):
-            schematic.add_instance(
-                switch_name(stage, switch_index),
-                switch_instance,
-                Placement(
-                    x=io_dx_um + stage * stage_pitch_um,
-                    y=switch_y(switch_index),
-                ),
-            )
+            switch = switch_name(stage, switch_index)
+            switch_x = io_dx_um + stage * stage_pitch_um
+            if not expand_switches:
+                schematic.add_instance(
+                    switch, switch_instance, Placement(x=switch_x, y=switch_y(switch_index))
+                )
+                continue
+            for primitive, component, dx, dy in SWITCH_PRIMITIVES:
+                schematic.add_instance(
+                    primitive_name(switch, primitive),
+                    Instance(component=component),
+                    Placement(x=switch_x + dx, y=switch_y(switch_index) + dy),
+                )
+            for source, source_port, target, target_port in SWITCH_INTERNAL_NETS:
+                schematic.add_net(
+                    Net(
+                        p1=f"{primitive_name(switch, source)},{source_port}",
+                        p2=f"{primitive_name(switch, target)},{target_port}",
+                        name=internal_net_name(switch, source, target),
+                    )
+                )
 
     for index in range(size):
         switch_index = index // 2
         target_port = SWITCH_TOP_INPUT_PORT if index % 2 == 0 else SWITCH_BOTTOM_INPUT_PORT
-        schematic.add_net(
-            Net(
-                p1=f"{input_name(index)},{IO_PORT}",
-                p2=f"{switch_name(0, switch_index)},{target_port}",
-                name=f"n_{input_name(index)}_to_s0_{switch_index}",
-            )
+        add_net(
+            f"{input_name(index)},{IO_PORT}",
+            f"{switch_name(0, switch_index)},{target_port}",
+            f"n_{input_name(index)}_to_s0_{switch_index}",
         )
 
     for edge in _iter_interstage_edges(size):
         if edge.target_depth > stage_count:
             continue
-        schematic.add_net(
-            Net(
-                p1=f"{edge.source_instance},{edge.source_port}",
-                p2=f"{edge.target_instance},{edge.target_port}",
-                name=edge.net_name,
-            )
+        add_net(
+            f"{edge.source_instance},{edge.source_port}",
+            f"{edge.target_instance},{edge.target_port}",
+            edge.net_name,
         )
 
     last_stage = stage_count - 1
     for index in range(size if keep_outputs else 0):
         switch_index = index // 2
         source_port = SWITCH_TOP_OUTPUT_PORT if index % 2 == 0 else SWITCH_BOTTOM_OUTPUT_PORT
-        schematic.add_net(
-            Net(
-                p1=f"{switch_name(last_stage, switch_index)},{source_port}",
-                p2=f"{output_name(index)},{IO_PORT}",
-                name=f"n_s{last_stage}_{switch_index}_to_{output_name(index)}",
-            )
+        add_net(
+            f"{switch_name(last_stage, switch_index)},{source_port}",
+            f"{output_name(index)},{IO_PORT}",
+            f"n_s{last_stage}_{switch_index}_to_{output_name(index)}",
         )
 
     return schematic
+
+
+def _expanded_endpoint(endpoint: str) -> str:
+    """`<switch>,<port>` -> `<switch>__<primitive>,<port>` for expanded switches."""
+    instance, port = endpoint.split(",")
+    if not instance.startswith("sw_s"):
+        return endpoint
+    primitive, primitive_port = SWITCH_PORT_MAP[port]
+    return f"{primitive_name(instance, primitive)},{primitive_port}"
