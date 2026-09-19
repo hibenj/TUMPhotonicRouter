@@ -47,7 +47,16 @@ LIDAR_DRV_OVERRIDES = {("multiportmmi_8x8", "lidar_p300"): "1"}
 
 
 def ok(m: dict | None) -> bool:
-    return m is not None and m.get("rc") == "0" and m.get("search_astar_loop_s") is not None
+    return (m is not None and m.get("rc") == "0" and m.get("routing_time_s") is not None
+            and m.get("total_length_with_structures_um", m.get("total_length_um")) is not None)
+
+
+def routing_time(m: dict) -> float:
+    """Routing time of ours: search with repairs, obstacle map, path-length
+    matching, route realization, plus contribution 2's structure construction
+    (`routing_time_s` from summarize_run.py, 2026-09-19); LiDAR's counterpart
+    is its `detailed routing takes` timer."""
+    return float(m["routing_time_s"])
 
 
 def astar(m: dict) -> float:
@@ -80,35 +89,36 @@ def build(results: Path) -> tuple[str, dict]:
             m = rows.get((b, c))
             if m is not None and m.get("rc") == "0" and m.get("routed_record_count"):
                 drv = LIDAR_DRV_OVERRIDES.get((b, c), str(m.get("drv_nets", "")))
-                return [str(m["wall_s"]), str(m.get("crossing_count", "")), drv]
+                t = m.get("lidar_detailed_routing_s")
+                return [fmt_t(float(t)) if t is not None else "--", str(m.get("crossing_count", "")), drv]
         return ["--"] * 3
 
     for b, label in BENCH:
         o = OURS_SOURCE.get(b, b)
         p = rows.get((o, "lidar-pure"))
         cells = [label] + lidar_cells(b)
-        cells += [fmt_t(astar(p)), f"{length_mm(p):.1f}", str(p.get("search_repairs", 0)), str(p.get("crossing_count", ""))] if ok(p) else ["--"] * 4
+        cells += [fmt_t(routing_time(p)), f"{length_mm(p):.1f}", str(p.get("search_repairs", 0)), str(p.get("crossing_count", ""))] if ok(p) else ["--"] * 4
         for key, c in (("c1", "contribution1"), ("c2", "contribution2")):
             m = rows.get((o, c))
             if not ok(m):
                 cells += ["--"] * 6
                 continue
-            dt = fmt_pct(astar(m) / astar(p)) if ok(p) else "--"
+            dt = fmt_pct(routing_time(m) / routing_time(p)) if ok(p) else "--"
             dl = fmt_pct(length_mm(m) / length_mm(p)) if ok(p) else "--"
-            cells += [fmt_t(astar(m)), dt, f"{length_mm(m):.1f}", dl, str(m.get("search_repairs", 0)), str(m.get("crossing_count", ""))]
+            cells += [fmt_t(routing_time(m)), dt, f"{length_mm(m):.1f}", dl, str(m.get("search_repairs", 0)), str(m.get("crossing_count", ""))]
         lines.append("            " + " & ".join(cells) + " \\\\")
         if b == "benes_128x128":
             lines.append("            \\midrule")
         c1 = rows.get((o, "contribution1")); c2 = rows.get((o, "contribution2"))
         if ok(p) and ok(c1) and ok(c2) and b not in MEAN_EXCLUDED:
-            logs["c1_t"].append(math.log(astar(c1) / astar(p))); logs["c1_l"].append(math.log(length_mm(c1) / length_mm(p)))
-            logs["c2_t"].append(math.log(astar(c2) / astar(p))); logs["c2_l"].append(math.log(length_mm(c2) / length_mm(p)))
+            logs["c1_t"].append(math.log(routing_time(c1) / routing_time(p))); logs["c1_l"].append(math.log(length_mm(c1) / length_mm(p)))
+            logs["c2_t"].append(math.log(routing_time(c2) / routing_time(p))); logs["c2_l"].append(math.log(length_mm(c2) / length_mm(p)))
     gm = {k: math.exp(sum(v) / len(v)) for k, v in logs.items()}
     n = len(logs["c1_t"])
     mean_row = ("            \\emph{Geometric mean} & & & & & & & & & " + fmt_pct(gm["c1_t"]) + " & & " + fmt_pct(gm["c1_l"])
                 + " & & & & " + fmt_pct(gm["c2_t"]) + " & & " + fmt_pct(gm["c2_l"]) + " & & \\\\")
     table = r"""\begin{table*}[!t]
-    \caption{Routing results of public LiDAR at the matched crossing price (wall time, realized crossings, nets with design-rule violations; \SI{12}{\hour} limit), of the LiDAR-style baseline (lidar-pure), and of the two crossing-aware contributions, one run per cell on the same frozen engine; the Benes rows route the netlist LiDAR routes (every switch expanded into its two MMIs, two heater arms and the four internal connections). $t$: A* search time; $L$: total waveguide length (Contribution~2 including the placed crossing structures); Rep.: repairs; Cross.: realized crossings. $\Delta t$ and $\Delta L$ are relative to lidar-pure (negative is better); the last row is the geometric mean over the %d benchmarks from $8\times8$ upwards that all three configurations complete. ``--'': not run, not completed within the time limit, or (LiDAR, ADEPT $16\times16$) aborted by a LiDAR post-processing error.}
+    \caption{Routing results of public LiDAR at the matched crossing price (realized crossings, nets with design-rule violations; \SI{12}{\hour} limit), of the LiDAR-style baseline (lidar-pure), and of the two crossing-aware contributions, one run per cell on the same frozen engine; the Benes rows route the netlist LiDAR routes (every switch expanded into its two MMIs, two heater arms and the four internal connections). $t$: routing time, for both engines the detailed-routing phase (search with rip-up and repair, geometry realization, crossing components; for Contribution~2 including the construction of the crossing structures), excluding benchmark loading, verification and GDS export; $L$: total waveguide length (Contribution~2 including the placed crossing structures); Rep.: repairs; Cross.: realized crossings. $\Delta t$ and $\Delta L$ are relative to lidar-pure (negative is better); the last row is the geometric mean over the %d benchmarks from $8\times8$ upwards that all three configurations complete. ``--'': not run, not completed within the time limit, or (LiDAR, ADEPT $16\times16$) aborted by a LiDAR post-processing error.}
     \label{tab:routing-results}
     \centering
     \scriptsize
@@ -119,7 +129,7 @@ def build(results: Path) -> tuple[str, dict]:
             \toprule
             & \multicolumn{3}{c}{\textsc{LiDAR}~\cite{zhou2025lidar}} & \multicolumn{4}{c}{\textsc{lidar-pure}} & \multicolumn{6}{c}{\textsc{Contribution 1}} & \multicolumn{6}{c}{\textsc{Contribution 2}} \\
             \cmidrule(lr){2-4} \cmidrule(lr){5-8} \cmidrule(lr){9-14} \cmidrule(l){15-20}
-            Benchmark & $t_\mathrm{wall}$ [s] & Cross. & DRV & $t$ [s] & $L$ [mm] & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. \\
+            Benchmark & $t$ [s] & Cross. & DRV & $t$ [s] & $L$ [mm] & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. \\
             \midrule
 %s
             \midrule

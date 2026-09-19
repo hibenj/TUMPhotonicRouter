@@ -74,6 +74,18 @@ _LOG_PATTERNS = {
     "preplaced_grid_count": r"Grids: (\d+) placed",
     "preplaced_crossing_components": r"Grids: \d+ placed, (\d+) crossing component",
     "preplaced_build_s": r"Grids: .*?\(([0-9.]+)s\)",
+    # routing time of ours (owner rule 2026-09-19: both engines report the same
+    # phase): `Optical routing stage time (net routing + PLM + realization)` =
+    # obstacle map + search with repairs + path-length matching + route
+    # realization; contribution 2 adds the structure construction
+    # (`preplaced_build_s`) in `routing_time_s` below. Excluded on both sides:
+    # reading the benchmark, LiDAR's bitmap / our layout translation, the
+    # verifier and the GDS export.
+    "routing_stage_s": r"Optical routing stage time \(net routing \+ PLM \+ realization\): ([0-9.]+) s",
+    # original LiDAR: `detailed routing takes 101.85 seconds` = DrGridRoute.solve()
+    # (net order, DRC init, routing loop with rip-ups, post-processing with
+    # Euler alignment and crossing components, evaluation)
+    "lidar_detailed_routing_s": r"detailed routing takes ([0-9.]+) seconds",
 }
 
 
@@ -99,6 +111,8 @@ def log_metrics(log_path: Path) -> dict:
             out[key] = max(int(v) for v in values)
         else:
             out[key] = sum(int(v) for v in values)
+    if "routing_stage_s" in out:
+        out["routing_time_s"] = round(out["routing_stage_s"] + out.get("preplaced_build_s", 0.0), 3)
     braids = len(re.findall(r"native_repair_braid_result .*?keep=true", text))
     if braids:
         out["braid_repairs_kept"] = braids
