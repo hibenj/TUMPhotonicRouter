@@ -86,56 +86,72 @@ def build(results: Path) -> tuple[str, dict]:
     rows = {}
     for b, c, run in latest_runs(results):
         if c in ("lidar-pure", "contribution1", "contribution2", "lidar_p300", "lidar_p300_12h"):
-            rows[(b, c)] = read(run)
+            rows[(b, c)] = read(run) | {"archive": str(run)}
     lines: list[str] = []
     logs: dict[str, list[float]] = {"c1_t": [], "c1_l": [], "c2_t": [], "c2_l": []}
-    def lidar_cells(b: str) -> list[str]:
-        # matched-price LiDAR: the 12 h archive when it completed, else the 4 h one; "--" for timeout / crash / not run
+    sources: dict[str, dict] = {}
+
+    def lidar_row(b: str) -> dict | None:
+        # matched-price LiDAR: the 12 h archive when it completed, else the 4 h one
         for c in ("lidar_p300_12h", "lidar_p300"):
             m = rows.get((b, c))
-            if m is not None and m.get("rc") == "0" and m.get("routed_record_count"):
-                drv = LIDAR_DRV_OVERRIDES.get((b, c), str(m.get("drv_nets", "")))
-                t = m.get("lidar_routing_loop_s")
-                return [fmt_t(float(t)) if t is not None else "--", str(m.get("crossing_count", "")), drv]
-        return ["--"] * 3
+            if m is not None and m.get("rc") == "0" and m.get("routed_record_count") and m.get("lidar_routing_loop_s") is not None:
+                return m | {"config": c}
+        return None
+
+    def source(m: dict | None, config: str) -> dict:
+        if m is None:
+            return {"archive": None}
+        keys = ("routing_loop_s", "lidar_routing_loop_s", "preplaced_build_s", "gds_length_um", "crossing_count", "drv_nets")
+        return {"archive": m.get("archive"), "config": config} | {k: m.get(k) for k in keys if m.get(k) is not None}
 
     for b, label in BENCH:
         o = OURS_SOURCE.get(b, b)
-        p = rows.get((o, "lidar-pure"))
-        cells = [label] + lidar_cells(b)
-        cells += [fmt_t(routing_time(p)), f"{length_mm(p):.1f}", str(p.get("search_repairs", 0)), str(p.get("crossing_count", ""))] if ok(p) else ["--"] * 4
-        for key, c in (("c1", "contribution1"), ("c2", "contribution2")):
-            m = rows.get((o, c))
+        lidar = lidar_row(b)
+        p = rows.get((o, "lidar-pure")); c1 = rows.get((o, "contribution1")); c2 = rows.get((o, "contribution2"))
+        sources[b] = {"ours_benchmark": o, "lidar": source(lidar, lidar["config"] if lidar else ""),
+                      "baseline": source(p, "lidar-pure"), "contribution1": source(c1, "contribution1"),
+                      "contribution2": source(c2, "contribution2")}
+        cells = [label]
+        if lidar is not None:
+            drv = LIDAR_DRV_OVERRIDES.get((b, lidar["config"]), str(lidar.get("drv_nets", "")))
+            cells += [fmt_t(float(lidar["lidar_routing_loop_s"])), str(lidar.get("crossing_count", "")), drv]
+        else:
+            cells += ["--"] * 3
+        cells += [fmt_t(routing_time(p)), f"{length_mm(p):.1f}", str(p.get("crossing_count", ""))] if ok(p) else ["--"] * 3
+        for key, m in (("c1", c1), ("c2", c2)):
             if not ok(m):
-                cells += ["--"] * 6
+                cells += ["--"] * (5 if key == "c1" else 6)
                 continue
             dt = fmt_pct(routing_time(m) / routing_time(p)) if ok(p) else "--"
             dl = fmt_pct(length_mm(m) / length_mm(p)) if ok(p) else "--"
-            cells += [fmt_t(routing_time(m)), dt, f"{length_mm(m):.1f}", dl, str(m.get("search_repairs", 0)), str(m.get("crossing_count", ""))]
+            cells += [fmt_t(routing_time(m))]
+            if key == "c2":
+                cells += [fmt_t(float(m.get("preplaced_build_s", 0.0)))]
+            cells += [dt, f"{length_mm(m):.1f}", dl, str(m.get("crossing_count", ""))]
         lines.append("            " + " & ".join(cells) + " \\\\")
         if b == "benes_128x128":
             lines.append("            \\midrule")
-        c1 = rows.get((o, "contribution1")); c2 = rows.get((o, "contribution2"))
         if ok(p) and ok(c1) and ok(c2) and b not in MEAN_EXCLUDED:
             logs["c1_t"].append(math.log(routing_time(c1) / routing_time(p))); logs["c1_l"].append(math.log(length_mm(c1) / length_mm(p)))
             logs["c2_t"].append(math.log(routing_time(c2) / routing_time(p))); logs["c2_l"].append(math.log(length_mm(c2) / length_mm(p)))
     gm = {k: math.exp(sum(v) / len(v)) for k, v in logs.items()}
     n = len(logs["c1_t"])
-    mean_row = ("            \\emph{Geometric mean} & & & & & & & & & " + fmt_pct(gm["c1_t"]) + " & & " + fmt_pct(gm["c1_l"])
-                + " & & & & " + fmt_pct(gm["c2_t"]) + " & & " + fmt_pct(gm["c2_l"]) + " & & \\\\")
+    mean_row = ("            \\emph{Geometric mean} & & & & & & & & " + fmt_pct(gm["c1_t"]) + " & & " + fmt_pct(gm["c1_l"])
+                + " & & & & " + fmt_pct(gm["c2_t"]) + " & & " + fmt_pct(gm["c2_l"]) + " & \\\\")
     table = r"""\begin{table*}[!t]
-    \caption{Routing results of public LiDAR at the matched crossing price (realized crossings, nets with design-rule violations; \SI{12}{\hour} limit), of the LiDAR-style baseline (lidar-pure), and of the two crossing-aware contributions, one run per cell on the same frozen engine; the Benes rows route the netlist LiDAR routes (every switch expanded into its two MMIs, two heater arms and the four internal connections). $t$: routing time, for both engines the routing loop alone (obstacle map, search with rip-up and repair; for Contribution~2 including the construction of the crossing structures), excluding benchmark loading, geometry generation, verification and GDS export; $L$: total waveguide length measured on the routed layout (routed waveguides and crossing elements, for Contribution~2 including the pre-placed crossing structures); Rep.: repairs; Cross.: realized crossings. $\Delta t$ and $\Delta L$ are relative to lidar-pure (negative is better); the last row is the geometric mean over the %d benchmarks from $8\times8$ upwards that all three configurations complete. ``--'': not run, not completed within the time limit, or (LiDAR, ADEPT $16\times16$) aborted by a LiDAR post-processing error.}
+    \caption{Routing results for public LiDAR, our baseline, and both contributions. $t$ is routing time, $t_\mathrm{build}$ is the structure-construction portion included in Contribution~2's $t$, and $L$ is the total waveguide length measured on the routed layout (routed waveguides and crossing elements, including placed structures). Cross.\ counts realized crossings, and DRV counts nets with DRVs. $\Delta$ values are relative to the baseline.}
     \label{tab:routing-results}
     \centering
     \scriptsize
     \setlength{\tabcolsep}{1.5pt}
     \renewcommand{\arraystretch}{0.9}
     \begin{adjustbox}{max width=\textwidth}
-        \begin{tabular}{@{}lrrrrrrrrrrrrrrrrrrr@{}}
+        \begin{tabular}{@{}lrrrrrrrrrrrrrrrrr@{}}
             \toprule
-            & \multicolumn{3}{c}{\textsc{LiDAR}~\cite{zhou2025lidar}} & \multicolumn{4}{c}{\textsc{lidar-pure}} & \multicolumn{6}{c}{\textsc{Contribution 1}} & \multicolumn{6}{c}{\textsc{Contribution 2}} \\
-            \cmidrule(lr){2-4} \cmidrule(lr){5-8} \cmidrule(lr){9-14} \cmidrule(l){15-20}
-            Benchmark & $t$ [s] & Cross. & DRV & $t$ [s] & $L$ [mm] & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Rep. & Cross. \\
+            & \multicolumn{3}{c}{\textsc{LiDAR}~\cite{zhou2025lidar}} & \multicolumn{3}{c}{\textsc{Baseline}} & \multicolumn{5}{c}{\textsc{Contribution 1}} & \multicolumn{6}{c}{\textsc{Contribution 2}} \\\\
+            \cmidrule(lr){2-4} \cmidrule(lr){5-7} \cmidrule(lr){8-12} \cmidrule(l){13-18}
+            Benchmark & $t$ [s] & Cross. & DRV & $t$ [s] & $L$ [mm] & Cross. & $t$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Cross. & $t$ [s] & $t_\mathrm{build}$ [s] & $\Delta t$ & $L$ [mm] & $\Delta L$ & Cross. \\\\
             \midrule
 %s
             \midrule
@@ -143,8 +159,14 @@ def build(results: Path) -> tuple[str, dict]:
             \bottomrule
         \end{tabular}
     \end{adjustbox}
-\end{table*}""" % (n, "\n".join(lines), mean_row)
-    return table, {"n": n, **gm}
+\end{table*}""" % ("\n".join(lines), mean_row)
+    meta = {
+        "definition": "t = routing_loop_s (net routing phase: obstacle map + search with rip-up and repair; contribution 2 plus preplaced_build_s, shown as t_build); LiDAR = lidar_routing_loop_s (Start Detailed Routing -> DrGridRoute succeed/fail); L = gds_length_um (routed polygons + crossing* instances on the WG layer of the routed GDS, area / 0.5 um)",
+        "benes_rows": "benes_<n>x<n>_flat archives (switches expanded into their primitives plus the internal nets, the netlist LiDAR routes) on the frozen engine 8ddde83",
+        "means": {"n": n, **gm},
+        "sources": sources,
+    }
+    return table, meta
 
 
 def main() -> int:
@@ -155,8 +177,10 @@ def main() -> int:
         start = s.index("\\begin{table*}[!t]"); end = s.index("\\end{table*}", start) + len("\\end{table*}")
         assert "tab:routing-results" in s[start:end]
         tex.write_text(s[:start] + table + s[end:])
+        (tex.parent / "EXPERIMENTS_TABLE_SOURCES.json").write_text(json.dumps(gm, indent=2) + "\n")
     print(table)
-    print("%% geometric means over %d benchmarks: C1 t %.3f L %.4f | C2 t %.4f L %.4f" % (gm["n"], gm["c1_t"], gm["c1_l"], gm["c2_t"], gm["c2_l"]))
+    m = gm["means"]
+    print("%% geometric means over %d benchmarks: C1 t %.3f L %.4f | C2 t %.4f L %.4f" % (m["n"], m["c1_t"], m["c1_l"], m["c2_t"], m["c2_l"]))
     return 0
 
 
