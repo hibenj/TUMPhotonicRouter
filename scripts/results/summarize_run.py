@@ -82,11 +82,33 @@ _LOG_PATTERNS = {
     # reading the benchmark, LiDAR's bitmap / our layout translation, the
     # verifier and the GDS export.
     "routing_stage_s": r"Optical routing stage time \(net routing \+ PLM \+ realization\): ([0-9.]+) s",
+    # the routing loop alone (obstacle map + search with repairs, no path-length
+    # matching / realization): `net routing phase (obstacles + A* + repairs): 21.4549 s`
+    "net_routing_phase_s": r"net routing phase \(obstacles \+ A\* \+ repairs\): ([0-9.]+) s",
     # original LiDAR: `detailed routing takes 101.85 seconds` = DrGridRoute.solve()
     # (net order, DRC init, routing loop with rip-ups, post-processing with
     # Euler alignment and crossing components, evaluation)
     "lidar_detailed_routing_s": r"detailed routing takes ([0-9.]+) seconds",
 }
+
+
+def lidar_routing_loop_seconds(text: str) -> float | None:
+    """Original LiDAR's routing loop from its log timestamps: `Start Detailed
+    Routing` (drmanager.py) to `DrGridRoute succeed` / `DrGridRoute fail`
+    (drgridroute.py, after the last rip-up iteration, before post-processing
+    and evaluation, which take < 0.5 % of `detailed routing takes`). None for
+    runs that never reached the end line (timeout)."""
+    import datetime
+    import re
+
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    stamp = r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)"
+    start = re.search(stamp + r" - drmanager\.py\[line:\d+\] - INFO: Start Detailed Routing", clean)
+    end = re.search(stamp + r" - drgridroute\.py\[line:\d+\] - (?:INFO|WARNING): DrGridRoute (?:succeed|fail)", clean)
+    if start is None or end is None:
+        return None
+    parse = lambda v: datetime.datetime.strptime(v, "%Y-%m-%d %H:%M:%S,%f")  # noqa: E731
+    return round((parse(end.group(1)) - parse(start.group(1))).total_seconds(), 3)
 
 
 def log_metrics(log_path: Path) -> dict:
@@ -113,6 +135,14 @@ def log_metrics(log_path: Path) -> dict:
             out[key] = sum(int(v) for v in values)
     if "routing_stage_s" in out:
         out["routing_time_s"] = round(out["routing_stage_s"] + out.get("preplaced_build_s", 0.0), 3)
+    if "net_routing_phase_s" in out:
+        # the paper's routing time (owner 2026-09-19: the actual routing time on
+        # both sides): the routing loop, for contribution 2 with the structure
+        # construction that replaces part of the search
+        out["routing_loop_s"] = round(out["net_routing_phase_s"] + out.get("preplaced_build_s", 0.0), 3)
+    loop = lidar_routing_loop_seconds(text)
+    if loop is not None:
+        out["lidar_routing_loop_s"] = loop
     braids = len(re.findall(r"native_repair_braid_result .*?keep=true", text))
     if braids:
         out["braid_repairs_kept"] = braids

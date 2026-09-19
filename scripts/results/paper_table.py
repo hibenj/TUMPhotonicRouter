@@ -47,16 +47,19 @@ LIDAR_DRV_OVERRIDES = {("multiportmmi_8x8", "lidar_p300"): "1"}
 
 
 def ok(m: dict | None) -> bool:
-    return (m is not None and m.get("rc") == "0" and m.get("routing_time_s") is not None
+    return (m is not None and m.get("rc") == "0" and m.get("routing_loop_s") is not None
             and m.get("total_length_with_structures_um", m.get("total_length_um")) is not None)
 
 
 def routing_time(m: dict) -> float:
-    """Routing time of ours: search with repairs, obstacle map, path-length
-    matching, route realization, plus contribution 2's structure construction
-    (`routing_time_s` from summarize_run.py, 2026-09-19); LiDAR's counterpart
-    is its `detailed routing takes` timer."""
-    return float(m["routing_time_s"])
+    """Routing time of ours (owner rule 2026-09-19: the actual routing time on
+    both sides): the routing loop = obstacle map + search with rip-up and
+    repairs, plus contribution 2's structure construction (`routing_loop_s`
+    from summarize_run.py). LiDAR's counterpart is `lidar_routing_loop_s`,
+    its loop from `Start Detailed Routing` to `DrGridRoute succeed/fail`;
+    the `routing_time_s` / `lidar_detailed_routing_s` pair adds geometry
+    realization and evaluation on both sides (< 1 %)."""
+    return float(m["routing_loop_s"])
 
 
 def astar(m: dict) -> float:
@@ -89,7 +92,7 @@ def build(results: Path) -> tuple[str, dict]:
             m = rows.get((b, c))
             if m is not None and m.get("rc") == "0" and m.get("routed_record_count"):
                 drv = LIDAR_DRV_OVERRIDES.get((b, c), str(m.get("drv_nets", "")))
-                t = m.get("lidar_detailed_routing_s")
+                t = m.get("lidar_routing_loop_s")
                 return [fmt_t(float(t)) if t is not None else "--", str(m.get("crossing_count", "")), drv]
         return ["--"] * 3
 
@@ -118,7 +121,7 @@ def build(results: Path) -> tuple[str, dict]:
     mean_row = ("            \\emph{Geometric mean} & & & & & & & & & " + fmt_pct(gm["c1_t"]) + " & & " + fmt_pct(gm["c1_l"])
                 + " & & & & " + fmt_pct(gm["c2_t"]) + " & & " + fmt_pct(gm["c2_l"]) + " & & \\\\")
     table = r"""\begin{table*}[!t]
-    \caption{Routing results of public LiDAR at the matched crossing price (realized crossings, nets with design-rule violations; \SI{12}{\hour} limit), of the LiDAR-style baseline (lidar-pure), and of the two crossing-aware contributions, one run per cell on the same frozen engine; the Benes rows route the netlist LiDAR routes (every switch expanded into its two MMIs, two heater arms and the four internal connections). $t$: routing time, for both engines the detailed-routing phase (search with rip-up and repair, geometry realization, crossing components; for Contribution~2 including the construction of the crossing structures), excluding benchmark loading, verification and GDS export; $L$: total waveguide length (Contribution~2 including the placed crossing structures); Rep.: repairs; Cross.: realized crossings. $\Delta t$ and $\Delta L$ are relative to lidar-pure (negative is better); the last row is the geometric mean over the %d benchmarks from $8\times8$ upwards that all three configurations complete. ``--'': not run, not completed within the time limit, or (LiDAR, ADEPT $16\times16$) aborted by a LiDAR post-processing error.}
+    \caption{Routing results of public LiDAR at the matched crossing price (realized crossings, nets with design-rule violations; \SI{12}{\hour} limit), of the LiDAR-style baseline (lidar-pure), and of the two crossing-aware contributions, one run per cell on the same frozen engine; the Benes rows route the netlist LiDAR routes (every switch expanded into its two MMIs, two heater arms and the four internal connections). $t$: routing time, for both engines the routing loop alone (obstacle map, search with rip-up and repair; for Contribution~2 including the construction of the crossing structures), excluding benchmark loading, geometry generation, verification and GDS export; $L$: total waveguide length (Contribution~2 including the placed crossing structures); Rep.: repairs; Cross.: realized crossings. $\Delta t$ and $\Delta L$ are relative to lidar-pure (negative is better); the last row is the geometric mean over the %d benchmarks from $8\times8$ upwards that all three configurations complete. ``--'': not run, not completed within the time limit, or (LiDAR, ADEPT $16\times16$) aborted by a LiDAR post-processing error.}
     \label{tab:routing-results}
     \centering
     \scriptsize
