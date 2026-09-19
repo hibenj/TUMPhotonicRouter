@@ -51,8 +51,60 @@ def summarize(archive: Path) -> dict:
             out["max_crossings_per_net"] = max(crossings_per_net.values())
             out["nets_with_crossings"] = len(crossings_per_net)
     out.update(log_metrics(archive / "run.log"))
+    out.update(gds_lengths(archive))
     (archive / "metrics.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
     return out
+
+
+WAVEGUIDE_LAYER = "1/0"  # the generic PDK's WG layer
+WAVEGUIDE_WIDTH_UM = 0.5
+CROSSING_CELL_PREFIX = "crossing"  # crossing components (inline or pre-placed tiles, corners, links)
+
+
+def gds_lengths(archive: Path) -> dict:
+    """Waveguide length measured on the routed layout (owner rule 2026-09-19:
+    one length measure for every configuration). Routed waveguides are the
+    polygons drawn directly into the top cell; crossing elements are the
+    `crossing*` instances (the inline crossing components of the lidar modes,
+    the tiles, corners and static links of contribution 2). Length = polygon
+    area on the WG layer / the 0.5 um strip width, so wider crossing bodies
+    count a little long, identically in every configuration. Benchmark
+    components and static fan-out stubs are not counted."""
+    gds = next(archive.glob("routed_*.gds"), None)
+    if gds is None:
+        return {}
+    try:
+        import klayout.db as kdb
+    except ImportError:
+        return {}
+    layout = kdb.Layout()
+    layout.read(str(gds))
+    dbu = layout.dbu
+    top = next(cell for cell in layout.each_cell() if cell.is_top())
+    wg = next(
+        (index for index in layout.layer_indexes() if str(layout.get_info(index)) == WAVEGUIDE_LAYER),
+        None,
+    )
+    if wg is None:
+        return {}
+    to_um = lambda area_dbu: area_dbu * dbu * dbu / WAVEGUIDE_WIDTH_UM  # noqa: E731
+    routed = to_um(sum(shape.polygon.area() for shape in top.shapes(wg).each()))
+    cell_area: dict[int, float] = {}
+    crossing = 0.0
+    for inst in top.each_inst():
+        cell = layout.cell(inst.cell_index)
+        if not cell.name.startswith(CROSSING_CELL_PREFIX):
+            continue
+        if inst.cell_index not in cell_area:
+            cell_area[inst.cell_index] = sum(
+                it.shape().polygon.area() for it in cell.begin_shapes_rec(wg)
+            )
+        crossing += to_um(cell_area[inst.cell_index])
+    return {
+        "gds_routed_length_um": round(routed, 3),
+        "gds_crossing_length_um": round(crossing, 3),
+        "gds_length_um": round(routed + crossing, 3),
+    }
 
 
 _LOG_PATTERNS = {
