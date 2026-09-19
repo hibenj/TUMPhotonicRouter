@@ -31,6 +31,11 @@ BENCH = [
     ("multiportmmi_32x32", "ADEPT $32\\times32$"), ("multiportmmi_64x64", "ADEPT $64\\times64$"),
     ("multiportmmi_128x128", "ADEPT $128\\times128$"),
 ]
+# Owner decision 2026-09-19: the Benes comparison routes the netlist LiDAR routes
+# (switches expanded into their primitives plus the switch-internal nets,
+# benchmarks/benes_<n>x<n>_flat.py); our cells of a Benes row come from the
+# `_flat` archives, LiDAR's from the benchmark it was given.
+OURS_SOURCE = {b: b + "_flat" for b, _ in BENCH if b.startswith("benes_")}
 MEAN_EXCLUDED = {"benes_4x4"}  # 0.02 s A* times give meaningless ratios
 # Manual DRV corrections for LiDAR rows (owner inspection in KLayout, 2026-09-18):
 # LiDAR's own DRV counter does not check the die boundary. ADEPT 8x8 at the
@@ -79,11 +84,12 @@ def build(results: Path) -> tuple[str, dict]:
         return ["--"] * 3
 
     for b, label in BENCH:
-        p = rows.get((b, "lidar-pure"))
+        o = OURS_SOURCE.get(b, b)
+        p = rows.get((o, "lidar-pure"))
         cells = [label] + lidar_cells(b)
         cells += [fmt_t(astar(p)), f"{length_mm(p):.1f}", str(p.get("search_repairs", 0)), str(p.get("crossing_count", ""))] if ok(p) else ["--"] * 4
         for key, c in (("c1", "contribution1"), ("c2", "contribution2")):
-            m = rows.get((b, c))
+            m = rows.get((o, c))
             if not ok(m):
                 cells += ["--"] * 6
                 continue
@@ -93,7 +99,7 @@ def build(results: Path) -> tuple[str, dict]:
         lines.append("            " + " & ".join(cells) + " \\\\")
         if b == "benes_128x128":
             lines.append("            \\midrule")
-        c1 = rows.get((b, "contribution1")); c2 = rows.get((b, "contribution2"))
+        c1 = rows.get((o, "contribution1")); c2 = rows.get((o, "contribution2"))
         if ok(p) and ok(c1) and ok(c2) and b not in MEAN_EXCLUDED:
             logs["c1_t"].append(math.log(astar(c1) / astar(p))); logs["c1_l"].append(math.log(length_mm(c1) / length_mm(p)))
             logs["c2_t"].append(math.log(astar(c2) / astar(p))); logs["c2_l"].append(math.log(length_mm(c2) / length_mm(p)))
@@ -102,7 +108,7 @@ def build(results: Path) -> tuple[str, dict]:
     mean_row = ("            \\emph{Geometric mean} & & & & & & & & & " + fmt_pct(gm["c1_t"]) + " & & " + fmt_pct(gm["c1_l"])
                 + " & & & & " + fmt_pct(gm["c2_t"]) + " & & " + fmt_pct(gm["c2_l"]) + " & & \\\\")
     table = r"""\begin{table*}[!t]
-    \caption{Routing results of public LiDAR at the matched crossing price (wall time, realized crossings, nets with design-rule violations; \SI{12}{\hour} limit), of the LiDAR-style baseline (lidar-pure), and of the two crossing-aware contributions, one run per cell on the same frozen engine. $t$: A* search time; $L$: total waveguide length (Contribution~2 including the placed crossing structures); Rep.: repairs; Cross.: realized crossings. $\Delta t$ and $\Delta L$ are relative to lidar-pure (negative is better); the last row is the geometric mean over the %d benchmarks from $8\times8$ upwards that all three configurations complete. ``--'': not run, not completed within the time limit, or (LiDAR, ADEPT $16\times16$) aborted by a LiDAR post-processing error.}
+    \caption{Routing results of public LiDAR at the matched crossing price (wall time, realized crossings, nets with design-rule violations; \SI{12}{\hour} limit), of the LiDAR-style baseline (lidar-pure), and of the two crossing-aware contributions, one run per cell on the same frozen engine; the Benes rows route the netlist LiDAR routes (every switch expanded into its two MMIs, two heater arms and the four internal connections). $t$: A* search time; $L$: total waveguide length (Contribution~2 including the placed crossing structures); Rep.: repairs; Cross.: realized crossings. $\Delta t$ and $\Delta L$ are relative to lidar-pure (negative is better); the last row is the geometric mean over the %d benchmarks from $8\times8$ upwards that all three configurations complete. ``--'': not run, not completed within the time limit, or (LiDAR, ADEPT $16\times16$) aborted by a LiDAR post-processing error.}
     \label{tab:routing-results}
     \centering
     \scriptsize
