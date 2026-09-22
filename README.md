@@ -156,7 +156,7 @@ python3 routing_flow.py mmi_heater_8x4 \
 Enable heater electrical routing:
 
 ```bash
-python3 routing_flow.py heater_s \
+python3 routing_flow.py heater_s_mod \
   --electrical-routing \
   --include-heater-obstacles
 ```

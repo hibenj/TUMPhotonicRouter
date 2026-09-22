@@ -1,3 +1,8 @@
+"""NOT ROUTABLE OPTICALLY: this toy layout has a placement clearance shortage at an
+MMI input approach (root-caused 2026-08-18); the optical router cannot complete it.
+Kept only as a fixture for schematic-level and electrical tests until Milestone 6 of
+`.agent/execplans/2026-09-22-modular-readable-router-restructure.md` replaces it.
+"""
 """TOY benchmark: Simple 2-component schematic for testing routing flow."""
 
 from gdsfactory.gpdk import get_generic_pdk
