@@ -33,6 +33,7 @@ from translation.electrical import ElectricalRoutingConfig, ElectricalRoutingRes
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import RipupRerouteConfig
 from photonic_router.config import RoutingConfig
+from photonic_router.config_loading import build_config
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from routing_flow_config import (
     DebugSvgSelector,
@@ -679,13 +680,19 @@ def main(argv: list[str] | None = None) -> Component:
         stable_flags,
         preplaced_crossing_grids=_requests_preplaced_crossing_grids(user_argv),
     )
-    for key, value in stable_env.items():
-        os.environ.setdefault(key, value)
+    # The benchmark's STABLE_ROUTING_ENV block and the process environment go
+    # through the overlay table into one configuration object (environment
+    # wins, as os.environ.setdefault did before); nothing is written to the
+    # environment any more.
+    config = build_config(stable_env)
     args = _build_arg_parser().parse_args(stable_flags + user_argv)
     if stable_flags:
         print(f"      - Benchmark stable defaults applied: {' '.join(stable_flags)}")
+    if stable_env:
+        print(f"      - Benchmark stable environment applied: {' '.join(sorted(stable_env))}")
     return run_routing_flow(
         args.benchmark,
+        config=config,
         debug_svgs=args.debug_svgs,
         debug_timing=args.debug_timing,
         debug_stop_after_route_index=args.debug_stop_after_route,
