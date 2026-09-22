@@ -10,7 +10,9 @@
 #   .venv/bin/python scripts/results/compare_date2027.py results_date2027 <EXPERIMENTS_TABLE_SOURCES.json>
 # compares crossings, GDS lengths and verifier errors cell by cell (times are
 # reported, not compared). Stop between rows with: touch results_date2027/STOP
-# Usage: reproduce_date2027.sh [all|benes|mesh|c2-mesh|ladder]   (default all)
+# Usage: reproduce_date2027.sh [all|benes|mesh|ladder|benes-large|mesh-base|c2-mesh]   (default all)
+#   ladder = Benes 4x4..32x32 x 3 configurations; benes-large = Benes 64/128 contribution 2;
+#   mesh-base = ADEPT 8x8..64x64 baseline + contribution 1; c2-mesh = ADEPT 8x8..128x128 contribution 2
 set -u
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$R" || exit 1
 export RESULTS_ROOT="${RESULTS_ROOT:-$R/results_date2027}"; mkdir -p "$RESULTS_ROOT"
@@ -31,12 +33,12 @@ case "$what" in
     for b in $BENES_LADDER; do ours contribution1 $b 3600 --crossing-mode lidar-guided; done
     for b in $BENES_LADDER; do ours contribution2 $b 3600 --preplaced-crossing-grids true --verbose-routes; done
     ;;&
-  all|benes)
+  all|benes|benes-large)
     ours contribution2 benes_64x64_flat 3600 --preplaced-crossing-grids true --verbose-routes
     # benes_128x128_flat: routing loop 925 s, but the verifier alone took 4449 s (20480 routes)
     ours contribution2 benes_128x128_flat 10800 --preplaced-crossing-grids true --verbose-routes
     ;;&
-  all|mesh)
+  all|mesh|mesh-base)
     for b in $MESH_LADDER; do ours lidar-pure $b 3600 --crossing-mode lidar-pure; done
     for b in $MESH_LADDER; do ours contribution1 $b 3600 --crossing-mode lidar-guided; done
     ;;&
