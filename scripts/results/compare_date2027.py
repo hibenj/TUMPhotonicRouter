@@ -43,6 +43,10 @@ def main() -> int:
                 bad += 1
                 continue
             m = read(run)
+            if m.get("rc") == "?":  # run.txt has no rc line yet: still running or killed
+                print(f"| {ours_bench} | {config} | {cell.get('crossing_count')} / -- | {cell.get('gds_length_um')} / -- | -- | -- | RUNNING ({run.name}) |")
+                bad += 1
+                continue
             problems = []
             if m.get("rc") != "0":
                 problems.append(f"rc={m.get('rc')}")

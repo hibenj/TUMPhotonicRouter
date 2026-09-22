@@ -69,11 +69,21 @@ on the machine. `paper_table.py results_date2027 <main.tex>` would regenerate
 the table from a full reproduction (the LiDAR columns then need the LiDAR
 archives copied or linked into that root).
 
-## Verification
+## Verification (2026-09-22, commit bb317c9, `results_date2027/`)
 
-Pending. The plan: Benes ladder in all three configurations against the
-frozen archives (expected exact, same engine), then the five mesh
-contribution 2 rows against their archives. Those were produced with
-Milestone 9 in the kernel; if crossings or lengths differ without it,
-Milestone 9 goes behind the contribution 2 switch on this branch instead
-of being absent.
+`reproduce_date2027.sh ladder` then `c2-mesh`, sequential, 13:52-14:49:
+17 of the 27 cells of ours, every one exact on crossing count and GDS
+length (to the archived 0.001 um), zero verifier errors, routing-loop time
+ratio 0.92-1.13 to the archives:
+
+- Benes 4x4 .. 32x32 in all three configurations (12 cells): same engine
+  as the frozen archives, reproduced exactly.
+- ADEPT 8x8 .. 128x128 with contribution 2 (5 cells): archived with
+  Milestone 9 in the kernel, reproduced exactly without it. ADEPT 128x128:
+  311 crossings, 5573562.981 um, 0 errors, loop 520 s (archive 555 s).
+  So Milestone 9 never influenced the paper's rows; it stays absent.
+
+Not yet rerun (same engine as the archives, no open question): ADEPT 8x8
+.. 64x64 baseline and contribution 1 (8 cells, about 1.5 h, the 64x64
+baseline alone 55 min) and Benes 64x64 / 128x128 with contribution 2
+(2 cells, about 2.5 h, mostly the verifier on 20480 routes).
