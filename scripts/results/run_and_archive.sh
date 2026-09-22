@@ -13,8 +13,11 @@
 set -u
 config="$1"; bench="$2"; shift 2
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# RESULTS_ROOT (default results/): archive root, so a reproduction run
+# (scripts/results/reproduce_date2027.sh) never shadows the paper's archives.
+root="${RESULTS_ROOT:-$R/results}"
 stamp="$(date +%Y%m%d-%H%M%S)"
-out="$R/results/$bench/$config/$stamp"; mkdir -p "$out"
+out="$root/$bench/$config/$stamp"; mkdir -p "$out"
 wd="$(mktemp -d "${TMPDIR:-/tmp}/run_${bench}_${config}_XXXX")"
 mkdir -p "$wd/build"
 for e in "$R"/* "$R"/.venv; do b="$(basename "$e")"; [ "$b" = build ] && continue; [ "$b" = results ] && continue; ln -s "$e" "$wd/$b"; done
