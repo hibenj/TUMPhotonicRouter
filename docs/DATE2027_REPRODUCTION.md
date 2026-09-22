@@ -69,21 +69,48 @@ on the machine. `paper_table.py results_date2027 <main.tex>` would regenerate
 the table from a full reproduction (the LiDAR columns then need the LiDAR
 archives copied or linked into that root).
 
-## Verification (2026-09-22, commit bb317c9, `results_date2027/`)
+## Verification (2026-09-22, commits bb317c9..bcc86e8, `results_date2027/`)
 
-`reproduce_date2027.sh ladder` then `c2-mesh`, sequential, 13:52-14:49:
-17 of the 27 cells of ours, every one exact on crossing count and GDS
+`reproduce_date2027.sh` in the order ladder, c2-mesh, mesh-base,
+benes-large (sequential, 12:52-16:59, machine otherwise idle): all 27
+cells of ours reproduced, every one exact on crossing count and GDS
 length (to the archived 0.001 um), zero verifier errors, routing-loop time
-ratio 0.92-1.13 to the archives:
+ratio 0.92-1.14 to the archives. `compare_date2027.py` output:
 
-- Benes 4x4 .. 32x32 in all three configurations (12 cells): same engine
-  as the frozen archives, reproduced exactly.
-- ADEPT 8x8 .. 128x128 with contribution 2 (5 cells): archived with
-  Milestone 9 in the kernel, reproduced exactly without it. ADEPT 128x128:
-  311 crossings, 5573562.981 um, 0 errors, loop 520 s (archive 555 s).
-  So Milestone 9 never influenced the paper's rows; it stays absent.
+| benchmark | config | crossings paper/repro | GDS length um paper/repro | errors | t_loop ratio | status |
+|---|---|---|---|---|---|---|
+| benes_4x4_flat | lidar-pure | 2 / 2 | 9484.511 / 9484.511 | 0 | 1.09 | ok |
+| benes_4x4_flat | contribution1 | 2 / 2 | 9475.187 / 9475.187 | 0 | 1.06 | ok |
+| benes_4x4_flat | contribution2 | 2 / 2 | 9475.255 / 9475.255 | 0 | 1.01 | ok |
+| benes_8x8_flat | lidar-pure | 16 / 16 | 31418.224 / 31418.224 | 0 | 1.13 | ok |
+| benes_8x8_flat | contribution1 | 16 / 16 | 31312.203 / 31312.203 | 0 | 1.06 | ok |
+| benes_8x8_flat | contribution2 | 16 / 16 | 31348.89 / 31348.89 | 0 | 1.06 | ok |
+| benes_16x16_flat | lidar-pure | 88 / 88 | 92323.991 / 92323.991 | 0 | 0.92 | ok |
+| benes_16x16_flat | contribution1 | 88 / 88 | 92106.172 / 92106.172 | 0 | 1.02 | ok |
+| benes_16x16_flat | contribution2 | 88 / 88 | 93654.793 / 93654.793 | 0 | 1.05 | ok |
+| benes_32x32_flat | lidar-pure | 416 / 416 | 270827.61 / 270827.61 | 0 | 1.05 | ok |
+| benes_32x32_flat | contribution1 | 416 / 416 | 270872.224 / 270872.224 | 0 | 1.04 | ok |
+| benes_32x32_flat | contribution2 | 416 / 416 | 277886.703 / 277886.703 | 0 | 1.06 | ok |
+| benes_64x64_flat | contribution2 | 1824 / 1824 | 1159313.33 / 1159313.33 | 0 | 1.04 | ok |
+| benes_128x128_flat | contribution2 | 7680 / 7680 | 4938323.005 / 4938323.005 | 0 | 0.99 | ok |
+| multiportmmi_8x8 | lidar-pure | 33 / 33 | 25160.335 / 25160.335 | 0 | 1.13 | ok |
+| multiportmmi_8x8 | contribution1 | 33 / 33 | 25073.626 / 25073.626 | 0 | 1.07 | ok |
+| multiportmmi_8x8 | contribution2 | 33 / 33 | 26319.97 / 26319.97 | 0 | 1.05 | ok |
+| multiportmmi_16x16 | lidar-pure | 63 / 63 | 90200.066 / 90200.066 | 0 | 1.14 | ok |
+| multiportmmi_16x16 | contribution1 | 63 / 63 | 89586.04 / 89586.04 | 0 | 1.04 | ok |
+| multiportmmi_16x16 | contribution2 | 63 / 63 | 96331.277 / 96331.277 | 0 | 1.03 | ok |
+| multiportmmi_32x32 | lidar-pure | 121 / 121 | 336038.575 / 336038.575 | 0 | 1.11 | ok |
+| multiportmmi_32x32 | contribution1 | 121 / 121 | 334816.567 / 334816.567 | 0 | 1.01 | ok |
+| multiportmmi_32x32 | contribution2 | 121 / 121 | 360764.408 / 360764.408 | 0 | 1.01 | ok |
+| multiportmmi_64x64 | lidar-pure | 217 / 217 | 1305628.208 / 1305628.208 | 0 | 1.07 | ok |
+| multiportmmi_64x64 | contribution1 | 209 / 209 | 1302769.96 / 1302769.96 | 0 | 1.06 | ok |
+| multiportmmi_64x64 | contribution2 | 209 / 209 | 1408033.109 / 1408033.109 | 0 | 0.97 | ok |
+| multiportmmi_128x128 | contribution2 | 311 / 311 | 5573562.981 / 5573562.981 | 0 | 1.08 | ok |
 
-Not yet rerun (same engine as the archives, no open question): ADEPT 8x8
-.. 64x64 baseline and contribution 1 (8 cells, about 1.5 h, the 64x64
-baseline alone 55 min) and Benes 64x64 / 128x128 with contribution 2
-(2 cells, about 2.5 h, mostly the verifier on 20480 routes).
+all reproduced cells match
+
+Notes: the five ADEPT contribution 2 rows were archived with Milestone 9
+in the kernel and reproduce exactly without it, so Milestone 9 never
+influenced the paper's rows and stays absent from this branch. Benes
+128x128 with contribution 2: loop 912 s (archive 925 s), wall 5443 s of
+which the verifier is most (20480 routes). LiDAR rows are not covered.
