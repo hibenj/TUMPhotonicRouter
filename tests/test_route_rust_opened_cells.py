@@ -127,6 +127,8 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
     class FakeAStarConfig:
         def __init__(self, max_iterations: int) -> None:
             self.max_iterations = max_iterations
+            # read by _configure_router_and_grid (dense-obstacle cap, 2026-09-13)
+            self.max_dense_obstacle_cells = 0
 
     class CapturingRouter:
         def __init__(

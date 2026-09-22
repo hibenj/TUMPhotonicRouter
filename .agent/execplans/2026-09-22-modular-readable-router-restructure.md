@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. This document must be maintained in accordance with `.agent/PLANS.md`.
 
-Status: **2026-09-22 -- plan written and decisions D1-D6 recorded; nothing implemented. Waiting for the owner's go for Milestone 0.**
+Status: **2026-09-22 18:30 -- Milestone 0 complete on branch `restructure/modular-engine` (gate 9/9 exact, test baseline pinned with zero failures). Next: Milestone 1 on the owner's go.**
 
 
 ## Purpose / Big Picture
@@ -18,7 +18,9 @@ The plan deliberately does not start from the rejected "cleanup" of 2026-09-19 (
 
 - [x] (2026-09-22 18:30) Structural survey of `main` taken (numbers in Context and Orientation); plan written.
 - [x] (2026-09-22) Owner decisions D1-D6 recorded in the Decision Log.
-- [ ] Milestone 0: gate and baseline (short reproduction gate, test baselines pinned, stale tests resolved).
+- [x] (2026-09-22 17:40) Milestone 0, gate: `reproduce_date2027.sh short` + `scripts/results/gate_short.sh` against `docs/date2027_table_sources.json`; first run 9/9 exact in 80 s (commit 58c9cc1).
+- [x] (2026-09-22 17:40) Milestone 0, baseline: `scripts/test_baseline.sh` with `tests/baselines/test_baseline.txt` (rust 486/0, python 411 passed, 11 pinned failures).
+- [x] (2026-09-22 18:30) Milestone 0, D3: the 11 stale tests resolved (details in the Decision Log); baseline re-pinned with an empty failure list.
 - [ ] Milestone 1: configuration as data (one typed configuration tree replaces the 88 environment variables as the algorithms' input).
 - [ ] Milestone 2: the Rust engine file split by concern (pure code motion, bindings separated from the engine).
 - [ ] Milestone 3: one search interface, one A* kernel module, a second search engine proving the seam.
@@ -49,6 +51,7 @@ Decisions the repository owner has to make before or during the work. None of th
 Recorded decisions:
 
 - 2026-09-22 (owner): the DATE 2027 paper is final; its numbers are frozen; `main` is the reproduction base; the 2026-09-19 cleanup is rejected and a cleanup is done from this base instead.
+- 2026-09-22 (lead, executing D3): diagnosis showed ten of the eleven failures share one cause: the toy benchmarks `TOY`, `heater_s`, `heater_s_compact`, `mmi_heater`, `mmi_heater_8x4` and `mmi_heater_8x4_ripup_reroute` cannot be routed at all (a placement clearance shortage at one MMI input approach, root-caused on 2026-08-18 by BFS analysis and recorded as "not planned to be fixed"; `--crossings false`, `--fanout-access-mode off` and the die keepout make no difference). The eleventh was a test double missing `max_dense_obstacle_cells`. Applied: `test_routing_flow_populates_stats`, `test_rust_routed_layout_uses_waveguide_geometry` and the electrical end-to-end test now run on `heater_s_mod` (63 instances, 81 nets, 21 heater terminal groups, routes in about a second), the parametrized `test_benchmarks_route_with_astar_only` keeps `clements_8x8` and `heater_s_mod` only, the fake config gained the field, and `test_toy_ten_um_bend_radius_does_not_backtrack_on_one_cell_short_s_bend` was deleted because its subject (a one-cell-short S-bend at 10 um radius) exists only in TOY's geometry; Milestone 6 should re-cover that property with a synthetic fixture. Open question for the owner, not decided here: the six unroutable toy benchmark modules still exist under `benchmarks/`; delete them, or fix their placement so they become fast smoke tests.
 - 2026-09-22 (owner, on the lead's recommendations): D1 delete the legacy repair chain, the orthogonal repair fallback and the non-negotiated multi-net paths in Milestone 4 once the gate proves no paper cell uses them. D2 delete the `window` and `collision` crossing modes unless a benchmark or test still needs them; keep `lidar-pure` and `lidar-guided`. D3 fix the stale tests that cover a behaviour that still exists, delete the rest with a note. D4 keep one environment overlay loader in one file permanently for ad-hoc experiments; rewrite the benchmark stable blocks and the reproduction scripts so nothing else depends on it. D5 the second search engine is the Dijkstra test oracle; a real alternative engine is a separate plan. D6 the entry point is `python -m photonic_router route <benchmark> --configuration {baseline,contribution1,contribution2}` with overrides, over `route_benchmark(config)`.
 
 

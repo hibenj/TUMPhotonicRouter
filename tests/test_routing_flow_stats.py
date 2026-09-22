@@ -191,10 +191,13 @@ def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
 
 
 def test_routing_flow_populates_stats():
+    # heater_s_mod: the smallest benchmark that routes under the current rules
+    # (the TOY / heater_s / mmi_heater family has a placement clearance
+    # shortage at one MMI input, documented 2026-08-18, and never routes).
     stats = RoutingFlowStats()
 
     run_routing_flow(
-        "TOY",
+        "heater_s_mod",
         show_unrouted=False,
         show_routed=False,
         show_static_obstacles_svg=False,
@@ -206,10 +209,10 @@ def test_routing_flow_populates_stats():
         stats=stats,
     )
 
-    assert stats.benchmark_name == "TOY"
+    assert stats.benchmark_name == "heater_s_mod"
     assert stats.total_time_s > 0.0
-    assert stats.instance_count == 5
-    assert stats.net_count == 4
+    assert stats.instance_count == 63
+    assert stats.net_count == 81
     assert stats.static_grid_width is not None
     assert stats.static_grid_height is not None
     assert stats.raw_blocked_cells is not None
@@ -233,7 +236,7 @@ def test_routing_flow_populates_stats():
         assert stats.step_times_s[step_name] >= 0.0
 
     stats_dict = stats.as_dict()
-    assert stats_dict["benchmark_name"] == "TOY"
+    assert stats_dict["benchmark_name"] == "heater_s_mod"
     assert stats_dict["total_time_s"] == stats.total_time_s
     assert stats_dict["route_attempts"] == stats.route_attempts
     assert stats_dict["expanded_states"] == stats.expanded_states
@@ -267,16 +270,12 @@ def test_route_match_uses_rust_batch_path_when_repair_disabled():
 
 @pytest.mark.parametrize(
     "benchmark_name",
-    [
-        "TOY",
-        "clements_8x8",
-        "heater_s",
-        "heater_s_compact",
-        "heater_s_mod",
-        "mmi_heater",
-        "mmi_heater_8x4",
-        "mmi_heater_8x4_ripup_reroute",
-    ],
+    # Only benchmarks that route under the current rules: TOY, heater_s,
+    # heater_s_compact, mmi_heater, mmi_heater_8x4 and
+    # mmi_heater_8x4_ripup_reroute share a placement clearance shortage at an
+    # MMI input port (2026-08-18 walkthrough, "not planned to be fixed") and
+    # were dropped from this list on 2026-09-22 (ExecPlan of that date, D3).
+    ["clements_8x8", "heater_s_mod"],
 )
 def test_benchmarks_route_with_astar_only(benchmark_name):
     stats = RoutingFlowStats()
@@ -509,9 +508,12 @@ def test_heater_s_mod_stable_configuration_routes_matches_and_wires():
     assert electrical["terminal_group_count"] > 0
 
 
-def test_routing_flow_routes_single_heater_electrical_metal_end_to_end():
+def test_routing_flow_routes_heater_electrical_metal_end_to_end():
+    # heater_s_mod (21 heater terminal groups) replaced the unroutable
+    # single-heater mmi_heater on 2026-09-22 (D3); the electrical stage's
+    # behaviour under test is the same.
     routed = run_routing_flow(
-        "mmi_heater",
+        "heater_s_mod",
         show_unrouted=False,
         show_routed=False,
         show_static_obstacles_svg=False,
@@ -521,10 +523,10 @@ def test_routing_flow_routes_single_heater_electrical_metal_end_to_end():
 
     assert "electrical_routing" in routed.info
     summary = routed.info["electrical_routing"]
-    assert summary["terminal_group_count"] == 1
+    assert summary["terminal_group_count"] == 21
     assert summary["common_bus_success"] is True
-    assert summary["pad_assignment_count"] >= 2
-    assert summary["detailed_route_count"] >= 1
+    assert summary["pad_assignment_count"] >= 21
+    assert summary["detailed_route_count"] == 21
     assert summary["failed_detailed_route_count"] == 0
     assert summary["verification_success"] is True
     assert summary["verification_error_count"] == 0
