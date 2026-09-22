@@ -9,21 +9,9 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Instant;
 
-/// Opt-in gate for the per-expansion micro-timers (legality/heap/neighbor
-/// breakdowns). `collect_detailed_timing` alone keeps the cheap per-attempt
-/// timers that feed the standard timing reports; the per-expansion timers
-/// call `clock_gettime` several times per expanded state and measured 17%
-/// of total wall time on multiportmmi_16x16 (vDSO share of the profile,
-/// engine-performance plan 2026-08-31), so they now also require
-/// `PHOTONIC_ROUTER_HOT_LOOP_TIMING` to be set. Their stats fields read 0
-/// otherwise.
-fn hot_loop_timing_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("PHOTONIC_ROUTER_HOT_LOOP_TIMING").is_some())
-}
-
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::config::KernelDiagnostics;
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, NetId, ObstacleMap};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
 use crate::simple_routes::{
@@ -62,6 +50,10 @@ impl State {
 /// Configuration for the first single-net A* router.
 #[derive(Clone, Debug)]
 pub struct AStarConfig {
+    /// Diagnostic/trace switches (`PHOTONIC_ROUTER_*` variables read only
+    /// inside this module). Cloned in from the router's `RouterConfig` when
+    /// this `AStarConfig` is built.
+    pub diagnostics: crate::config::KernelDiagnostics,
     pub max_iterations: usize,
     pub bend_weight: f64,
     pub target_tolerance_cells: i32,
@@ -111,6 +103,7 @@ pub struct AStarConfig {
 impl Default for AStarConfig {
     fn default() -> Self {
         Self {
+            diagnostics: crate::config::KernelDiagnostics::default(),
             max_iterations: 100_000,
             bend_weight: 1.0,
             target_tolerance_cells: 0,
@@ -258,6 +251,10 @@ pub struct TerminalBumpGuard {
 
 #[derive(Clone, Debug)]
 pub struct CrossingSearchConfig {
+    /// Diagnostic/trace switches for the crossing search. Cloned in from
+    /// the router's `RouterConfig` when this `CrossingSearchConfig` is
+    /// built.
+    pub diagnostics: crate::config::KernelDiagnostics,
     pub net_id: NetId,
     pub partners: Vec<CrossingSearchPartner>,
     pub min_straight_cells: i32,
@@ -2325,7 +2322,7 @@ where
         return try_bounds(obstacle_map, None, stats, config.max_iterations);
     }
 
-    let diag = std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some();
+    let diag = config.diagnostics.search_failure_diag;
     let mut last_bounds: Option<RoutingBounds> = None;
     for expansion_idx in 0..=config.routing_window_max_expansions {
         if budget_exhausted(config.total_expansion_budget, stats) {
@@ -2510,7 +2507,7 @@ fn route_single_net_jps4(
         false,
         false,
     ) else {
-        if std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some() {
+        if config.diagnostics.search_failure_diag {
             eprintln!(
                 "search-failure kind=dense_grid_not_built window=[{}..{}]x[{}..{}] area_cells={} max_dense_obstacle_cells={} source=({},{}) target=({},{})",
                 bounds.min_x,
@@ -2532,7 +2529,7 @@ fn route_single_net_jps4(
     stats.window_attempts = 1;
 
     if dense_grid.is_blocked(source.x, source.y) || dense_grid.is_blocked(target.x, target.y) {
-        if std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some() {
+        if config.diagnostics.search_failure_diag {
             eprintln!(
                 "search-failure kind=endpoint_blocked source=({},{}) source_blocked={} source_static={} source_dynamic={} target=({},{}) target_blocked={} target_static={} target_dynamic={}",
                 source.x,
@@ -3216,14 +3213,11 @@ fn primitive_terminal_straight_run_cells(primitive: &Primitive, end_angle: u8) -
 }
 
 fn trace_crossing_pending_enabled(crossing: &CrossingSearchConfig) -> bool {
-    if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_PENDING").is_none() {
+    if !crossing.diagnostics.trace_crossing_pending {
         return false;
     }
-    if let Ok(trace_net_id) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET") {
-        return trace_net_id
-            .parse::<u64>()
-            .map(|trace_net_id| trace_net_id == crossing.net_id)
-            .unwrap_or(false);
+    if let Some(trace_net_id) = crossing.diagnostics.trace_crossing_net {
+        return trace_net_id == crossing.net_id;
     }
     true
 }
@@ -4284,18 +4278,9 @@ mod unified_kernel {
         obstacle_map: &ObstacleMap,
         port_open_cells: Option<&FxHashSet<CellKey>>,
         dense_grid: &DenseRoutingGrid,
+        probe_cells: &[(i32, i32)],
     ) {
-        let Some(spec) = std::env::var("PHOTONIC_ROUTER_PROBE_CELLS").ok() else {
-            return;
-        };
-        for item in spec.split(';') {
-            let mut it = item.split(',');
-            let (Some(xs), Some(ys)) = (it.next(), it.next()) else {
-                continue;
-            };
-            let (Ok(x), Ok(y)) = (xs.trim().parse::<i32>(), ys.trim().parse::<i32>()) else {
-                continue;
-            };
+        for &(x, y) in probe_cells {
             if !obstacle_map.in_bounds(x, y) {
                 eprintln!(
                     "probe-cell seq={} cell=({},{}) out_of_bounds",
@@ -4318,25 +4303,24 @@ mod unified_kernel {
         }
     }
 
-    /// `PHOTONIC_ROUTER_SEARCH_FAILURE_MAP`: an ASCII picture of the obstacle
-    /// map around a failed search. `1` = the source/target bounding box plus
-    /// a margin, downsampled so a row fits about 150 characters;
-    /// `cx,cy,half_w,half_h[,step]` = an explicit window in cells and block
-    /// size. Per block: `D` any dynamic (routed) cell, `#` static only, `.`
-    /// free, `S`/`T` source/target block. Rows top (max y) to bottom.
+    /// An ASCII picture of the obstacle map around a failed search, gated
+    /// by `KernelDiagnostics::search_failure_map` (`None` = disabled).
+    /// `Some(nums)` with `nums.len() < 4` = the source/target bounding box
+    /// plus a margin, downsampled so a row fits about 150 characters;
+    /// `[cx, cy, half_w, half_h, step?]` = an explicit window in cells and
+    /// block size. Per block: `D` any dynamic (routed) cell, `#` static
+    /// only, `.` free, `S`/`T` source/target block. Rows top (max y) to
+    /// bottom.
     fn print_failure_map_window(
         search_seq: u64,
         obstacle_map: &ObstacleMap,
         source: State,
         target: State,
+        window_spec: Option<&[i32]>,
     ) {
-        let Some(spec) = std::env::var("PHOTONIC_ROUTER_SEARCH_FAILURE_MAP").ok() else {
+        let Some(nums) = window_spec else {
             return;
         };
-        let nums: Vec<i32> = spec
-            .split(',')
-            .filter_map(|v| v.trim().parse::<i32>().ok())
-            .collect();
         let (min_x, max_x, min_y, max_y, step) = if nums.len() >= 4 {
             let step = nums.get(4).copied().unwrap_or(1).max(1);
             (
@@ -4593,7 +4577,7 @@ mod unified_kernel {
             // (multiportmmi_128x128, heater-to-MMI nets). Now counted and,
             // under PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG, reported.
             stats.dense_grid_build_failures += 1;
-            if std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some() {
+            if config.diagnostics.search_failure_diag {
                 let area = window_area(bounds) as u64;
                 eprintln!(
                     "search-failure kind=dense_storage_cap window=[{}..{}]x[{}..{}] area_cells={} states={} max_dense_states={} source=({},{}) target=({},{})",
@@ -4722,7 +4706,7 @@ mod unified_kernel {
         // experiments): under PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG=1 every
         // failing search prints its termination kind plus the bounding box of
         // the explored region, which localizes the wall the frontier dies at.
-        let failure_diag = std::env::var_os("PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG").is_some();
+        let failure_diag = config.diagnostics.search_failure_diag;
         let mut explored_min_x = i32::MAX;
         let mut explored_max_x = i32::MIN;
         let mut explored_min_y = i32::MAX;
@@ -4738,29 +4722,20 @@ mod unified_kernel {
         // Blocker lines are capped PER ring/probe slot (not globally), so
         // landings from one side cannot starve the others of diagnostics.
         let mut ring_blocker_lines: FxHashMap<usize, u32> = FxHashMap::default();
-        // Permanent, env-gated: names the branch that abandons an eager
-        // completion chain (the silent killer of consecutive crossings).
-        let chain_diag = std::env::var_os("PHOTONIC_ROUTER_CHAIN_DIAG").is_some();
-        let move_diag_cell: Option<(i32, i32)> = std::env::var("PHOTONIC_ROUTER_MOVE_DIAG")
-            .ok()
-            .and_then(|v| {
-                let mut it = v.split(',');
-                Some((
-                    it.next()?.trim().parse().ok()?,
-                    it.next()?.trim().parse().ok()?,
-                ))
-            });
+        // Names the branch that abandons an eager completion chain (the
+        // silent killer of consecutive crossings), under
+        // `KernelDiagnostics::chain_diag`.
+        let chain_diag = config.diagnostics.chain_diag;
+        let move_diag_cell: Option<(i32, i32)> = config.diagnostics.move_diag_cell;
         // Per-process search sequence number so diagnostic lines from
         // different searches can be told apart in a shared stderr stream.
         static SEARCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let search_seq = SEARCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         CURRENT_SEARCH_SEQ.with(|c| c.set(search_seq));
         let ignore_dyn_flag = hook.ignores_dynamic_obstacles();
-        // Permanent, env-gated: PHOTONIC_ROUTER_POP_DIAG_BELOW_Y=<y> logs every
-        // Tier-2 push/pop/skip whose state lies below that y (first 200).
-        let pop_diag_below_y: Option<i32> = std::env::var("PHOTONIC_ROUTER_POP_DIAG_BELOW_Y")
-            .ok()
-            .and_then(|v| v.parse().ok());
+        // `KernelDiagnostics::pop_diag_below_y = Some(y)` logs every Tier-2
+        // push/pop/skip whose state lies below that y (first 200).
+        let pop_diag_below_y: Option<i32> = config.diagnostics.pop_diag_below_y;
         let mut pop_diag_lines = 0u32;
         // Best-crossing-path tracking (owner request 2026-09-02): remember
         // the accepted state with the most legalized crossings so a failing
@@ -4770,21 +4745,10 @@ mod unified_kernel {
         // parents are always dense -- so only extended nodes carry counts.)
         let mut best_crossings: u16 = 0;
         let mut best_crossing_ref: Option<usize> = None;
-        // Probe cells (PHOTONIC_ROUTER_PROBE_CELLS) get the same landing
-        // counters as the target ring: slot 25.. in `target_ring`-like storage.
-        let probe_cells: Vec<(i32, i32)> = std::env::var("PHOTONIC_ROUTER_PROBE_CELLS")
-            .ok()
-            .map(|spec| {
-                spec.split(';')
-                    .filter_map(|item| {
-                        let mut it = item.split(',');
-                        let x = it.next()?.trim().parse::<i32>().ok()?;
-                        let y = it.next()?.trim().parse::<i32>().ok()?;
-                        Some((x, y))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Probe cells (`KernelDiagnostics::probe_cells`) get the same
+        // landing counters as the target ring: slot 25.. in
+        // `target_ring`-like storage.
+        let probe_cells: Vec<(i32, i32)> = config.diagnostics.probe_cells.clone();
         let probe_index: FxHashMap<(i32, i32), usize> = probe_cells
             .iter()
             .enumerate()
@@ -4872,8 +4836,15 @@ mod unified_kernel {
                         obstacle_map,
                         port_open_cells,
                         &dense_grid,
+                        &probe_cells,
                     );
-                    print_failure_map_window(search_seq, obstacle_map, source, target);
+                    print_failure_map_window(
+                        search_seq,
+                        obstacle_map,
+                        source,
+                        target,
+                        config.diagnostics.search_failure_map.as_deref(),
+                    );
                     for (i, cell) in probe_cells.iter().enumerate() {
                         let c = probe_ring[i];
                         if c.iter().any(|v| *v > 0) {
@@ -4923,8 +4894,15 @@ mod unified_kernel {
                         obstacle_map,
                         port_open_cells,
                         &dense_grid,
+                        &probe_cells,
                     );
-                    print_failure_map_window(search_seq, obstacle_map, source, target);
+                    print_failure_map_window(
+                        search_seq,
+                        obstacle_map,
+                        source,
+                        target,
+                        config.diagnostics.search_failure_map.as_deref(),
+                    );
                     for (i, cell) in probe_cells.iter().enumerate() {
                         let c = probe_ring[i];
                         if c.iter().any(|v| *v > 0) {
@@ -5014,8 +4992,15 @@ mod unified_kernel {
                         obstacle_map,
                         port_open_cells,
                         &dense_grid,
+                        &probe_cells,
                     );
-                    print_failure_map_window(search_seq, obstacle_map, source, target);
+                    print_failure_map_window(
+                        search_seq,
+                        obstacle_map,
+                        source,
+                        target,
+                        config.diagnostics.search_failure_map.as_deref(),
+                    );
                     for (i, cell) in probe_cells.iter().enumerate() {
                         let c = probe_ring[i];
                         if c.iter().any(|v| *v > 0) {
@@ -5081,12 +5066,12 @@ mod unified_kernel {
                 primitives.grid_size_um(),
                 config.primitive_ordering,
             );
-            let neighbor_loop_start = if config.collect_detailed_timing && hot_loop_timing_enabled()
-            {
-                Some(Instant::now())
-            } else {
-                None
-            };
+            let neighbor_loop_start =
+                if config.collect_detailed_timing && config.diagnostics.hot_loop_timing {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
             let mut neighbor_loop_heap_time_us = 0u128;
             let mut neighbor_loop_legality_time_us = 0u128;
 
@@ -5172,29 +5157,29 @@ mod unified_kernel {
                 stats.primitive_footprint_checks += 1;
                 stats.primitive_footprint_checks_by_class[primitive_class] += 1;
                 stats.obstacle_clearance_checks += 1;
-                let footprint_free = if config.collect_detailed_timing && hot_loop_timing_enabled()
-                {
-                    let legality_start = Instant::now();
-                    let footprint_free = dense_grid.primitive_footprint_free_with_profile(
-                        state.x,
-                        state.y,
-                        &primitive.footprint,
-                        profile,
-                        stats,
-                    );
-                    let legality_elapsed_us = legality_start.elapsed().as_micros();
-                    stats.legality_check_time_us += legality_elapsed_us;
-                    neighbor_loop_legality_time_us += legality_elapsed_us;
-                    footprint_free
-                } else {
-                    dense_grid.primitive_footprint_free_with_profile(
-                        state.x,
-                        state.y,
-                        &primitive.footprint,
-                        profile,
-                        stats,
-                    )
-                };
+                let footprint_free =
+                    if config.collect_detailed_timing && config.diagnostics.hot_loop_timing {
+                        let legality_start = Instant::now();
+                        let footprint_free = dense_grid.primitive_footprint_free_with_profile(
+                            state.x,
+                            state.y,
+                            &primitive.footprint,
+                            profile,
+                            stats,
+                        );
+                        let legality_elapsed_us = legality_start.elapsed().as_micros();
+                        stats.legality_check_time_us += legality_elapsed_us;
+                        neighbor_loop_legality_time_us += legality_elapsed_us;
+                        footprint_free
+                    } else {
+                        dense_grid.primitive_footprint_free_with_profile(
+                            state.x,
+                            state.y,
+                            &primitive.footprint,
+                            profile,
+                            stats,
+                        )
+                    };
 
                 // Compact diagonal halo (see `.agent/WORKFLOW.md`): a one-cell-wide
                 // diagonal piece can have a completely free footprint while a
@@ -5342,7 +5327,8 @@ mod unified_kernel {
                     storage.best_generation[next_idx] = generation;
                     stats.best_cost_updates += 1;
                     stats.parent_updates += 1;
-                    let heap_start = (config.collect_detailed_timing && hot_loop_timing_enabled())
+                    let heap_start = (config.collect_detailed_timing
+                        && config.diagnostics.hot_loop_timing)
                         .then(Instant::now);
                     let queued = tier1_open.push(OpenEntry {
                         f_score: tentative_g + search_heuristic.estimate(next_state),
@@ -6179,7 +6165,8 @@ mod unified_kernel {
                     stats.best_cost_updates += 1;
                     stats.parent_updates += 1;
                     let generation = next_search_generation(&mut counter)?;
-                    let heap_start = (config.collect_detailed_timing && hot_loop_timing_enabled())
+                    let heap_start = (config.collect_detailed_timing
+                        && config.diagnostics.hot_loop_timing)
                         .then(Instant::now);
                     tier2_open.push(OpenEntry {
                         f_score: tentative_g
@@ -6229,8 +6216,20 @@ mod unified_kernel {
                 port_open_cells,
             );
             print_best_crossing_path(best_crossings, best_crossing_ref, &storage, &extended_nodes);
-            print_probe_cells_report(search_seq, obstacle_map, port_open_cells, &dense_grid);
-            print_failure_map_window(search_seq, obstacle_map, source, target);
+            print_probe_cells_report(
+                search_seq,
+                obstacle_map,
+                port_open_cells,
+                &dense_grid,
+                &probe_cells,
+            );
+            print_failure_map_window(
+                search_seq,
+                obstacle_map,
+                source,
+                target,
+                config.diagnostics.search_failure_map.as_deref(),
+            );
             for (i, cell) in probe_cells.iter().enumerate() {
                 let c = probe_ring[i];
                 if c.iter().any(|v| *v > 0) {
@@ -6894,6 +6893,7 @@ mod unified_kernel {
             ));
 
             let crossing = CrossingSearchConfig {
+                diagnostics: KernelDiagnostics::default(),
                 net_id: 2,
                 partners: vec![CrossingSearchPartner {
                     net_id: 1,
@@ -7007,6 +7007,7 @@ mod unified_kernel {
             let empty_map = ObstacleMap::new(20, 10);
             let primitives = primitive_library_no45_bend1();
             let far_crossing = CrossingSearchConfig {
+                diagnostics: KernelDiagnostics::default(),
                 net_id: 2,
                 partners: vec![CrossingSearchPartner {
                     net_id: 1,
@@ -7130,29 +7131,20 @@ fn trace_crossing_candidate(
     route_before: f64,
     route_after: f64,
 ) {
-    if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_CANDIDATES").is_none() {
+    if !crossing.diagnostics.trace_crossing_candidates {
         return;
     }
-    if let Ok(trace_net_id) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET") {
-        if trace_net_id
-            .parse::<u64>()
-            .is_ok_and(|net_id| net_id != crossing.net_id)
-        {
+    if let Some(trace_net_id) = crossing.diagnostics.trace_crossing_net {
+        if trace_net_id != crossing.net_id {
             return;
         }
     }
-    if let Ok(trace_partner_id) = std::env::var("PHOTONIC_ROUTER_TRACE_PARTNER_NET") {
-        if trace_partner_id
-            .parse::<u64>()
-            .is_ok_and(|net_id| net_id != partner_net_id)
-        {
+    if let Some(trace_partner_id) = crossing.diagnostics.trace_partner_net {
+        if trace_partner_id != partner_net_id {
             return;
         }
     }
-    let max_count = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_CANDIDATE_MAX")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(120);
+    let max_count = crossing.diagnostics.trace_crossing_candidate_max;
     let trace_index = CROSSING_CANDIDATE_TRACE_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
     if trace_index >= max_count {
         return;
@@ -7198,22 +7190,16 @@ fn trace_crossing_level1_intersection(
     route_after: f64,
     pending_after: i32,
 ) {
-    if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_LEVEL1").is_none() {
+    if !crossing.diagnostics.trace_crossing_level1 {
         return;
     }
-    if let Ok(trace_net_id) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET") {
-        if trace_net_id
-            .parse::<u64>()
-            .is_ok_and(|net_id| net_id != crossing.net_id)
-        {
+    if let Some(trace_net_id) = crossing.diagnostics.trace_crossing_net {
+        if trace_net_id != crossing.net_id {
             return;
         }
     }
-    if let Ok(trace_partner_id) = std::env::var("PHOTONIC_ROUTER_TRACE_PARTNER_NET") {
-        if trace_partner_id
-            .parse::<u64>()
-            .is_ok_and(|net_id| net_id != partner_net_id)
-        {
+    if let Some(trace_partner_id) = crossing.diagnostics.trace_partner_net {
+        if trace_partner_id != partner_net_id {
             return;
         }
     }
@@ -7371,20 +7357,14 @@ fn record_pending_after_crossing_partner(
     let Some(search_start) = search_start else {
         return;
     };
-    let Some(threshold) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_PENDING_THRESHOLD")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-    else {
+    let Some(threshold) = crossing.diagnostics.trace_crossing_pending_threshold else {
         return;
     };
     if *count != threshold {
         return;
     }
-    if let Ok(trace_net_id) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET") {
-        if trace_net_id
-            .parse::<u64>()
-            .is_ok_and(|net_id| net_id != crossing.net_id)
-        {
+    if let Some(trace_net_id) = crossing.diagnostics.trace_crossing_net {
+        if trace_net_id != crossing.net_id {
             return;
         }
     }
@@ -7406,25 +7386,13 @@ fn record_crossing_hotpath_owner_count(stats: &mut RouteSearchStats, owner_count
     }
 }
 
-fn analysis_crossing_partner_counters_enabled() -> bool {
-    std::env::var("PHOTONIC_ROUTER_ANALYSIS_CROSSING_PARTNER_COUNTERS")
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "on" | "yes" | "enabled"
-            )
-        })
-        .unwrap_or(false)
-}
-
 fn record_perpendicular_crossing_reject(
     stats: &mut RouteSearchStats,
     crossing: &CrossingSearchConfig,
     partner_net_id: NetId,
     search_start: Option<&Instant>,
 ) {
-    if !analysis_crossing_partner_counters_enabled() {
+    if !crossing.diagnostics.analysis_crossing_partner_counters {
         return;
     }
     let count = stats
@@ -7435,20 +7403,14 @@ fn record_perpendicular_crossing_reject(
     let Some(search_start) = search_start else {
         return;
     };
-    let Some(threshold) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_PERP_REJECT_THRESHOLD")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-    else {
+    let Some(threshold) = crossing.diagnostics.trace_crossing_perp_reject_threshold else {
         return;
     };
     if *count != threshold {
         return;
     }
-    if let Ok(trace_net_id) = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET") {
-        if trace_net_id
-            .parse::<u64>()
-            .is_ok_and(|net_id| net_id != crossing.net_id)
-        {
+    if let Some(trace_net_id) = crossing.diagnostics.trace_crossing_net {
+        if trace_net_id != crossing.net_id {
             return;
         }
     }
@@ -7668,7 +7630,7 @@ fn crossing_move_outcome_with_segments(
         let Some(partner_idx) = partner_index_by_id.get(&owner).copied() else {
             record_crossing_hotpath_owner_count(stats, contacted_partners.len() + 1);
             stats.crossing_reject_unexpected_owner += 1;
-            if std::env::var_os("PHOTONIC_ROUTER_MOVE_DIAG").is_some() {
+            if crossing.diagnostics.move_diag {
                 eprintln!(
                     "unexpected-owner seq={} net={} cell=({},{}) owner={} state=({},{},{}) partners={}",
                     current_search_seq(),
@@ -7954,7 +7916,7 @@ fn crossing_move_outcome_with_segments(
                     state,
                     partner,
                 );
-                if std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING_LEVEL1").is_some() {
+                if crossing.diagnostics.trace_crossing_level1 {
                     trace_crossing_level1_intersection(
                         crossing,
                         partner.net_id,
@@ -8104,7 +8066,7 @@ fn crossing_move_outcome_with_segments(
                     intersection.distance_after_on_segment,
                 );
                 stats.crossing_reject_pending_straight += 1;
-                if analysis_crossing_partner_counters_enabled() {
+                if crossing.diagnostics.analysis_crossing_partner_counters {
                     *stats
                         .crossing_after_margin_by_partner
                         .entry(partner.net_id)
@@ -9383,6 +9345,7 @@ mod tests {
         ));
 
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 2,
             partners: vec![CrossingSearchPartner {
                 net_id: 1,
@@ -10344,6 +10307,7 @@ mod tests {
             State::new(3, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 max_iterations: 200,
                 bend_weight: 1.0,
                 target_tolerance_cells: 0,
@@ -10369,6 +10333,7 @@ mod tests {
             State::new(10, 2, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: false,
                 require_target_angle: false,
                 use_routing_window: false,
@@ -10397,6 +10362,7 @@ mod tests {
             State::new(10, 2, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: false,
                 require_target_angle: false,
                 use_routing_window: false,
@@ -10518,6 +10484,7 @@ mod tests {
             State::new(5, 3, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 target_tolerance_cells: 1,
                 ..AStarConfig::default()
             },
@@ -10541,6 +10508,7 @@ mod tests {
             State::new(3, 3, 2),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: false,
                 require_terminal_straights: true,
                 ..AStarConfig::default()
@@ -10575,6 +10543,7 @@ mod tests {
         let map = ObstacleMap::new(16, 16);
         let library = primitive_library();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
@@ -10597,6 +10566,7 @@ mod tests {
             State::new(3, 3, 2),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: false,
                 require_terminal_straights: true,
                 ..AStarConfig::default()
@@ -10640,6 +10610,7 @@ mod tests {
             State::new(5, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: false,
                 ..AStarConfig::default()
             },
@@ -10681,6 +10652,7 @@ mod tests {
             State::new(5, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -10700,6 +10672,7 @@ mod tests {
             State::new(5, 4, 2),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -10719,6 +10692,7 @@ mod tests {
             State::new(10, 10, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -10761,6 +10735,7 @@ mod tests {
             State::new(5, 4, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -10787,6 +10762,7 @@ mod tests {
             State::new(5, 5, 1),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -10808,6 +10784,7 @@ mod tests {
             State::new(7, 4, 1),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -10828,6 +10805,7 @@ mod tests {
             State::new(9, 5, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -10852,6 +10830,7 @@ mod tests {
             State::new(9, 5, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -10876,6 +10855,7 @@ mod tests {
             State::new(5, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: false,
                 ..AStarConfig::default()
             },
@@ -10921,6 +10901,7 @@ mod tests {
             target,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_indexed_heap: true,
                 ..base_config
             },
@@ -10968,6 +10949,7 @@ mod tests {
                 target,
                 None,
                 &AStarConfig {
+                    diagnostics: KernelDiagnostics::default(),
                     primitive_ordering,
                     ..base_config.clone()
                 },
@@ -11007,6 +10989,7 @@ mod tests {
             target,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 heap_tie_breaker: HeapTieBreaker::LargerG,
                 ..base_config
             },
@@ -11035,6 +11018,7 @@ mod tests {
             target,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 heuristic_mode: HeuristicMode::HeadingAware,
                 ..base_config
             },
@@ -11143,6 +11127,7 @@ mod tests {
             State::new(1, 3, 0),
             State::new(8, 3, 0),
             AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: false,
                 routing_window_fallback_full_grid: true,
                 ..AStarConfig::default()
@@ -11169,6 +11154,7 @@ mod tests {
             State::new(6, 25, 0),
             State::new(82, 25, 0),
             AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 max_iterations: 500_000,
                 require_target_angle: false,
                 enable_simple_routes: false,
@@ -11189,6 +11175,7 @@ mod tests {
             State::new(5, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -11213,6 +11200,7 @@ mod tests {
             State::new(5, 1, 0),
             Some(&opened),
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
@@ -11287,6 +11275,7 @@ mod tests {
             State::new(5, 0, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 use_routing_window: false,
                 ..AStarConfig::default()
@@ -11308,6 +11297,7 @@ mod tests {
             State::new(5, 0, 0),
             Some(&opened),
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 use_routing_window: false,
                 ..AStarConfig::default()
@@ -11329,6 +11319,7 @@ mod tests {
             State::new(5, 0, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: true,
                 use_routing_window: false,
                 ..AStarConfig::default()
@@ -11350,6 +11341,7 @@ mod tests {
             State::new(5, 2, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 enable_simple_routes: false,
                 ..AStarConfig::default()
             },
@@ -11370,6 +11362,7 @@ mod tests {
             State::new(5, 1, 2),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 require_target_angle: false,
                 ..AStarConfig::default()
             },
@@ -11393,6 +11386,7 @@ mod tests {
             State::new(5, 1, 2),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 require_target_angle: true,
                 allowed_target_angles_mask: Some((1u8 << 0) | (1u8 << 1)),
                 ..AStarConfig::default()
@@ -11415,6 +11409,7 @@ mod tests {
             State::new(5, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 target_tolerance_cells: -1,
                 ..AStarConfig::default()
             },
@@ -11432,6 +11427,7 @@ mod tests {
             source,
             target,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 routing_window_min_margin_cells: 0,
                 routing_window_scale: 0.0,
                 target_tolerance_cells: 2,
@@ -11522,6 +11518,7 @@ mod tests {
             State::new(7, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 routing_window_min_margin_cells: 0,
                 routing_window_scale: 0.0,
                 routing_window_max_expansions: 0,
@@ -11548,6 +11545,7 @@ mod tests {
             State::new(7, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 routing_window_min_margin_cells: 0,
                 routing_window_scale: 0.0,
                 routing_window_max_expansions: 3,
@@ -11571,6 +11569,7 @@ mod tests {
             State::new(5, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 max_dense_states: 8,
                 enable_simple_routes: false,
@@ -11657,6 +11656,7 @@ mod tests {
             State::new(32, 33, 1),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ..AStarConfig::default()
@@ -11702,6 +11702,7 @@ mod tests {
         let committed_set: FxHashSet<(i32, i32)> = committed.iter().copied().collect();
         let library = primitive_library();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 2,
             partners: vec![CrossingSearchPartner {
                 net_id: 1,
@@ -11725,6 +11726,7 @@ mod tests {
             None,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ..AStarConfig::default()
@@ -11764,6 +11766,7 @@ mod tests {
             State::new(8, 2, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ..AStarConfig::default()
@@ -11778,6 +11781,7 @@ mod tests {
             State::new(8, 2, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ignore_dynamic_obstacles: true,
@@ -11981,6 +11985,7 @@ mod tests {
             State::new(8, 2, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ..AStarConfig::default()
@@ -12039,6 +12044,7 @@ mod tests {
             State::new(8, 2, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 collect_detailed_timing: true,
@@ -12069,6 +12075,7 @@ mod tests {
             State::new(5, 1, 0),
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 max_dense_obstacle_cells: 10,
                 enable_simple_routes: false,
@@ -12096,6 +12103,7 @@ mod tests {
 
         let library = primitive_library_no45_bend1();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 2,
             partners: vec![CrossingSearchPartner {
                 net_id: 1,
@@ -12119,6 +12127,7 @@ mod tests {
             None,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 require_target_angle: false,
@@ -12173,6 +12182,7 @@ mod tests {
             None,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 require_target_angle: false,
@@ -12189,6 +12199,7 @@ mod tests {
     fn planned_partner_crossing_uses_its_own_price_and_unplanned_pays_crossing_loss() {
         let (map, library) = guided_pricing_fixture();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 3,
             partners: vec![
                 CrossingSearchPartner {
@@ -12259,6 +12270,7 @@ mod tests {
 
     fn budget_config(partner: CrossingSearchPartner) -> CrossingSearchConfig {
         CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 3,
             partners: vec![partner],
             min_straight_cells: 1,
@@ -12293,6 +12305,7 @@ mod tests {
     fn budget_is_per_partner_two_planned_partners_are_both_discounted() {
         let (map, library) = guided_pricing_fixture();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 3,
             partners: vec![
                 CrossingSearchPartner {
@@ -12328,6 +12341,7 @@ mod tests {
     fn partners_without_price_override_price_like_the_baseline() {
         let (map, library) = guided_pricing_fixture();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 3,
             partners: vec![
                 CrossingSearchPartner {
@@ -12375,6 +12389,7 @@ mod tests {
             target,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 require_target_angle: false,
@@ -12394,6 +12409,7 @@ mod tests {
             target,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 require_target_angle: false,
@@ -12450,6 +12466,7 @@ mod tests {
             committed_partner_ids.insert(partner.net_id);
         }
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 15,
             partners,
             min_straight_cells: 2,
@@ -12557,6 +12574,7 @@ mod tests {
             committed_partner_ids.insert(partner.net_id);
         }
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 13,
             partners,
             min_straight_cells: 2,
@@ -12642,6 +12660,7 @@ mod tests {
             &[],
         ));
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
@@ -12719,6 +12738,7 @@ mod tests {
             &FxHashSet::default()
         ));
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 33,
             partners: vec![CrossingSearchPartner {
                 net_id: 32,
@@ -12830,6 +12850,7 @@ mod tests {
             &FxHashSet::default()
         ));
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 33,
             partners: vec![CrossingSearchPartner {
                 net_id: 32,
@@ -12971,6 +12992,7 @@ mod tests {
         ));
         let library = primitive_library();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 3,
             partners: vec![
                 CrossingSearchPartner {
@@ -13007,6 +13029,7 @@ mod tests {
             None,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ..AStarConfig::default()
@@ -13055,6 +13078,7 @@ mod tests {
         ));
         let library = primitive_library();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 3,
             partners: vec![
                 CrossingSearchPartner {
@@ -13087,6 +13111,7 @@ mod tests {
             None,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ..AStarConfig::default()
@@ -13135,6 +13160,7 @@ mod tests {
         ));
         let library = primitive_library();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 3,
             partners: vec![
                 CrossingSearchPartner {
@@ -13167,6 +13193,7 @@ mod tests {
             None,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ..AStarConfig::default()
@@ -13205,6 +13232,7 @@ mod tests {
         ));
         let library = primitive_library();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 3,
             partners: vec![
                 CrossingSearchPartner {
@@ -13237,6 +13265,7 @@ mod tests {
             None,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ..AStarConfig::default()
@@ -13288,6 +13317,7 @@ mod tests {
         let b0 = cells_b[0];
         let b1 = *cells_b.last().unwrap();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 3,
             partners: vec![
                 CrossingSearchPartner {
@@ -13321,6 +13351,7 @@ mod tests {
             None,
             None,
             &AStarConfig {
+                diagnostics: KernelDiagnostics::default(),
                 use_routing_window: false,
                 enable_simple_routes: false,
                 ..AStarConfig::default()
@@ -13432,6 +13463,7 @@ mod tests {
             .find(|primitive| primitive.end_angle == end_angle)
             .expect("turn primitive should exist");
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
@@ -13533,6 +13565,7 @@ mod tests {
         let map = ObstacleMap::new(32, 32);
         let library = primitive_library_bend3();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: Vec::new(),
             min_straight_cells: 2,
@@ -13611,6 +13644,7 @@ mod tests {
             ));
             let library = primitive_library_bend3();
             let crossing = CrossingSearchConfig {
+                diagnostics: KernelDiagnostics::default(),
                 net_id: 1,
                 partners: vec![CrossingSearchPartner {
                     net_id: 2,
@@ -13710,6 +13744,7 @@ mod tests {
             ));
             let library = primitive_library_bend3();
             let crossing = CrossingSearchConfig {
+                diagnostics: KernelDiagnostics::default(),
                 net_id: 1,
                 partners: vec![CrossingSearchPartner {
                     net_id: 2,
@@ -13781,6 +13816,7 @@ mod tests {
         ));
         let library = primitive_library_no45_bend1();
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 2,
             partners: vec![CrossingSearchPartner {
                 net_id: 1,
@@ -13846,6 +13882,7 @@ mod tests {
             &FxHashSet::default()
         ));
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 33,
             partners: vec![CrossingSearchPartner {
                 net_id: 32,
@@ -13924,6 +13961,7 @@ mod tests {
             &FxHashSet::default()
         ));
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
@@ -13992,6 +14030,7 @@ mod tests {
             .find(|primitive| primitive.end_angle == 2)
             .expect("east-to-north bend should exist");
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: Vec::new(),
             min_straight_cells: 0,
@@ -14068,6 +14107,7 @@ mod tests {
             .find(|primitive| primitive.end_angle == 2)
             .expect("east-to-north bend should exist");
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: Vec::new(),
             min_straight_cells: 0,
@@ -14120,6 +14160,7 @@ mod tests {
             geometry: PrimitiveGeometry::Straight { length_um: 4.0 },
         };
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: Vec::new(),
             min_straight_cells: 0,
@@ -14185,6 +14226,7 @@ mod tests {
             },
         };
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
@@ -14255,6 +14297,7 @@ mod tests {
             },
         };
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: Vec::new(),
             min_straight_cells: 0,
@@ -14343,6 +14386,7 @@ mod tests {
             &FxHashSet::default()
         ));
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: vec![CrossingSearchPartner {
                 net_id: 2,
@@ -14599,6 +14643,7 @@ mod tests {
             &FxHashSet::default()
         ));
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: vec![
                 CrossingSearchPartner {
@@ -14692,6 +14737,7 @@ mod tests {
             &FxHashSet::default()
         ));
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: vec![
                 CrossingSearchPartner {
@@ -14777,6 +14823,7 @@ mod tests {
             &FxHashSet::default()
         ));
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 36,
             partners: vec![CrossingSearchPartner {
                 net_id: 33,
@@ -14861,6 +14908,7 @@ mod tests {
         ));
 
         let empty_crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: Vec::new(),
             min_straight_cells: 0,
@@ -14897,6 +14945,7 @@ mod tests {
         assert_eq!(bend_outcome.straight_run_cells, 2);
 
         let crossing = CrossingSearchConfig {
+            diagnostics: KernelDiagnostics::default(),
             net_id: 1,
             partners: vec![CrossingSearchPartner {
                 net_id: 2,

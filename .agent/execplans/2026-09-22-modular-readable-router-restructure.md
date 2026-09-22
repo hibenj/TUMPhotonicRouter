@@ -22,6 +22,9 @@ The plan deliberately does not start from the rejected "cleanup" of 2026-09-19 (
 - [x] (2026-09-22 17:40) Milestone 0, baseline: `scripts/test_baseline.sh` with `tests/baselines/test_baseline.txt` (rust 486/0, python 411 passed, 11 pinned failures).
 - [x] (2026-09-22 18:30) Milestone 0, D3: the 11 stale tests resolved (details in the Decision Log); baseline re-pinned with an empty failure list.
 - [ ] Milestone 1: configuration as data (one typed configuration tree replaces the 88 environment variables as the algorithms' input).
+  - [x] (2026-09-22 20:40) Slice 1: the 41 Rust-side variables are fields of `crate::config::RouterConfig` (`src/config.rs`), passed from Python as `rust_backend.RouterConfig` built by `photonic_router/config.py`; the single overlay table lives in `photonic_router/env_overlay.py`; `grep -rn "env::var\|var_os" src/` is empty; rust 492/0, python 447/0 (32 new overlay tests), gate 9/9 exact; verified independently by the lead.
+  - [ ] Slice 2: the 46 Python-side variables.
+  - [ ] Slice 3: `build_config` loader, CLI integration, full 27-cell reproduction.
 - [ ] Milestone 2: the Rust engine file split by concern (pure code motion, bindings separated from the engine).
 - [ ] Milestone 3: one search interface, one A* kernel module, a second search engine proving the seam.
 - [ ] Milestone 4: one readable rip-up-and-repair loop with named policies.
@@ -31,6 +34,8 @@ The plan deliberately does not start from the rejected "cleanup" of 2026-09-19 (
 
 
 ## Surprises & Discoveries
+
+- 2026-09-22, Slice 1: after the Rust environment reads were removed but before the Python side passed a configuration, the gate showed the two ADEPT 8x8 cells of baseline and contribution 1 with the right crossings and a longer GDS. Cause: the mesh benchmarks set `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0.05` in their `STABLE_ROUTING_ENV` block, exported by the CLI and formerly read by Rust; without the overlay the kernel ran with weight 0. The implementation agent attributed the difference to compiler codegen, which two independently built kernels reproducing all 27 cells on 2026-09-22 already ruled out. Lesson for every later slice: a gate run is only meaningful once the value's whole path (environment, overlay, config object, kernel) is wired; and a mismatch with identical crossings and a few percent longer routes is the signature of a lost search-cost parameter.
 
 - 2026-09-22: The kernel already has a search interface, `crate::astar::SingleNetSearch` (four methods) with `AStarSingleNetSearch` as its only implementation, wired into every production call site on 2026-08-24. It is a seam, but its four methods and their nine positional parameters each are the old free functions in disguise; Milestone 3 replaces it with one method over a request struct rather than adding a fifth.
 - 2026-09-22: `python/photonic_router/static_obstacle_builder.py` already declares an `ObstacleMapBuilder` Protocol. Milestone 5 keeps that pattern and extends it to the other stages.

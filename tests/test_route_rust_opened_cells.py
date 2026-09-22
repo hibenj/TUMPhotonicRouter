@@ -130,12 +130,17 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
             # read by _configure_router_and_grid (dense-obstacle cap, 2026-09-13)
             self.max_dense_obstacle_cells = 0
 
+    class FakeRouterConfig:
+        def __init__(self, **kwargs: object) -> None:
+            self.__dict__.update(kwargs)
+
     class CapturingRouter:
         def __init__(
             self,
             _grid_spec: FakeBackendGridSpec,
             _primitive_cfg: FakePrimitiveLibraryConfig,
             _astar_cfg: FakeAStarConfig,
+            _router_config: FakeRouterConfig | None = None,
         ) -> None:
             pass
 
@@ -151,6 +156,7 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
         GridSpec=FakeBackendGridSpec,
         PrimitiveLibraryConfig=FakePrimitiveLibraryConfig,
         AStarConfig=FakeAStarConfig,
+        RouterConfig=FakeRouterConfig,
         PyPhotonicRouter=CapturingRouter,
     )
 

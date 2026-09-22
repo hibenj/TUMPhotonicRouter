@@ -5,6 +5,7 @@
 
 pub mod astar;
 pub mod auto_meander;
+pub mod config;
 pub mod crossings;
 pub mod geometry_realization;
 pub mod meander;
@@ -33,6 +34,10 @@ pub use auto_meander::{
     meander_box_to_grid_rect, probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix,
     AutoMeanderConfig, AutoMeanderSidePolicy, AutoRouteAnalyticMeanderPlan,
     AutoRouteAnalyticMeanderProbe, DenseOccupancyPrefix, MeanderGridRect, SparseCellIndex,
+};
+pub use config::{
+    CrossingEngineConfig, KernelDiagnostics, NegotiationConfig, NetNameTrace, RouterConfig,
+    SearchOverrides,
 };
 pub use crossings::{CrossingConfig, CrossingConstraint, CrossingContext, CrossingPair};
 pub use geometry_realization::{

@@ -21,6 +21,10 @@ use crate::auto_meander::{
     AutoMeanderConfig, AutoMeanderPlanningProfile, AutoMeanderSidePolicy, DenseOccupancyPrefix,
     SparseCellIndex,
 };
+use crate::config::{
+    CrossingEngineConfig, KernelDiagnostics, NegotiationConfig, NetNameTrace, RouterConfig,
+    SearchOverrides,
+};
 use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingContext, CrossingGuidance};
 use crate::geometry_realization::{
     anchored_tilt_scale_candidate as anchored_tilt_scale_candidate_rs,
@@ -723,6 +727,14 @@ pub struct PyPhotonicRouter {
     primitive_cfg: PyPrimitiveLibraryConfig,
     astar_cfg: PyAStarConfig,
     astar_cfg_cached: Result<AStarConfig, String>,
+    // Typed configuration tree replacing the `PHOTONIC_ROUTER_*`
+    // environment variables read inside `src/astar.rs` and
+    // `src/py_router.rs` (Milestone 1 of
+    // `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`).
+    // Set once at construction from the optional `router_config` argument
+    // of `PyPhotonicRouter::new` (`RouterConfig::default()` when omitted)
+    // and read wherever this module used to read the environment directly.
+    router_config: RouterConfig,
     obstacle_map: ObstacleMap,
     primitives: PrimitiveLibrary,
     crossing_context: CrossingContext,
@@ -1202,45 +1214,6 @@ const NEGOTIATED_PROBE_GUIDANCE_LOSS: f64 = 0.0;
 /// rolls back to the braid as before (measured 2026-09-16: on the 64x64
 /// mesh in lidar-pure the escalation turned one braid into three single
 /// crossings, 218 vs 217 -- the owner decides its default).
-fn negotiated_braid_escalation_enabled() -> bool {
-    // Off by default since the 2026-09-16 baseline freeze (measured
-    // neutral to slightly negative for lidar-pure: 218 vs 217 crossings on
-    // the 64x64 mesh); `=1` enables it for A/B runs.
-    std::env::var("PHOTONIC_ROUTER_NEGOTIATED_BRAID_ESCALATION")
-        .map(|value| value == "1")
-        .unwrap_or(false)
-}
-
-/// `PHOTONIC_ROUTER_MAX_DENSE_STATES`: per-attempt cap on dense search
-/// states (8 per window cell) for the A* kernel, default
-/// `AStarConfig::default().max_dense_states`. See the 2026-09-16 entry in
-/// `.agent/execplans/2026-09-10-64x64-scaling-benchmarks.md` (128x128 mesh).
-fn configured_max_dense_states() -> usize {
-    max_dense_states_from_env_value(
-        std::env::var("PHOTONIC_ROUTER_MAX_DENSE_STATES")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn max_dense_states_from_env_value(value: Option<&str>) -> usize {
-    let default = AStarConfig::default().max_dense_states;
-    match value.map(str::trim).filter(|v| !v.is_empty()) {
-        Some(v) => v
-            .parse::<usize>()
-            .ok()
-            .filter(|n| *n > 0)
-            .unwrap_or(default),
-        None => default,
-    }
-}
-
-fn negotiated_crossing_free_unplanned_enabled() -> bool {
-    std::env::var("PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED")
-        .map(|value| value != "0")
-        .unwrap_or(true)
-}
-
 /// The rule itself: `planned_net_ids` is the set of nets that appear in at
 /// least one planned pair of the current guidance (`None` = no guidance,
 /// lidar-pure); the last round is always exempt.
@@ -1268,40 +1241,20 @@ fn negotiated_search_budget(
     round: u32,
     max_rounds: u32,
     attempt_index: u32,
+    negotiation: &NegotiationConfig,
 ) -> Option<u64> {
     if round == max_rounds {
         return None;
     }
     if failed_count == 0 {
         if attempt_index == 0 {
-            Some(budget_env_override(
-                "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST",
-                NEGOTIATED_BUDGET_FIRST_ATTEMPT,
-            ))
+            Some(negotiation.budget_first)
         } else {
-            Some(budget_env_override(
-                "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY",
-                NEGOTIATED_BUDGET_FIRST_RETRY,
-            ))
+            Some(negotiation.budget_first_retry)
         }
     } else {
-        Some(budget_env_override(
-            "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY",
-            NEGOTIATED_BUDGET_RETRY,
-        ))
+        Some(negotiation.budget_retry)
     }
-}
-
-/// Experiment knobs for the three negotiated search budgets (2026-09-16,
-/// multiportmmi_128x128: the fan-in nets need 7-9 M expansions, above the
-/// 2 M first / 10 M retry defaults). A positive integer in the variable
-/// replaces the default; anything else keeps it.
-fn budget_env_override(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(default)
 }
 
 impl CrossingReservationBlockers {
@@ -2238,10 +2191,6 @@ fn physical_segment_length(a: (f64, f64), b: (f64, f64)) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
-fn rust_crossing_level2_validation_disabled() -> bool {
-    std::env::var_os("PHOTONIC_ROUTER_DISABLE_RUST_CROSSING_VALIDATION").is_some()
-}
-
 /// The orthogonal repair fallback is DISABLED BY DEFAULT since the
 /// forced-90-degree plan
 /// (`.agent/execplans/2026-09-01-forced-90-degree-route-degradation.md`):
@@ -2253,13 +2202,6 @@ fn rust_crossing_level2_validation_disabled() -> bool {
 /// from failing at net 109 to net 156. Set
 /// PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK to restore the old
 /// behavior.
-fn orthogonal_repair_fallback_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var_os("PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK").is_some()
-    })
-}
-
 fn physical_point_near_centerline_endpoint(
     point: (f64, f64),
     centerline: &[(f64, f64)],
@@ -2938,6 +2880,7 @@ fn parse_heap_tie_breaker(value: &str) -> PyResult<HeapTieBreaker> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn astar_config_from_py(
     astar_cfg: &PyAStarConfig,
     primitive_cfg: &PyPrimitiveLibraryConfig,
@@ -2945,16 +2888,23 @@ fn astar_config_from_py(
     enable_simple_routes: Option<bool>,
     history_weight: Option<f64>,
     long_straight_weight_override: Option<f64>,
+    router_config: &RouterConfig,
 ) -> PyResult<AStarConfig> {
     let allowed_target_angles_mask =
         allowed_angles_to_mask(astar_cfg.allowed_target_angles.as_ref())?;
     let primitive_ordering = parse_primitive_ordering(&astar_cfg.primitive_ordering)?;
     let heuristic_mode = parse_heuristic_mode(&astar_cfg.heuristic_mode)?;
     let heap_tie_breaker = parse_heap_tie_breaker(&astar_cfg.heap_tie_breaker)?;
-    let max_search_time_ms = astar_timeout_ms_from_env()?.unwrap_or(astar_cfg.max_search_time_ms);
+    let max_search_time_ms = router_config
+        .search
+        .astar_timeout_ms
+        .unwrap_or(astar_cfg.max_search_time_ms);
     let long_straight_congestion_weight = match long_straight_weight_override {
         Some(weight) => weight,
-        None => long_straight_congestion_weight_from_env()?.unwrap_or(0.0),
+        None => router_config
+            .search
+            .long_straight_congestion_weight
+            .unwrap_or(0.0),
     };
     if !astar_cfg.proactive_congestion_weight.is_finite()
         || astar_cfg.proactive_congestion_weight < 0.0
@@ -2969,6 +2919,7 @@ fn astar_config_from_py(
         ));
     }
     Ok(AStarConfig {
+        diagnostics: router_config.diagnostics.clone(),
         max_iterations: astar_cfg.max_iterations,
         bend_weight: astar_cfg.bend_weight * primitive_cfg.bend_weight,
         target_tolerance_cells: astar_cfg.target_tolerance_cells,
@@ -2980,7 +2931,11 @@ fn astar_config_from_py(
         routing_window_max_expansions: astar_cfg.routing_window_max_expansions,
         routing_window_fallback_full_grid: astar_cfg.routing_window_fallback_full_grid,
         routing_window_growth: astar_cfg.routing_window_growth,
-        max_dense_states: configured_max_dense_states(),
+        max_dense_states: router_config
+            .search
+            .max_dense_states
+            .filter(|n| *n > 0)
+            .unwrap_or_else(|| AStarConfig::default().max_dense_states),
         max_dense_obstacle_cells: astar_cfg.max_dense_obstacle_cells,
         enable_simple_routes: enable_simple_routes.unwrap_or(astar_cfg.enable_simple_routes),
         simple_route_max_offset_cells: astar_cfg.simple_route_max_offset_cells,
@@ -3008,42 +2963,6 @@ fn astar_config_from_py(
         // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`.
         total_expansion_budget: None,
     })
-}
-
-fn astar_timeout_ms_from_env() -> PyResult<Option<u64>> {
-    if let Ok(value) = std::env::var("PHOTONIC_ROUTER_ASTAR_TIMEOUT_MS") {
-        let parsed = value.trim().parse::<u64>().map_err(|_| {
-            PyValueError::new_err("PHOTONIC_ROUTER_ASTAR_TIMEOUT_MS must be an integer")
-        })?;
-        return Ok(Some(parsed));
-    }
-    if let Ok(value) = std::env::var("PHOTONIC_ROUTER_ASTAR_TIMEOUT_S") {
-        let parsed = value.trim().parse::<f64>().map_err(|_| {
-            PyValueError::new_err("PHOTONIC_ROUTER_ASTAR_TIMEOUT_S must be a number")
-        })?;
-        if !parsed.is_finite() || parsed < 0.0 {
-            return Err(PyValueError::new_err(
-                "PHOTONIC_ROUTER_ASTAR_TIMEOUT_S must be finite and non-negative",
-            ));
-        }
-        return Ok(Some((parsed * 1000.0).ceil() as u64));
-    }
-    Ok(None)
-}
-
-fn long_straight_congestion_weight_from_env() -> PyResult<Option<f64>> {
-    let Ok(value) = std::env::var("PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT") else {
-        return Ok(None);
-    };
-    let parsed = value.trim().parse::<f64>().map_err(|_| {
-        PyValueError::new_err("PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT must be a number")
-    })?;
-    if !parsed.is_finite() || parsed < 0.0 {
-        return Err(PyValueError::new_err(
-            "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT must be finite and non-negative",
-        ));
-    }
-    Ok(Some(parsed))
 }
 
 fn parse_meander_side(side: &str) -> PyResult<MeanderSide> {
@@ -3715,6 +3634,7 @@ impl PyPhotonicRouter {
             }
         }
         CrossingSearchConfig {
+            diagnostics: self.router_config.diagnostics.clone(),
             net_id,
             partners,
             min_straight_cells: crossing_cfg.min_straight_cells_per_crossing,
@@ -5053,7 +4973,7 @@ impl PyPhotonicRouter {
         net_id: u64,
         route: &RouteResult,
     ) -> Option<String> {
-        if rust_crossing_level2_validation_disabled() {
+        if self.router_config.crossing.disable_rust_crossing_validation {
             return None;
         }
         if !self.crossing_context.is_enabled() {
@@ -5194,24 +5114,6 @@ impl PyPhotonicRouter {
         (filtered.len() != opened_ref.len()).then_some(filtered)
     }
 
-    /// `PHOTONIC_ROUTER_TRACE_PLAIN_ROUTE_NET=<net_id>` prints, to stderr,
-    /// the outcome of each stage of `route_single_net_and_commit_native` for
-    /// that net (simple probe, its commit, the plain search, the deferred
-    /// crossing attempt). The stages fall through silently on failure, so
-    /// without this the only visible error is the last fallback's.
-    fn trace_plain_route_net() -> Option<u64> {
-        std::env::var("PHOTONIC_ROUTER_TRACE_PLAIN_ROUTE_NET")
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-    }
-
-    fn pending_straight_ripup_threshold() -> usize {
-        std::env::var("PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(100)
-    }
-
     fn clear_pending_straight_victim_hint(&self, net_id: u64) {
         let mut hint = self.last_pending_straight_victim.borrow_mut();
         if hint.as_ref().is_some_and(|hint| hint.net_id == net_id) {
@@ -5220,7 +5122,10 @@ impl PyPhotonicRouter {
     }
 
     fn remember_pending_straight_victim_hint(&self, net_id: u64, stats: &RouteSearchStats) {
-        let threshold = Self::pending_straight_ripup_threshold();
+        let threshold = self
+            .router_config
+            .negotiation
+            .pending_straight_ripup_threshold;
         if threshold == 0 {
             return;
         }
@@ -5237,7 +5142,7 @@ impl PyPhotonicRouter {
             victim_net_id,
             count,
         });
-        if std::env::var_os("PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG").is_some() {
+        if self.router_config.diagnostics.native_repair_diag {
             eprintln!(
                 "native_repair_pending_straight_hint net={} victim={} count={} threshold={}",
                 net_id, victim_net_id, count, threshold
@@ -5347,11 +5252,12 @@ impl PyPhotonicRouter {
         crossing_search_cfg.enable_simple_routes = false;
         crossing_search_cfg.enable_jps4 = false;
         crossing_search_cfg.routing_window_fallback_full_grid = false;
-        let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
+        let trace_crossing = self
+            .router_config
+            .diagnostics
+            .trace_crossing_net
             .map_or_else(
-                || std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING").is_some(),
+                || self.router_config.diagnostics.trace_crossing,
                 |trace_net_id| trace_net_id == net_id,
             );
         if trace_crossing {
@@ -5435,7 +5341,8 @@ impl PyPhotonicRouter {
         } else {
             &crossed_partner_ids
         };
-        let skip_rust_level2_validation = rust_crossing_level2_validation_disabled();
+        let skip_rust_level2_validation =
+            self.router_config.crossing.disable_rust_crossing_validation;
         let route_has_no_unresolved_grid_crossings = skip_rust_level2_validation
             || self
                 .invalid_crossing_intersections_for_route(net_id, &result, &search_partner_ids)
@@ -5654,11 +5561,12 @@ impl PyPhotonicRouter {
         // lower as a circuit breaker for the infeasible case -- still ~15x
         // more headroom than any observed real success.
         crossing_search_cfg.max_iterations = crossing_search_cfg.max_iterations.min(500_000);
-        let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
+        let trace_crossing = self
+            .router_config
+            .diagnostics
+            .trace_crossing_net
             .map_or_else(
-                || std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING").is_some(),
+                || self.router_config.diagnostics.trace_crossing,
                 |trace_net_id| trace_net_id == net_id,
             );
         if trace_crossing {
@@ -5930,10 +5838,7 @@ impl PyPhotonicRouter {
     }
 
     fn trace_committed_partner_centerline_compare(&self, net_id: u64, partner_id: u64) {
-        let Some(requested_partner_id) = std::env::var("PHOTONIC_ROUTER_TRACE_PARTNER_NET")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-        else {
+        let Some(requested_partner_id) = self.router_config.diagnostics.trace_partner_net else {
             return;
         };
         if requested_partner_id != partner_id {
@@ -6488,13 +6393,13 @@ impl PyPhotonicRouter {
         target_port_um: Option<(f64, f64)>,
         violations: &[InvalidCrossingIntersection],
     ) {
-        let Some(filter) = std::env::var_os("PHOTONIC_ROUTER_CROSSING_MISMATCH_DUMP") else {
+        if !self.router_config.diagnostics.crossing_mismatch_dump {
             return;
-        };
+        }
         if violations.is_empty() {
             return;
         }
-        if let Some(requested) = filter.to_str().and_then(|value| value.parse::<u64>().ok()) {
+        if let Some(requested) = self.router_config.diagnostics.crossing_mismatch_dump_net {
             if requested != net_id {
                 return;
             }
@@ -6561,7 +6466,7 @@ impl PyPhotonicRouter {
         target_port_um: Option<(f64, f64)>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
     ) -> Result<(), String> {
-        if rust_crossing_level2_validation_disabled() {
+        if self.router_config.crossing.disable_rust_crossing_validation {
             return Ok(());
         }
         // Post-commit context: this net's own crossing events were already
@@ -6580,7 +6485,7 @@ impl PyPhotonicRouter {
             return Ok(());
         }
         self.dump_crossing_mismatch(net_id, route, source_port_um, target_port_um, &violations);
-        if std::env::var_os("PHOTONIC_ROUTER_CROSSING_MISMATCH_FATAL").is_some() {
+        if self.router_config.diagnostics.crossing_mismatch_fatal {
             panic!(
                 "crossing mismatch fatal (net {}): the crossing-aware search returned a route \
                  that fails realized-crossing validation; first violation: net {} intersects \
@@ -6821,11 +6726,12 @@ impl PyPhotonicRouter {
             None,
             Some(require_all_expected_partners),
         );
-        let trace_crossing = std::env::var("PHOTONIC_ROUTER_TRACE_CROSSING_NET")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
+        let trace_crossing = self
+            .router_config
+            .diagnostics
+            .trace_crossing_net
             .map_or_else(
-                || std::env::var_os("PHOTONIC_ROUTER_TRACE_CROSSING").is_some(),
+                || self.router_config.diagnostics.trace_crossing,
                 |trace_net_id| trace_net_id == net_id,
             );
         if trace_crossing {
@@ -7109,7 +7015,7 @@ impl PyPhotonicRouter {
                     &cfg,
                 )
             };
-            let trace_plain = Self::trace_plain_route_net() == Some(net_id);
+            let trace_plain = self.router_config.diagnostics.trace_plain_route_net == Some(net_id);
             if trace_plain {
                 eprintln!(
                     "trace_plain_route net={net_id} stage=simple_probe found={}",
@@ -7337,7 +7243,7 @@ impl PyPhotonicRouter {
         if lidar_pure_crossing_attempted && !probe_halo_only_conflict {
             return Err("No legal LiDAR crossing route found".to_string());
         }
-        if Self::trace_plain_route_net() == Some(net_id) {
+        if self.router_config.diagnostics.trace_plain_route_net == Some(net_id) {
             eprintln!(
                 "trace_plain_route net={net_id} stage=ordinary_search lidar_pure_attempted={lidar_pure_crossing_attempted} halo_only_conflict={probe_halo_only_conflict}"
             );
@@ -8189,7 +8095,13 @@ impl PyPhotonicRouter {
             source_port_um,
             target_port_um,
         );
-        if normal_result.is_ok() || !prefer_orthogonal || !orthogonal_repair_fallback_enabled() {
+        if normal_result.is_ok()
+            || !prefer_orthogonal
+            || !self
+                .router_config
+                .negotiation
+                .enable_orthogonal_repair_fallback
+        {
             return normal_result;
         }
         self.route_single_net_and_commit_orthogonal_native_with_repair_keepout(
@@ -8665,10 +8577,8 @@ impl PyPhotonicRouter {
             // .agent/execplans/2026-08-19-collision-avoiding-endpoint-correction.md.
             // The post-construction check below is left unchanged and still
             // runs as a defense-in-depth backstop.
-            let trace_net = std::env::var("PHOTONIC_ROUTER_TRACE_ENDPOINT_CORRECTION_NET")
-                .ok()
-                .and_then(|value| value.trim().parse::<u64>().ok())
-                == Some(net_id);
+            let trace_net =
+                self.router_config.diagnostics.trace_endpoint_correction_net == Some(net_id);
             let candidate_collision_check = |candidate: &[(f64, f64)]| -> bool {
                 let Ok(candidate_cells) = centerline_core_cells(candidate, width_um, &static_grid)
                 else {
@@ -8886,15 +8796,13 @@ impl PyPhotonicRouter {
         let commit_clearance_exempt_keys = pack_cells(&commit_clearance_exempt_cell_vec);
         let mut rejection_details = Vec::new();
         let endpoint_bump_trace_net_id = net_id.to_string();
-        let trace_endpoint_bumps = std::env::var("PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS")
-            .ok()
-            .map(|raw| {
-                raw.split(',').any(|item| {
-                    let item = item.trim();
-                    item == "*" || item == endpoint_bump_trace_net_id
-                })
-            })
-            .unwrap_or(false);
+        let trace_endpoint_bumps = match &self.router_config.diagnostics.trace_endpoint_bump_nets {
+            NetNameTrace::All => true,
+            NetNameTrace::Names(names) => {
+                names.iter().any(|name| *name == endpoint_bump_trace_net_id)
+            }
+            NetNameTrace::None => false,
+        };
 
         for (candidate_index, candidate) in candidates.into_iter().enumerate() {
             let candidate_label = candidate.label;
@@ -9165,15 +9073,13 @@ impl PyPhotonicRouter {
         let opened_keys = pack_cells(opened_cells);
         let clearance_exempt_keys = pack_cells(clearance_exempt_cells);
         let endpoint_bump_trace_net_id = net_id.to_string();
-        let trace_endpoint_bumps = std::env::var("PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS")
-            .ok()
-            .map(|raw| {
-                raw.split(',').any(|item| {
-                    let item = item.trim();
-                    item == "*" || item == endpoint_bump_trace_net_id
-                })
-            })
-            .unwrap_or(false);
+        let trace_endpoint_bumps = match &self.router_config.diagnostics.trace_endpoint_bump_nets {
+            NetNameTrace::All => true,
+            NetNameTrace::Names(names) => {
+                names.iter().any(|name| *name == endpoint_bump_trace_net_id)
+            }
+            NetNameTrace::None => false,
+        };
 
         if let Ok(corrected_centerline) = centerline_to_port_corrected_centerline_with_options_rs(
             centerline,
@@ -12370,7 +12276,7 @@ impl PyPhotonicRouter {
                     }
                     Err(error) => {
                         batch.timings.reroute_victims_failed_wall_us += repair_elapsed_us;
-                        if std::env::var_os("PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG").is_some() {
+                        if self.router_config.diagnostics.native_repair_diag {
                             eprintln!(
                                 "{}native_repair_victim_reroute_failed bucket={} net={} victim={} net_waypoints={:?} normal_error={} repair_error={}",
                                 trace_t(self.negotiated_batch_start),
@@ -12725,7 +12631,7 @@ impl PyPhotonicRouter {
         skip_pairs: Option<&FxHashSet<(u64, u64)>>,
         escalate_victim: bool,
     ) -> Option<BraidRepairOutcome> {
-        if std::env::var_os("PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR").is_some() {
+        if self.router_config.negotiation.disable_braid_repair {
             return None;
         }
         let mut counts: FxHashMap<u64, usize> = FxHashMap::default();
@@ -12913,7 +12819,7 @@ impl PyPhotonicRouter {
         ripped_victims: &mut Vec<u64>,
     ) -> u32 {
         let mut kept_count = 0u32;
-        let escalate = negotiated_braid_escalation_enabled();
+        let escalate = self.router_config.negotiation.braid_escalation;
         self.negotiated_search_budget = Some(NEGOTIATED_BUDGET_BRAID);
         for _ in 0..NEGOTIATED_BRAID_MAX_PASSES {
             let braid_outcome = self.try_braid_repair(
@@ -13414,11 +13320,17 @@ impl PyPhotonicRouter {
     }
 
     #[new]
+    #[pyo3(signature=(grid_spec, primitive_config, astar_config, router_config=None))]
     fn new(
         grid_spec: PyGridSpec,
         primitive_config: PyPrimitiveLibraryConfig,
         astar_config: PyAStarConfig,
+        router_config: Option<PyRouterConfig>,
     ) -> Self {
+        let router_config: RouterConfig = router_config
+            .as_ref()
+            .map(RouterConfig::from)
+            .unwrap_or_default();
         let primitives = if primitive_config.jps4_unit_grid {
             create_jps4_unit_grid_primitive_library(primitive_config.grid_size_um)
         } else if primitive_config.grid4_unit_grid {
@@ -13432,15 +13344,23 @@ impl PyPhotonicRouter {
                 allow_45_degree_turns: primitive_config.allow_45_degree_turns,
             })
         };
-        let astar_cfg_cached =
-            astar_config_from_py(&astar_config, &primitive_config, None, None, None, None)
-                .map_err(|err| err.to_string());
+        let astar_cfg_cached = astar_config_from_py(
+            &astar_config,
+            &primitive_config,
+            None,
+            None,
+            None,
+            None,
+            &router_config,
+        )
+        .map_err(|err| err.to_string());
         Self {
             obstacle_map: ObstacleMap::new(grid_spec.width as i32, grid_spec.height as i32),
             grid: grid_spec,
             primitive_cfg: primitive_config,
             astar_cfg: astar_config,
             astar_cfg_cached,
+            router_config,
             primitives,
             crossing_context: CrossingContext::default(),
             committed_center_routes: FxHashMap::default(),
@@ -14387,8 +14307,8 @@ impl PyPhotonicRouter {
                 .or_default()
                 .push(index);
         }
-        let trace_native_progress = std::env::var_os("PHOTONIC_ROUTER_NATIVE_PROGRESS").is_some();
-        let trace_native_repair = std::env::var_os("PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG").is_some();
+        let trace_native_progress = self.router_config.diagnostics.native_progress;
+        let trace_native_repair = self.router_config.diagnostics.native_repair_diag;
 
         let mut queue: std::collections::VecDeque<usize> = (0..native_jobs.len()).collect();
         'route_jobs: loop {
@@ -14537,9 +14457,11 @@ impl PyPhotonicRouter {
             // still takes it as a parameter for its own "guided" per-victim
             // attempt.
             let guided_collision_crossing_enabled =
-                std::env::var_os("PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING").is_some()
-                    && std::env::var_os("PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING")
-                        .is_none();
+                self.router_config.crossing.enable_guided_collision_crossing
+                    && !self
+                        .router_config
+                        .crossing
+                        .disable_guided_collision_crossing;
             match self.try_localized_crossing_keepout_retry(
                 &mut batch,
                 &probe,
@@ -14946,7 +14868,7 @@ impl PyPhotonicRouter {
         // history-cost steering; see this milestone's Surprises &
         // Discoveries for the measurements that found this.
         let collect_native_timing = self.astar_cfg.collect_detailed_timing;
-        let trace_native_repair = std::env::var_os("PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG").is_some();
+        let trace_native_repair = self.router_config.diagnostics.native_repair_diag;
         // Timestamps every `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG` trace line
         // this loop (and the two helpers it shares with the older chain,
         // `probe_net_for_repair`/`try_lidar_direct_crossing_subset`) emits
@@ -15019,7 +14941,7 @@ impl PyPhotonicRouter {
         // (`negotiated_crossing_free_net`): the nets named by at least one
         // planned pair of the guidance, `None` without guidance.
         let planned_net_ids: Option<FxHashSet<u64>> =
-            if negotiated_crossing_free_unplanned_enabled() {
+            if self.router_config.negotiation.crossing_free_unplanned {
                 self.crossing_context.guidance().map(|guidance| {
                     guidance
                         .pairs()
@@ -15153,8 +15075,13 @@ impl PyPhotonicRouter {
                     } else {
                         None
                     };
-                let net_search_budget =
-                    negotiated_search_budget(my_failed_count, round, max_rounds, 0);
+                let net_search_budget = negotiated_search_budget(
+                    my_failed_count,
+                    round,
+                    max_rounds,
+                    0,
+                    &self.router_config.negotiation,
+                );
                 let crossing_free = negotiated_crossing_free_net(
                     planned_net_ids.as_ref(),
                     net_id,
@@ -15225,8 +15152,13 @@ impl PyPhotonicRouter {
                     && my_failed_count == 0
                     && round != max_rounds
                 {
-                    let plain_retry_budget =
-                        negotiated_search_budget(my_failed_count, round, max_rounds, 1);
+                    let plain_retry_budget = negotiated_search_budget(
+                        my_failed_count,
+                        round,
+                        max_rounds,
+                        1,
+                        &self.router_config.negotiation,
+                    );
                     let plain_retry_start = Instant::now();
                     self.negotiated_search_budget = plain_retry_budget;
                     self.negotiated_crossing_free_search = crossing_free;
@@ -15805,7 +15737,7 @@ impl PyPhotonicRouter {
             );
         }
         self.long_straight_weight_override = None;
-                        self.negotiated_batch_start = None;
+        self.negotiated_batch_start = None;
 
         self.build_native_batch_result_dict(py, &native_jobs, &mut batch, collect_native_timing)
     }
@@ -18193,10 +18125,303 @@ impl PyPhotonicRouter {
     }
 }
 
+/// Binding for `crate::config::RouterConfig` (Milestone 1 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`):
+/// every field the Python side used to set via a `PHOTONIC_ROUTER_*`
+/// environment variable, now passed explicitly. Field names are flat,
+/// prefixed by group (`negotiation_*`, `search_*`, `crossing_*`,
+/// `diag_*`), and every default equals today's environment-unset default.
+#[pyclass(name = "RouterConfig")]
+#[derive(Clone)]
+pub struct PyRouterConfig {
+    #[pyo3(get)]
+    pub negotiation_budget_first: u64,
+    #[pyo3(get)]
+    pub negotiation_budget_first_retry: u64,
+    #[pyo3(get)]
+    pub negotiation_budget_retry: u64,
+    #[pyo3(get)]
+    pub negotiation_braid_escalation: bool,
+    #[pyo3(get)]
+    pub negotiation_crossing_free_unplanned: bool,
+    #[pyo3(get)]
+    pub negotiation_disable_braid_repair: bool,
+    #[pyo3(get)]
+    pub negotiation_pending_straight_ripup_threshold: usize,
+    #[pyo3(get)]
+    pub negotiation_enable_orthogonal_repair_fallback: bool,
+    #[pyo3(get)]
+    pub search_astar_timeout_ms: Option<u64>,
+    #[pyo3(get)]
+    pub search_max_dense_states: Option<usize>,
+    #[pyo3(get)]
+    pub search_long_straight_congestion_weight: Option<f64>,
+    #[pyo3(get)]
+    pub crossing_enable_guided_collision_crossing: bool,
+    #[pyo3(get)]
+    pub crossing_disable_guided_collision_crossing: bool,
+    #[pyo3(get)]
+    pub crossing_disable_rust_crossing_validation: bool,
+    #[pyo3(get)]
+    pub diag_native_progress: bool,
+    #[pyo3(get)]
+    pub diag_native_repair_diag: bool,
+    #[pyo3(get)]
+    pub diag_search_failure_diag: bool,
+    #[pyo3(get)]
+    pub diag_search_failure_map: Option<Vec<i32>>,
+    #[pyo3(get)]
+    pub diag_chain_diag: bool,
+    #[pyo3(get)]
+    pub diag_hot_loop_timing: bool,
+    #[pyo3(get)]
+    pub diag_move_diag: bool,
+    #[pyo3(get)]
+    pub diag_move_diag_cell: Option<(i32, i32)>,
+    #[pyo3(get)]
+    pub diag_pop_diag_below_y: Option<i32>,
+    #[pyo3(get)]
+    pub diag_probe_cells: Vec<(i32, i32)>,
+    #[pyo3(get)]
+    pub diag_trace_crossing: bool,
+    #[pyo3(get)]
+    pub diag_trace_crossing_net: Option<u64>,
+    #[pyo3(get)]
+    pub diag_trace_crossing_candidates: bool,
+    #[pyo3(get)]
+    pub diag_trace_crossing_candidate_max: usize,
+    #[pyo3(get)]
+    pub diag_trace_crossing_level1: bool,
+    #[pyo3(get)]
+    pub diag_trace_crossing_pending: bool,
+    #[pyo3(get)]
+    pub diag_trace_crossing_pending_threshold: Option<usize>,
+    #[pyo3(get)]
+    pub diag_trace_crossing_perp_reject_threshold: Option<usize>,
+    #[pyo3(get)]
+    pub diag_trace_partner_net: Option<u64>,
+    #[pyo3(get)]
+    pub diag_trace_plain_route_net: Option<u64>,
+    #[pyo3(get)]
+    pub diag_trace_endpoint_bump_nets: Option<Vec<String>>,
+    #[pyo3(get)]
+    pub diag_trace_endpoint_bump_all_nets: bool,
+    #[pyo3(get)]
+    pub diag_trace_endpoint_correction_net: Option<u64>,
+    #[pyo3(get)]
+    pub diag_crossing_mismatch_dump: bool,
+    #[pyo3(get)]
+    pub diag_crossing_mismatch_dump_net: Option<u64>,
+    #[pyo3(get)]
+    pub diag_crossing_mismatch_fatal: bool,
+    #[pyo3(get)]
+    pub diag_analysis_crossing_partner_counters: bool,
+}
+
+#[pymethods]
+impl PyRouterConfig {
+    #[new]
+    #[pyo3(signature=(
+        negotiation_budget_first=2_000_000,
+        negotiation_budget_first_retry=10_000_000,
+        negotiation_budget_retry=30_000_000,
+        negotiation_braid_escalation=false,
+        negotiation_crossing_free_unplanned=true,
+        negotiation_disable_braid_repair=false,
+        negotiation_pending_straight_ripup_threshold=100,
+        negotiation_enable_orthogonal_repair_fallback=false,
+        search_astar_timeout_ms=None,
+        search_max_dense_states=None,
+        search_long_straight_congestion_weight=None,
+        crossing_enable_guided_collision_crossing=false,
+        crossing_disable_guided_collision_crossing=false,
+        crossing_disable_rust_crossing_validation=false,
+        diag_native_progress=false,
+        diag_native_repair_diag=false,
+        diag_search_failure_diag=false,
+        diag_search_failure_map=None,
+        diag_chain_diag=false,
+        diag_hot_loop_timing=false,
+        diag_move_diag=false,
+        diag_move_diag_cell=None,
+        diag_pop_diag_below_y=None,
+        diag_probe_cells=Vec::new(),
+        diag_trace_crossing=false,
+        diag_trace_crossing_net=None,
+        diag_trace_crossing_candidates=false,
+        diag_trace_crossing_candidate_max=120,
+        diag_trace_crossing_level1=false,
+        diag_trace_crossing_pending=false,
+        diag_trace_crossing_pending_threshold=None,
+        diag_trace_crossing_perp_reject_threshold=None,
+        diag_trace_partner_net=None,
+        diag_trace_plain_route_net=None,
+        diag_trace_endpoint_bump_nets=None,
+        diag_trace_endpoint_bump_all_nets=false,
+        diag_trace_endpoint_correction_net=None,
+        diag_crossing_mismatch_dump=false,
+        diag_crossing_mismatch_dump_net=None,
+        diag_crossing_mismatch_fatal=false,
+        diag_analysis_crossing_partner_counters=false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        negotiation_budget_first: u64,
+        negotiation_budget_first_retry: u64,
+        negotiation_budget_retry: u64,
+        negotiation_braid_escalation: bool,
+        negotiation_crossing_free_unplanned: bool,
+        negotiation_disable_braid_repair: bool,
+        negotiation_pending_straight_ripup_threshold: usize,
+        negotiation_enable_orthogonal_repair_fallback: bool,
+        search_astar_timeout_ms: Option<u64>,
+        search_max_dense_states: Option<usize>,
+        search_long_straight_congestion_weight: Option<f64>,
+        crossing_enable_guided_collision_crossing: bool,
+        crossing_disable_guided_collision_crossing: bool,
+        crossing_disable_rust_crossing_validation: bool,
+        diag_native_progress: bool,
+        diag_native_repair_diag: bool,
+        diag_search_failure_diag: bool,
+        diag_search_failure_map: Option<Vec<i32>>,
+        diag_chain_diag: bool,
+        diag_hot_loop_timing: bool,
+        diag_move_diag: bool,
+        diag_move_diag_cell: Option<(i32, i32)>,
+        diag_pop_diag_below_y: Option<i32>,
+        diag_probe_cells: Vec<(i32, i32)>,
+        diag_trace_crossing: bool,
+        diag_trace_crossing_net: Option<u64>,
+        diag_trace_crossing_candidates: bool,
+        diag_trace_crossing_candidate_max: usize,
+        diag_trace_crossing_level1: bool,
+        diag_trace_crossing_pending: bool,
+        diag_trace_crossing_pending_threshold: Option<usize>,
+        diag_trace_crossing_perp_reject_threshold: Option<usize>,
+        diag_trace_partner_net: Option<u64>,
+        diag_trace_plain_route_net: Option<u64>,
+        diag_trace_endpoint_bump_nets: Option<Vec<String>>,
+        diag_trace_endpoint_bump_all_nets: bool,
+        diag_trace_endpoint_correction_net: Option<u64>,
+        diag_crossing_mismatch_dump: bool,
+        diag_crossing_mismatch_dump_net: Option<u64>,
+        diag_crossing_mismatch_fatal: bool,
+        diag_analysis_crossing_partner_counters: bool,
+    ) -> Self {
+        Self {
+            negotiation_budget_first,
+            negotiation_budget_first_retry,
+            negotiation_budget_retry,
+            negotiation_braid_escalation,
+            negotiation_crossing_free_unplanned,
+            negotiation_disable_braid_repair,
+            negotiation_pending_straight_ripup_threshold,
+            negotiation_enable_orthogonal_repair_fallback,
+            search_astar_timeout_ms,
+            search_max_dense_states,
+            search_long_straight_congestion_weight,
+            crossing_enable_guided_collision_crossing,
+            crossing_disable_guided_collision_crossing,
+            crossing_disable_rust_crossing_validation,
+            diag_native_progress,
+            diag_native_repair_diag,
+            diag_search_failure_diag,
+            diag_search_failure_map,
+            diag_chain_diag,
+            diag_hot_loop_timing,
+            diag_move_diag,
+            diag_move_diag_cell,
+            diag_pop_diag_below_y,
+            diag_probe_cells,
+            diag_trace_crossing,
+            diag_trace_crossing_net,
+            diag_trace_crossing_candidates,
+            diag_trace_crossing_candidate_max,
+            diag_trace_crossing_level1,
+            diag_trace_crossing_pending,
+            diag_trace_crossing_pending_threshold,
+            diag_trace_crossing_perp_reject_threshold,
+            diag_trace_partner_net,
+            diag_trace_plain_route_net,
+            diag_trace_endpoint_bump_nets,
+            diag_trace_endpoint_bump_all_nets,
+            diag_trace_endpoint_correction_net,
+            diag_crossing_mismatch_dump,
+            diag_crossing_mismatch_dump_net,
+            diag_crossing_mismatch_fatal,
+            diag_analysis_crossing_partner_counters,
+        }
+    }
+}
+
+impl From<&PyRouterConfig> for RouterConfig {
+    fn from(cfg: &PyRouterConfig) -> Self {
+        let trace_endpoint_bump_nets = if cfg.diag_trace_endpoint_bump_all_nets {
+            NetNameTrace::All
+        } else if let Some(names) = cfg.diag_trace_endpoint_bump_nets.clone() {
+            NetNameTrace::Names(names)
+        } else {
+            NetNameTrace::None
+        };
+        RouterConfig {
+            negotiation: NegotiationConfig {
+                budget_first: cfg.negotiation_budget_first,
+                budget_first_retry: cfg.negotiation_budget_first_retry,
+                budget_retry: cfg.negotiation_budget_retry,
+                braid_escalation: cfg.negotiation_braid_escalation,
+                crossing_free_unplanned: cfg.negotiation_crossing_free_unplanned,
+                disable_braid_repair: cfg.negotiation_disable_braid_repair,
+                pending_straight_ripup_threshold: cfg.negotiation_pending_straight_ripup_threshold,
+                enable_orthogonal_repair_fallback: cfg
+                    .negotiation_enable_orthogonal_repair_fallback,
+            },
+            search: SearchOverrides {
+                astar_timeout_ms: cfg.search_astar_timeout_ms,
+                max_dense_states: cfg.search_max_dense_states,
+                long_straight_congestion_weight: cfg.search_long_straight_congestion_weight,
+            },
+            crossing: CrossingEngineConfig {
+                enable_guided_collision_crossing: cfg.crossing_enable_guided_collision_crossing,
+                disable_guided_collision_crossing: cfg.crossing_disable_guided_collision_crossing,
+                disable_rust_crossing_validation: cfg.crossing_disable_rust_crossing_validation,
+            },
+            diagnostics: KernelDiagnostics {
+                native_progress: cfg.diag_native_progress,
+                native_repair_diag: cfg.diag_native_repair_diag,
+                search_failure_diag: cfg.diag_search_failure_diag,
+                search_failure_map: cfg.diag_search_failure_map.clone(),
+                chain_diag: cfg.diag_chain_diag,
+                hot_loop_timing: cfg.diag_hot_loop_timing,
+                move_diag: cfg.diag_move_diag,
+                move_diag_cell: cfg.diag_move_diag_cell,
+                pop_diag_below_y: cfg.diag_pop_diag_below_y,
+                probe_cells: cfg.diag_probe_cells.clone(),
+                trace_crossing: cfg.diag_trace_crossing,
+                trace_crossing_net: cfg.diag_trace_crossing_net,
+                trace_crossing_candidates: cfg.diag_trace_crossing_candidates,
+                trace_crossing_candidate_max: cfg.diag_trace_crossing_candidate_max,
+                trace_crossing_level1: cfg.diag_trace_crossing_level1,
+                trace_crossing_pending: cfg.diag_trace_crossing_pending,
+                trace_crossing_pending_threshold: cfg.diag_trace_crossing_pending_threshold,
+                trace_crossing_perp_reject_threshold: cfg.diag_trace_crossing_perp_reject_threshold,
+                trace_partner_net: cfg.diag_trace_partner_net,
+                trace_plain_route_net: cfg.diag_trace_plain_route_net,
+                trace_endpoint_bump_nets,
+                trace_endpoint_correction_net: cfg.diag_trace_endpoint_correction_net,
+                crossing_mismatch_dump: cfg.diag_crossing_mismatch_dump,
+                crossing_mismatch_dump_net: cfg.diag_crossing_mismatch_dump_net,
+                crossing_mismatch_fatal: cfg.diag_crossing_mismatch_fatal,
+                analysis_crossing_partner_counters: cfg.diag_analysis_crossing_partner_counters,
+            },
+        }
+    }
+}
+
 pub fn register_py_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGridSpec>()?;
     m.add_class::<PyPrimitiveLibraryConfig>()?;
     m.add_class::<PyAStarConfig>()?;
+    m.add_class::<PyRouterConfig>()?;
     m.add_class::<PyCrossingConfig>()?;
     m.add_class::<PyCrossingConstraint>()?;
     m.add_class::<PyState>()?;
@@ -18756,28 +18981,54 @@ mod tests {
     /// last round is always unbounded.
     #[test]
     fn negotiated_search_budget_sequence_matches_failed_count() {
+        let negotiation = NegotiationConfig::default();
         // Fresh net, mid-run round: (2 M, 10 M).
         assert_eq!(
-            negotiated_search_budget(0, 1, 8, 0),
+            negotiated_search_budget(0, 1, 8, 0, &negotiation),
             Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT)
         );
         assert_eq!(
-            negotiated_search_budget(0, 1, 8, 1),
+            negotiated_search_budget(0, 1, 8, 1, &negotiation),
             Some(NEGOTIATED_BUDGET_FIRST_RETRY)
         );
         // A net that has already failed once this epoch: a single attempt
         // at the larger retry budget, regardless of attempt_index.
         assert_eq!(
-            negotiated_search_budget(1, 1, 8, 0),
+            negotiated_search_budget(1, 1, 8, 0, &negotiation),
             Some(NEGOTIATED_BUDGET_RETRY)
         );
         assert_eq!(
-            negotiated_search_budget(1, 1, 8, 1),
+            negotiated_search_budget(1, 1, 8, 1, &negotiation),
             Some(NEGOTIATED_BUDGET_RETRY)
         );
         // The last round is always unbounded, fresh or already-failed.
-        assert_eq!(negotiated_search_budget(0, 8, 8, 0), None);
-        assert_eq!(negotiated_search_budget(1, 8, 8, 0), None);
+        assert_eq!(negotiated_search_budget(0, 8, 8, 0, &negotiation), None);
+        assert_eq!(negotiated_search_budget(1, 8, 8, 0, &negotiation), None);
+    }
+
+    /// Config path: a custom `NegotiationConfig` (replacing
+    /// `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_*`) picks the budget instead of
+    /// the constants.
+    #[test]
+    fn negotiated_search_budget_uses_configured_values() {
+        let negotiation = NegotiationConfig {
+            budget_first: 111,
+            budget_first_retry: 222,
+            budget_retry: 333,
+            ..NegotiationConfig::default()
+        };
+        assert_eq!(
+            negotiated_search_budget(0, 1, 8, 0, &negotiation),
+            Some(111)
+        );
+        assert_eq!(
+            negotiated_search_budget(0, 1, 8, 1, &negotiation),
+            Some(222)
+        );
+        assert_eq!(
+            negotiated_search_budget(1, 1, 8, 0, &negotiation),
+            Some(333)
+        );
     }
 
     /// Milestone 5 of
@@ -18819,6 +19070,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         assert_eq!(router.negotiated_search_budget, None);
         let cfg = router
@@ -18882,6 +19134,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.negotiated_search_budget = Some(NEGOTIATED_BUDGET_BRAID);
         let cfg = router
@@ -18928,6 +19181,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         )
     }
 
@@ -19327,6 +19581,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.set_collision_crossing_routing(true);
         router.crossing_context.set_config(CrossingConfig {
@@ -19850,6 +20105,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
 
         let mut setup_batch = RepairBatchState {
@@ -20118,6 +20374,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.set_collision_crossing_routing(true);
         router.crossing_context.set_config(CrossingConfig {
@@ -20565,16 +20822,79 @@ mod tests {
         }
     }
 
+    /// Config path (replacing `PHOTONIC_ROUTER_MAX_DENSE_STATES`):
+    /// `RouterConfig.search.max_dense_states` overrides `AStarConfig`'s own
+    /// default only when it is `Some` and positive.
     #[test]
-    fn max_dense_states_env_value_overrides_only_with_a_positive_integer() {
+    fn router_config_max_dense_states_overrides_only_when_positive() {
         let default = AStarConfig::default().max_dense_states;
         assert_eq!(default, 100_000_000);
-        assert_eq!(max_dense_states_from_env_value(None), default);
-        assert_eq!(max_dense_states_from_env_value(Some("")), default);
-        assert_eq!(max_dense_states_from_env_value(Some("abc")), default);
-        assert_eq!(max_dense_states_from_env_value(Some("0")), default);
+        let astar_cfg = PyAStarConfig::new(
+            10000,
+            1.0,
+            0,
+            true,
+            None,
+            true,
+            12,
+            0.35,
+            3,
+            true,
+            0.5,
+            10_000_000,
+            false,
+            0.0,
+            0.0,
+            0,
+            false,
+            false,
+            "library".to_string(),
+            "distance".to_string(),
+            1.0,
+        );
+        let primitive_cfg = PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true);
+
+        let unset = RouterConfig::default();
         assert_eq!(
-            max_dense_states_from_env_value(Some(" 30000000 ")),
+            astar_config_from_py(&astar_cfg, &primitive_cfg, None, None, None, None, &unset)
+                .unwrap()
+                .max_dense_states,
+            default
+        );
+
+        let zero = RouterConfig {
+            search: SearchOverrides {
+                max_dense_states: Some(0),
+                ..SearchOverrides::default()
+            },
+            ..RouterConfig::default()
+        };
+        assert_eq!(
+            astar_config_from_py(&astar_cfg, &primitive_cfg, None, None, None, None, &zero)
+                .unwrap()
+                .max_dense_states,
+            default
+        );
+
+        let overridden = RouterConfig {
+            search: SearchOverrides {
+                max_dense_states: Some(30_000_000),
+                ..SearchOverrides::default()
+            },
+            ..RouterConfig::default()
+        };
+        assert_eq!(
+            astar_config_from_py(
+                &astar_cfg,
+                &primitive_cfg,
+                None,
+                None,
+                None,
+                None,
+                &overridden
+            )
+            .unwrap()
+            .max_dense_states,
             30_000_000
         );
     }
@@ -21294,6 +21614,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         assert!(!router.primitives.get_primitives_for_angle(0).is_empty());
     }
@@ -21465,6 +21786,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
 
         let keepout = router.crossing_error_repair_keepout_keys(
@@ -21503,6 +21825,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
 
         let keepout = router.dynamic_commit_error_repair_keepout_keys(
@@ -21542,6 +21865,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
 
         let mut learned_keepout = FxHashSet::default();
@@ -21604,6 +21928,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let error = "Failed to commit routed cells to obstacle map: dynamic_overlap_count=1 dynamic_overlap_owners=[33] dynamic_overlap_bbox=(10,10,20,20) dynamic_overlap_sample=(10,20)";
         assert_eq!(dynamic_commit_error_overlap_owner_ids(error), vec![33]);
@@ -21799,6 +22124,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
@@ -21865,6 +22191,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context = CrossingContext::new(
             CrossingConfig {
@@ -21932,6 +22259,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context = CrossingContext::new(
             CrossingConfig {
@@ -22010,6 +22338,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context = CrossingContext::new(
             CrossingConfig {
@@ -22063,6 +22392,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context = CrossingContext::new(
             CrossingConfig {
@@ -22166,6 +22496,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context = CrossingContext::new(
             CrossingConfig {
@@ -22245,6 +22576,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context = CrossingContext::new(
             CrossingConfig {
@@ -22347,6 +22679,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context = CrossingContext::new(
             CrossingConfig {
@@ -22445,6 +22778,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context = CrossingContext::new(
             CrossingConfig {
@@ -22525,6 +22859,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context = CrossingContext::new(
             CrossingConfig {
@@ -22586,6 +22921,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
@@ -22662,6 +22998,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
@@ -22716,6 +23053,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.set_collision_crossing_routing(true);
         assert!(router.obstacle_map.commit_route(1, &[(3, 3)]));
@@ -22884,6 +23222,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
@@ -22984,6 +23323,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
@@ -23128,6 +23468,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let route = PyRouteResult {
             states: vec![PyState::new(1, 2, 0), PyState::new(13, 2, 0)],
@@ -23252,6 +23593,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let route = PyRouteResult {
             states: vec![PyState::new(1, 2, 0), PyState::new(13, 2, 0)],
@@ -23393,6 +23735,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let route = PyRouteResult {
             states: vec![PyState::new(1, 2, 0), PyState::new(13, 2, 0)],
@@ -23525,6 +23868,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.add_static_cells(vec![(3, 3)]);
         let route = PyRouteResult {
@@ -23652,6 +23996,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         router.add_static_cells(vec![(3, 3)]);
         Python::with_gil(|py| {
@@ -23696,6 +24041,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let route = PyRouteResult {
             states: vec![PyState::new(1, 2, 0), PyState::new(13, 2, 0)],
@@ -23837,6 +24183,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let route = PyRouteResult {
             states: vec![PyState::new(1, 2, 0), PyState::new(5, 2, 0)],
@@ -23967,6 +24314,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let route = PyRouteResult {
             states: vec![PyState::new(2, 20, 0), PyState::new(62, 20, 0)],
@@ -24096,6 +24444,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let eff = router.effective_bend_radius_um(None).unwrap();
         assert!((eff - 1.0).abs() < 1.0e-9);
@@ -24130,6 +24479,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let eff = router.effective_bend_radius_um(Some(1.1)).unwrap();
         assert!((eff - 1.5).abs() < 1.0e-9);
@@ -24165,6 +24515,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         Python::with_gil(|py| {
             let obj = router.describe_bend_radius(py, Some(1.1)).unwrap();
@@ -24216,6 +24567,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let route = PyRouteResult {
             states: vec![PyState::new(2, 20, 0), PyState::new(62, 20, 0)],
@@ -24392,6 +24744,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let route = PyRouteResult {
             states: vec![PyState::new(2, 20, 0), PyState::new(62, 20, 0)],
@@ -24549,6 +24902,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         Python::with_gil(|py| {
             let obj = router
@@ -24624,6 +24978,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let err = Python::with_gil(|py| {
             router
@@ -24682,6 +25037,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         let reserved_cells: Vec<(i32, i32)> = Python::with_gil(|py| {
             let obj = router
@@ -24909,6 +25265,7 @@ mod tests {
                 "distance".to_string(),
                 1.0,
             ),
+            None,
         );
         // Net 1 runs along y=11; with keepout radius 1 its halo covers y=10.
         let core: Vec<(i32, i32)> = (10..=30).map(|x| (x, 11)).collect();

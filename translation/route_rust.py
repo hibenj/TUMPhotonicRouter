@@ -30,6 +30,7 @@ from photonic_router.routing_layers import (
     ComponentPortAccessRule,
     find_component_port_access_rule,
 )
+from photonic_router.config import RouterConfig
 from photonic_router.static_obstacle_builder import grid_cell_center, physical_to_grid
 from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
 from photonic_router.topology_analysis import analyze_schematic_topology
@@ -287,6 +288,7 @@ def route_match_and_realize(
     ripup_reroute_config: RipupRerouteConfig | None = None,
     path_length_meander_height_um: float = DEFAULT_MEANDER_MAX_HEIGHT_UM,
     enable_grid_endpoint_correction: bool = True,
+    router_config: RouterConfig | None = None,
 ) -> RouteRustPipelineResult:
     """Run Phase A->(optional M1)->B entirely in route_rust."""
     route_obstacle_config = obstacle_config
@@ -343,6 +345,7 @@ def route_match_and_realize(
         crossing_guidance_net_names=crossing_guidance_net_names,
         defer_realization=True,
         enable_checked_endpoint_correction=enable_grid_endpoint_correction,
+        router_config=router_config,
     )
     pipeline_timings_s: dict[str, float] = {
         "route_nets": time.perf_counter() - t_route_nets_start,
@@ -698,6 +701,7 @@ class _RouteNetsRustSession:
         crossing_guidance_net_names: frozenset[str] | None = None,
         defer_realization: bool = False,
         enable_checked_endpoint_correction: bool = True,
+        router_config: RouterConfig | None = None,
     ):
         """Route schematic nets using Rust A* and add one polygon per routed net.
 
@@ -755,6 +759,12 @@ class _RouteNetsRustSession:
                 such as path-length matching/meander insertion.
             enable_checked_endpoint_correction: If False, skip the checked
                 grid-to-port correction pass used by PLM-oriented flows.
+            router_config: Typed configuration passed to `PyPhotonicRouter`
+                (`src/config.rs`'s `RouterConfig`, replacing the
+                `PHOTONIC_ROUTER_*` variables the kernel used to read
+                directly). When omitted, `RouterConfig.from_environment()`
+                is used, so every caller that passes nothing keeps today's
+                behavior.
 
         Returns:
             A tuple of (routed_layout, debug_artifacts).
@@ -882,6 +892,7 @@ class _RouteNetsRustSession:
         self.effective_allow_only_expected_crossings = effective_allow_only_expected_crossings
         self.crossing_search_loss = crossing_search_loss
         self.fanout_access_mode_normalized = fanout_access_mode_normalized
+        self.router_config: RouterConfig = router_config or RouterConfig.from_environment()
 
         self.rust_backend = _load_rust_backend()
         if self.rust_backend is None:
@@ -6869,7 +6880,10 @@ class _RouteNetsRustSession:
             int(12 * self.bend_radius_cells + 2 * self.commit_radius_cells),
         )
         self.router = self.rust_backend.PyPhotonicRouter(
-            grid_spec, self.primitive_cfg, self.astar_cfg
+            grid_spec,
+            self.primitive_cfg,
+            self.astar_cfg,
+            self.router_config.to_rust(self.rust_backend),
         )
         if hasattr(self.router, "set_route_width_um"):
             # The commit validation's parallel-overlap check needs the
@@ -8244,6 +8258,7 @@ def route_nets_rust(
     crossing_guidance_net_names: frozenset[str] | None = None,
     defer_realization: bool = False,
     enable_checked_endpoint_correction: bool = True,
+    router_config: RouterConfig | None = None,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
     """Route schematic nets through a temporary routing session."""
     session = _RouteNetsRustSession(
@@ -8291,5 +8306,6 @@ def route_nets_rust(
         crossing_guidance_net_names=crossing_guidance_net_names,
         defer_realization=defer_realization,
         enable_checked_endpoint_correction=enable_checked_endpoint_correction,
+        router_config=router_config,
     )
     return session.run()
