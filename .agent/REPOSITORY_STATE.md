@@ -18,6 +18,8 @@ now lives only in the referenced ExecPlan and `git log`.)
 
 ## Current Snapshot
 
+- **2026-09-19, aggregate scope updated by paper author:** include Benes 4x4 in the geometric means of all eight commonly completed cases. Removed the obsolete A*-time exclusion from `scripts/results/paper_table.py`. C1: -72.1% routing time (3.6x), -0.3% length; C2: -93.2% routing time (14.6x), +3.7% length. Verified `build(results)` against the paper sources JSON for all four unrounded means (n=8), and the paper mean row against generator output. All 11 individual benchmark rows remain unchanged. Paper text and notes synchronized. Working branch `crossings/verification-foundation`, HEAD `2ee5312`; no commit made. This is an aggregate-reporting correction, with no routing changes or new runs.
+
 - **2026-09-19, paper numbers final except one row:** Benes rows on the netlist LiDAR routes (`benchmarks/benes_<n>x<n>_flat.py`, switches expanded into primitives plus internal nets), run on the frozen engine `8ddde83` via the worktree `TUMPhotonicRouter-frozen` (`scripts/results/rerun_benes_flat_frozen.sh`); one time metric (routing loop, `routing_loop_s` / `lidar_routing_loop_s`) and one length metric (measured on the routed GDS, `gds_length_um`) for every cell; `scripts/results/paper_table.py results <main.tex>` writes the table and `EXPERIMENTS_TABLE_SOURCES.json`. Open: HEAD's Milestone 9 regresses the Benes ladder (see execplan 2026-09-10 decision log 2026-09-19); the verifier takes 4449 s on benes_128x128_flat (20480 routes; routing loop 925 s), a cost outside the routing time but worth a look before larger flat runs.
 
 - Date: 2026-09-17 (afternoon)

@@ -9,8 +9,7 @@ values plus Delta columns and one mean row): per benchmark the absolute
 lidar-pure numbers, then for each contribution the absolute values plus
 the relative change of A* time and waveguide length against lidar-pure in
 percent (negative = better); the last row is the geometric mean of the
-ratios over the benchmarks from 8x8 upwards that all three configurations
-complete. Repairs and crossings stay absolute. `--` = not run or not
+ratios over all benchmarks that all three configurations complete. Repairs and crossings stay absolute. `--` = not run or not
 completed.
 """
 
@@ -37,7 +36,8 @@ BENCH = [
 # benchmarks/benes_<n>x<n>_flat.py); our cells of a Benes row come from the
 # `_flat` archives, LiDAR's from the benchmark it was given.
 OURS_SOURCE = {b: b + "_flat" for b, _ in BENCH if b.startswith("benes_")}
-MEAN_EXCLUDED = {"benes_4x4"}  # 0.02 s A* times give meaningless ratios
+# Owner decision 2026-09-19: include every commonly completed case,
+# including Benes 4x4, now that the reported metric is routing-loop time.
 # Manual DRV corrections for LiDAR rows (owner inspection in KLayout, 2026-09-18):
 # LiDAR's own DRV counter does not check the die boundary. ADEPT 8x8 at the
 # matched price routes four output nets (n_105, n_106, n_108, n_110) outside
@@ -133,7 +133,7 @@ def build(results: Path) -> tuple[str, dict]:
         lines.append("            " + " & ".join(cells) + " \\\\")
         if b == "benes_128x128":
             lines.append("            \\midrule")
-        if ok(p) and ok(c1) and ok(c2) and b not in MEAN_EXCLUDED:
+        if ok(p) and ok(c1) and ok(c2):
             logs["c1_t"].append(math.log(routing_time(c1) / routing_time(p))); logs["c1_l"].append(math.log(length_mm(c1) / length_mm(p)))
             logs["c2_t"].append(math.log(routing_time(c2) / routing_time(p))); logs["c2_l"].append(math.log(length_mm(c2) / length_mm(p)))
     gm = {k: math.exp(sum(v) / len(v)) for k, v in logs.items()}
