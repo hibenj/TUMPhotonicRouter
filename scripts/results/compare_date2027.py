@@ -1,7 +1,11 @@
 """Compare a reproduction of the DATE 2027 table (archives written by
 scripts/results/reproduce_date2027.sh) with the paper's sources, cell by cell.
 
-Usage: compare_date2027.py <results_root> <EXPERIMENTS_TABLE_SOURCES.json>
+Usage: compare_date2027.py <results_root> <EXPERIMENTS_TABLE_SOURCES.json> [--only-present]
+
+`--only-present` compares only the cells that have a run under <results_root>
+(the short gate routes nine of the 27 cells); without it every cell the paper
+names must be present.
 
 For every cell of ours (baseline, contribution1, contribution2) that the
 paper sources name, the latest run under <results_root>/<benchmark>/<config>
@@ -27,6 +31,7 @@ LENGTH_TOL_UM = 0.01
 def main() -> int:
     root = Path(sys.argv[1])
     sources = json.loads(Path(sys.argv[2]).read_text())["sources"]
+    only_present = "--only-present" in sys.argv[3:]
     runs = {(b, c): run for b, c, run in latest_runs(root)}
     print("| benchmark | config | crossings paper/repro | GDS length um paper/repro | errors | t_loop ratio | status |")
     print("|---|---|---|---|---|---|---|")
@@ -38,6 +43,8 @@ def main() -> int:
             if cell.get("archive") is None:
                 continue
             run = runs.get((ours_bench, config))
+            if run is None and only_present:
+                continue
             if run is None:
                 print(f"| {ours_bench} | {config} | {cell.get('crossing_count')} / -- | {cell.get('gds_length_um')} / -- | -- | -- | MISSING |")
                 bad += 1

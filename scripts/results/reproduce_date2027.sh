@@ -10,7 +10,8 @@
 #   .venv/bin/python scripts/results/compare_date2027.py results_date2027 <EXPERIMENTS_TABLE_SOURCES.json>
 # compares crossings, GDS lengths and verifier errors cell by cell (times are
 # reported, not compared). Stop between rows with: touch results_date2027/STOP
-# Usage: reproduce_date2027.sh [all|benes|mesh|ladder|benes-large|mesh-base|c2-mesh]   (default all)
+# Usage: reproduce_date2027.sh [all|benes|mesh|ladder|benes-large|mesh-base|c2-mesh|short]   (default all)
+#   short = Benes 4x4 / 8x8 and ADEPT 8x8 in all three configurations (nine cells, about two minutes): the gate
 #   ladder = Benes 4x4..32x32 x 3 configurations; benes-large = Benes 64/128 contribution 2;
 #   mesh-base = ADEPT 8x8..64x64 baseline + contribution 1; c2-mesh = ADEPT 8x8..128x128 contribution 2
 set -u
@@ -28,6 +29,13 @@ say "DATE2027 reproduction ($what) start commit=$(git rev-parse --short HEAD) ke
 BENES_LADDER="benes_4x4_flat benes_8x8_flat benes_16x16_flat benes_32x32_flat"
 MESH_LADDER="multiportmmi_8x8 multiportmmi_16x16 multiportmmi_32x32 multiportmmi_64x64"
 case "$what" in
+  short)
+    for b in benes_4x4_flat benes_8x8_flat multiportmmi_8x8; do
+      ours lidar-pure $b 900 --crossing-mode lidar-pure
+      ours contribution1 $b 900 --crossing-mode lidar-guided
+      ours contribution2 $b 900 --preplaced-crossing-grids true --verbose-routes
+    done
+    ;;
   all|benes|ladder)
     for b in $BENES_LADDER; do ours lidar-pure $b 3600 --crossing-mode lidar-pure; done
     for b in $BENES_LADDER; do ours contribution1 $b 3600 --crossing-mode lidar-guided; done

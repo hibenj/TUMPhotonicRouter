@@ -1,0 +1,321 @@
+{
+  "definition": "t = routing_loop_s (net routing phase: obstacle map + search with rip-up and repair; contribution 2 plus preplaced_build_s, shown as t_build); LiDAR = lidar_routing_loop_s (Start Detailed Routing -> DrGridRoute succeed/fail); L = gds_length_um (routed polygons + crossing* instances on the WG layer of the routed GDS, area / 0.5 um)",
+  "benes_rows": "benes_<n>x<n>_flat archives (switches expanded into their primitives plus the internal nets, the netlist LiDAR routes) on the frozen engine 8ddde83",
+  "means": {
+    "n": 8,
+    "c1_t": 0.2790896382053147,
+    "c1_l": 0.9971691757289756,
+    "c2_t": 0.06848238145253444,
+    "c2_l": 1.037457970059189
+  },
+  "sources": {
+    "benes_4x4": {
+      "ours_benchmark": "benes_4x4_flat",
+      "lidar": {
+        "archive": "results/benes_4x4/lidar_p300/20260919-145359",
+        "config": "lidar_p300",
+        "lidar_routing_loop_s": 14.515,
+        "crossing_count": 2,
+        "drv_nets": 0
+      },
+      "baseline": {
+        "archive": "results/benes_4x4_flat/lidar-pure/20260919-135723",
+        "config": "lidar-pure",
+        "routing_loop_s": 2.061,
+        "gds_length_um": 9484.511,
+        "crossing_count": 2
+      },
+      "contribution1": {
+        "archive": "results/benes_4x4_flat/contribution1/20260919-142211",
+        "config": "contribution1",
+        "routing_loop_s": 0.394,
+        "gds_length_um": 9475.187,
+        "crossing_count": 2
+      },
+      "contribution2": {
+        "archive": "results/benes_4x4_flat/contribution2/20260919-143701",
+        "config": "contribution2",
+        "routing_loop_s": 0.659,
+        "preplaced_build_s": 0.23,
+        "gds_length_um": 9475.255,
+        "crossing_count": 2
+      }
+    },
+    "benes_8x8": {
+      "ours_benchmark": "benes_8x8_flat",
+      "lidar": {
+        "archive": "results/benes_8x8/lidar_p300/20260916-231235",
+        "config": "lidar_p300",
+        "lidar_routing_loop_s": 101.304,
+        "crossing_count": 16,
+        "drv_nets": 0
+      },
+      "baseline": {
+        "archive": "results/benes_8x8_flat/lidar-pure/20260919-135727",
+        "config": "lidar-pure",
+        "routing_loop_s": 22.259,
+        "gds_length_um": 31418.224,
+        "crossing_count": 16
+      },
+      "contribution1": {
+        "archive": "results/benes_8x8_flat/contribution1/20260919-142214",
+        "config": "contribution1",
+        "routing_loop_s": 1.205,
+        "gds_length_um": 31312.203,
+        "crossing_count": 16
+      },
+      "contribution2": {
+        "archive": "results/benes_8x8_flat/contribution2/20260919-143704",
+        "config": "contribution2",
+        "routing_loop_s": 1.821,
+        "preplaced_build_s": 0.5,
+        "gds_length_um": 31348.89,
+        "crossing_count": 16
+      }
+    },
+    "benes_16x16": {
+      "ours_benchmark": "benes_16x16_flat",
+      "lidar": {
+        "archive": "results/benes_16x16/lidar_p300/20260916-231612",
+        "config": "lidar_p300",
+        "lidar_routing_loop_s": 2394.306,
+        "crossing_count": 88,
+        "drv_nets": 0
+      },
+      "baseline": {
+        "archive": "results/benes_16x16_flat/lidar-pure/20260919-135753",
+        "config": "lidar-pure",
+        "routing_loop_s": 180.798,
+        "gds_length_um": 92323.991,
+        "crossing_count": 88
+      },
+      "contribution1": {
+        "archive": "results/benes_16x16_flat/contribution1/20260919-142219",
+        "config": "contribution1",
+        "routing_loop_s": 39.327,
+        "gds_length_um": 92106.172,
+        "crossing_count": 88
+      },
+      "contribution2": {
+        "archive": "results/benes_16x16_flat/contribution2/20260919-143709",
+        "config": "contribution2",
+        "routing_loop_s": 5.855,
+        "preplaced_build_s": 1.46,
+        "gds_length_um": 93654.793,
+        "crossing_count": 88
+      }
+    },
+    "benes_32x32": {
+      "ours_benchmark": "benes_32x32_flat",
+      "lidar": {
+        "archive": null
+      },
+      "baseline": {
+        "archive": "results/benes_32x32_flat/lidar-pure/20260919-140103",
+        "config": "lidar-pure",
+        "routing_loop_s": 1224.926,
+        "gds_length_um": 270827.61,
+        "crossing_count": 416
+      },
+      "contribution1": {
+        "archive": "results/benes_32x32_flat/contribution1/20260919-142307",
+        "config": "contribution1",
+        "routing_loop_s": 790.947,
+        "gds_length_um": 270872.224,
+        "crossing_count": 416
+      },
+      "contribution2": {
+        "archive": "results/benes_32x32_flat/contribution2/20260919-143726",
+        "config": "contribution2",
+        "routing_loop_s": 20.632,
+        "preplaced_build_s": 4.9,
+        "gds_length_um": 277886.703,
+        "crossing_count": 416
+      }
+    },
+    "benes_64x64": {
+      "ours_benchmark": "benes_64x64_flat",
+      "lidar": {
+        "archive": null
+      },
+      "baseline": {
+        "archive": null
+      },
+      "contribution1": {
+        "archive": null
+      },
+      "contribution2": {
+        "archive": "results/benes_64x64_flat/contribution2/20260919-143853",
+        "config": "contribution2",
+        "routing_loop_s": 103.874,
+        "preplaced_build_s": 18.8,
+        "gds_length_um": 1159313.33,
+        "crossing_count": 1824
+      }
+    },
+    "benes_128x128": {
+      "ours_benchmark": "benes_128x128_flat",
+      "lidar": {
+        "archive": null
+      },
+      "baseline": {
+        "archive": null
+      },
+      "contribution1": {
+        "archive": null
+      },
+      "contribution2": {
+        "archive": "results/benes_128x128_flat/contribution2/20260919-144932",
+        "config": "contribution2",
+        "routing_loop_s": 925.401,
+        "preplaced_build_s": 82.69,
+        "gds_length_um": 4938323.005,
+        "crossing_count": 7680
+      }
+    },
+    "multiportmmi_8x8": {
+      "ours_benchmark": "multiportmmi_8x8",
+      "lidar": {
+        "archive": "results/multiportmmi_8x8/lidar_p300/20260916-231420",
+        "config": "lidar_p300",
+        "lidar_routing_loop_s": 106.37,
+        "crossing_count": 30,
+        "drv_nets": 0
+      },
+      "baseline": {
+        "archive": "results/multiportmmi_8x8/lidar-pure/20260916-172801",
+        "config": "lidar-pure",
+        "routing_loop_s": 9.26,
+        "gds_length_um": 25160.335,
+        "crossing_count": 33
+      },
+      "contribution1": {
+        "archive": "results/multiportmmi_8x8/contribution1/20260916-175607",
+        "config": "contribution1",
+        "routing_loop_s": 3.771,
+        "gds_length_um": 25073.626,
+        "crossing_count": 33
+      },
+      "contribution2": {
+        "archive": "results/multiportmmi_8x8/contribution2/20260917-155443",
+        "config": "contribution2",
+        "routing_loop_s": 2.076,
+        "preplaced_build_s": 0.53,
+        "gds_length_um": 26319.97,
+        "crossing_count": 33
+      }
+    },
+    "multiportmmi_16x16": {
+      "ours_benchmark": "multiportmmi_16x16",
+      "lidar": {
+        "archive": null
+      },
+      "baseline": {
+        "archive": "results/multiportmmi_16x16/lidar-pure/20260916-172838",
+        "config": "lidar-pure",
+        "routing_loop_s": 33.909,
+        "gds_length_um": 90200.066,
+        "crossing_count": 63
+      },
+      "contribution1": {
+        "archive": "results/multiportmmi_16x16/contribution1/20260916-175617",
+        "config": "contribution1",
+        "routing_loop_s": 12.156,
+        "gds_length_um": 89586.04,
+        "crossing_count": 63
+      },
+      "contribution2": {
+        "archive": "results/multiportmmi_16x16/contribution2/20260917-155449",
+        "config": "contribution2",
+        "routing_loop_s": 5.245,
+        "preplaced_build_s": 1.3,
+        "gds_length_um": 96331.277,
+        "crossing_count": 63
+      }
+    },
+    "multiportmmi_32x32": {
+      "ours_benchmark": "multiportmmi_32x32",
+      "lidar": {
+        "archive": "results/multiportmmi_32x32/lidar_p300/20260917-000445",
+        "config": "lidar_p300",
+        "lidar_routing_loop_s": 2955.151,
+        "crossing_count": 121,
+        "drv_nets": 0
+      },
+      "baseline": {
+        "archive": "results/multiportmmi_32x32/lidar-pure/20260916-173158",
+        "config": "lidar-pure",
+        "routing_loop_s": 311.885,
+        "gds_length_um": 336038.575,
+        "crossing_count": 121
+      },
+      "contribution1": {
+        "archive": "results/multiportmmi_32x32/contribution1/20260916-175715",
+        "config": "contribution1",
+        "routing_loop_s": 182.276,
+        "gds_length_um": 334816.567,
+        "crossing_count": 121
+      },
+      "contribution2": {
+        "archive": "results/multiportmmi_32x32/contribution2/20260917-155500",
+        "config": "contribution2",
+        "routing_loop_s": 16.124,
+        "preplaced_build_s": 3.26,
+        "gds_length_um": 360764.408,
+        "crossing_count": 121
+      }
+    },
+    "multiportmmi_64x64": {
+      "ours_benchmark": "multiportmmi_64x64",
+      "lidar": {
+        "archive": "results/multiportmmi_64x64/lidar_p300_12h/20260918-080417",
+        "config": "lidar_p300_12h",
+        "lidar_routing_loop_s": 15555.82,
+        "crossing_count": 213,
+        "drv_nets": 1
+      },
+      "baseline": {
+        "archive": "results/multiportmmi_64x64/lidar-pure/20260916-181429",
+        "config": "lidar-pure",
+        "routing_loop_s": 3265.555,
+        "gds_length_um": 1305628.208,
+        "crossing_count": 217
+      },
+      "contribution1": {
+        "archive": "results/multiportmmi_64x64/contribution1/20260916-190920",
+        "config": "contribution1",
+        "routing_loop_s": 969.206,
+        "gds_length_um": 1302769.96,
+        "crossing_count": 209
+      },
+      "contribution2": {
+        "archive": "results/multiportmmi_64x64/contribution2/20260917-155529",
+        "config": "contribution2",
+        "routing_loop_s": 61.757,
+        "preplaced_build_s": 8.21,
+        "gds_length_um": 1408033.109,
+        "crossing_count": 209
+      }
+    },
+    "multiportmmi_128x128": {
+      "ours_benchmark": "multiportmmi_128x128",
+      "lidar": {
+        "archive": null
+      },
+      "baseline": {
+        "archive": null
+      },
+      "contribution1": {
+        "archive": null
+      },
+      "contribution2": {
+        "archive": "results/multiportmmi_128x128/contribution2/20260917-155710",
+        "config": "contribution2",
+        "routing_loop_s": 480.818,
+        "preplaced_build_s": 22.63,
+        "gds_length_um": 5573562.981,
+        "crossing_count": 311
+      }
+    }
+  }
+}
