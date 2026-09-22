@@ -120,22 +120,28 @@ def test_lidar_pure_uses_search_only_crossing_penalty_by_default():
 
 
 def test_collision_crossing_search_penalty_can_be_overridden(monkeypatch):
+    from photonic_router.config import RoutingConfig
+
     monkeypatch.setenv(COLLISION_CROSSING_SEARCH_LOSS_ENV, "30")
+    crossing_plan_config = RoutingConfig.from_environment().crossing_plan
 
     assert _effective_crossing_search_loss(
         enable_crossings=True,
         crossing_mode="lidar-pure",
         crossing_loss=0.0,
+        config=crossing_plan_config,
     ) == pytest.approx(30.0)
     assert _effective_crossing_search_loss(
         enable_crossings=True,
         crossing_mode="window",
         crossing_loss=0.0,
+        config=crossing_plan_config,
     ) == pytest.approx(0.0)
     assert _effective_crossing_search_loss(
         enable_crossings=True,
         crossing_mode="lidar-pure",
         crossing_loss=0.07,
+        config=crossing_plan_config,
     ) == pytest.approx(0.07)
 
 
@@ -1627,6 +1633,7 @@ def test_lidar_pure_still_ignores_the_topology_plan():
 
 
 def test_planned_crossing_search_loss_env_override(monkeypatch):
+    from photonic_router.config import RoutingConfig
     from translation.route_rust_crossing_plan import (
         PLANNED_CROSSING_SEARCH_LOSS_ENV,
         _effective_planned_crossing_search_loss,
@@ -1634,15 +1641,17 @@ def test_planned_crossing_search_loss_env_override(monkeypatch):
 
     assert _effective_planned_crossing_search_loss() == pytest.approx(0.0)
     monkeypatch.setenv(PLANNED_CROSSING_SEARCH_LOSS_ENV, "1.5")
-    assert _effective_planned_crossing_search_loss() == pytest.approx(1.5)
+    cfg = RoutingConfig.from_environment().crossing_plan
+    assert _effective_planned_crossing_search_loss(cfg) == pytest.approx(1.5)
     monkeypatch.setenv(PLANNED_CROSSING_SEARCH_LOSS_ENV, "-1")
     with pytest.raises(ValueError):
-        _effective_planned_crossing_search_loss()
+        RoutingConfig.from_environment()
 
 
 def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
     """`PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET=0` (default, owner 2026-09-04) =
     every crossing of a planned partner discounted (S1); `1` = one per pair (S2)."""
+    from photonic_router.config import RoutingConfig
     from translation.route_rust_crossing_plan import (
         PLANNED_CROSSING_BUDGET_ENV,
         _effective_single_discounted_crossing_per_pair,
@@ -1650,12 +1659,18 @@ def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
 
     assert _effective_single_discounted_crossing_per_pair() is False
     monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "1")
-    assert _effective_single_discounted_crossing_per_pair() is True
+    assert (
+        _effective_single_discounted_crossing_per_pair(RoutingConfig.from_environment().crossing_plan)
+        is True
+    )
     monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "0")
-    assert _effective_single_discounted_crossing_per_pair() is False
+    assert (
+        _effective_single_discounted_crossing_per_pair(RoutingConfig.from_environment().crossing_plan)
+        is False
+    )
     monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "2")
     with pytest.raises(ValueError):
-        _effective_single_discounted_crossing_per_pair()
+        RoutingConfig.from_environment()
 
     captured: dict[str, object] = {}
     router, backend = _fake_crossing_plan_router_and_backend(captured)
@@ -1676,6 +1691,7 @@ def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
         crossing_half_size_cells=3,
         min_straight_cells_per_crossing=0,
         allow_only_expected_crossings=False,
+        config=RoutingConfig.from_environment().crossing_plan,
     )
     assert info["guidance"]["single_discounted_crossing_per_pair"] is True
     assert captured["guidance_single"] is True

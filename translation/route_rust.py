@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import json
 import math
-import os
 import re
 import sys
 import time
@@ -30,7 +29,7 @@ from photonic_router.routing_layers import (
     ComponentPortAccessRule,
     find_component_port_access_rule,
 )
-from photonic_router.config import RouterConfig
+from photonic_router.config import ALL_NETS, EngineSelection, RouterConfig, RoutingConfig
 from photonic_router.static_obstacle_builder import grid_cell_center, physical_to_grid
 from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
 from photonic_router.topology_analysis import analyze_schematic_topology
@@ -288,7 +287,7 @@ def route_match_and_realize(
     ripup_reroute_config: RipupRerouteConfig | None = None,
     path_length_meander_height_um: float = DEFAULT_MEANDER_MAX_HEIGHT_UM,
     enable_grid_endpoint_correction: bool = True,
-    router_config: RouterConfig | None = None,
+    config: RoutingConfig | None = None,
 ) -> RouteRustPipelineResult:
     """Run Phase A->(optional M1)->B entirely in route_rust."""
     route_obstacle_config = obstacle_config
@@ -345,7 +344,7 @@ def route_match_and_realize(
         crossing_guidance_net_names=crossing_guidance_net_names,
         defer_realization=True,
         enable_checked_endpoint_correction=enable_grid_endpoint_correction,
-        router_config=router_config,
+        config=config,
     )
     pipeline_timings_s: dict[str, float] = {
         "route_nets": time.perf_counter() - t_route_nets_start,
@@ -634,13 +633,14 @@ def route_match_and_realize(
 DENSE_OBSTACLE_CELL_CAP_MARGIN = 2
 
 
-def negotiated_repair_engine_enabled() -> bool:
+def negotiated_repair_engine_enabled(engine: EngineSelection | None = None) -> bool:
     """The negotiated rip-up engine is the default repair engine since the
     2026-09-16 baseline freeze; `PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN=1` or
     `PHOTONIC_ROUTER_NEGOTIATED_REPAIR=0` selects the older repair chain."""
-    if os.environ.get("PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN", "") == "1":
+    engine = engine if engine is not None else EngineSelection()
+    if engine.legacy_repair_chain:
         return False
-    return os.environ.get("PHOTONIC_ROUTER_NEGOTIATED_REPAIR", "1") != "0"
+    return engine.negotiated_repair
 
 
 def dense_obstacle_cell_cap(grid_width: int, grid_height: int, default_cap: int) -> int:
@@ -701,7 +701,7 @@ class _RouteNetsRustSession:
         crossing_guidance_net_names: frozenset[str] | None = None,
         defer_realization: bool = False,
         enable_checked_endpoint_correction: bool = True,
-        router_config: RouterConfig | None = None,
+        config: RoutingConfig | None = None,
     ):
         """Route schematic nets using Rust A* and add one polygon per routed net.
 
@@ -759,17 +759,18 @@ class _RouteNetsRustSession:
                 such as path-length matching/meander insertion.
             enable_checked_endpoint_correction: If False, skip the checked
                 grid-to-port correction pass used by PLM-oriented flows.
-            router_config: Typed configuration passed to `PyPhotonicRouter`
-                (`src/config.rs`'s `RouterConfig`, replacing the
-                `PHOTONIC_ROUTER_*` variables the kernel used to read
-                directly). When omitted, `RouterConfig.from_environment()`
-                is used, so every caller that passes nothing keeps today's
-                behavior.
+            config: Typed configuration (Milestone 1: `RoutingConfig`, whose
+                `.router` field is `src/config.rs`'s `RouterConfig`, passed
+                to `PyPhotonicRouter`), replacing every `PHOTONIC_ROUTER_*`
+                variable this module and the kernel used to read directly.
+                When omitted, `RoutingConfig.from_environment()` is used, so
+                every caller that passes nothing keeps today's behavior.
 
         Returns:
             A tuple of (routed_layout, debug_artifacts).
             :param debug_timing:
         """
+        self.config: RoutingConfig = config if config is not None else RoutingConfig.from_environment()
         if route_width_um <= 0:
             raise ValueError("route_width_um must be > 0")
         if max_iterations <= 0:
@@ -789,6 +790,7 @@ class _RouteNetsRustSession:
             enable_crossings=bool(enable_crossings),
             crossing_mode=crossing_mode,
             crossing_loss=float(crossing_loss),
+            config=self.config.crossing_plan,
         )
         if crossing_half_size_cells < 0:
             raise ValueError("crossing_half_size_cells must be non-negative")
@@ -796,9 +798,10 @@ class _RouteNetsRustSession:
             raise ValueError("min_straight_cells_per_crossing must be non-negative")
         if foreign_port_keepout_cells < 0:
             raise ValueError("foreign_port_keepout_cells must be non-negative")
-        raw_fanout_access_mode = os.environ.get(
-            "PHOTONIC_ROUTER_FANOUT_ACCESS_MODE",
-            "legacy-runway" if fanout_access_mode is None else str(fanout_access_mode),
+        raw_fanout_access_mode = (
+            self.config.fanout.fanout_access_mode
+            if self.config.fanout.fanout_access_mode is not None
+            else ("legacy-runway" if fanout_access_mode is None else str(fanout_access_mode))
         )
         fanout_access_mode_normalized = raw_fanout_access_mode.strip().lower().replace("_", "-")
         fanout_mode_aliases = {
@@ -892,7 +895,7 @@ class _RouteNetsRustSession:
         self.effective_allow_only_expected_crossings = effective_allow_only_expected_crossings
         self.crossing_search_loss = crossing_search_loss
         self.fanout_access_mode_normalized = fanout_access_mode_normalized
-        self.router_config: RouterConfig = router_config or RouterConfig.from_environment()
+        self.router_config: RouterConfig = self.config.router
 
         self.rust_backend = _load_rust_backend()
         if self.rust_backend is None:
@@ -1431,13 +1434,8 @@ class _RouteNetsRustSession:
         switch's port pair (1.25 um apart, inside one routing cell) gets the
         same staggered static stubs a multiport MMI's port row gets.
         """
-        raw = os.environ.get("PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS", "").strip()
-        if not raw:
-            return 3
-        value = int(raw)
-        if value < 2:
-            raise ValueError("PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS must be >= 2")
-        return value
+        value = self.config.fanout.dense_fanout_min_ports
+        return 3 if value is None else value
 
     def _dense_fanout_group_size(self, port_specs: set[str]) -> int:
         """Ports of a group that qualify for automatic dense-fanout handling.
@@ -1471,8 +1469,8 @@ class _RouteNetsRustSession:
         every crossing lane of a multiport MMI on a spread row, also when
         only two of its outputs cross in a layer -- while everything else
         (e.g. the 1x2 splitter tree) keeps the global threshold."""
-        raw = os.environ.get("PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES", "").strip()
-        if raw and instance_name in {name.strip() for name in raw.split(",") if name.strip()}:
+        instances = self.config.fanout.dense_fanout_instances
+        if instances and instance_name in instances:
             return 2
         return self._dense_fanout_min_ports()
 
@@ -1569,20 +1567,17 @@ class _RouteNetsRustSession:
                 append_point((start[0] + dx * t, start[1] + dy * t))
         return tuple(dict.fromkeys(cells))
 
-    def _env_nonnegative_int(self, name: str, default: int) -> int:
-        raw_value = os.environ.get(name)
-        if raw_value is None or raw_value.strip() == "":
-            return int(default)
-        try:
-            value = int(raw_value)
-        except ValueError as exc:
-            raise ValueError(f"{name} must be a non-negative integer") from exc
-        if value < 0:
-            raise ValueError(f"{name} must be a non-negative integer")
-        return value
+    @staticmethod
+    def _fanout_int_or_default(value: int | None, default: int) -> int:
+        """`value` is a resolved `FanoutAccessConfig` field: `None` (unset)
+        keeps the site's own `default`; validation (non-negative, raises)
+        already happened when the config was parsed from the environment."""
+        return int(default) if value is None else int(value)
 
-    def _env_fanout_stub_bend_steps(self) -> int:
-        raw_value = os.environ.get("PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES", "90")
+    def _fanout_stub_bend_steps(self) -> int:
+        raw_value = self.config.fanout.fanout_stub_bend_degrees
+        if raw_value is None:
+            raw_value = "90"
         normalized = raw_value.strip().lower().replace("_", "-")
         aliases = {
             "45": 1,
@@ -1870,11 +1865,11 @@ class _RouteNetsRustSession:
         extra_final_forward_cells: int = 0,
     ) -> tuple[tuple[tuple[float, float], ...], tuple[int, int]] | None:
         start_angle = int(physical_angle) % 8
-        bend_delta = int(lateral_sign) * self._env_fanout_stub_bend_steps()
+        bend_delta = int(lateral_sign) * self._fanout_stub_bend_steps()
         intermediate_angle = (start_angle + bend_delta) % 8
         intermediate_step = self._angle_to_step(intermediate_angle)
         final_step = self._angle_to_step(start_angle)
-        trace_fanout_stubs = os.environ.get("PHOTONIC_ROUTER_TRACE_FANOUT_STUBS", "").strip()
+        trace_fanout_stubs = self.config.diagnostics.trace_fanout_stubs
 
         def fail(reason: str, extra: str = "") -> None:
             if trace_fanout_stubs:
@@ -2198,16 +2193,16 @@ class _RouteNetsRustSession:
             return {}
         default_forward_cells = max(3, int(self.bend_radius_cells) + 3)
         default_lane_spacing_cells = 11
-        forward_cells = self._env_nonnegative_int(
-            "PHOTONIC_ROUTER_FANOUT_STUB_FORWARD_CELLS",
+        forward_cells = self._fanout_int_or_default(
+            self.config.fanout.fanout_stub_forward_cells,
             default_forward_cells,
         )
-        lane_spacing_cells = self._env_nonnegative_int(
-            "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+        lane_spacing_cells = self._fanout_int_or_default(
+            self.config.fanout.fanout_lane_spacing_cells,
             default_lane_spacing_cells,
         )
-        stub_x_offset_cells = self._env_nonnegative_int(
-            "PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS",
+        stub_x_offset_cells = self._fanout_int_or_default(
+            self.config.fanout.fanout_stub_x_offset_cells,
             1,
         )
         if forward_cells <= 0 or lane_spacing_cells <= 0:
@@ -2291,7 +2286,7 @@ class _RouteNetsRustSession:
                 upper_items = ordered_items[count // 2 :]
                 if not lower_items or not upper_items:
                     continue
-                stub_bend_steps = self._env_fanout_stub_bend_steps()
+                stub_bend_steps = self._fanout_stub_bend_steps()
                 stagger_forward_cells = int(stub_x_offset_cells) if int(stub_bend_steps) >= 2 else 0
 
                 lower_inner = lower_items[-1]
@@ -2394,16 +2389,16 @@ class _RouteNetsRustSession:
         if self.fanout_access_mode_normalized != "static-stubs":
             return {}
         default_forward_cells = max(3, int(self.bend_radius_cells) + 3)
-        forward_cells = self._env_nonnegative_int(
-            "PHOTONIC_ROUTER_FANOUT_STUB_FORWARD_CELLS",
+        forward_cells = self._fanout_int_or_default(
+            self.config.fanout.fanout_stub_forward_cells,
             default_forward_cells,
         )
-        spacing_cells = self._env_nonnegative_int(
-            "PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS",
-            self._env_nonnegative_int(
-                "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
-                self._env_nonnegative_int(
-                    "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+        spacing_cells = self._fanout_int_or_default(
+            self.config.fanout.target_protected_lane_spacing_cells,
+            self._fanout_int_or_default(
+                self.config.fanout.fanout_protected_lane_spacing_cells,
+                self._fanout_int_or_default(
+                    self.config.fanout.fanout_lane_spacing_cells,
                     3,
                 ),
             ),
@@ -2536,10 +2531,10 @@ class _RouteNetsRustSession:
                     ),
                 )
                 count = len(ordered_specs)
-                spacing_cells = self._env_nonnegative_int(
-                    "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
-                    self._env_nonnegative_int(
-                        "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+                spacing_cells = self._fanout_int_or_default(
+                    self.config.fanout.fanout_protected_lane_spacing_cells,
+                    self._fanout_int_or_default(
+                        self.config.fanout.fanout_lane_spacing_cells,
                         3,
                     ),
                 )
@@ -2660,12 +2655,12 @@ class _RouteNetsRustSession:
             grouped.setdefault((run_job.inst2, int(angle)), []).append(run_job)
 
         base_cells = max(1, int(self.bend_radius_cells) + 1)
-        spacing_cells = self._env_nonnegative_int(
-            "PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS",
-            self._env_nonnegative_int(
-                "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
-                self._env_nonnegative_int(
-                    "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+        spacing_cells = self._fanout_int_or_default(
+            self.config.fanout.target_protected_lane_spacing_cells,
+            self._fanout_int_or_default(
+                self.config.fanout.fanout_protected_lane_spacing_cells,
+                self._fanout_int_or_default(
+                    self.config.fanout.fanout_lane_spacing_cells,
                     3,
                 ),
             ),
@@ -2871,8 +2866,7 @@ class _RouteNetsRustSession:
             int(source_state.y) - int(target_state.y)
         )
 
-    @staticmethod
-    def _debug_hoist_instance_first(ordered: list[RouteJob]) -> list[RouteJob]:
+    def _debug_hoist_instance_first(self, ordered: list[RouteJob]) -> list[RouteJob]:
         """Debug-only reordering: `PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE=<name>`
         hoists every net touching the named instance to the front of the
         routing order (relative order preserved on both sides), so a dense
@@ -2881,11 +2875,8 @@ class _RouteNetsRustSession:
         under this knob are NOT comparable to stable runs -- ordering
         changes every downstream commit; diagnosis use only.
         """
-        raw_net_ids = os.environ.get("PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_NETS", "").strip()
-        if raw_net_ids:
-            wanted_order = [
-                int(token) for token in raw_net_ids.split(",") if token.strip().isdigit()
-            ]
+        wanted_order = list(self.config.diagnostics.debug_route_first_nets)
+        if wanted_order:
             wanted = set(wanted_order)
             # the list's own order is binding (ordering experiments, 2026-09-04)
             rank = {net_id: position for position, net_id in enumerate(wanted_order)}
@@ -2899,7 +2890,7 @@ class _RouteNetsRustSession:
                 f"net-id list hoisted to the front, in list order (diagnosis only)"
             )
             return hoisted + rest
-        instance = os.environ.get("PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE", "").strip()
+        instance = self.config.diagnostics.debug_route_first_instance
         if not instance:
             return ordered
         hoisted = [job for job in ordered if instance in (job.inst1, job.inst2)]
@@ -3195,10 +3186,9 @@ class _RouteNetsRustSession:
         )
         opened_candidate_cells.update(source_endpoint_bump_open_cells)
         opened_candidate_cells.update(target_endpoint_bump_open_cells)
-        trace_endpoint_bumps = os.environ.get("PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS", "")
-        if trace_endpoint_bumps and (
-            trace_endpoint_bumps.strip() == "*"
-            or str(int(job.net_id)) in {item.strip() for item in trace_endpoint_bumps.split(",")}
+        trace_endpoint_bumps = self.router_config.diagnostics.trace_endpoint_bump_nets
+        if trace_endpoint_bumps is not None and (
+            trace_endpoint_bumps == ALL_NETS or str(int(job.net_id)) in trace_endpoint_bumps
         ):
             print(
                 "endpoint_open_trace "
@@ -3914,7 +3904,7 @@ class _RouteNetsRustSession:
             f"target_access_rule={self.port_access_rule_by_spec.get(port2_spec)}",
             f"foreign_port_keepout_cells={int(self.foreign_port_keepout_cells)}",
             f"fanout_access_mode={self.fanout_access_mode_normalized}",
-            f"fanout_stub_bend_degrees={45 * int(self._env_fanout_stub_bend_steps())}",
+            f"fanout_stub_bend_degrees={45 * int(self._fanout_stub_bend_steps())}",
             f"fanout_anchor_port_count={len(self.fanout_anchor_by_port_spec)}",
             f"fanout_stub_center_cell_count={len(self.fanout_stub_center_cells)}",
             f"fanout_stub_static_cell_count={len(self.fanout_stub_static_cells)}",
@@ -4453,7 +4443,7 @@ class _RouteNetsRustSession:
             self._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
 
             batch_start = self._timing_start()
-            if negotiated_repair_engine_enabled():
+            if negotiated_repair_engine_enabled(self.config.engine):
                 # Default since 2026-09-16 (owner decision, baseline
                 # freeze): the LiDAR-style negotiated rip-up loop of
                 # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
@@ -5427,8 +5417,7 @@ class _RouteNetsRustSession:
         if not isinstance(self.crossing_plan_info, dict):
             return
 
-        trace_raw = os.environ.get("PHOTONIC_ROUTER_TRACE_TERMINAL_BUMP_DISTANCE_CHECKS", "")
-        trace_tokens = {item.strip() for item in trace_raw.split(",") if item.strip()}
+        trace_tokens = self.config.diagnostics.trace_terminal_bump_distance_checks
         trace_all = "*" in trace_tokens
         grid_size = float(self.grid.grid_size_um)
         eps = max(1e-6, grid_size * 1e-6)
@@ -5660,6 +5649,7 @@ class _RouteNetsRustSession:
                 clearance_exempt_cells=clearance_exempt_cells,
                 clearance_radius_cells=int(self.commit_radius_cells),
                 core_radius_cells=int(self.core_commit_radius_cells),
+                config=self.config.diagnostics,
             )
             failed = updated.endpoint_correction_error is not None
             if self.collect_timing:
@@ -6748,7 +6738,7 @@ class _RouteNetsRustSession:
         """
         t_router_setup_start = self._pipeline_timer_start()
         self.origin_x_um, self.origin_y_um = _grid_origin_xy(self.grid)
-        if os.environ.get("PHOTONIC_ROUTER_TRACE_GRID"):
+        if self.config.diagnostics.trace_grid:
             # Path-investigation harness: the grid<->um mapping must come from
             # the tool, never from a hand conversion (see
             # .agent/PATH_INVESTIGATION_HARNESS.md). um = origin + (cell + 0.5) * grid_size.
@@ -6798,7 +6788,7 @@ class _RouteNetsRustSession:
         collision_crossing_mode = bool(self.enable_crossings) and is_collision_mode(
             self.crossing_mode
         )
-        min_heuristic_weight = float(os.environ.get("PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT", "1.0"))
+        min_heuristic_weight = float(self.config.search.min_heuristic_weight)
         if (
             self.allow_45_degree_turns
             and not collision_crossing_mode
@@ -6833,15 +6823,15 @@ class _RouteNetsRustSession:
             # (.agent/execplans/2026-08-31-heuristics-inventory.md): the
             # magnitude 12.0 has no recorded derivation; the env var lets the
             # neutral-value ladder run without a code edit. Default unchanged.
-            min_bend_weight = float(os.environ.get("PHOTONIC_ROUTER_MIN_BEND_WEIGHT", "12.0"))
+            min_bend_weight = float(self.config.search.min_bend_weight)
             self.astar_cfg.bend_weight = max(float(self.astar_cfg.bend_weight), min_bend_weight)
         effective_heap_tie_breaker = str(self.heap_tie_breaker)
         if self.allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":
             effective_heap_tie_breaker = "larger_g"
         # Experiment gate (same audit): the 45-degree-only tie-break flip is
         # unjustified in-repo; an explicit env value overrides the outcome.
-        env_tie_breaker = os.environ.get("PHOTONIC_ROUTER_HEAP_TIE_BREAKER", "").strip()
-        if env_tie_breaker in {"smaller_g", "larger_g"}:
+        env_tie_breaker = self.config.search.heap_tie_breaker
+        if env_tie_breaker is not None:
             effective_heap_tie_breaker = env_tie_breaker
         self.astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
         if hasattr(self.astar_cfg, "proactive_congestion_weight"):
@@ -6917,12 +6907,12 @@ class _RouteNetsRustSession:
         # stable baseline with both knobs at `0` (previously `half_width=2`,
         # `length=port_lane_length_cells`): still routes 111/111, 0 errors,
         # 0 self-intersections, 0 cross-net overlaps.
-        self.stub_port_lane_length_cells = self._env_nonnegative_int(
-            "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
+        self.stub_port_lane_length_cells = self._fanout_int_or_default(
+            self.config.fanout.stub_port_lane_length_cells,
             0,
         )
-        self.stub_port_lane_half_width_cells = self._env_nonnegative_int(
-            "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
+        self.stub_port_lane_half_width_cells = self._fanout_int_or_default(
+            self.config.fanout.stub_port_lane_half_width_cells,
             0,
         )
 
@@ -7051,8 +7041,8 @@ class _RouteNetsRustSession:
             **self._build_static_fanout_anchors(),
             **self._build_static_fanout_target_anchors(),
         }
-        if os.environ.get("PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE"):
-            traced_instance = os.environ["PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE"]
+        traced_instance = self.config.diagnostics.trace_runway_instance
+        if traced_instance:
             for port_spec, anchor in sorted(self.fanout_anchor_by_port_spec.items()):
                 if port_spec.startswith(f"{traced_instance},"):
                     print(
@@ -7093,8 +7083,8 @@ class _RouteNetsRustSession:
         self.dense_target_port_runway_length_by_spec = self._dense_target_port_runway_lengths(
             route_jobs
         )
-        if os.environ.get("PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE"):
-            traced_instance = os.environ["PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE"]
+        traced_instance = self.config.diagnostics.trace_runway_instance
+        if traced_instance:
             for port_spec, runway_length in sorted(
                 self.dense_target_port_runway_length_by_spec.items()
             ):
@@ -7195,6 +7185,7 @@ class _RouteNetsRustSession:
             min_straight_cells_per_crossing=int(self.min_straight_cells_per_crossing),
             allow_only_expected_crossings=self.effective_allow_only_expected_crossings,
             guidance_net_names=self.crossing_guidance_net_names,
+            config=self.config.crossing_plan,
         )
         self.crossing_plan_info["crossing_mode"] = self.crossing_mode
         if bool(self.enable_crossings):
@@ -7218,7 +7209,7 @@ class _RouteNetsRustSession:
         )
         self.crossing_plan_info["bend_runout_cells_per_crossing"] = int(self.bend_radius_cells)
         self.crossing_plan_info["fanout_stub_bend_degrees"] = 45 * int(
-            self._env_fanout_stub_bend_steps()
+            self._fanout_stub_bend_steps()
         )
         self.crossing_plan_info["required_straight_margin_cells_per_crossing"] = int(
             self.resolved_crossing_half_size_cells
@@ -7671,16 +7662,8 @@ class _RouteNetsRustSession:
                     f"  Debug stop-after-route active: routing {len(route_jobs)} "
                     f"of {full_route_count} full-context routes"
                 )
-        debug_execution_limit_raw = os.environ.get("PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT")
-        if debug_execution_limit_raw:
-            try:
-                debug_execution_limit = int(debug_execution_limit_raw)
-            except ValueError as exc:
-                raise ValueError(
-                    "PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT must be an integer"
-                ) from exc
-            if debug_execution_limit < 1:
-                raise ValueError("PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT must be >= 1")
+        debug_execution_limit = self.config.diagnostics.debug_execution_limit
+        if debug_execution_limit is not None:
             original_route_job_count = len(route_jobs)
             route_jobs = route_jobs[:debug_execution_limit]
             if self.verbose_route_diagnostics or self.debug_route_indices is not None:
@@ -7947,7 +7930,7 @@ class _RouteNetsRustSession:
         route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec = (
             self._build_route_jobs_and_fanout_clustering(nets)
         )
-        if os.environ.get("PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT", "") == "1":
+        if self.config.search.long_straight_exempt_dense_fanout is True:
             # 2026-09-17 (multiportmmi_128x128): the fan-in / fan-out bands of
             # dense multi-port instances route without the long-straight
             # penalty, so their lanes may pack in parallel; every other net
@@ -8258,7 +8241,7 @@ def route_nets_rust(
     crossing_guidance_net_names: frozenset[str] | None = None,
     defer_realization: bool = False,
     enable_checked_endpoint_correction: bool = True,
-    router_config: RouterConfig | None = None,
+    config: RoutingConfig | None = None,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
     """Route schematic nets through a temporary routing session."""
     session = _RouteNetsRustSession(
@@ -8306,6 +8289,6 @@ def route_nets_rust(
         crossing_guidance_net_names=crossing_guidance_net_names,
         defer_realization=defer_realization,
         enable_checked_endpoint_correction=enable_checked_endpoint_correction,
-        router_config=router_config,
+        config=config,
     )
     return session.run()

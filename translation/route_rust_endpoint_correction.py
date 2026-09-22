@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import math
-import os
 from collections.abc import Iterable as IterableABC
 from dataclasses import replace
 from typing import Iterable, Mapping
 
+from photonic_router.config import FlowDiagnostics
 from translation.route_rust_crossing_components import (
     _crossing_footprint_polygon_metadata,
     _point_um_from_mapping,
@@ -516,17 +516,12 @@ def _apply_crossing_aware_endpoint_correction_to_record(
     clearance_exempt_cells: Iterable[tuple[int, int]] | None = None,
     clearance_radius_cells: int = 0,
     core_radius_cells: int = 0,
+    config: FlowDiagnostics | None = None,
 ) -> RoutedNetRecord:
     """Apply terminal-only endpoint correction without moving route crossings."""
 
-    trace_endpoint_nets = {
-        item.strip()
-        for item in os.environ.get(
-            "PHOTONIC_ROUTER_TRACE_ENDPOINT_CORRECTION_NETS",
-            "",
-        ).split(",")
-        if item.strip()
-    }
+    config = config if config is not None else FlowDiagnostics()
+    trace_endpoint_nets = config.trace_endpoint_correction_nets
     trace_endpoint = record.net_name in trace_endpoint_nets or (
         record.net_id is not None and str(int(record.net_id)) in trace_endpoint_nets
     )

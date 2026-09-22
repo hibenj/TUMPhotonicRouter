@@ -13,6 +13,7 @@ import importlib
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 if "MPLCONFIGDIR" not in os.environ:
@@ -31,6 +32,7 @@ from translation.route_order import NET_ORDERS, default_net_order
 from translation.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import RipupRerouteConfig
+from photonic_router.config import RoutingConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from routing_flow_config import (
     DebugSvgSelector,
@@ -866,11 +868,16 @@ def _preplaced_crossing_grids_stage(
     total_steps: int,
     stats: RoutingFlowStats | None,
     router_probe_kwargs: dict[str, object] | None = None,
-) -> tuple[Schematic, Component, dict[str, object], frozenset[str]]:
+    config: RoutingConfig,
+) -> tuple[Schematic, Component, dict[str, object], frozenset[str], frozenset[str] | None]:
     """Replace the schematic/layout with the crossing-grid-derived pair.
 
     The fourth element names the nets of layers without a feasible pre-placed
-    structure; the flow routes them with the guided crossing search.
+    structure; the flow routes them with the guided crossing search. The
+    fifth element is the dense-fanout-instance set the stage computed for its
+    own static-fanout probe (`None` when none), which `run_routing_flow`
+    folds into the routing-stage config so the actual routing run's fan-out
+    access agrees with the probe's.
 
     Every interstage crossing of the benchmark is computed from its topology
     metadata, realized as a pre-wired crossing grid instance placed in the
@@ -889,7 +896,11 @@ def _preplaced_crossing_grids_stage(
     metadata = load_benchmark_metadata(benchmark_name, schematic=schematic)
     crossing_plan = build_crossing_plan_for_benchmark(schematic, metadata)
     derived = derive_preplaced_crossing_layout(
-        schematic, unrouted_layout, crossing_plan, router_probe_kwargs=router_probe_kwargs
+        schematic,
+        unrouted_layout,
+        crossing_plan,
+        router_probe_kwargs=router_probe_kwargs,
+        config=config.crossing_grid,
     )
     metrics = preplaced_crossing_grid_metrics(derived)
     if derived.placed_crossing_count != derived.expected_crossing_count:
@@ -913,6 +924,7 @@ def _preplaced_crossing_grids_stage(
         derived.unrouted_layout,
         {"preplaced_crossing_grids": metrics},
         frozenset(derived.router_fallback_net_names),
+        derived.dense_fanout_instances,
     )
 
 
@@ -966,6 +978,7 @@ def run_routing_flow(
     collect_route_stats: bool = False,
     collect_attempt_diagnostics: bool = False,
     stats: RoutingFlowStats | None = None,
+    config: RoutingConfig | None = None,
 ) -> Component:
     """Execute the routing flow for a given benchmark.
 
@@ -1071,10 +1084,17 @@ def run_routing_flow(
             provided.
         collect_attempt_diagnostics: If True, collect extra per-attempt window,
             obstacle-density, and ripup diagnostics for slow/failed attempts.
+        config: Milestone 1's typed Python-side configuration tree
+            (`photonic_router.config.RoutingConfig`), replacing every
+            `PHOTONIC_ROUTER_*` variable `translation/` and this module used
+            to read directly. When omitted, `RoutingConfig.from_environment()`
+            is used, so every caller that passes nothing keeps today's
+            behavior.
 
     Returns:
         The routed layout component.
     """
+    config = config if config is not None else RoutingConfig.from_environment()
     debug_svgs, show_klayout = resolve_legacy_display_options(
         debug_svgs=debug_svgs,
         show_klayout=show_klayout,
@@ -1140,7 +1160,11 @@ def run_routing_flow(
         # configuration since the ADEPT 128x128 run that only converged this
         # way; `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT=0` in the
         # shell keeps the old behaviour.
-        os.environ.setdefault("PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT", "1")
+        if config.search.long_straight_exempt_dense_fanout is None:
+            config = replace(
+                config,
+                search=replace(config.search, long_straight_exempt_dense_fanout=True),
+            )
     # Contribution 2 splits nets into tile stubs; keep the net order's depth
     # layers those of the original netlist (see route_rust.net_order_depth_by_node).
     net_order_depth_by_node: dict[str, int] | None = (
@@ -1166,6 +1190,7 @@ def run_routing_flow(
             unrouted_layout,
             preplaced_report_metadata,
             crossing_guidance_net_names,
+            dense_fanout_instances,
         ) = _preplaced_crossing_grids_stage(
             benchmark_name=benchmark_name,
             schematic=schematic,
@@ -1180,7 +1205,17 @@ def run_routing_flow(
                 "fanout_access_mode": fanout_access_mode,
                 "bend_radius_um": bend_radius_um,
                 "include_heater_obstacles": include_heater_obstacles,
+                "config": config,
             },
+            config=config,
+        )
+        # The stage's own static-fanout probe computed which source
+        # instances get the 2-port dense-fanout threshold (see
+        # `_derive_crossing_tiles`); the actual routing run must agree, so
+        # PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES's old self-set/self-clear
+        # environment mutation becomes this explicit config fold-in.
+        config = replace(
+            config, fanout=replace(config.fanout, dense_fanout_instances=dense_fanout_instances)
         )
         if crossing_guidance_net_names:
             # Mixed run: tiled layers stay crossing-free, the fallback layers
@@ -1231,6 +1266,7 @@ def run_routing_flow(
         collect_route_stats=collect_route_stats,
         collect_attempt_diagnostics=collect_attempt_diagnostics,
         stats=stats,
+        config=config,
     )
     optical_result = run_photonic_routing_stage(
         benchmark_name=benchmark_name,
@@ -1263,6 +1299,9 @@ def run_routing_flow(
         include_heater_obstacles=include_heater_obstacles,
         debug_stop_after_route_index=debug_stop_after_route_index,
         extra_report_metadata=preplaced_report_metadata,
+        write_gds_on_photonic_verification_failure=(
+            config.write_gds_on_photonic_verification_failure
+        ),
     )
     if debug_timing:
         # Performance pass 2026-09-03 (P5): the non-routing phases were an

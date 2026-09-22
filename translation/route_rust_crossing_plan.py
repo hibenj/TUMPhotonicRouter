@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from collections import Counter
 from collections.abc import Iterable as IterableABC
 from pathlib import Path
@@ -12,6 +11,7 @@ from typing import Any, Iterable, Mapping, cast
 
 from gdsfactory.schematic import Schematic
 
+from photonic_router.config import CrossingPlanConfig
 from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
 from translation.crossing_modes import is_collision_mode, is_guided_mode, is_lidar_mode
 from photonic_router.topology_analysis import analyze_schematic_topology
@@ -124,6 +124,7 @@ def _effective_crossing_search_loss(
     enable_crossings: bool,
     crossing_mode: str,
     crossing_loss: float,
+    config: CrossingPlanConfig | None = None,
 ) -> float:
     """Return the search-only crossing penalty passed to Rust A*.
 
@@ -131,48 +132,37 @@ def _effective_crossing_search_loss(
     Collision-discovered crossing modes also need a non-physical search cost so
     A* tries a clean same-net route before probing route-route collisions.
     """
+    config = config if config is not None else CrossingPlanConfig()
     physical_loss = float(crossing_loss)
     if not enable_crossings:
         return physical_loss
     if physical_loss > 0.0:
         return physical_loss
     if is_collision_mode(crossing_mode):
-        override = os.environ.get(COLLISION_CROSSING_SEARCH_LOSS_ENV)
-        if override is not None:
-            override_value = float(override)
-            if not math.isfinite(override_value) or override_value < 0.0:
-                raise ValueError(
-                    f"{COLLISION_CROSSING_SEARCH_LOSS_ENV} must be finite and non-negative"
-                )
-            return override_value
+        if config.collision_crossing_search_loss_um is not None:
+            return config.collision_crossing_search_loss_um
         return DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
     return physical_loss
 
 
-def _effective_planned_crossing_search_loss() -> float:
-    """Search price of a planned crossing in lidar-guided mode (env override)."""
+def _effective_planned_crossing_search_loss(config: CrossingPlanConfig | None = None) -> float:
+    """Search price of a planned crossing in lidar-guided mode (config override)."""
 
-    override = os.environ.get(PLANNED_CROSSING_SEARCH_LOSS_ENV)
-    if override is None:
+    config = config if config is not None else CrossingPlanConfig()
+    if config.planned_crossing_search_loss_um is None:
         return DEFAULT_PLANNED_CROSSING_SEARCH_LOSS_UM
-    value = float(override)
-    if not math.isfinite(value) or value < 0.0:
-        raise ValueError(f"{PLANNED_CROSSING_SEARCH_LOSS_ENV} must be finite and non-negative")
-    return value
+    return config.planned_crossing_search_loss_um
 
 
-def _effective_single_discounted_crossing_per_pair() -> bool:
+def _effective_single_discounted_crossing_per_pair(
+    config: CrossingPlanConfig | None = None,
+) -> bool:
     """S2 switch: True = one discounted crossing per planned pair (default: off)."""
 
-    raw = os.environ.get(PLANNED_CROSSING_BUDGET_ENV)
-    if raw is None:
+    config = config if config is not None else CrossingPlanConfig()
+    if config.planned_crossing_budget is None:
         return DEFAULT_SINGLE_DISCOUNTED_CROSSING_PER_PAIR
-    value = raw.strip()
-    if value == "1":
-        return True
-    if value == "0":
-        return False
-    raise ValueError(f"{PLANNED_CROSSING_BUDGET_ENV} must be 0 (unlimited) or 1 (one per pair)")
+    return config.planned_crossing_budget
 
 
 def _build_crossing_plan_info(
@@ -192,11 +182,13 @@ def _build_crossing_plan_info(
     min_straight_cells_per_crossing: int,
     allow_only_expected_crossings: bool,
     guidance_net_names: frozenset[str] | None = None,
+    config: CrossingPlanConfig | None = None,
 ) -> dict[str, object]:
     """``guidance_net_names``: when given, only plan events between two of
     these nets are loaded (counts, guidance pairs); the others are dropped
     silently. Contribution 2's router fallback uses it so that the guided
     search only sees the layers it routes, not the tiled ones."""
+    config = config if config is not None else CrossingPlanConfig()
     info: dict[str, object] = {
         "enabled": bool(enable_crossings),
         "constraint_count": 0,
@@ -363,8 +355,8 @@ def _build_crossing_plan_info(
             for record in event_records
             if record.get("loaded")
         ]
-        planned_loss = _effective_planned_crossing_search_loss()
-        single_per_pair = _effective_single_discounted_crossing_per_pair()
+        planned_loss = _effective_planned_crossing_search_loss(config)
+        single_per_pair = _effective_single_discounted_crossing_per_pair(config)
         router.set_crossing_guidance(planned_pairs, planned_loss, single_per_pair)
         info["guidance"] = {
             "planned_pair_count": len(planned_pairs),

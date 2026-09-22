@@ -94,6 +94,183 @@ class KernelDiagnostics:
 
 
 @dataclass(frozen=True)
+class CrossingPlanConfig:
+    """Mirrors the env reads of `translation/route_rust_crossing_plan.py`.
+    Every field is `None` when unset, in which case the site keeps its own
+    literal default (named below)."""
+
+    #: `PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_LOSS_UM`: float, finite and
+    #: non-negative. `None` = unset (site default
+    #: `DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM` = 200.0).
+    collision_crossing_search_loss_um: float | None = None
+    #: `PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM`: float, finite and
+    #: non-negative. `None` = unset (site default
+    #: `DEFAULT_PLANNED_CROSSING_SEARCH_LOSS_UM` = 0.0).
+    planned_crossing_search_loss_um: float | None = None
+    #: `PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET`: `"0"` -> False, `"1"` ->
+    #: True, anything else raises. `None` = unset (site default
+    #: `DEFAULT_SINGLE_DISCOUNTED_CROSSING_PER_PAIR` = False).
+    planned_crossing_budget: bool | None = None
+
+
+@dataclass(frozen=True)
+class CrossingGridConfig:
+    """Mirrors the env reads of `translation/preplaced_crossing_grids.py`'s
+    `crossing_grid_geometry_from_config`/`_column_grid_stage` and
+    `translation/crossing_structures.py`'s `select_layer_structure`. Every
+    float/string field is `None` when unset, in which case the site's own
+    (`CrossingGridGeometry` or literal) default applies."""
+
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_BAND_MARGIN_UM` (default 50.0).
+    band_margin_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_BEND_RADIUS_UM` (default 5.0).
+    bend_radius_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_LEAD_UM` (default 14.0).
+    column_lead_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_PITCH_UM` (default 16.0).
+    column_pitch_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_CORNER_MARGIN_UM` (default 14.0).
+    corner_margin_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_ENTRY_STRAIGHT_UM` (default 4.0).
+    entry_straight_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_FAN_COLUMN_PITCH_UM` (default 4.0).
+    fan_column_pitch_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM` (default 14.0).
+    lane_pitch_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_PORT_PAIR_SPREAD_UM` (default 2.0).
+    port_pair_spread_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_SLOT_SPREAD_UM` (default 11.0).
+    slot_spread_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_STUB_STAGGER_UM` (default 6.0).
+    stub_stagger_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_TILE_MIN_SPACING_UM` (default 14.0).
+    tile_min_spacing_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM` (default 0.0).
+    unrouted_sibling_clearance_um: float | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_FAN_MODE`: string (site default
+    #: `base.fan_mode`, "tiles"); a blank value is also "unset".
+    fan_mode: str | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_TILE_PLACEMENT`: string (site default
+    #: "auto"); a blank value is also "unset".
+    tile_placement: str | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_CORNERS`: string (site default
+    #: "always"); a blank value is also "unset".
+    corners: str | None = None
+    #: `PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS`: comma-separated ints
+    #: (non-digit tokens dropped); default empty.
+    router_layers: frozenset[int] = frozenset()
+    #: `PHOTONIC_ROUTER_TRACE_COLUMN_GRID`: truthy string.
+    trace_column_grid: bool = False
+
+
+@dataclass(frozen=True)
+class FanoutAccessConfig:
+    """Mirrors the fan-out-related env reads of `translation/route_rust.py`."""
+
+    #: `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES`: comma-separated instance
+    #: names. Unset (`None`) means no override. Also SELF-SET: the
+    #: pre-placed crossing-grid stage computes this set and
+    #: `run_routing_flow` folds it into the routing-stage config (see
+    #: `translation/preplaced_crossing_grids.py`'s `_derive_crossing_tiles`).
+    dense_fanout_instances: frozenset[str] | None = None
+    #: `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS`: int >= 2, else raises.
+    #: `None` = unset (site default 3).
+    dense_fanout_min_ports: int | None = None
+    #: `PHOTONIC_ROUTER_FANOUT_ACCESS_MODE`: today this OVERRIDES the
+    #: constructor argument (`os.environ.get(NAME, default_or_ctor_arg)`,
+    #: then alias-normalized). `None` = unset -> the constructor
+    #: argument/default is used.
+    fanout_access_mode: str | None = None
+    #: `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS`: non-negative int, else
+    #: raises. `None` = unset (site defaults: 11 at
+    #: `_build_static_fanout_anchors`, 3 at the three other sites).
+    fanout_lane_spacing_cells: int | None = None
+    #: `PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS`: non-negative
+    #: int, else raises. `None` = unset -> falls back to
+    #: `fanout_lane_spacing_cells`, then 3.
+    fanout_protected_lane_spacing_cells: int | None = None
+    #: `PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS`: non-negative
+    #: int, else raises. `None` = unset -> outermost of that fallback chain.
+    target_protected_lane_spacing_cells: int | None = None
+    #: `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES`: alias table (see
+    #: `_fanout_stub_bend_steps`), site default `"90"`. `None` = unset.
+    fanout_stub_bend_degrees: str | None = None
+    #: `PHOTONIC_ROUTER_FANOUT_STUB_FORWARD_CELLS`: non-negative int, else
+    #: raises. `None` = unset (site computes `max(3, bend_radius_cells + 3)`).
+    fanout_stub_forward_cells: int | None = None
+    #: `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS`: non-negative int, else
+    #: raises. `None` = unset (site default 1).
+    fanout_stub_x_offset_cells: int | None = None
+    #: `PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS`: non-negative int,
+    #: else raises. `None` = unset (site default 0).
+    stub_port_lane_half_width_cells: int | None = None
+    #: `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS`: non-negative int, else
+    #: raises. `None` = unset (site default 0).
+    stub_port_lane_length_cells: int | None = None
+
+
+@dataclass(frozen=True)
+class EngineSelection:
+    """Mirrors the repair-engine selection env reads of
+    `translation/route_rust.py`'s `negotiated_repair_engine_enabled`."""
+
+    #: `PHOTONIC_ROUTER_NEGOTIATED_REPAIR`: `!= "0"`, default True.
+    negotiated_repair: bool = True
+    #: `PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN`: `== "1"`, default False.
+    #: When True it forces the legacy chain regardless of
+    #: `negotiated_repair`.
+    legacy_repair_chain: bool = False
+
+
+@dataclass(frozen=True)
+class SearchTuning:
+    """Mirrors the search-tuning env reads of `translation/route_rust.py`."""
+
+    #: `PHOTONIC_ROUTER_MIN_BEND_WEIGHT`: float, default 12.0.
+    min_bend_weight: float = 12.0
+    #: `PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT`: float, default 1.0.
+    min_heuristic_weight: float = 1.0
+    #: `PHOTONIC_ROUTER_HEAP_TIE_BREAKER`: only exactly `"smaller_g"` or
+    #: `"larger_g"` override; any other value (including unset) means
+    #: `None`, and the site computes its own default.
+    heap_tie_breaker: str | None = None
+    #: `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT`: `== "1"`.
+    #: `None` = unset -- SELF-SET by `routing_flow.py` to True when
+    #: pre-placed crossing grids are enabled and this field is still
+    #: `None`; the site tests `is True`.
+    long_straight_exempt_dense_fanout: bool | None = None
+
+
+@dataclass(frozen=True)
+class FlowDiagnostics:
+    """Mirrors the Python-side diagnostic env reads of
+    `translation/route_rust.py` and `translation/route_rust_endpoint_correction.py`."""
+
+    #: `PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT`: int >= 1, else raises.
+    #: `None` = unset.
+    debug_execution_limit: int | None = None
+    #: `PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE`: string, default `""`.
+    debug_route_first_instance: str = ""
+    #: `PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_NETS`: comma-separated ints, list
+    #: order kept (non-digit tokens dropped); default empty.
+    debug_route_first_nets: tuple[int, ...] = ()
+    #: `PHOTONIC_ROUTER_TRACE_ENDPOINT_CORRECTION_NETS`: comma-separated set
+    #: of net names; default empty.
+    trace_endpoint_correction_nets: frozenset[str] = frozenset()
+    #: `PHOTONIC_ROUTER_TRACE_FANOUT_STUBS`: non-empty string (after
+    #: `.strip()`) is truthy.
+    trace_fanout_stubs: bool = False
+    #: `PHOTONIC_ROUTER_TRACE_GRID`: truthy string.
+    trace_grid: bool = False
+    #: `PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE`: string; truthy then
+    #: re-read. `None` = unset (a blank value is also "unset").
+    trace_runway_instance: str | None = None
+    #: `PHOTONIC_ROUTER_TRACE_TERMINAL_BUMP_DISTANCE_CHECKS`: comma set of
+    #: tokens, `"*"` matches every net; default empty.
+    trace_terminal_bump_distance_checks: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
 class RouterConfig:
     """Mirrors Rust `RouterConfig`: the top-level configuration tree passed
     explicitly into `rust_backend.PyPhotonicRouter`, replacing every
@@ -180,11 +357,50 @@ class RouterConfig:
         return apply_env_overlay(cls(), environ if environ is not None else os.environ)
 
 
+@dataclass(frozen=True)
+class RoutingConfig:
+    """Milestone 1, Slice 2: the top-level Python-side configuration tree.
+    Every `PHOTONIC_ROUTER_*` variable read by `translation/` and
+    `routing_flow*.py` (outside `env_overlay.py` itself) is a typed field
+    somewhere under this tree, threaded explicitly from `run_routing_flow`
+    down to `_RouteNetsRustSession` (whose `.router` field is `RouterConfig`,
+    the Rust-boundary configuration Milestone 1 Slice 1 introduced)."""
+
+    router: RouterConfig = field(default_factory=RouterConfig)
+    crossing_plan: CrossingPlanConfig = field(default_factory=CrossingPlanConfig)
+    crossing_grid: CrossingGridConfig = field(default_factory=CrossingGridConfig)
+    fanout: FanoutAccessConfig = field(default_factory=FanoutAccessConfig)
+    engine: EngineSelection = field(default_factory=EngineSelection)
+    search: SearchTuning = field(default_factory=SearchTuning)
+    diagnostics: FlowDiagnostics = field(default_factory=FlowDiagnostics)
+    #: `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE`
+    #: (`routing_flow_verification.py`): `.strip().lower() in
+    #: {"1", "true", "yes", "on"}`, default False.
+    write_gds_on_photonic_verification_failure: bool = False
+
+    @classmethod
+    def from_environment(cls, environ: Mapping[str, str] | None = None) -> "RoutingConfig":
+        """`apply_env_overlay(RoutingConfig(), environ or os.environ)` --
+        imported lazily for the same reason as `RouterConfig.from_environment`."""
+        import os
+
+        from photonic_router.env_overlay import apply_env_overlay
+
+        return apply_env_overlay(cls(), environ if environ is not None else os.environ)
+
+
 __all__ = [
     "ALL_NETS",
     "CrossingEngineConfig",
+    "CrossingGridConfig",
+    "CrossingPlanConfig",
+    "EngineSelection",
+    "FanoutAccessConfig",
+    "FlowDiagnostics",
     "KernelDiagnostics",
     "NegotiationConfig",
     "RouterConfig",
+    "RoutingConfig",
     "SearchOverrides",
+    "SearchTuning",
 ]

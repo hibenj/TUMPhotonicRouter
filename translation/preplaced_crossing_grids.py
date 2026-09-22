@@ -34,13 +34,14 @@ from __future__ import annotations
 import hashlib
 import itertools
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterable, Mapping
 
 import gdsfactory as gf
 from gdsfactory.component import Component
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
+from photonic_router.config import CrossingGridConfig, RoutingConfig
 from photonic_router.crossing_plan import CrossingPlan, CrossingStagePlan
 from photonic_router.path_length_graph import RoutedEdgeKey
 from photonic_router.routing_layers import (
@@ -195,6 +196,12 @@ class DerivedCrossingLayout:
     router_fallback_net_names: set[str] = field(default_factory=set)
     # every planned crossing of the whole plan (tiled + fallback layers)
     plan_event_count: int = 0
+    # tiles mode (auto/column-grid): source instances with >= 2 crossing
+    # lanes in a column-grid layer, so the routing run's fan-out access
+    # gives them the same 2-port static-stub threshold this stage used for
+    # its own fan-out probe. `None` when no such instance exists (or the
+    # stage never ran the auto/column-grid probe).
+    dense_fanout_instances: frozenset[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -999,64 +1006,41 @@ def _build_stretched_grid_component(
 # ---------------------------------------------------------------------------
 
 
-def crossing_grid_geometry_from_env() -> CrossingGridGeometry:
-    """Default grid geometry, with environment-variable overrides for experiments.
+def crossing_grid_geometry_from_config(
+    config: CrossingGridConfig | None = None,
+) -> CrossingGridGeometry:
+    """Default grid geometry, with `CrossingGridConfig` overrides for experiments.
 
-    ``PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM``,
-    ``PHOTONIC_ROUTER_CROSSING_GRID_BEND_RADIUS_UM`` and
-    ``PHOTONIC_ROUTER_CROSSING_GRID_ENTRY_STRAIGHT_UM`` override the
-    corresponding ``CrossingGridGeometry`` fields when set.
+    `config.lane_pitch_um`, `config.bend_radius_um` and
+    `config.entry_straight_um` (among others) override the corresponding
+    `CrossingGridGeometry` fields when set (not `None`).
     """
-    import os
-
+    config = config if config is not None else CrossingGridConfig()
     base = CrossingGridGeometry()
 
-    def _read(name: str, default: float) -> float:
-        raw = os.environ.get(name, "").strip()
-        if not raw:
-            return default
-        try:
-            return float(raw)
-        except ValueError as exc:
-            raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+    def _resolve(value: float | None, default: float) -> float:
+        return default if value is None else value
 
     return CrossingGridGeometry(
-        lane_pitch_um=_read("PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM", base.lane_pitch_um),
-        bend_radius_um=_read("PHOTONIC_ROUTER_CROSSING_GRID_BEND_RADIUS_UM", base.bend_radius_um),
-        entry_straight_um=_read(
-            "PHOTONIC_ROUTER_CROSSING_GRID_ENTRY_STRAIGHT_UM", base.entry_straight_um
+        lane_pitch_um=_resolve(config.lane_pitch_um, base.lane_pitch_um),
+        bend_radius_um=_resolve(config.bend_radius_um, base.bend_radius_um),
+        entry_straight_um=_resolve(config.entry_straight_um, base.entry_straight_um),
+        fan_column_pitch_um=_resolve(config.fan_column_pitch_um, base.fan_column_pitch_um),
+        port_pair_spread_um=_resolve(config.port_pair_spread_um, base.port_pair_spread_um),
+        unrouted_sibling_clearance_um=_resolve(
+            config.unrouted_sibling_clearance_um, base.unrouted_sibling_clearance_um
         ),
-        fan_column_pitch_um=_read(
-            "PHOTONIC_ROUTER_CROSSING_GRID_FAN_COLUMN_PITCH_UM", base.fan_column_pitch_um
+        fan_mode=config.fan_mode if config.fan_mode is not None else base.fan_mode,
+        stub_stagger_um=_resolve(config.stub_stagger_um, base.stub_stagger_um),
+        slot_spread_um=_resolve(config.slot_spread_um, base.slot_spread_um),
+        band_margin_um=_resolve(config.band_margin_um, base.band_margin_um),
+        tile_placement=(
+            config.tile_placement if config.tile_placement is not None else base.tile_placement
         ),
-        port_pair_spread_um=_read(
-            "PHOTONIC_ROUTER_CROSSING_GRID_PORT_PAIR_SPREAD_UM", base.port_pair_spread_um
-        ),
-        unrouted_sibling_clearance_um=_read(
-            "PHOTONIC_ROUTER_CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM",
-            base.unrouted_sibling_clearance_um,
-        ),
-        fan_mode=os.environ.get("PHOTONIC_ROUTER_CROSSING_GRID_FAN_MODE", base.fan_mode).strip()
-        or base.fan_mode,
-        stub_stagger_um=_read(
-            "PHOTONIC_ROUTER_CROSSING_GRID_STUB_STAGGER_UM", base.stub_stagger_um
-        ),
-        slot_spread_um=_read("PHOTONIC_ROUTER_CROSSING_GRID_SLOT_SPREAD_UM", base.slot_spread_um),
-        band_margin_um=_read("PHOTONIC_ROUTER_CROSSING_GRID_BAND_MARGIN_UM", base.band_margin_um),
-        tile_placement=os.environ.get(
-            "PHOTONIC_ROUTER_CROSSING_GRID_TILE_PLACEMENT", base.tile_placement
-        ).strip()
-        or base.tile_placement,
-        tile_min_spacing_um=_read(
-            "PHOTONIC_ROUTER_CROSSING_GRID_TILE_MIN_SPACING_UM", base.tile_min_spacing_um
-        ),
-        column_pitch_um=_read(
-            "PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_PITCH_UM", base.column_pitch_um
-        ),
-        column_lead_um=_read("PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_LEAD_UM", base.column_lead_um),
-        corner_margin_um=_read(
-            "PHOTONIC_ROUTER_CROSSING_GRID_CORNER_MARGIN_UM", base.corner_margin_um
-        ),
+        tile_min_spacing_um=_resolve(config.tile_min_spacing_um, base.tile_min_spacing_um),
+        column_pitch_um=_resolve(config.column_pitch_um, base.column_pitch_um),
+        column_lead_um=_resolve(config.column_lead_um, base.column_lead_um),
+        corner_margin_um=_resolve(config.corner_margin_um, base.corner_margin_um),
         route_width_um=base.route_width_um,
         cross_section=base.cross_section,
     )
@@ -1457,6 +1441,7 @@ def _derive_crossing_tiles(
     geometry: CrossingGridGeometry,
     derived: Schematic,
     router_probe_kwargs: Mapping[str, object] | None = None,
+    config: CrossingGridConfig | None = None,
 ) -> tuple:
     """Place one crossing tile per planned crossing and split every crossing
     lane into router nets between its tiles (see ``crossing_tile_component``).
@@ -1468,6 +1453,7 @@ def _derive_crossing_tiles(
     source rows -- for a single swap exactly the average of the four ports
     involved (owner rule, 2026-09-07).
     """
+    config = config if config is not None else CrossingGridConfig()
     tile = crossing_tile_component(geometry)
     _register_grid_cell(tile.name, tile)
     if geometry.tile_placement == "lines":
@@ -1480,9 +1466,8 @@ def _derive_crossing_tiles(
             "'column-grid' or 'lines'"
         )
     anchors: dict[str, tuple[float, float]] = {}
+    dense_fanout_instances: frozenset[str] | None = None
     if geometry.tile_placement in ("auto", "column-grid"):
-        import os
-
         from translation.crossing_structures import evaluate_x_array
         from translation.route_rust import static_fanout_anchors_um
 
@@ -1508,13 +1493,14 @@ def _derive_crossing_tiles(
             for edge in stage_plan.initial_edge_order:
                 count[edge.source.instance] = count.get(edge.source.instance, 0) + 1
             dense.update(name for name, n in count.items() if n >= 2)
-        if dense:
-            os.environ["PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES"] = ",".join(sorted(dense))
-        else:
-            os.environ.pop("PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES", None)
-        anchors = static_fanout_anchors_um(
-            unrouted_layout, schematic, **dict(router_probe_kwargs or {})
+        dense_fanout_instances = frozenset(dense) if dense else None
+        probe_kwargs = dict(router_probe_kwargs or {})
+        probe_config = probe_kwargs.get("config") or RoutingConfig()
+        probe_kwargs["config"] = replace(
+            probe_config,
+            fanout=replace(probe_config.fanout, dense_fanout_instances=dense_fanout_instances),
         )
+        anchors = static_fanout_anchors_um(unrouted_layout, schematic, **probe_kwargs)
         print(
             f"      - crossing tiles: {len(anchors)} static fan-out anchor(s) from the router "
             f"(dense instances: {', '.join(sorted(dense)) or 'none'})"
@@ -1565,7 +1551,7 @@ def _derive_crossing_tiles(
         }[geometry.tile_placement]
         decision = select_layer_structure(
             schematic, unrouted_layout, stage_plan, geometry, anchors,
-            stage_key=tuple(stage_key), allowed=allowed,
+            stage_key=tuple(stage_key), allowed=allowed, config=config,
         )
         decisions.append(decision)
         print(f"      - crossing structure {decision.describe()}")
@@ -1575,7 +1561,8 @@ def _derive_crossing_tiles(
             continue
         if decision.chosen == COLUMN_GRID:
             stage_result = _column_grid_stage(
-                schematic, unrouted_layout, stage_plan, geometry, derived, plus_tile, anchors
+                schematic, unrouted_layout, stage_plan, geometry, derived, plus_tile, anchors,
+                config=config,
             )
             tile_names.extend(stage_result[0])
             builds.update(stage_result[1])
@@ -1663,7 +1650,7 @@ def _derive_crossing_tiles(
         )
     return (
         tile_names, builds, stub_nets, lengths, nets, split, expected, placed, decisions,
-        fallback_nets,
+        fallback_nets, dense_fanout_instances,
     )
 
 
@@ -1983,6 +1970,7 @@ def _column_grid_stage(
     plus_tile: Component,
     anchors: Mapping[str, tuple[float, float]],
     probe_only: bool = False,
+    config: CrossingGridConfig | None = None,
 ) -> (
     tuple[
         list[str],
@@ -2018,6 +2006,7 @@ def _column_grid_stage(
     column). The router connects the pieces: straight runs between tiles and
     two 90-degree corners per lane.
     """
+    config = config if config is not None else CrossingGridConfig()
     crossing = _crossing_component()
     pass_length_um = 2.0 * _crossing_half_extent_um(crossing)
     eps = 1e-6
@@ -2177,9 +2166,7 @@ def _column_grid_stage(
         f"{len(moving)} moving, {len(columns)} columns at {pitch:.0f} um "
         f"({needed:.0f} of {band_x1 - band_x0:.0f} um), {len(planned)} crossings"
     )
-    import os
-
-    if os.environ.get("PHOTONIC_ROUTER_TRACE_COLUMN_GRID"):
+    if config.trace_column_grid:
         for n in lanes:
             partners = sorted(m for m in lanes if frozenset((n, m)) in planned)
             print(
@@ -2227,7 +2214,6 @@ def _column_grid_stage(
     # tight one, else as a bare bend.
     half_tile = 0.5 * pass_length_um
     corner_elements: list[dict] = []
-    import os as _os
 
     # "always" (default): both corners of every moving lane are pre-wired
     # (crossing-with-bend tile or bare bend), so the router only routes
@@ -2235,9 +2221,7 @@ def _column_grid_stage(
     # (multiportmmi_32x32: a tile-less lane routed diagonally through a
     # column). "auto": only corners whose legs are shorter than
     # corner_margin_um. "router": none.
-    corners_mode = (
-        _os.environ.get("PHOTONIC_ROUTER_CROSSING_GRID_CORNERS", "always").strip() or "always"
-    )
+    corners_mode = config.corners if config.corners is not None else "always"
     for n in moving if corners_mode != "router" else []:
         x_col = column_x[n]
         ye, yt = span[n]
@@ -2473,6 +2457,7 @@ def derive_preplaced_crossing_layout(
     *,
     geometry: CrossingGridGeometry | None = None,
     router_probe_kwargs: Mapping[str, object] | None = None,
+    config: CrossingGridConfig | None = None,
 ) -> DerivedCrossingLayout:
     """Derive a schematic/layout pair with crossing grids placed and nets split.
 
@@ -2486,7 +2471,8 @@ def derive_preplaced_crossing_layout(
     layout in every respect.
     """
 
-    geometry = geometry or crossing_grid_geometry_from_env()
+    config = config if config is not None else CrossingGridConfig()
+    geometry = geometry or crossing_grid_geometry_from_config(config)
     derived = Schematic()
     for instance_name, instance in schematic.netlist.instances.items():
         derived.add_instance(instance_name, instance, schematic.placements[instance_name])
@@ -2503,7 +2489,13 @@ def derive_preplaced_crossing_layout(
 
     if geometry.fan_mode == "tiles":
         tiles_result = _derive_crossing_tiles(
-            schematic, unrouted_layout, crossing_plan, geometry, derived, router_probe_kwargs
+            schematic,
+            unrouted_layout,
+            crossing_plan,
+            geometry,
+            derived,
+            router_probe_kwargs,
+            config=config,
         )
         (
             grid_instance_names,
@@ -2517,6 +2509,7 @@ def derive_preplaced_crossing_layout(
         ) = tiles_result[:8]
         layer_decisions = list(tiles_result[8]) if len(tiles_result) > 8 else []
         fallback_net_names = set(tiles_result[9]) if len(tiles_result) > 9 else set()
+        dense_fanout_instances = tiles_result[10] if len(tiles_result) > 10 else None
         for net_name in schematic.netlist.routes:
             if net_name in interstage_net_names:
                 continue
@@ -2537,6 +2530,7 @@ def derive_preplaced_crossing_layout(
             layer_decisions=layer_decisions,
             router_fallback_net_names=fallback_net_names,
             plan_event_count=sum(len(stage.events) for stage in crossing_plan.stages.values()),
+            dense_fanout_instances=dense_fanout_instances,
         )
 
     for stage_key in sorted(crossing_plan.stages):

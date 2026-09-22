@@ -2,7 +2,6 @@
 
 from collections.abc import Mapping
 import json
-import os
 from pathlib import Path
 from typing import Any, cast
 
@@ -29,6 +28,7 @@ def verify_and_attach_photonic_reports(
     include_heater_obstacles: bool,
     debug_stop_after_route_index: int | None,
     extra_report_metadata: Mapping[str, object] | None = None,
+    write_gds_on_photonic_verification_failure: bool = False,
 ) -> None:
     """Run crossing and photonic final-geometry gates and attach report metadata.
 
@@ -112,10 +112,7 @@ def verify_and_attach_photonic_reports(
     print(f"      - Photonic verification JSON: {photonic_report['path']}")
     if photonic_verification.success:
         return
-    if os.environ.get(
-        "PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE",
-        "",
-    ).strip().lower() in {"1", "true", "yes", "on"}:
+    if write_gds_on_photonic_verification_failure:
         print(
             "      - WARNING: Photonic geometry verification failed; "
             "writing GDS anyway because "

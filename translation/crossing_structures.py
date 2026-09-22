@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
+from photonic_router.config import CrossingGridConfig
 from photonic_router.crossing_plan import CrossingStagePlan
 
 from translation.route_gds import get_port_from_instance
@@ -217,17 +218,12 @@ def select_layer_structure(
     *,
     stage_key: tuple[int, int],
     allowed: tuple[str, ...] = (X_ARRAY, COLUMN_GRID),
+    config: CrossingGridConfig | None = None,
 ) -> LayerDecision:
     """Evaluate every allowed alignment on the layer and pick the cheapest
     feasible one; ROUTER when none is feasible."""
-    import os
-
-    forced = {
-        int(v)
-        for v in os.environ.get("PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS", "").split(",")
-        if v.strip().isdigit()
-    }
-    if stage_key[0] in forced:
+    config = config if config is not None else CrossingGridConfig()
+    if stage_key[0] in config.router_layers:
         return LayerDecision(
             stage_key,
             ROUTER,

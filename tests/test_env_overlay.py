@@ -8,25 +8,42 @@ from __future__ import annotations
 
 import pytest
 
-from photonic_router.config import ALL_NETS, RouterConfig
+from photonic_router.config import ALL_NETS, RouterConfig, RoutingConfig
 from photonic_router.env_overlay import (
     ENV_OVERLAY,
     SPECIALLY_HANDLED_NAMES,
     apply_env_overlay,
     cell_pair,
     cell_pairs_semicolon,
+    comma_digit_ints_frozenset,
     comma_ints,
+    comma_names_frozenset_or_none,
+    comma_token_frozenset,
+    dense_fanout_min_ports_override,
     enabled_words,
     exact_one,
     f64_finite_nonneg,
+    float_or_unset,
+    heap_tie_breaker_override,
     i32,
     net_names_or_star,
+    nonempty_raw_or_none,
+    nonnegative_int,
     not_zero,
     optional_int,
+    ordered_digit_ints_tuple,
+    plain_float,
+    positive_int_or_raise,
     presence,
+    raw_string,
+    string_or_unset,
+    stripped_string,
+    truthy,
+    truthy_stripped,
     u64_positive_or_default,
     usize_or_default,
     usize_positive,
+    zero_one_crossing_budget,
 )
 
 # --- one test per parser rule -------------------------------------------
@@ -134,6 +151,132 @@ def test_net_names_or_star_returns_all_nets_sentinel_when_star_present():
     assert net_names_or_star(" n1 , n2 ") == ("n1", "n2")
 
 
+# --- Milestone 1 Slice 2: one test per new parser rule ------------------
+
+
+def test_raw_string_is_identity():
+    assert raw_string("") == ""
+    assert raw_string(" Legacy_Runway ") == " Legacy_Runway "
+
+
+def test_stripped_string_strips_only():
+    assert stripped_string("  first  ") == "first"
+    assert stripped_string("") == ""
+
+
+def test_string_or_unset_maps_blank_to_none():
+    assert string_or_unset("tiles") == "tiles"
+    assert string_or_unset("  ") is None
+    assert string_or_unset("") is None
+
+
+def test_nonempty_raw_or_none_does_not_strip():
+    assert nonempty_raw_or_none("mmi_1") == "mmi_1"
+    assert nonempty_raw_or_none("") is None
+    assert nonempty_raw_or_none(" ") == " "  # whitespace-only is still non-empty
+
+
+def test_truthy_is_bool_of_the_raw_value():
+    assert truthy("0") is True  # unlike Python's own bool("0"), any non-empty string
+    assert truthy("anything") is True
+    assert truthy("") is False
+
+
+def test_truthy_stripped_strips_before_the_truthiness_check():
+    assert truthy_stripped("  ") is False
+    assert truthy_stripped(" x ") is True
+    assert truthy_stripped("") is False
+
+
+def test_plain_float_raises_the_builtin_value_error():
+    assert plain_float("12.5") == pytest.approx(12.5)
+    with pytest.raises(ValueError):
+        plain_float("abc")
+
+
+def test_float_or_unset_maps_blank_to_none_and_raises_on_bad_value():
+    parse = float_or_unset("PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM")
+    assert parse("20") == pytest.approx(20.0)
+    assert parse("  ") is None
+    assert parse("") is None
+    with pytest.raises(ValueError):
+        parse("abc")
+
+
+def test_nonnegative_int_maps_blank_to_none_and_raises_on_negative_or_bad_value():
+    parse = nonnegative_int("PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS")
+    assert parse("11") == 11
+    assert parse("0") == 0
+    assert parse("") is None
+    assert parse("  ") is None
+    with pytest.raises(ValueError):
+        parse("-1")
+    with pytest.raises(ValueError):
+        parse("abc")
+
+
+def test_dense_fanout_min_ports_override_enforces_the_floor_of_two():
+    parse = dense_fanout_min_ports_override("PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS")
+    assert parse("") is None
+    assert parse("3") == 3
+    with pytest.raises(ValueError):
+        parse("1")
+    with pytest.raises(ValueError):
+        parse("abc")
+
+
+def test_positive_int_or_raise_maps_empty_to_none_and_enforces_the_floor_of_one():
+    parse = positive_int_or_raise("PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT")
+    assert parse("") is None
+    assert parse("5") == 5
+    with pytest.raises(ValueError):
+        parse("0")
+    with pytest.raises(ValueError):
+        parse("abc")
+
+
+def test_zero_one_crossing_budget_accepts_only_0_or_1():
+    parse = zero_one_crossing_budget("PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET")
+    assert parse("0") is False
+    assert parse("1") is True
+    with pytest.raises(ValueError):
+        parse("2")
+    with pytest.raises(ValueError):
+        parse("")
+
+
+def test_heap_tie_breaker_override_only_accepts_the_two_literal_values():
+    assert heap_tie_breaker_override("smaller_g") == "smaller_g"
+    assert heap_tie_breaker_override("larger_g") == "larger_g"
+    assert heap_tie_breaker_override(" smaller_g ") == "smaller_g"
+    assert heap_tie_breaker_override("other") is None
+    assert heap_tie_breaker_override("") is None
+
+
+def test_comma_digit_ints_frozenset_drops_non_digit_tokens():
+    assert comma_digit_ints_frozenset("1,2,3") == frozenset({1, 2, 3})
+    assert comma_digit_ints_frozenset("1,-2,x") == frozenset({1})  # "-2" is not a digit token
+    assert comma_digit_ints_frozenset("") == frozenset()
+
+
+def test_ordered_digit_ints_tuple_keeps_order_and_drops_non_digit_tokens():
+    assert ordered_digit_ints_tuple("3,1,2") == (3, 1, 2)
+    assert ordered_digit_ints_tuple("3,x,2") == (3, 2)
+    assert ordered_digit_ints_tuple("") == ()
+
+
+def test_comma_token_frozenset_strips_and_drops_empty_tokens():
+    assert comma_token_frozenset("a, b ,,c") == frozenset({"a", "b", "c"})
+    assert comma_token_frozenset("*") == frozenset({"*"})
+    assert comma_token_frozenset("") == frozenset()
+
+
+def test_comma_names_frozenset_or_none_maps_empty_result_to_none():
+    assert comma_names_frozenset_or_none("mmi_1,mmi_2") == frozenset({"mmi_1", "mmi_2"})
+    assert comma_names_frozenset_or_none("") is None
+    assert comma_names_frozenset_or_none(" , ,") is None
+
+
 # --- coverage: every Rust-read name from the Milestone 1 inventory ------
 
 # Hard-coded from the brief's Slice 1 enumeration (src/astar.rs and
@@ -190,12 +333,80 @@ RUST_SIDE_NAMES: frozenset[str] = frozenset(
 )
 
 
+# Python-side names (Milestone 1 Slice 2 of the same ExecPlan): every
+# PHOTONIC_ROUTER_* variable `translation/`, `routing_flow*.py` and
+# `python/photonic_router/` read outside `env_overlay.py` itself, one entry
+# per distinct name. `PHOTONIC_ROUTER_SYNTH` (benchmarks/permutation_synthetic.py,
+# a benchmark generator parameter, not a routing knob) and the dead
+# `LAYER_ORDER` comment mention are deliberately excluded -- out of scope
+# for both slices.
+PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
+    {
+        # Crossing plan (translation/route_rust_crossing_plan.py)
+        "PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_LOSS_UM",
+        "PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM",
+        "PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET",
+        # Crossing grid (translation/preplaced_crossing_grids.py, crossing_structures.py)
+        "PHOTONIC_ROUTER_CROSSING_GRID_BAND_MARGIN_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_BEND_RADIUS_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_LEAD_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_PITCH_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_CORNER_MARGIN_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_ENTRY_STRAIGHT_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_FAN_COLUMN_PITCH_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_PORT_PAIR_SPREAD_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_SLOT_SPREAD_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_STUB_STAGGER_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_TILE_MIN_SPACING_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM",
+        "PHOTONIC_ROUTER_CROSSING_GRID_FAN_MODE",
+        "PHOTONIC_ROUTER_CROSSING_GRID_TILE_PLACEMENT",
+        "PHOTONIC_ROUTER_CROSSING_GRID_CORNERS",
+        "PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS",
+        "PHOTONIC_ROUTER_TRACE_COLUMN_GRID",
+        # Fan-out access (translation/route_rust.py)
+        "PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES",
+        "PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS",
+        "PHOTONIC_ROUTER_FANOUT_ACCESS_MODE",
+        "PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS",
+        "PHOTONIC_ROUTER_FANOUT_PROTECTED_LANE_SPACING_CELLS",
+        "PHOTONIC_ROUTER_TARGET_PROTECTED_LANE_SPACING_CELLS",
+        "PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES",
+        "PHOTONIC_ROUTER_FANOUT_STUB_FORWARD_CELLS",
+        "PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS",
+        "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
+        "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
+        # Engine selection (translation/route_rust.py)
+        "PHOTONIC_ROUTER_NEGOTIATED_REPAIR",
+        "PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN",
+        # Search tuning (translation/route_rust.py)
+        "PHOTONIC_ROUTER_MIN_BEND_WEIGHT",
+        "PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT",
+        "PHOTONIC_ROUTER_HEAP_TIE_BREAKER",
+        "PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT",
+        # Flow diagnostics (translation/route_rust.py, route_rust_endpoint_correction.py)
+        "PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT",
+        "PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE",
+        "PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_NETS",
+        "PHOTONIC_ROUTER_TRACE_ENDPOINT_CORRECTION_NETS",
+        "PHOTONIC_ROUTER_TRACE_FANOUT_STUBS",
+        "PHOTONIC_ROUTER_TRACE_GRID",
+        "PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE",
+        "PHOTONIC_ROUTER_TRACE_TERMINAL_BUMP_DISTANCE_CHECKS",
+        # Debug artifact (routing_flow_verification.py)
+        "PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE",
+    }
+)
+
+
 def test_env_overlay_table_covers_every_rust_side_name():
     covered = {entry.name for entry in ENV_OVERLAY} | SPECIALLY_HANDLED_NAMES
-    missing = RUST_SIDE_NAMES - covered
-    extra = covered - RUST_SIDE_NAMES
-    assert not missing, f"names read in Rust but missing from the overlay: {sorted(missing)}"
-    assert not extra, f"overlay names not in the Rust-side inventory: {sorted(extra)}"
+    all_names = RUST_SIDE_NAMES | PYTHON_SIDE_NAMES
+    missing = all_names - covered
+    extra = covered - all_names
+    assert not missing, f"names read but missing from the overlay: {sorted(missing)}"
+    assert not extra, f"overlay names not in the Rust+Python-side inventory: {sorted(extra)}"
 
 
 # --- RouterConfig().to_rust round-trip ----------------------------------
@@ -386,3 +597,115 @@ def test_long_straight_congestion_weight_applies_a_valid_value():
         RouterConfig(), {"PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT": "0.05"}
     )
     assert cfg.search.long_straight_congestion_weight == pytest.approx(0.05)
+
+
+# --- Milestone 1 Slice 2: RoutingConfig.from_environment examples --------
+
+
+def test_routing_config_from_environment_applies_the_whole_table():
+    cfg = RoutingConfig.from_environment(
+        {
+            "PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM": "20",
+            "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST": "123",
+        }
+    )
+    assert cfg.crossing_grid.lane_pitch_um == pytest.approx(20.0)
+    assert cfg.router.negotiation.budget_first == 123
+    # Everything else stays at its default.
+    assert cfg == RoutingConfig(
+        crossing_grid=RoutingConfig().crossing_grid.__class__(lane_pitch_um=20.0),
+        router=RouterConfig(
+            negotiation=RouterConfig().negotiation.__class__(budget_first=123)
+        ),
+    )
+
+
+def test_routing_config_from_environment_empty_environ_returns_all_defaults():
+    assert RoutingConfig.from_environment({}) == RoutingConfig()
+
+
+def test_planned_crossing_budget_raises_through_routing_config_from_environment():
+    """0/1 are legal; every other value raises the same way `RouterConfig`'s
+    other raising variables do -- validated once, at config-build time."""
+    cfg = RoutingConfig.from_environment({"PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET": "1"})
+    assert cfg.crossing_plan.planned_crossing_budget is True
+    with pytest.raises(ValueError):
+        RoutingConfig.from_environment({"PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET": "2"})
+
+
+def test_debug_execution_limit_raises_through_routing_config_from_environment():
+    cfg = RoutingConfig.from_environment({"PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT": "5"})
+    assert cfg.diagnostics.debug_execution_limit == 5
+    with pytest.raises(ValueError):
+        RoutingConfig.from_environment({"PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT": "0"})
+    with pytest.raises(ValueError):
+        RoutingConfig.from_environment({"PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT": "abc"})
+
+
+def test_long_straight_exempt_dense_fanout_optional_bool_semantics():
+    """Unset stays `None` (the flow then decides); present-and-"1" is True;
+    present-but-not-"1" is False -- distinguishable from unset, matching the
+    site's `is True` test (not a truthiness test)."""
+    assert RoutingConfig.from_environment({}).search.long_straight_exempt_dense_fanout is None
+    cfg_on = RoutingConfig.from_environment(
+        {"PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT": "1"}
+    )
+    assert cfg_on.search.long_straight_exempt_dense_fanout is True
+    cfg_off = RoutingConfig.from_environment(
+        {"PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT": "0"}
+    )
+    assert cfg_off.search.long_straight_exempt_dense_fanout is False
+
+
+def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypatch):
+    """`PHOTONIC_ROUTER_FANOUT_ACCESS_MODE` overrides the `fanout_access_mode`
+    constructor argument of `_RouteNetsRustSession` when set; unset lets the
+    constructor argument (or its own default) through."""
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
+    from dataclasses import dataclass, field
+    from typing import Any
+
+    from gdsfactory.component import Component
+    from gdsfactory.gpdk import get_generic_pdk
+
+    from translation import route_rust
+
+    get_generic_pdk().activate()
+
+    @dataclass
+    class _DummyBundle:
+        links: dict[str, str] = field(default_factory=dict)
+
+    @dataclass
+    class _DummyNetlist:
+        routes: dict[str, _DummyBundle] = field(default_factory=dict)
+        instances: dict[str, Any] = field(default_factory=dict)
+
+    @dataclass
+    class _DummySchematic:
+        netlist: _DummyNetlist = field(default_factory=_DummyNetlist)
+
+    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: SimpleNamespace())
+
+    from uuid import uuid4
+
+    def _session(fanout_access_mode, config=None):
+        return route_rust._RouteNetsRustSession(
+            unrouted_layout=Component(f"dummy_unrouted_{uuid4().hex}"),
+            schematic=_DummySchematic(),
+            fanout_access_mode=fanout_access_mode,
+            config=config,
+        )
+
+    # No env override: the constructor argument wins.
+    session = _session("off")
+    assert session.fanout_access_mode_normalized == "off"
+
+    # Env override present: it wins over the constructor argument.
+    monkeypatch.setenv("PHOTONIC_ROUTER_FANOUT_ACCESS_MODE", "static-stubs")
+    session = _session("off", config=RoutingConfig.from_environment())
+    assert session.fanout_access_mode_normalized == "static-stubs"

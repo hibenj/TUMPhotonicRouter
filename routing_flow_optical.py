@@ -5,7 +5,7 @@ the large router option set here lets `run_routing_flow()` read as orchestration
 instead of as a full argument map for the Rust bridge.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import time
 
@@ -13,6 +13,7 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 from benchmark_metadata import load_benchmark_metadata
+from photonic_router.config import RoutingConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from routing_flow_reporting import (
     report_optical_timing,
@@ -66,6 +67,9 @@ class OpticalRoutingStageConfig:
     # contribution 2: instance depths of the original netlist for the net
     # order (the derived netlist's tile stubs would scramble the layers)
     net_order_depth_by_node: dict[str, int] | None = None
+    # Milestone 1 Slice 2: the full Python-side configuration tree, threaded
+    # down to `route_match_and_realize`/`_RouteNetsRustSession`.
+    routing_config: RoutingConfig = field(default_factory=RoutingConfig)
 
 
 @dataclass(frozen=True)
@@ -135,6 +139,7 @@ def run_photonic_routing_stage(
             path_length_meander_height_um=config.path_length_meander_height_um,
             enable_grid_endpoint_correction=True,
             obstacle_config=config.obstacle_config,
+            config=config.routing_config,
         )
     except Exception:
         print("      \u2717 Routing failed.")

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from photonic_router.config import RoutingConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from routing_flow_optical import OpticalRoutingStageConfig
 from translation.electrical import (
@@ -224,9 +225,11 @@ def build_optical_routing_stage_config(
     collect_attempt_diagnostics: bool,
     stats: object | None,
     crossing_guidance_net_names: frozenset[str] | None = None,
+    config: RoutingConfig | None = None,
 ) -> OpticalRoutingStageConfig:
     """Collect public flow arguments into the optical-stage config object."""
     return OpticalRoutingStageConfig(
+        routing_config=config if config is not None else RoutingConfig(),
         enable_path_length_matching=enable_path_length_matching,
         path_length_match_outputs=path_length_match_outputs,
         path_length_meander_height_um=path_length_meander_height_um,
