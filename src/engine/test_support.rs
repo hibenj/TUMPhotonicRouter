@@ -605,3 +605,168 @@ pub(crate) fn crossing_partner_discovery_test_router() -> PyPhotonicRouter {
     assert!(router.obstacle_map.commit_route(2, &[(25, 25)]));
     router
 }
+
+/// A 60 x 60 router in lidar-pure crossing mode with the left and right
+/// margins closed off for their full height (grid columns [0, 5) and
+/// [55, 60), exactly as `crossing_conflict_fixture` closes them) and
+/// nothing committed at all -- the job lists of the negotiated loop's own
+/// end-to-end tests are routed by the loop, not by a setup route, so the
+/// loop starts from the clean map it starts from in production.
+pub(crate) fn empty_bordered_lidar_router() -> PyPhotonicRouter {
+    let mut router = missing_crossing_event_fixture_router();
+    let mut border_cells: Vec<(i32, i32)> = Vec::new();
+    for y in 0..60 {
+        for x in 0..5 {
+            border_cells.push((x, y));
+        }
+        for x in 55..60 {
+            border_cells.push((x, y));
+        }
+    }
+    router.obstacle_map.add_static_cells(&border_cells);
+    router
+}
+
+/// The negotiated loop's own crossing conflict as a *job list*: the loop
+/// routes both nets itself, from the clean map it starts from in
+/// production, on `empty_bordered_lidar_router`'s closed corridor.
+///
+/// Net 1 is a horizontal net at y = 30 spanning the corridor from wall to
+/// wall ((5, 30) to (54, 30)), so nothing gets past it. Net 2 is a
+/// four-cell 45-degree net from (28, 28) to (32, 32) whose straight route
+/// crosses net 1 at (30, 30) at 45 degrees: never perpendicular, so never
+/// legal, and the static walls leave no way around net 1's ends. Net 2 is
+/// deliberately tiny: a longer net swings out into a 135-degree leg and
+/// crosses net 1 perpendicularly instead, which is what the loop's
+/// direct-crossing repair does one step before the local rip-up
+/// (measured: with net 2 spanning the corridor as a full diagonal, that
+/// repair resolves the conflict in round 1 and the rip-up rule never
+/// runs).
+///
+/// So net 2 can only route once net 1 is out of the way, and net 1 --
+/// the rip-up's victim -- has the whole corridor to detour through when
+/// it is rerouted behind net 2 (measured: it reroutes along y = 33,
+/// around net 2, in the next round). This is the fixture the ripup.rs
+/// NOTE in `negotiated_local_ripup_rips_the_illegal_partner_and_routes_the_net`
+/// asks for: `crossing_conflict_probe_fixture`'s vertical job cannot
+/// complete its post-rip-up reroute, and that fixture's diagonal cannot
+/// be rerouted at all once any other net holds the corridor -- its two
+/// 45-degree terminals sit in the corridor's corners, so every detour
+/// that dodges the other net can no longer arrive at 45 degrees.
+pub(crate) fn crossing_ripup_job_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJob>) {
+    let router = empty_bordered_lidar_router();
+    let full_width_horizontal = NativeRouteJob::new(
+        1,
+        PyState::new(5, 30, 0),
+        PyState::new(54, 30, 0),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    );
+    let short_diagonal = NativeRouteJob::new(
+        2,
+        PyState::new(28, 28, 1),
+        PyState::new(32, 32, 1),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    );
+    (router, vec![full_width_horizontal, short_diagonal])
+}
+
+/// One net that no budgeted search can route and no negotiation can
+/// help: its way through is a staggered pair of static walls -- wall A
+/// (y in [20, 23)) blocks x in [0, 35) and wall B (y in [40, 43)) blocks
+/// x in [25, 60), so the only path from (30, 10) to (30, 50) is a
+/// five-leg detour out to the right, back to the left and down, which no
+/// simple route shortcuts and no small expansion budget finds, while the
+/// probe (unbudgeted, and blind to dynamic obstacles only) routes it
+/// every time. There is no committed net anywhere, so the rip-up rule
+/// has nobody to blame: round after round the loop commits nothing at
+/// all, which is the stall its own epoch boundary exists for. Set the
+/// negotiation config's three budgets small to hold the stall, and give
+/// the batch a last round -- never budgeted -- to end it.
+///
+/// The gaps are wide (25 and 35 cells): with 8-cell gaps the detour is
+/// not routable at all here, unbudgeted searches included (measured:
+/// 11,925 expansions on the full-grid fallback, no route), and the probe
+/// then fails too, which aborts the batch instead of stalling it.
+pub(crate) fn walled_detour_job_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJob>) {
+    let mut router = missing_crossing_event_fixture_router();
+    let mut wall_cells: Vec<(i32, i32)> = Vec::new();
+    for y in 20..23 {
+        for x in 0..35 {
+            wall_cells.push((x, y));
+        }
+    }
+    for y in 40..43 {
+        for x in 25..60 {
+            wall_cells.push((x, y));
+        }
+    }
+    router.obstacle_map.add_static_cells(&wall_cells);
+    let blocked = NativeRouteJob::new(
+        1,
+        PyState::new(30, 10, 0),
+        PyState::new(30, 50, 0),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+    );
+    (router, vec![blocked])
+}
+
+/// Three jobs of which the middle one (net 2) has a target walled in by
+/// static cells on every side: its own search fails, and so does the
+/// probe, which is the negotiated loop's one hard abort.
+pub(crate) fn enclosed_target_job_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJob>) {
+    let mut router = missing_crossing_event_fixture_router();
+    let mut wall_cells: Vec<(i32, i32)> = Vec::new();
+    for dx in -4i32..=4 {
+        for dy in -4i32..=4 {
+            if dx.abs() >= 2 || dy.abs() >= 2 {
+                wall_cells.push((40 + dx, 40 + dy));
+            }
+        }
+    }
+    router.obstacle_map.add_static_cells(&wall_cells);
+    let jobs = vec![
+        NativeRouteJob::new(
+            1,
+            PyState::new(10, 10, 0),
+            PyState::new(50, 10, 0),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        ),
+        NativeRouteJob::new(
+            2,
+            PyState::new(10, 40, 0),
+            PyState::new(40, 40, 0),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        ),
+        NativeRouteJob::new(
+            3,
+            PyState::new(10, 55, 0),
+            PyState::new(50, 55, 0),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        ),
+    ];
+    (router, jobs)
+}

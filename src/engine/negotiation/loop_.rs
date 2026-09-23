@@ -610,6 +610,252 @@ mod tests {
         assert!(failed_counts.is_empty());
         assert!(batch.repair_trace.is_empty());
     }
+
+    /// Every test below drives `run_negotiated_batch` -- the whole loop,
+    /// from the clean map to the committed batch -- on a `test_support`
+    /// fixture, at the radii the fixtures are built for: no dynamic
+    /// expansion for the search and no extra commit or core clearance, so
+    /// a committed net blocks exactly its own cells.
+    fn plain_params(max_rounds: u32) -> NegotiationParams {
+        NegotiationParams {
+            block_radius_cells: 0,
+            commit_radius_cells: None,
+            core_radius_cells: None,
+            max_rounds,
+            history_weight: 2.0,
+            history_increment: 1,
+        }
+    }
+
+    fn local_ripup_events(batch: &RepairBatchState) -> Vec<&NativeRepairTraceEvent> {
+        batch
+            .repair_trace
+            .iter()
+            .filter(|event| event.event_name == "local_ripup")
+            .collect()
+    }
+
+    /// (1) The loop's ordinary case: two nets that do not contend route on
+    /// their first try, in one round, and nothing negotiates.
+    #[test]
+    fn every_net_routes_in_the_first_round_when_nothing_contends() {
+        let mut router = small_test_router();
+        let jobs = vec![
+            NativeRouteJob::new(
+                1,
+                PyState::new(1, 2, 0),
+                PyState::new(17, 2, 0),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                None,
+            ),
+            NativeRouteJob::new(
+                2,
+                PyState::new(1, 12, 0),
+                PyState::new(17, 12, 0),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                None,
+            ),
+        ];
+
+        let (batch, counters) = router
+            .run_negotiated_batch(jobs, &plain_params(4))
+            .expect("the negotiated loop must not raise");
+
+        assert!(
+            batch.final_routes.contains_key(&1) && batch.final_routes.contains_key(&2),
+            "both nets must end committed: {:?}",
+            batch.final_routes.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(batch.repair_count, 0, "nothing was repaired");
+        assert_eq!(counters.rounds, 1, "the queue emptied in the first round");
+        assert_eq!(counters.local_ripups, 0);
+        assert_eq!(counters.global_ripups, 0);
+        assert_eq!(counters.stall_resets, 0);
+        assert_eq!(batch.failed_net_id, None);
+        assert!(
+            batch.repair_trace.is_empty(),
+            "no repair rule ran: {:?}",
+            batch.repair_trace
+        );
+    }
+
+    /// (2) The negotiation itself, end to end: the horizontal net 1
+    /// commits first and closes the corridor, the four-cell 45-degree net
+    /// 2 cannot cross it legally at any angle and has no room to swing
+    /// into one, so the loop probes, the direct-crossing repair comes
+    /// back not resolved, the local rip-up rule rips net 1, net 2 routes
+    /// on the map that frees up, and net 1 -- requeued as the rip-up's
+    /// victim -- reroutes around net 2 in the next round. Both end
+    /// committed.
+    ///
+    /// Fixture: `crossing_ripup_job_fixture`, not
+    /// `crossing_conflict_probe_fixture`. The NOTE in
+    /// `negotiated_local_ripup_rips_the_illegal_partner_and_routes_the_net`
+    /// (ripup.rs) records that the original fixture's vertical job cannot
+    /// complete its post-rip-up reroute; measured while writing this
+    /// test, that fixture's diagonal also cannot be rerouted at all once
+    /// any other net holds the corridor, so it can never show the
+    /// victim's side of a rip-up. See the fixture's own doc comment.
+    #[test]
+    fn a_blocked_net_rips_its_illegal_partner_and_both_end_routed() {
+        let (mut router, jobs) = crossing_ripup_job_fixture();
+
+        let (batch, counters) = router
+            .run_negotiated_batch(jobs, &plain_params(4))
+            .expect("the negotiated loop must not raise");
+
+        let ripups = local_ripup_events(&batch);
+        assert_eq!(
+            ripups.len(),
+            1,
+            "exactly one local rip-up: {:?}",
+            batch.repair_trace
+        );
+        assert_eq!(ripups[0].net_id, 2, "net 2 is the net that was blocked");
+        assert_eq!(
+            ripups[0].candidate_blockers,
+            vec![1],
+            "net 1 is the illegal crossing partner that was ripped"
+        );
+        assert_eq!(counters.local_ripups, 1);
+        assert!(
+            batch.final_routes.contains_key(&2),
+            "the blocked net must route on the map the rip-up freed"
+        );
+        assert!(
+            batch.final_routes.contains_key(&1),
+            "the ripped victim must be rerouted and recommitted: {:?}",
+            batch.failed_error
+        );
+        assert_eq!(batch.failed_net_id, None, "{:?}", batch.failed_error);
+        assert_eq!(
+            counters.rounds, 2,
+            "round 1 negotiates, round 2 reroutes the victim"
+        );
+    }
+
+    /// (3) The stall: a net whose only path is the far detour cannot be
+    /// found within the (here: one-expansion) search budget, and there is
+    /// no committed net anywhere to blame, so the rip-up rule rips
+    /// nothing and no route is committed at all. After
+    /// `RESET_AFTER_ROUNDS_WITHOUT_PROGRESS` such rounds the loop's own
+    /// epoch boundary fires once -- history map cleared, every failure
+    /// count cleared -- and the last round, which is never budgeted, then
+    /// routes the net.
+    #[test]
+    fn two_rounds_without_progress_fire_the_loops_epoch_reset() {
+        let (mut router, jobs) = walled_detour_job_fixture();
+        router.router_config.negotiation.budget_first = 1;
+        router.router_config.negotiation.budget_first_retry = 1;
+        router.router_config.negotiation.budget_retry = 1;
+
+        let (batch, counters) = router
+            .run_negotiated_batch(jobs, &plain_params(3))
+            .expect("the negotiated loop must not raise");
+
+        assert_eq!(counters.rounds, 3);
+        assert_eq!(
+            counters.stall_resets, 1,
+            "rounds 1 and 2 commit nothing, so the reset fires once, at the \
+             end of round 2: {:?}",
+            batch.repair_trace
+        );
+        assert_eq!(
+            counters.local_ripups, 0,
+            "there is no committed net to rip: {:?}",
+            batch.repair_trace
+        );
+        assert!(
+            batch.final_routes.contains_key(&1),
+            "the last round is unbudgeted and routes the net: {:?}",
+            batch.failed_error
+        );
+    }
+
+    /// (4) The loop's one hard abort: a net whose probe finds no path at
+    /// all (its target is walled in by static cells, which the probe --
+    /// blind to dynamic obstacles only -- cannot route through either)
+    /// ends the batch on the spot, carrying that net as `failed_net_id`.
+    /// The nets before it keep their committed routes; the nets after it
+    /// are never attempted.
+    #[test]
+    fn a_probe_that_finds_no_path_aborts_the_batch() {
+        let (mut router, jobs) = enclosed_target_job_fixture();
+
+        let (batch, counters) = router
+            .run_negotiated_batch(jobs, &plain_params(4))
+            .expect("the negotiated loop must not raise");
+
+        assert_eq!(
+            batch.failed_net_id,
+            Some(2),
+            "the net whose probe failed ends the batch: {:?}",
+            batch.failed_error
+        );
+        assert!(
+            batch
+                .failed_error
+                .as_deref()
+                .is_some_and(|error| !error.contains("did not converge")),
+            "the probe's own error is kept, not the soft non-convergence one: {:?}",
+            batch.failed_error
+        );
+        assert!(
+            batch.final_routes.contains_key(&1),
+            "the net routed before the abort keeps its route"
+        );
+        assert!(
+            !batch.final_routes.contains_key(&2) && !batch.final_routes.contains_key(&3),
+            "the failed net and the net behind it are unrouted: {:?}",
+            batch.final_routes.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(counters.rounds, 1, "the abort ends the first round");
+    }
+
+    /// (5) Non-convergence: the same negotiation as (2), but with a
+    /// single round, so the victim the rip-up displaced never gets its
+    /// reroute. The batch is returned with whatever routed and the soft
+    /// "did not converge" error, naming the net at the front of the queue
+    /// and how many nets are still unrouted.
+    #[test]
+    fn a_batch_that_runs_out_of_rounds_reports_the_soft_failure() {
+        let (mut router, jobs) = crossing_ripup_job_fixture();
+
+        let (batch, counters) = router
+            .run_negotiated_batch(jobs, &plain_params(1))
+            .expect("the negotiated loop must not raise");
+
+        assert_eq!(counters.rounds, 1);
+        assert_eq!(counters.local_ripups, 1);
+        assert!(
+            batch.final_routes.contains_key(&2),
+            "the blocked net still routes in the round it negotiates"
+        );
+        assert!(
+            !batch.final_routes.contains_key(&1),
+            "the ripped victim never got its reroute"
+        );
+        assert_eq!(
+            batch.failed_net_id,
+            Some(1),
+            "the ripped victim is the net left at the front of the queue"
+        );
+        assert_eq!(
+            batch.failed_error.as_deref(),
+            Some(
+                "Negotiated repair did not converge for net 1 within 1 rounds; \
+                 1 net(s) still unrouted"
+            ),
+            "{:?}",
+            batch.failed_error
+        );
+    }
 }
 
 /// The Python job tuple the `#[pymethods]` wrapper forwards unchanged.
@@ -636,12 +882,22 @@ struct NetTables {
     source_layer_indices_by_x: FxHashMap<i32, Vec<usize>>,
 }
 
-impl NetTables {
-    fn from_py_jobs(jobs: Vec<PyRouteJobTuple>) -> Self {
-        let jobs: Vec<NativeRouteJob> = jobs
-            .into_iter()
-            .map(
-                |(
+/// The Python job tuples as the loop's own jobs -- the one conversion the
+/// `#[pymethods]` wrapper's tuples need before anything native runs.
+pub(crate) fn native_jobs_from_py(jobs: Vec<PyRouteJobTuple>) -> Vec<NativeRouteJob> {
+    jobs.into_iter()
+        .map(
+            |(
+                net_id,
+                source,
+                target,
+                opened_cells,
+                clearance_exempt_cells,
+                static_cleanup_cells,
+                source_port_um,
+                target_port_um,
+            )| {
+                NativeRouteJob::new(
                     net_id,
                     source,
                     target,
@@ -650,20 +906,14 @@ impl NetTables {
                     static_cleanup_cells,
                     source_port_um,
                     target_port_um,
-                )| {
-                    NativeRouteJob::new(
-                        net_id,
-                        source,
-                        target,
-                        opened_cells,
-                        clearance_exempt_cells,
-                        static_cleanup_cells,
-                        source_port_um,
-                        target_port_um,
-                    )
-                },
-            )
-            .collect();
+                )
+            },
+        )
+        .collect()
+}
+
+impl NetTables {
+    fn from_jobs(jobs: Vec<NativeRouteJob>) -> Self {
         let mut source_layer_indices_by_x: FxHashMap<i32, Vec<usize>> = FxHashMap::default();
         for (index, job) in jobs.iter().enumerate() {
             source_layer_indices_by_x
@@ -684,18 +934,44 @@ impl NetTables {
     }
 }
 
-/// The counters the `native_negotiated_done` line reports.
+/// The counters the `native_negotiated_done` line reports, plus the two
+/// the line does not print but [`PyPhotonicRouter::run_negotiated_batch`]
+/// hands back with the batch (`rounds` is the `rounds=` field of that same
+/// line; `stall_resets` is how often the "two rounds without progress"
+/// reset fired). Nothing in the loop reads them; they are written where
+/// the loop already did the work they count.
 #[derive(Default)]
-struct NegotiationCounters {
-    global_ripups: u32,
-    local_ripups: u32,
-    probe_guided: u32,
-    crossing_free: u32,
+pub(crate) struct NegotiationCounters {
+    pub(crate) global_ripups: u32,
+    pub(crate) local_ripups: u32,
+    pub(crate) probe_guided: u32,
+    pub(crate) crossing_free: u32,
     /// The negotiated chain no longer calls `try_commit_clean_probe`
     /// (owner decision 2026-09-15: the clean-probe commit shortcut is
     /// dropped here), so this always stays 0 -- kept only so the
     /// `native_negotiated_done` trace line's shape is unchanged.
-    commit_rejected: u32,
+    pub(crate) commit_rejected: u32,
+    /// Rounds the loop actually ran.
+    pub(crate) rounds: u32,
+    /// How often the loop's own epoch boundary
+    /// (`RESET_AFTER_ROUNDS_WITHOUT_PROGRESS` rounds in which not a single
+    /// net committed) cleared the history map and the queue's failure
+    /// counts.
+    pub(crate) stall_resets: u32,
+}
+
+/// The per-batch arguments of the negotiated loop: the clearance radii
+/// every search of the batch shares, the round limit, and the history cost
+/// the loop installs for the nets that have already failed. Exactly the
+/// six arguments `route_many_with_negotiated_repair_and_commit` takes from
+/// Python beside the jobs.
+pub(crate) struct NegotiationParams {
+    pub(crate) block_radius_cells: i32,
+    pub(crate) commit_radius_cells: Option<i32>,
+    pub(crate) core_radius_cells: Option<i32>,
+    pub(crate) max_rounds: u32,
+    pub(crate) history_weight: f64,
+    pub(crate) history_increment: u32,
 }
 
 /// What one round mutates: the committed batch, the queue and its
@@ -915,20 +1191,45 @@ impl PyPhotonicRouter {
         );
     }
 
-    /// Both non-error returns of the loop: the per-batch fields it set are
-    /// cleared and the Python result dictionary is built. (The one `?`
-    /// return, a direct-crossing error, propagates without clearing, as it
-    /// always has.)
-    fn finish_negotiated_batch(
-        &mut self,
-        py: Python<'_>,
-        tables: &NetTables,
-        batch: &mut RepairBatchState,
-        args: &SearchArgs,
-    ) -> PyResult<PyObject> {
+    /// Both non-error returns of the loop clear the per-batch fields it
+    /// set. (The one `?` return, a direct-crossing error, propagates
+    /// without clearing, as it always has.)
+    fn finish_negotiated_batch(&mut self) {
         self.long_straight_weight_override = None;
         self.negotiated_batch_start = None;
-        self.build_native_batch_result_dict(py, &tables.jobs, batch, args.collect_native_timing)
+    }
+
+    /// The `#[pymethods]` wrapper's entry point: the Python job tuples as
+    /// the loop's own jobs, the loop, and the Python result dictionary.
+    /// Everything between those two conversions is `run_negotiated_batch`,
+    /// which needs no `Python<'_>` token at all -- the loop itself is
+    /// native, and this is the only place in the batch that is not.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn route_many_with_negotiated_repair_and_commit_impl(
+        &mut self,
+        py: Python<'_>,
+        jobs: Vec<PyRouteJobTuple>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        max_rounds: u32,
+        history_weight: f64,
+        history_increment: u32,
+    ) -> PyResult<PyObject> {
+        let jobs = native_jobs_from_py(jobs);
+        let params = NegotiationParams {
+            block_radius_cells,
+            commit_radius_cells,
+            core_radius_cells,
+            max_rounds,
+            history_weight,
+            history_increment,
+        };
+        // Read before the loop runs, as `SearchArgs` has always read it;
+        // no step of the loop writes `astar_cfg`.
+        let collect_native_timing = self.astar_cfg.collect_detailed_timing;
+        let (mut batch, _counters) = self.run_negotiated_batch(jobs.clone(), &params)?;
+        self.build_native_batch_result_dict(py, &jobs, &mut batch, collect_native_timing)
     }
 
     /// The negotiated rip-up-and-repair loop (Milestone 5 of
@@ -943,18 +1244,24 @@ impl PyPhotonicRouter {
     /// `budget.rs`, the crossing-free rule in `crossing_free.rs`, the
     /// rip-up rule in `ripup.rs`, the queue and its bookkeeping in
     /// `queue.rs`, one attempt and its trace line in `attempt.rs`.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn route_many_with_negotiated_repair_and_commit_impl(
+    ///
+    /// Returns the committed batch and the counters of the rules that ran;
+    /// `route_many_with_negotiated_repair_and_commit_impl` above turns the
+    /// batch into the Python result dictionary and drops the counters (the
+    /// trace line already reports them). No step below touches Python.
+    pub(crate) fn run_negotiated_batch(
         &mut self,
-        py: Python<'_>,
-        jobs: Vec<PyRouteJobTuple>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        max_rounds: u32,
-        history_weight: f64,
-        history_increment: u32,
-    ) -> PyResult<PyObject> {
+        jobs: Vec<NativeRouteJob>,
+        params: &NegotiationParams,
+    ) -> PyResult<(RepairBatchState, NegotiationCounters)> {
+        let NegotiationParams {
+            block_radius_cells,
+            commit_radius_cells,
+            core_radius_cells,
+            max_rounds,
+            history_weight,
+            history_increment,
+        } = *params;
         self.obstacle_map.clear_congestion();
         self.obstacle_map.clear_history();
         self.long_straight_congestion_cells.clear();
@@ -972,7 +1279,7 @@ impl PyPhotonicRouter {
             trace: self.router_config.diagnostics.native_repair_diag,
         };
         let mut batch = empty_batch_state();
-        let tables = NetTables::from_py_jobs(jobs);
+        let tables = NetTables::from_jobs(jobs);
         // The policies. The configuration is cloned because no step of the
         // loop changes it and `self` must stay free for the searches.
         let negotiation = self.router_config.negotiation.clone();
@@ -989,8 +1296,13 @@ impl PyPhotonicRouter {
         let mut round = 0u32;
         let mut rounds_without_progress = 0u32;
         const RESET_AFTER_ROUNDS_WITHOUT_PROGRESS: u32 = 2;
+        // Set by the one early exit below (a probe that found no path at
+        // all): that batch keeps the `failed_net_id`/`failed_error` the
+        // probe itself set and never takes the soft non-convergence
+        // failure after the loop.
+        let mut probe_aborted = false;
 
-        while round < max_rounds && !queue.is_empty() {
+        'rounds: while round < max_rounds && !queue.is_empty() {
             round += 1;
             braid_failed_pairs.clear();
             let this_round = queue.take_round();
@@ -1056,7 +1368,8 @@ impl PyPhotonicRouter {
                     if args.trace {
                         self.trace_negotiated_done(&counters, round, state.queue.len());
                     }
-                    return self.finish_negotiated_batch(py, &tables, state.batch, &args);
+                    probe_aborted = true;
+                    break 'rounds;
                 };
                 let blockers = probe_blockers(&probe, crossing_free);
                 state.queue.record_blockers(net_id, blockers);
@@ -1168,21 +1481,26 @@ impl PyPhotonicRouter {
                     self.obstacle_map.clear_history();
                     queue.epoch_reset(true);
                     rounds_without_progress = 0;
+                    counters.stall_resets += 1;
                 }
             }
         }
+        counters.rounds = round;
 
-        // The soft failure: the batch is returned with whatever routed.
-        if let Some(failed_net_id) = queue.front() {
-            batch.failed_net_id = Some(failed_net_id);
-            batch.failed_error = Some(format!(
-                "Negotiated repair did not converge for net {failed_net_id} within {max_rounds} rounds; {} net(s) still unrouted",
-                queue.len()
-            ));
+        if !probe_aborted {
+            // The soft failure: the batch is returned with whatever routed.
+            if let Some(failed_net_id) = queue.front() {
+                batch.failed_net_id = Some(failed_net_id);
+                batch.failed_error = Some(format!(
+                    "Negotiated repair did not converge for net {failed_net_id} within {max_rounds} rounds; {} net(s) still unrouted",
+                    queue.len()
+                ));
+            }
+            if args.trace {
+                self.trace_negotiated_done(&counters, round, queue.len());
+            }
         }
-        if args.trace {
-            self.trace_negotiated_done(&counters, round, queue.len());
-        }
-        self.finish_negotiated_batch(py, &tables, &mut batch, &args)
+        self.finish_negotiated_batch();
+        Ok((batch, counters))
     }
 }
