@@ -120,6 +120,20 @@ impl SearchHeuristic {
         }
     }
 
+    /// The identically-zero heuristic: a `Distance` estimate with weight
+    /// 0, so `estimate` returns `0.0` for every state and the shared
+    /// expansion helpers' `f = g + h` becomes `f = g`. This is what turns
+    /// the A* kernel's building blocks into the uniform-cost search
+    /// `crate::search::grid_dijkstra` runs.
+    pub(crate) fn zero(target: State, primitives: &PrimitiveLibrary) -> Self {
+        Self {
+            target,
+            grid_size_um: primitives.grid_size_um(),
+            mode: SearchHeuristicMode::Distance,
+            weight: 0.0,
+        }
+    }
+
     pub(crate) fn estimate(&self, state: State) -> f64 {
         match &self.mode {
             SearchHeuristicMode::Distance => {

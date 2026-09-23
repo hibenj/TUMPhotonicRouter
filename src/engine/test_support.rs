@@ -42,11 +42,73 @@ pub(crate) const FIXTURE_CLEARANCE_RADIUS_CELLS: i32 = 1;
 /// which govern what actually gets marked blocked -- are unchanged.
 pub(crate) const DIAGONAL_SETUP_BLOCK_RADIUS_CELLS: i32 = 0;
 
+/// `PyRouterConfig` with every field at its documented default except
+/// `search_engine`, which selects the `NetSearch` implementation
+/// `PyPhotonicRouter::construct` boxes. Spelled out positionally because
+/// the binding constructor's per-field defaults live in its `#[pyo3(signature=...)]`
+/// and so exist only on the Python side. Returns the constructor's own
+/// `PyResult`, so a test can also assert the rejection of an unknown name.
+pub(crate) fn test_router_config(search_engine: &str) -> PyResult<PyRouterConfig> {
+    PyRouterConfig::new(
+        2_000_000,
+        10_000_000,
+        30_000_000,
+        false,
+        true,
+        false,
+        100,
+        false,
+        None,
+        None,
+        None,
+        search_engine.to_string(),
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        None,
+        false,
+        false,
+        false,
+        None,
+        None,
+        Vec::new(),
+        false,
+        None,
+        false,
+        120,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        false,
+        None,
+        false,
+        false,
+    )
+}
+
 /// Shared fixture for the probe-guided guidance tests below: a fresh
 /// router with no crossing guidance set, same construction as
 /// `astar_config_leaves_total_expansion_budget_none_by_default` and
 /// `astar_config_applies_negotiated_search_budget_when_set` above.
 pub(crate) fn small_test_router() -> PyPhotonicRouter {
+    small_test_router_with_router_config(None)
+}
+
+/// `small_test_router` with an explicit `PyRouterConfig` -- the same grid,
+/// primitive library and A* settings, so a test can vary one router-config
+/// field (today: `search_engine`) and nothing else.
+pub(crate) fn small_test_router_with_router_config(
+    router_config: Option<PyRouterConfig>,
+) -> PyPhotonicRouter {
     let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
     PyPhotonicRouter::new(
         grid,
@@ -74,7 +136,7 @@ pub(crate) fn small_test_router() -> PyPhotonicRouter {
             "distance".to_string(),
             1.0,
         ),
-        None,
+        router_config,
     )
 }
 

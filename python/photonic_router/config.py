@@ -46,6 +46,11 @@ class SearchOverrides:
     astar_timeout_ms: int | None = None
     max_dense_states: int | None = None
     long_straight_congestion_weight: float | None = None
+    #: `PHOTONIC_ROUTER_SEARCH_ENGINE`: which Rust `NetSearch` engine routes
+    #: a single net -- `"astar"` (default) or `"grid-dijkstra"`. Unlike the
+    #: three above this one is never "unset"; the Rust binding rejects any
+    #: other value.
+    engine: str = "astar"
 
 
 @dataclass(frozen=True)
@@ -310,6 +315,7 @@ class RouterConfig:
             search_astar_timeout_ms=s.astar_timeout_ms,
             search_max_dense_states=s.max_dense_states,
             search_long_straight_congestion_weight=s.long_straight_congestion_weight,
+            search_engine=s.engine,
             crossing_enable_guided_collision_crossing=c.enable_guided_collision_crossing,
             crossing_disable_guided_collision_crossing=c.disable_guided_collision_crossing,
             crossing_disable_rust_crossing_validation=c.disable_rust_crossing_validation,

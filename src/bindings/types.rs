@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 
 use crate::config::{
     CrossingEngineConfig, KernelDiagnostics, NegotiationConfig, NetNameTrace, RouterConfig,
-    SearchOverrides,
+    SearchOverrides, SEARCH_ENGINE_ASTAR, SEARCH_ENGINE_GRID_DIJKSTRA,
 };
 use crate::crossings::{CrossingConfig, CrossingConstraint};
 use crate::geometry_realization::PortAccess;
@@ -670,6 +670,10 @@ pub struct PyRouterConfig {
     pub search_max_dense_states: Option<usize>,
     #[pyo3(get)]
     pub search_long_straight_congestion_weight: Option<f64>,
+    /// `RouterConfig::search.engine`: `"astar"` or `"grid-dijkstra"`,
+    /// validated in `new` below.
+    #[pyo3(get)]
+    pub search_engine: String,
     #[pyo3(get)]
     pub crossing_enable_guided_collision_crossing: bool,
     #[pyo3(get)]
@@ -747,6 +751,7 @@ impl PyRouterConfig {
         search_astar_timeout_ms=None,
         search_max_dense_states=None,
         search_long_straight_congestion_weight=None,
+        search_engine=SEARCH_ENGINE_ASTAR.to_string(),
         crossing_enable_guided_collision_crossing=false,
         crossing_disable_guided_collision_crossing=false,
         crossing_disable_rust_crossing_validation=false,
@@ -791,6 +796,7 @@ impl PyRouterConfig {
         search_astar_timeout_ms: Option<u64>,
         search_max_dense_states: Option<usize>,
         search_long_straight_congestion_weight: Option<f64>,
+        search_engine: String,
         crossing_enable_guided_collision_crossing: bool,
         crossing_disable_guided_collision_crossing: bool,
         crossing_disable_rust_crossing_validation: bool,
@@ -821,8 +827,13 @@ impl PyRouterConfig {
         diag_crossing_mismatch_dump_net: Option<u64>,
         diag_crossing_mismatch_fatal: bool,
         diag_analysis_crossing_partner_counters: bool,
-    ) -> Self {
-        Self {
+    ) -> PyResult<Self> {
+        if search_engine != SEARCH_ENGINE_ASTAR && search_engine != SEARCH_ENGINE_GRID_DIJKSTRA {
+            return Err(PyValueError::new_err(format!(
+                "search_engine must be \"{SEARCH_ENGINE_ASTAR}\" or \"{SEARCH_ENGINE_GRID_DIJKSTRA}\", got \"{search_engine}\""
+            )));
+        }
+        Ok(Self {
             negotiation_budget_first,
             negotiation_budget_first_retry,
             negotiation_budget_retry,
@@ -834,6 +845,7 @@ impl PyRouterConfig {
             search_astar_timeout_ms,
             search_max_dense_states,
             search_long_straight_congestion_weight,
+            search_engine,
             crossing_enable_guided_collision_crossing,
             crossing_disable_guided_collision_crossing,
             crossing_disable_rust_crossing_validation,
@@ -864,7 +876,7 @@ impl PyRouterConfig {
             diag_crossing_mismatch_dump_net,
             diag_crossing_mismatch_fatal,
             diag_analysis_crossing_partner_counters,
-        }
+        })
     }
 }
 
@@ -893,6 +905,7 @@ impl From<&PyRouterConfig> for RouterConfig {
                 astar_timeout_ms: cfg.search_astar_timeout_ms,
                 max_dense_states: cfg.search_max_dense_states,
                 long_straight_congestion_weight: cfg.search_long_straight_congestion_weight,
+                engine: cfg.search_engine.clone(),
             },
             crossing: CrossingEngineConfig {
                 enable_guided_collision_crossing: cfg.crossing_enable_guided_collision_crossing,

@@ -1,22 +1,38 @@
-//! One interface for a single-net search: `NetSearch`. `AStarSearch`
-//! (`astar/mod.rs`) is today's, and only, implementation -- it is a straight
-//! call into that module's one `run_search` body, which reproduces the four
-//! unified-kernel wrappers it was assembled from exactly, so this slice is
-//! the interface itself, not a behaviour change. See Milestone 3, Slices 1
-//! to 3 of
+//! One interface for a single-net search: `NetSearch`. See Milestone 3 of
 //! `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
 //!
+//! # Search engines
+//!
+//! Every single-net search in this crate goes through the `NetSearch` trait
+//! (one method, `search(&SearchEnvironment, &SearchRequest) -> SearchOutcome`).
+//! Two implementations exist:
+//!
+//! * `AStarSearch` (`astar/mod.rs`), the production engine: the full A*
+//!   with its heuristic, routing windows, JPS4 and simple-route shortcuts
+//!   and crossing support, all reached through one `run_search` body.
+//! * `GridDijkstraSearch` (`grid_dijkstra.rs`), a uniform-cost search over
+//!   the same state space, built by calling the A* kernel's own building
+//!   blocks with a zero heuristic, no routing window and no crossing hook.
+//!   It proves the seam is real and serves as an optimality oracle in
+//!   tests; it does not serve crossing requests.
+//!
+//! To add a third engine: implement `NetSearch` in its own module here,
+//! and give it a name in `PyPhotonicRouter::construct` (`src/engine/mod.rs`),
+//! which boxes the engine `RouterConfig::search.engine` selects. The
+//! accepted names are validated in `PyRouterConfig::new`.
+//!
 //! `state` and `geometry` hold the search-state/result types and the
-//! grid-polyline geometry helpers shared by `astar` and any future second
-//! engine; `astar` is the A* implementation's own module tree.
+//! grid-polyline geometry helpers both engines share; `astar` is the A*
+//! implementation's own module tree.
 
 pub mod astar;
 pub mod geometry;
+pub mod grid_dijkstra;
 pub mod state;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-use crate::obstacle_map::{CellKey, ObstacleMap};
+use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::PrimitiveLibrary;
 use astar::config::AStarConfig;
 use astar::crossing_rules::CrossingSearchConfig;
@@ -24,6 +40,25 @@ use rustc_hash::FxHashSet;
 use state::{RouteResult, RouteSearchStats, State};
 
 pub use astar::AStarSearch;
+pub use grid_dijkstra::GridDijkstraSearch;
+
+/// The cells a search may treat as open regardless of ownership: the
+/// request's own `port_open_cells` plus the source and target cells. Both
+/// engines build this set the same way and hand it to the kernel's dense
+/// grid construction as its `port_open_cells` argument.
+pub(crate) fn anchor_open_cells(
+    source: State,
+    target: State,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+) -> FxHashSet<CellKey> {
+    let mut anchor_open_cells = FxHashSet::default();
+    if let Some(port_open_cells) = port_open_cells {
+        anchor_open_cells.extend(port_open_cells.iter().copied());
+    }
+    anchor_open_cells.insert(pack_xy(source.x, source.y));
+    anchor_open_cells.insert(pack_xy(target.x, target.y));
+    anchor_open_cells
+}
 
 /// The obstacle map and primitive library a search runs against. Neither
 /// switches on anything by itself -- every request against the same
@@ -85,9 +120,9 @@ pub struct SearchOutcome {
     pub stats: RouteSearchStats,
 }
 
-/// A pluggable single-net search algorithm. `AStarSearch` is the only
-/// implementation today; Milestone 3 Slice 4 adds a second (a grid
-/// Dijkstra) to prove the seam.
+/// A pluggable single-net search algorithm: `AStarSearch` (production) and
+/// `GridDijkstraSearch` (the oracle that proves the seam). See the module
+/// doc comment above for how to add another.
 pub trait NetSearch {
     fn search(&self, env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome;
 }

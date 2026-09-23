@@ -187,8 +187,10 @@ pub(crate) fn entry_is_better(candidate: &OpenEntry, current: &OpenEntry) -> boo
 /// (dense_storage_cap logs under `search_failure_diag`; the grid's own
 /// build failure does not). `ignores_dynamic_obstacles` is threaded
 /// through unchanged; it is only consulted later, by the pop-diagnostic.
+/// Shared with `crate::search::grid_dijkstra`, which builds the same grid
+/// for its own single full-grid attempt.
 #[allow(clippy::too_many_arguments)]
-fn build_search_grid(
+pub(crate) fn build_search_grid(
     obstacle_map: &ObstacleMap,
     bounds: RoutingBounds,
     port_open_cells: Option<&FxHashSet<CellKey>>,
@@ -252,8 +254,10 @@ fn build_search_grid(
 /// Seeds the source state (g = 0) into Tier 1's open set, exactly like a
 /// plain A* seeding its start node -- the source can never itself carry
 /// crossing bookkeeping, so this never touches Tier 2. Returns the
-/// source's dense-array index, needed again at goal reconstruction.
-fn seed_open_set<H: CrossingLegalityHook>(
+/// source's dense-array index, needed again at goal reconstruction. Shared
+/// with `crate::search::grid_dijkstra`, whose zero heuristic makes the
+/// seeded `f_score` equal to the source's g-cost of 0.
+pub(crate) fn seed_open_set<H: CrossingLegalityHook>(
     storage: &mut DenseSearchStorage,
     tier1_open: &mut OpenSet,
     source: State,

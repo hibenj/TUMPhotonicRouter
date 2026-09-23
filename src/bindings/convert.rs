@@ -459,6 +459,9 @@ pub(crate) fn to_route_result(route: &PyRouteResult) -> RouteResult {
             jps4_used: route.jps4_used,
             jps4_fallbacks: route.jps4_fallbacks,
             jps4_fallback_reason: route.jps4_fallback_reason.clone(),
+            // A `PyRouteResult` always describes a route that was found, so
+            // it can never carry an unsupported-request marker.
+            unsupported_request: 0,
         },
     }
 }

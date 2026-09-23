@@ -145,6 +145,12 @@ pub struct RouteSearchStats {
     pub jps4_used: bool,
     pub jps4_fallbacks: usize,
     pub jps4_fallback_reason: String,
+    /// 1 when the engine that handled the request cannot serve that kind of
+    /// request at all and returned no route for that reason alone (today:
+    /// `crate::search::GridDijkstraSearch` given a `SearchRequest` with a
+    /// `crossing` part). 0 everywhere else, including every ordinary search
+    /// failure. Nothing but the engine's own tests reads it.
+    pub unsupported_request: u32,
 }
 
 #[inline]

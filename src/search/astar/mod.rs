@@ -38,7 +38,7 @@ use crate::search::state::{RouteResult, RouteSearchStats, State};
 use rustc_hash::FxHashSet;
 use std::time::Instant;
 
-use super::{NetSearch, SearchEnvironment, SearchOutcome, SearchRequest};
+use super::{anchor_open_cells, NetSearch, SearchEnvironment, SearchOutcome, SearchRequest};
 
 /// The kernel today's production callers have always used, now reached
 /// through `NetSearch` instead of the deleted four-method single-net-search
@@ -181,12 +181,7 @@ fn run_search(env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome
         return rejected_outcome();
     }
 
-    let mut anchor_open_cells = FxHashSet::default();
-    if let Some(port_open_cells) = port_open_cells {
-        anchor_open_cells.extend(port_open_cells.iter().copied());
-    }
-    anchor_open_cells.insert(pack_xy(source.x, source.y));
-    anchor_open_cells.insert(pack_xy(target.x, target.y));
+    let anchor_open_cells = anchor_open_cells(source, target, port_open_cells);
 
     let reservation_anchor_open_cells = request
         .crossing
@@ -362,64 +357,7 @@ mod tests {
     use super::*;
     use crate::config::KernelDiagnostics;
     use crate::search;
-    use crate::search::astar::crossing_rules::{CrossingSearchConfig, CrossingSearchPartner};
     use crate::search::test_support::*;
-
-    fn crossing_search_fixture() -> (
-        ObstacleMap,
-        PrimitiveLibrary,
-        State,
-        State,
-        AStarConfig,
-        CrossingSearchConfig,
-    ) {
-        let mut map = ObstacleMap::new(20, 14);
-        for x in 3..=13 {
-            map.add_static_cell(x, 5);
-            map.add_static_cell(x, 7);
-        }
-        let partner_cells: Vec<(i32, i32)> = (2..=10).map(|y| (8, y)).collect();
-        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
-            1,
-            &partner_cells,
-            &partner_cells,
-            &[],
-            &FxHashSet::default()
-        ));
-
-        let crossing = CrossingSearchConfig {
-            diagnostics: KernelDiagnostics::default(),
-            net_id: 2,
-            partners: vec![CrossingSearchPartner {
-                net_id: 1,
-                waypoints: vec![(8, 2), (8, 10)],
-                target_terminal_bump_guard: None,
-                crossing_loss_override: None,
-                single_discounted_crossing: false,
-            }],
-            min_straight_cells: 1,
-            crossing_half_size_cells: 0,
-            bend_runout_cells: 0,
-            crossing_loss: 3.0,
-            require_all_partners: false,
-            terminal_bump_guard: None,
-        };
-        let config = AStarConfig {
-            use_routing_window: false,
-            enable_simple_routes: false,
-            require_target_angle: false,
-            ..AStarConfig::default()
-        };
-
-        (
-            map,
-            primitive_library_no45_bend1(),
-            State::new(2, 6, 0),
-            State::new(14, 6, 0),
-            config,
-            crossing,
-        )
-    }
 
     /// The plain request (no crossing part, no dynamic expansion) is the
     /// only one `run_search` lets take the JPS4/simple-route shortcuts, so
@@ -427,14 +365,7 @@ mod tests {
     /// from one of the two fixed unified-kernel reasons.
     #[test]
     fn net_search_plain_request_takes_the_shortcut_path() {
-        let map = ObstacleMap::new(12, 5);
-        let library = primitive_library_no45_bend1();
-        let source = State::new(1, 2, 0);
-        let target = State::new(8, 2, 0);
-        let config = AStarConfig {
-            require_target_angle: true,
-            ..AStarConfig::default()
-        };
+        let (map, library, source, target, config) = plain_request_fixture();
         let env = search::SearchEnvironment {
             obstacle_map: &map,
             primitives: &library,
@@ -461,16 +392,8 @@ mod tests {
     /// `run_search` records in the stats as a fixed fallback reason.
     #[test]
     fn net_search_dynamic_expansion_request_takes_the_dense_kernel_path() {
-        let mut map = ObstacleMap::new(12, 5);
-        assert!(map.commit_route_with_clearance_overlap(1, &[(4, 1)], &[(4, 1)], &[]));
-        let library = primitive_library_no45_bend1();
-        let source = State::new(1, 2, 0);
-        let target = State::new(8, 2, 0);
-        let config = AStarConfig {
-            require_target_angle: true,
-            ..AStarConfig::default()
-        };
-        let exempt_cells = pack_cells_for_test(&[(4, 1)]);
+        let (map, library, source, target, config, exempt_cells) =
+            dynamic_expansion_request_fixture();
         let env = search::SearchEnvironment {
             obstacle_map: &map,
             primitives: &library,
@@ -600,14 +523,7 @@ mod tests {
     #[test]
     fn determinism_pin_matches_commit_5a5edb8() {
         {
-            let map = ObstacleMap::new(12, 5);
-            let library = primitive_library_no45_bend1();
-            let source = State::new(1, 2, 0);
-            let target = State::new(8, 2, 0);
-            let config = AStarConfig {
-                require_target_angle: true,
-                ..AStarConfig::default()
-            };
+            let (map, library, source, target, config) = plain_request_fixture();
             let env = search::SearchEnvironment {
                 obstacle_map: &map,
                 primitives: &library,
@@ -633,16 +549,8 @@ mod tests {
             assert_eq!(route.compressed_waypoints.len(), 2, "base waypoint count");
         }
         {
-            let mut map = ObstacleMap::new(12, 5);
-            assert!(map.commit_route_with_clearance_overlap(1, &[(4, 1)], &[(4, 1)], &[]));
-            let library = primitive_library_no45_bend1();
-            let source = State::new(1, 2, 0);
-            let target = State::new(8, 2, 0);
-            let config = AStarConfig {
-                require_target_angle: true,
-                ..AStarConfig::default()
-            };
-            let exempt_cells = pack_cells_for_test(&[(4, 1)]);
+            let (map, library, source, target, config, exempt_cells) =
+                dynamic_expansion_request_fixture();
             let env = search::SearchEnvironment {
                 obstacle_map: &map,
                 primitives: &library,

@@ -299,6 +299,7 @@ RUST_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_ASTAR_TIMEOUT_S",
         "PHOTONIC_ROUTER_MAX_DENSE_STATES",
         "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT",
+        "PHOTONIC_ROUTER_SEARCH_ENGINE",
         # Crossing engine (src/py_router.rs)
         "PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING",
         "PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING",
@@ -439,6 +440,7 @@ def test_router_config_default_to_rust_round_trips_defaults():
         rust_cfg.search_long_straight_congestion_weight
         == cfg.search.long_straight_congestion_weight
     )
+    assert rust_cfg.search_engine == cfg.search.engine == "astar"
     assert (
         rust_cfg.crossing_enable_guided_collision_crossing
         == cfg.crossing.enable_guided_collision_crossing

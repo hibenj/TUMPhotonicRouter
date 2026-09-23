@@ -4,7 +4,7 @@ use std::time::Instant;
 use pyo3::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::config::RouterConfig;
+use crate::config::{RouterConfig, SEARCH_ENGINE_GRID_DIJKSTRA};
 use crate::crossings::CrossingContext;
 use crate::obstacle_map::{CellKey, ObstacleMap};
 use crate::plm::RegisteredPlmContext;
@@ -14,7 +14,7 @@ use crate::primitives::{
 };
 use crate::search::astar::config::AStarConfig;
 use crate::search::astar::crossing_rules::TerminalBumpGuard;
-use crate::search::{AStarSearch, NetSearch};
+use crate::search::{AStarSearch, GridDijkstraSearch, NetSearch};
 
 use crate::bindings::*;
 
@@ -184,10 +184,10 @@ pub struct PyPhotonicRouter {
     pub(crate) last_search_expanded_states: u64,
     // The single-net search algorithm every production call site now
     // reaches through `NetSearch::search` instead of the deleted
-    // four-method single-net-search trait. Always `AStarSearch` today --
-    // set once at construction, never reassigned -- Milestone 3 Slice 4
-    // adds a second implementation selectable via `RouterConfig`. See
-    // Milestone 3, Slice 1 of
+    // four-method single-net-search trait. Set once at construction from
+    // `RouterConfig::search.engine` (`search_engine_for` below) and never
+    // reassigned: `AStarSearch` by default, `GridDijkstraSearch` for
+    // `"grid-dijkstra"`. See Milestone 3, Slices 1 and 4 of
     // `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
     pub(crate) search_engine: Box<dyn NetSearch + Send + Sync>,
 }
@@ -206,6 +206,19 @@ pub(crate) struct LongStraightCongestionRecord {
     pub(crate) end: (i32, i32),
     pub(crate) length_um: f64,
     pub(crate) marked_cells: usize,
+}
+
+/// The `NetSearch` implementation `RouterConfig::search.engine` names. Add
+/// a new engine's name here (see `crate::search`'s module doc comment).
+/// Unknown values keep A*: the Python binding rejects them at construction
+/// (`PyRouterConfig::new`), so a `RouterConfig` built directly in Rust is
+/// the only way to get one here.
+pub(crate) fn search_engine_for(config: &RouterConfig) -> Box<dyn NetSearch + Send + Sync> {
+    if config.search.engine == SEARCH_ENGINE_GRID_DIJKSTRA {
+        Box::new(GridDijkstraSearch)
+    } else {
+        Box::new(AStarSearch)
+    }
 }
 
 impl PyPhotonicRouter {
@@ -242,6 +255,7 @@ impl PyPhotonicRouter {
             &router_config,
         )
         .map_err(|err| err.to_string());
+        let search_engine = search_engine_for(&router_config);
         Self {
             obstacle_map: ObstacleMap::new(grid_spec.width as i32, grid_spec.height as i32),
             grid: grid_spec,
@@ -274,7 +288,7 @@ impl PyPhotonicRouter {
             long_straight_exempt_net_ids: FxHashSet::default(),
             long_straight_weight_override: None,
             last_search_expanded_states: 0,
-            search_engine: Box::new(AStarSearch),
+            search_engine,
         }
     }
 }

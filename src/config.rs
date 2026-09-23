@@ -51,12 +51,18 @@ impl Default for NegotiationConfig {
     }
 }
 
+/// `RouterConfig::search.engine` selecting `crate::search::AStarSearch`.
+pub const SEARCH_ENGINE_ASTAR: &str = "astar";
+/// `RouterConfig::search.engine` selecting `crate::search::GridDijkstraSearch`.
+pub const SEARCH_ENGINE_GRID_DIJKSTRA: &str = "grid-dijkstra";
+
 /// Search-kernel overrides
 /// (`PHOTONIC_ROUTER_ASTAR_TIMEOUT_MS`/`_S`, `PHOTONIC_ROUTER_MAX_DENSE_STATES`,
-/// `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT`), read in
-/// `src/py_router.rs`. All three are unset-sensitive: `None` means "no
-/// override", not any particular value.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT`,
+/// `PHOTONIC_ROUTER_SEARCH_ENGINE`), read in `src/py_router.rs`. The three
+/// numeric ones are unset-sensitive: `None` means "no override", not any
+/// particular value.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SearchOverrides {
     /// Timeout in milliseconds, already resolved from either
     /// `PHOTONIC_ROUTER_ASTAR_TIMEOUT_MS` or
@@ -69,6 +75,24 @@ pub struct SearchOverrides {
     /// `PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT`: `None` = no
     /// penalty.
     pub long_straight_congestion_weight: Option<f64>,
+    /// `PHOTONIC_ROUTER_SEARCH_ENGINE`: which `crate::search::NetSearch`
+    /// implementation routes a single net. `SEARCH_ENGINE_ASTAR` (the
+    /// default) selects `AStarSearch`, `SEARCH_ENGINE_GRID_DIJKSTRA` the
+    /// `GridDijkstraSearch` oracle engine; the Python binding
+    /// (`PyRouterConfig::new`) rejects every other value at construction,
+    /// and `PyPhotonicRouter::construct` keeps A* for one.
+    pub engine: String,
+}
+
+impl Default for SearchOverrides {
+    fn default() -> Self {
+        Self {
+            astar_timeout_ms: None,
+            max_dense_states: None,
+            long_straight_congestion_weight: None,
+            engine: SEARCH_ENGINE_ASTAR.to_string(),
+        }
+    }
 }
 
 /// Crossing-engine selection
@@ -230,6 +254,7 @@ mod tests {
         assert_eq!(cfg.astar_timeout_ms, None);
         assert_eq!(cfg.max_dense_states, None);
         assert_eq!(cfg.long_straight_congestion_weight, None);
+        assert_eq!(cfg.engine, SEARCH_ENGINE_ASTAR);
     }
 
     #[test]

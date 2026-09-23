@@ -109,6 +109,107 @@ pub(crate) fn pack_cells_for_test(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
     cells.iter().map(|&(x, y)| pack_xy(x, y)).collect()
 }
 
+// The three `NetSearch` request fixtures. Introduced for the `net_search_*`
+// tests in `src/search/astar/mod.rs` (Milestone 3, Slice 3) and moved here
+// in Slice 4 so the second engine's tests (`src/search/grid_dijkstra.rs`)
+// run the same geometry against the same A* settings rather than a copy of
+// it.
+
+/// An empty 12x5 map and a straight, unobstructed source-to-target pair:
+/// the fixture of `net_search_plain_request_takes_the_shortcut_path`.
+pub(crate) fn plain_request_fixture() -> (ObstacleMap, PrimitiveLibrary, State, State, AStarConfig)
+{
+    (
+        ObstacleMap::new(12, 5),
+        primitive_library_no45_bend1(),
+        State::new(1, 2, 0),
+        State::new(8, 2, 0),
+        AStarConfig {
+            require_target_angle: true,
+            ..AStarConfig::default()
+        },
+    )
+}
+
+/// `plain_request_fixture` with net 1 committed on (4, 1) and that cell
+/// exempted from the clearance check: the fixture of
+/// `net_search_dynamic_expansion_request_takes_the_dense_kernel_path`. The
+/// returned cell set is the request's `clearance_exempt_cells`.
+pub(crate) fn dynamic_expansion_request_fixture() -> (
+    ObstacleMap,
+    PrimitiveLibrary,
+    State,
+    State,
+    AStarConfig,
+    FxHashSet<CellKey>,
+) {
+    let (mut map, library, source, target, config) = plain_request_fixture();
+    assert!(map.commit_route_with_clearance_overlap(1, &[(4, 1)], &[(4, 1)], &[]));
+    let exempt_cells = pack_cells_for_test(&[(4, 1)]);
+    (map, library, source, target, config, exempt_cells)
+}
+
+/// A 20x14 corridor between two static walls with net 1 committed straight
+/// across it: the fixture of both `net_search_*_crossing_*` tests, whose
+/// request can only reach the target by crossing net 1.
+pub(crate) fn crossing_search_fixture() -> (
+    ObstacleMap,
+    PrimitiveLibrary,
+    State,
+    State,
+    AStarConfig,
+    CrossingSearchConfig,
+) {
+    let mut map = ObstacleMap::new(20, 14);
+    for x in 3..=13 {
+        map.add_static_cell(x, 5);
+        map.add_static_cell(x, 7);
+    }
+    let partner_cells: Vec<(i32, i32)> = (2..=10).map(|y| (8, y)).collect();
+    assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+        1,
+        &partner_cells,
+        &partner_cells,
+        &[],
+        &FxHashSet::default()
+    ));
+
+    let crossing = CrossingSearchConfig {
+        diagnostics: crate::config::KernelDiagnostics::default(),
+        net_id: 2,
+        partners: vec![
+            crate::search::astar::crossing_rules::CrossingSearchPartner {
+                net_id: 1,
+                waypoints: vec![(8, 2), (8, 10)],
+                target_terminal_bump_guard: None,
+                crossing_loss_override: None,
+                single_discounted_crossing: false,
+            },
+        ],
+        min_straight_cells: 1,
+        crossing_half_size_cells: 0,
+        bend_runout_cells: 0,
+        crossing_loss: 3.0,
+        require_all_partners: false,
+        terminal_bump_guard: None,
+    };
+    let config = AStarConfig {
+        use_routing_window: false,
+        enable_simple_routes: false,
+        require_target_angle: false,
+        ..AStarConfig::default()
+    };
+
+    (
+        map,
+        primitive_library_no45_bend1(),
+        State::new(2, 6, 0),
+        State::new(14, 6, 0),
+        config,
+        crossing,
+    )
+}
+
 // The six deleted free functions (the old single-net search trait's
 // free-function twins, see Milestone 3 Slice 1 of
 // `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`)

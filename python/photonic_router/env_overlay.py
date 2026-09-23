@@ -394,6 +394,11 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("router", "search", "max_dense_states"),
         usize_positive,
     ),
+    EnvVar(
+        _PREFIX + "SEARCH_ENGINE",
+        ("router", "search", "engine"),
+        stripped_string,
+    ),
     # Crossing engine (src/py_router.rs)
     EnvVar(
         _PREFIX + "ENABLE_GUIDED_COLLISION_CROSSING",
