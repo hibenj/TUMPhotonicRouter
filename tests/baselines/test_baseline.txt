@@ -1,3 +1,3 @@
-rust_passed=512
+rust_passed=522
 python_passed=477
 python_failures:

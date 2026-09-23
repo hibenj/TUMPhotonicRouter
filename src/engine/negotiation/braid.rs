@@ -2,23 +2,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::engine::*;
 
-/// Re-queues the partners a braid escalation left ripped: each goes to the
-/// front of the queue with its failed count raised and is marked as ripped
-/// this epoch (LiDAR's once-per-epoch rule), exactly like a local rip-up's
-/// victims in `route_many_with_negotiated_repair_and_commit`.
-pub(crate) fn requeue_braid_victims(
-    queue: &mut std::collections::VecDeque<u64>,
-    failed_counts: &mut FxHashMap<u64, u32>,
-    ripped_once: &mut FxHashSet<u64>,
-    victims: &[u64],
-) {
-    for &victim_id in victims.iter().rev() {
-        *failed_counts.entry(victim_id).or_insert(0) += 1;
-        ripped_once.insert(victim_id);
-        queue.push_front(victim_id);
-    }
-}
-
 impl PyPhotonicRouter {
     /// `keep_net_on_victim_failure`: when the net routes without the victim
     /// but the victim cannot be rerouted afterwards, keep the net's new
@@ -970,24 +953,5 @@ mod tests {
         );
         assert!(batch.final_routes.contains_key(&job.net_id));
         assert!(batch.final_routes.contains_key(&victim.net_id));
-    }
-
-    #[test]
-    fn requeue_braid_victims_pushes_front_raises_failed_count_and_marks_ripped() {
-        let mut queue: std::collections::VecDeque<u64> = [9u64, 10].into_iter().collect();
-        let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
-        failed_counts.insert(7, 1);
-        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
-
-        requeue_braid_victims(&mut queue, &mut failed_counts, &mut ripped_once, &[7, 8]);
-
-        assert_eq!(
-            queue.iter().copied().collect::<Vec<u64>>(),
-            vec![7, 8, 9, 10],
-            "victims go to the front in their original order"
-        );
-        assert_eq!(failed_counts.get(&7), Some(&2));
-        assert_eq!(failed_counts.get(&8), Some(&1));
-        assert!(ripped_once.contains(&7) && ripped_once.contains(&8));
     }
 }
