@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. This document must be maintained in accordance with `.agent/PLANS.md`.
 
-Status: **2026-09-22 18:30 -- Milestone 0 complete on branch `restructure/modular-engine` (gate 9/9 exact, test baseline pinned with zero failures). Next: Milestone 1 on the owner's go.**
+Status: **2026-09-23 14:40 -- Milestones 0 and 1 complete on branch `restructure/modular-engine` (full 27-cell reproduction exact on the Milestone 1 tree). Next: Milestone 2 (pure code motion of the engine file) on the owner's go; its brief is ready.**
 
 
 ## Purpose / Big Picture
@@ -21,11 +21,11 @@ The plan deliberately does not start from the rejected "cleanup" of 2026-09-19 (
 - [x] (2026-09-22 17:40) Milestone 0, gate: `reproduce_date2027.sh short` + `scripts/results/gate_short.sh` against `docs/date2027_table_sources.json`; first run 9/9 exact in 80 s (commit 58c9cc1).
 - [x] (2026-09-22 17:40) Milestone 0, baseline: `scripts/test_baseline.sh` with `tests/baselines/test_baseline.txt` (rust 486/0, python 411 passed, 11 pinned failures).
 - [x] (2026-09-22 18:30) Milestone 0, D3: the 11 stale tests resolved (details in the Decision Log); baseline re-pinned with an empty failure list.
-- [ ] Milestone 1: configuration as data (one typed configuration tree replaces the 88 environment variables as the algorithms' input).
+- [x] (2026-09-23) Milestone 1: configuration as data (one typed configuration tree replaces the 88 environment variables as the algorithms' input).
   - [x] (2026-09-22 20:40) Slice 1: the 41 Rust-side variables are fields of `crate::config::RouterConfig` (`src/config.rs`), passed from Python as `rust_backend.RouterConfig` built by `photonic_router/config.py`; the single overlay table lives in `photonic_router/env_overlay.py`; `grep -rn "env::var\|var_os" src/` is empty; rust 492/0, python 447/0 (32 new overlay tests), gate 9/9 exact; verified independently by the lead.
   - [x] (2026-09-22 22:10) Slice 2: the Python-side variables are fields of `photonic_router.config.RoutingConfig` (crossing_plan, crossing_grid, fanout, engine, search, diagnostics, write_gds_on_photonic_verification_failure, plus `router`), threaded as one `config` parameter from `run_routing_flow` through the optical stage config, `route_match_and_realize`, `route_nets_rust` and the session; the pre-placed grid stage returns its dense fan-out instance names instead of exporting them; the exemption is an `Optional[bool]` the flow sets when pre-placed grids are on; `translation/` has no `os.environ` left. Coverage test: 86 names (88 minus SYNTH and the dead LAYER_ORDER). python 470/0, gate 9/9 exact, verified independently. Remaining environment access: the CLI's stable-block export in `routing_flow.main` (Slice 3).
   - [x] (2026-09-22 22:40) Slice 3, loader: `photonic_router/config_loading.py::build_config(stable_env, environ)` applies defaults, then the benchmark's `STABLE_ROUTING_ENV` block, then the process environment, all through the overlay table; `routing_flow.main` passes the result as `config` and no longer writes `os.environ`. python 475/0, gate 9/9 exact.
-  - [ ] Slice 3, acceptance: the full 27-cell reproduction on the Milestone 1 tree (about 4.5 h, owner go).
+  - [x] (2026-09-23 14:38) Slice 3, acceptance: full 27-cell reproduction on commit c57bf31 (`results_m1_check/`, 10:49-14:38): 27/27 exact on crossings and GDS length, 0 verifier errors, loop-time ratio 0.88-1.05. Milestone 1 complete.
 - [ ] Milestone 2: the Rust engine file split by concern (pure code motion, bindings separated from the engine).
 - [ ] Milestone 3: one search interface, one A* kernel module, a second search engine proving the seam.
 - [ ] Milestone 4: one readable rip-up-and-repair loop with named policies.

@@ -114,3 +114,7 @@ in the kernel and reproduce exactly without it, so Milestone 9 never
 influenced the paper's rows and stays absent from this branch. Benes
 128x128 with contribution 2: loop 912 s (archive 925 s), wall 5443 s of
 which the verifier is most (20480 routes). LiDAR rows are not covered.
+
+## Re-verification on the restructuring branch
+
+- 2026-09-23, commit c57bf31 (Milestone 1 of `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`: every environment variable became a typed configuration field): all 27 cells exact on crossings and GDS length, 0 verifier errors, loop-time ratio 0.88-1.05 (`results_m1_check/`, 10:49-14:38).
