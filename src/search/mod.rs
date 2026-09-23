@@ -1,8 +1,9 @@
 //! One interface for a single-net search: `NetSearch`. `AStarSearch`
-//! (`astar/mod.rs`) is today's, and only, implementation -- it dispatches to
-//! the four unified-kernel wrappers in `crate::search::astar::kernel`
-//! unchanged, so this slice is the interface itself, not a behaviour
-//! change. See Milestone 3, Slices 1 and 2 of
+//! (`astar/mod.rs`) is today's, and only, implementation -- it is a straight
+//! call into that module's one `run_search` body, which reproduces the four
+//! unified-kernel wrappers it was assembled from exactly, so this slice is
+//! the interface itself, not a behaviour change. See Milestone 3, Slices 1
+//! to 3 of
 //! `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
 //!
 //! `state` and `geometry` hold the search-state/result types and the
@@ -49,12 +50,13 @@ pub struct DynamicExpansion<'a> {
 /// distinguishes the two crossing search variants that exist today:
 /// `Some(_)` selects the collision-crossing path (an explicit reservation
 /// anchor set, independent of `SearchRequest::port_open_cells`); `None`
-/// selects the crossing-config path, whose own wrapper always reuses
-/// `port_open_cells` as the reservation anchor set too -- behaviourally the
-/// same thing `Some(port_open_cells)` would produce on the collision path,
-/// confirmed by reading both wrappers (see `AStarSearch::search`'s doc
-/// comment). Absent (`SearchRequest::crossing == None`) means no crossing
-/// support at all: `NoCrossingHook` rather than `LiveCrossingHook`.
+/// selects the crossing-config path, which reuses the `port_open_cells`
+/// anchor set as the reservation anchor set too -- behaviourally the same
+/// thing `Some(port_open_cells)` produces on the collision path (see
+/// `run_search`'s doc comment and
+/// `crossing_reservation_none_matches_an_equal_reservation_anchor_set`).
+/// Absent (`SearchRequest::crossing == None`) means no crossing support at
+/// all: `NoCrossingHook` rather than `LiveCrossingHook`.
 pub struct CrossingSearch<'a> {
     pub config: &'a CrossingSearchConfig,
     pub reservation_open_cells: Option<&'a FxHashSet<CellKey>>,
@@ -75,10 +77,9 @@ pub struct SearchRequest<'a> {
 }
 
 /// The result of one search call: `route` is `None` on failure regardless
-/// of cause (infeasible, timed out, budget exhausted); `stats` is always
-/// populated (a variant that cannot expose real counters returns
-/// `RouteSearchStats::default()` -- see `AStarSearch::search`'s doc comment
-/// for which variant that is today and why).
+/// of cause (infeasible, timed out, budget exhausted); `stats` carries the
+/// search's real counters on every path (a request rejected by an entry
+/// guard reports `RouteSearchStats::default()`, as it always has).
 pub struct SearchOutcome {
     pub route: Option<RouteResult>,
     pub stats: RouteSearchStats,
