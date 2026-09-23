@@ -13,7 +13,7 @@ use crate::primitives::{Primitive, PrimitiveLibrary};
 use crate::search::astar::config::{
     AStarConfig, HeapTieBreaker, NO_GENERATION, NO_HEAP_POSITION, NO_PARENT,
 };
-use crate::search::astar::cost::PrimitiveSearchMetadata;
+use crate::search::astar::cost::{self, PrimitiveSearchMetadata};
 use crate::search::astar::crossing_rules::{
     extend_unique_keys, primitive_crossing_metadata,
     unified_candidate_hits_active_local_crossing_reservation,
@@ -178,6 +178,110 @@ impl IndexedOpenSet {
 
 pub(crate) fn entry_is_better(candidate: &OpenEntry, current: &OpenEntry) -> bool {
     candidate.cmp(current) == Ordering::Greater
+}
+
+/// Builds the per-search dense obstacle grid and per-search state storage
+/// for one bounded window: `DenseSearchStorage` (g-costs, parent links,
+/// the closed bitset) and `DenseRoutingGrid` (blocked/history/congestion
+/// bitmaps, expanded for dynamic obstacles and opened port cells). Returns
+/// `None`, with `stats.dense_grid_build_failures` incremented, if either
+/// construction fails -- unchanged from the loop's own inline checks
+/// (dense_storage_cap logs under `search_failure_diag`; the grid's own
+/// build failure does not). `ignores_dynamic_obstacles` is threaded
+/// through unchanged; it is only consulted later, by the pop-diagnostic.
+#[allow(clippy::too_many_arguments)]
+fn build_search_grid(
+    obstacle_map: &ObstacleMap,
+    bounds: RoutingBounds,
+    port_open_cells: Option<&FxHashSet<CellKey>>,
+    config: &AStarConfig,
+    dynamic_expansion_radius_cells: i32,
+    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+    ignores_dynamic_obstacles: bool,
+    source: State,
+    target: State,
+    stats: &mut RouteSearchStats,
+) -> Option<(DenseSearchStorage, DenseRoutingGrid, bool)> {
+    let Some(storage) = DenseSearchStorage::new(bounds, config.max_dense_states) else {
+        // Silent before 2026-09-16: a window whose 8 x area exceeds
+        // `max_dense_states` failed with 0 expansions and no trace
+        // (multiportmmi_128x128, heater-to-MMI nets). Now counted and,
+        // under PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG, reported.
+        stats.dense_grid_build_failures += 1;
+        if config.diagnostics.search_failure_diag {
+            let area = window_area(bounds) as u64;
+            eprintln!(
+                    "search-failure kind=dense_storage_cap window=[{}..{}]x[{}..{}] area_cells={} states={} max_dense_states={} source=({},{}) target=({},{})",
+                    bounds.min_x,
+                    bounds.max_x,
+                    bounds.min_y,
+                    bounds.max_y,
+                    area,
+                    area * 8,
+                    config.max_dense_states,
+                    source.x,
+                    source.y,
+                    target.x,
+                    target.y
+                );
+        }
+        return None;
+    };
+    stats.dense_search_states = storage.state_count();
+    stats.dense_search_storage_bytes = storage.allocated_bytes();
+    let dense_grid = match DenseRoutingGrid::from_obstacle_map_with_dynamic_expansion(
+        obstacle_map,
+        bounds,
+        port_open_cells,
+        config.max_dense_obstacle_cells,
+        config.ignore_dynamic_obstacles,
+        config.history_weight > 0.0,
+        config.long_straight_congestion_weight > 0.0,
+        dynamic_expansion_radius_cells,
+        dynamic_clearance_exempt_cells,
+    ) {
+        Some(grid) => grid,
+        None => {
+            stats.dense_grid_build_failures += 1;
+            return None;
+        }
+    };
+    stats.dense_grid_cells = dense_grid.blocked_count();
+    stats.dense_grid_build_time_us = dense_grid.build_time_us();
+    Some((storage, dense_grid, ignores_dynamic_obstacles))
+}
+
+/// Seeds the source state (g = 0) into Tier 1's open set, exactly like a
+/// plain A* seeding its start node -- the source can never itself carry
+/// crossing bookkeeping, so this never touches Tier 2. Returns the
+/// source's dense-array index, needed again at goal reconstruction.
+fn seed_open_set<H: CrossingLegalityHook>(
+    storage: &mut DenseSearchStorage,
+    tier1_open: &mut OpenSet,
+    source: State,
+    search_heuristic: &SearchHeuristic,
+    hook: &H,
+    config: &AStarConfig,
+    stats: &mut RouteSearchStats,
+    counter: &mut u32,
+) -> Option<usize> {
+    let source_idx = storage.state_to_idx(source)?;
+    storage.g_costs[source_idx] = 0.0;
+    let source_generation = next_search_generation(counter)?;
+    storage.best_generation[source_idx] = source_generation;
+    stats.best_cost_updates += 1;
+    tier1_open.push(OpenEntry {
+        f_score: cost::heuristic_estimate(search_heuristic, source)
+            + hook.heuristic_bonus(source, CrossingExtension::default()),
+        tie_score: heap_tie_score(0.0, config.heap_tie_breaker),
+        g_score: 0.0,
+        counter: source_generation,
+        generation: source_generation,
+        idx: source_idx,
+    });
+    stats.heap_pushes += 1;
+    stats.max_heap_size = stats.max_heap_size.max(tier1_open.len());
+    Some(source_idx)
 }
 
 #[inline]
@@ -372,52 +476,18 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
         }
     };
 
-    let Some(mut storage) = DenseSearchStorage::new(bounds, config.max_dense_states) else {
-        // Silent before 2026-09-16: a window whose 8 x area exceeds
-        // `max_dense_states` failed with 0 expansions and no trace
-        // (multiportmmi_128x128, heater-to-MMI nets). Now counted and,
-        // under PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG, reported.
-        stats.dense_grid_build_failures += 1;
-        if config.diagnostics.search_failure_diag {
-            let area = window_area(bounds) as u64;
-            eprintln!(
-                    "search-failure kind=dense_storage_cap window=[{}..{}]x[{}..{}] area_cells={} states={} max_dense_states={} source=({},{}) target=({},{})",
-                    bounds.min_x,
-                    bounds.max_x,
-                    bounds.min_y,
-                    bounds.max_y,
-                    area,
-                    area * 8,
-                    config.max_dense_states,
-                    source.x,
-                    source.y,
-                    target.x,
-                    target.y
-                );
-        }
-        return None;
-    };
-    stats.dense_search_states = storage.state_count();
-    stats.dense_search_storage_bytes = storage.allocated_bytes();
-    let dense_grid = match DenseRoutingGrid::from_obstacle_map_with_dynamic_expansion(
+    let (mut storage, dense_grid, ignore_dyn_flag) = build_search_grid(
         obstacle_map,
         bounds,
         port_open_cells,
-        config.max_dense_obstacle_cells,
-        config.ignore_dynamic_obstacles,
-        config.history_weight > 0.0,
-        config.long_straight_congestion_weight > 0.0,
+        config,
         dynamic_expansion_radius_cells,
         dynamic_clearance_exempt_cells,
-    ) {
-        Some(grid) => grid,
-        None => {
-            stats.dense_grid_build_failures += 1;
-            return None;
-        }
-    };
-    stats.dense_grid_cells = dense_grid.blocked_count();
-    stats.dense_grid_build_time_us = dense_grid.build_time_us();
+        hook.ignores_dynamic_obstacles(),
+        source,
+        target,
+        stats,
+    )?;
     let search_heuristic = SearchHeuristic::new(target, primitives, config);
 
     let primitive_buckets: [&[Primitive]; 8] =
@@ -471,11 +541,6 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
     });
 
     let mut counter = 0u32;
-    let source_idx = storage.state_to_idx(source)?;
-    storage.g_costs[source_idx] = 0.0;
-    let source_generation = next_search_generation(&mut counter)?;
-    storage.best_generation[source_idx] = source_generation;
-    stats.best_cost_updates += 1;
 
     // Tier 1's own `straight_run_cells` count, needed the instant a
     // Tier-1 state first attempts a crossing (its `CrossingExtension` is
@@ -531,7 +596,6 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
     static SEARCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let search_seq = SEARCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     CURRENT_SEARCH_SEQ.with(|c| c.set(search_seq));
-    let ignore_dyn_flag = hook.ignores_dynamic_obstacles();
     // `KernelDiagnostics::pop_diag_below_y = Some(y)` logs every Tier-2
     // push/pop/skip whose state lies below that y (first 200).
     let pop_diag_below_y: Option<i32> = config.diagnostics.pop_diag_below_y;
@@ -566,17 +630,16 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
 
     let mut tier1_open = OpenSet::new(config.use_indexed_heap, storage.state_count());
     let mut tier2_open: BinaryHeap<OpenEntry> = BinaryHeap::new();
-    tier1_open.push(OpenEntry {
-        f_score: search_heuristic.estimate(source)
-            + hook.heuristic_bonus(source, CrossingExtension::default()),
-        tie_score: heap_tie_score(0.0, config.heap_tie_breaker),
-        g_score: 0.0,
-        counter: source_generation,
-        generation: source_generation,
-        idx: source_idx,
-    });
-    stats.heap_pushes += 1;
-    stats.max_heap_size = stats.max_heap_size.max(tier1_open.len());
+    let source_idx = seed_open_set(
+        &mut storage,
+        &mut tier1_open,
+        source,
+        &search_heuristic,
+        hook,
+        config,
+        stats,
+        &mut counter,
+    )?;
 
     let mut iterations = 0usize;
     let search_loop_start = if config.collect_detailed_timing {
@@ -1036,45 +1099,18 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                     }
                     continue;
                 }
-                let history_cost = if config.history_weight > 0.0 {
-                    dense_grid.primitive_footprint_history_with_profile(
-                        state.x,
-                        state.y,
-                        &primitive.footprint,
-                        profile,
-                    ) as f64
-                        * config.history_weight
-                } else {
-                    0.0
-                };
-                let long_straight_congestion_cost = if config.long_straight_congestion_weight > 0.0
-                {
-                    dense_grid.primitive_footprint_congestion_with_profile(
-                        state.x,
-                        state.y,
-                        &primitive.footprint,
-                        profile,
-                    ) as f64
-                        * config.long_straight_congestion_weight
-                } else {
-                    0.0
-                };
-                let congestion_cost = if config.proactive_congestion_weight > 0.0
-                    && config.proactive_congestion_radius_cells > 0
-                    && primitive_class_is_straight(primitive_class)
-                {
-                    f64::from(dense_grid.primitive_lateral_congestion(
-                        state.x,
-                        state.y,
-                        &primitive.footprint,
-                        primitive.start_angle,
-                        config.proactive_congestion_radius_cells,
-                    )) * config.proactive_congestion_weight
-                } else {
-                    0.0
-                };
-                let step_cost =
-                    base_step_cost + history_cost + long_straight_congestion_cost + congestion_cost;
+                let step_cost = cost::step_cost(
+                    &dense_grid,
+                    config,
+                    0.0,
+                    base_step_cost,
+                    state.x,
+                    state.y,
+                    &primitive.footprint,
+                    profile,
+                    primitive.start_angle,
+                    primitive_class_is_straight(primitive_class),
+                );
                 let tentative_g = current_g + step_cost;
                 if tentative_g >= storage.g_costs[next_idx] {
                     stats.primitive_cost_pruned_by_class[primitive_class] += 1;
@@ -1122,7 +1158,7 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                     && config.diagnostics.hot_loop_timing)
                     .then(Instant::now);
                 let queued = tier1_open.push(OpenEntry {
-                    f_score: tentative_g + search_heuristic.estimate(next_state),
+                    f_score: tentative_g + cost::heuristic_estimate(&search_heuristic, next_state),
                     tie_score: heap_tie_score(tentative_g, config.heap_tie_breaker),
                     g_score: tentative_g,
                     counter: generation,
@@ -1344,49 +1380,18 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                         stats.crossing_reject_reservation_overlap += 1;
                         continue;
                     }
-                    let first_history_cost = if config.history_weight > 0.0 {
-                        dense_grid.primitive_footprint_history_with_profile(
-                            state.x,
-                            state.y,
-                            &primitive.footprint,
-                            profile,
-                        ) as f64
-                            * config.history_weight
-                    } else {
-                        0.0
-                    };
-                    let first_long_straight_congestion_cost =
-                        if config.long_straight_congestion_weight > 0.0 {
-                            dense_grid.primitive_footprint_congestion_with_profile(
-                                state.x,
-                                state.y,
-                                &primitive.footprint,
-                                profile,
-                            ) as f64
-                                * config.long_straight_congestion_weight
-                        } else {
-                            0.0
-                        };
-                    let first_congestion_cost = if config.proactive_congestion_weight > 0.0
-                        && config.proactive_congestion_radius_cells > 0
-                        && primitive_class_is_straight(primitive_class)
-                    {
-                        f64::from(dense_grid.primitive_lateral_congestion(
-                            state.x,
-                            state.y,
-                            &primitive.footprint,
-                            primitive.start_angle,
-                            config.proactive_congestion_radius_cells,
-                        )) * config.proactive_congestion_weight
-                    } else {
-                        0.0
-                    };
-                    let mut chain_g = current_g
-                        + metadata.base_step_cost
-                        + first_history_cost
-                        + first_long_straight_congestion_cost
-                        + first_congestion_cost
-                        + extra_cost;
+                    let mut chain_g = cost::step_cost(
+                        &dense_grid,
+                        config,
+                        current_g,
+                        metadata.base_step_cost,
+                        state.x,
+                        state.y,
+                        &primitive.footprint,
+                        profile,
+                        primitive.start_angle,
+                        primitive_class_is_straight(primitive_class),
+                    ) + extra_cost;
                     let first_parent = match current_ref {
                         UnifiedOpenRef::Dense(idx) => UnifiedParentRef::Dense(idx),
                         UnifiedOpenRef::Extended(ext_idx) => UnifiedParentRef::Extended(ext_idx),
@@ -1557,47 +1562,18 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                             chain_completed = false;
                             break;
                         }
-                        let step_history_cost = if config.history_weight > 0.0 {
-                            dense_grid.primitive_footprint_history_with_profile(
-                                chain_state.x,
-                                chain_state.y,
-                                &step_primitive.footprint,
-                                step_profile,
-                            ) as f64
-                                * config.history_weight
-                        } else {
-                            0.0
-                        };
-                        let step_long_straight_congestion_cost =
-                            if config.long_straight_congestion_weight > 0.0 {
-                                dense_grid.primitive_footprint_congestion_with_profile(
-                                    chain_state.x,
-                                    chain_state.y,
-                                    &step_primitive.footprint,
-                                    step_profile,
-                                ) as f64
-                                    * config.long_straight_congestion_weight
-                            } else {
-                                0.0
-                            };
-                        let step_congestion_cost = if config.proactive_congestion_weight > 0.0
-                            && config.proactive_congestion_radius_cells > 0
-                        {
-                            f64::from(dense_grid.primitive_lateral_congestion(
-                                chain_state.x,
-                                chain_state.y,
-                                &step_primitive.footprint,
-                                step_primitive.start_angle,
-                                config.proactive_congestion_radius_cells,
-                            )) * config.proactive_congestion_weight
-                        } else {
-                            0.0
-                        };
-                        chain_g += step_metadata.base_step_cost
-                            + step_history_cost
-                            + step_long_straight_congestion_cost
-                            + step_congestion_cost
-                            + step_extra_cost;
+                        chain_g += cost::step_cost(
+                            &dense_grid,
+                            config,
+                            0.0,
+                            step_metadata.base_step_cost,
+                            chain_state.x,
+                            chain_state.y,
+                            &step_primitive.footprint,
+                            step_profile,
+                            step_primitive.start_angle,
+                            true,
+                        ) + step_extra_cost;
                         let step_extension = CrossingExtension::from_outcome(&step_outcome);
                         // Reservation-key promotion, mirroring the keyed
                         // path: keys booked while the debt was open
@@ -1735,7 +1711,7 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                     let generation = next_search_generation(&mut counter)?;
                     tier2_open.push(OpenEntry {
                         f_score: chain_g
-                            + search_heuristic.estimate(chain_state)
+                            + cost::heuristic_estimate(&search_heuristic, chain_state)
                             + hook.heuristic_bonus(chain_state, chain_extension),
                         tie_score: heap_tie_score(chain_g, config.heap_tie_breaker),
                         g_score: chain_g,
@@ -1764,48 +1740,18 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                     }
                     continue;
                 }
-                let history_cost = if config.history_weight > 0.0 {
-                    dense_grid.primitive_footprint_history_with_profile(
-                        state.x,
-                        state.y,
-                        &primitive.footprint,
-                        profile,
-                    ) as f64
-                        * config.history_weight
-                } else {
-                    0.0
-                };
-                let long_straight_congestion_cost = if config.long_straight_congestion_weight > 0.0
-                {
-                    dense_grid.primitive_footprint_congestion_with_profile(
-                        state.x,
-                        state.y,
-                        &primitive.footprint,
-                        profile,
-                    ) as f64
-                        * config.long_straight_congestion_weight
-                } else {
-                    0.0
-                };
-                let congestion_cost = if config.proactive_congestion_weight > 0.0
-                    && config.proactive_congestion_radius_cells > 0
-                    && primitive_class_is_straight(primitive_class)
-                {
-                    f64::from(dense_grid.primitive_lateral_congestion(
-                        state.x,
-                        state.y,
-                        &primitive.footprint,
-                        primitive.start_angle,
-                        config.proactive_congestion_radius_cells,
-                    )) * config.proactive_congestion_weight
-                } else {
-                    0.0
-                };
-                let step_cost = metadata.base_step_cost
-                    + history_cost
-                    + long_straight_congestion_cost
-                    + congestion_cost
-                    + extra_cost;
+                let step_cost = cost::step_cost(
+                    &dense_grid,
+                    config,
+                    0.0,
+                    metadata.base_step_cost,
+                    state.x,
+                    state.y,
+                    &primitive.footprint,
+                    profile,
+                    primitive.start_angle,
+                    primitive_class_is_straight(primitive_class),
+                ) + extra_cost;
                 let tentative_g = current_g + step_cost;
                 let best_next_g = existing_bookkeeping.map(|(g, _)| g);
                 if tentative_g >= best_next_g.unwrap_or(f64::INFINITY) {
@@ -1944,7 +1890,7 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                     .then(Instant::now);
                 tier2_open.push(OpenEntry {
                     f_score: tentative_g
-                        + search_heuristic.estimate(next_state)
+                        + cost::heuristic_estimate(&search_heuristic, next_state)
                         + hook.heuristic_bonus(next_state, next_extension),
                     tie_score: heap_tie_score(tentative_g, config.heap_tie_breaker),
                     g_score: tentative_g,

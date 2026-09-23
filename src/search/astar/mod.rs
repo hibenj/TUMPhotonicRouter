@@ -865,6 +865,162 @@ mod tests {
         // slice.
     }
 
+    /// Milestone 3, Slice 3's determinism pin: routes the four
+    /// `net_search_matches_*` fixtures above and checks `RouteSearchStats`
+    /// counters plus the route's own cost and waypoint count against
+    /// literals recorded on commit 5a5edb8 (Milestone 3, Slice 2, the last
+    /// commit before Slice 3's kernel-loop rewrite began), by temporarily
+    /// stashing the Slice 3 working tree and re-running this fixture set
+    /// on that commit. Kept passing unchanged through the whole rewrite,
+    /// it is the independent check that the extraction never changed a
+    /// comparison, a tie-break or a floating-point operation's order: the
+    /// base fixture never even enters the unified kernel loop (it takes
+    /// the simple-route shortcut, hence the all-zero search counters).
+    #[test]
+    fn determinism_pin_matches_commit_5a5edb8() {
+        {
+            let map = ObstacleMap::new(12, 5);
+            let library = primitive_library_no45_bend1();
+            let source = State::new(1, 2, 0);
+            let target = State::new(8, 2, 0);
+            let config = AStarConfig {
+                require_target_angle: true,
+                ..AStarConfig::default()
+            };
+            let env = search::SearchEnvironment {
+                obstacle_map: &map,
+                primitives: &library,
+            };
+            let request = search::SearchRequest {
+                source,
+                target,
+                port_open_cells: None,
+                dynamic_expansion: None,
+                crossing: None,
+                config: &config,
+            };
+            let outcome = search::AStarSearch.search(&env, &request);
+            let route = outcome.route.expect("base fixture should route");
+            assert_eq!(outcome.stats.expanded_states, 0, "base expanded_states");
+            assert_eq!(
+                outcome.stats.generated_neighbors, 0,
+                "base generated_neighbors"
+            );
+            assert_eq!(outcome.stats.heap_pushes, 0, "base heap_pushes");
+            assert_eq!(outcome.stats.heap_pops, 0, "base heap_pops");
+            assert_eq!(route.total_cost, 7.0, "base total_cost");
+            assert_eq!(route.compressed_waypoints.len(), 2, "base waypoint count");
+        }
+        {
+            let mut map = ObstacleMap::new(12, 5);
+            assert!(map.commit_route_with_clearance_overlap(1, &[(4, 1)], &[(4, 1)], &[]));
+            let library = primitive_library_no45_bend1();
+            let source = State::new(1, 2, 0);
+            let target = State::new(8, 2, 0);
+            let config = AStarConfig {
+                require_target_angle: true,
+                ..AStarConfig::default()
+            };
+            let exempt_cells = pack_cells_for_test(&[(4, 1)]);
+            let env = search::SearchEnvironment {
+                obstacle_map: &map,
+                primitives: &library,
+            };
+            let request = search::SearchRequest {
+                source,
+                target,
+                port_open_cells: None,
+                dynamic_expansion: Some(search::DynamicExpansion {
+                    radius_cells: 1,
+                    clearance_exempt_cells: Some(&exempt_cells),
+                }),
+                crossing: None,
+                config: &config,
+            };
+            let outcome = search::AStarSearch.search(&env, &request);
+            let route = outcome
+                .route
+                .expect("dynamic expansion fixture should route");
+            assert_eq!(outcome.stats.expanded_states, 24, "dynexp expanded_states");
+            assert_eq!(
+                outcome.stats.generated_neighbors, 96,
+                "dynexp generated_neighbors"
+            );
+            assert_eq!(outcome.stats.heap_pushes, 46, "dynexp heap_pushes");
+            assert_eq!(outcome.stats.heap_pops, 25, "dynexp heap_pops");
+            assert_eq!(route.total_cost, 19.0, "dynexp total_cost");
+            assert_eq!(route.compressed_waypoints.len(), 6, "dynexp waypoint count");
+        }
+        {
+            let (map, library, source, target, config, crossing) = crossing_search_fixture();
+            let reservation_open_cells: FxHashSet<CellKey> = FxHashSet::default();
+            let env = search::SearchEnvironment {
+                obstacle_map: &map,
+                primitives: &library,
+            };
+            let request = search::SearchRequest {
+                source,
+                target,
+                port_open_cells: None,
+                dynamic_expansion: None,
+                crossing: Some(search::CrossingSearch {
+                    config: &crossing,
+                    reservation_open_cells: Some(&reservation_open_cells),
+                }),
+                config: &config,
+            };
+            let outcome = search::AStarSearch.search(&env, &request);
+            let route = outcome
+                .route
+                .expect("collision crossing fixture should route");
+            assert_eq!(
+                outcome.stats.expanded_states, 13,
+                "collision expanded_states"
+            );
+            assert_eq!(
+                outcome.stats.generated_neighbors, 52,
+                "collision generated_neighbors"
+            );
+            assert_eq!(outcome.stats.heap_pushes, 19, "collision heap_pushes");
+            assert_eq!(outcome.stats.heap_pops, 14, "collision heap_pops");
+            assert_eq!(route.total_cost, 15.0, "collision total_cost");
+            assert_eq!(
+                route.compressed_waypoints.len(),
+                2,
+                "collision waypoint count"
+            );
+        }
+        {
+            // No stats to pin here: the crossing-config wrapper has never
+            // reported real `RouteSearchStats` (see
+            // `net_search_matches_crossing_config_free_function` above).
+            let (map, library, source, target, config, crossing) = crossing_search_fixture();
+            let env = search::SearchEnvironment {
+                obstacle_map: &map,
+                primitives: &library,
+            };
+            let request = search::SearchRequest {
+                source,
+                target,
+                port_open_cells: None,
+                dynamic_expansion: None,
+                crossing: Some(search::CrossingSearch {
+                    config: &crossing,
+                    reservation_open_cells: None,
+                }),
+                config: &config,
+            };
+            let outcome = search::AStarSearch.search(&env, &request);
+            let route = outcome.route.expect("crossing config fixture should route");
+            assert_eq!(route.total_cost, 15.0, "crossing-config total_cost");
+            assert_eq!(
+                route.compressed_waypoints.len(),
+                2,
+                "crossing-config waypoint count"
+            );
+        }
+    }
+
     /// Same fixture as `net_search_matches_crossing_config_free_function`,
     /// but proves the equivalence `AStarSearch::search`'s dispatch doc
     /// comment relies on: with `reservation_open_cells: None`, the
