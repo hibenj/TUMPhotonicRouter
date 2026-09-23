@@ -5,14 +5,15 @@
 
 pub mod astar;
 pub mod auto_meander;
+pub mod bindings;
 pub mod config;
 pub mod crossings;
+pub mod engine;
 pub mod geometry_realization;
 pub mod meander;
 pub mod obstacle_map;
 pub mod plm;
 pub mod primitives;
-pub mod py_router;
 pub mod simple_routes;
 pub mod static_obstacle_builder;
 

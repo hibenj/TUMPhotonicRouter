@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+#[cfg(test)]
 use crate::config::KernelDiagnostics;
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, NetId, ObstacleMap};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
@@ -7166,7 +7167,6 @@ fn trace_crossing_candidate(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 thread_local! {
     /// Sequence number of the search currently running on this thread, so
     /// every crossing trace line can be attributed to one search.

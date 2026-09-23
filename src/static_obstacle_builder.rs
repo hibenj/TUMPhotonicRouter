@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rustc_hash::FxHashSet;
 
+use crate::bindings::register_py_router;
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, ClearanceMetric, GridRect, ObstacleMap};
-use crate::py_router::register_py_router;
 
 const EPS: f64 = 1.0e-9;
 
