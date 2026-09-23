@@ -14,6 +14,7 @@ pub mod meander;
 pub mod obstacle_map;
 pub mod plm;
 pub mod primitives;
+pub mod search;
 pub mod simple_routes;
 pub mod static_obstacle_builder;
 
@@ -65,6 +66,10 @@ pub use obstacle_map::{
 pub use primitives::{
     create_photonic_primitive_library, Primitive, PrimitiveGeometry, PrimitiveLibrary,
     PrimitiveLibraryConfig, DIRECTIONS,
+};
+pub use search::{
+    AStarSearch, CrossingSearch, DynamicExpansion, NetSearch, SearchEnvironment, SearchOutcome,
+    SearchRequest,
 };
 pub use static_obstacle_builder::{
     build_static_obstacle_map_from_geometry, compute_bbox, expand_bbox, grid_cell_center,

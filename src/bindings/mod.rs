@@ -5,10 +5,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustc_hash::FxHashSet;
 
-use crate::astar::{
-    export_route_svg_with_port_open_cells, AStarSingleNetSearch, RouteSearchStats, SingleNetSearch,
-    State,
-};
+use crate::astar::{export_route_svg_with_port_open_cells, State};
 use crate::auto_meander::{
     cells_in_grid_rect as cells_in_grid_rect_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
@@ -50,6 +47,7 @@ use crate::plm::{
     plan_registered_geometry_requirement_candidates, plan_registered_geometry_split_request,
     RegisteredMeanderGeometry,
 };
+use crate::search::{SearchEnvironment, SearchRequest};
 use crate::static_obstacle_builder::{PortInput, PyStaticCellSet, StaticGridSpec};
 
 use crate::engine::*;
@@ -773,17 +771,22 @@ impl PyPhotonicRouter {
         let cfg = self
             .astar_config(None, None, None)
             .map_err(PyValueError::new_err)?;
-        let mut discarded_stats = RouteSearchStats::default();
-        let result = AStarSingleNetSearch
-            .search(
-                &self.obstacle_map,
-                &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
-                Some(opened_ref),
-                &cfg,
-                &mut discarded_stats,
-            )
+        let env = SearchEnvironment {
+            obstacle_map: &self.obstacle_map,
+            primitives: &self.primitives,
+        };
+        let request = SearchRequest {
+            source: State::new(source.x, source.y, source.angle),
+            target: State::new(target.x, target.y, target.angle),
+            port_open_cells: Some(opened_ref),
+            dynamic_expansion: None,
+            crossing: None,
+            config: &cfg,
+        };
+        let result = self
+            .search_engine
+            .search(&env, &request)
+            .route
             .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
         Py::new(py, convert_result(py, &self.primitives, &result)?)
     }
@@ -3174,17 +3177,22 @@ impl PyPhotonicRouter {
             .astar_config(None, None, None)
             .map_err(PyValueError::new_err)?;
 
-        let mut discarded_stats = RouteSearchStats::default();
-        let result = AStarSingleNetSearch
-            .search(
-                &self.obstacle_map,
-                &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
-                opened_ref,
-                &cfg,
-                &mut discarded_stats,
-            )
+        let env = SearchEnvironment {
+            obstacle_map: &self.obstacle_map,
+            primitives: &self.primitives,
+        };
+        let request = SearchRequest {
+            source: State::new(source.x, source.y, source.angle),
+            target: State::new(target.x, target.y, target.angle),
+            port_open_cells: opened_ref,
+            dynamic_expansion: None,
+            crossing: None,
+            config: &cfg,
+        };
+        let result = self
+            .search_engine
+            .search(&env, &request)
+            .route
             .ok_or_else(|| PyRuntimeError::new_err("No route found"))?;
 
         let grid = GeometryGridSpec::new(

@@ -15,6 +15,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::config::KernelDiagnostics;
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, NetId, ObstacleMap};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
+use crate::search::NetSearch;
 use crate::simple_routes::{
     direction_between_octant as simple_direction_between, expand_candidate_to_grid_points,
     try_45_degree_straight_l_or_z_candidate_with_config,
@@ -1754,163 +1755,6 @@ impl OpenSet {
     }
 }
 
-/// Interface for substituting a different single-net search algorithm behind future call sites.
-/// `AStarSingleNetSearch` delegates to the current free functions, leaving production callers unchanged.
-pub trait SingleNetSearch {
-    fn search(
-        &self,
-        obstacle_map: &ObstacleMap,
-        primitives: &PrimitiveLibrary,
-        source: State,
-        target: State,
-        port_open_cells: Option<&FxHashSet<CellKey>>,
-        config: &AStarConfig,
-        out_stats: &mut RouteSearchStats,
-    ) -> Option<RouteResult>;
-
-    fn search_with_dynamic_expansion(
-        &self,
-        obstacle_map: &ObstacleMap,
-        primitives: &PrimitiveLibrary,
-        source: State,
-        target: State,
-        port_open_cells: Option<&FxHashSet<CellKey>>,
-        config: &AStarConfig,
-        dynamic_expansion_radius_cells: i32,
-        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-        out_stats: &mut RouteSearchStats,
-    ) -> Option<RouteResult>;
-
-    fn search_with_collision_crossing(
-        &self,
-        obstacle_map: &ObstacleMap,
-        primitives: &PrimitiveLibrary,
-        source: State,
-        target: State,
-        port_open_cells: Option<&FxHashSet<CellKey>>,
-        reservation_open_cells: Option<&FxHashSet<CellKey>>,
-        config: &AStarConfig,
-        dynamic_expansion_radius_cells: i32,
-        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-        crossing: &CrossingSearchConfig,
-    ) -> (Option<RouteResult>, RouteSearchStats);
-
-    fn search_with_crossing_config(
-        &self,
-        obstacle_map: &ObstacleMap,
-        primitives: &PrimitiveLibrary,
-        source: State,
-        target: State,
-        port_open_cells: Option<&FxHashSet<CellKey>>,
-        config: &AStarConfig,
-        dynamic_expansion_radius_cells: i32,
-        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-        crossing: &CrossingSearchConfig,
-    ) -> Option<RouteResult>;
-}
-
-pub struct AStarSingleNetSearch;
-
-impl SingleNetSearch for AStarSingleNetSearch {
-    fn search(
-        &self,
-        obstacle_map: &ObstacleMap,
-        primitives: &PrimitiveLibrary,
-        source: State,
-        target: State,
-        port_open_cells: Option<&FxHashSet<CellKey>>,
-        config: &AStarConfig,
-        out_stats: &mut RouteSearchStats,
-    ) -> Option<RouteResult> {
-        unified_kernel::route_single_net_with_unified_kernel_config_reporting_stats(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            port_open_cells,
-            config,
-            out_stats,
-        )
-    }
-
-    fn search_with_dynamic_expansion(
-        &self,
-        obstacle_map: &ObstacleMap,
-        primitives: &PrimitiveLibrary,
-        source: State,
-        target: State,
-        port_open_cells: Option<&FxHashSet<CellKey>>,
-        config: &AStarConfig,
-        dynamic_expansion_radius_cells: i32,
-        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-        out_stats: &mut RouteSearchStats,
-    ) -> Option<RouteResult> {
-        unified_kernel::route_single_net_with_unified_kernel_dynamic_expansion_config_reporting_stats(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            port_open_cells,
-            config,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-            out_stats,
-        )
-    }
-
-    fn search_with_collision_crossing(
-        &self,
-        obstacle_map: &ObstacleMap,
-        primitives: &PrimitiveLibrary,
-        source: State,
-        target: State,
-        port_open_cells: Option<&FxHashSet<CellKey>>,
-        reservation_open_cells: Option<&FxHashSet<CellKey>>,
-        config: &AStarConfig,
-        dynamic_expansion_radius_cells: i32,
-        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-        crossing: &CrossingSearchConfig,
-    ) -> (Option<RouteResult>, RouteSearchStats) {
-        unified_kernel::route_single_net_with_unified_kernel_collision_crossing_config_with_stats(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            port_open_cells,
-            reservation_open_cells,
-            config,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-            crossing,
-        )
-    }
-
-    fn search_with_crossing_config(
-        &self,
-        obstacle_map: &ObstacleMap,
-        primitives: &PrimitiveLibrary,
-        source: State,
-        target: State,
-        port_open_cells: Option<&FxHashSet<CellKey>>,
-        config: &AStarConfig,
-        dynamic_expansion_radius_cells: i32,
-        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-        crossing: &CrossingSearchConfig,
-    ) -> Option<RouteResult> {
-        unified_kernel::route_single_net_with_unified_kernel_crossing_config(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            port_open_cells,
-            config,
-            dynamic_expansion_radius_cells,
-            dynamic_clearance_exempt_cells,
-            crossing,
-        )
-    }
-}
-
 /// Route a single net with default A* settings.
 pub fn route_single_net(
     obstacle_map: &ObstacleMap,
@@ -2082,7 +1926,12 @@ pub fn try_simple_route_with_dynamic_expansion_config(
     )
 }
 
-/// Route a single net with explicit A* settings.
+/// Route a single net with explicit A* settings. A convenience over
+/// `AStarSearch::search` with a plain request (no dynamic expansion, no
+/// crossing) -- kept as its own free function because dozens of tests
+/// exercise general A* properties (heuristics, tie-breaking, congestion,
+/// indexed-heap parity, dense-grid construction) through this exact
+/// signature.
 pub fn route_single_net_with_config(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
@@ -2091,179 +1940,19 @@ pub fn route_single_net_with_config(
     port_open_cells: Option<&FxHashSet<CellKey>>,
     config: &AStarConfig,
 ) -> Option<RouteResult> {
-    let mut discarded_stats = RouteSearchStats::default();
-    route_single_net_with_config_reporting_stats(
+    let env = crate::search::SearchEnvironment {
         obstacle_map,
         primitives,
+    };
+    let request = crate::search::SearchRequest {
         source,
         target,
         port_open_cells,
+        dynamic_expansion: None,
+        crossing: None,
         config,
-        &mut discarded_stats,
-    )
-}
-
-/// Delegates to the unified kernel (`unified_kernel::route_single_net_with_unified_kernel_config_reporting_stats`).
-/// Kept as its own name because it is this crate's own stable, widely-used
-/// entry point -- dozens of tests exercise general A* properties (heuristics,
-/// tie-breaking, congestion, indexed-heap parity, dense-grid construction)
-/// through this exact function, and should keep doing so unchanged now that
-/// it runs on the unified kernel instead of the old plain kernel.
-pub fn route_single_net_with_config_reporting_stats(
-    obstacle_map: &ObstacleMap,
-    primitives: &PrimitiveLibrary,
-    source: State,
-    target: State,
-    port_open_cells: Option<&FxHashSet<CellKey>>,
-    config: &AStarConfig,
-    out_stats: &mut RouteSearchStats,
-) -> Option<RouteResult> {
-    unified_kernel::route_single_net_with_unified_kernel_config_reporting_stats(
-        obstacle_map,
-        primitives,
-        source,
-        target,
-        port_open_cells,
-        config,
-        out_stats,
-    )
-}
-
-pub fn route_single_net_with_dynamic_expansion_config(
-    obstacle_map: &ObstacleMap,
-    primitives: &PrimitiveLibrary,
-    source: State,
-    target: State,
-    port_open_cells: Option<&FxHashSet<CellKey>>,
-    config: &AStarConfig,
-    dynamic_expansion_radius_cells: i32,
-    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-) -> Option<RouteResult> {
-    let mut discarded_stats = RouteSearchStats::default();
-    route_single_net_with_dynamic_expansion_config_reporting_stats(
-        obstacle_map,
-        primitives,
-        source,
-        target,
-        port_open_cells,
-        config,
-        dynamic_expansion_radius_cells,
-        dynamic_clearance_exempt_cells,
-        &mut discarded_stats,
-    )
-}
-
-/// Delegates to the unified kernel (`unified_kernel::route_single_net_with_unified_kernel_dynamic_expansion_config_reporting_stats`).
-/// Kept as its own name for the same reason as `route_single_net_with_config_reporting_stats`
-/// above.
-#[allow(clippy::too_many_arguments)]
-pub fn route_single_net_with_dynamic_expansion_config_reporting_stats(
-    obstacle_map: &ObstacleMap,
-    primitives: &PrimitiveLibrary,
-    source: State,
-    target: State,
-    port_open_cells: Option<&FxHashSet<CellKey>>,
-    config: &AStarConfig,
-    dynamic_expansion_radius_cells: i32,
-    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-    out_stats: &mut RouteSearchStats,
-) -> Option<RouteResult> {
-    unified_kernel::route_single_net_with_unified_kernel_dynamic_expansion_config_reporting_stats(
-        obstacle_map,
-        primitives,
-        source,
-        target,
-        port_open_cells,
-        config,
-        dynamic_expansion_radius_cells,
-        dynamic_clearance_exempt_cells,
-        out_stats,
-    )
-}
-
-pub fn route_single_net_with_collision_crossing_config(
-    obstacle_map: &ObstacleMap,
-    primitives: &PrimitiveLibrary,
-    source: State,
-    target: State,
-    port_open_cells: Option<&FxHashSet<CellKey>>,
-    reservation_open_cells: Option<&FxHashSet<CellKey>>,
-    config: &AStarConfig,
-    dynamic_expansion_radius_cells: i32,
-    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-    crossing: &CrossingSearchConfig,
-) -> Option<RouteResult> {
-    route_single_net_with_collision_crossing_config_with_stats(
-        obstacle_map,
-        primitives,
-        source,
-        target,
-        port_open_cells,
-        reservation_open_cells,
-        config,
-        dynamic_expansion_radius_cells,
-        dynamic_clearance_exempt_cells,
-        crossing,
-    )
-    .0
-}
-
-/// Delegates to the unified kernel (`unified_kernel::route_single_net_with_unified_kernel_collision_crossing_config_with_stats`).
-/// Kept as its own name for the same reason as `route_single_net_with_config_reporting_stats`
-/// above.
-#[allow(clippy::too_many_arguments)]
-pub fn route_single_net_with_collision_crossing_config_with_stats(
-    obstacle_map: &ObstacleMap,
-    primitives: &PrimitiveLibrary,
-    source: State,
-    target: State,
-    port_open_cells: Option<&FxHashSet<CellKey>>,
-    reservation_open_cells: Option<&FxHashSet<CellKey>>,
-    config: &AStarConfig,
-    dynamic_expansion_radius_cells: i32,
-    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-    crossing: &CrossingSearchConfig,
-) -> (Option<RouteResult>, RouteSearchStats) {
-    unified_kernel::route_single_net_with_unified_kernel_collision_crossing_config_with_stats(
-        obstacle_map,
-        primitives,
-        source,
-        target,
-        port_open_cells,
-        reservation_open_cells,
-        config,
-        dynamic_expansion_radius_cells,
-        dynamic_clearance_exempt_cells,
-        crossing,
-    )
-}
-
-/// Delegates to the unified kernel (`unified_kernel::route_single_net_with_unified_kernel_crossing_config`).
-/// Kept as its own name for the same reason as `route_single_net_with_config_reporting_stats`
-/// above.
-#[allow(clippy::too_many_arguments)]
-pub fn route_single_net_with_crossing_config(
-    obstacle_map: &ObstacleMap,
-    primitives: &PrimitiveLibrary,
-    source: State,
-    target: State,
-    port_open_cells: Option<&FxHashSet<CellKey>>,
-    config: &AStarConfig,
-    dynamic_expansion_radius_cells: i32,
-    dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
-    crossing: &CrossingSearchConfig,
-) -> Option<RouteResult> {
-    unified_kernel::route_single_net_with_unified_kernel_crossing_config(
-        obstacle_map,
-        primitives,
-        source,
-        target,
-        port_open_cells,
-        config,
-        dynamic_expansion_radius_cells,
-        dynamic_clearance_exempt_cells,
-        crossing,
-    )
+    };
+    crate::search::AStarSearch.search(&env, &request).route
 }
 
 /// `true` once `stats.expanded_states` (accumulated across every window and
@@ -3721,12 +3410,12 @@ fn terminal_bump_guard_satisfied(
 /// independently-implemented kernels this repository used to carry (see
 /// `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
 /// for the full design history and migration record). Wired into every
-/// production call site via `AStarSingleNetSearch`'s `SingleNetSearch` trait
-/// impl above, plus the crate's own stable `route_single_net_with_config`-family
-/// entry points (also above), both of which now delegate to this module's
-/// entry points instead of the two old kernel functions -- which no longer
-/// exist; the full benchmark ladder validated byte-identical route costs
-/// against them before they were deleted.
+/// production call site via `crate::search::AStarSearch`'s `NetSearch` impl,
+/// plus the crate's own stable `route_single_net_with_config`-family entry
+/// points (also above), both of which now delegate to this module's entry
+/// points instead of the two old kernel functions -- which no longer exist;
+/// the full benchmark ladder validated byte-identical route costs against
+/// them before they were deleted.
 ///
 /// Every step behaves exactly like a plain, crossing-unaware A* search --
 /// dense-array `DenseSearchStorage`/`OpenSet` state, no extra bookkeeping --
@@ -3765,7 +3454,7 @@ fn terminal_bump_guard_satisfied(
 ///   `"insufficient_straight_margin"` crossing rejections until this was
 ///   added, because the earlier bounded-prototype fixtures never had a long
 ///   enough straight approach to expose the gap.
-mod unified_kernel {
+pub(crate) mod unified_kernel {
     use super::*;
 
     /// Every state the unified kernel visits carries one of these. The
@@ -6357,14 +6046,13 @@ mod unified_kernel {
         )
     }
 
-    /// Production entry points, one per `SingleNetSearch` trait method. Not
-    /// wired into `AStarSingleNetSearch` yet -- Milestone 4 does that, once
-    /// these are validated against the full benchmark ladder. Each mirrors
-    /// its plain/crossing-kernel counterpart above exactly (same validation
-    /// guards, same anchor-cell construction, same `run_windowed_single_net_search`
-    /// wiring), swapping only which kernel function the windowed closure
-    /// calls.
-    pub(super) fn route_single_net_with_unified_kernel_config_reporting_stats(
+    /// Production entry points, one per `crate::search::NetSearch::search`
+    /// dispatch branch (`crate::search::astar_engine::AStarSearch::search`).
+    /// Each mirrors its plain/crossing-kernel counterpart above exactly
+    /// (same validation guards, same anchor-cell construction, same
+    /// `run_windowed_single_net_search` wiring), swapping only which kernel
+    /// function the windowed closure calls.
+    pub(crate) fn route_single_net_with_unified_kernel_config_reporting_stats(
         obstacle_map: &ObstacleMap,
         primitives: &PrimitiveLibrary,
         source: State,
@@ -6485,7 +6173,7 @@ mod unified_kernel {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn route_single_net_with_unified_kernel_dynamic_expansion_config_reporting_stats(
+    pub(crate) fn route_single_net_with_unified_kernel_dynamic_expansion_config_reporting_stats(
         obstacle_map: &ObstacleMap,
         primitives: &PrimitiveLibrary,
         source: State,
@@ -6566,7 +6254,7 @@ mod unified_kernel {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn route_single_net_with_unified_kernel_collision_crossing_config_with_stats(
+    pub(crate) fn route_single_net_with_unified_kernel_collision_crossing_config_with_stats(
         obstacle_map: &ObstacleMap,
         primitives: &PrimitiveLibrary,
         source: State,
@@ -6676,7 +6364,7 @@ mod unified_kernel {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn route_single_net_with_unified_kernel_crossing_config(
+    pub(crate) fn route_single_net_with_unified_kernel_crossing_config(
         obstacle_map: &ObstacleMap,
         primitives: &PrimitiveLibrary,
         source: State,
@@ -9122,6 +8810,7 @@ mod tests {
         create_grid4_unit_grid_primitive_library, create_photonic_primitive_library, Primitive,
         PrimitiveGeometry, PrimitiveLibraryConfig,
     };
+    use crate::search;
     use std::collections::VecDeque;
 
     #[test]
@@ -9379,7 +9068,7 @@ mod tests {
     }
 
     #[test]
-    fn single_net_search_trait_matches_base_free_function() {
+    fn net_search_matches_base_free_function() {
         let map = ObstacleMap::new(12, 5);
         let library = primitive_library_no45_bend1();
         let source = State::new(1, 2, 0);
@@ -9388,19 +9077,20 @@ mod tests {
             require_target_angle: true,
             ..AStarConfig::default()
         };
-        let search = AStarSingleNetSearch;
-        let mut trait_stats = RouteSearchStats::default();
-        let mut direct_stats = RouteSearchStats::default();
-
-        let trait_result = search.search(
-            &map,
-            &library,
+        let env = search::SearchEnvironment {
+            obstacle_map: &map,
+            primitives: &library,
+        };
+        let request = search::SearchRequest {
             source,
             target,
-            None,
-            &config,
-            &mut trait_stats,
-        );
+            port_open_cells: None,
+            dynamic_expansion: None,
+            crossing: None,
+            config: &config,
+        };
+        let outcome = search::AStarSearch.search(&env, &request);
+        let mut direct_stats = RouteSearchStats::default();
         let direct_result =
             unified_kernel::route_single_net_with_unified_kernel_config_reporting_stats(
                 &map,
@@ -9412,8 +9102,8 @@ mod tests {
                 &mut direct_stats,
             );
 
-        assert_route_results_equivalent(&trait_result, &direct_result);
-        assert_route_search_stats_equivalent(&trait_stats, &direct_stats);
+        assert_route_results_equivalent(&outcome.route, &direct_result);
+        assert_route_search_stats_equivalent(&outcome.stats, &direct_stats);
     }
 
     fn stub_route_result(source: State, target: State) -> RouteResult {
@@ -9745,7 +9435,7 @@ mod tests {
     }
 
     #[test]
-    fn single_net_search_trait_matches_dynamic_expansion_free_function() {
+    fn net_search_matches_dynamic_expansion_free_function() {
         let mut map = ObstacleMap::new(12, 5);
         assert!(map.commit_route_with_clearance_overlap(1, &[(4, 1)], &[(4, 1)], &[]));
         let library = primitive_library_no45_bend1();
@@ -9756,21 +9446,23 @@ mod tests {
             ..AStarConfig::default()
         };
         let exempt_cells = pack_cells_for_test(&[(4, 1)]);
-        let search = AStarSingleNetSearch;
-        let mut trait_stats = RouteSearchStats::default();
-        let mut direct_stats = RouteSearchStats::default();
-
-        let trait_result = search.search_with_dynamic_expansion(
-            &map,
-            &library,
+        let env = search::SearchEnvironment {
+            obstacle_map: &map,
+            primitives: &library,
+        };
+        let request = search::SearchRequest {
             source,
             target,
-            None,
-            &config,
-            1,
-            Some(&exempt_cells),
-            &mut trait_stats,
-        );
+            port_open_cells: None,
+            dynamic_expansion: Some(search::DynamicExpansion {
+                radius_cells: 1,
+                clearance_exempt_cells: Some(&exempt_cells),
+            }),
+            crossing: None,
+            config: &config,
+        };
+        let outcome = search::AStarSearch.search(&env, &request);
+        let mut direct_stats = RouteSearchStats::default();
         let direct_result =
             unified_kernel::route_single_net_with_unified_kernel_dynamic_expansion_config_reporting_stats(
                 &map,
@@ -9784,40 +9476,105 @@ mod tests {
                 &mut direct_stats,
             );
 
-        assert_route_results_equivalent(&trait_result, &direct_result);
-        assert_route_search_stats_equivalent(&trait_stats, &direct_stats);
+        assert_route_results_equivalent(&outcome.route, &direct_result);
+        assert_route_search_stats_equivalent(&outcome.stats, &direct_stats);
     }
 
     #[test]
-    fn single_net_search_trait_matches_collision_crossing_free_function() {
+    fn net_search_matches_collision_crossing_free_function() {
         let (map, library, source, target, config, crossing) = crossing_search_fixture();
-        let search = AStarSingleNetSearch;
-
-        let (trait_result, trait_stats) = search.search_with_collision_crossing(
-            &map, &library, source, target, None, None, &config, 0, None, &crossing,
-        );
+        // A present-but-empty reservation set (as opposed to `None`) is what
+        // selects the collision-crossing dispatch branch -- see
+        // `AStarSearch::search`'s doc comment.
+        let reservation_open_cells: FxHashSet<CellKey> = FxHashSet::default();
+        let env = search::SearchEnvironment {
+            obstacle_map: &map,
+            primitives: &library,
+        };
+        let request = search::SearchRequest {
+            source,
+            target,
+            port_open_cells: None,
+            dynamic_expansion: None,
+            crossing: Some(search::CrossingSearch {
+                config: &crossing,
+                reservation_open_cells: Some(&reservation_open_cells),
+            }),
+            config: &config,
+        };
+        let outcome = search::AStarSearch.search(&env, &request);
         let (direct_result, direct_stats) =
             unified_kernel::route_single_net_with_unified_kernel_collision_crossing_config_with_stats(
-                &map, &library, source, target, None, None, &config, 0, None, &crossing,
+                &map,
+                &library,
+                source,
+                target,
+                None,
+                Some(&reservation_open_cells),
+                &config,
+                0,
+                None,
+                &crossing,
             );
 
-        assert_route_results_equivalent(&trait_result, &direct_result);
-        assert_route_search_stats_equivalent(&trait_stats, &direct_stats);
+        assert_route_results_equivalent(&outcome.route, &direct_result);
+        assert_route_search_stats_equivalent(&outcome.stats, &direct_stats);
     }
 
     #[test]
-    fn single_net_search_trait_matches_crossing_config_free_function() {
+    fn net_search_matches_crossing_config_free_function() {
         let (map, library, source, target, config, crossing) = crossing_search_fixture();
-        let search = AStarSingleNetSearch;
-
-        let trait_result = search.search_with_crossing_config(
-            &map, &library, source, target, None, &config, 0, None, &crossing,
-        );
+        let env = search::SearchEnvironment {
+            obstacle_map: &map,
+            primitives: &library,
+        };
+        let request = search::SearchRequest {
+            source,
+            target,
+            port_open_cells: None,
+            dynamic_expansion: None,
+            crossing: Some(search::CrossingSearch {
+                config: &crossing,
+                reservation_open_cells: None,
+            }),
+            config: &config,
+        };
+        let outcome = search::AStarSearch.search(&env, &request);
         let direct_result = unified_kernel::route_single_net_with_unified_kernel_crossing_config(
             &map, &library, source, target, None, &config, 0, None, &crossing,
         );
 
-        assert_route_results_equivalent(&trait_result, &direct_result);
+        assert_route_results_equivalent(&outcome.route, &direct_result);
+        // The crossing-config wrapper's own signature has never reported
+        // search stats (`-> Option<RouteResult>`, no out-param, no tuple),
+        // and `AStarSearch::search` cannot plumb real ones out of it without
+        // changing that wrapper's body (forbidden this slice) -- see
+        // `AStarSearch::search`'s doc comment. So there is nothing to assert
+        // stats-equivalent against here, same as this test before this
+        // slice.
+    }
+
+    /// Same fixture as `net_search_matches_crossing_config_free_function`,
+    /// but proves the equivalence `AStarSearch::search`'s dispatch doc
+    /// comment relies on: with `reservation_open_cells: None`, the
+    /// collision-crossing wrapper (which *does* report stats) produces the
+    /// exact same route as the crossing-config wrapper, because its
+    /// `.or(port_open_cells)` fallback makes its reservation anchor set
+    /// equal in content to the crossing-config wrapper's one anchor set.
+    #[test]
+    fn collision_crossing_wrapper_with_no_reservation_matches_crossing_config_wrapper() {
+        let (map, library, source, target, config, crossing) = crossing_search_fixture();
+
+        let (collision_result, _collision_stats) =
+            unified_kernel::route_single_net_with_unified_kernel_collision_crossing_config_with_stats(
+                &map, &library, source, target, None, None, &config, 0, None, &crossing,
+            );
+        let crossing_config_result =
+            unified_kernel::route_single_net_with_unified_kernel_crossing_config(
+                &map, &library, source, target, None, &config, 0, None, &crossing,
+            );
+
+        assert_route_results_equivalent(&collision_result, &crossing_config_result);
     }
 
     #[test]
@@ -9884,7 +9641,7 @@ mod tests {
         let materialized =
             route_single_net_with_config(&expanded, &library, source, target, None, &config)
                 .expect("materialized expanded map should route");
-        let overlay = route_single_net_with_dynamic_expansion_config(
+        let overlay = test_route_single_net_with_dynamic_expansion_config(
             &map,
             &library,
             source,
@@ -9976,7 +9733,7 @@ mod tests {
             &config,
         )
         .expect("materialized zero-radius map should route");
-        let overlay = route_single_net_with_dynamic_expansion_config(
+        let overlay = test_route_single_net_with_dynamic_expansion_config(
             &map,
             &library,
             source,
@@ -9994,6 +9751,212 @@ mod tests {
 
     fn pack_cells_for_test(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
         cells.iter().map(|&(x, y)| pack_xy(x, y)).collect()
+    }
+
+    // The six deleted free functions (the old single-net search trait's
+    // free-function twins, see Milestone 3 Slice 1 of
+    // `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`)
+    // had dozens of test call sites below that exercised them by their old
+    // signature. Rather than build a `SearchRequest`/`SearchEnvironment` by
+    // hand at each one, these test-only helpers build the request once,
+    // per shape, and keep the old signature so each call site's own
+    // behaviour-under-test stays exactly as it was.
+
+    fn test_route_single_net_with_config_reporting_stats(
+        obstacle_map: &ObstacleMap,
+        primitives: &PrimitiveLibrary,
+        source: State,
+        target: State,
+        port_open_cells: Option<&FxHashSet<CellKey>>,
+        config: &AStarConfig,
+        out_stats: &mut RouteSearchStats,
+    ) -> Option<RouteResult> {
+        let env = search::SearchEnvironment {
+            obstacle_map,
+            primitives,
+        };
+        let request = search::SearchRequest {
+            source,
+            target,
+            port_open_cells,
+            dynamic_expansion: None,
+            crossing: None,
+            config,
+        };
+        let outcome = search::AStarSearch.search(&env, &request);
+        *out_stats = outcome.stats;
+        outcome.route
+    }
+
+    fn test_route_single_net_with_dynamic_expansion_config(
+        obstacle_map: &ObstacleMap,
+        primitives: &PrimitiveLibrary,
+        source: State,
+        target: State,
+        port_open_cells: Option<&FxHashSet<CellKey>>,
+        config: &AStarConfig,
+        dynamic_expansion_radius_cells: i32,
+        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+    ) -> Option<RouteResult> {
+        let env = search::SearchEnvironment {
+            obstacle_map,
+            primitives,
+        };
+        let request = search::SearchRequest {
+            source,
+            target,
+            port_open_cells,
+            dynamic_expansion: Some(search::DynamicExpansion {
+                radius_cells: dynamic_expansion_radius_cells,
+                clearance_exempt_cells: dynamic_clearance_exempt_cells,
+            }),
+            crossing: None,
+            config,
+        };
+        search::AStarSearch.search(&env, &request).route
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn test_route_single_net_with_dynamic_expansion_config_reporting_stats(
+        obstacle_map: &ObstacleMap,
+        primitives: &PrimitiveLibrary,
+        source: State,
+        target: State,
+        port_open_cells: Option<&FxHashSet<CellKey>>,
+        config: &AStarConfig,
+        dynamic_expansion_radius_cells: i32,
+        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+        out_stats: &mut RouteSearchStats,
+    ) -> Option<RouteResult> {
+        let env = search::SearchEnvironment {
+            obstacle_map,
+            primitives,
+        };
+        let request = search::SearchRequest {
+            source,
+            target,
+            port_open_cells,
+            dynamic_expansion: Some(search::DynamicExpansion {
+                radius_cells: dynamic_expansion_radius_cells,
+                clearance_exempt_cells: dynamic_clearance_exempt_cells,
+            }),
+            crossing: None,
+            config,
+        };
+        let outcome = search::AStarSearch.search(&env, &request);
+        *out_stats = outcome.stats;
+        outcome.route
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn test_route_single_net_with_collision_crossing_config(
+        obstacle_map: &ObstacleMap,
+        primitives: &PrimitiveLibrary,
+        source: State,
+        target: State,
+        port_open_cells: Option<&FxHashSet<CellKey>>,
+        reservation_open_cells: Option<&FxHashSet<CellKey>>,
+        config: &AStarConfig,
+        dynamic_expansion_radius_cells: i32,
+        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+        crossing: &CrossingSearchConfig,
+    ) -> Option<RouteResult> {
+        test_route_single_net_with_collision_crossing_config_with_stats(
+            obstacle_map,
+            primitives,
+            source,
+            target,
+            port_open_cells,
+            reservation_open_cells,
+            config,
+            dynamic_expansion_radius_cells,
+            dynamic_clearance_exempt_cells,
+            crossing,
+        )
+        .0
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn test_route_single_net_with_collision_crossing_config_with_stats(
+        obstacle_map: &ObstacleMap,
+        primitives: &PrimitiveLibrary,
+        source: State,
+        target: State,
+        port_open_cells: Option<&FxHashSet<CellKey>>,
+        reservation_open_cells: Option<&FxHashSet<CellKey>>,
+        config: &AStarConfig,
+        dynamic_expansion_radius_cells: i32,
+        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+        crossing: &CrossingSearchConfig,
+    ) -> (Option<RouteResult>, RouteSearchStats) {
+        let env = search::SearchEnvironment {
+            obstacle_map,
+            primitives,
+        };
+        // The deleted free function this replaces always ran the collision
+        // wrapper, which reports real stats (a tuple, not an out-param)
+        // even on a failed search -- unlike the crossing-config wrapper
+        // `AStarSearch::search` reaches for `reservation_open_cells: None`
+        // (see its doc comment), whose signature cannot report stats at
+        // all. So this helper forces the collision-wrapper dispatch branch
+        // by never handing `AStarSearch::search` a `None` reservation set,
+        // precomputing the exact same `.or(port_open_cells)` fallback the
+        // collision wrapper itself applies -- same anchor cells, same
+        // route, and (unlike going through the crossing-config path) real
+        // stats even on failure, matching the deleted function exactly.
+        let empty_reservation_fallback: FxHashSet<CellKey> = FxHashSet::default();
+        let reservation_open_cells = reservation_open_cells
+            .or(port_open_cells)
+            .unwrap_or(&empty_reservation_fallback);
+        let request = search::SearchRequest {
+            source,
+            target,
+            port_open_cells,
+            dynamic_expansion: Some(search::DynamicExpansion {
+                radius_cells: dynamic_expansion_radius_cells,
+                clearance_exempt_cells: dynamic_clearance_exempt_cells,
+            }),
+            crossing: Some(search::CrossingSearch {
+                config: crossing,
+                reservation_open_cells: Some(reservation_open_cells),
+            }),
+            config,
+        };
+        let outcome = search::AStarSearch.search(&env, &request);
+        (outcome.route, outcome.stats)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn test_route_single_net_with_crossing_config(
+        obstacle_map: &ObstacleMap,
+        primitives: &PrimitiveLibrary,
+        source: State,
+        target: State,
+        port_open_cells: Option<&FxHashSet<CellKey>>,
+        config: &AStarConfig,
+        dynamic_expansion_radius_cells: i32,
+        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+        crossing: &CrossingSearchConfig,
+    ) -> Option<RouteResult> {
+        let env = search::SearchEnvironment {
+            obstacle_map,
+            primitives,
+        };
+        let request = search::SearchRequest {
+            source,
+            target,
+            port_open_cells,
+            dynamic_expansion: Some(search::DynamicExpansion {
+                radius_cells: dynamic_expansion_radius_cells,
+                clearance_exempt_cells: dynamic_clearance_exempt_cells,
+            }),
+            crossing: Some(search::CrossingSearch {
+                config: crossing,
+                reservation_open_cells: None,
+            }),
+            config,
+        };
+        search::AStarSearch.search(&env, &request).route
     }
 
     fn plain_jps4_primitive_library() -> PrimitiveLibrary {
@@ -10326,7 +10289,7 @@ mod tests {
         }
         let mut stats = RouteSearchStats::default();
 
-        let result = route_single_net_with_config_reporting_stats(
+        let result = test_route_single_net_with_config_reporting_stats(
             &map,
             &primitive_library_no45_bend1(),
             State::new(1, 2, 0),
@@ -10355,7 +10318,7 @@ mod tests {
         }
         let mut stats = RouteSearchStats::default();
 
-        let result = route_single_net_with_dynamic_expansion_config_reporting_stats(
+        let result = test_route_single_net_with_dynamic_expansion_config_reporting_stats(
             &map,
             &primitive_library_no45_bend1(),
             State::new(1, 2, 0),
@@ -10394,7 +10357,7 @@ mod tests {
             route_single_net_with_config(&map, &library, source, target, None, &config)
                 .expect("public wrapper should route");
         let mut reporting_stats = RouteSearchStats::default();
-        let reporting_route = route_single_net_with_config_reporting_stats(
+        let reporting_route = test_route_single_net_with_config_reporting_stats(
             &map,
             &library,
             source,
@@ -10411,22 +10374,23 @@ mod tests {
         assert!((reporting_route.total_cost - public_route.total_cost).abs() < 1.0e-9);
 
         let mut dynamic_stats = RouteSearchStats::default();
-        let public_dynamic = route_single_net_with_dynamic_expansion_config(
+        let public_dynamic = test_route_single_net_with_dynamic_expansion_config(
             &map, &library, source, target, None, &config, 0, None,
         )
         .expect("dynamic public wrapper should route");
-        let reporting_dynamic = route_single_net_with_dynamic_expansion_config_reporting_stats(
-            &map,
-            &library,
-            source,
-            target,
-            None,
-            &config,
-            0,
-            None,
-            &mut dynamic_stats,
-        )
-        .expect("dynamic reporting variant should route");
+        let reporting_dynamic =
+            test_route_single_net_with_dynamic_expansion_config_reporting_stats(
+                &map,
+                &library,
+                source,
+                target,
+                None,
+                &config,
+                0,
+                None,
+                &mut dynamic_stats,
+            )
+            .expect("dynamic reporting variant should route");
 
         assert_eq!(reporting_dynamic.cells, public_dynamic.cells);
         assert_eq!(reporting_dynamic.states, public_dynamic.states);
@@ -10559,7 +10523,7 @@ mod tests {
             require_all_partners: false,
             terminal_bump_guard: None,
         };
-        let result = route_single_net_with_crossing_config(
+        let result = test_route_single_net_with_crossing_config(
             &map,
             &library,
             State::new(1, 1, 0),
@@ -11649,7 +11613,7 @@ mod tests {
         let committed_set: FxHashSet<(i32, i32)> = committed.iter().copied().collect();
         let library = primitive_library();
         let mut stats = RouteSearchStats::default();
-        let route = route_single_net_with_config_reporting_stats(
+        let route = test_route_single_net_with_config_reporting_stats(
             &map,
             &library,
             State::new(2, 3, 1),
@@ -11718,7 +11682,7 @@ mod tests {
             require_all_partners: false,
             terminal_bump_guard: None,
         };
-        let (route, _stats) = route_single_net_with_collision_crossing_config_with_stats(
+        let (route, _stats) = test_route_single_net_with_collision_crossing_config_with_stats(
             &map,
             &library,
             State::new(2, 3, 1),
@@ -12119,7 +12083,7 @@ mod tests {
             require_all_partners: false,
             terminal_bump_guard: None,
         };
-        let route = route_single_net_with_collision_crossing_config(
+        let route = test_route_single_net_with_collision_crossing_config(
             &map,
             &library,
             State::new(2, 6, 0),
@@ -12174,7 +12138,7 @@ mod tests {
         library: &PrimitiveLibrary,
         crossing: &CrossingSearchConfig,
     ) -> RouteResult {
-        route_single_net_with_collision_crossing_config(
+        test_route_single_net_with_collision_crossing_config(
             map,
             library,
             State::new(2, 6, 0),
@@ -13021,7 +12985,7 @@ mod tests {
         // at (22.5, 22.5) (X between cells) and partner B at (28, 17) (shared
         // cell). Both partners separate source from target, so every route
         // must cross both; the straight line is the cheapest.
-        let (route, stats) = route_single_net_with_collision_crossing_config_with_stats(
+        let (route, stats) = test_route_single_net_with_collision_crossing_config_with_stats(
             &map,
             &library,
             State::new(5, 40, 7),
@@ -13103,7 +13067,7 @@ mod tests {
             require_all_partners: false,
             terminal_bump_guard: None,
         };
-        let (route, stats) = route_single_net_with_collision_crossing_config_with_stats(
+        let (route, stats) = test_route_single_net_with_collision_crossing_config_with_stats(
             &map,
             &library,
             State::new(5, 40, 7),
@@ -13185,7 +13149,7 @@ mod tests {
             require_all_partners: false,
             terminal_bump_guard: None,
         };
-        let (route, stats) = route_single_net_with_collision_crossing_config_with_stats(
+        let (route, stats) = test_route_single_net_with_collision_crossing_config_with_stats(
             &map,
             &library,
             State::new(30, 70, 6),
@@ -13257,7 +13221,7 @@ mod tests {
             require_all_partners: false,
             terminal_bump_guard: None,
         };
-        route_single_net_with_collision_crossing_config_with_stats(
+        test_route_single_net_with_collision_crossing_config_with_stats(
             &map,
             &library,
             State::new(30, 70, 6),
@@ -13343,7 +13307,7 @@ mod tests {
             terminal_bump_guard: None,
         };
         // "/" route on x - y = -10 from the lower left to the upper right
-        route_single_net_with_collision_crossing_config_with_stats(
+        test_route_single_net_with_collision_crossing_config_with_stats(
             &map,
             &library,
             State::new(10, 20, 1),

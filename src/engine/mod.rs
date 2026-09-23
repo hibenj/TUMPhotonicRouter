@@ -13,6 +13,7 @@ use crate::primitives::{
     create_grid4_unit_grid_primitive_library, create_jps4_unit_grid_primitive_library,
     create_photonic_primitive_library, PrimitiveLibrary, PrimitiveLibraryConfig,
 };
+use crate::search::{AStarSearch, NetSearch};
 
 use crate::bindings::*;
 
@@ -180,6 +181,14 @@ pub struct PyPhotonicRouter {
     // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
     // Milestone 5.
     pub(crate) last_search_expanded_states: u64,
+    // The single-net search algorithm every production call site now
+    // reaches through `NetSearch::search` instead of the deleted
+    // four-method single-net-search trait. Always `AStarSearch` today --
+    // set once at construction, never reassigned -- Milestone 3 Slice 4
+    // adds a second implementation selectable via `RouterConfig`. See
+    // Milestone 3, Slice 1 of
+    // `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
+    pub(crate) search_engine: Box<dyn NetSearch + Send + Sync>,
 }
 
 #[derive(Clone, Debug)]
@@ -264,6 +273,7 @@ impl PyPhotonicRouter {
             long_straight_exempt_net_ids: FxHashSet::default(),
             long_straight_weight_override: None,
             last_search_expanded_states: 0,
+            search_engine: Box::new(AStarSearch),
         }
     }
 }

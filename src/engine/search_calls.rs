@@ -6,14 +6,15 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::astar::{
     try_simple_route_with_config, try_simple_route_with_dynamic_expansion_config, AStarConfig,
-    AStarSingleNetSearch, CrossingSearchConfig, CrossingSearchPartner, HeapTieBreaker,
-    HeuristicMode, PrimitiveOrdering, RouteResult, RouteSearchStats, SingleNetSearch, State,
+    CrossingSearchConfig, CrossingSearchPartner, HeapTieBreaker, HeuristicMode, PrimitiveOrdering,
+    RouteResult, RouteSearchStats, State,
 };
 use crate::config::RouterConfig;
 use crate::crossings::{CrossingConfig, CrossingGuidance};
 use crate::geometry_realization::GeometryGridSpec;
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey};
 use crate::primitives::PrimitiveLibrary;
+use crate::search::{CrossingSearch, DynamicExpansion, SearchEnvironment, SearchRequest};
 
 #[cfg(test)]
 use crate::config::SearchOverrides;
@@ -520,18 +521,26 @@ impl PyPhotonicRouter {
                 self.trace_committed_partner_centerline_compare(net_id, partner.net_id);
             }
         }
-        let (route_result, failed_stats) = AStarSingleNetSearch.search_with_collision_crossing(
-            &self.obstacle_map,
+        let env = SearchEnvironment {
+            obstacle_map: &self.obstacle_map,
             primitives,
+        };
+        let request = SearchRequest {
             source,
             target,
-            Some(opened_ref),
-            opened_cell_keys,
-            &crossing_search_cfg,
-            block_radius_cells.max(0),
-            dynamic_clearance_exempt_keys,
-            &crossing_search,
-        );
+            port_open_cells: Some(opened_ref),
+            dynamic_expansion: Some(DynamicExpansion {
+                radius_cells: block_radius_cells.max(0),
+                clearance_exempt_cells: dynamic_clearance_exempt_keys,
+            }),
+            crossing: Some(CrossingSearch {
+                config: &crossing_search,
+                reservation_open_cells: opened_cell_keys,
+            }),
+            config: &crossing_search_cfg,
+        };
+        let outcome = self.search_engine.search(&env, &request);
+        let (route_result, failed_stats) = (outcome.route, outcome.stats);
         let Some(result) = route_result else {
             self.remember_pending_straight_victim_hint(net_id, &failed_stats);
             return Ok(None);
@@ -828,17 +837,25 @@ impl PyPhotonicRouter {
         let mut guided_keepout = FxHashSet::default();
         const MAX_GUIDED_CROSSING_VALIDATION_RETRIES: usize = 4;
         for retry_idx in 0..=MAX_GUIDED_CROSSING_VALIDATION_RETRIES {
-            let Some(result) = AStarSingleNetSearch.search_with_crossing_config(
-                &search_map,
-                &self.primitives,
+            let env = SearchEnvironment {
+                obstacle_map: &search_map,
+                primitives: &self.primitives,
+            };
+            let request = SearchRequest {
                 source,
                 target,
-                Some(opened_ref),
-                &crossing_search_cfg,
-                block_radius_cells.max(0),
-                dynamic_clearance_exempt_keys,
-                &crossing_search,
-            ) else {
+                port_open_cells: Some(opened_ref),
+                dynamic_expansion: Some(DynamicExpansion {
+                    radius_cells: block_radius_cells.max(0),
+                    clearance_exempt_cells: dynamic_clearance_exempt_keys,
+                }),
+                crossing: Some(CrossingSearch {
+                    config: &crossing_search,
+                    reservation_open_cells: None,
+                }),
+                config: &crossing_search_cfg,
+            };
+            let Some(result) = self.search_engine.search(&env, &request).route else {
                 return Ok(None);
             };
             let crossing_events = self.realized_crossing_events_for_route(
@@ -1051,17 +1068,25 @@ impl PyPhotonicRouter {
                     crossing_candidate_keys.len()
                 );
             }
-            if let Some(result) = AStarSingleNetSearch.search_with_crossing_config(
-                &search_map,
-                &self.primitives,
+            let env = SearchEnvironment {
+                obstacle_map: &search_map,
+                primitives: &self.primitives,
+            };
+            let request = SearchRequest {
                 source,
                 target,
-                Some(opened_ref),
-                &crossing_search_cfg,
-                block_radius_cells.max(0),
-                dynamic_clearance_exempt_keys,
-                &crossing_search,
-            ) {
+                port_open_cells: Some(opened_ref),
+                dynamic_expansion: Some(DynamicExpansion {
+                    radius_cells: block_radius_cells.max(0),
+                    clearance_exempt_cells: dynamic_clearance_exempt_keys,
+                }),
+                crossing: Some(CrossingSearch {
+                    config: &crossing_search,
+                    reservation_open_cells: None,
+                }),
+                config: &crossing_search_cfg,
+            };
+            if let Some(result) = self.search_engine.search(&env, &request).route {
                 if trace_crossing {
                     eprintln!(
                         "crossing-search candidate-result net={} expanded={} generated={} heap={} events={}",
@@ -1090,17 +1115,25 @@ impl PyPhotonicRouter {
         if trace_crossing {
             eprintln!("crossing-search broad-phase net={}", net_id);
         }
-        let result = AStarSingleNetSearch.search_with_crossing_config(
-            &search_map,
-            &self.primitives,
+        let env = SearchEnvironment {
+            obstacle_map: &search_map,
+            primitives: &self.primitives,
+        };
+        let request = SearchRequest {
             source,
             target,
-            Some(opened_ref),
-            &crossing_search_cfg,
-            block_radius_cells.max(0),
-            dynamic_clearance_exempt_keys,
-            &crossing_search,
-        )?;
+            port_open_cells: Some(opened_ref),
+            dynamic_expansion: Some(DynamicExpansion {
+                radius_cells: block_radius_cells.max(0),
+                clearance_exempt_cells: dynamic_clearance_exempt_keys,
+            }),
+            crossing: Some(CrossingSearch {
+                config: &crossing_search,
+                reservation_open_cells: None,
+            }),
+            config: &crossing_search_cfg,
+        };
+        let result = self.search_engine.search(&env, &request).route?;
         if trace_crossing {
             eprintln!(
                 "crossing-search broad-result net={} expanded={} generated={} heap={} events={}",
@@ -1548,19 +1581,23 @@ impl PyPhotonicRouter {
             && dynamic_clearance_exempt_keys.is_some()
             && !search_cfg.enable_jps4;
         let mut opened_dynamic_obstacle_map;
-        let mut fallback_search_stats = RouteSearchStats::default();
-        let search_option = if block_radius_cells > 0 || zero_radius_overlay {
-            AStarSingleNetSearch.search_with_dynamic_expansion(
-                &self.obstacle_map,
-                &self.primitives,
-                source_state,
-                target_state,
-                Some(opened_search_ref),
-                &search_cfg,
-                block_radius_cells.max(0),
-                dynamic_clearance_exempt_keys,
-                &mut fallback_search_stats,
-            )
+        let outcome = if block_radius_cells > 0 || zero_radius_overlay {
+            let env = SearchEnvironment {
+                obstacle_map: &self.obstacle_map,
+                primitives: &self.primitives,
+            };
+            let request = SearchRequest {
+                source: source_state,
+                target: target_state,
+                port_open_cells: Some(opened_search_ref),
+                dynamic_expansion: Some(DynamicExpansion {
+                    radius_cells: block_radius_cells.max(0),
+                    clearance_exempt_cells: dynamic_clearance_exempt_keys,
+                }),
+                crossing: None,
+                config: &search_cfg,
+            };
+            self.search_engine.search(&env, &request)
         } else {
             let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
                 opened_dynamic_obstacle_map = self.obstacle_map.clone();
@@ -1570,16 +1607,22 @@ impl PyPhotonicRouter {
             } else {
                 &self.obstacle_map
             };
-            AStarSingleNetSearch.search(
-                search_obstacle_map,
-                &self.primitives,
-                source_state,
-                target_state,
-                Some(opened_search_ref),
-                &search_cfg,
-                &mut fallback_search_stats,
-            )
+            let env = SearchEnvironment {
+                obstacle_map: search_obstacle_map,
+                primitives: &self.primitives,
+            };
+            let request = SearchRequest {
+                source: source_state,
+                target: target_state,
+                port_open_cells: Some(opened_search_ref),
+                dynamic_expansion: None,
+                crossing: None,
+                config: &search_cfg,
+            };
+            self.search_engine.search(&env, &request)
         };
+        let fallback_search_stats = outcome.stats;
+        let search_option = outcome.route;
         // Recorded before `.ok_or_else` below turns a failed search into an
         // `Err` that discards `fallback_search_stats` entirely -- see
         // `last_search_expanded_states`'s doc comment.
@@ -1922,19 +1965,23 @@ impl PyPhotonicRouter {
         let zero_radius_overlay =
             block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some() && !cfg.enable_jps4;
         let mut opened_dynamic_obstacle_map;
-        let mut discarded_stats = RouteSearchStats::default();
         let mut result = if block_radius_cells > 0 || zero_radius_overlay {
-            AStarSingleNetSearch.search_with_dynamic_expansion(
-                &self.obstacle_map,
-                &self.primitives,
-                source_state,
-                target_state,
-                Some(opened_search_ref),
-                &cfg,
-                block_radius_cells.max(0),
-                dynamic_clearance_exempt_keys,
-                &mut discarded_stats,
-            )
+            let env = SearchEnvironment {
+                obstacle_map: &self.obstacle_map,
+                primitives: &self.primitives,
+            };
+            let request = SearchRequest {
+                source: source_state,
+                target: target_state,
+                port_open_cells: Some(opened_search_ref),
+                dynamic_expansion: Some(DynamicExpansion {
+                    radius_cells: block_radius_cells.max(0),
+                    clearance_exempt_cells: dynamic_clearance_exempt_keys,
+                }),
+                crossing: None,
+                config: &cfg,
+            };
+            self.search_engine.search(&env, &request).route
         } else {
             let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
                 opened_dynamic_obstacle_map = self.obstacle_map.clone();
@@ -1944,15 +1991,19 @@ impl PyPhotonicRouter {
             } else {
                 &self.obstacle_map
             };
-            AStarSingleNetSearch.search(
-                search_obstacle_map,
-                &self.primitives,
-                source_state,
-                target_state,
-                Some(opened_search_ref),
-                &cfg,
-                &mut discarded_stats,
-            )
+            let env = SearchEnvironment {
+                obstacle_map: search_obstacle_map,
+                primitives: &self.primitives,
+            };
+            let request = SearchRequest {
+                source: source_state,
+                target: target_state,
+                port_open_cells: Some(opened_search_ref),
+                dynamic_expansion: None,
+                crossing: None,
+                config: &cfg,
+            };
+            self.search_engine.search(&env, &request).route
         }
         .ok_or_else(|| "No route found".to_string())?;
 
@@ -2275,17 +2326,21 @@ impl PyPhotonicRouter {
         cfg.require_terminal_straights = true;
         let mut static_only_obstacle_map = self.obstacle_map.clone();
         static_only_obstacle_map.clear_dynamic();
-        let mut discarded_stats = RouteSearchStats::default();
-        AStarSingleNetSearch
-            .search(
-                &static_only_obstacle_map,
-                &self.primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
-                Some(opened_ref),
-                &cfg,
-                &mut discarded_stats,
-            )
+        let env = SearchEnvironment {
+            obstacle_map: &static_only_obstacle_map,
+            primitives: &self.primitives,
+        };
+        let request = SearchRequest {
+            source: State::new(source.x, source.y, source.angle),
+            target: State::new(target.x, target.y, target.angle),
+            port_open_cells: Some(opened_ref),
+            dynamic_expansion: None,
+            crossing: None,
+            config: &cfg,
+        };
+        self.search_engine
+            .search(&env, &request)
+            .route
             .ok_or_else(|| "No route found".to_string())
     }
 

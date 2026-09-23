@@ -4,9 +4,10 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::astar::{AStarSingleNetSearch, RouteResult, RouteSearchStats, SingleNetSearch, State};
+use crate::astar::{RouteResult, State};
 use crate::obstacle_map::{pack_xy, CellKey};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary};
+use crate::search::{SearchEnvironment, SearchRequest};
 
 #[cfg(test)]
 use crate::crossings::CrossingConfig;
@@ -2676,17 +2677,22 @@ impl PyPhotonicRouter {
         cfg.enable_simple_routes = false;
         cfg.enable_jps4 = false;
         let orthogonal_primitives = self.orthogonal_repair_primitives();
-        let mut discarded_stats = RouteSearchStats::default();
-        let route = AStarSingleNetSearch
-            .search(
-                &self.obstacle_map,
-                &orthogonal_primitives,
-                State::new(source.x, source.y, source.angle),
-                State::new(target.x, target.y, target.angle),
-                Some(opened_keys_for_route),
-                &cfg,
-                &mut discarded_stats,
-            )
+        let env = SearchEnvironment {
+            obstacle_map: &self.obstacle_map,
+            primitives: &orthogonal_primitives,
+        };
+        let request = SearchRequest {
+            source: State::new(source.x, source.y, source.angle),
+            target: State::new(target.x, target.y, target.angle),
+            port_open_cells: Some(opened_keys_for_route),
+            dynamic_expansion: None,
+            crossing: None,
+            config: &cfg,
+        };
+        let route = self
+            .search_engine
+            .search(&env, &request)
+            .route
             .ok_or_else(|| "No route found".to_string())?;
         if self.commit_native_route_with_clearance(
             net_id,
