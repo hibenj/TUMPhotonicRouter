@@ -257,31 +257,79 @@ Acceptance: `src/py_router.rs` does not exist; the largest file under `src/engin
 
 ## Milestone 3: one search interface, one A* kernel, a second engine
 
-Goal: the single-net search is one interface with one method, the A* implementation of it is a readable module tree, and a second implementation exists so that "the search engine is swappable" is a demonstrated fact, not a claim.
+Goal: the single-net search is one interface with one method, the A* implementation of it is a readable module tree whose kernel loop reads as a sequence of named steps, and a second implementation exists so that "the search engine is swappable" is a demonstrated fact.
 
-Work, interface. Define in `src/search/mod.rs`:
+What exists today (index of `src/astar.rs`, 15,046 lines, evidence agent 2026-09-23): eight public `route_single_net*` functions and the four-method `SingleNetSearch` trait all forward to four wrappers inside `mod unified_kernel`, and those four call ONE generic kernel loop, `route_single_net_with_bounds_unified<H: CrossingLegalityHook>` (lines 4547-6241, 1,695 lines), parameterised by a crossing-legality hook: `NoCrossingHook` for the plain and dynamic-expansion variants, a `LiveCrossingHook` for the two crossing variants. The variants differ in three more ways that the new interface must preserve exactly: only the plain variant tries the JPS4 shortcut and the simple-route shortcut before A*; only the collision variant takes `reservation_open_cells` (falling back to `port_open_cells` when absent); and the stats come back three different ways (out-parameter, by-value tuple, or not at all). The loop body inlines the g-cost arithmetic (history, congestion, long-straight and proactive-congestion penalties, about lines 5242-6025) and the neighbour generation, legality and terminal-straight rules; `DenseRoutingGrid`'s 20-method impl mixes storage, legality queries and cost queries. `AStarConfig` has 30 fields plus the diagnostics; `CrossingSearchConfig` is read only by the crossing rules. The engine reaches the kernel through twelve call sites on the unit struct `AStarSingleNetSearch` in `src/py_router.rs` (six `search`, two `search_with_dynamic_expansion`, one `search_with_collision_crossing`, three `search_with_crossing_config`), which vary in the obstacle map (live, a cloned search map, a static-only map), the primitive library (normal or orthogonal), and the optional parts.
 
-    pub struct SearchRequest<'a> {
-        pub source: State,
-        pub target: State,
-        pub port_open_cells: Option<&'a FxHashSet<CellKey>>,
-        pub reservation_open_cells: Option<&'a FxHashSet<CellKey>>,
-        pub dynamic_expansion: Option<DynamicExpansion<'a>>,   // radius + clearance-exempt cells
-        pub crossing: Option<&'a CrossingSearchConfig>,
-        pub config: &'a SearchConfig,
-    }
+Design decisions (lead, 2026-09-23): (1) A `#[pyclass]` cannot be generic, and Milestone 2 keeps `PyPhotonicRouter` as the class, so the engine holds the search as `search_engine: Box<dyn NetSearch + Send + Sync>`, set at construction (A* by default) from a new `RouterConfig.search.engine` string field (`"astar"`, `"grid-dijkstra"`); one virtual call per search is nothing next to a search. The earlier idea of a generic `Router<S>` is dropped. (2) The two simplest free functions, `route_single_net` and `route_single_net_with_config`, stay as thin conveniences over the new interface because 137 kernel tests and the `lib.rs` re-exports use them; the other six free functions and the old trait are deleted. (3) Extracting cost and expansion functions from the loop is a behaviour-preserving rewrite, not a move, so it is its own slice with its own gate.
+
+The interface, in `src/search/mod.rs`:
+
     pub struct SearchEnvironment<'a> { pub obstacle_map: &'a ObstacleMap, pub primitives: &'a PrimitiveLibrary }
+    pub struct DynamicExpansion<'a> { pub radius_cells: i32, pub clearance_exempt_cells: Option<&'a FxHashSet<CellKey>> }
+    pub struct CrossingSearch<'a> { pub config: &'a CrossingSearchConfig, pub reservation_open_cells: Option<&'a FxHashSet<CellKey>> }
+    pub struct SearchRequest<'a> {
+        pub source: State, pub target: State,
+        pub port_open_cells: Option<&'a FxHashSet<CellKey>>,
+        pub dynamic_expansion: Option<DynamicExpansion<'a>>,
+        pub crossing: Option<CrossingSearch<'a>>,
+        pub config: &'a AStarConfig,
+    }
     pub struct SearchOutcome { pub route: Option<RouteResult>, pub stats: RouteSearchStats }
     pub trait NetSearch { fn search(&self, env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome; }
 
-The four methods of the old `SingleNetSearch` and the ten public `route_single_net_*` functions become this one method; the differences between them (dynamic expansion or not, collision crossing or not, stats returned or not) are fields of the request, all `Option`s, so that the plain case is the request with everything `None`. The old names are deleted, not kept as wrappers, once every call site in the engine uses the new one.
+`AStarSearch::search` reproduces today's dispatch exactly: no dynamic expansion and no crossing -> the plain path (JPS4 and simple-route shortcuts, then the windowed kernel with `NoCrossingHook`); dynamic expansion without crossing -> the dynamic-expansion path; crossing with `reservation_open_cells` -> the collision path; crossing without -> the crossing-config path (which today passes the anchor set for both slots; the implementation must show, by reading both wrappers, that "reservation_open_cells absent" is equivalent to that, and keep a separate internal flag if it is not). Stats are always returned; callers that discarded them keep discarding.
 
-Work, A* module. Split `src/search/astar.rs` (14,997 lines) into `src/search/astar/`: `state.rs` (State, CellKey, angle bookkeeping), `config.rs` (the `SearchConfig` from Milestone 1 lives in `crate::config`; this file holds derived search-time constants only), `heuristic.rs` (the `SearchHeuristic` and its modes, from lines 8,805-8,829 today), `cost.rs` (the g-cost terms: length, bend, crossing price, congestion and long-straight penalties, history), `expansion.rs` (primitive moves, legality checks, terminal straight rules), `crossing_rules.rs` (the collision-triggered crossing legality that Milestone 5 of the 2026-08-25 kernel plan unified), `kernel.rs` (the open list, the closed set, the loop; target: under 600 lines, one function `run`), `dense.rs` (dense-state storage and its cap), `svg.rs` (the debug export), and `mod.rs` with `pub struct AStarSearch` implementing `NetSearch`. The 140 tests move with their code.
+Slice 1, the interface (gate after): `src/search/mod.rs` with the types above and `AStarSearch` implemented by dispatching to the four existing `unified_kernel` wrappers unchanged; `PyPhotonicRouter` gains the boxed engine field; the twelve call sites build requests; the old trait, `AStarSingleNetSearch` and six free functions are deleted; the existing `single_net_search_trait_matches_*` parity tests become parity tests between the new method and the two remaining free functions plus direct wrapper calls; `lib.rs` re-exports the new types.
 
-Work, second engine. `src/search/grid_dijkstra.rs`: a plain Dijkstra over the same `State` space with the same primitive moves and legality checks from `expansion.rs`, no heuristic, no crossing support (it returns `route: None` with a stats flag when the request asks for crossing search). It exists to prove the seam and to serve as a slow oracle in tests: on small fixtures the A* route cost must equal the Dijkstra route cost. The engine (`engine::Router`) becomes generic over `S: NetSearch` with `AStarSearch` as the default type; the binding constructs `Router<AStarSearch>`. A test constructs `Router<GridDijkstraSearch>` and routes a two-net fixture through the whole negotiated loop.
+Slice 2, the module split (pure code motion, gate after): `src/astar.rs` becomes
 
-Acceptance: `grep -rn "route_single_net" src/` reports nothing outside `src/search/`; the Rust test count is the pinned baseline plus the new tests; `gate_short.sh` identical; the full 27-cell reproduction identical (this milestone touches the kernel, so it is run, about 4.5 hours, sequential, on an otherwise idle machine).
+    src/search/mod.rs               the interface (Slice 1) and `pub use` of the engines
+    src/search/state.rs             State, RouteResult, RouteSearchStats, grid_point_from_state, find_primitive
+    src/search/astar/mod.rs         AStarSearch, the two convenience functions, with_route_search_total_time,
+                                    the four `route_single_net_with_unified_kernel_*` wrappers
+    src/search/astar/config.rs      AStarConfig + Default, PrimitiveOrdering, HeuristicMode, HeapTieBreaker,
+                                    SearchHeuristicMode, the constants (lines 27-33, 276-282, 585-588, 1592, 2484)
+    src/search/astar/heuristic.rs   distance/diagonal heuristics, minimum_positive_bend_cost, TerminalApproach,
+                                    SearchHeuristic, terminal_approach_*, target_angle_acceptance
+    src/search/astar/cost.rs        PrimitiveSearchMetadata (Slice 3 adds the extracted cost functions)
+    src/search/astar/expansion.rs   FootprintCollisionProfile, footprint_horizontal_runs, primitive_transition_class
+                                    and the class/order helpers, target_biased_primitive_score,
+                                    primitive_iteration_order, compact_diagonal_halo_cells, push_unique_cell
+                                    (Slice 3 adds the extracted expansion functions)
+    src/search/astar/crossing_rules.rs   CrossingSearchPartner, TerminalBumpAxis, TerminalBumpGuard,
+                                    CrossingSearchConfig, crossing_required_margin_cells, the types and functions
+                                    of lines 3323-3766, CrossingExtension, CrossingLegalityHook, NoCrossingHook,
+                                    LiveCrossingHook, CrossingHookContext, the reservation checks, and the crossing
+                                    evaluator crossing_move_outcome_with_segments (753 lines) with its helpers
+                                    (7279-8562)
+    src/search/astar/window.rs      RoutingBounds, budget_exhausted, effective_max_iterations,
+                                    run_windowed_single_net_search, compute_routing_bounds, window_area
+    src/search/astar/dense.rs       Jps4Eligibility, DenseSearchStorage, DenseBitset, DenseRoutingGrid and its impl,
+                                    DenseDynamicCoreOwnerGrid, intersect_bounds_rect, the JPS4 functions
+    src/search/astar/kernel.rs      OpenEntry, IndexedOpenSet, OpenSet, entry_is_better, heap_tie_score,
+                                    next_search_generation, search_timed_out, should_check_timeout,
+                                    UnifiedOpenRef, UnifiedParentRef, UnifiedExtendedNode,
+                                    route_single_net_with_bounds_unified, route_result_from_step_chain,
+                                    reconstruct_route_unified
+    src/search/astar/simple.rs      try_simple_route_with_config, try_simple_route_with_dynamic_expansion_config,
+                                    simple_candidate_to_route_result, infer_bend_radius_cells,
+                                    decompose_straight_cells, turn_delta, find_bend_primitive_id
+    src/search/geometry.rs          compress_grid_waypoints, push_if_different, orientation, strictly_between,
+                                    segments_intersect, polyline_self_intersects, direction (shared by simple,
+                                    dense and kernel)
+    src/search/astar/svg.rs         export_route_svg, export_route_svg_with_port_open_cells
+    src/search/astar/diagnostics.rs trace_search_timeout, trace_crossing_pending*, print_target_ring_report,
+                                    print_probe_cells_report, print_failure_map_window, print_best_crossing_path,
+                                    trace_crossing_candidate, current_search_seq, trace_crossing_level1_intersection
 
+  The 140 tests move next to their code (`search/astar/tests/` as one `#[cfg(test)]` module per file is acceptable if a single test file per module would exceed 2,000 lines); fixtures shared by several test modules go to `src/search/test_support.rs`. Visibility `pub(crate)` unless already `pub`. `cargo fmt` after every move; the reviewer check is the same as Milestone 2's.
+
+Slice 3, the readable kernel (behaviour-preserving rewrite, gate after, plus the full 27-cell reproduction at the end of the milestone): the loop function becomes a `run` under 600 lines whose body reads as: build the dense grid, seed the open set, then per iteration pop the best entry, stop on the goal, generate the primitive moves, for each move check legality (`expansion::move_is_legal`, with the hook's `evaluate` for crossings), compute the step cost (`cost::step_cost` with the history, congestion, long-straight and proactive terms as separate named functions), and push or improve. `DenseRoutingGrid` keeps storage and the legality queries; its cost queries move to `cost.rs` as functions over `&DenseRoutingGrid`. No default, constant or order of evaluation changes; the reviewer reads the old inline block and the new functions side by side. Evidence beyond the gate: the Rust parity tests and a new test that routes the fixtures of `single_net_search_trait_matches_*` before and after with identical `RouteSearchStats` counters (expanded, generated, heap pushes and pops), pinned as literals in the test.
+
+Slice 4, the second engine (gate after): `src/search/grid_dijkstra.rs`, `pub struct GridDijkstraSearch`, implementing `NetSearch` over the same `State` space with the same primitive moves and legality from `expansion.rs` and the same dense grid, no heuristic, no crossing support (a request with `crossing` set returns `route: None` and a stats flag). It exists to prove the seam and to be an oracle: on the fixture layouts the A* route cost equals the Dijkstra route cost (test). `RouterConfig.search.engine` selects it; `photonic_router.config` and the overlay get the field (`PHOTONIC_ROUTER_SEARCH_ENGINE`); one Python test routes `benes_4x4_flat` end to end with the Dijkstra engine and checks the crossing count equals the plan.
+
+Acceptance: `grep -rn "route_single_net_with" src/` reports only the two conveniences and the four wrappers inside `search/astar/`; `grep -rn "AStarSingleNetSearch\|SingleNetSearch" src/` reports nothing; the largest file under `src/search/` is `crossing_rules.rs` at about 2,500 lines and `kernel.rs` under 1,200 with its tests; Rust test count is the pinned baseline plus the new tests; `cargo fmt --check` clean; test baseline OK; `gate_short.sh` 9 of 9 exact after every slice; the full 27-cell reproduction identical at the end (about 4.5 hours, sequential, idle machine).
 
 ## Milestone 4: one readable rip-up-and-repair loop
 
