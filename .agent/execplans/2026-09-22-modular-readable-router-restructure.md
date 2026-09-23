@@ -148,36 +148,112 @@ Slice 3 (loading): `build_config(cli_args, benchmark_module)` in `photonic_route
 
 ## Milestone 2: the Rust engine split by concern
 
-Goal: `src/py_router.rs` stops existing as a 25,000-line file. This milestone is pure code motion with zero behaviour change; nothing is renamed except modules and nothing is rewritten. Its value is that Milestones 3 and 4 can then be read and reviewed as diffs of small files.
+Goal: `src/py_router.rs` (25,310 lines on 2026-09-23: 3,580 lines of types and free functions, a 9,700-line plain `impl PyPhotonicRouter` with 136 methods, a 4,860-line `#[pymethods]` block with 101 methods, and 6,370 lines of tests) stops existing. This milestone is pure code motion with zero behaviour change: no function body changes, no renames of functions or fields, no merging. Its value is that Milestones 3 and 4 can be read and reviewed as diffs of small files.
 
-Work. Create the module tree and move code into it, keeping every function's body intact:
+Design decisions taken by the lead on 2026-09-23 after the item-level index (evidence agent): (1) the struct keeps its name `PyPhotonicRouter` and its `#[pyclass]`; its 31 private fields become `pub(crate)`, and the inherent methods move into `impl PyPhotonicRouter` blocks in the engine modules (Rust allows inherent impls anywhere in the crate). The plan's earlier idea of a separate `engine::Router` wrapped by a thin binding is deferred to Milestone 3, where the engine becomes generic over the search interface and needs that wrapper anyway; doing it here would be a rewrite, not a move. (2) PyO3 0.22 without the `multiple-pymethods` feature allows one `#[pymethods]` block per class, so that block moves as a whole to `src/bindings/mod.rs`; the only change inside it is that the two routing loops defined there today (`route_many_with_repair_and_commit`, 622 lines, and `route_many_with_negotiated_repair_and_commit`, 913 lines) become five-line wrappers calling `pub(crate)` inherent methods of the same name in the engine modules, so the loops can be read where the rest of the engine lives. (3) The crate is `cargo fmt --check` clean today; it stays so, and formatting is run after every move so the diff of a move is the move.
 
-    src/lib.rs                       crate root, module wiring only
-    src/config/                      (from Milestone 1)
-    src/grid/                        obstacle_map.rs, static_obstacle_builder.rs, primitives.rs (moved as-is)
-    src/search/                      astar.rs moved as-is (split in Milestone 3)
-    src/engine/mod.rs                the router struct (renamed from PyPhotonicRouter's engine half to Router;
-                                     no #[pyclass] on it)
-    src/engine/jobs.rs               NativeRouteJob, NativeRouteAttempt, batch types
-    src/engine/commit.rs             commit_native_route_* and realized_dynamic_blockers (lines 8,295-8,654)
-    src/engine/crossing_reservation.rs   CrossingReservationBlockers, reservation windows, crossing events
-    src/engine/endpoint_correction.rs    the endpoint bump / correction methods
-    src/engine/negotiation/mod.rs    route_many_with_negotiated_repair_and_commit and its helpers (as-is here;
-                                     restructured in Milestone 4)
-    src/engine/negotiation/probe.rs  probe_net_for_repair, probe_names_no_blocker, blocker analysis
-    src/engine/negotiation/braid.rs  try_braid_repair, run_braid_repair_passes, requeue_braid_victims
-    src/engine/diagnostics.rs        trace printing helpers
-    src/geometry/                    geometry_realization.rs, meander.rs, auto_meander.rs, plm.rs, simple_routes.rs
-    src/bindings/mod.rs              PyPhotonicRouter: a thin #[pyclass] wrapping engine::Router
-    src/bindings/convert.rs          every *_to_py_dict / *_to_py_object, build_native_batch_result_dict
-    src/bindings/types.rs            PyGridSpec, PyAStarConfig, PyCrossingConfig, PyState, PyPortAccess ...
+Target layout (each file lists what it receives; the index that produced it is in the evidence agent's report of 2026-09-23 and every name below exists on `main` today):
 
-The 101 tests in `py_router.rs`'s `mod tests` move next to the code they test (`src/engine/negotiation/tests.rs` and so on) unchanged. Legacy engine paths named in D1 are moved, not deleted, in this milestone; their deletion is Milestone 4's business once the owner has decided.
+    src/lib.rs                            module wiring; keeps every existing `pub use`
+    src/engine/mod.rs                     the `PyPhotonicRouter` struct (fields `pub(crate)`), `MeanderRegistrationProfile`,
+                                          `PendingStraightVictimHint`, `LongStraightCongestionRecord`, and the body of the
+                                          `new` constructor as `pub(crate) fn construct(...)` (the pymethod `new` calls it)
+    src/engine/jobs.rs                    `NativeRouteJob` + impl, `NativeRouteAttempt`, `NativeRepairTraceEvent`,
+                                          `RepairBatchState`, `RepairAttemptState`, `NegotiationSnapshot`, `ProbeState`,
+                                          `RepairModeAttemptState`, the eleven outcome enums, `NativeEndpointCorrection`,
+                                          `NativeBatchTimings` + impl, the `const` block of budgets and thresholds
+    src/engine/cells.rs                   the cell and route-footprint utilities used by three or more modules:
+                                          `pack_cells`, `opened_cells_excluding_keepout`, `route_orientation_to_angle`,
+                                          `route_angle_to_step`, `route_in_bounds`, `route_collect_inflated_step_cells`,
+                                          `route_port_state_cell`, `route_port_footprint_cells`,
+                                          `route_dynamic_clearance_exempt_cells`, `sorted_cells`,
+                                          `collect_meander_route_cell_sets`, `build_registered_open_sets`,
+                                          `build_registered_open_indices`, `inflate_route_cells`, `route_commit_cells`,
+                                          `route_core_cells`, `unique_cells`, `static_grid_from_py_grid`,
+                                          `sorted_other_owners_for_cells`, `cells_with_other_dynamic_owner`
+    src/engine/crossing_geometry.rs       the free geometry helpers `point_to_segment_distance` .. `compress_physical_centerline`
+                                          (segments, polylines, physical intersections; lines 1997-2395 today)
+    src/engine/crossing_reservation.rs    the 53 crossing methods (partner sets, events, reservations, keepouts,
+                                          violations, validation of committed crossings, `committed_partners_intersecting_route`),
+                                          the free functions `crossing_reservation_window_keys` .. `append_crossing_event_svg_overlay`,
+                                          `illegal_crossing_net_ids_from_error`, and the types `CrossingEvent`,
+                                          `InvalidCrossingIntersection`, `CrossingReservationBlockers` + impl
+    src/engine/commit.rs                  the 20 commit methods (`commit_native_route_with_clearance*`, `realized_dynamic_blockers`,
+                                          `rollback_committed_route`, history and congestion bookkeeping after a commit,
+                                          `remember_committed_route_*`), plus `remove_success_static_cleanup`,
+                                          `dynamic_commit_error_overlap_owner_ids`, `RealizedDynamicBlockers` + impl
+    src/engine/endpoint_correction.rs     `terminal_bump_guard_for_target`, the four `*port_corrected_centerline*` methods and
+                                          `centerline_port_corrected_checked_native`, `CenterlineCells` + impl,
+                                          `centerline_core_cells`, `compact_bump_portion`
+    src/engine/search_calls.rs            `astar_config`, `crossing_search_config`, `temporary_probe_guided_guidance`,
+                                          `with_probe_guided_guidance`, the `try_route_with_collision_crossings*` and
+                                          `try_route_through_*` methods, `route_single_net_and_commit_native*`,
+                                          `route_single_net_ignore_dynamic_native`, `try_plain_normal_route`,
+                                          `try_lidar_direct_crossing_subset`, the pending-straight hint methods,
+                                          `geometry_grid`, `grid_waypoints_to_centerline`, `opened_cells_without_dynamic_overlap`;
+                                          free: `astar_config_from_py`, `allowed_angles_to_mask`, the three `parse_*` for
+                                          ordering / heuristic / tie breaker; `enum CollisionCrossingTryOrder`
+    src/engine/negotiation/mod.rs         `pub mod loop_; pub mod probe; pub mod braid;` and nothing else
+    src/engine/negotiation/loop_.rs       the body of `route_many_with_negotiated_repair_and_commit` as
+                                          `pub(crate) fn route_many_with_negotiated_repair_and_commit(&mut self, py, ...)`,
+                                          `snapshot_negotiation_state`, `restore_negotiation_state`, `try_negotiated_displacement`,
+                                          `ripup_illegal_crossing_partners`, `global_ripup_round`, `ripup_repair_set_victims`;
+                                          free: `negotiated_search_budget`, `negotiated_crossing_free_net`
+                                          (`loop` is a Rust keyword, hence `loop_`)
+    src/engine/negotiation/probe.rs       `probe_net_for_repair`; free: `widen_probe_partners_by_source_column`, `split_probe_partners`
+    src/engine/negotiation/braid.rs       `try_braid_repair`, `run_braid_repair_passes`, `crossing_event_count_between`,
+                                          `try_ripup_single_victim_and_reroute_with`; free: `requeue_braid_victims`
+    src/engine/legacy_repair.rs           the body of `route_many_with_repair_and_commit` as a `pub(crate)` inherent method,
+                                          the source-layer center-out chain (6 methods), `prepare_repair_attempt`,
+                                          `try_localized_crossing_keepout_retry`, `try_commit_clean_probe`,
+                                          `reset_repair_attempt_state_from_round_base`, `label_and_trace_repair_mode_start`,
+                                          the victim reroute chain (`try_reroute_current_net_before_victims`,
+                                          `reroute_victim_with_plain_fallback`, `try_crossing_aware_victim_reroute`,
+                                          `try_reroute_current_net_after_victims`, `build_repair_mode_reservation`,
+                                          `try_ripup_single_victim_and_reroute`, `try_pending_straight_victim_repair`,
+                                          `try_final_repair_fallback`), the orthogonal fallback (3 methods);
+                                          free: `center_out_layer_job_indices`, `compute_repair_victim_sets`,
+                                          `enqueue_targeted_illegal_crossing_repair_set`, `enqueue_learned_keepout_repair_retry`,
+                                          `enqueue_deferred_jobs`. Moved, not deleted: deletion is Milestone 4 (D1).
+    src/engine/diagnostics.rs             `dump_crossing_mismatch`, `trace_committed_partner_centerline_compare`; free:
+                                          `trace_t`, `trace_budget_str`, `push_native_repair_trace`, `cells_bbox`,
+                                          `format_bbox`, `format_cell_sample`, `native_batch_seconds`, `native_batch_timer`,
+                                          `native_batch_elapsed_us`
+    src/bindings/mod.rs                   the `#[pymethods] impl PyPhotonicRouter` block (99 methods verbatim plus the two
+                                          five-line loop wrappers and `new` calling `construct`), `register_py_router`,
+                                          the `#[pymodule] fn photonic_router_rust`
+    src/bindings/types.rs                 `PyGridSpec`, `PyPrimitiveLibraryConfig`, `PyAStarConfig`, `PyCrossingConfig`,
+                                          `PyCrossingConstraint`, `PyState`, `PyRouteResult`, `PyPortAccess`, `PyRouterConfig`,
+                                          their `#[pymethods]`, `From` conversions and the two `validate_*` functions
+    src/bindings/convert.rs               `build_native_batch_result_dict` (as an `impl PyPhotonicRouter` block here),
+                                          `native_batch_timings_to_py_dict`, `convert_result`, `to_route_result`,
+                                          `vec_to_primitive_counter_array`, `describe_primitives` (free), `primitive_kind`
+    src/bindings/meander_py.rs            the meander Python-object glue: `add_bend_radius_debug_metadata` ..
+                                          `auto_meander_search_config_rs` (lines 3005-3565 today) and the four `parse_*` /
+                                          `planning_mode_to_str` helpers for meander enums
+    src/engine/test_support.rs            `#[cfg(test)]` fixtures shared by the moved tests: `small_test_router`,
+                                          `empty_test_route`, `dummy_invalid_crossing_intersection`, `crossing_conflict_fixture`,
+                                          `missing_crossing_event_fixture_router`, `install_diagonal_partner`,
+                                          `crossing_diagonal_centerline`, `crossing_conflict_probe_fixture`,
+                                          `single_horizontal_crossing_fixture`, `second_vertical_job_blocked_by_diagonal`,
+                                          `fresh_repair_batch_state`, `route_with_real_cells_for_net`,
+                                          `crossing_partner_discovery_test_router`
 
-Commands: `cargo build --release`, `cargo test --release --lib` (count unchanged from the pinned baseline), `maturin develop --release`, `scripts/test_baseline.sh`, `scripts/results/gate_short.sh`.
+The 100 tests of the old `mod tests` move, unchanged, into a `#[cfg(test)] mod tests` at the bottom of the module whose code they exercise (about 28 crossing reservation, 17 endpoint correction and meander, 13 negotiation loop, 12 legacy repair, 8 probe, 11 search calls, 5 braid, 3 commit, 2 diagnostics, 1 legacy `enqueue_deferred_jobs`); a test that touches two modules goes with the one it names in its name. One deletion is allowed because it is dead code with zero callers: `net_endpoint_distance_cells`. Visibility: every moved method and free function becomes `pub(crate)` (or stays private if only its own module uses it); nothing becomes `pub`.
 
-Acceptance: `wc -l` of the largest file under `src/` below 4,000 lines except `src/search/astar.rs` (split next); test count identical; gate identical. The full 27-cell reproduction is not needed for pure code motion; the short gate plus the unchanged Rust test count is the evidence, and the Milestone 3 full run covers this milestone as well.
+Order of work, each step compiling, the Rust tests green and the short gate run after steps 4 and 7:
 
+1. `src/engine/mod.rs` with the struct (fields `pub(crate)`), `src/bindings/mod.rs` empty, `lib.rs` wiring; `py_router.rs` still holds everything else and compiles against the moved struct.
+2. Types and free functions: `jobs.rs`, `cells.rs`, `crossing_geometry.rs`, then the free functions of `crossing_reservation.rs`, `commit.rs`, `diagnostics.rs`, `search_calls.rs`, `legacy_repair.rs`, `negotiation/*`.
+3. The plain impl, one module at a time in this order: `diagnostics`, `cells`-dependent `commit`, `crossing_reservation`, `endpoint_correction`, `search_calls`, `negotiation/probe`, `negotiation/braid`, `negotiation/loop_` (the loop body carved out of the pymethods block), `legacy_repair` (its loop body carved out likewise).
+4. Gate.
+5. `bindings/types.rs`, `bindings/convert.rs`, `bindings/meander_py.rs`, then the pymethods block into `bindings/mod.rs`.
+6. Tests: `test_support.rs`, then each test into its module.
+7. Delete `src/py_router.rs`; `cargo fmt`; gate.
+
+Commands, repository root, with `RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON=$PWD/.venv/bin/python`: `cargo build --release`, `cargo test --release --lib` (492 before, 491 after the dead-function deletion only if a test covered it; otherwise 492), `cargo fmt --check`, `.venv/bin/maturin develop --release`, `scripts/test_baseline.sh`, `scripts/results/gate_short.sh`.
+
+Acceptance: `src/py_router.rs` does not exist; the largest file under `src/engine/` and `src/bindings/` is `bindings/mod.rs` at about 3,400 lines and no other file exceeds 2,500 lines (`crossing_reservation.rs` about 1,900 with its tests); `git diff --stat` of the milestone shows, apart from `use` lines, visibility keywords, the two wrappers and the `construct` split, no changed line inside any function body (reviewer check: `git diff -M --color-moved=dimmed-zebra` shows bodies as moves); Rust tests identical in number and names; `cargo fmt --check` clean; test baseline OK; gate 9 of 9 exact. The full 27-cell reproduction is not required for pure code motion; Milestone 3's full run covers it.
 
 ## Milestone 3: one search interface, one A* kernel, a second engine
 
