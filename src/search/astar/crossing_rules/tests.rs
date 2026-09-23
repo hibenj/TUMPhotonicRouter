@@ -8,7 +8,7 @@
 use super::*;
 use crate::config::KernelDiagnostics;
 use crate::primitives::create_grid4_unit_grid_primitive_library;
-use crate::search::astar::kernel::route_single_net_with_bounds_unified;
+use crate::search::astar::kernel;
 use crate::search::astar::route_single_net_with_config;
 use crate::search::state::RouteResult;
 use crate::search::test_support::*;
@@ -3065,7 +3065,7 @@ mod kernel_hook_dispatch {
         let full_bounds = full_bounds_of(obstacle_map);
         let mut stats = RouteSearchStats::default();
         let route = match crossing {
-            None => route_single_net_with_bounds_unified(
+            None => kernel::run(
                 obstacle_map,
                 primitives,
                 source,
@@ -3094,7 +3094,7 @@ mod kernel_hook_dispatch {
                     None,
                     None,
                 );
-                route_single_net_with_bounds_unified(
+                kernel::run(
                     obstacle_map,
                     primitives,
                     source,
@@ -3301,7 +3301,7 @@ mod kernel_hook_dispatch {
             calls: Cell::new(0),
         };
         let mut stats = RouteSearchStats::default();
-        let route = route_single_net_with_bounds_unified(
+        let route = kernel::run(
             &empty_map,
             &primitives,
             State::new(1, 5, 0),
@@ -3342,7 +3342,7 @@ mod kernel_hook_dispatch {
             calls: Cell::new(0),
         };
         let mut stats = RouteSearchStats::default();
-        let route = route_single_net_with_bounds_unified(
+        let route = kernel::run(
             &map,
             &primitives,
             source,

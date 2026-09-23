@@ -1,35 +1,32 @@
-//! The unified A* kernel loop: `route_single_net_with_bounds_unified`,
-//! generic over a `CrossingLegalityHook`, plus its open-set/node types and
+//! The unified A* kernel loop: `run` (formerly
+//! `route_single_net_with_bounds_unified`), generic over a
+//! `CrossingLegalityHook`, plus its open-set/node types and
 //! route reconstruction. This is the single search kernel the whole crate
 //! runs single-net routing through, whether crossings are enabled or not
 //! (see the module doc comment below, kept from `mod unified_kernel`).
 //! Moved out of `src/astar.rs` (Milestone 3, Slice 2, dissolving `mod
 //! unified_kernel`); pure code motion, no behaviour change. Slice 3
-//! rewrites the loop body into named steps; this file's size today (the
-//! 1,696-line loop, unrewritten) reflects that, not the target shape.
+//! rewrote the loop body into named steps: the kernel entry point is
+//! `run`, and the expansion, insert-or-improve and eager post-crossing
+//! completion steps live in `expansion.rs`.
 
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
-use crate::primitives::{Primitive, PrimitiveLibrary};
+use crate::primitives::PrimitiveLibrary;
 use crate::search::astar::config::{
     AStarConfig, HeapTieBreaker, NO_GENERATION, NO_HEAP_POSITION, NO_PARENT,
 };
-use crate::search::astar::cost::{self, PrimitiveSearchMetadata};
-use crate::search::astar::crossing_rules::{
-    extend_unique_keys, primitive_crossing_metadata,
-    unified_candidate_hits_active_local_crossing_reservation,
-    unified_outcome_windows_overlap_own_reservations, CrossingExtension, CrossingLegalityHook,
-    PrimitiveCrossingMetadata,
-};
+use crate::search::astar::cost;
+use crate::search::astar::crossing_rules::{CrossingExtension, CrossingLegalityHook};
 use crate::search::astar::dense::{DenseRoutingGrid, DenseSearchStorage};
 use crate::search::astar::diagnostics::{
-    print_best_crossing_path, print_failure_map_window, print_probe_cells_report,
-    print_target_ring_report, search_timed_out, should_check_timeout, trace_search_timeout,
+    print_probe_success_report, print_search_failure_report, search_timed_out,
+    should_check_timeout, trace_search_timeout, ExploredBox, SearchFailureEnv, SearchFailureState,
     CURRENT_SEARCH_SEQ,
 };
 use crate::search::astar::expansion::{
-    candidate_moves, move_is_legal, primitive_class_is_straight,
-    primitive_initial_straight_run_distance, primitive_terminal_straight_run_cells,
-    FootprintCollisionProfile, LegalMove, MoveContext, MoveDiagnostics, MoveVerdict,
+    candidate_moves, complete_crossing_corridor, goal_reached, move_is_legal,
+    push_or_improve_dense, push_or_improve_extended, within_target_tolerance, CompletedCorridor,
+    MoveContext, MoveDiagnostics, MoveVerdict, PrimitiveTables,
 };
 use crate::search::astar::heuristic::{target_angle_acceptance, SearchHeuristic};
 use crate::search::astar::window::{window_area, RoutingBounds};
@@ -450,7 +447,14 @@ pub(crate) fn chain_has_reservations_from(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
+/// The A* search itself: build the dense search grid and the per-angle
+/// primitive tables, seed the open set, then per iteration pop the best
+/// entry across the two open tiers, stop on the goal, generate the
+/// primitive moves, check each one's legality, compute its step cost and
+/// push or improve the resulting entry. The timeout and iteration-budget
+/// checks sit at the top of the iteration; every diagnostic mechanism is
+/// behind its own `KernelDiagnostics` flag.
+pub(crate) fn run<H: CrossingLegalityHook>(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
     source: State,
@@ -491,32 +495,7 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
     )?;
     let search_heuristic = SearchHeuristic::new(target, primitives, config);
 
-    let primitive_buckets: [&[Primitive]; 8] =
-        std::array::from_fn(|angle| primitives.get_primitives_for_angle(angle as u8));
-    let primitive_search_metadata: Vec<Vec<PrimitiveSearchMetadata>> = primitive_buckets
-        .iter()
-        .map(|bucket| {
-            bucket
-                .iter()
-                .map(|primitive| {
-                    PrimitiveSearchMetadata::from_primitive(primitive, config.bend_weight)
-                })
-                .collect()
-        })
-        .collect();
-    let primitive_footprint_profiles: Vec<Vec<FootprintCollisionProfile>> = primitive_buckets
-        .iter()
-        .map(|bucket| {
-            bucket
-                .iter()
-                .map(|primitive| FootprintCollisionProfile::from_footprint(&primitive.footprint))
-                .collect()
-        })
-        .collect();
-    let primitive_crossing_metadata: Vec<Vec<PrimitiveCrossingMetadata>> = primitive_buckets
-        .iter()
-        .map(|bucket| bucket.iter().map(primitive_crossing_metadata).collect())
-        .collect();
+    let tables = PrimitiveTables::build(primitives, config.bend_weight);
     let target_tolerance = config.target_tolerance_cells.max(0);
     let accepted_target_angles = target_angle_acceptance(target, config);
     // Everything a single move's legality check reads that never
@@ -531,28 +510,6 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
         target_tolerance,
         accepted_target_angles: &accepted_target_angles,
     };
-    // Per-angle angle-preserving straight primitives, longest first,
-    // used by the eager post-crossing completion chain below. Longest-
-    // fitting-first matches the decomposition the old pending-state
-    // search preferred (per-primitive history/congestion costs make
-    // many short steps slightly pricier than one long straight over
-    // the same cells).
-    let completion_straights_per_angle: [Vec<(usize, i32)>; 8] = std::array::from_fn(|angle| {
-        let mut straights: Vec<(usize, i32)> = primitive_buckets[angle]
-            .iter()
-            .enumerate()
-            .filter(|(idx, primitive)| {
-                primitive.end_angle % 8 == angle as u8
-                    && primitive_class_is_straight(
-                        primitive_search_metadata[angle][*idx].transition_class,
-                    )
-            })
-            .map(|(idx, primitive)| (idx, primitive.dx.abs().max(primitive.dy.abs())))
-            .collect();
-        straights.sort_by_key(|(_, cells)| std::cmp::Reverse(*cells));
-        straights
-    });
-
     let mut counter = 0u32;
 
     // Tier 1's own `straight_run_cells` count, needed the instant a
@@ -584,10 +541,7 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
     // failing search prints its termination kind plus the bounding box of
     // the explored region, which localizes the wall the frontier dies at.
     let failure_diag = config.diagnostics.search_failure_diag;
-    let mut explored_min_x = i32::MAX;
-    let mut explored_max_x = i32::MIN;
-    let mut explored_min_y = i32::MAX;
-    let mut explored_max_y = i32::MIN;
+    let mut explored = ExploredBox::new();
     // Target-ring diagnosis (owner request 2026-09-02): for the 5x5 cells
     // around the target, count what happened to every successor attempt
     // landing there, so a failing search names the check that seals the
@@ -631,16 +585,19 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
         .map(|(i, cell)| (*cell, 25 + i))
         .collect();
     let mut probe_ring: Vec<[u32; 7]> = vec![[0u32; 7]; probe_cells.len()];
-    let ring_index = |x: i32, y: i32| -> Option<usize> {
-        let dx = x - target.x;
-        let dy = y - target.y;
-        if dx.abs() <= 2 && dy.abs() <= 2 {
-            Some(((dy + 2) * 5 + (dx + 2)) as usize)
-        } else {
-            probe_index.get(&(x, y)).copied()
-        }
+    // Everything the failure and probe reports read that never changes
+    // during the search (see `diagnostics::print_search_failure_report`).
+    let failure_env = SearchFailureEnv {
+        search_seq,
+        obstacle_map,
+        port_open_cells,
+        dense_grid: &dense_grid,
+        source,
+        target,
+        bounds,
+        probe_cells: &probe_cells,
+        failure_map: config.diagnostics.search_failure_map.as_deref(),
     };
-
     let mut tier1_open = OpenSet::new(config.use_indexed_heap, storage.state_count());
     let mut tier2_open: BinaryHeap<OpenEntry> = BinaryHeap::new();
     let source_idx = seed_open_set(
@@ -685,47 +642,23 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                 stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
             }
             if failure_diag {
-                eprintln!(
-                        "search-failure seq={} kind=iteration_cap iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
-                        search_seq, iterations, stats.expanded_states, stats.generated_neighbors,
-                        source.x, source.y, source.angle, target.x, target.y, target.angle,
-                        bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
-                        explored_min_x, explored_max_x, explored_min_y, explored_max_y,
-                    );
-                print_target_ring_report(
-                    target,
-                    &target_ring,
-                    goal_miss_angle,
-                    goal_miss_hook,
-                    obstacle_map,
-                    port_open_cells,
+                print_search_failure_report(
+                    &failure_env,
+                    "iteration_cap",
+                    &SearchFailureState {
+                        iterations,
+                        explored,
+                        target_ring: &target_ring,
+                        probe_ring: &probe_ring,
+                        goal_miss_angle,
+                        goal_miss_hook,
+                        best_crossings,
+                        best_crossing_ref,
+                        storage: &storage,
+                        extended_nodes: &extended_nodes,
+                    },
+                    stats,
                 );
-                print_best_crossing_path(
-                    best_crossings,
-                    best_crossing_ref,
-                    &storage,
-                    &extended_nodes,
-                );
-                print_probe_cells_report(
-                    search_seq,
-                    obstacle_map,
-                    port_open_cells,
-                    &dense_grid,
-                    &probe_cells,
-                );
-                print_failure_map_window(
-                    search_seq,
-                    obstacle_map,
-                    source,
-                    target,
-                    config.diagnostics.search_failure_map.as_deref(),
-                );
-                for (i, cell) in probe_cells.iter().enumerate() {
-                    let c = probe_ring[i];
-                    if c.iter().any(|v| *v > 0) {
-                        eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
-                    }
-                }
             }
             return None;
         }
@@ -743,47 +676,23 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                 tier1_open.len() + tier2_open.len(),
             );
             if failure_diag {
-                eprintln!(
-                        "search-failure seq={} kind=timeout iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
-                        search_seq, iterations, stats.expanded_states, stats.generated_neighbors,
-                        source.x, source.y, source.angle, target.x, target.y, target.angle,
-                        bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
-                        explored_min_x, explored_max_x, explored_min_y, explored_max_y,
-                    );
-                print_target_ring_report(
-                    target,
-                    &target_ring,
-                    goal_miss_angle,
-                    goal_miss_hook,
-                    obstacle_map,
-                    port_open_cells,
+                print_search_failure_report(
+                    &failure_env,
+                    "timeout",
+                    &SearchFailureState {
+                        iterations,
+                        explored,
+                        target_ring: &target_ring,
+                        probe_ring: &probe_ring,
+                        goal_miss_angle,
+                        goal_miss_hook,
+                        best_crossings,
+                        best_crossing_ref,
+                        storage: &storage,
+                        extended_nodes: &extended_nodes,
+                    },
+                    stats,
                 );
-                print_best_crossing_path(
-                    best_crossings,
-                    best_crossing_ref,
-                    &storage,
-                    &extended_nodes,
-                );
-                print_probe_cells_report(
-                    search_seq,
-                    obstacle_map,
-                    port_open_cells,
-                    &dense_grid,
-                    &probe_cells,
-                );
-                print_failure_map_window(
-                    search_seq,
-                    obstacle_map,
-                    source,
-                    target,
-                    config.diagnostics.search_failure_map.as_deref(),
-                );
-                for (i, cell) in probe_cells.iter().enumerate() {
-                    let c = probe_ring[i];
-                    if c.iter().any(|v| *v > 0) {
-                        eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
-                    }
-                }
             }
             return None;
         }
@@ -838,51 +747,22 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
             }
         };
 
-        let within_target_tolerance = (state.x - target.x).abs() <= target_tolerance
-            && (state.y - target.y).abs() <= target_tolerance;
-        let goal_reached = within_target_tolerance
-            && accepted_target_angles[state.angle as usize]
-            && current_extension.pending_after_crossing_cells == 0
-            && hook.goal_extra_ok(current_extension);
-        if failure_diag && within_target_tolerance && !goal_reached {
+        let in_tolerance = within_target_tolerance(&move_context, state);
+        let at_goal = goal_reached(&move_context, state, current_extension);
+        if failure_diag && in_tolerance && !at_goal {
             if !accepted_target_angles[state.angle as usize] {
                 goal_miss_angle += 1;
             } else {
                 goal_miss_hook += 1;
             }
         }
-        if goal_reached {
+        if at_goal {
             if let Some(search_loop_start) = search_loop_start.as_ref() {
                 stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
             }
             // Harness: probe cells report on SUCCESS too (where did the
             // search go / not go), not only on failure.
-            if !probe_cells.is_empty() {
-                eprintln!(
-                    "probe-success seq={} goal=({},{},{})",
-                    search_seq, state.x, state.y, state.angle
-                );
-                print_probe_cells_report(
-                    search_seq,
-                    obstacle_map,
-                    port_open_cells,
-                    &dense_grid,
-                    &probe_cells,
-                );
-                print_failure_map_window(
-                    search_seq,
-                    obstacle_map,
-                    source,
-                    target,
-                    config.diagnostics.search_failure_map.as_deref(),
-                );
-                for (i, cell) in probe_cells.iter().enumerate() {
-                    let c = probe_ring[i];
-                    if c.iter().any(|v| *v > 0) {
-                        eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
-                    }
-                }
-            }
+            print_probe_success_report(&failure_env, state, &probe_ring);
             if config.collect_detailed_timing {
                 let reconstruction_start = Instant::now();
                 let mut route = reconstruct_route_unified(
@@ -921,17 +801,14 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
         }
         stats.expanded_states += 1;
         if failure_diag {
-            explored_min_x = explored_min_x.min(state.x);
-            explored_max_x = explored_max_x.max(state.x);
-            explored_min_y = explored_min_y.min(state.y);
-            explored_max_y = explored_max_y.max(state.y);
+            explored.note(state);
         }
 
         let angle = state.angle as usize;
-        let primitive_bucket = primitive_buckets[angle];
-        let primitive_metadata = &primitive_search_metadata[angle];
-        let footprint_profiles = &primitive_footprint_profiles[angle];
-        let crossing_metadata = &primitive_crossing_metadata[angle];
+        let primitive_bucket = tables.buckets[angle];
+        let primitive_metadata = &tables.metadata[angle];
+        let footprint_profiles = &tables.profiles[angle];
+        let crossing_metadata = &tables.crossings[angle];
         let neighbor_loop_start =
             if config.collect_detailed_timing && config.diagnostics.hot_loop_timing {
                 Some(Instant::now())
@@ -951,10 +828,6 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
             primitives.grid_size_um(),
             config.primitive_ordering,
         ) {
-            let primitive = candidate.primitive;
-            let metadata = candidate.metadata;
-            let profile = candidate.profile;
-            let primitive_crossing = candidate.crossing;
             let primitive_class = candidate.class;
             stats.generated_neighbors += 1;
             stats.primitive_generated_by_class[primitive_class] += 1;
@@ -989,12 +862,6 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                     (legal, Some((outcome, extra_cost)))
                 }
             };
-            let LegalMove {
-                next_state,
-                ring_slot,
-                pending_completed_by_primitive,
-            } = legal;
-
             let Some((outcome, extra_cost)) = hook_outcome else {
                 // Tier 1: identical fast path to today's plain kernel --
                 // dense array storage, no crossing bookkeeping, no hook call.
@@ -1004,406 +871,53 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                              state, which is always stored densely"
                     );
                 };
-                let next_idx =
-                    storage.in_bounds_parts_to_idx(next_state.x, next_state.y, next_state.angle);
-                if storage.closed.get(next_idx) {
-                    stats.primitive_closed_rejects_by_class[primitive_class] += 1;
-                    if let Some(i) = ring_slot {
-                        {
-                            if i >= 25 {
-                                probe_ring[i - 25][4] += 1;
-                            } else {
-                                target_ring[i][4] += 1;
-                            }
-                        }
-                    }
-                    continue;
-                }
-                let base_step_cost = metadata.base_step_cost;
-                let tentative_g_lower_bound = current_g + base_step_cost;
-                if tentative_g_lower_bound >= storage.g_costs[next_idx] {
-                    stats.primitive_cost_pruned_by_class[primitive_class] += 1;
-                    if let Some(i) = ring_slot {
-                        {
-                            if i >= 25 {
-                                probe_ring[i - 25][5] += 1;
-                            } else {
-                                target_ring[i][5] += 1;
-                            }
-                        }
-                    }
-                    continue;
-                }
-                let step_cost = cost::step_cost(
-                    &dense_grid,
-                    config,
-                    0.0,
-                    base_step_cost,
-                    state.x,
-                    state.y,
-                    &primitive.footprint,
-                    profile,
-                    primitive.start_angle,
-                    primitive_class_is_straight(primitive_class),
-                );
-                let tentative_g = current_g + step_cost;
-                if tentative_g >= storage.g_costs[next_idx] {
-                    stats.primitive_cost_pruned_by_class[primitive_class] += 1;
-                    if let Some(i) = ring_slot {
-                        {
-                            if i >= 25 {
-                                probe_ring[i - 25][5] += 1;
-                            } else {
-                                target_ring[i][5] += 1;
-                            }
-                        }
-                    }
-                    continue;
-                }
-                stats.primitive_accepted_by_class[primitive_class] += 1;
-                if let Some(i) = ring_slot {
-                    {
-                        if i >= 25 {
-                            probe_ring[i - 25][1] += 1;
-                        } else {
-                            target_ring[i][1] += 1;
-                        }
-                    }
-                }
-                storage.parent_idx[next_idx] = current_dense_idx as u32;
-                storage.parent_primitive[next_idx] = primitive.id;
-                storage.g_costs[next_idx] = tentative_g;
-                if H::TRACKS_STRAIGHT_RUN {
-                    let capped_required_margin = hook.capped_required_margin();
-                    dense_straight_run[next_idx] = if primitive_class_is_straight(primitive_class) {
-                        current_extension
-                            .straight_run_cells
-                            .saturating_add(primitive.dx.abs().max(primitive.dy.abs()))
-                            .min(capped_required_margin)
-                    } else {
-                        primitive_terminal_straight_run_cells(primitive, primitive.end_angle)
-                            .min(capped_required_margin)
-                    };
-                }
-                let generation = next_search_generation(&mut counter)?;
-                storage.best_generation[next_idx] = generation;
-                stats.best_cost_updates += 1;
-                stats.parent_updates += 1;
-                let heap_start = (config.collect_detailed_timing
-                    && config.diagnostics.hot_loop_timing)
-                    .then(Instant::now);
-                let queued = tier1_open.push(OpenEntry {
-                    f_score: tentative_g + cost::heuristic_estimate(&search_heuristic, next_state),
-                    tie_score: heap_tie_score(tentative_g, config.heap_tie_breaker),
-                    g_score: tentative_g,
-                    counter: generation,
-                    generation,
-                    idx: next_idx,
-                });
-                if let Some(heap_start) = heap_start {
-                    let heap_elapsed_us = heap_start.elapsed().as_micros();
-                    stats.heap_operation_time_us += heap_elapsed_us;
-                    neighbor_loop_heap_time_us += heap_elapsed_us;
-                }
-                if queued {
-                    stats.heap_pushes += 1;
-                    stats.max_heap_size = stats.max_heap_size.max(tier1_open.len());
-                }
+                push_or_improve_dense(
+                    &move_context,
+                    &search_heuristic,
+                    &mut storage,
+                    &mut tier1_open,
+                    &mut dense_straight_run,
+                    &mut counter,
+                    state,
+                    current_extension,
+                    current_g,
+                    current_dense_idx,
+                    &candidate,
+                    &legal,
+                    &mut move_diagnostics,
+                    stats,
+                    &mut neighbor_loop_heap_time_us,
+                )?;
                 continue;
             };
             let next_extension = CrossingExtension::from_outcome(&outcome);
 
             if next_extension.pending_after_crossing_cells > 0 {
-                // Eager post-crossing completion: a crossing whose
-                // min-straight-after debt is still open never becomes
-                // a search state. Debt-carrying keys multiplied per
-                // (pending cells x angle x partner index) and caused
-                // the crossing-state explosion diagnosed on
-                // multiportmmi_32x32 net 156 (~63 key variants per
-                // cell). The debt's only legal continuation is the
-                // straight run itself, so complete it immediately
-                // with forced shortest-straight steps -- each
-                // validated through the same legality hook, which
-                // already consumes pending in both its contact and
-                // no-contact paths and legalizes any NEW crossings
-                // the completion run hits (the dense-bundle case,
-                // where the debt chains across several partners).
-                // Intermediate nodes are parent scaffolding only:
-                // never keyed in `extended_state`, never heaped.
-                // An illegal completion abandons the whole move --
-                // the same rejection the old per-state bookkeeping
-                // produced, just before any states are spawned.
-                const EAGER_CHAIN_MAX_STEPS: usize = 512;
-                if unified_candidate_hits_active_local_crossing_reservation(
-                    current_ref,
+                let Some(chain) = complete_crossing_corridor(
+                    &move_context,
+                    &tables,
+                    &mut extended_nodes,
                     state,
-                    primitive_crossing,
-                    &extended_nodes,
-                ) {
-                    stats.footprint_rejects += 1;
-                    stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
-                    continue;
-                }
-                if unified_outcome_windows_overlap_own_reservations(
-                    current_ref,
-                    &outcome,
-                    &extended_nodes,
-                ) {
-                    stats.crossing_reject_reservation_overlap += 1;
-                    continue;
-                }
-                let mut chain_g = cost::step_cost(
-                    &dense_grid,
-                    config,
                     current_g,
-                    metadata.base_step_cost,
-                    state.x,
-                    state.y,
-                    &primitive.footprint,
-                    profile,
-                    primitive.start_angle,
-                    primitive_class_is_straight(primitive_class),
-                ) + extra_cost;
-                let first_parent = match current_ref {
-                    UnifiedOpenRef::Dense(idx) => UnifiedParentRef::Dense(idx),
-                    UnifiedOpenRef::Extended(ext_idx) => UnifiedParentRef::Extended(ext_idx),
-                };
-                // Keyed states never carry open debt any more, so the
-                // first move needs no promotion from the current
-                // node's pending keys -- only the outcome's own keys.
-                let mut first_active_keys =
-                    Vec::with_capacity(outcome.active_reservation_keys.len());
-                let mut first_pending_keys =
-                    Vec::with_capacity(outcome.pending_reservation_keys.len());
-                extend_unique_keys(&mut first_active_keys, &outcome.active_reservation_keys);
-                extend_unique_keys(&mut first_pending_keys, &outcome.pending_reservation_keys);
-                let first_crossings = if failure_diag {
-                    let parent_crossings = match current_ref {
-                        UnifiedOpenRef::Dense(_) => 0u16,
-                        UnifiedOpenRef::Extended(ext_idx) => extended_nodes[ext_idx].crossings,
-                    };
-                    parent_crossings
-                        .saturating_add(u16::try_from(outcome.crossing_count).unwrap_or(0))
-                } else {
-                    0
-                };
-                let mut last_idx = extended_nodes.len();
-                let first_chain_has_reservations = chain_has_reservations_from(
-                    first_parent,
-                    &first_active_keys,
-                    &first_pending_keys,
-                    &extended_nodes,
-                );
-                extended_nodes.push(UnifiedExtendedNode {
-                    state: next_state,
-                    extension: next_extension,
-                    parent: first_parent,
-                    primitive_id: primitive.id,
-                    g_score: chain_g,
-                    active_local_reservation_keys: first_active_keys,
-                    pending_local_reservation_keys: first_pending_keys,
-                    crossings: first_crossings,
-                    chain_has_reservations: first_chain_has_reservations,
-                });
-                let mut chain_state = next_state;
-                let mut chain_extension = next_extension;
-                let mut chain_completed = true;
-                let mut chain_steps = 0usize;
-                while chain_extension.pending_after_crossing_cells > 0 {
-                    chain_steps += 1;
-                    let mut step_footprint_free_diag = true;
-                    if chain_steps > EAGER_CHAIN_MAX_STEPS {
-                        if chain_diag {
-                            eprintln!("chain-break seq={} reason=max_steps state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag);
-                        }
-                        chain_completed = false;
-                        break;
-                    }
-                    let pending_angle = chain_extension.pending_after_crossing_angle as usize;
-                    if pending_angle >= 8 || chain_state.angle as usize != pending_angle {
-                        if chain_diag {
-                            eprintln!("chain-break seq={} reason=angle_mismatch state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag);
-                        }
-                        chain_completed = false;
-                        break;
-                    }
-                    let remaining_debt = chain_extension.pending_after_crossing_cells;
-                    let Some(&(step_idx, _)) = completion_straights_per_angle[pending_angle]
-                        .iter()
-                        .find(|(_, cells)| *cells <= remaining_debt)
-                    else {
-                        if chain_diag {
-                            eprintln!("chain-break seq={} reason=no_fitting_straight state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag);
-                        }
-                        chain_completed = false;
-                        break;
-                    };
-                    let step_primitive = &primitive_buckets[pending_angle][step_idx];
-                    let step_metadata = primitive_search_metadata[pending_angle][step_idx];
-                    let step_profile = &primitive_footprint_profiles[pending_angle][step_idx];
-                    let step_crossing = &primitive_crossing_metadata[pending_angle][step_idx];
-                    let (Some(step_x), Some(step_y)) = (
-                        chain_state.x.checked_add(step_primitive.dx),
-                        chain_state.y.checked_add(step_primitive.dy),
-                    ) else {
-                        if chain_diag {
-                            eprintln!("chain-break seq={} reason=checked_add_overflow state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag);
-                        }
-                        chain_completed = false;
-                        break;
-                    };
-                    if !bounds.contains(step_x, step_y) {
-                        stats.window_rejects += 1;
-                        if chain_diag {
-                            eprintln!("chain-break seq={} reason=out_of_window state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag);
-                        }
-                        chain_completed = false;
-                        break;
-                    }
-                    stats.primitive_footprint_checks += 1;
-                    stats.obstacle_clearance_checks += 1;
-                    let step_footprint_free = dense_grid.primitive_footprint_free_with_profile(
-                        chain_state.x,
-                        chain_state.y,
-                        &step_primitive.footprint,
-                        step_profile,
-                        stats,
-                    );
-                    step_footprint_free_diag = step_footprint_free;
-                    let step_pending_completed =
-                        primitive_initial_straight_run_distance(step_primitive, chain_state.angle)
-                            + 1.0e-9
-                            >= f64::from(chain_extension.pending_after_crossing_cells);
-                    let Some((step_outcome, step_extra_cost)) = hook.evaluate(
-                        chain_state,
-                        chain_extension,
-                        step_primitive,
-                        true,
-                        step_crossing,
-                        step_footprint_free,
-                        stats,
-                    ) else {
-                        if let Some(i) = ring_index(step_x, step_y) {
-                            {
-                                if i >= 25 {
-                                    probe_ring[i - 25][if step_footprint_free { 3 } else { 2 }] +=
-                                        1;
-                                } else {
-                                    target_ring[i][if step_footprint_free { 3 } else { 2 }] += 1;
-                                }
-                            }
-                        }
-                        if chain_diag {
-                            eprintln!("chain-break seq={} reason=hook_none state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag);
-                        }
-                        chain_completed = false;
-                        break;
-                    };
-                    if unified_candidate_hits_active_local_crossing_reservation(
-                        UnifiedOpenRef::Extended(last_idx),
-                        chain_state,
-                        step_crossing,
-                        &extended_nodes,
-                    ) {
-                        if let Some(i) = ring_index(step_x, step_y) {
-                            {
-                                if i >= 25 {
-                                    probe_ring[i - 25][6] += 1;
-                                } else {
-                                    target_ring[i][6] += 1;
-                                }
-                            }
-                        }
-                        if chain_diag {
-                            eprintln!("chain-break seq={} reason=reservation_hit state=({},{},{}) pending={} step={} footprint_free={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps, step_footprint_free_diag);
-                        }
-                        chain_completed = false;
-                        break;
-                    }
-                    if unified_outcome_windows_overlap_own_reservations(
-                        UnifiedOpenRef::Extended(last_idx),
-                        &step_outcome,
-                        &extended_nodes,
-                    ) {
-                        stats.crossing_reject_reservation_overlap += 1;
-                        if chain_diag {
-                            eprintln!("chain-break seq={} reason=reservation_overlap state=({},{},{}) pending={} step={}", search_seq, chain_state.x, chain_state.y, chain_state.angle, chain_extension.pending_after_crossing_cells, chain_steps);
-                        }
-                        chain_completed = false;
-                        break;
-                    }
-                    chain_g += cost::step_cost(
-                        &dense_grid,
-                        config,
-                        0.0,
-                        step_metadata.base_step_cost,
-                        chain_state.x,
-                        chain_state.y,
-                        &step_primitive.footprint,
-                        step_profile,
-                        step_primitive.start_angle,
-                        true,
-                    ) + step_extra_cost;
-                    let step_extension = CrossingExtension::from_outcome(&step_outcome);
-                    // Reservation-key promotion, mirroring the keyed
-                    // path: keys booked while the debt was open
-                    // become active once the debt completes, and
-                    // stay pending while it is still open.
-                    let prev_pending_keys = extended_nodes[last_idx]
-                        .pending_local_reservation_keys
-                        .clone();
-                    let mut step_active_keys =
-                        Vec::with_capacity(step_outcome.active_reservation_keys.len());
-                    let mut step_pending_keys =
-                        Vec::with_capacity(step_outcome.pending_reservation_keys.len());
-                    if step_pending_completed {
-                        step_active_keys.extend(prev_pending_keys);
-                    } else {
-                        step_pending_keys.extend(prev_pending_keys);
-                    }
-                    extend_unique_keys(
-                        &mut step_active_keys,
-                        &step_outcome.active_reservation_keys,
-                    );
-                    extend_unique_keys(
-                        &mut step_pending_keys,
-                        &step_outcome.pending_reservation_keys,
-                    );
-                    let step_state = State::new(step_x, step_y, step_primitive.end_angle % 8);
-                    let step_crossings = if failure_diag {
-                        extended_nodes[last_idx]
-                            .crossings
-                            .saturating_add(u16::try_from(step_outcome.crossing_count).unwrap_or(0))
-                    } else {
-                        0
-                    };
-                    let new_idx = extended_nodes.len();
-                    let step_chain_has_reservations = chain_has_reservations_from(
-                        UnifiedParentRef::Extended(last_idx),
-                        &step_active_keys,
-                        &step_pending_keys,
-                        &extended_nodes,
-                    );
-                    extended_nodes.push(UnifiedExtendedNode {
-                        state: step_state,
-                        extension: step_extension,
-                        parent: UnifiedParentRef::Extended(last_idx),
-                        primitive_id: step_primitive.id,
-                        g_score: chain_g,
-                        active_local_reservation_keys: step_active_keys,
-                        pending_local_reservation_keys: step_pending_keys,
-                        crossings: step_crossings,
-                        chain_has_reservations: step_chain_has_reservations,
-                    });
-                    last_idx = new_idx;
-                    chain_state = step_state;
-                    chain_extension = step_extension;
-                }
-                if !chain_completed {
-                    stats.crossing_reject_pending_straight += 1;
+                    current_ref,
+                    &candidate,
+                    &legal,
+                    next_extension,
+                    &outcome,
+                    extra_cost,
+                    chain_diag,
+                    &mut move_diagnostics,
+                    stats,
+                ) else {
                     continue;
-                }
-                let chain_ring = ring_index(chain_state.x, chain_state.y);
+                };
+                let CompletedCorridor {
+                    last_idx,
+                    state: chain_state,
+                    extension: chain_extension,
+                    g_score: chain_g,
+                } = chain;
+                let chain_ring = move_diagnostics.ring_index(chain_state.x, chain_state.y);
                 let final_key = (chain_state, chain_extension);
                 let final_bookkeeping = extended_state.get(&final_key).copied();
                 if final_bookkeeping.is_some_and(|(_, closed)| closed) {
@@ -1415,13 +929,7 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                     }
                     stats.primitive_closed_rejects_by_class[primitive_class] += 1;
                     if let Some(i) = chain_ring {
-                        {
-                            if i >= 25 {
-                                probe_ring[i - 25][4] += 1;
-                            } else {
-                                target_ring[i][4] += 1;
-                            }
-                        }
+                        move_diagnostics.count_landing(i, 4);
                     }
                     continue;
                 }
@@ -1431,13 +939,7 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                     }
                     stats.primitive_cost_pruned_by_class[primitive_class] += 1;
                     if let Some(i) = chain_ring {
-                        {
-                            if i >= 25 {
-                                probe_ring[i - 25][5] += 1;
-                            } else {
-                                target_ring[i][5] += 1;
-                            }
-                        }
+                        move_diagnostics.count_landing(i, 5);
                     }
                     continue;
                 }
@@ -1453,13 +955,7 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                 }
                 stats.primitive_accepted_by_class[primitive_class] += 1;
                 if let Some(i) = chain_ring {
-                    {
-                        if i >= 25 {
-                            probe_ring[i - 25][1] += 1;
-                        } else {
-                            target_ring[i][1] += 1;
-                        }
-                    }
+                    move_diagnostics.count_landing(i, 1);
                 }
                 if failure_diag {
                     let count = extended_nodes[last_idx].crossings;
@@ -1486,182 +982,29 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
                 continue;
             }
 
-            let key = (next_state, next_extension);
-            let existing_bookkeeping = extended_state.get(&key).copied();
-            if existing_bookkeeping.is_some_and(|(_, closed)| closed) {
-                stats.primitive_closed_rejects_by_class[primitive_class] += 1;
-                if let Some(i) = ring_slot {
-                    {
-                        if i >= 25 {
-                            probe_ring[i - 25][4] += 1;
-                        } else {
-                            target_ring[i][4] += 1;
-                        }
-                    }
-                }
-                continue;
-            }
-            let step_cost = cost::step_cost(
-                &dense_grid,
-                config,
-                0.0,
-                metadata.base_step_cost,
-                state.x,
-                state.y,
-                &primitive.footprint,
-                profile,
-                primitive.start_angle,
-                primitive_class_is_straight(primitive_class),
-            ) + extra_cost;
-            let tentative_g = current_g + step_cost;
-            let best_next_g = existing_bookkeeping.map(|(g, _)| g);
-            if tentative_g >= best_next_g.unwrap_or(f64::INFINITY) {
-                stats.primitive_cost_pruned_by_class[primitive_class] += 1;
-                if let Some(i) = ring_slot {
-                    {
-                        if i >= 25 {
-                            probe_ring[i - 25][5] += 1;
-                        } else {
-                            target_ring[i][5] += 1;
-                        }
-                    }
-                }
-                continue;
-            }
-            if unified_candidate_hits_active_local_crossing_reservation(
-                current_ref,
+            push_or_improve_extended(
+                &move_context,
+                &search_heuristic,
+                &mut extended_nodes,
+                &mut extended_state,
+                &mut tier2_open,
+                tier1_open.len(),
+                &mut counter,
                 state,
-                primitive_crossing,
-                &extended_nodes,
-            ) {
-                stats.footprint_rejects += 1;
-                stats.primitive_footprint_rejects_by_class[primitive_class] += 1;
-                if let Some(i) = ring_slot {
-                    {
-                        if i >= 25 {
-                            probe_ring[i - 25][6] += 1;
-                        } else {
-                            target_ring[i][6] += 1;
-                        }
-                    }
-                }
-                continue;
-            }
-            if unified_outcome_windows_overlap_own_reservations(
+                current_extension,
+                current_g,
                 current_ref,
+                &candidate,
+                &legal,
+                next_extension,
                 &outcome,
-                &extended_nodes,
-            ) {
-                stats.crossing_reject_reservation_overlap += 1;
-                if let Some(i) = ring_slot {
-                    {
-                        if i >= 25 {
-                            probe_ring[i - 25][6] += 1;
-                        } else {
-                            target_ring[i][6] += 1;
-                        }
-                    }
-                }
-                continue;
-            }
-
-            let parent = match current_ref {
-                UnifiedOpenRef::Dense(idx) => UnifiedParentRef::Dense(idx),
-                UnifiedOpenRef::Extended(ext_idx) => UnifiedParentRef::Extended(ext_idx),
-            };
-            let node_pending_local_reservation_keys: &[CellKey] = match current_ref {
-                UnifiedOpenRef::Dense(_) => &[],
-                UnifiedOpenRef::Extended(ext_idx) => {
-                    &extended_nodes[ext_idx].pending_local_reservation_keys
-                }
-            };
-            let mut active_local_reservation_keys =
-                Vec::with_capacity(outcome.active_reservation_keys.len());
-            let mut pending_local_reservation_keys =
-                Vec::with_capacity(outcome.pending_reservation_keys.len());
-            if current_extension.pending_after_crossing_cells > 0 && pending_completed_by_primitive
-            {
-                active_local_reservation_keys
-                    .extend(node_pending_local_reservation_keys.iter().copied());
-            } else if current_extension.pending_after_crossing_cells > 0
-                && outcome.pending_after_crossing_cells > 0
-            {
-                pending_local_reservation_keys
-                    .extend(node_pending_local_reservation_keys.iter().copied());
-            }
-            extend_unique_keys(
-                &mut active_local_reservation_keys,
-                &outcome.active_reservation_keys,
-            );
-            extend_unique_keys(
-                &mut pending_local_reservation_keys,
-                &outcome.pending_reservation_keys,
-            );
-
-            let node_crossings = if failure_diag {
-                let parent_crossings = match current_ref {
-                    UnifiedOpenRef::Dense(_) => 0u16,
-                    UnifiedOpenRef::Extended(ext_idx) => extended_nodes[ext_idx].crossings,
-                };
-                parent_crossings.saturating_add(u16::try_from(outcome.crossing_count).unwrap_or(0))
-            } else {
-                0
-            };
-            let node_idx = extended_nodes.len();
-            let node_chain_has_reservations = chain_has_reservations_from(
-                parent,
-                &active_local_reservation_keys,
-                &pending_local_reservation_keys,
-                &extended_nodes,
-            );
-            extended_nodes.push(UnifiedExtendedNode {
-                state: next_state,
-                extension: next_extension,
-                parent,
-                primitive_id: primitive.id,
-                g_score: tentative_g,
-                active_local_reservation_keys,
-                pending_local_reservation_keys,
-                crossings: node_crossings,
-                chain_has_reservations: node_chain_has_reservations,
-            });
-            if failure_diag && (node_crossings > best_crossings || best_crossing_ref.is_none()) {
-                best_crossings = node_crossings;
-                best_crossing_ref = Some(node_idx);
-            }
-            extended_state.insert(key, (tentative_g, false));
-            stats.primitive_accepted_by_class[primitive_class] += 1;
-            if let Some(i) = ring_slot {
-                {
-                    if i >= 25 {
-                        probe_ring[i - 25][1] += 1;
-                    } else {
-                        target_ring[i][1] += 1;
-                    }
-                }
-            }
-            stats.best_cost_updates += 1;
-            stats.parent_updates += 1;
-            let generation = next_search_generation(&mut counter)?;
-            let heap_start = (config.collect_detailed_timing && config.diagnostics.hot_loop_timing)
-                .then(Instant::now);
-            tier2_open.push(OpenEntry {
-                f_score: tentative_g
-                    + cost::heuristic_estimate(&search_heuristic, next_state)
-                    + hook.heuristic_bonus(next_state, next_extension),
-                tie_score: heap_tie_score(tentative_g, config.heap_tie_breaker),
-                g_score: tentative_g,
-                counter: generation,
-                generation,
-                idx: node_idx,
-            });
-            if let Some(heap_start) = heap_start {
-                let heap_elapsed_us = heap_start.elapsed().as_micros();
-                stats.heap_operation_time_us += heap_elapsed_us;
-                neighbor_loop_heap_time_us += heap_elapsed_us;
-            }
-            stats.heap_pushes += 1;
-            stats.max_heap_size = stats.max_heap_size.max(tier1_open.len() + tier2_open.len());
+                extra_cost,
+                &mut best_crossings,
+                &mut best_crossing_ref,
+                &mut move_diagnostics,
+                stats,
+                &mut neighbor_loop_heap_time_us,
+            )?;
         }
         if let Some(neighbor_loop_start) = neighbor_loop_start {
             let neighbor_loop_elapsed_us = neighbor_loop_start.elapsed().as_micros();
@@ -1675,42 +1018,23 @@ pub(crate) fn route_single_net_with_bounds_unified<H: CrossingLegalityHook>(
         stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
     }
     if failure_diag {
-        eprintln!(
-                "search-failure seq={} kind=open_set_exhausted iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
-                search_seq, iterations, stats.expanded_states, stats.generated_neighbors,
-                source.x, source.y, source.angle, target.x, target.y, target.angle,
-                bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
-                explored_min_x, explored_max_x, explored_min_y, explored_max_y,
-            );
-        print_target_ring_report(
-            target,
-            &target_ring,
-            goal_miss_angle,
-            goal_miss_hook,
-            obstacle_map,
-            port_open_cells,
+        print_search_failure_report(
+            &failure_env,
+            "open_set_exhausted",
+            &SearchFailureState {
+                iterations,
+                explored,
+                target_ring: &target_ring,
+                probe_ring: &probe_ring,
+                goal_miss_angle,
+                goal_miss_hook,
+                best_crossings,
+                best_crossing_ref,
+                storage: &storage,
+                extended_nodes: &extended_nodes,
+            },
+            stats,
         );
-        print_best_crossing_path(best_crossings, best_crossing_ref, &storage, &extended_nodes);
-        print_probe_cells_report(
-            search_seq,
-            obstacle_map,
-            port_open_cells,
-            &dense_grid,
-            &probe_cells,
-        );
-        print_failure_map_window(
-            search_seq,
-            obstacle_map,
-            source,
-            target,
-            config.diagnostics.search_failure_map.as_deref(),
-        );
-        for (i, cell) in probe_cells.iter().enumerate() {
-            let c = probe_ring[i];
-            if c.iter().any(|v| *v > 0) {
-                eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
-            }
-        }
     }
     None
 }

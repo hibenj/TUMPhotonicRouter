@@ -12,6 +12,7 @@ use crate::search::astar::config::{
 use crate::search::astar::crossing_rules::CrossingSearchConfig;
 use crate::search::astar::dense::{DenseRoutingGrid, DenseSearchStorage};
 use crate::search::astar::kernel::{UnifiedExtendedNode, UnifiedParentRef};
+use crate::search::astar::window::RoutingBounds;
 use crate::search::state::{RouteSearchStats, State};
 use rustc_hash::FxHashSet;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -419,4 +420,154 @@ pub(crate) fn trace_crossing_level1_intersection(
         route_after,
         pending_after,
     );
+}
+
+/// The bounding box of the region a search actually explored, maintained
+/// only under `KernelDiagnostics::search_failure_diag`. Printed with every
+/// search-failure line: it localizes the wall the frontier died at.
+#[derive(Clone, Copy)]
+pub(crate) struct ExploredBox {
+    pub(crate) min_x: i32,
+    pub(crate) max_x: i32,
+    pub(crate) min_y: i32,
+    pub(crate) max_y: i32,
+}
+
+impl ExploredBox {
+    pub(crate) fn new() -> Self {
+        Self {
+            min_x: i32::MAX,
+            max_x: i32::MIN,
+            min_y: i32::MAX,
+            max_y: i32::MIN,
+        }
+    }
+
+    pub(crate) fn note(&mut self, state: State) {
+        self.min_x = self.min_x.min(state.x);
+        self.max_x = self.max_x.max(state.x);
+        self.min_y = self.min_y.min(state.y);
+        self.max_y = self.max_y.max(state.y);
+    }
+}
+
+/// Everything the search-failure and probe reports read that does not
+/// change during a search. The kernel builds one before its loop.
+pub(crate) struct SearchFailureEnv<'a> {
+    pub(crate) search_seq: u64,
+    pub(crate) obstacle_map: &'a ObstacleMap,
+    pub(crate) port_open_cells: Option<&'a FxHashSet<CellKey>>,
+    pub(crate) dense_grid: &'a DenseRoutingGrid,
+    pub(crate) source: State,
+    pub(crate) target: State,
+    pub(crate) bounds: RoutingBounds,
+    pub(crate) probe_cells: &'a [(i32, i32)],
+    pub(crate) failure_map: Option<&'a [i32]>,
+}
+
+/// The mutable diagnostic state one search accumulated, as the failure
+/// report reads it at the moment the search gives up.
+pub(crate) struct SearchFailureState<'a> {
+    pub(crate) iterations: usize,
+    pub(crate) explored: ExploredBox,
+    pub(crate) target_ring: &'a [[u32; 7]; 25],
+    pub(crate) probe_ring: &'a [[u32; 7]],
+    pub(crate) goal_miss_angle: u32,
+    pub(crate) goal_miss_hook: u32,
+    pub(crate) best_crossings: u16,
+    pub(crate) best_crossing_ref: Option<usize>,
+    pub(crate) storage: &'a DenseSearchStorage,
+    pub(crate) extended_nodes: &'a [UnifiedExtendedNode],
+}
+
+/// One `probe-landing` line per probe cell that saw any successor attempt.
+fn print_probe_landing_lines(search_seq: u64, probe_cells: &[(i32, i32)], probe_ring: &[[u32; 7]]) {
+    for (i, cell) in probe_cells.iter().enumerate() {
+        let c = probe_ring[i];
+        if c.iter().any(|v| *v > 0) {
+            eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
+        }
+    }
+}
+
+/// The full search-failure diagnosis the kernel prints under
+/// `KernelDiagnostics::search_failure_diag` at each of its three
+/// termination points: the `search-failure` line naming `kind`, then the
+/// target-ring, best-crossing-path, probe-cell, failure-map and
+/// probe-landing reports, in that order.
+pub(crate) fn print_search_failure_report(
+    env: &SearchFailureEnv<'_>,
+    kind: &str,
+    state: &SearchFailureState<'_>,
+    stats: &RouteSearchStats,
+) {
+    let (search_seq, source, target, bounds) = (env.search_seq, env.source, env.target, env.bounds);
+    let explored = state.explored;
+    eprintln!(
+            "search-failure seq={} kind={} iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
+            search_seq, kind, state.iterations, stats.expanded_states, stats.generated_neighbors,
+            source.x, source.y, source.angle, target.x, target.y, target.angle,
+            bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y,
+            explored.min_x, explored.max_x, explored.min_y, explored.max_y,
+        );
+    print_target_ring_report(
+        target,
+        state.target_ring,
+        state.goal_miss_angle,
+        state.goal_miss_hook,
+        env.obstacle_map,
+        env.port_open_cells,
+    );
+    print_best_crossing_path(
+        state.best_crossings,
+        state.best_crossing_ref,
+        state.storage,
+        state.extended_nodes,
+    );
+    print_probe_cells_report(
+        search_seq,
+        env.obstacle_map,
+        env.port_open_cells,
+        env.dense_grid,
+        env.probe_cells,
+    );
+    print_failure_map_window(
+        search_seq,
+        env.obstacle_map,
+        source,
+        target,
+        env.failure_map,
+    );
+    print_probe_landing_lines(search_seq, env.probe_cells, state.probe_ring);
+}
+
+/// The probe-cell report on a SUCCESSFUL search (where did the search go /
+/// not go), not only on failure. A no-op unless probe cells are named.
+pub(crate) fn print_probe_success_report(
+    env: &SearchFailureEnv<'_>,
+    goal: State,
+    probe_ring: &[[u32; 7]],
+) {
+    if env.probe_cells.is_empty() {
+        return;
+    }
+    eprintln!(
+        "probe-success seq={} goal=({},{},{})",
+        env.search_seq, goal.x, goal.y, goal.angle
+    );
+    print_probe_cells_report(
+        env.search_seq,
+        env.obstacle_map,
+        env.port_open_cells,
+        env.dense_grid,
+        env.probe_cells,
+    );
+    print_failure_map_window(
+        env.search_seq,
+        env.obstacle_map,
+        env.source,
+        env.target,
+        env.failure_map,
+    );
+    print_probe_landing_lines(env.search_seq, env.probe_cells, probe_ring);
 }

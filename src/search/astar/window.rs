@@ -224,7 +224,7 @@ mod tests {
     use super::*;
     use crate::config::KernelDiagnostics;
     use crate::search::astar::crossing_rules::NoCrossingHook;
-    use crate::search::astar::kernel::route_single_net_with_bounds_unified;
+    use crate::search::astar::kernel;
     use crate::search::astar::route_single_net_with_config;
     use crate::search::test_support::*;
 
@@ -523,7 +523,7 @@ mod tests {
             |obstacle_map, bounds, stats, effective_max_iterations| {
                 let mut attempt_config = config.clone();
                 attempt_config.max_iterations = effective_max_iterations;
-                route_single_net_with_bounds_unified(
+                kernel::run(
                     obstacle_map,
                     &library,
                     source,
@@ -560,7 +560,7 @@ mod tests {
     fn nonzero_offset_window_routes() {
         let map = ObstacleMap::new(30, 30);
         let library = primitive_library();
-        let result = route_single_net_with_bounds_unified(
+        let result = kernel::run(
             &map,
             &library,
             State::new(11, 11, 0),

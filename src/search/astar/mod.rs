@@ -30,7 +30,6 @@ use crate::primitives::PrimitiveLibrary;
 use config::AStarConfig;
 use crossing_rules::{CrossingHookContext, CrossingSearchConfig, NoCrossingHook};
 use dense::{evaluate_jps4_eligibility, route_single_net_jps4};
-use kernel::route_single_net_with_bounds_unified;
 use simple::try_simple_route_with_config;
 use window::{run_windowed_single_net_search, RoutingBounds};
 
@@ -335,7 +334,7 @@ pub(crate) fn route_single_net_with_unified_kernel_config_reporting_stats(
         |obstacle_map, bounds, stats, effective_max_iterations| {
             let mut attempt_config = config.clone();
             attempt_config.max_iterations = effective_max_iterations;
-            route_single_net_with_bounds_unified(
+            kernel::run(
                 obstacle_map,
                 primitives,
                 source,
@@ -414,7 +413,7 @@ pub(crate) fn route_single_net_with_unified_kernel_dynamic_expansion_config_repo
         |obstacle_map, bounds, stats, effective_max_iterations| {
             let mut attempt_config = config.clone();
             attempt_config.max_iterations = effective_max_iterations;
-            route_single_net_with_bounds_unified(
+            kernel::run(
                 obstacle_map,
                 primitives,
                 source,
@@ -523,7 +522,7 @@ pub(crate) fn route_single_net_with_unified_kernel_collision_crossing_config_wit
                 Some(&reservation_anchor_open_cells),
                 Some(&anchor_open_cells),
             );
-            route_single_net_with_bounds_unified(
+            kernel::run(
                 obstacle_map,
                 primitives,
                 source,
@@ -625,7 +624,7 @@ pub(crate) fn route_single_net_with_unified_kernel_crossing_config(
                 Some(&anchor_open_cells),
                 Some(&anchor_open_cells),
             );
-            route_single_net_with_bounds_unified(
+            kernel::run(
                 obstacle_map,
                 primitives,
                 source,
