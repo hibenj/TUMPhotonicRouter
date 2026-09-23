@@ -1,7 +1,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::astar::{RouteResult, RouteSearchStats, State};
 use crate::crossings::CrossingConfig;
+use crate::search::state::{RouteResult, RouteSearchStats, State};
 
 use crate::engine::*;
 

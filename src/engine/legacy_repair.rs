@@ -4,9 +4,9 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::astar::{RouteResult, State};
 use crate::obstacle_map::{pack_xy, CellKey};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary};
+use crate::search::state::{RouteResult, State};
 use crate::search::{SearchEnvironment, SearchRequest};
 
 #[cfg(test)]

@@ -2,8 +2,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustc_hash::FxHashMap;
 
-use crate::astar::{RouteResult, RouteSearchStats, State};
 use crate::primitives::{Primitive, PrimitiveLibrary};
+use crate::search::state::{RouteResult, RouteSearchStats, State};
 
 use crate::bindings::*;
 

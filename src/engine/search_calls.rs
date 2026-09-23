@@ -4,16 +4,17 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::astar::{
-    try_simple_route_with_config, try_simple_route_with_dynamic_expansion_config, AStarConfig,
-    CrossingSearchConfig, CrossingSearchPartner, HeapTieBreaker, HeuristicMode, PrimitiveOrdering,
-    RouteResult, RouteSearchStats, State,
-};
 use crate::config::RouterConfig;
 use crate::crossings::{CrossingConfig, CrossingGuidance};
 use crate::geometry_realization::GeometryGridSpec;
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey};
 use crate::primitives::PrimitiveLibrary;
+use crate::search::astar::config::{AStarConfig, HeapTieBreaker, HeuristicMode, PrimitiveOrdering};
+use crate::search::astar::crossing_rules::{CrossingSearchConfig, CrossingSearchPartner};
+use crate::search::astar::simple::{
+    try_simple_route_with_config, try_simple_route_with_dynamic_expansion_config,
+};
+use crate::search::state::{RouteResult, RouteSearchStats, State};
 use crate::search::{CrossingSearch, DynamicExpansion, SearchEnvironment, SearchRequest};
 
 #[cfg(test)]

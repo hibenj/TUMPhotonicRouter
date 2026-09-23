@@ -6,8 +6,8 @@
 
 use rustc_hash::FxHashSet;
 
-use crate::astar::State;
 use crate::obstacle_map::{CellKey, GridRect, ObstacleMap};
+use crate::search::state::State;
 
 /// Discrete grid point in cell coordinates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]

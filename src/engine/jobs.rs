@@ -2,8 +2,9 @@ use std::time::Instant;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::astar::{RouteResult, TerminalBumpGuard};
 use crate::obstacle_map::{CellKey, ObstacleMap};
+use crate::search::astar::crossing_rules::TerminalBumpGuard;
+use crate::search::state::RouteResult;
 
 use crate::engine::*;
 

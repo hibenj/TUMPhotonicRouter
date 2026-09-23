@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::astar::RouteResult;
+use crate::search::state::RouteResult;
 
 use crate::engine::*;
 

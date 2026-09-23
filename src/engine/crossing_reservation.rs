@@ -1,21 +1,21 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::astar::{RouteResult, State};
 use crate::geometry_realization::{
     grid_path_to_centerline as grid_path_to_centerline_rs,
     route_to_grid_path as route_to_grid_path_rs,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
 };
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey};
+use crate::search::state::{RouteResult, State};
 use crate::static_obstacle_builder::floor_snap_to_grid;
 
-#[cfg(test)]
-use crate::astar::RouteSearchStats;
 #[cfg(test)]
 use crate::crossings::CrossingConfig;
 #[cfg(test)]
 use crate::crossings::CrossingConstraint;
 use crate::engine::*;
+#[cfg(test)]
+use crate::search::state::RouteSearchStats;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CrossingEvent {

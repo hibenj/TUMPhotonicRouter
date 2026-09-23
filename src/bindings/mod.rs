@@ -5,7 +5,6 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustc_hash::FxHashSet;
 
-use crate::astar::{export_route_svg_with_port_open_cells, State};
 use crate::auto_meander::{
     cells_in_grid_rect as cells_in_grid_rect_rs,
     check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
@@ -47,6 +46,8 @@ use crate::plm::{
     plan_registered_geometry_requirement_candidates, plan_registered_geometry_split_request,
     RegisteredMeanderGeometry,
 };
+use crate::search::astar::svg::export_route_svg_with_port_open_cells;
+use crate::search::state::State;
 use crate::search::{SearchEnvironment, SearchRequest};
 use crate::static_obstacle_builder::{PortInput, PyStaticCellSet, StaticGridSpec};
 

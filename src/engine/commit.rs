@@ -1,20 +1,20 @@
 use rustc_hash::FxHashSet;
 
-use crate::astar::RouteResult;
 use crate::geometry_realization::{
     compress_grid_waypoints as compress_grid_waypoints_rs,
     route_to_grid_path as route_to_grid_path_rs,
 };
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
+use crate::search::state::RouteResult;
 use crate::static_obstacle_builder::{grid_cell_center, StaticGridSpec};
 
 #[cfg(test)]
-use crate::astar::RouteSearchStats;
-#[cfg(test)]
-use crate::astar::State;
-#[cfg(test)]
 use crate::crossings::CrossingConfig;
 use crate::engine::*;
+#[cfg(test)]
+use crate::search::state::RouteSearchStats;
+#[cfg(test)]
+use crate::search::state::State;
 
 /// Cells of a candidate that other nets own, split by whether the other net's
 /// *realized* geometry actually comes within one waveguide width of the

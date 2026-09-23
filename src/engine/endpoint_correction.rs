@@ -1,6 +1,5 @@
 use rustc_hash::FxHashSet;
 
-use crate::astar::{RouteResult, State, TerminalBumpAxis, TerminalBumpGuard};
 use crate::config::NetNameTrace;
 use crate::geometry_realization::{
     anchored_tilt_scale_candidate as anchored_tilt_scale_candidate_rs,
@@ -14,6 +13,8 @@ use crate::geometry_realization::{
     GeometryGridSpec, OffsetBumpCandidate,
 };
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey};
+use crate::search::astar::crossing_rules::{TerminalBumpAxis, TerminalBumpGuard};
+use crate::search::state::{RouteResult, State};
 use crate::static_obstacle_builder::{rasterize_polygon, sample_polyline_cells, StaticGridSpec};
 
 use crate::engine::*;

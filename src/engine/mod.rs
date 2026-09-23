@@ -4,7 +4,6 @@ use std::time::Instant;
 use pyo3::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::astar::{AStarConfig, TerminalBumpGuard};
 use crate::config::RouterConfig;
 use crate::crossings::CrossingContext;
 use crate::obstacle_map::{CellKey, ObstacleMap};
@@ -13,6 +12,8 @@ use crate::primitives::{
     create_grid4_unit_grid_primitive_library, create_jps4_unit_grid_primitive_library,
     create_photonic_primitive_library, PrimitiveLibrary, PrimitiveLibraryConfig,
 };
+use crate::search::astar::config::AStarConfig;
+use crate::search::astar::crossing_rules::TerminalBumpGuard;
 use crate::search::{AStarSearch, NetSearch};
 
 use crate::bindings::*;

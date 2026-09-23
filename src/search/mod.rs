@@ -1,18 +1,28 @@
 //! One interface for a single-net search: `NetSearch`. `AStarSearch`
-//! (`astar_engine.rs`) is today's, and only, implementation -- it dispatches
-//! to the four `unified_kernel` wrappers in `crate::astar` unchanged, so this
-//! slice is the interface itself, not a behaviour change. See Milestone 3,
-//! Slice 1 of
+//! (`astar/mod.rs`) is today's, and only, implementation -- it dispatches to
+//! the four unified-kernel wrappers in `crate::search::astar::kernel`
+//! unchanged, so this slice is the interface itself, not a behaviour
+//! change. See Milestone 3, Slices 1 and 2 of
 //! `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
+//!
+//! `state` and `geometry` hold the search-state/result types and the
+//! grid-polyline geometry helpers shared by `astar` and any future second
+//! engine; `astar` is the A* implementation's own module tree.
 
-use crate::astar::{AStarConfig, CrossingSearchConfig, RouteResult, RouteSearchStats, State};
+pub mod astar;
+pub mod geometry;
+pub mod state;
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use crate::obstacle_map::{CellKey, ObstacleMap};
 use crate::primitives::PrimitiveLibrary;
+use astar::config::AStarConfig;
+use astar::crossing_rules::CrossingSearchConfig;
 use rustc_hash::FxHashSet;
+use state::{RouteResult, RouteSearchStats, State};
 
-mod astar_engine;
-
-pub use astar_engine::AStarSearch;
+pub use astar::AStarSearch;
 
 /// The obstacle map and primitive library a search runs against. Neither
 /// switches on anything by itself -- every request against the same

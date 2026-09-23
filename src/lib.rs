@@ -3,7 +3,6 @@
 //! This crate currently provides only the routing database and obstacle-map
 //! infrastructure. It intentionally does not implement A* yet.
 
-pub mod astar;
 pub mod auto_meander;
 pub mod bindings;
 pub mod config;
@@ -26,10 +25,6 @@ pub use crate::simple_routes::{
     try_straight_l_or_z_candidate_with_config, try_straight_or_l_candidate, try_z_candidate,
     try_z_candidate_with_config, GridPoint, Segment, SimpleRouteCandidate, SimpleRouteKind,
     SimpleZRouteConfig,
-};
-pub use astar::{
-    export_route_svg, export_route_svg_with_port_open_cells, route_single_net,
-    route_single_net_with_config, AStarConfig, RouteResult, State,
 };
 pub use auto_meander::{
     cells_in_grid_rect, check_meander_box_free, check_meander_box_free_with_prefix,
@@ -67,6 +62,10 @@ pub use primitives::{
     create_photonic_primitive_library, Primitive, PrimitiveGeometry, PrimitiveLibrary,
     PrimitiveLibraryConfig, DIRECTIONS,
 };
+pub use search::astar::config::AStarConfig;
+pub use search::astar::svg::{export_route_svg, export_route_svg_with_port_open_cells};
+pub use search::astar::{route_single_net, route_single_net_with_config};
+pub use search::state::{RouteResult, State};
 pub use search::{
     AStarSearch, CrossingSearch, DynamicExpansion, NetSearch, SearchEnvironment, SearchOutcome,
     SearchRequest,

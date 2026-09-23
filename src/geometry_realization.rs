@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use rustc_hash::FxHashSet;
 
-use crate::astar::{RouteResult, State};
 #[cfg(test)]
 use crate::auto_meander::{
     cells_in_grid_rect, extract_axis_aligned_straight_runs, meander_box_to_grid_rect,
@@ -27,6 +26,7 @@ use crate::meander::{
 };
 use crate::obstacle_map::{CellKey, ObstacleMap};
 use crate::primitives::{PrimitiveGeometry, PrimitiveLibrary};
+use crate::search::state::{RouteResult, State};
 use crate::static_obstacle_builder::{
     cell_center_coordinate, grid_cell_center, physical_to_grid, PortInput, StaticGridSpec,
 };

@@ -1,6 +1,6 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::astar::RouteResult;
+use crate::search::state::RouteResult;
 
 use crate::engine::*;
 
