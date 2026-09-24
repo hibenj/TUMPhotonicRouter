@@ -69,7 +69,7 @@ def test_phase2_router_setup_builds_the_kernel_router_into_the_state(pipeline: P
 
     state = pipeline.state
     assert state.router is not None
-    assert hasattr(state.router, "route_many_with_repair_and_commit")
+    assert hasattr(state.router, "route_many_with_negotiated_repair_and_commit")
     assert state.primitive_cfg is not None
     assert state.astar_cfg is not None
     assert (state.grid_width, state.grid_height) == (GRID_WIDTH, GRID_HEIGHT)

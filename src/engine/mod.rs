@@ -25,7 +25,6 @@ pub(crate) mod crossing_reservation;
 pub(crate) mod diagnostics;
 pub(crate) mod endpoint_correction;
 pub(crate) mod jobs;
-pub(crate) mod legacy_repair;
 pub(crate) mod negotiation;
 pub(crate) mod search_calls;
 #[cfg(test)]
@@ -90,8 +89,8 @@ pub struct PyPhotonicRouter {
     pub(crate) last_pending_straight_victim: RefCell<Option<PendingStraightVictimHint>>,
     pub(crate) long_straight_congestion_cells: FxHashMap<CellKey, u32>,
     pub(crate) long_straight_congestion_records: Vec<LongStraightCongestionRecord>,
-    // Set once at the top of `route_many_with_repair_and_commit` from that
-    // call's own `history_increment`/`block_radius_cells` arguments, reset
+    // Set once at the top of the negotiated repair loop from that call's
+    // own `history_increment`/`block_radius_cells` arguments, reset
     // to 0 (a no-op amount) when the batch finishes. Read unconditionally by
     // every successful-commit chokepoint
     // (`commit_native_route_with_clearance_internal`,
@@ -125,16 +124,17 @@ pub struct PyPhotonicRouter {
     // outside it. Used only to timestamp `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG`
     // trace lines (`trace_t`): set to `Some(Instant::now())` at the top of
     // that loop and back to `None` before it returns. Two of its helpers
-    // (`probe_net_for_repair`, `try_lidar_direct_crossing_subset`) are
-    // shared with the older `route_many_with_repair_and_commit` chain, which
-    // never sets this field, so their trace lines print no `t=` field there
-    // and stay byte-identical to before this milestone. See
+    // (`probe_net_for_repair`, `try_lidar_direct_crossing_subset`) were
+    // shared with the older repair chain, deleted in Milestone 8 of
+    // `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`,
+    // which never set this field, so their trace lines printed no `t=`
+    // field there. See
     // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
     // Milestone 5.
     pub(crate) negotiated_batch_start: Option<Instant>,
     // Fail-fast expansion budget for the *next* search only: `None` outside
     // `route_many_with_negotiated_repair_and_commit`. That loop sets this to
-    // `Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT | NEGOTIATED_BUDGET_RETRY)`
+    // `Some(<the configured first / retry budget>)`
     // immediately before a plain/direct-crossing search call and back to
     // `None` immediately after, so `astar_config` (the one place this field
     // is read, applied to `AStarConfig::total_expansion_budget`) only ever
@@ -195,8 +195,6 @@ pub struct PyPhotonicRouter {
 #[derive(Clone, Debug)]
 pub(crate) struct PendingStraightVictimHint {
     pub(crate) net_id: u64,
-    pub(crate) victim_net_id: u64,
-    pub(crate) count: usize,
 }
 
 #[derive(Clone, Debug)]

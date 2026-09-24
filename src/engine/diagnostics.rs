@@ -79,9 +79,10 @@ pub(crate) fn push_native_repair_trace(
 /// Formats the `t=<seconds since batch start, one decimal> ` field led by
 /// every `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG` trace line emitted by
 /// `route_many_with_negotiated_repair_and_commit` and its helpers --
-/// `""` when `start` is `None` (outside that loop, e.g. for a trace line
-/// shared with the older `route_many_with_repair_and_commit` chain), so a
-/// caller can always write `eprintln!("{}native_repair_...", trace_t(start))`
+/// `""` when `start` is `None` (outside that loop, as it was for a trace
+/// line shared with the older repair chain, deleted in Milestone 8 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`), so
+/// a caller can always write `eprintln!("{}native_repair_...", trace_t(start))`
 /// without a branch. See
 /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
 /// Milestone 5.

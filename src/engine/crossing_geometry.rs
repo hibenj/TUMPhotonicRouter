@@ -187,9 +187,11 @@ pub(crate) fn physical_segment_length(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// axis-aligned material cascaded into later nets' searches; with it off,
 /// the full ladder stays clean (repair-path excess 1.31 -> 1.07 and
 /// 1.20 -> 1.03, owner visual sign-off) and multiportmmi_32x32 progresses
-/// from failing at net 109 to net 156. Set
-/// PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK to restore the old
-/// behavior.
+/// from failing at net 109 to net 156. The fallback itself, and the
+/// `PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK` switch that could
+/// restore it, were deleted in Milestone 8 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
+/// (2026-09-24).
 pub(crate) fn physical_point_near_centerline_endpoint(
     point: (f64, f64),
     centerline: &[(f64, f64)],

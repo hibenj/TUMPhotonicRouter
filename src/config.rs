@@ -10,8 +10,7 @@
 
 /// Negotiated-repair engine parameters
 /// (`PHOTONIC_ROUTER_NEGOTIATED_*`, `PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR`,
-/// `PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD`,
-/// `PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK`), read in
+/// `PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD`), read in
 /// `src/py_router.rs`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NegotiationConfig {
@@ -32,8 +31,6 @@ pub struct NegotiationConfig {
     pub disable_braid_repair: bool,
     /// `PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD`: parsed `usize`.
     pub pending_straight_ripup_threshold: usize,
-    /// `PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK`: presence.
-    pub enable_orthogonal_repair_fallback: bool,
 }
 
 impl Default for NegotiationConfig {
@@ -46,7 +43,6 @@ impl Default for NegotiationConfig {
             crossing_free_unplanned: true,
             disable_braid_repair: false,
             pending_straight_ripup_threshold: 100,
-            enable_orthogonal_repair_fallback: false,
         }
     }
 }
@@ -245,7 +241,6 @@ mod tests {
         assert!(cfg.crossing_free_unplanned);
         assert!(!cfg.disable_braid_repair);
         assert_eq!(cfg.pending_straight_ripup_threshold, 100);
-        assert!(!cfg.enable_orthogonal_repair_fallback);
     }
 
     #[test]

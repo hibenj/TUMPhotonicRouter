@@ -23,10 +23,7 @@ from translation.routing.session import (  # noqa: E402
     _RouteNetsRustSession,
     route_nets_rust,
 )
-from translation.routing.dispatch import (  # noqa: E402
-    NEGOTIATED_MAX_ROUNDS,
-    negotiated_repair_engine_enabled,
-)
+from translation.routing.dispatch import NEGOTIATED_MAX_ROUNDS  # noqa: E402
 from translation.routing.router_setup import (  # noqa: E402
     DENSE_OBSTACLE_CELL_CAP_MARGIN,
     dense_obstacle_cell_cap,
@@ -46,7 +43,6 @@ __all__ = [
     "analyze_meander_insertion_for_requirements",
     "dense_obstacle_cell_cap",
     "insert_meanders_for_requirements",
-    "negotiated_repair_engine_enabled",
     "route_match_and_realize",
     "route_nets_rust",
     "static_fanout_anchors_um",

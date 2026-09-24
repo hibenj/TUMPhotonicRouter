@@ -737,235 +737,13 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Shared low-level search primitive: routes through a caller-supplied
-    /// set of collision-crossing partner nets. Used by
-    /// [`Self::try_guided_collision_crossing`] (guided/2-partner case) and
-    /// by [`Self::try_crossing_aware_victim_reroute`]'s "seeded" and
-    /// "guided" per-victim attempts (see that method's own doc comment) --
-    /// not an independent top-level repair strategy itself.
-    pub(crate) fn try_route_through_collision_partner_set(
-        &self,
-        net_id: u64,
-        source: State,
-        target: State,
-        opened_ref: &FxHashSet<CellKey>,
-        search_cfg: &AStarConfig,
-        block_radius_cells: i32,
-        dynamic_clearance_exempt_keys: Option<&FxHashSet<CellKey>>,
-        partner_ids: &FxHashSet<u64>,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-        opened_cell_keys: Option<&FxHashSet<CellKey>>,
-    ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
-        if !self.crossing_context.is_enabled() || partner_ids.is_empty() {
-            return Ok(None);
-        }
-        let crossing_cfg = self.crossing_context.config();
-        let crossing_partners: Vec<CrossingSearchPartner> = partner_ids
-            .iter()
-            .filter_map(|partner_id| {
-                self.committed_center_routes
-                    .get(partner_id)
-                    .map(|waypoints| CrossingSearchPartner {
-                        net_id: *partner_id,
-                        waypoints: waypoints.clone(),
-                        target_terminal_bump_guard: self
-                            .committed_target_terminal_bump_guards
-                            .get(partner_id)
-                            .copied(),
-                        crossing_loss_override: None,
-                        single_discounted_crossing: false,
-                    })
-            })
-            .collect();
-        if crossing_partners.is_empty() {
-            return Ok(None);
-        }
-        let crossing_search = self.crossing_search_config(
-            net_id,
-            crossing_partners,
-            crossing_cfg,
-            target,
-            target_port_um,
-            None,
-            Some(true),
-        );
-        let mut crossing_search_cfg = search_cfg.clone();
-        crossing_search_cfg.require_terminal_straights = false;
-        crossing_search_cfg.enable_simple_routes = false;
-        crossing_search_cfg.enable_jps4 = false;
-        // This search requires the route to cross *every* partner in
-        // `partner_ids` simultaneously (`require_all_partners=true` below).
-        // When that joint constraint is infeasible, A* has no early-exit
-        // signal and must exhaust the search space before concluding
-        // failure -- confirmed via direct measurement on multiportmmi_8x8
-        // (net 32 repair, 2026-08-26): two such failed searches took 47.9s
-        // and 36.6s each against the uncapped default (5,000,000), while
-        // every real success this call has ever produced completed in
-        // well under 200ms (expanded well under 30,000 states). Capped 10x
-        // lower as a circuit breaker for the infeasible case -- still ~15x
-        // more headroom than any observed real success.
-        crossing_search_cfg.max_iterations = crossing_search_cfg.max_iterations.min(500_000);
-        let trace_crossing = self
-            .router_config
-            .diagnostics
-            .trace_crossing_net
-            .map_or_else(
-                || self.router_config.diagnostics.trace_crossing,
-                |trace_net_id| trace_net_id == net_id,
-            );
-        if trace_crossing {
-            eprintln!(
-                "guided-collision-crossing start net={} partners={:?} max_iterations={} block_radius={} min_straight={} half_size={}",
-                net_id,
-                crossing_search
-                    .partners
-                    .iter()
-                    .map(|partner| partner.net_id)
-                    .collect::<Vec<_>>(),
-                crossing_search_cfg.max_iterations,
-                block_radius_cells,
-                crossing_search.min_straight_cells,
-                crossing_search.crossing_half_size_cells,
-            );
-            for partner in &crossing_search.partners {
-                self.trace_committed_partner_centerline_compare(net_id, partner.net_id);
-            }
-        }
-        let mut search_map = self.obstacle_map.clone();
-        search_map.clear_dynamic_blocking_for_nets(partner_ids);
-        let partner_vec: Vec<u64> = partner_ids.iter().copied().collect();
-        let mut guided_keepout = FxHashSet::default();
-        const MAX_GUIDED_CROSSING_VALIDATION_RETRIES: usize = 4;
-        for retry_idx in 0..=MAX_GUIDED_CROSSING_VALIDATION_RETRIES {
-            let env = SearchEnvironment {
-                obstacle_map: &search_map,
-                primitives: &self.primitives,
-            };
-            let request = SearchRequest {
-                source,
-                target,
-                port_open_cells: Some(opened_ref),
-                dynamic_expansion: Some(DynamicExpansion {
-                    radius_cells: block_radius_cells.max(0),
-                    clearance_exempt_cells: dynamic_clearance_exempt_keys,
-                }),
-                crossing: Some(CrossingSearch {
-                    config: &crossing_search,
-                    reservation_open_cells: None,
-                }),
-                config: &crossing_search_cfg,
-            };
-            let Some(result) = self.search_engine.search(&env, &request).route else {
-                return Ok(None);
-            };
-            let crossing_events = self.realized_crossing_events_for_route(
-                net_id,
-                &result,
-                partner_ids,
-                source_port_um,
-                target_port_um,
-            );
-            let satisfies = self.crossing_route_satisfies_partner_constraints(
-                net_id,
-                &result,
-                partner_ids,
-                &crossing_events,
-                opened_cell_keys,
-            );
-            // Pre-commit search primitive (guided-collision retry loop):
-            // `result` has not been committed, so it cannot have registered
-            // crossing events yet.
-            let realized_violations = self.crossing_violations_for_route_with_ports(
-                net_id,
-                &result,
-                source_port_um,
-                target_port_um,
-                opened_cell_keys,
-                false,
-            );
-            self.dump_crossing_mismatch(
-                net_id,
-                &result,
-                source_port_um,
-                target_port_um,
-                &realized_violations,
-            );
-            let covers_requested_partners =
-                Self::crossing_events_cover_partners(&crossing_events, partner_ids);
-            if trace_crossing {
-                eprintln!(
-                    "guided-collision-crossing result net={} retry={} expanded={} generated={} events={} satisfies={} covers_partners={} realized_violations={:?} cost={} waypoints={:?}",
-                    net_id,
-                    retry_idx,
-                    result.stats.expanded_states,
-                    result.stats.generated_neighbors,
-                    crossing_events.len(),
-                    satisfies,
-                    covers_requested_partners,
-                    realized_violations
-                        .iter()
-                        .map(|violation| (violation.partner_net_id, violation.point, violation.reason))
-                        .collect::<Vec<_>>(),
-                    result.total_cost,
-                    result.compressed_waypoints,
-                );
-            }
-            if !crossing_events.is_empty()
-                && satisfies
-                && covers_requested_partners
-                && realized_violations.is_empty()
-            {
-                return Ok(Some((result, crossing_events)));
-            }
-            if !crossing_events.is_empty()
-                && satisfies
-                && covers_requested_partners
-                && !realized_violations.is_empty()
-            {
-                return Err(Self::format_realized_crossing_violation_error(
-                    net_id,
-                    &realized_violations,
-                ));
-            }
-
-            if retry_idx == MAX_GUIDED_CROSSING_VALIDATION_RETRIES {
-                break;
-            }
-            let retry_keepout = self.crossing_physical_violation_repair_keepout_keys(
-                &realized_violations,
-                &partner_vec,
-            );
-            let new_keepout: FxHashSet<CellKey> = retry_keepout
-                .into_iter()
-                .filter(|key| guided_keepout.insert(*key))
-                .collect();
-            if new_keepout.is_empty() {
-                break;
-            }
-            let added = search_map.add_static_keys(&new_keepout);
-            if trace_crossing {
-                eprintln!(
-                    "guided-collision-crossing retry-keepout net={} retry={} keys={} added={}",
-                    net_id,
-                    retry_idx + 1,
-                    new_keepout.len(),
-                    added,
-                );
-            }
-        }
-        Ok(None)
-    }
-
-    #[allow(clippy::too_many_arguments)]
     /// Shared low-level search primitive for the "window" (topology
     /// expected-partner) crossing mode -- the sibling of
     /// [`Self::try_route_through_collision_partner_set`] for nets whose
     /// crossing partners come from `crossing_allowed_partner_set` rather
-    /// than lidar-pure collision detection. Not part of the
-    /// `route_many_with_repair_and_commit` main loop's own call chain;
-    /// called from the native route/repair entry points that resolve
-    /// crossing mode before dispatching into repair.
+    /// than lidar-pure collision detection. Called from the native
+    /// route/repair entry points that resolve crossing mode before
+    /// dispatching into repair.
     // candidate for removal, see Milestone 8 of .agent/execplans/2026-09-22-modular-readable-router-restructure.md
     pub(crate) fn try_route_through_expected_crossing_partner(
         &self,
@@ -2085,225 +1863,6 @@ impl PyPhotonicRouter {
         Ok(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn route_single_net_and_commit_native_with_repair_keepout(
-        &mut self,
-        net_id: u64,
-        source: PyState,
-        target: PyState,
-        block_radius_cells: i32,
-        opened_cells: &[(i32, i32)],
-        opened_cell_keys: &FxHashSet<CellKey>,
-        commit_radius_cells: Option<i32>,
-        clearance_exempt_cells: &[(i32, i32)],
-        clearance_exempt_cell_keys: &FxHashSet<CellKey>,
-        core_radius_cells: Option<i32>,
-        repair_keepout: &FxHashSet<CellKey>,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-    ) -> Result<RouteResult, String> {
-        if repair_keepout.is_empty() {
-            return self.route_single_net_and_commit_native(
-                net_id,
-                source,
-                target,
-                block_radius_cells,
-                Some(opened_cells),
-                Some(opened_cell_keys),
-                commit_radius_cells,
-                Some(clearance_exempt_cells),
-                Some(clearance_exempt_cell_keys),
-                core_radius_cells,
-                source_port_um,
-                target_port_um,
-            );
-        }
-        let filtered_opened =
-            opened_cells_excluding_keepout(opened_cells, repair_keepout, source, target);
-        if filtered_opened.len() == opened_cells.len() {
-            return self.route_single_net_and_commit_native(
-                net_id,
-                source,
-                target,
-                block_radius_cells,
-                Some(opened_cells),
-                Some(opened_cell_keys),
-                commit_radius_cells,
-                Some(clearance_exempt_cells),
-                Some(clearance_exempt_cell_keys),
-                core_radius_cells,
-                source_port_um,
-                target_port_um,
-            );
-        }
-        let filtered_opened_keys = pack_cells(&filtered_opened);
-        let result = self.route_single_net_and_commit_native(
-            net_id,
-            source,
-            target,
-            block_radius_cells,
-            Some(&filtered_opened),
-            Some(&filtered_opened_keys),
-            commit_radius_cells,
-            Some(clearance_exempt_cells),
-            Some(clearance_exempt_cell_keys),
-            core_radius_cells,
-            source_port_um,
-            target_port_um,
-        );
-        if matches!(result, Err(ref error) if error == "No route found") {
-            self.route_single_net_and_commit_native(
-                net_id,
-                source,
-                target,
-                block_radius_cells,
-                Some(opened_cells),
-                Some(opened_cell_keys),
-                commit_radius_cells,
-                Some(clearance_exempt_cells),
-                Some(clearance_exempt_cell_keys),
-                core_radius_cells,
-                source_port_um,
-                target_port_um,
-            )
-        } else {
-            result
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn route_single_net_and_commit_repair_native_with_repair_keepout(
-        &mut self,
-        net_id: u64,
-        source: PyState,
-        target: PyState,
-        block_radius_cells: i32,
-        opened_cells: &[(i32, i32)],
-        opened_cell_keys: &FxHashSet<CellKey>,
-        history_weight: f64,
-        commit_radius_cells: Option<i32>,
-        clearance_exempt_cells: &[(i32, i32)],
-        clearance_exempt_cell_keys: &FxHashSet<CellKey>,
-        core_radius_cells: Option<i32>,
-        repair_keepout: &FxHashSet<CellKey>,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-    ) -> Result<RouteResult, String> {
-        let mut active_keepout = repair_keepout.clone();
-        let mut internally_added_keepout = FxHashSet::default();
-        let mut feedback_attempts = 0usize;
-        loop {
-            let result = if active_keepout.is_empty() {
-                self.route_single_net_and_commit_repair_native(
-                    net_id,
-                    source,
-                    target,
-                    block_radius_cells,
-                    Some(opened_cells),
-                    Some(opened_cell_keys),
-                    history_weight,
-                    commit_radius_cells,
-                    Some(clearance_exempt_cells),
-                    Some(clearance_exempt_cell_keys),
-                    core_radius_cells,
-                    source_port_um,
-                    target_port_um,
-                )
-            } else {
-                let filtered_opened =
-                    opened_cells_excluding_keepout(opened_cells, &active_keepout, source, target);
-                if filtered_opened.len() == opened_cells.len() {
-                    self.route_single_net_and_commit_repair_native(
-                        net_id,
-                        source,
-                        target,
-                        block_radius_cells,
-                        Some(opened_cells),
-                        Some(opened_cell_keys),
-                        history_weight,
-                        commit_radius_cells,
-                        Some(clearance_exempt_cells),
-                        Some(clearance_exempt_cell_keys),
-                        core_radius_cells,
-                        source_port_um,
-                        target_port_um,
-                    )
-                } else {
-                    let filtered_opened_keys = pack_cells(&filtered_opened);
-                    let result = self.route_single_net_and_commit_repair_native(
-                        net_id,
-                        source,
-                        target,
-                        block_radius_cells,
-                        Some(&filtered_opened),
-                        Some(&filtered_opened_keys),
-                        history_weight,
-                        commit_radius_cells,
-                        Some(clearance_exempt_cells),
-                        Some(clearance_exempt_cell_keys),
-                        core_radius_cells,
-                        source_port_um,
-                        target_port_um,
-                    );
-                    if matches!(result, Err(ref error) if error == "No route found") {
-                        self.route_single_net_and_commit_repair_native(
-                            net_id,
-                            source,
-                            target,
-                            block_radius_cells,
-                            Some(opened_cells),
-                            Some(opened_cell_keys),
-                            history_weight,
-                            commit_radius_cells,
-                            Some(clearance_exempt_cells),
-                            Some(clearance_exempt_cell_keys),
-                            core_radius_cells,
-                            source_port_um,
-                            target_port_um,
-                        )
-                    } else {
-                        result
-                    }
-                }
-            };
-
-            match result {
-                Ok(route) => {
-                    if !internally_added_keepout.is_empty() {
-                        self.obstacle_map
-                            .remove_static_keys(&internally_added_keepout);
-                    }
-                    return Ok(route);
-                }
-                Err(error) => {
-                    if feedback_attempts >= 4 {
-                        if !internally_added_keepout.is_empty() {
-                            self.obstacle_map
-                                .remove_static_keys(&internally_added_keepout);
-                        }
-                        return Err(error);
-                    }
-                    let error_keepout = self.crossing_error_repair_keepout_keys(&error);
-                    let extra_keepout: FxHashSet<CellKey> = error_keepout
-                        .into_iter()
-                        .filter(|key| !active_keepout.contains(key))
-                        .collect();
-                    if extra_keepout.is_empty() {
-                        if !internally_added_keepout.is_empty() {
-                            self.obstacle_map
-                                .remove_static_keys(&internally_added_keepout);
-                        }
-                        return Err(error);
-                    }
-                    self.obstacle_map.add_static_keys(&extra_keepout);
-                    active_keepout.extend(extra_keepout.iter().copied());
-                    internally_added_keepout.extend(extra_keepout);
-                    feedback_attempts = feedback_attempts.saturating_add(1);
-                }
-            }
-        }
-    }
-
     pub(crate) fn route_single_net_ignore_dynamic_native(
         &self,
         source: PyState,
@@ -2583,28 +2142,14 @@ impl PyPhotonicRouter {
         else {
             return;
         };
-        *self.last_pending_straight_victim.borrow_mut() = Some(PendingStraightVictimHint {
-            net_id,
-            victim_net_id,
-            count,
-        });
+        *self.last_pending_straight_victim.borrow_mut() =
+            Some(PendingStraightVictimHint { net_id });
         if self.router_config.diagnostics.native_repair_diag {
             eprintln!(
                 "native_repair_pending_straight_hint net={} victim={} count={} threshold={}",
                 net_id, victim_net_id, count, threshold
             );
         }
-    }
-
-    pub(crate) fn pending_straight_victim_hint_for(
-        &self,
-        net_id: u64,
-    ) -> Option<PendingStraightVictimHint> {
-        self.last_pending_straight_victim
-            .borrow()
-            .as_ref()
-            .filter(|hint| hint.net_id == net_id)
-            .cloned()
     }
 
     pub(crate) fn geometry_grid(&self) -> Result<GeometryGridSpec, String> {
@@ -2676,12 +2221,11 @@ mod tests {
     /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`:
     /// `negotiated_search_budget` (and therefore
     /// `AStarConfig::total_expansion_budget`) must stay `None` on every path
-    /// the older repair chain (`route_many_with_repair_and_commit` and the
-    /// plain-routing entry points it shares helpers with) uses to build a
-    /// search config -- only `route_many_with_negotiated_repair_and_commit`
-    /// ever sets it, and only for the duration of one search call. A fresh
-    /// router has never run either engine, so `astar_config` here stands in
-    /// for what every chain call sees.
+    /// the plain-routing entry points use to build a search config -- only
+    /// `route_many_with_negotiated_repair_and_commit` ever sets it, and only
+    /// for the duration of one search call. A fresh router has never run the
+    /// loop, so `astar_config` here stands in for what every other call
+    /// sees.
     #[test]
     fn astar_config_leaves_total_expansion_budget_none_by_default() {
         let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
@@ -3086,12 +2630,8 @@ mod tests {
             repair_count: 0,
             failed_net_id: None,
             failed_error: None,
-            retried_source_layers: FxHashSet::default(),
             timings: NativeBatchTimings::default(),
-            trace_last_route_start: None,
-            deferred_job_indices: Vec::new(),
             deferred_count: 0,
-            last_rejected_commit_partners: Vec::new(),
         };
         for net_id in [1u64, 2, 3] {
             batch.final_routes.insert(net_id, empty_test_route());
@@ -3201,26 +2741,6 @@ mod tests {
         .map(|(x, y)| pack_xy(x, y))
         .collect();
         assert_eq!(north, expected_north);
-    }
-
-    #[test]
-    fn opened_cells_excluding_keepout_preserves_terminals() {
-        let opened = vec![(1, 1), (2, 2), (3, 3), (4, 4)];
-        let keepout: FxHashSet<CellKey> = [(2, 2), (3, 3), (4, 4)]
-            .into_iter()
-            .map(|(x, y)| pack_xy(x, y))
-            .collect();
-        let filtered = opened_cells_excluding_keepout(
-            &opened,
-            &keepout,
-            PyState::new(2, 2, 0),
-            PyState::new(4, 4, 0),
-        );
-
-        assert!(filtered.contains(&(2, 2)));
-        assert!(filtered.contains(&(4, 4)));
-        assert!(!filtered.contains(&(3, 3)));
-        assert!(filtered.contains(&(1, 1)));
     }
 
     #[test]

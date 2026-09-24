@@ -1,8 +1,13 @@
 """Phase 8: the final geometry repair and verification passes.
 
 The two mid-pipeline repair passes (final crossing repair, issue-group repair)
-still call the kernel's legacy repair loop -- question D8 of the restructure
-plan; candidate for removal, see Milestone 8."""
+call the kernel's negotiated repair loop
+(`route_many_with_negotiated_repair_and_commit`, `NEGOTIATED_MAX_ROUNDS`
+rounds), the repository's only batch routing entry point. They called the
+legacy repair loop until Milestone 8 of
+`.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
+re-pointed them here (question D8, owner decision 2026-09-24); no paper cell
+has ever reached either pass, so the gate cannot see the difference."""
 
 from __future__ import annotations
 
@@ -45,6 +50,7 @@ from translation.route_rust_realization import realize_routed_net_records
 from translation.route_rust_types import RoutedNetRecord
 
 from translation.routing.dispatch import (
+    NEGOTIATED_MAX_ROUNDS,
     _clearance_exempt_cells_for_job,
     _foreign_keepout_cleanup_cells_for_job,
     _record_route,
@@ -371,7 +377,6 @@ def _repair_final_illegal_crossings(
         or not state.repair_config.enabled
         or not hasattr(state.router, "add_static_cells")
         or not hasattr(state.router, "ripup_route")
-        or not hasattr(state.router, "route_many_with_repair_and_commit")
     ):
         return False
     repair_net_ids = _final_crossing_repair_net_ids(settings, state, selected_illegal_crossings)
@@ -470,13 +475,12 @@ def _repair_final_illegal_crossings(
         )
         opened_by_id[int(job.net_id)] = opened_cells
 
-    raw_repair_result = state.router.route_many_with_repair_and_commit(
+    raw_repair_result = state.router.route_many_with_negotiated_repair_and_commit(
         repair_jobs,
         state.block_radius_cells,
         state.commit_radius_cells,
         state.core_commit_radius_cells,
-        int(state.repair_config.max_rounds),
-        int(state.repair_config.max_victims_per_failure),
+        NEGOTIATED_MAX_ROUNDS,
         float(state.repair_config.history_weight),
         int(state.repair_config.history_increment),
     )
@@ -810,7 +814,6 @@ def _repair_final_photonic_issues(
         or not state.repair_config.enabled
         or not hasattr(state.router, "add_static_cells")
         or not hasattr(state.router, "ripup_route")
-        or not hasattr(state.router, "route_many_with_repair_and_commit")
     ):
         return False
 
@@ -876,13 +879,12 @@ def _repair_final_photonic_issues(
         )
         opened_by_id[int(job.net_id)] = opened_cells
 
-    raw_repair_result = state.router.route_many_with_repair_and_commit(
+    raw_repair_result = state.router.route_many_with_negotiated_repair_and_commit(
         repair_jobs,
         state.block_radius_cells,
         state.commit_radius_cells,
         state.core_commit_radius_cells,
-        int(state.repair_config.max_rounds),
-        int(state.repair_config.max_victims_per_failure),
+        NEGOTIATED_MAX_ROUNDS,
         float(state.repair_config.history_weight),
         int(state.repair_config.history_increment),
     )

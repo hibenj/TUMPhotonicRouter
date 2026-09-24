@@ -32,7 +32,7 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 from gdsfactory.typings import Port
 
-from photonic_router.config import ALL_NETS, EngineSelection, RouterConfig, RoutingConfig
+from photonic_router.config import ALL_NETS, RouterConfig, RoutingConfig
 from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
 from photonic_router.routing_layers import (
     ComponentPortAccessRule,
@@ -223,7 +223,7 @@ from translation.routing.api import (
     route_match_and_realize,
     static_fanout_anchors_um,
 )
-from translation.routing.dispatch import NEGOTIATED_MAX_ROUNDS, negotiated_repair_engine_enabled
+from translation.routing.dispatch import NEGOTIATED_MAX_ROUNDS
 from translation.routing.router_setup import (
     DENSE_OBSTACLE_CELL_CAP_MARGIN,
     dense_obstacle_cell_cap,
@@ -253,7 +253,6 @@ __all__ = [
     "DENSE_OBSTACLE_CELL_CAP_MARGIN",
     "EndpointCorrectionCategory",
     "EndpointCorrectionRouter",
-    "EngineSelection",
     "GridSpec",
     "Iterable",
     "IterableABC",
@@ -421,7 +420,6 @@ __all__ = [
     "math",
     "merge_missing_length_requirements",
     "minimum_four_bend_extra_length_um",
-    "negotiated_repair_engine_enabled",
     "normalize_crossing_mode",
     "normalize_net_order",
     "order_route_jobs",

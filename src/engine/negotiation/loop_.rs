@@ -8,204 +8,6 @@ use crate::config::NegotiationConfig;
 use crate::engine::*;
 
 impl PyPhotonicRouter {
-    // candidate for removal, see Milestone 8 of .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-    pub(crate) fn snapshot_negotiation_state(
-        &self,
-        batch: &RepairBatchState,
-    ) -> NegotiationSnapshot {
-        NegotiationSnapshot {
-            obstacle_map: self.obstacle_map.clone(),
-            committed_center_routes: self.committed_center_routes.clone(),
-            committed_realized_center_routes: self.committed_realized_center_routes.clone(),
-            committed_target_terminal_bump_guards: self
-                .committed_target_terminal_bump_guards
-                .clone(),
-            committed_opened_cell_keys: self.committed_opened_cell_keys.clone(),
-            crossing_events: self.crossing_events.clone(),
-            final_routes: batch.final_routes.clone(),
-        }
-    }
-
-    // candidate for removal, see Milestone 8 of .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-    pub(crate) fn restore_negotiation_state(
-        &mut self,
-        batch: &mut RepairBatchState,
-        snapshot: NegotiationSnapshot,
-    ) {
-        self.obstacle_map = snapshot.obstacle_map;
-        self.committed_center_routes = snapshot.committed_center_routes;
-        self.committed_realized_center_routes = snapshot.committed_realized_center_routes;
-        self.committed_target_terminal_bump_guards = snapshot.committed_target_terminal_bump_guards;
-        self.committed_opened_cell_keys = snapshot.committed_opened_cell_keys;
-        self.crossing_events = snapshot.crossing_events;
-        batch.final_routes = snapshot.final_routes;
-        self.invalidate_meander_base_prefix();
-    }
-
-    /// Negotiated displacement, cascading up to `depth_remaining` levels:
-    /// rip up every net in `blocker_ids`, try to commit `job` in the space
-    /// that frees up, then try to reroute and recommit every displaced
-    /// blocker in turn. If a blocker cannot be rerouted plainly and
-    /// `depth_remaining > 0`, probe *that* blocker for its own blockers and
-    /// recursively attempt to displace them too -- so a chain (`job` needs
-    /// `B`'s spot, `B` needs `C`'s spot, ...) can resolve as one atomic
-    /// negotiation, not just a single pairwise swap. Succeeds (returns
-    /// `true`, `batch.repair_count` bumped once per top-level call, all
-    /// routes left committed) only if `job` and the *entire* resulting
-    /// displacement chain can be routed; any failure at any level restores
-    /// every field the negotiation touched to exactly the snapshot taken at
-    /// that level's own entry (nested restores compose correctly: an inner
-    /// failure already undoes its own sub-chain before an outer failure
-    /// restores everything above it), so a failed attempt at any depth is a
-    /// pure no-op from its caller's perspective. A nested `probe_net_for_repair`
-    /// call's own `batch.failed_net_id`/`failed_error` side effects (meant
-    /// for a *top-level* probe failure to abort the whole batch) are
-    /// explicitly cleared here when used for cascade exploration -- a
-    /// blocker genuinely having no route at all only means this cascade
-    /// branch fails, not that the batch should abort.
-    ///
-    /// Reuses `route_single_net_and_commit_native` (the same primitive
-    /// `try_plain_normal_route` and every other repair strategy already
-    /// uses) and `probe_net_for_repair` (unchanged, already crossing-
-    /// legality-aware) rather than new search machinery. See
-    /// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestones 5
-    /// (single-level version) and 6 (cascading; the single-level version was
-    /// found insufficient for `benes_16x16`, see Milestone 6's Surprises &
-    /// Discoveries).
-    ///
-    /// As of Milestone 2 of
-    /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`,
-    /// `route_many_with_negotiated_repair_and_commit` no longer calls this
-    /// -- it was replaced by LiDAR's local rip-up rule
-    /// (`ripup_illegal_crossing_partners`). Kept unused until Milestone 5
-    /// decides its fate.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
-    // candidate for removal, see Milestone 8 of .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-    pub(crate) fn try_negotiated_displacement(
-        &mut self,
-        batch: &mut RepairBatchState,
-        job: &NativeRouteJob,
-        blocker_ids: &[u64],
-        job_by_id: &FxHashMap<u64, NativeRouteJob>,
-        order_by_id: &FxHashMap<u64, usize>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        collect_native_timing: bool,
-        trace_native_repair: bool,
-        depth_remaining: u32,
-    ) -> bool {
-        let snapshot = self.snapshot_negotiation_state(batch);
-        self.ripup_repair_set_victims(batch, blocker_ids, collect_native_timing);
-
-        let route_start = native_batch_timer(collect_native_timing);
-        let route_result = self.route_single_net_and_commit_native(
-            job.net_id,
-            job.source,
-            job.target,
-            block_radius_cells,
-            Some(&job.opened_cells),
-            Some(&job.opened_cell_keys),
-            commit_radius_cells,
-            Some(&job.clearance_exempt_cells),
-            Some(&job.clearance_exempt_cell_keys),
-            core_radius_cells,
-            job.source_port_um,
-            job.target_port_um,
-        );
-        batch.timings.normal_route_wall_us += native_batch_elapsed_us(route_start);
-        let route = match route_result {
-            Ok(route) => route,
-            Err(_) => {
-                self.restore_negotiation_state(batch, snapshot);
-                return false;
-            }
-        };
-        remove_success_static_cleanup(&mut self.obstacle_map, job);
-        batch.final_routes.insert(job.net_id, route);
-
-        let mut all_blockers_rerouted = true;
-        for blocker_id in blocker_ids {
-            let Some(blocker_job) = job_by_id.get(blocker_id).cloned() else {
-                continue;
-            };
-            let blocker_route_start = native_batch_timer(collect_native_timing);
-            let blocker_result = self.route_single_net_and_commit_native(
-                blocker_job.net_id,
-                blocker_job.source,
-                blocker_job.target,
-                block_radius_cells,
-                Some(&blocker_job.opened_cells),
-                Some(&blocker_job.opened_cell_keys),
-                commit_radius_cells,
-                Some(&blocker_job.clearance_exempt_cells),
-                Some(&blocker_job.clearance_exempt_cell_keys),
-                core_radius_cells,
-                blocker_job.source_port_um,
-                blocker_job.target_port_um,
-            );
-            batch.timings.normal_route_wall_us += native_batch_elapsed_us(blocker_route_start);
-            match blocker_result {
-                Ok(blocker_route) => {
-                    remove_success_static_cleanup(&mut self.obstacle_map, &blocker_job);
-                    batch.final_routes.insert(blocker_job.net_id, blocker_route);
-                }
-                Err(_) if depth_remaining > 0 => {
-                    let sub_probe = self.probe_net_for_repair(
-                        batch,
-                        &blocker_job,
-                        order_by_id,
-                        block_radius_cells,
-                        commit_radius_cells,
-                        collect_native_timing,
-                        trace_native_repair,
-                    );
-                    let cascaded = match sub_probe {
-                        Ok(sub_probe) if !sub_probe.candidate_blockers.is_empty() => self
-                            .try_negotiated_displacement(
-                                batch,
-                                &blocker_job,
-                                &sub_probe.candidate_blockers,
-                                job_by_id,
-                                order_by_id,
-                                block_radius_cells,
-                                commit_radius_cells,
-                                core_radius_cells,
-                                collect_native_timing,
-                                trace_native_repair,
-                                depth_remaining - 1,
-                            ),
-                        _ => false,
-                    };
-                    // A nested probe failure (no route exists for
-                    // `blocker_job` even ignoring dynamic obstacles) is only
-                    // this cascade branch failing, not a reason to abort the
-                    // whole batch -- clear the side effect a top-level probe
-                    // failure would otherwise leave behind.
-                    batch.failed_net_id = None;
-                    batch.failed_error = None;
-                    if !cascaded {
-                        all_blockers_rerouted = false;
-                        break;
-                    }
-                }
-                Err(_) => {
-                    all_blockers_rerouted = false;
-                    break;
-                }
-            }
-        }
-
-        if all_blockers_rerouted {
-            batch.repair_count += 1;
-            true
-        } else {
-            self.restore_negotiation_state(batch, snapshot);
-            false
-        }
-    }
-
     /// LiDAR's `ripupfailedNets` (Milestone 3 of
     /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`):
     /// called once at the end of every round of
@@ -351,26 +153,6 @@ impl PyPhotonicRouter {
                     *global_ripups
                 );
             }
-        }
-    }
-
-    // candidate for removal, see Milestone 8 of .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-    pub(crate) fn ripup_repair_set_victims(
-        &mut self,
-        batch: &mut RepairBatchState,
-        ripup_ids: &[u64],
-        collect_native_timing: bool,
-    ) {
-        for old_id in ripup_ids {
-            let ripup_start = native_batch_timer(collect_native_timing);
-            self.remove_crossing_events_for_net(*old_id);
-            self.obstacle_map.ripup_route(*old_id);
-            self.committed_center_routes.remove(old_id);
-            self.committed_realized_center_routes.remove(old_id);
-            self.committed_target_terminal_bump_guards.remove(old_id);
-            self.committed_opened_cell_keys.remove(old_id);
-            batch.timings.ripup_us += native_batch_elapsed_us(ripup_start);
-            batch.final_routes.remove(old_id);
         }
     }
 }
@@ -624,6 +406,7 @@ mod tests {
             max_rounds,
             history_weight: 2.0,
             history_increment: 1,
+            no_ripup: false,
         }
     }
 
@@ -873,8 +656,7 @@ pub(crate) type PyRouteJobTuple = (
 /// The batch's jobs plus the three lookup tables the loop's steps read:
 /// the caller's net order (`route_rust.py`'s `_topological_net_route_order`),
 /// the jobs by id, and the job indices by source column (the probe-guided
-/// step's structural widening -- the same construction as
-/// `route_many_with_repair_and_commit`'s map of the same name).
+/// step's structural widening).
 struct NetTables {
     jobs: Vec<NativeRouteJob>,
     order_by_id: FxHashMap<u64, usize>,
@@ -961,10 +743,11 @@ pub(crate) struct NegotiationCounters {
 }
 
 /// The per-batch arguments of the negotiated loop: the clearance radii
-/// every search of the batch shares, the round limit, and the history cost
-/// the loop installs for the nets that have already failed. Exactly the
-/// six arguments `route_many_with_negotiated_repair_and_commit` takes from
-/// Python beside the jobs.
+/// every search of the batch shares, the round limit, the history cost the
+/// loop installs for the nets that have already failed, and which rip-up
+/// rule runs. Exactly the seven arguments
+/// `route_many_with_negotiated_repair_and_commit` takes from Python beside
+/// the jobs.
 pub(crate) struct NegotiationParams {
     pub(crate) block_radius_cells: i32,
     pub(crate) commit_radius_cells: Option<i32>,
@@ -972,6 +755,14 @@ pub(crate) struct NegotiationParams {
     pub(crate) max_rounds: u32,
     pub(crate) history_weight: f64,
     pub(crate) history_increment: u32,
+    /// `true` selects `NoRipUp` instead of `LidarStyleRipUp`: nothing is
+    /// ever ripped and a blocked net just fails its round. With
+    /// `max_rounds = 1` this is the no-repair mode
+    /// (`RipupRerouteConfig(enabled=False)`), which reached the deleted
+    /// separate non-repair batch binding this loop replaced in Milestone 8
+    /// of `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
+    /// (2026-09-24).
+    pub(crate) no_ripup: bool,
 }
 
 /// What one round mutates: the committed batch, the queue and its
@@ -995,12 +786,8 @@ fn empty_batch_state() -> RepairBatchState {
         repair_count: 0,
         failed_net_id: None,
         failed_error: None,
-        retried_source_layers: FxHashSet::default(),
         timings: NativeBatchTimings::default(),
-        trace_last_route_start: None,
-        deferred_job_indices: Vec::new(),
         deferred_count: 0,
-        last_rejected_commit_partners: Vec::new(),
     }
 }
 
@@ -1215,6 +1002,7 @@ impl PyPhotonicRouter {
         max_rounds: u32,
         history_weight: f64,
         history_increment: u32,
+        no_ripup: bool,
     ) -> PyResult<PyObject> {
         let jobs = native_jobs_from_py(jobs);
         let params = NegotiationParams {
@@ -1224,6 +1012,7 @@ impl PyPhotonicRouter {
             max_rounds,
             history_weight,
             history_increment,
+            no_ripup,
         };
         // Read before the loop runs, as `SearchArgs` has always read it;
         // no step of the loop writes `astar_cfg`.
@@ -1261,6 +1050,7 @@ impl PyPhotonicRouter {
             max_rounds,
             history_weight,
             history_increment,
+            no_ripup,
         } = *params;
         self.obstacle_map.clear_congestion();
         self.obstacle_map.clear_history();
@@ -1286,9 +1076,15 @@ impl PyPhotonicRouter {
         let budgets = LadderBudgets(&negotiation);
         let crossing_free_policy = self.negotiated_crossing_free_policy(&negotiation);
         // This loop has always ripped up LiDAR-style; `NoRipUp` is the
-        // no-repair mode, which reaches this loop only once Milestone 8
-        // re-points it here.
-        let ripup_policy: Box<dyn RipUpPolicy> = Box::new(LidarStyleRipUp);
+        // no-repair mode (`max_rounds = 1`, `no_ripup = true`), which
+        // Milestone 8 of
+        // `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
+        // re-pointed here from the deleted non-repair batch binding.
+        let ripup_policy: Box<dyn RipUpPolicy> = if no_ripup {
+            Box::new(NoRipUp)
+        } else {
+            Box::new(LidarStyleRipUp)
+        };
 
         let mut queue = NetQueue::new(tables.jobs.iter().map(|job| job.net_id));
         let mut counters = NegotiationCounters::default();

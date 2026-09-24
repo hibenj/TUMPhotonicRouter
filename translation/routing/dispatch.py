@@ -9,7 +9,6 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Iterable, Mapping, cast
 
-from photonic_router.config import EngineSelection
 
 from translation.route_rust_crossing_plan import _port_center_um
 from translation.route_rust_debug_artifacts import (
@@ -43,11 +42,14 @@ from translation.routing.state import SessionState
 # `route_many_with_negotiated_repair_and_commit`'s own round budget --
 # LiDAR's `runNRR` default (`.agent/execplans/2026-09-14-lidar-style-
 # negotiated-ripup-endgame.md`, Milestone 3). Kept separate from
-# `RipupRerouteConfig.max_rounds` (default 4, the chain's per-net
-# `--ripup-max-rounds`), which is a different knob for a different engine:
-# the negotiated engine's "round" is a whole-queue pass with a global
-# rip-up at the end (LiDAR's `ripupfailedNets`), not a per-net repair-set
-# retry count, so the chain's smaller default does not carry over.
+# `RipupRerouteConfig.max_rounds` (default 4, `--ripup-max-rounds`), which
+# was a different knob for the older repair chain: the negotiated engine's
+# "round" is a whole-queue pass with a global rip-up at the end (LiDAR's
+# `ripupfailedNets`), not a per-net repair-set retry count, so the chain's
+# smaller default never carried over. Since Milestone 8 of
+# .agent/execplans/2026-09-22-modular-readable-router-restructure.md deleted
+# that chain, `max_rounds` and `max_victims_per_failure` are set by the CLI
+# but read by nothing -- flagged for the owner, not removed here.
 NEGOTIATED_MAX_ROUNDS = 10
 
 
@@ -1477,11 +1479,11 @@ def dispatch_native_routing(
     settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
 ) -> None:
     if state.repair_config.enabled:
-        if not hasattr(state.router, "route_many_with_repair_and_commit"):
+        if not hasattr(state.router, "route_many_with_negotiated_repair_and_commit"):
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
-                "PyPhotonicRouter.route_many_with_repair_and_commit. Rebuild it with "
-                "`maturin develop --release`; Python repair fallback has been removed."
+                "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. Rebuild it "
+                "with `maturin develop --release`; Python repair fallback has been removed."
             )
         batch_jobs: list[
             tuple[
@@ -1546,41 +1548,22 @@ def dispatch_native_routing(
         timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
 
         batch_start = _timing_start(settings, state)
-        if negotiated_repair_engine_enabled(settings.config.engine):
-            # Default since 2026-09-16 (owner decision, baseline
-            # freeze): the LiDAR-style negotiated rip-up loop of
-            # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
-            # (the only engine that routes the 64x64 mesh). The older
-            # 17-strategy chain `route_many_with_repair_and_commit`
-            # stays available for A/B runs via
-            # PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN=1 (or
-            # PHOTONIC_ROUTER_NEGOTIATED_REPAIR=0).
-            if not hasattr(state.router, "route_many_with_negotiated_repair_and_commit"):
-                raise RuntimeError(
-                    "The loaded photonic_router._rust extension does not expose "
-                    "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. "
-                    "Rebuild it with `maturin develop --release`."
-                )
-            raw_batch_result = state.router.route_many_with_negotiated_repair_and_commit(
-                batch_jobs,
-                state.block_radius_cells,
-                state.commit_radius_cells,
-                state.core_commit_radius_cells,
-                NEGOTIATED_MAX_ROUNDS,
-                float(state.repair_config.history_weight),
-                int(state.repair_config.history_increment),
-            )
-        else:
-            raw_batch_result = state.router.route_many_with_repair_and_commit(
-                batch_jobs,
-                state.block_radius_cells,
-                state.commit_radius_cells,
-                state.core_commit_radius_cells,
-                int(state.repair_config.max_rounds),
-                int(state.repair_config.max_victims_per_failure),
-                float(state.repair_config.history_weight),
-                int(state.repair_config.history_increment),
-            )
+        # The LiDAR-style negotiated rip-up loop of
+        # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
+        # (the only engine that routes the 64x64 mesh), the default since
+        # 2026-09-16 (owner decision, baseline freeze) and the only repair
+        # engine since Milestone 8 of
+        # .agent/execplans/2026-09-22-modular-readable-router-restructure.md
+        # deleted the older 17-strategy chain and its engine switch.
+        raw_batch_result = state.router.route_many_with_negotiated_repair_and_commit(
+            batch_jobs,
+            state.block_radius_cells,
+            state.commit_radius_cells,
+            state.core_commit_radius_cells,
+            NEGOTIATED_MAX_ROUNDS,
+            float(state.repair_config.history_weight),
+            int(state.repair_config.history_increment),
+        )
         batch_elapsed_s = time.perf_counter() - batch_start if state.collect_timing else 0.0
         timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
         t_batch_result_processing_start = timing.pipeline_timer_start(settings, state)
@@ -1748,10 +1731,10 @@ def dispatch_native_routing(
             )
 
     else:
-        if not hasattr(state.router, "route_many_normal_and_commit"):
+        if not hasattr(state.router, "route_many_with_negotiated_repair_and_commit"):
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
-                "PyPhotonicRouter.route_many_normal_and_commit. Rebuild it with "
+                "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. Rebuild it with "
                 "`maturin develop --release`; Python sequential routing fallback has been removed."
             )
         batch_jobs: list[
@@ -1817,11 +1800,23 @@ def dispatch_native_routing(
         timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
 
         batch_start = _timing_start(settings, state)
-        raw_batch_result = state.router.route_many_normal_and_commit(
+        # Repair disabled: the negotiated loop with a single round and the
+        # `NoRipUp` policy, which is plain in-order routing with no rip-up
+        # and no requeue. This replaced the separate
+        # separate non-repair batch binding in Milestone 8 of
+        # .agent/execplans/2026-09-22-modular-readable-router-restructure.md
+        # (owner decision 2026-09-24). With one round every net has
+        # `failed_count == 0`, so the loop's history weight stays 0.0 and
+        # its searches are unbounded, exactly as the deleted loop's were.
+        raw_batch_result = state.router.route_many_with_negotiated_repair_and_commit(
             batch_jobs,
             state.block_radius_cells,
             state.commit_radius_cells,
             state.core_commit_radius_cells,
+            1,
+            float(state.repair_config.history_weight),
+            int(state.repair_config.history_increment),
+            no_ripup=True,
         )
         batch_elapsed_s = time.perf_counter() - batch_start if state.collect_timing else 0.0
         timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
@@ -1938,12 +1933,3 @@ def dispatch_native_routing(
                 f"allow_45_degree_turns={settings.allow_45_degree_turns}"
             )
 
-
-def negotiated_repair_engine_enabled(engine: EngineSelection | None = None) -> bool:
-    """The negotiated rip-up engine is the default repair engine since the
-    2026-09-16 baseline freeze; `PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN=1` or
-    `PHOTONIC_ROUTER_NEGOTIATED_REPAIR=0` selects the older repair chain."""
-    engine = engine if engine is not None else EngineSelection()
-    if engine.legacy_repair_chain:
-        return False
-    return engine.negotiated_repair

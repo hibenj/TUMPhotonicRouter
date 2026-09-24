@@ -35,7 +35,6 @@ class NegotiationConfig:
     crossing_free_unplanned: bool = True
     disable_braid_repair: bool = False
     pending_straight_ripup_threshold: int = 100
-    enable_orthogonal_repair_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -215,19 +214,6 @@ class FanoutAccessConfig:
 
 
 @dataclass(frozen=True)
-class EngineSelection:
-    """Mirrors the repair-engine selection env reads of
-    `translation/route_rust.py`'s `negotiated_repair_engine_enabled`."""
-
-    #: `PHOTONIC_ROUTER_NEGOTIATED_REPAIR`: `!= "0"`, default True.
-    negotiated_repair: bool = True
-    #: `PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN`: `== "1"`, default False.
-    #: When True it forces the legacy chain regardless of
-    #: `negotiated_repair`.
-    legacy_repair_chain: bool = False
-
-
-@dataclass(frozen=True)
 class SearchTuning:
     """Mirrors the search-tuning env reads of `translation/route_rust.py`."""
 
@@ -311,7 +297,6 @@ class RouterConfig:
             negotiation_crossing_free_unplanned=n.crossing_free_unplanned,
             negotiation_disable_braid_repair=n.disable_braid_repair,
             negotiation_pending_straight_ripup_threshold=n.pending_straight_ripup_threshold,
-            negotiation_enable_orthogonal_repair_fallback=n.enable_orthogonal_repair_fallback,
             search_astar_timeout_ms=s.astar_timeout_ms,
             search_max_dense_states=s.max_dense_states,
             search_long_straight_congestion_weight=s.long_straight_congestion_weight,
@@ -376,7 +361,6 @@ class RoutingConfig:
     crossing_plan: CrossingPlanConfig = field(default_factory=CrossingPlanConfig)
     crossing_grid: CrossingGridConfig = field(default_factory=CrossingGridConfig)
     fanout: FanoutAccessConfig = field(default_factory=FanoutAccessConfig)
-    engine: EngineSelection = field(default_factory=EngineSelection)
     search: SearchTuning = field(default_factory=SearchTuning)
     diagnostics: FlowDiagnostics = field(default_factory=FlowDiagnostics)
     #: `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE`
@@ -400,7 +384,6 @@ __all__ = [
     "CrossingEngineConfig",
     "CrossingGridConfig",
     "CrossingPlanConfig",
-    "EngineSelection",
     "FanoutAccessConfig",
     "FlowDiagnostics",
     "KernelDiagnostics",

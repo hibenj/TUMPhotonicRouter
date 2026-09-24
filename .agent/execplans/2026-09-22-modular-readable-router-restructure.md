@@ -57,7 +57,7 @@ The plan deliberately does not start from the rejected "cleanup" of 2026-09-19 (
   - [x] (2026-09-24 15:36) Final full 27-cell reproduction on commit e1ea40f (`results_m7_check/`, 11:43-15:36): 27/27 exact, 0 verifier errors, loop-time ratio 0.88-1.18. Milestones 6 and 7 merged to `main`.
 - [ ] Milestone 8: negotiation of removals with the owner on the readable code (the candidate list in that section), then the removals, then the final full reproduction.
   - [x] (2026-09-24 16:00) Negotiation done: all removals as recommended (Decision Log), toys deferred behind D10.
-  - [ ] Slice A: the legacy engine (items 1-5, D8, D9).
+  - [x] (2026-09-24 17:05) Slice A: `src/engine/legacy_repair.rs` (3,739 lines) deleted with its chain, the clean-probe commit, the orthogonal fallback and its config field, the non-repair loop (the negotiated loop with `max_rounds = 1` and `no_ripup = True` replaces it; the one test passes unchanged), the displacement trio and `ripup_repair_set_victims`, the engine selection (`EngineSelection`, three overlay variables); D8: the two mid-pipeline repair passes call the negotiated loop; D9: the probe-guided and direct-crossing budgets follow the configuration. 33 files, -5,645 +282 lines; Rust 570 tests (16 legacy tests removed), Python 521; warnings unchanged; gate 9/9 exact after both checkpoints, verified independently. Loose ends folded into Slice C: two write-only rip-up knobs and the archive runner's provenance line.
   - [ ] Slice B: the window and collision crossing modes.
   - [ ] Slice C: the unreachable Python helpers, the demo wrapper, the D7 comment.
   - [ ] Final full 27-cell reproduction, merge.

@@ -440,7 +440,7 @@ mod tests {
         Python::with_gil(|py| {
             let result = router
                 .route_many_with_negotiated_repair_and_commit_impl(
-                    py, jobs, 0, None, None, 4, 2.0, 1,
+                    py, jobs, 0, None, None, 4, 2.0, 1, false,
                 )
                 .expect("the negotiated loop must not raise");
             let dict = result.bind(py).downcast::<PyDict>().unwrap().clone();

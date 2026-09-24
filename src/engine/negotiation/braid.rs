@@ -249,8 +249,9 @@ impl PyPhotonicRouter {
     /// ended with `keep=false`: a pair already in it is skipped outright
     /// (`None`, before any snapshot/rip-up/trace), so the same doomed pair
     /// is not retried every time either net routes again in the same
-    /// round. The chain's own call site (`route_many_with_repair_and_commit`)
-    /// passes `None` -- its behaviour is unchanged.
+    /// round. The older repair chain's own call site passed `None`; that
+    /// chain was deleted in Milestone 8 of
+    /// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
     ///
     /// Returns `None` when no eligible partner was found (braid repair
     /// disabled, no partner with >=2 crossings, or the pair was skipped);
@@ -525,12 +526,8 @@ mod tests {
             repair_count: 0,
             failed_net_id: None,
             failed_error: None,
-            retried_source_layers: FxHashSet::default(),
             timings: NativeBatchTimings::default(),
-            trace_last_route_start: None,
-            deferred_job_indices: Vec::new(),
             deferred_count: 0,
-            last_rejected_commit_partners: Vec::new(),
         };
         batch
             .final_routes
@@ -678,12 +675,8 @@ mod tests {
             repair_count: 0,
             failed_net_id: None,
             failed_error: None,
-            retried_source_layers: FxHashSet::default(),
             timings: NativeBatchTimings::default(),
-            trace_last_route_start: None,
-            deferred_job_indices: Vec::new(),
             deferred_count: 0,
-            last_rejected_commit_partners: Vec::new(),
         };
         batch
             .final_routes
@@ -838,12 +831,8 @@ mod tests {
             repair_count: 0,
             failed_net_id: None,
             failed_error: None,
-            retried_source_layers: FxHashSet::default(),
             timings: NativeBatchTimings::default(),
-            trace_last_route_start: None,
-            deferred_job_indices: Vec::new(),
             deferred_count: 0,
-            last_rejected_commit_partners: Vec::new(),
         };
         // A committed net far from job's own route below -- neither
         // geometrically overlaps nor needs to cross the other, so both
@@ -888,12 +877,8 @@ mod tests {
             repair_count: 0,
             failed_net_id: None,
             failed_error: None,
-            retried_source_layers: FxHashSet::default(),
             timings: NativeBatchTimings::default(),
-            trace_last_route_start: None,
-            deferred_job_indices: Vec::new(),
             deferred_count: 0,
-            last_rejected_commit_partners: Vec::new(),
         };
         batch.final_routes.insert(victim.net_id, empty_test_route());
 

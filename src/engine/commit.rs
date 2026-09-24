@@ -52,19 +52,6 @@ pub(crate) fn remove_success_static_cleanup(obstacle_map: &mut ObstacleMap, job:
     obstacle_map.remove_static_keys(&job.static_cleanup_cell_keys);
 }
 
-pub(crate) fn dynamic_commit_error_overlap_owner_ids(error: &str) -> Vec<u64> {
-    let Some((_, rest)) = error.split_once("dynamic_overlap_owners=[") else {
-        return Vec::new();
-    };
-    let Some((owner_text, _)) = rest.split_once(']') else {
-        return Vec::new();
-    };
-    owner_text
-        .split(',')
-        .filter_map(|value| value.trim().parse::<u64>().ok())
-        .collect()
-}
-
 impl PyPhotonicRouter {
     pub(crate) fn add_crossing_spacing_history_for_route(
         &mut self,
@@ -196,9 +183,8 @@ impl PyPhotonicRouter {
     /// user of a cell, discouraging future congestion on an already-popular
     /// corridor regardless of who used it, which is the actual PathFinder-
     /// family negotiated-congestion signal. `commit_history_increment` is 0
-    /// (a no-op) outside `route_many_with_repair_and_commit`, so a plain
-    /// commit made via `route_many_normal_and_commit` or a single-net
-    /// diagnostic call never accumulates history. See
+    /// (a no-op) outside the negotiated repair loop, so a single-net
+    /// diagnostic commit never accumulates history. See
     /// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 4.
     pub(crate) fn add_repair_history_for_route(&mut self, route: &RouteResult) {
         if self.commit_history_increment == 0 {
@@ -275,32 +261,6 @@ impl PyPhotonicRouter {
             dynamic_blockers.len(),
             format_bbox(&dynamic_blockers),
             format_cell_sample(&dynamic_blockers, 8),
-        )
-    }
-
-    pub(crate) fn commit_native_route_with_clearance(
-        &mut self,
-        net_id: u64,
-        route: &RouteResult,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        clearance_exempt_cells: &[(i32, i32)],
-        core_radius_cells: Option<i32>,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-        opened_cell_keys: Option<&FxHashSet<CellKey>>,
-    ) -> bool {
-        self.commit_native_route_with_clearance_internal(
-            net_id,
-            route,
-            block_radius_cells,
-            commit_radius_cells,
-            clearance_exempt_cells,
-            core_radius_cells,
-            source_port_um,
-            target_port_um,
-            opened_cell_keys,
-            true,
         )
     }
 
@@ -706,102 +666,6 @@ impl PyPhotonicRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::test_support::*;
-
-    /// Milestone 4 of
-    /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`:
-    /// a probe that reports itself clean (`probe_crossing_compliant = true`,
-    /// no candidate blockers) but never registered the crossing event for
-    /// its one real intersection -- the exact shape that made
-    /// `try_commit_clean_probe` commit-then-reject on the 64x64 mesh (net
-    /// 575 vs net 573). Uses the B1 kernel fixture
-    /// (`missing_crossing_event_fixture_router`/`install_diagonal_partner`/
-    /// `crossing_diagonal_centerline`, shared with
-    /// `intersection_without_crossing_event_is_a_violation` above) rather
-    /// than `crossing_conflict_fixture`: that fixture's three nets are
-    /// *actually* committed on `obstacle_map` with radius-1 clearance, so a
-    /// hand-built probe that drops the real crossing event also loses the
-    /// legal exemption the real search would have carried for the other
-    /// two committed nets, and the low-level grid commit rejects for an
-    /// unrelated reason before the post-commit geometric check this test
-    /// targets ever runs. The B1 fixture books its one committed partner
-    /// (net 3) only into `committed_center_routes`/`committed_realized_center_routes`
-    /// (the geometric-check bookkeeping `try_commit_clean_probe`'s
-    /// post-commit validation reads) and never into `obstacle_map`, so the
-    /// grid-level commit here has nothing to conflict with and always
-    /// succeeds -- isolating the geometric rejection this test is about.
-    #[test]
-    fn rejected_commit_records_partners_and_does_not_abort() {
-        let mut router = missing_crossing_event_fixture_router();
-        install_diagonal_partner(&mut router, 3);
-
-        let probe_route = RouteResult {
-            states: Vec::new(),
-            primitives: Vec::new(),
-            cells: (0..=40).map(|i| (10 + i, 50 - i)).collect(),
-            compressed_waypoints: vec![(10, 50), (50, 10)],
-            total_length_um: 0.0,
-            total_cost: 0.0,
-            requested_target: State::new(50, 10, 0),
-            reached_target: State::new(50, 10, 0),
-            stats: RouteSearchStats::default(),
-        };
-        let job = NativeRouteJob::new(
-            4,
-            PyState::new(10, 50, 0),
-            PyState::new(50, 10, 0),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            None,
-            None,
-        );
-        let rejecting_probe = ProbeState {
-            probe_route,
-            crossing_repair_enabled: true,
-            allowed_crossing_partners: FxHashSet::default(),
-            // Blanked: this is the bug shape -- net 3's crossing was never
-            // registered, so the post-commit geometric check below must
-            // find it as a `missing_crossing_event` violation.
-            probe_crossing_events: Vec::new(),
-            strict_expected_crossing_probe: false,
-            // Forced true: the probe believes the route is clean.
-            probe_crossing_compliant: true,
-            probe_realized_crossing_violations: Vec::new(),
-            probe_grid_crossing_violations: Vec::new(),
-            probe_repair_keepout_keys: FxHashSet::default(),
-            // Blanked: this is what routes `try_commit_clean_probe` into
-            // its clean-commit branch instead of returning `NotResolved`.
-            candidate_blockers: Vec::new(),
-            probe_intersecting_partners: Vec::new(),
-        };
-        let mut batch = fresh_repair_batch_state();
-
-        let result = router.try_commit_clean_probe(
-            &mut batch,
-            &rejecting_probe,
-            &job,
-            0,
-            Some(0),
-            Some(0),
-            false,
-        );
-
-        assert!(
-            matches!(result, Err(())),
-            "the post-commit validation must reject this route, got Ok"
-        );
-        assert_eq!(batch.failed_net_id, Some(4));
-        assert!(
-            batch.last_rejected_commit_partners.contains(&3),
-            "the diagonal net must be recorded as the rejection's culprit: {:?}",
-            batch.last_rejected_commit_partners
-        );
-        assert!(
-            router.obstacle_map.get_net_cells(4).is_none(),
-            "the rejected commit must be rolled back off the obstacle map"
-        );
-    }
 
     #[test]
     fn dynamic_commit_error_creates_bounded_repair_keepout() {

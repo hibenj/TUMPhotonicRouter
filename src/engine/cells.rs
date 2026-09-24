@@ -14,27 +14,6 @@ pub(crate) fn pack_cells(cells: &[(i32, i32)]) -> FxHashSet<CellKey> {
     cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect()
 }
 
-pub(crate) fn opened_cells_excluding_keepout(
-    opened_cells: &[(i32, i32)],
-    keepout: &FxHashSet<CellKey>,
-    source: PyState,
-    target: PyState,
-) -> Vec<(i32, i32)> {
-    if keepout.is_empty() {
-        return opened_cells.to_vec();
-    }
-    let source_key = pack_xy(source.x, source.y);
-    let target_key = pack_xy(target.x, target.y);
-    opened_cells
-        .iter()
-        .copied()
-        .filter(|(x, y)| {
-            let key = pack_xy(*x, *y);
-            !keepout.contains(&key) || key == source_key || key == target_key
-        })
-        .collect()
-}
-
 pub(crate) fn route_orientation_to_angle(orientation: Option<f64>) -> u8 {
     let value = orientation.unwrap_or(0.0).rem_euclid(360.0);
     (value / 45.0).round().rem_euclid(8.0) as u8

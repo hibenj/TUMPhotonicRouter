@@ -186,17 +186,6 @@ impl PyPhotonicRouter {
             } else {
                 Vec::new()
             };
-        let strict_expected_crossing_probe = crossing_repair_enabled
-            && self.crossing_context.config().allow_only_expected_pairs
-            && !allowed_crossing_partners.is_empty();
-        let probe_crossing_compliant = crossing_repair_enabled
-            && self.crossing_route_satisfies_partner_constraints(
-                job.net_id,
-                &probe_route,
-                &allowed_crossing_partners,
-                &probe_crossing_events,
-                Some(&job.opened_cell_keys),
-            );
         // Pre-commit probe: `probe_route` has not been committed (it comes
         // from `route_single_net_ignore_dynamic_native`, ignoring dynamic
         // obstacles entirely), so it cannot have registered crossing
@@ -324,8 +313,6 @@ impl PyPhotonicRouter {
             crossing_repair_enabled,
             allowed_crossing_partners,
             probe_crossing_events,
-            strict_expected_crossing_probe,
-            probe_crossing_compliant,
             probe_realized_crossing_violations,
             probe_grid_crossing_violations,
             probe_repair_keepout_keys,
@@ -507,8 +494,6 @@ mod tests {
             crossing_repair_enabled: true,
             allowed_crossing_partners: FxHashSet::default(),
             probe_crossing_events: events,
-            strict_expected_crossing_probe: false,
-            probe_crossing_compliant: false,
             probe_realized_crossing_violations: vec![InvalidCrossingIntersection {
                 net_id: 4,
                 partner_net_id: 7,

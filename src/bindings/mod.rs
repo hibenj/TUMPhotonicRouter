@@ -824,171 +824,18 @@ impl PyPhotonicRouter {
         Py::new(py, convert_result(py, &self.primitives, &result)?)
     }
 
-    #[pyo3(signature=(jobs,block_radius_cells=0,commit_radius_cells=None,core_radius_cells=None))]
-    // candidate for removal, see Milestone 8 of .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-    pub(crate) fn route_many_normal_and_commit(
-        &mut self,
-        py: Python<'_>,
-        jobs: Vec<(
-            u64,
-            PyState,
-            PyState,
-            Vec<(i32, i32)>,
-            Vec<(i32, i32)>,
-            Vec<(i32, i32)>,
-            Option<(f64, f64)>,
-            Option<(f64, f64)>,
-        )>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-    ) -> PyResult<PyObject> {
-        self.obstacle_map.clear_congestion();
-        self.long_straight_congestion_cells.clear();
-        self.long_straight_congestion_records.clear();
-        // No repair batch is running (this is the plain-routing-only entry
-        // point `test_benchmarks_route_with_astar_only` and friends use), so
-        // no commit here should accumulate history cost, even if a prior
-        // `route_many_with_repair_and_commit` call left these non-zero on
-        // this router instance.
-        self.commit_history_increment = 0;
-        self.commit_history_block_radius_cells = 0;
-        self.commit_history_weight = 0.0;
-        let collect_native_timing = self.astar_cfg.collect_detailed_timing;
-        let mut timings = NativeBatchTimings::default();
-        let unpack_start = native_batch_timer(collect_native_timing);
-        let native_jobs: Vec<NativeRouteJob> = jobs
-            .into_iter()
-            .map(
-                |(
-                    net_id,
-                    source,
-                    target,
-                    opened_cells,
-                    clearance_exempt_cells,
-                    static_cleanup_cells,
-                    source_port_um,
-                    target_port_um,
-                )| {
-                    NativeRouteJob::new(
-                        net_id,
-                        source,
-                        target,
-                        opened_cells,
-                        clearance_exempt_cells,
-                        static_cleanup_cells,
-                        source_port_um,
-                        target_port_um,
-                    )
-                },
-            )
-            .collect();
-        timings.route_job_unpack_us += native_batch_elapsed_us(unpack_start);
-        let result_dict = PyDict::new_bound(py);
-        let route_entries = PyList::empty_bound(py);
-        for job in &native_jobs {
-            let route_start = native_batch_timer(collect_native_timing);
-            let route_result = self.route_single_net_and_commit_native(
-                job.net_id,
-                job.source.clone(),
-                job.target.clone(),
-                block_radius_cells,
-                Some(&job.opened_cells),
-                Some(&job.opened_cell_keys),
-                commit_radius_cells,
-                Some(&job.clearance_exempt_cells),
-                Some(&job.clearance_exempt_cell_keys),
-                core_radius_cells,
-                job.source_port_um,
-                job.target_port_um,
-            );
-            let route_elapsed_us = native_batch_elapsed_us(route_start);
-            timings.normal_route_wall_us += route_elapsed_us;
-            match route_result {
-                Ok(route_result) => {
-                    timings.add_route_result_stats_if(collect_native_timing, &route_result);
-                    remove_success_static_cleanup(&mut self.obstacle_map, job);
-                    let entry = PyDict::new_bound(py);
-                    let route_construct_start = native_batch_timer(collect_native_timing);
-                    let route_obj =
-                        Py::new(py, convert_result(py, &self.primitives, &route_result)?)?;
-                    timings.route_result_construction_us +=
-                        native_batch_elapsed_us(route_construct_start);
-                    let dict_start = native_batch_timer(collect_native_timing);
-                    entry.set_item("net_id", job.net_id)?;
-                    entry.set_item("route", route_obj)?;
-                    route_entries.append(entry)?;
-                    timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
-                }
-                Err(error) => {
-                    timings.normal_route_failed_wall_us += route_elapsed_us;
-                    let dict_start = native_batch_timer(collect_native_timing);
-                    result_dict.set_item("status", "failed")?;
-                    result_dict.set_item("failed_net_id", job.net_id)?;
-                    result_dict.set_item("error", error)?;
-                    result_dict.set_item("routes", route_entries)?;
-                    result_dict.set_item(
-                        "long_straight_congestion",
-                        self.long_straight_congestion_records(py)?,
-                    )?;
-                    timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
-                    result_dict
-                        .set_item("timings_s", native_batch_timings_to_py_dict(py, &timings)?)?;
-                    return Ok(result_dict.into());
-                }
-            }
-        }
-        let dict_start = native_batch_timer(collect_native_timing);
-        result_dict.set_item("status", "routed")?;
-        result_dict.set_item("failed_net_id", py.None())?;
-        result_dict.set_item("error", py.None())?;
-        result_dict.set_item("routes", route_entries)?;
-        result_dict.set_item(
-            "long_straight_congestion",
-            self.long_straight_congestion_records(py)?,
-        )?;
-        timings.python_return_dict_us += native_batch_elapsed_us(dict_start);
-        result_dict.set_item("timings_s", native_batch_timings_to_py_dict(py, &timings)?)?;
-        Ok(result_dict.into())
-    }
-
-    #[pyo3(signature=(jobs,block_radius_cells=0,commit_radius_cells=None,core_radius_cells=None,max_rounds=4,max_victims_per_failure=8,history_weight=2.0,history_increment=1))]
-    #[allow(clippy::too_many_arguments)]
-    fn route_many_with_repair_and_commit(
-        &mut self,
-        py: Python<'_>,
-        jobs: Vec<(
-            u64,
-            PyState,
-            PyState,
-            Vec<(i32, i32)>,
-            Vec<(i32, i32)>,
-            Vec<(i32, i32)>,
-            Option<(f64, f64)>,
-            Option<(f64, f64)>,
-        )>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        max_rounds: u32,
-        max_victims_per_failure: usize,
-        history_weight: f64,
-        history_increment: u32,
-    ) -> PyResult<PyObject> {
-        self.route_many_with_repair_and_commit_impl(
-            py,
-            jobs,
-            block_radius_cells,
-            commit_radius_cells,
-            core_radius_cells,
-            max_rounds,
-            max_victims_per_failure,
-            history_weight,
-            history_increment,
-        )
-    }
-
-    #[pyo3(signature=(jobs,block_radius_cells=0,commit_radius_cells=None,core_radius_cells=None,max_rounds=8,history_weight=2.0,history_increment=1))]
+    /// The negotiated rip-up-and-repair loop, the repository's only batch
+    /// routing entry point since Milestone 8 of
+    /// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
+    /// (2026-09-24) removed the non-repair batch binding and the older
+    /// 17-strategy repair chain.
+    ///
+    /// `no_ripup = True` selects the `NoRipUp` rip-up policy instead of the
+    /// LiDAR-style one, so a blocked net simply fails instead of displacing
+    /// committed nets. With `max_rounds = 1` that is the no-repair mode
+    /// (`RipupRerouteConfig(enabled=False)`), which used to be the separate
+    /// non-repair binding; every other caller leaves it at its default.
+    #[pyo3(signature=(jobs,block_radius_cells=0,commit_radius_cells=None,core_radius_cells=None,max_rounds=8,history_weight=2.0,history_increment=1,no_ripup=false))]
     #[allow(clippy::too_many_arguments)]
     fn route_many_with_negotiated_repair_and_commit(
         &mut self,
@@ -1009,6 +856,7 @@ impl PyPhotonicRouter {
         max_rounds: u32,
         history_weight: f64,
         history_increment: u32,
+        no_ripup: bool,
     ) -> PyResult<PyObject> {
         self.route_many_with_negotiated_repair_and_commit_impl(
             py,
@@ -1019,6 +867,7 @@ impl PyPhotonicRouter {
             max_rounds,
             history_weight,
             history_increment,
+            no_ripup,
         )
     }
 

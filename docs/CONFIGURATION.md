@@ -29,7 +29,7 @@ A field of the `router` subtree with an empty description is documented by its
 Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 See `docs/ARCHITECTURE.md` for how the two trees reach the stages.
 
-Totals: 88 `RoutingConfig` fields (88 with an overlay variable), 48 `FlowOptions` fields (40 with a command-line flag), 136 in total.
+Totals: 85 `RoutingConfig` fields (85 with an overlay variable), 48 `FlowOptions` fields (40 with a command-line flag), 133 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -60,7 +60,6 @@ Mirrors Rust `NegotiationConfig`.
 | `crossing_free_unplanned` | `bool` | `True` | `PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED` | -- |
 | `disable_braid_repair` | `bool` | `False` | `PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR` | -- |
 | `pending_straight_ripup_threshold` | `int` | `100` | `PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD` | -- |
-| `enable_orthogonal_repair_fallback` | `bool` | `False` | `PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK` | -- |
 
 ### `router.search` -- `SearchOverrides`
 
@@ -168,15 +167,6 @@ Mirrors the fan-out-related env reads of `translation/route_rust.py`.
 | `fanout_stub_x_offset_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS` | `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS`: non-negative int, else raises. `None` = unset (site default 1). |
 | `stub_port_lane_half_width_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS` | `PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS`: non-negative int, else raises. `None` = unset (site default 0). |
 | `stub_port_lane_length_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS` | `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS`: non-negative int, else raises. `None` = unset (site default 0). |
-
-### `engine` -- `EngineSelection`
-
-Mirrors the repair-engine selection env reads of `translation/route_rust.py`'s `negotiated_repair_engine_enabled`.
-
-| field | type | default | environment variable | description |
-| --- | --- | --- | --- | --- |
-| `negotiated_repair` | `bool` | `True` | `PHOTONIC_ROUTER_NEGOTIATED_REPAIR` | `PHOTONIC_ROUTER_NEGOTIATED_REPAIR`: `!= "0"`, default True. |
-| `legacy_repair_chain` | `bool` | `False` | `PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN` | `PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN`: `== "1"`, default False. When True it forces the legacy chain regardless of `negotiated_repair`. |
 
 ### `search` -- `SearchTuning`
 

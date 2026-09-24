@@ -916,9 +916,9 @@ def _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
     expressed as one call instead of two.
 
     This is also, deliberately, as far as consolidation goes for the
-    two mid-repair call sites in `_route_many_with_repair_and_commit`-style
-    methods (around what were lines 5638-5645 and 6019-6028 before this
-    milestone): repair runs before the run's final crossing plan is
+    two mid-repair call sites in the batch-repair methods (around what were
+    lines 5638-5645 and 6019-6028 before this milestone): repair runs
+    before the run's final crossing plan is
     settled, so those call sites only ever need this pair, never the
     crossing-aware pass, and always did -- this method exists to give
     that pre-existing two-call pattern one name instead of leaving it

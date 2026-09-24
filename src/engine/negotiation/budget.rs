@@ -7,9 +7,7 @@
 //! call site before the extraction.
 
 use crate::config::NegotiationConfig;
-use crate::engine::{
-    NEGOTIATED_BUDGET_BRAID, NEGOTIATED_BUDGET_FIRST_ATTEMPT, NEGOTIATED_BUDGET_RETRY,
-};
+use crate::engine::NEGOTIATED_BUDGET_BRAID;
 
 /// One step of a net's per-round attempt sequence, in the order the loop
 /// runs them: the plain search, its fresh-net retry, the probe-guided
@@ -75,9 +73,22 @@ pub(crate) fn negotiated_search_budget(
 /// Milestone 5): the plain searches -- first try, fresh-net retry and the
 /// post-rip-up try -- follow `negotiated_search_budget` and are unbounded
 /// in the last round, while the probe-guided, direct-crossing and braid
-/// searches run at their own fixed constants *in every round, the last one
-/// included* (those three are bounded repairs of an already-failed search,
-/// not the search that must not lose a route).
+/// searches stay bounded *in every round, the last one included* (those
+/// three are bounded repairs of an already-failed search, not the search
+/// that must not lose a route).
+///
+/// The probe-guided and direct-crossing budgets read `NegotiationConfig`
+/// (`budget_retry` and `budget_first`) like the plain searches do. Until
+/// 2026-09-24 they used the constants `NEGOTIATED_BUDGET_RETRY` /
+/// `NEGOTIATED_BUDGET_FIRST_ATTEMPT` instead, so with
+/// `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_*` set the two groups diverged; that
+/// was open question D9 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`,
+/// settled by the owner on 2026-09-24 (Milestone 8) in favour of the
+/// configuration. The defaults of those two fields are the constants'
+/// values, so every unconfigured run -- the paper's cells included -- is
+/// unchanged. The braid budget keeps its constant: it is set at the braid
+/// call sites themselves (`braid.rs`, `search_calls.rs`), not from here.
 pub(crate) struct LadderBudgets<'a>(pub(crate) &'a NegotiationConfig);
 
 impl BudgetSchedule for LadderBudgets<'_> {
@@ -97,8 +108,10 @@ impl BudgetSchedule for LadderBudgets<'_> {
             AttemptKind::FirstRetry => {
                 negotiated_search_budget(failed_count, round, max_rounds, 1, self.0)
             }
-            AttemptKind::ProbeGuided => Some(NEGOTIATED_BUDGET_RETRY),
-            AttemptKind::DirectCrossing => Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT),
+            // D9 (owner decision 2026-09-24): the configured budgets, not
+            // the constants; the defaults are the constants' values.
+            AttemptKind::ProbeGuided => Some(self.0.budget_retry),
+            AttemptKind::DirectCrossing => Some(self.0.budget_first),
             AttemptKind::Braid => Some(NEGOTIATED_BUDGET_BRAID),
         }
     }
@@ -107,36 +120,45 @@ impl BudgetSchedule for LadderBudgets<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::NEGOTIATED_BUDGET_FIRST_RETRY;
+
+    /// The defaults of the three configured budgets are the numbers the
+    /// paper ran (2 M / 10 M / 30 M); every other test here reads the
+    /// configuration, so this is the one place the numbers are pinned.
+    #[test]
+    fn negotiation_config_budget_defaults_are_the_paper_numbers() {
+        let negotiation = NegotiationConfig::default();
+        assert_eq!(negotiation.budget_first, 2_000_000);
+        assert_eq!(negotiation.budget_first_retry, 10_000_000);
+        assert_eq!(negotiation.budget_retry, 30_000_000);
+    }
 
     /// 2026-09-15 01:30 owner decision: a fresh net (`failed_count == 0`)
-    /// gets a first attempt at `NEGOTIATED_BUDGET_FIRST_ATTEMPT` (2 M) and,
-    /// only if that fails, one retry at `NEGOTIATED_BUDGET_FIRST_RETRY`
-    /// (10 M) before probe/rip-up runs; a net that has already failed at
-    /// least once this epoch gets a single attempt at
-    /// `NEGOTIATED_BUDGET_RETRY` (30 M) regardless of `attempt_index`; the
-    /// last round is always unbounded.
+    /// gets a first attempt at `budget_first` and, only if that fails, one
+    /// retry at `budget_first_retry` before probe/rip-up runs; a net that
+    /// has already failed at least once this epoch gets a single attempt at
+    /// `budget_retry` regardless of `attempt_index`; the last round is
+    /// always unbounded.
     #[test]
     fn negotiated_search_budget_sequence_matches_failed_count() {
         let negotiation = NegotiationConfig::default();
         // Fresh net, mid-run round: (2 M, 10 M).
         assert_eq!(
             negotiated_search_budget(0, 1, 8, 0, &negotiation),
-            Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT)
+            Some(negotiation.budget_first)
         );
         assert_eq!(
             negotiated_search_budget(0, 1, 8, 1, &negotiation),
-            Some(NEGOTIATED_BUDGET_FIRST_RETRY)
+            Some(negotiation.budget_first_retry)
         );
         // A net that has already failed once this epoch: a single attempt
         // at the larger retry budget, regardless of attempt_index.
         assert_eq!(
             negotiated_search_budget(1, 1, 8, 0, &negotiation),
-            Some(NEGOTIATED_BUDGET_RETRY)
+            Some(negotiation.budget_retry)
         );
         assert_eq!(
             negotiated_search_budget(1, 1, 8, 1, &negotiation),
-            Some(NEGOTIATED_BUDGET_RETRY)
+            Some(negotiation.budget_retry)
         );
         // The last round is always unbounded, fresh or already-failed.
         assert_eq!(negotiated_search_budget(0, 8, 8, 0, &negotiation), None);
@@ -144,8 +166,7 @@ mod tests {
     }
 
     /// Config path: a custom `NegotiationConfig` (replacing
-    /// `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_*`) picks the budget instead of
-    /// the constants.
+    /// `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_*`) picks the budget.
     #[test]
     fn negotiated_search_budget_uses_configured_values() {
         let negotiation = NegotiationConfig {
@@ -177,32 +198,34 @@ mod tests {
 
         assert_eq!(
             budgets.budget(AttemptKind::First, 0, 1, 8),
-            Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT)
+            Some(negotiation.budget_first)
         );
         assert_eq!(
             budgets.budget(AttemptKind::First, 1, 1, 8),
-            Some(NEGOTIATED_BUDGET_RETRY)
+            Some(negotiation.budget_retry)
         );
         assert_eq!(
             budgets.budget(AttemptKind::FirstRetry, 0, 1, 8),
-            Some(NEGOTIATED_BUDGET_FIRST_RETRY)
+            Some(negotiation.budget_first_retry)
         );
         // The post-rip-up search reuses the net's own plain-search budget.
         assert_eq!(
             budgets.budget(AttemptKind::PostRipUp, 0, 1, 8),
-            Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT)
+            Some(negotiation.budget_first)
         );
         assert_eq!(
             budgets.budget(AttemptKind::PostRipUp, 2, 1, 8),
-            Some(NEGOTIATED_BUDGET_RETRY)
+            Some(negotiation.budget_retry)
         );
+        // D9 (owner decision 2026-09-24): these two follow the
+        // configuration too, whose defaults are the old constants.
         assert_eq!(
             budgets.budget(AttemptKind::ProbeGuided, 0, 1, 8),
-            Some(NEGOTIATED_BUDGET_RETRY)
+            Some(negotiation.budget_retry)
         );
         assert_eq!(
             budgets.budget(AttemptKind::DirectCrossing, 3, 1, 8),
-            Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT)
+            Some(negotiation.budget_first)
         );
         assert_eq!(
             budgets.budget(AttemptKind::Braid, 0, 1, 8),
@@ -210,9 +233,42 @@ mod tests {
         );
     }
 
+    /// D9 (owner decision 2026-09-24, Milestone 8 of
+    /// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`):
+    /// an override of `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST` / `_RETRY`
+    /// reaches the probe-guided and direct-crossing attempts as well, in
+    /// every round including the last. Before that decision these two ran
+    /// at the fixed constants and ignored the configuration.
+    #[test]
+    fn ladder_budgets_probe_and_direct_crossing_follow_the_configuration() {
+        let negotiation = NegotiationConfig {
+            budget_first: 111,
+            budget_retry: 333,
+            ..NegotiationConfig::default()
+        };
+        let budgets = LadderBudgets(&negotiation);
+
+        assert_eq!(budgets.budget(AttemptKind::ProbeGuided, 0, 1, 8), Some(333));
+        assert_eq!(
+            budgets.budget(AttemptKind::DirectCrossing, 0, 1, 8),
+            Some(111)
+        );
+        // The last round leaves these two bounded, at the configured values.
+        assert_eq!(budgets.budget(AttemptKind::ProbeGuided, 0, 8, 8), Some(333));
+        assert_eq!(
+            budgets.budget(AttemptKind::DirectCrossing, 0, 8, 8),
+            Some(111)
+        );
+        // The braid budget is not configurable and keeps its constant.
+        assert_eq!(
+            budgets.budget(AttemptKind::Braid, 0, 1, 8),
+            Some(NEGOTIATED_BUDGET_BRAID)
+        );
+    }
+
     /// The last round: the three plain searches go unbounded, the three
-    /// fixed-constant repairs do not -- exactly as the loop called them
-    /// before this extraction.
+    /// bounded repairs do not -- exactly as the loop called them before
+    /// this extraction.
     #[test]
     fn ladder_budgets_in_the_last_round_unbound_only_the_plain_searches() {
         let negotiation = NegotiationConfig::default();
@@ -223,11 +279,11 @@ mod tests {
         assert_eq!(budgets.budget(AttemptKind::PostRipUp, 1, 8, 8), None);
         assert_eq!(
             budgets.budget(AttemptKind::ProbeGuided, 0, 8, 8),
-            Some(NEGOTIATED_BUDGET_RETRY)
+            Some(negotiation.budget_retry)
         );
         assert_eq!(
             budgets.budget(AttemptKind::DirectCrossing, 0, 8, 8),
-            Some(NEGOTIATED_BUDGET_FIRST_ATTEMPT)
+            Some(negotiation.budget_first)
         );
         assert_eq!(
             budgets.budget(AttemptKind::Braid, 0, 8, 8),

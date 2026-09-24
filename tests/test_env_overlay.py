@@ -293,7 +293,6 @@ RUST_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED",
         "PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR",
         "PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD",
-        "PHOTONIC_ROUTER_ENABLE_ORTHOGONAL_REPAIR_FALLBACK",
         # Search overrides (src/py_router.rs)
         "PHOTONIC_ROUTER_ASTAR_TIMEOUT_MS",
         "PHOTONIC_ROUTER_ASTAR_TIMEOUT_S",
@@ -378,9 +377,6 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS",
         "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
         "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
-        # Engine selection (translation/route_rust.py)
-        "PHOTONIC_ROUTER_NEGOTIATED_REPAIR",
-        "PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN",
         # Search tuning (translation/route_rust.py)
         "PHOTONIC_ROUTER_MIN_BEND_WEIGHT",
         "PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT",
@@ -429,10 +425,6 @@ def test_router_config_default_to_rust_round_trips_defaults():
     assert (
         rust_cfg.negotiation_pending_straight_ripup_threshold
         == cfg.negotiation.pending_straight_ripup_threshold
-    )
-    assert (
-        rust_cfg.negotiation_enable_orthogonal_repair_fallback
-        == cfg.negotiation.enable_orthogonal_repair_fallback
     )
     assert rust_cfg.search_astar_timeout_ms == cfg.search.astar_timeout_ms
     assert rust_cfg.search_max_dense_states == cfg.search.max_dense_states

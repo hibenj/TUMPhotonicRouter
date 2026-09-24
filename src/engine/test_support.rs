@@ -1,4 +1,4 @@
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::crossings::CrossingConfig;
 use crate::search::state::{RouteResult, RouteSearchStats, State};
@@ -57,7 +57,6 @@ pub(crate) fn test_router_config(search_engine: &str) -> PyResult<PyRouterConfig
         true,
         false,
         100,
-        false,
         None,
         None,
         None,
@@ -154,15 +153,6 @@ pub(crate) fn empty_test_route() -> RouteResult {
     }
 }
 
-pub(crate) fn dummy_invalid_crossing_intersection() -> InvalidCrossingIntersection {
-    InvalidCrossingIntersection {
-        net_id: 1,
-        partner_net_id: 2,
-        point: (0.0, 0.0),
-        reason: "dummy",
-    }
-}
-
 /// Milestone 1 kernel fixture of
 /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`:
 /// a small router, lidar-pure crossing mode enabled, with two
@@ -244,12 +234,8 @@ pub(crate) fn crossing_conflict_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJ
         repair_count: 0,
         failed_net_id: None,
         failed_error: None,
-        retried_source_layers: FxHashSet::default(),
         timings: NativeBatchTimings::default(),
-        trace_last_route_start: None,
-        deferred_job_indices: Vec::new(),
         deferred_count: 0,
-        last_rejected_commit_partners: Vec::new(),
     };
 
     let horizontal_top = NativeRouteJob::new(
@@ -413,12 +399,8 @@ pub(crate) fn crossing_conflict_probe_fixture() -> (
         repair_count: 0,
         failed_net_id: None,
         failed_error: None,
-        retried_source_layers: FxHashSet::default(),
         timings: NativeBatchTimings::default(),
-        trace_last_route_start: None,
-        deferred_job_indices: Vec::new(),
         deferred_count: 0,
-        last_rejected_commit_partners: Vec::new(),
     };
     for net_id in [1u64, 2, 3] {
         batch.final_routes.insert(net_id, empty_test_route());
@@ -546,12 +528,8 @@ pub(crate) fn fresh_repair_batch_state() -> RepairBatchState {
         repair_count: 0,
         failed_net_id: None,
         failed_error: None,
-        retried_source_layers: FxHashSet::default(),
         timings: NativeBatchTimings::default(),
-        trace_last_route_start: None,
-        deferred_job_indices: Vec::new(),
         deferred_count: 0,
-        last_rejected_commit_partners: Vec::new(),
     }
 }
 

@@ -56,11 +56,12 @@ impl RipUpPolicy for LidarStyleRipUp {
     }
 }
 
-/// Nothing is ever ripped: a blocked net simply fails its round. The
-/// no-rip-up mode (`repair_config.enabled = False`), which reaches this
-/// loop only once Milestone 8 re-points it here -- until then nothing
-/// outside the tests builds it.
-#[allow(dead_code)]
+/// Nothing is ever ripped: a blocked net simply fails its round. This is
+/// the no-rip-up mode (`repair_config.enabled = False`), selected by
+/// `NegotiationParams::no_ripup` together with `max_rounds = 1`; Milestone
+/// 8 of `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
+/// (2026-09-24) re-pointed that mode here from the deleted non-repair
+/// batch binding.
 pub(crate) struct NoRipUp;
 
 impl RipUpPolicy for NoRipUp {

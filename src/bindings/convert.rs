@@ -467,15 +467,14 @@ pub(crate) fn to_route_result(route: &PyRouteResult) -> RouteResult {
 }
 
 impl PyPhotonicRouter {
-    /// Shared batch-result serialization for every native repair-dispatch
-    /// entry point (`route_many_with_repair_and_commit`,
-    /// `route_many_with_negotiated_repair_and_commit`) -- both funnel
-    /// through here so the Python-level result shape
+    /// Batch-result serialization for `route_many_with_negotiated_repair_and_commit`:
+    /// the Python-level result shape
     /// (`status`/`failed_net_id`/`error`/`routes`/`attempts`/`repair_trace`/
-    /// `long_straight_congestion`/`timings_s`) stays identical regardless of
-    /// which repair engine produced `batch`, which is what lets
-    /// `translation/route_rust.py` treat them as interchangeable for direct
-    /// A/B comparison. See
+    /// `long_straight_congestion`/`timings_s`). It was shared with the older
+    /// repair chain, so that the two engines were interchangeable for direct
+    /// A/B comparison, until Milestone 8 of
+    /// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
+    /// deleted that chain. See
     /// `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 5.
     pub(crate) fn build_native_batch_result_dict(
         &mut self,

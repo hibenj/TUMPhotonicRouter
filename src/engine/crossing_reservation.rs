@@ -49,28 +49,6 @@ impl CrossingReservationBlockers {
     }
 }
 
-pub(crate) const ILLEGAL_REALIZED_CROSSING_PREFIX: &str = "Illegal realized crossing: net ";
-
-pub(crate) const ILLEGAL_GRID_CROSSING_PREFIX: &str = "Illegal grid crossing: net ";
-
-pub(crate) fn illegal_crossing_net_ids_from_error(error: &str) -> Vec<u64> {
-    let rest = error
-        .strip_prefix(ILLEGAL_REALIZED_CROSSING_PREFIX)
-        .or_else(|| error.strip_prefix(ILLEGAL_GRID_CROSSING_PREFIX));
-    let Some(rest) = rest else {
-        return Vec::new();
-    };
-    let Some((first, rest)) = rest.split_once(" intersects net ") else {
-        return Vec::new();
-    };
-    let first_id = first.trim().parse::<u64>().ok();
-    let second_id = rest
-        .split_whitespace()
-        .next()
-        .and_then(|value| value.trim().parse::<u64>().ok());
-    first_id.into_iter().chain(second_id).collect()
-}
-
 pub(crate) fn crossing_reservation_window_keys(
     center_x: f64,
     center_y: f64,
@@ -788,21 +766,6 @@ impl PyPhotonicRouter {
         events.iter().map(|event| event.partner_net_id).collect()
     }
 
-    pub(crate) fn crossing_partner_ids_for_net(
-        events: &[CrossingEvent],
-        net_id: u64,
-    ) -> FxHashSet<u64> {
-        let mut partner_ids = FxHashSet::default();
-        for event in events {
-            if event.net_id == net_id {
-                partner_ids.insert(event.partner_net_id);
-            } else if event.partner_net_id == net_id {
-                partner_ids.insert(event.net_id);
-            }
-        }
-        partner_ids
-    }
-
     pub(crate) fn crossing_events_cover_partners(
         events: &[CrossingEvent],
         partner_ids: &FxHashSet<u64>,
@@ -990,62 +953,6 @@ impl PyPhotonicRouter {
         keys
     }
 
-    pub(crate) fn crossing_error_repair_keepout_keys(&self, error: &str) -> FxHashSet<CellKey> {
-        self.crossing_error_repair_keepout_keys_with_options(error, true)
-    }
-
-    pub(crate) fn crossing_error_repair_keepout_keys_with_options(
-        &self,
-        error: &str,
-        tight_not_perpendicular: bool,
-    ) -> FxHashSet<CellKey> {
-        if !error.starts_with(ILLEGAL_REALIZED_CROSSING_PREFIX)
-            && !error.starts_with(ILLEGAL_GRID_CROSSING_PREFIX)
-        {
-            return FxHashSet::default();
-        }
-        let Some((_, point_and_rest)) = error.split_once(" at (") else {
-            return FxHashSet::default();
-        };
-        let Some((point_text, _)) = point_and_rest.split_once(')') else {
-            return FxHashSet::default();
-        };
-        let Some((x_text, y_text)) = point_text.split_once(',') else {
-            return FxHashSet::default();
-        };
-        let Ok(point_x_um) = x_text.trim().parse::<f64>() else {
-            return FxHashSet::default();
-        };
-        let Ok(point_y_um) = y_text.trim().parse::<f64>() else {
-            return FxHashSet::default();
-        };
-        let Some((center_x, center_y)) =
-            self.grid_cell_for_physical_point((point_x_um, point_y_um))
-        else {
-            return FxHashSet::default();
-        };
-        let radius = if error.contains("(crossing_footprint_contains_route_geometry)")
-            || error.contains("(crossing_footprint_overlap)")
-        {
-            self.crossing_repair_keepout_radius_for_reason(
-                "crossing_footprint_contains_route_geometry",
-            )
-        } else if tight_not_perpendicular && error.contains("(not_perpendicular)") {
-            1
-        } else {
-            self.crossing_repair_keepout_radius_cells()
-        };
-        let mut keys = FxHashSet::default();
-        for y in center_y.saturating_sub(radius)..=center_y.saturating_add(radius) {
-            for x in center_x.saturating_sub(radius)..=center_x.saturating_add(radius) {
-                if self.obstacle_map.in_bounds(x, y) {
-                    keys.insert(pack_xy(x, y));
-                }
-            }
-        }
-        keys
-    }
-
     pub(crate) fn dynamic_commit_error_repair_keepout_keys(
         &self,
         error: &str,
@@ -1096,96 +1003,6 @@ impl PyPhotonicRouter {
             }
         }
         keys
-    }
-
-    pub(crate) fn augmented_crossing_error_repair_keepout(
-        &self,
-        base_keepout: &FxHashSet<CellKey>,
-        error: &str,
-    ) -> (FxHashSet<CellKey>, FxHashSet<CellKey>) {
-        let mut error_keepout = self.crossing_error_repair_keepout_keys(error);
-        error_keepout.extend(self.dynamic_commit_error_repair_keepout_keys(error));
-        if error_keepout.is_empty() {
-            return (base_keepout.clone(), FxHashSet::default());
-        }
-        let mut merged = base_keepout.clone();
-        let mut extra = FxHashSet::default();
-        for key in error_keepout {
-            if merged.insert(key) {
-                extra.insert(key);
-            }
-        }
-        (merged, extra)
-    }
-
-    pub(crate) fn remember_crossing_error_repair_keepout(
-        &self,
-        learned_keepout: &mut FxHashSet<CellKey>,
-        error: &str,
-    ) -> bool {
-        let mut learned_new_key = false;
-        for key in self.crossing_error_repair_keepout_keys(error) {
-            if learned_keepout.insert(key) {
-                learned_new_key = true;
-            }
-        }
-        learned_new_key
-    }
-
-    pub(crate) fn remember_local_repair_error_keepout(
-        &self,
-        learned_keepout: &mut FxHashSet<CellKey>,
-        error: &str,
-    ) -> bool {
-        let mut learned_new_key =
-            self.remember_crossing_error_repair_keepout(learned_keepout, error);
-        for key in self.dynamic_commit_error_repair_keepout_keys(error) {
-            if learned_keepout.insert(key) {
-                learned_new_key = true;
-            }
-        }
-        learned_new_key
-    }
-
-    pub(crate) fn remember_victim_repair_error_keepout(
-        &self,
-        learned_keepout: &mut FxHashSet<CellKey>,
-        victim_only_keepout: &mut FxHashSet<CellKey>,
-        error: &str,
-        current_net_id: u64,
-    ) -> bool {
-        let mut learned_new_key = false;
-        let current_in_crossing = illegal_crossing_net_ids_from_error(error)
-            .into_iter()
-            .any(|net_id| net_id == current_net_id);
-        let crossing_target_keepout = if current_in_crossing {
-            &mut *victim_only_keepout
-        } else {
-            &mut *learned_keepout
-        };
-        for key in self.crossing_error_repair_keepout_keys(error) {
-            if crossing_target_keepout.insert(key) {
-                learned_new_key = true;
-            }
-        }
-
-        let dynamic_keys = self.dynamic_commit_error_repair_keepout_keys(error);
-        if dynamic_keys.is_empty() {
-            return learned_new_key;
-        }
-        let current_owned_overlap =
-            dynamic_commit_error_overlap_owner_ids(error).contains(&current_net_id);
-        let target_keepout = if current_owned_overlap {
-            victim_only_keepout
-        } else {
-            learned_keepout
-        };
-        for key in dynamic_keys {
-            if target_keepout.insert(key) {
-                learned_new_key = true;
-            }
-        }
-        learned_new_key
     }
 
     pub(crate) fn crossing_route_satisfies_partner_constraints(
@@ -1827,39 +1644,6 @@ impl PyPhotonicRouter {
         ))
     }
 
-    /// The distinct `partner_net_id`s of
-    /// [`Self::crossing_violations_for_route_with_ports`] run with
-    /// `require_registered_events = true` -- the same geometric check
-    /// [`Self::validate_committed_crossings_for_route_with_ports`] runs, but
-    /// returning who the route illegally crosses instead of only the first
-    /// violation as an error string. Used on that function's rejection path
-    /// so a caller can rip up the culprits instead of aborting (Milestone 4
-    /// of `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`).
-    pub(crate) fn committed_crossing_violation_partners(
-        &self,
-        net_id: u64,
-        route: &RouteResult,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-        opened_cell_keys: Option<&FxHashSet<CellKey>>,
-    ) -> Vec<u64> {
-        let violations = self.crossing_violations_for_route_with_ports(
-            net_id,
-            route,
-            source_port_um,
-            target_port_um,
-            opened_cell_keys,
-            true,
-        );
-        let mut partners: Vec<u64> = Vec::new();
-        for violation in &violations {
-            if !partners.contains(&violation.partner_net_id) {
-                partners.push(violation.partner_net_id);
-            }
-        }
-        partners
-    }
-
     pub(crate) fn register_geometric_crossing_events_for_route(
         &mut self,
         net_id: u64,
@@ -2064,12 +1848,8 @@ mod tests {
             repair_count: 0,
             failed_net_id: None,
             failed_error: None,
-            retried_source_layers: FxHashSet::default(),
             timings: NativeBatchTimings::default(),
-            trace_last_route_start: None,
-            deferred_job_indices: Vec::new(),
             deferred_count: 0,
-            last_rejected_commit_partners: Vec::new(),
         };
         // probe_net_for_repair only checks *membership* of an owner id in
         // `batch.final_routes`, never the stored RouteResult itself, to
@@ -2189,62 +1969,6 @@ mod tests {
         );
     }
 
-    /// `committed_crossing_violation_partners` on the same B1 fixture as
-    /// `intersection_without_crossing_event_is_a_violation`/
-    /// `intersection_with_a_registered_crossing_event_is_accepted` above,
-    /// through a `RouteResult` instead of a bare centerline: net 2's
-    /// 135-degree centerline against the committed 45-degree partner (net
-    /// 1) with no registered event names net 1 as the violation's partner;
-    /// once the event is registered for the same point, the list is empty.
-    /// (Note: `crossing_conflict_fixture`'s vertical-vs-diagonal pair from
-    /// the test above this one cannot exercise the "with event -> []" half
-    /// -- that crossing's `not_perpendicular` reason is not gated by
-    /// `has_registered_crossing_event` at all, only the perpendicular,
-    /// margin-satisfying `missing_crossing_event` case is; this fixture's
-    /// crossing is perpendicular, so it is the one where a registered
-    /// event actually changes the outcome.)
-    #[test]
-    fn committed_crossing_violation_partners_reflects_registered_events() {
-        let mut router = missing_crossing_event_fixture_router();
-        install_diagonal_partner(&mut router, 1);
-        let route = RouteResult {
-            states: Vec::new(),
-            primitives: Vec::new(),
-            cells: Vec::new(),
-            compressed_waypoints: vec![(10, 50), (50, 10)],
-            total_length_um: 0.0,
-            total_cost: 0.0,
-            requested_target: State::new(50, 10, 0),
-            reached_target: State::new(50, 10, 0),
-            stats: RouteSearchStats::default(),
-        };
-
-        let partners = router.committed_crossing_violation_partners(2, &route, None, None, None);
-        assert_eq!(
-            partners,
-            vec![1],
-            "no registered event: net 1 must be named as the violation's partner"
-        );
-
-        router.add_crossing_events(vec![CrossingEvent {
-            net_id: 1,
-            partner_net_id: 2,
-            point: (30.0, 30.0),
-            route_segment: ((10, 10), (50, 50)),
-            partner_segment: ((10, 50), (50, 10)),
-            route_angle: 1,
-            partner_angle: 3,
-            reservation_keys: FxHashSet::default(),
-        }]);
-
-        let partners_after =
-            router.committed_crossing_violation_partners(2, &route, None, None, None);
-        assert!(
-            partners_after.is_empty(),
-            "a registered crossing event must clear the violation: {partners_after:?}"
-        );
-    }
-
     /// 2026-09-15 00:30 owner decision (a): `probe_net_for_repair`'s
     /// crossing reconstruction must be geometric
     /// (`realized_crossing_events_for_route`), not grid-waypoint-based
@@ -2333,65 +2057,6 @@ mod tests {
             "the second vertical job (net 5, x=40) must also be blocked by the diagonal \
              net 3, the same as net 4 (x=30)"
         );
-    }
-
-    #[test]
-    fn illegal_crossing_net_ids_parse_realized_grid_and_unrelated_errors() {
-        assert_eq!(
-            illegal_crossing_net_ids_from_error(
-                "Illegal realized crossing: net 36 intersects net 33 at (0.000, 0.000) (not_perpendicular)",
-            ),
-            vec![36, 33]
-        );
-        assert_eq!(
-            illegal_crossing_net_ids_from_error(
-                "Illegal grid crossing: net 70 intersects net 67 at (1292.500, 326.500) (insufficient_straight_margin)",
-            ),
-            vec![70, 67]
-        );
-        assert_eq!(
-            illegal_crossing_net_ids_from_error("some unrelated error"),
-            Vec::<u64>::new()
-        );
-    }
-
-    #[test]
-    fn grid_crossing_error_creates_repair_keepout() {
-        let router = PyPhotonicRouter::new(
-            PyGridSpec::new(40, 40, 0.5, 0.0, 0.0).unwrap(),
-            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
-            PyAStarConfig::new(
-                10000,
-                1.0,
-                0,
-                true,
-                None,
-                true,
-                12,
-                0.35,
-                3,
-                true,
-                0.5,
-                10_000_000,
-                false,
-                0.0,
-                0.0,
-                0,
-                false,
-                false,
-                "library".to_string(),
-                "distance".to_string(),
-                1.0,
-            ),
-            None,
-        );
-
-        let keepout = router.crossing_error_repair_keepout_keys(
-            "Illegal grid crossing: net 70 intersects net 67 at (5.000, 5.000) (insufficient_straight_margin)",
-        );
-
-        assert!(!keepout.is_empty());
-        assert!(keepout.contains(&pack_xy(10, 10)));
     }
 
     #[test]

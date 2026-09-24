@@ -381,11 +381,6 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("router", "negotiation", "pending_straight_ripup_threshold"),
         usize_or_default(100),
     ),
-    EnvVar(
-        _PREFIX + "ENABLE_ORTHOGONAL_REPAIR_FALLBACK",
-        ("router", "negotiation", "enable_orthogonal_repair_fallback"),
-        presence,
-    ),
     # Search overrides (src/py_router.rs) -- ASTAR_TIMEOUT_MS/S and
     # LONG_STRAIGHT_CONGESTION_WEIGHT are applied by their own functions
     # below (precedence/unit-conversion, or raising validation).
@@ -643,9 +638,6 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("fanout", "stub_port_lane_length_cells"),
         nonnegative_int(_PREFIX + "STUB_PORT_LANE_LENGTH_CELLS"),
     ),
-    # Engine selection (translation/route_rust.py)
-    EnvVar(_PREFIX + "NEGOTIATED_REPAIR", ("engine", "negotiated_repair"), not_zero),
-    EnvVar(_PREFIX + "LEGACY_REPAIR_CHAIN", ("engine", "legacy_repair_chain"), exact_one),
     # Search tuning (translation/route_rust.py)
     EnvVar(_PREFIX + "MIN_BEND_WEIGHT", ("search", "min_bend_weight"), plain_float),
     EnvVar(_PREFIX + "MIN_HEURISTIC_WEIGHT", ("search", "min_heuristic_weight"), plain_float),

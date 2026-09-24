@@ -113,36 +113,34 @@ bookkeeping, the typed `RouterConfig`, and `search_engine: Box<dyn NetSearch +
 Send + Sync>`, chosen once at construction by `search_engine_for`. It declares
 the submodules and owns no algorithm.
 
-`jobs.rs` (443 lines) owns the per-net job and batch types (`NativeRouteJob`,
-the repair batch state and its defaults). `cells.rs` (653 lines) owns the cell
+`jobs.rs` (331 lines) owns the per-net job and batch types (`NativeRouteJob`,
+the repair batch state and its defaults). `cells.rs` (632 lines) owns the cell
 arithmetic: footprint inflation, port footprint cells, clearance-exempt cells,
-commit and core cells. `commit.rs` (941 lines) owns committing a route to the
+commit and core cells. `commit.rs` (805 lines) owns committing a route to the
 obstacle map and everything that accumulates on a successful commit (history,
 long-straight congestion, crossing spacing, post-commit guidance).
-`search_calls.rs` (3,612 lines) owns the bridge from a job to a
+`search_calls.rs` (3,132 lines) owns the bridge from a job to a
 `SearchRequest`: it builds `AStarConfig` and the crossing search configuration
-and calls `self.search_engine.search(...)`. `crossing_reservation.rs` (3,553
+and calls `self.search_engine.search(...)`. `crossing_reservation.rs` (3,218
 lines) owns crossing reservations, partner sets and the realized-crossing
 validation. `crossing_geometry.rs` (579 lines) owns the pure geometry used
 there (segment intersection, point-segment distance, parallel overlap,
 collinearity, centerline compression). `endpoint_correction.rs` (2,677 lines)
 owns the checked grid-to-port correction pass. `diagnostics.rs` (248 lines)
-owns the trace records and the batch timers. `legacy_repair.rs` (3,739 lines)
-owns the pre-negotiation repair chain and is labelled a removal candidate
-(section 9). `test_support.rs` (772 lines, `#[cfg(test)]`) owns the engine-side
-fixtures. No module here implements a search; each one calls the interface of
+owns the trace records and the batch timers. `test_support.rs` (750 lines,
+`#[cfg(test)]`) owns the engine-side fixtures. No module here implements a search; each one calls the interface of
 section 4.
 
 ### `src/engine/negotiation/` -- the loop and its policies
 
-`mod.rs` (15 lines) is the module list. `loop_.rs` (1,506 lines) owns the loop
+`mod.rs` (15 lines) is the module list. `loop_.rs` (1,302 lines) owns the loop
 itself: `run_negotiated_batch(jobs, params) -> (RepairBatchState,
 NegotiationCounters)` is the loop without PyO3, and
 `route_many_with_negotiated_repair_and_commit_impl` is the thin converter above
 it. Each *rule* the loop applies lives in its own module and can be replaced
-without touching the loop: `budget.rs` (237 lines, `AttemptKind`,
+without touching the loop: `budget.rs` (293 lines, `AttemptKind`,
 `BudgetSchedule`, `LadderBudgets`), `crossing_free.rs` (102 lines,
-`CrossingFreePolicy`, `PlannedPairsOnly`, `Never`), `ripup.rs` (408 lines,
+`CrossingFreePolicy`, `PlannedPairsOnly`, `Never`), `ripup.rs` (409 lines,
 `RipUpPolicy`, `LidarStyleRipUp`, `NoRipUp`), `queue.rs` (213 lines,
 `NetQueue` and the three tables the rules read), `attempt.rs` (469 lines, one
 attempt and its trace line), `probe.rs` (536 lines, "who is blocking this
@@ -151,9 +149,9 @@ reads the loop in full.
 
 ### `src/bindings/` -- the PyO3 surface
 
-`mod.rs` (3,441 lines) owns the single `#[pymethods]` block of
+`mod.rs` (3,290 lines) owns the single `#[pymethods]` block of
 `PyPhotonicRouter`: every method Python can call, and nothing else.
-`types.rs` (945 lines) owns the `#[pyclass]` configuration and result types
+`types.rs` (938 lines) owns the `#[pyclass]` configuration and result types
 (including `PyRouterConfig`, which validates the search engine name at
 construction). `convert.rs` (578 lines) owns the conversions in both directions
 (route results, batch timing dictionaries, primitive descriptions).
@@ -177,7 +175,7 @@ realization and port access. `src/simple_routes.rs` (2,510 lines) owns the
 straight/L/Z candidate representation and validation (no search).
 `src/meander.rs` (988) and `src/auto_meander.rs` (1,895) own analytic and
 obstacle-aware meander planning; `src/plm.rs` (2,435) owns the path-length
-matching planner. `src/config.rs` (307 lines) owns the typed configuration tree
+matching planner. `src/config.rs` (302 lines) owns the typed configuration tree
 (`RouterConfig` and its four groups) -- since Milestone 1, `grep -rn
 "env::var\|var_os" src/` is empty, so no algorithm in the crate reads the
 environment.
@@ -382,7 +380,7 @@ The rules are values, one module each, chosen before the first round:
 | --- | --- | --- |
 | Budget | `BudgetSchedule`, `LadderBudgets` (`negotiation/budget.rs`) | the expansion budget of one attempt, given its `AttemptKind` (`First`, `FirstRetry`, `PostRipUp`, `ProbeGuided`, `DirectCrossing`, `Braid`), the net's failure count and the round; `None` means unbounded |
 | Crossing-free | `CrossingFreePolicy`, `PlannedPairsOnly`, `Never` (`negotiation/crossing_free.rs`) | whether this net's searches this round run crossing-free (contribution 1's rule for nets the plan gives no crossing; `Never` without guidance) |
-| Rip-up | `RipUpPolicy`, `LidarStyleRipUp`, `NoRipUp` (`negotiation/ripup.rs`) | which committed nets a blocked net displaces -- and it does the ripping, because rip-up mutates the obstacle map and `batch.final_routes`; it returns the ids it ripped, in the order it found them |
+| Rip-up | `RipUpPolicy`, `LidarStyleRipUp`, `NoRipUp` (`negotiation/ripup.rs`) | which committed nets a blocked net displaces -- and it does the ripping, because rip-up mutates the obstacle map and `batch.final_routes`; it returns the ids it ripped, in the order it found them. `NoRipUp` rips nothing: the binding's `no_ripup=True` with `max_rounds = 1` is the no-repair mode (`RipupRerouteConfig(enabled=False)`) |
 | Queue | `NetQueue` (`negotiation/queue.rs`) | the work order plus the three tables the other rules read: failure counts, the nets already ripped this epoch, and each net's most recent probe blockers |
 
 `negotiation/attempt.rs` turns one attempt into its `native_negotiated_search`
@@ -510,35 +508,43 @@ which commit last reproduced all 27 cells.
 
 ## 9. Removal candidates (Milestone 8)
 
-Nothing here is removed yet. The repository owner's decision of 2026-09-23 was
-to keep the functionality of everything through Milestones 2 to 7, move each
-candidate into a clearly named module, label it in place, and negotiate the
-removals item by item afterwards. The label is the string `candidate for
-removal, see Milestone 8` -- `grep -rn "candidate for removal" src/ translation/`
-is the authoritative list; the items below are that grep plus the candidates
-named in the ExecPlan's Milestone 8 section.
+The repository owner decided every candidate on 2026-09-24 (all removals as
+recommended, under the constraint that the working benchmarks stay exact), and
+Milestone 8 carries them out one slice at a time. The label is the string
+`candidate for removal, see Milestone 8` -- `grep -rn "candidate for removal"
+src/ translation/` is the authoritative list of what is still labelled; the
+items below are that grep plus the candidates named in the ExecPlan's
+Milestone 8 section.
 
-Labelled in the source:
+Already removed, Slice A, the legacy engine (2026-09-24): the legacy repair
+loop with its ~25-helper chain (the whole `src/engine/legacy_repair.rs`, 3,739
+lines) and its binding, the clean-probe commit, the orthogonal repair fallback
+(its config field `enable_orthogonal_repair_fallback` removed with it), the
+non-repair batch binding (the negotiated loop with `max_rounds = 1` and
+`NoRipUp` replaces it),
+the negotiated-displacement trio and `ripup_repair_set_victims`, the
+engine-selection fields and their two environment variables, and every helper
+those left unreachable. Two decisions came with the slice: the two
+mid-pipeline repair passes of `translation/routing/verify_repair.py` now call
+the negotiated loop (D8), and the probe-guided and direct-crossing budgets
+follow `NegotiationConfig` instead of the constants, whose values are those
+fields' defaults (D9).
+
+Still labelled in the source:
 
 | item | module | size |
 | --- | --- | --- |
-| `route_many_with_repair_and_commit_impl`, the legacy repair loop, and the ~25 helpers of its chain | `src/engine/legacy_repair.rs` | 3,739 lines (the whole file) |
-| `try_commit_clean_probe` | `src/engine/legacy_repair.rs` | removed from the negotiated chain 2026-09-15; still used by the legacy loop and one test |
-| `orthogonal_repair_primitives`, `route_single_net_and_commit_orthogonal_native_with_repair_keepout`, `route_single_net_and_commit_native_with_optional_orthogonal_repair_keepout` (the orthogonal repair fallback) | `src/engine/legacy_repair.rs` | 3 methods plus `NegotiationConfig.enable_orthogonal_repair_fallback`, off by default |
-| `route_many_normal_and_commit`, the non-repair loop | `src/bindings/mod.rs` | one binding; used by one test. `max_rounds = 1` with `NoRipUp` would replace it |
-| `try_negotiated_displacement` with `snapshot_negotiation_state` / `restore_negotiation_state` | `src/engine/negotiation/loop_.rs` | dead since 2026-09-14 (its only caller was removed); calls only itself |
-| `ripup_repair_set_victims` | `src/engine/negotiation/loop_.rs` | reached by the legacy loop and the dead displacement only |
 | `expected_pairs_partner_set`, `crossing_allowed_partner_set` (the window and collision crossing modes, D2) | `src/engine/crossing_reservation.rs` | 2 methods |
 | `try_route_through_expected_crossing_partner` (same modes) | `src/engine/search_calls.rs` | about 220 lines with the two above, plus the branches keyed on `allow_only_expected_pairs` / `use_collision_crossing_routing` in shared functions, the `"window"` default at four sites, three Rust tests and one Python test |
-| The final crossing repair and issue-group repair passes (D8) | `translation/routing/verify_repair.py` | two mid-pipeline passes; no paper cell ever reached them |
 | `record_elapsed` and the four other helpers no phase reaches | `translation/routing/timing.py` (1), `translation/routing/route_jobs.py` (4: `_append_grid_step`, `_fanout_stub_centerline_um`, `_append_circular_stub_bend`, `_cross2`) | 5 functions |
 
 Named in the plan, not labelled in the source:
 
 * **D7**: the global rip-up's epoch reset fires when its call counter is
   exactly 2, while its doc comment says "the second call and every second call
-  after that" (`src/engine/negotiation/loop_.rs`). The paper ran the code, so
-  the code stands until the owner decides.
+  after that" (`src/engine/negotiation/loop_.rs`). Decided 2026-09-24: the
+  paper ran the code, so the code stands and the comment is corrected to
+  describe it (a later slice of this milestone).
 * **The four toy benchmark modules** kept only as historical fixtures (`TOY`,
   `mmi_heater`, `mmi_heater_8x4`, `mmi_heater_8x4_ripup_reroute`). No test
   imports them any more (Milestone 6 Slice 3), but
