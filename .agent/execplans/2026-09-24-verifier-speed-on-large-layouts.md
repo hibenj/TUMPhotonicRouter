@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. This document must be maintained in accordance with `.agent/PLANS.md`.
 
-Status: **2026-09-25 00:50 -- Milestone 1 done: the hotspot is the obstacle check's per-route loop against the residue, not the pair check; Milestone 2 (residue index) in progress.**
+Status: **2026-09-25 02:20 -- Milestones 1 and 2 done (obstacle check 526 s to 38 s on Benes 64x64, reports byte-identical); Milestone 3 (pair-check index) next.**
 
 
 ## Purpose / Big Picture
@@ -16,7 +16,7 @@ After this plan the same call takes minutes instead of an hour on that layout, t
 
 - [x] (2026-09-24 23:20) Evidence gathered (structure of the verifier, the 2026-09-07 prefilter plan, phase timings from the Milestone 8 reproduction logs); plan written.
 - [x] (2026-09-25 00:45) Milestone 1: attribution by cProfile (Benes 64x64 contribution 2, 5,824 records, verification 551 s under the profiler) and by an instrumented copy of the verifier in a scratch working directory (Benes 32x32 contribution 2, 1,728 records, 64 s). Both scratch runs produced reports byte-identical to the `results_m8_check` archives, so the harness is sound. Benes 64x64: `_verify_route_obstacle_overlaps` 510 s, `_realized_record_region` 26 s (5,824 calls), `_verify_cross_net_route_overlaps` 12 s, everything else under 1 s. Benes 32x32 inside the obstacle check, per obstacle layer: the union of routes 0.01 s, the union-vs-obstacle boolean 0.15 s, the residue minus the global legal region 0.00 s, then the per-route loop 9 to 14 s on each of five crossing-tile layers (residue of 576 or 2,880 polygons, every one a legal per-key overlap, 576 touching routes, zero issues). The loop does one boolean of each route against the whole residue: 1,728 routes x 5 layers on 32x32, 5,824 x 6 on 64x64, and the residue grows with the layout, so the cost is quadratic. cProfile cannot see it because klayout's operators are not attributed to a Python frame (508 s of "own time" in the loop's frame).
-- [ ] Milestone 2: the residue index (candidate residue polygons per route from a grid over their bounding boxes; the same booleans on a subset that cannot change the result).
+- [x] (2026-09-25 02:20) Milestone 2: `_PolygonBucketIndex` over the residue's polygons, cell = max(median extent, sqrt(bbox area / n)); the loop intersects each route with its candidate polygons only; four tests (two oracle comparisons against the full-residue loop, the index's conservativeness, the query-cost bound); the dead duplicate in `_polyline_self_intersects_um` removed. Reports byte-identical to the archives on Benes 64x64 contribution 2 (verification 526 s to 38 s) and ADEPT 128x128 contribution 2 (143 s to 70 s). Rust 567, Python 526; gate 9/9 exact, verified independently.
 - [ ] Milestone 3: candidate pairs from a spatial index, issues in the original order.
 - [ ] Milestone 4: regions without a component per record (optional; 26 s on 64x64, about 100 s expected on 128x128).
 - [ ] Milestone 5: acceptance on the archived reports and the full reproduction.
@@ -25,6 +25,7 @@ After this plan the same call takes minutes instead of an hour on that layout, t
 ## Surprises & Discoveries
 
 - 2026-09-25: the 2026-09-24 survey (and this plan's first version) blamed the pair check's quadratic Python loop. Measured, the pair check is 12 s of 551 s on Benes 64x64; the obstacle check's per-route loop against the residue is 510 s. The 2026-09-07 pass made the residue small "while the obstacle layer is the whole chip", but under contribution 2 the residue is the whole set of legal crossing-tile overlaps (2,880 polygons on 32x32) and every route is intersected with all of it on every crossing layer. Lesson: profile before planning; a survey of the code's shape found the wrong quadratic loop.
+- 2026-09-25: the first Milestone 2 spec set the grid cell from the residue polygons' median extent alone. On Benes that is the crossing-tile pitch and the check dropped from 526 s to about 60 s on 64x64 with a byte-identical report; on ADEPT 64x64 a residue of 42 slivers of 0.25 um on a whole-chip layer gave a 250 dbu cell under chip-length routes, one query walked 2.4 million cells, and the 128x128 run was killed after 38 minutes (the implementer stopped and reported instead of improvising). Fix: the cell is at least the square root of the residue's bounding-box area per polygon, so a query never covers more cells than the residue has polygons.
 - 2026-09-24: `translation/photonic_verification.py::_polyline_self_intersects_um` carries an unreachable duplicate of its own loop after a `return` (lines about 928-959). Dead code; removed in Milestone 2 with a note.
 
 

@@ -1,3 +1,6 @@
+import math
+import random
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -12,6 +15,9 @@ from translation.photonic_verification import (
     PhotonicVerificationIssue,
     _component_layer_region,
     _polygon_regions_by_pair_um,
+    _PolygonBucketIndex,
+    _region_area_um2,
+    _region_bbox_um,
     _verify_crossing_component_overlaps,
     _verify_crossing_component_route_overlaps,
     _verify_cross_net_route_overlaps,
@@ -733,3 +739,303 @@ def test_photonic_verifier_allows_centerline_in_the_cell_holding_the_bound():
         )
         == 1
     )
+
+
+def _oracle_verify_route_obstacle_overlaps(
+    issues,
+    route_regions_by_key,
+    *,
+    obstacle_component,
+    routed_layout,
+    route_layer,
+    obstacle_layers,
+    dbu,
+    legal_overlap_region,
+    legal_overlap_regions_by_key=None,
+    legal_overlap_regions_by_layer=None,
+    min_overlap_area_um2=0.0,
+):
+    """Verbatim copy of the pre-Milestone-2 `_verify_route_obstacle_overlaps`
+    per-route loop: intersects each route directly with the FULL residue,
+    with no bounding-box index. Used as the correctness oracle for
+    `_PolygonBucketIndex`.
+    """
+    overlap_count = 0
+    for layer in obstacle_layers:
+        source_component = obstacle_component
+        if source_component is None:
+            if layer == route_layer:
+                continue
+            source_component = routed_layout
+        obstacle_region = _component_layer_region(source_component, layer)
+        if obstacle_region.is_empty():
+            continue
+        all_routes_region = kdb.Region()
+        for route_region in route_regions_by_key.values():
+            all_routes_region.insert(route_region)
+        residue = (all_routes_region & obstacle_region) - legal_overlap_region
+        if residue.is_empty():
+            continue
+        for key, route_region in route_regions_by_key.items():
+            touching = route_region & residue
+            if touching.is_empty():
+                continue
+            per_key_regions = legal_overlap_regions_by_key
+            if legal_overlap_regions_by_layer is not None:
+                per_key_regions = legal_overlap_regions_by_layer.get(
+                    layer,
+                    per_key_regions,
+                )
+            overlap = touching
+            if per_key_regions is not None:
+                overlap = touching - per_key_regions.get(key, kdb.Region())
+            if overlap.is_empty():
+                continue
+            overlap_area_um2 = _region_area_um2(overlap, dbu)
+            if overlap_area_um2 <= float(min_overlap_area_um2):
+                continue
+            overlap_count += 1
+            issues.append(
+                PhotonicVerificationIssue(
+                    code="waveguide_obstacle_overlap",
+                    message=f"Waveguide for {key[0]} overlaps obstacle layer {layer}.",
+                    net_name=key[0],
+                    details={
+                        "obstacle_layer": layer,
+                        "overlap_area_um2": overlap_area_um2,
+                        "overlap_bbox_um": _region_bbox_um(overlap, dbu),
+                    },
+                )
+            )
+    return overlap_count
+
+
+def test_obstacle_overlap_issues_match_full_residue_oracle():
+    obstacle_layout = Component()
+    layer_a = (1, 0)
+    layer_b = (2, 0)
+    # Layer A: two illegal overlaps (n1, n2) and one overlap fully inside a
+    # per-key legal window (n5, so no issue).
+    obstacle_layout.add_polygon([(5.0, 0.0), (15.0, 0.0), (15.0, 2.0), (5.0, 2.0)], layer=layer_a)
+    obstacle_layout.add_polygon(
+        [(25.0, -1.0), (35.0, -1.0), (35.0, 3.0), (25.0, 3.0)], layer=layer_a
+    )
+    obstacle_layout.add_polygon(
+        [(45.0, -1.0), (55.0, -1.0), (55.0, 3.0), (45.0, 3.0)], layer=layer_a
+    )
+    # Layer B: two illegal overlaps (n3, n4) and one legal-window overlap (n6).
+    obstacle_layout.add_polygon(
+        [(5.0, 10.0), (15.0, 10.0), (15.0, 12.0), (5.0, 12.0)], layer=layer_b
+    )
+    obstacle_layout.add_polygon(
+        [(25.0, 9.0), (35.0, 9.0), (35.0, 13.0), (25.0, 13.0)], layer=layer_b
+    )
+    obstacle_layout.add_polygon(
+        [(45.0, 9.0), (55.0, 9.0), (55.0, 13.0), (45.0, 13.0)], layer=layer_b
+    )
+
+    key1 = ("n1", ("a", "o1"), ("b", "o2"))
+    key2 = ("n2", ("a", "o1"), ("b", "o2"))
+    key3 = ("n3", ("a", "o1"), ("b", "o2"))
+    key4 = ("n4", ("a", "o1"), ("b", "o2"))
+    key5 = ("n5", ("a", "o1"), ("b", "o2"))
+    key6 = ("n6", ("a", "o1"), ("b", "o2"))
+    key7 = ("n7", ("a", "o1"), ("b", "o2"))
+
+    route_regions_by_key = {
+        key1: _box_region(0, 0, 10_000, 2_000),
+        key2: _box_region(20_000, 0, 30_000, 2_000),
+        key3: _box_region(0, 10_000, 10_000, 12_000),
+        key4: _box_region(20_000, 10_000, 30_000, 12_000),
+        key5: _box_region(40_000, 0, 50_000, 2_000),
+        key6: _box_region(40_000, 10_000, 50_000, 12_000),
+        # Far from every obstacle on both layers.
+        key7: _box_region(1_000_000, 1_000_000, 1_010_000, 1_002_000),
+    }
+    legal_overlap_regions_by_key = {
+        key5: _box_region(44_000, -1_000, 51_000, 3_000),
+        key6: _box_region(44_000, 9_000, 51_000, 13_000),
+    }
+
+    kwargs = {
+        "route_regions_by_key": route_regions_by_key,
+        "obstacle_component": obstacle_layout,
+        "routed_layout": Component(),
+        "route_layer": (99, 0),
+        "obstacle_layers": (layer_a, layer_b),
+        "dbu": 0.001,
+        "legal_overlap_region": kdb.Region(),
+        "legal_overlap_regions_by_key": legal_overlap_regions_by_key,
+    }
+
+    shipped_issues: list[PhotonicVerificationIssue] = []
+    shipped_count = _verify_route_obstacle_overlaps(shipped_issues, **kwargs)
+    oracle_issues: list[PhotonicVerificationIssue] = []
+    oracle_count = _oracle_verify_route_obstacle_overlaps(oracle_issues, **kwargs)
+
+    assert shipped_count == oracle_count
+    assert len(shipped_issues) >= 4
+    assert shipped_issues == oracle_issues
+    assert [issue.net_name for issue in shipped_issues] == ["n1", "n2", "n3", "n4"]
+
+
+def test_obstacle_overlap_index_is_exact_on_random_rectangles():
+    rng = random.Random(20260925)
+    obstacle_layout = Component()
+    layer = (7, 0)
+
+    def _random_box_um(rng: random.Random) -> tuple[float, float, float, float]:
+        x0 = float(rng.randint(0, 190))
+        y0 = float(rng.randint(0, 190))
+        w = float(rng.randint(1, 15))
+        h = float(rng.randint(1, 15))
+        return (x0, y0, x0 + w, y0 + h)
+
+    route_boxes_um = [_random_box_um(rng) for _ in range(60)]
+    obstacle_boxes_um = [_random_box_um(rng) for _ in range(80)]
+
+    # Force a few deterministic edge cases the pure randomness might miss.
+    route_boxes_um[0] = (0.0, 0.0, 10.0, 10.0)
+    obstacle_boxes_um[0] = (10.0, 0.0, 20.0, 10.0)  # touches route 0 at x=10
+    route_boxes_um[1] = (50.0, 50.0, 80.0, 80.0)
+    obstacle_boxes_um[1] = (60.0, 60.0, 65.0, 65.0)  # fully inside route 1
+    route_boxes_um[2] = (110.0, 110.0, 115.0, 115.0)
+    obstacle_boxes_um[2] = (100.0, 100.0, 140.0, 140.0)  # fully contains route 2
+
+    route_keys = [(f"n{i}", (f"src{i}", "o1"), (f"dst{i}", "o2")) for i in range(60)]
+    route_regions_by_key = {
+        key: _box_region(
+            round(xmin * 1000),
+            round(ymin * 1000),
+            round(xmax * 1000),
+            round(ymax * 1000),
+        )
+        for key, (xmin, ymin, xmax, ymax) in zip(route_keys, route_boxes_um, strict=True)
+    }
+    for xmin, ymin, xmax, ymax in obstacle_boxes_um:
+        obstacle_layout.add_polygon(
+            [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)],
+            layer=layer,
+        )
+
+    legal_overlap_regions_by_key = {
+        route_keys[0]: _box_region(0, 0, 10_000, 10_000),
+        route_keys[5]: _box_region(0, 0, 5_000, 5_000),
+        route_keys[10]: _box_region(0, 0, 1_000, 1_000),
+    }
+
+    kwargs = {
+        "route_regions_by_key": route_regions_by_key,
+        "obstacle_component": obstacle_layout,
+        "routed_layout": Component(),
+        "route_layer": (98, 0),
+        "obstacle_layers": (layer,),
+        "dbu": 0.001,
+        "legal_overlap_region": kdb.Region(),
+        "legal_overlap_regions_by_key": legal_overlap_regions_by_key,
+    }
+
+    shipped_issues: list[PhotonicVerificationIssue] = []
+    shipped_count = _verify_route_obstacle_overlaps(shipped_issues, **kwargs)
+    oracle_issues: list[PhotonicVerificationIssue] = []
+    oracle_count = _oracle_verify_route_obstacle_overlaps(oracle_issues, **kwargs)
+
+    assert oracle_count > 0
+    assert shipped_issues != []
+    assert shipped_count == oracle_count
+    assert shipped_issues == oracle_issues
+
+
+def test_polygon_bucket_index_candidates_are_conservative_and_exact():
+    # 20 boxes on a 5x4 grid, each 10x10 dbu, spaced 20 dbu apart, so
+    # adjacent boxes never touch or overlap unless a query is built to do so.
+    region = kdb.Region()
+    for row in range(4):
+        for col in range(5):
+            box = kdb.Box(col * 20, row * 20, col * 20 + 10, row * 20 + 10)
+            region.insert(box)
+    polygons = list(region.each())
+    assert len(polygons) == 20
+    index = _PolygonBucketIndex(region)
+
+    def _exact_candidates(query: kdb.Box) -> set[int]:
+        return {
+            i
+            for i, polygon in enumerate(polygons)
+            if query.overlaps(polygon.bbox()) or query.touches(polygon.bbox())
+        }
+
+    equal_count = 0
+    queries = [
+        # Fully inside the box at col=1, row=0 (x 20-30, y 0-10): overlap.
+        kdb.Box(22, 2, 28, 8),
+        # Straddles the shared edge between col=2 (x 40-50) and col=3
+        # (x 60-70) at y in [20, 30) (row=1): touches both, no overlap.
+        kdb.Box(50, 20, 60, 30),
+        # Far from every box: miss.
+        kdb.Box(10_000, 10_000, 10_010, 10_010),
+        # In a gap cell whose only registered box (col=0, row=0) does not
+        # actually meet the query: the index may over-report (conservative).
+        kdb.Box(15, 15, 19, 19),
+    ]
+    for query in queries:
+        exact = _exact_candidates(query)
+        candidates = set(index.candidates(query))
+        assert candidates.issuperset(exact)
+        if candidates == exact:
+            equal_count += 1
+
+    assert equal_count >= 3
+
+
+def test_polygon_bucket_index_query_cost_is_bounded_by_polygon_count():
+    # 40 small (250 x 250 dbu) polygons scattered over a huge 3,000,000 x
+    # 5,000,000 dbu area. Without the area-based cell-size term, the
+    # median-extent term alone (250, the polygon size) would force a
+    # whole-area query to visit (3e6/250) * (5e6/250) = 240,000 cells; the
+    # area term instead bounds a query over the whole indexed area to
+    # roughly the polygon count.
+    rng = random.Random(20260925)
+    area_width = 3_000_000
+    area_height = 5_000_000
+    polygon_extent = 250
+    n = 40
+    region = kdb.Region()
+    # Anchor two polygons at the extreme corners so the region's bbox is
+    # exactly (0, 0, area_width, area_height), matching the nominal area
+    # the cell-size formula below is checked against exactly.
+    region.insert(kdb.Box(0, 0, polygon_extent, polygon_extent))
+    region.insert(
+        kdb.Box(
+            area_width - polygon_extent,
+            area_height - polygon_extent,
+            area_width,
+            area_height,
+        )
+    )
+    for _ in range(n - 2):
+        x0 = rng.randint(0, area_width - polygon_extent)
+        y0 = rng.randint(0, area_height - polygon_extent)
+        region.insert(kdb.Box(x0, y0, x0 + polygon_extent, y0 + polygon_extent))
+    assert region.count() == n
+    assert region.bbox() == kdb.Box(0, 0, area_width, area_height)
+
+    index = _PolygonBucketIndex(region)
+    expected_min_cell = math.ceil(math.sqrt((area_width * area_height) / n))
+    assert index._cell >= expected_min_cell
+
+    query = kdb.Box(0, 0, area_width, area_height)
+    # The number of grid cells a whole-area query iterates, computed the
+    # same way `candidates()` does internally: bounded by (a small
+    # constant beyond) the polygon count, not by (area / median-extent^2).
+    cells_visited = (query.right // index._cell - query.left // index._cell + 1) * (
+        query.top // index._cell - query.bottom // index._cell + 1
+    )
+    assert cells_visited <= n + 8
+
+    start = time.perf_counter()
+    candidates = index.candidates(query)
+    elapsed = time.perf_counter() - start
+
+    assert sorted(candidates) == list(range(n))
+    assert elapsed < 1.0

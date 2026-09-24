@@ -557,6 +557,67 @@ def _verify_cross_net_route_overlaps(
     return overlap_count
 
 
+class _PolygonBucketIndex:
+    """Bounding-box grid index over a `kdb.Region`'s polygons.
+
+    Performance pass 2026-09-25 (Milestone 2): `_verify_route_obstacle_overlaps`
+    used to boolean every route against the whole residue (thousands of
+    legal crossing-tile overlap polygons under contribution 2, on every
+    obstacle layer): 510 of 551 s of verification on Benes 64x64. This index
+    lets that check ask only the residue polygons whose bounding box can
+    possibly meet a route's bounding box.
+
+    Performance pass 2026-09-25 (Milestone 2, cell-size decision): the cell
+    size is the larger of the median polygon bbox extent and
+    `ceil(sqrt(area(region bbox) / n_polygons))`. A query box always lies
+    inside the region's own bbox, so it covers at most
+    `area(query) / cell^2 <= area(region bbox) / cell^2 <= n_polygons`
+    cells -- a query is never worse than a linear scan of the polygons, no
+    matter how large the query box is relative to the polygons. A dense
+    residue (Benes crossing tiles: thousands of polygons at one pitch)
+    still gets a cell near the tile pitch from the median term; a sparse
+    one on a chip-wide bbox (multiportmmi: 42 sub-micron slivers on a
+    layer spanning the whole chip) gets a chip-scale cell from the area
+    term instead of the tiny median, which is what made a route's bbox
+    query cost millions of empty cells before this term was added.
+    Registration stays cheap either way because the cell is never smaller
+    than the median polygon extent.
+    """
+
+    def __init__(self, region: kdb.Region) -> None:
+        self._polygons: list[kdb.Polygon] = list(region.each())
+        self._cell = self._cell_size(self._polygons, region.bbox())
+        self._buckets: dict[tuple[int, int], list[int]] = {}
+        for index, polygon in enumerate(self._polygons):
+            box = polygon.bbox()
+            for grid_x in range(box.left // self._cell, box.right // self._cell + 1):
+                for grid_y in range(box.bottom // self._cell, box.top // self._cell + 1):
+                    self._buckets.setdefault((grid_x, grid_y), []).append(index)
+
+    @staticmethod
+    def _cell_size(polygons: list[kdb.Polygon], region_bbox: kdb.Box) -> int:
+        if not polygons:
+            return 1
+        widths = sorted(polygon.bbox().width() for polygon in polygons)
+        heights = sorted(polygon.bbox().height() for polygon in polygons)
+        median_width = widths[len(widths) // 2]
+        median_height = heights[len(heights) // 2]
+        median_extent = max(int(median_width), int(median_height))
+        region_area = int(region_bbox.width()) * int(region_bbox.height())
+        bounded_extent = math.ceil(math.sqrt(region_area / len(polygons)))
+        return max(median_extent, bounded_extent, 1)
+
+    def candidates(self, box: kdb.Box) -> list[int]:
+        indices: set[int] = set()
+        for grid_x in range(box.left // self._cell, box.right // self._cell + 1):
+            for grid_y in range(box.bottom // self._cell, box.top // self._cell + 1):
+                indices.update(self._buckets.get((grid_x, grid_y), ()))
+        return sorted(indices)
+
+    def polygon(self, index: int) -> kdb.Polygon:
+        return self._polygons[index]
+
+
 def _verify_route_obstacle_overlaps(
     issues: list[PhotonicVerificationIssue],
     route_regions_by_key: dict[RouteKey, kdb.Region],
@@ -597,8 +658,26 @@ def _verify_route_obstacle_overlaps(
         residue = (all_routes_region & obstacle_region) - legal_overlap_region
         if residue.is_empty():
             continue
+        # Performance pass 2026-09-25 (Milestone 2): route & residue equals
+        # route & candidates when candidates holds every residue polygon
+        # whose bounding box overlaps or touches the route's bounding box,
+        # because a polygon whose bounding box is disjoint from the
+        # route's contributes nothing to the intersection; the issue below
+        # is built from the emptiness, area and bounding box of the
+        # result, all properties of the point set. The index's coverage is
+        # conservative -- a polygon sits in every cell its bounding box
+        # covers, and a query returns every cell the route's bounding box
+        # covers -- so a polygon whose bounding box meets the query box is
+        # always among the candidates.
+        residue_index = _PolygonBucketIndex(residue)
         for key, route_region in route_regions_by_key.items():
-            touching = route_region & residue
+            candidate_indices = residue_index.candidates(route_region.bbox())
+            if not candidate_indices:
+                continue
+            candidates_region = kdb.Region()
+            for candidate_index in candidate_indices:
+                candidates_region.insert(residue_index.polygon(candidate_index))
+            touching = route_region & candidates_region
             if touching.is_empty():
                 continue
             per_key_regions = legal_overlap_regions_by_key
@@ -924,38 +1003,6 @@ def _polyline_self_intersects_um(
         # shared vertex.
         centroid = intersection.centroid
         return (centroid.x, centroid.y)
-    return None
-    for i in range(len(points) - 1):
-        p1, q1 = points[i], points[i + 1]
-        segment_a = LineString([p1, q1])
-        if segment_a.length <= tolerance_um:
-            continue
-        for j in range(i + 2, len(points) - 1):
-            p2, q2 = points[j], points[j + 1]
-            segment_b = LineString([p2, q2])
-            if segment_b.length <= tolerance_um:
-                continue
-            intersection = segment_a.intersection(segment_b)
-            if intersection.is_empty:
-                continue
-            if isinstance(intersection, Point):
-                point = (intersection.x, intersection.y)
-                touches_a_endpoint = any(
-                    math.hypot(point[0] - ep[0], point[1] - ep[1]) <= tolerance_um
-                    for ep in (p1, q1)
-                )
-                touches_b_endpoint = any(
-                    math.hypot(point[0] - ep[0], point[1] - ep[1]) <= tolerance_um
-                    for ep in (p2, q2)
-                )
-                if touches_a_endpoint and touches_b_endpoint:
-                    continue
-                return point
-            # Not a single point (a MultiPoint, an overlapping LineString,
-            # or a GeometryCollection): a genuine overlap spanning more
-            # than one shared vertex.
-            centroid = intersection.centroid
-            return (centroid.x, centroid.y)
     return None
 
 
