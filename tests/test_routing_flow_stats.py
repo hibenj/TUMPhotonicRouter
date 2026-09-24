@@ -715,7 +715,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
             meander_insertion_report_info=None,
         )
 
-    import routing_flow
+    from photonic_router import flow as routing_flow
     import routing_flow_optical
 
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
@@ -823,7 +823,7 @@ def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_p
             meander_insertion_report_info=None,
         )
 
-    import routing_flow
+    from photonic_router import flow as routing_flow
     import routing_flow_optical
 
     monkeypatch.chdir(tmp_path)
@@ -930,7 +930,7 @@ def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_pa
             meander_insertion_report_info=None,
         )
 
-    import routing_flow
+    from photonic_router import flow as routing_flow
     import routing_flow_optical
 
     monkeypatch.chdir(tmp_path)
@@ -1053,7 +1053,7 @@ def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_
         ],
     }
 
-    import routing_flow
+    from photonic_router import flow as routing_flow
     import routing_flow_optical
     import routing_flow_verification
 
@@ -1184,7 +1184,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             meander_insertion_report_info=None,
         )
 
-    import routing_flow
+    from photonic_router import flow as routing_flow
     import routing_flow_optical
 
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
@@ -1413,7 +1413,7 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
             },
         )
 
-    import routing_flow
+    from photonic_router import flow as routing_flow
     import routing_flow_electrical
     import routing_flow_optical
 
@@ -1763,7 +1763,7 @@ def test_flow_net_order_default_follows_the_configuration(
     contribution 1 (guided) defaults to the hybrid order; the baseline keeps
     declaration order; an explicit order always wins."""
     crossing_mode, enable_crossings = crossings
-    import routing_flow
+    from photonic_router import flow as routing_flow
 
     seen: dict[str, str] = {}
 

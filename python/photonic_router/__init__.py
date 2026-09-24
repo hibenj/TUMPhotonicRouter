@@ -7,6 +7,20 @@ from pathlib import Path
 import sys
 
 
+# Matplotlib config directory (moved here from routing_flow.py in Milestone 5,
+# Slice 3, so that every entry point gets it: `python -m photonic_router`,
+# `python routing_flow.py` and the benchmark drivers). Set before the imports
+# below, which reach gdsfactory and matplotlib, and never against an explicit
+# choice already in the environment.
+if "MPLCONFIGDIR" not in os.environ:
+    _default_mpl_config_dir = Path(__file__).resolve().parents[2] / "build" / "mpl"
+    try:
+        _default_mpl_config_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    os.environ["MPLCONFIGDIR"] = str(_default_mpl_config_dir)
+
+
 _DLL_DIRECTORY_HANDLES: list[object] = []
 
 

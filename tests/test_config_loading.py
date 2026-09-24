@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 
-import routing_flow
+from photonic_router import cli
 from photonic_router.config import RoutingConfig
 from photonic_router.config_loading import build_config
 
@@ -37,20 +37,23 @@ def test_a_name_absent_from_both_keeps_its_default():
 def test_main_hands_the_built_config_to_the_flow_without_touching_os_environ(monkeypatch):
     monkeypatch.delenv(WEIGHT, raising=False)
     monkeypatch.setattr(
-        routing_flow,
+        cli,
         "_benchmark_stable_defaults",
         lambda argv: (["--crossing-mode", "lidar-pure"], {WEIGHT: "0.05"}),
     )
     captured: dict[str, object] = {}
 
-    def fake_run_routing_flow(benchmark_name, **kwargs):
-        captured["benchmark"] = benchmark_name
-        captured["config"] = kwargs["config"]
-        captured["crossing_mode"] = kwargs.get("crossing_mode")
+    def fake_route_benchmark(config, options):
+        captured["benchmark"] = options.loading.benchmark_name
+        captured["config"] = config
+        captured["crossing_mode"] = options.optical.crossing_mode
         return object()
 
-    monkeypatch.setattr(routing_flow, "run_routing_flow", fake_run_routing_flow)
-    routing_flow.main(["benes_4x4"])
+    # Milestone 5, Slice 3: the entry point the command line calls is
+    # `photonic_router.flow.route_benchmark(config, options)`; `main` is
+    # `photonic_router.cli.main` (and `routing_flow.main` is that same object).
+    monkeypatch.setattr(cli, "route_benchmark", fake_route_benchmark)
+    cli.main(["benes_4x4"])
 
     assert captured["benchmark"] == "benes_4x4"
     assert captured["crossing_mode"] == "lidar-pure"

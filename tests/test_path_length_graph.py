@@ -42,7 +42,7 @@ from translation.route_rust_meanders import (
 )
 import translation.route_rust as route_rust
 from translation.routing import api as routing_api
-import routing_flow
+from photonic_router import flow as routing_flow
 import routing_flow_optical
 
 
