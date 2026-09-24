@@ -229,7 +229,7 @@ def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[
     (`inst1 -> inst2` edges), not from optional benchmark metadata or the
     crossing plan, so every mode has it. The plan-based orders need the
     topology plan, which only `lidar-guided` builds
-    (`crossing_plan_info["expected_crossings_by_net_id"]`).
+    (`crossing_plan_info.expected_crossings_by_net_id`).
     """
     depth_by_node = (
         settings.net_order_depth_by_node
@@ -253,8 +253,8 @@ def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[
             stub_by_net_id[int(job.net_id)] = max(lengths) if lengths else 0
     planned_by_net_id: dict[int, int] | None = None
     if settings.net_order.startswith("plan-crossings"):
-        raw_counts = state.crossing_plan_info.get("expected_crossings_by_net_id")
-        if not isinstance(raw_counts, dict) or not state.crossing_plan_info.get("event_count"):
+        raw_counts = state.crossing_plan_info.expected_crossings_by_net_id
+        if not state.crossing_plan_info.event_count:
             raise ValueError(
                 f"net_order {settings.net_order!r} needs the topology plan: run with "
                 "--crossing-mode lidar-guided"

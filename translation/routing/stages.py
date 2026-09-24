@@ -29,8 +29,10 @@ The Protocols are declared here, not next to the implementations, so that the
 flow reads as a list of interfaces and so a second implementation of a phase (a
 different crossing planner, say) has one place to answer to -- the same pattern
 `photonic_router.static_obstacle_builder.ObstacleMapBuilder` already sets.
-`crossing_plan_info` is still an untyped dict inside the state; Slice 2c gives it
-a `CrossingPlanInfo` type.
+Slice 2c typed the last untyped thing the phases share, the crossing plan itself:
+`state.crossing_plan_info` is a `CrossingPlanInfo` dataclass
+(`translation/routing/crossing_plan_info.py`), one field per key, and `to_dict()`
+is what reaches the mapping consumers outside the session.
 """
 
 from __future__ import annotations

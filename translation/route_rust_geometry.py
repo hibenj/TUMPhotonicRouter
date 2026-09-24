@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Any, Iterable, Mapping, cast
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, cast
 
 from photonic_router.static_obstacle_builder import floor_snap_to_grid
 from translation.route_rust_types import RoutedNetRecord
+
+if TYPE_CHECKING:
+    from translation.routing.crossing_plan_info import CrossingPlanInfo
 
 _ILLEGAL_REALIZED_CROSSING_RE = re.compile(
     r"Illegal realized crossing:\s*net\s+"
@@ -486,10 +489,10 @@ def _rounded_segment(
 
 def _crossing_footprint_half_extent_um(
     *,
-    crossing_plan_info: Mapping[str, object],
+    crossing_plan_info: CrossingPlanInfo,
     grid_size_um: float,
 ) -> float:
-    crossing_device = crossing_plan_info.get("crossing_device", {})
+    crossing_device = crossing_plan_info.crossing_device
     if isinstance(crossing_device, Mapping):
         component_bbox = crossing_device.get("component_bbox_um")
         if isinstance(component_bbox, (list, tuple)) and len(component_bbox) >= 2:
@@ -500,10 +503,7 @@ def _crossing_footprint_half_extent_um(
             if math.isfinite(footprint_um) and footprint_um > 0.0:
                 return 0.5 * float(footprint_um)
 
-    half_size_cells = max(
-        0,
-        int(crossing_plan_info.get("crossing_half_size_cells", 0) or 0),
-    )
+    half_size_cells = max(0, int(crossing_plan_info.crossing_half_size_cells or 0))
     return float(half_size_cells) * float(grid_size_um)
 
 

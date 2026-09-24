@@ -32,6 +32,7 @@ from translation.route_rust import (
     _build_crossing_plan_info,
     _resolve_crossing_half_size_cells,
 )
+from translation.routing.crossing_plan_info import CrossingPlanInfo
 from translation.route_rust_types import RouteJob
 
 
@@ -380,13 +381,14 @@ def test_benes_crossing_plan_can_be_loaded_into_router_context():
         first.net_id: [(10, 20), (11, 20)],
         first.partner_net_id: [(11, 20), (12, 20)],
     }
+    plan = CrossingPlanInfo.from_dict(info)
     _augment_crossing_plan_with_realized_overlaps(
         router=router,
-        crossing_plan_info=info,
+        crossing_plan_info=plan,
     )
-    assert info["actual_crossing_count"] == 1
-    assert info["actual_crossings"][0]["cell_count"] == 1
-    assert info["unrealized_expected_crossing_count"] == 1
+    assert plan.actual_crossing_count == 1
+    assert plan.actual_crossings[0]["cell_count"] == 1
+    assert plan.unrealized_expected_crossing_count == 1
 
 
 def test_benes_crossing_plan_counts_geometric_route_intersections():
@@ -412,9 +414,10 @@ def test_benes_crossing_plan_counts_geometric_route_intersections():
 
     first = router.constraints[0]
     router.core_cells_by_net_id = {}
+    plan = CrossingPlanInfo.from_dict(info)
     _augment_crossing_plan_with_realized_overlaps(
         router=router,
-        crossing_plan_info=info,
+        crossing_plan_info=plan,
         routed_records_by_net_id={
             first.net_id: _FakeRouteRecord(
                 _FakeRouteObj([(-5, -5), (15, 15)]),
@@ -425,12 +428,12 @@ def test_benes_crossing_plan_counts_geometric_route_intersections():
         },
     )
 
-    assert info["actual_crossing_count"] == 1
-    assert info["actual_geometric_crossing_count"] == 1
-    assert info["actual_crossing_cell_count"] == 0
-    assert info["actual_crossings"][0]["geometric"] is True
-    assert info["actual_crossings"][0]["point"] == [5.0, 5.0]
-    assert info["unrealized_expected_crossing_count"] == 1
+    assert plan.actual_crossing_count == 1
+    assert plan.actual_geometric_crossing_count == 1
+    assert plan.actual_crossing_cell_count == 0
+    assert plan.actual_crossings[0]["geometric"] is True
+    assert plan.actual_crossings[0]["point"] == [5.0, 5.0]
+    assert plan.unrealized_expected_crossing_count == 1
 
 
 def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
@@ -453,13 +456,13 @@ def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
         min_straight_cells_per_crossing=6,
         allow_only_expected_crossings=True,
     )
-    info["bend_runout_cells_per_crossing"] = 6
-
     first = router.constraints[0]
     router.core_cells_by_net_id = {}
+    plan = CrossingPlanInfo.from_dict(info)
+    plan.bend_runout_cells_per_crossing = 6
     _augment_crossing_plan_with_realized_overlaps(
         router=router,
-        crossing_plan_info=info,
+        crossing_plan_info=plan,
         routed_records_by_net_id={
             first.net_id: _FakeRouteRecord(
                 _FakeRouteObj([(0, 0), (10, 10)]),
@@ -470,11 +473,11 @@ def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
         },
     )
 
-    assert info["actual_crossing_count"] == 0
-    assert info["unrealized_expected_crossing_count"] == 2
+    assert plan.actual_crossing_count == 0
+    assert plan.unrealized_expected_crossing_count == 2
     invalid = next(
         crossing
-        for crossing in info["unrealized_expected_crossings"]
+        for crossing in plan.unrealized_expected_crossings
         if crossing.get("unrealized_reason") == "insufficient_straight_margin"
     )
     assert invalid["geometric"] is True
@@ -505,9 +508,10 @@ def test_benes_crossing_plan_rejects_non_perpendicular_route_intersections():
 
     first = router.constraints[0]
     router.core_cells_by_net_id = {}
+    plan = CrossingPlanInfo.from_dict(info)
     _augment_crossing_plan_with_realized_overlaps(
         router=router,
-        crossing_plan_info=info,
+        crossing_plan_info=plan,
         routed_records_by_net_id={
             first.net_id: _FakeRouteRecord(
                 _FakeRouteObj([(0, 5), (10, 5)]),
@@ -518,9 +522,9 @@ def test_benes_crossing_plan_rejects_non_perpendicular_route_intersections():
         },
     )
 
-    assert info["actual_crossing_count"] == 0
-    assert info["actual_geometric_crossing_count"] == 0
-    assert info["unrealized_expected_crossing_count"] == 2
+    assert plan.actual_crossing_count == 0
+    assert plan.actual_geometric_crossing_count == 0
+    assert plan.unrealized_expected_crossing_count == 2
 
 
 def test_crossing_keepout_size_can_be_derived_from_pdk_component():

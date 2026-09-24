@@ -57,6 +57,7 @@ from translation.route_rust_types import (
     _as_float,
 )
 
+from translation.routing.crossing_plan_info import CrossingPlanInfo
 from translation.routing.session import (
     DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     _RouteNetsRustSession,
@@ -407,23 +408,28 @@ def route_match_and_realize(
         raise RuntimeError("Missing realization grid spec from routing phase.")
 
     crossing_plan_info = debug_artifacts.crossing_plan_info
-    if isinstance(crossing_plan_info, dict) and enable_internal_photonic_probe_verification:
+    plan_info = (
+        CrossingPlanInfo.from_dict(crossing_plan_info)
+        if isinstance(crossing_plan_info, dict)
+        else None
+    )
+    if plan_info is not None and enable_internal_photonic_probe_verification:
         final_records_by_net_id = _routed_records_by_net_id(records_for_realization)
         if final_records_by_net_id:
             illegal_realized_crossings = _verify_realized_route_intersections(
-                crossing_plan_info=crossing_plan_info,
+                crossing_plan_info=plan_info,
                 routed_records_by_net_id=final_records_by_net_id,
                 realization_grid_spec=debug_artifacts.realization_grid_spec,
             )
             _augment_insertion_loss_report_from_realized_intersections(
-                crossing_plan_info=crossing_plan_info,
+                crossing_plan_info=plan_info,
                 routed_records_by_net_id=final_records_by_net_id,
             )
             if illegal_realized_crossings:
                 _write_crossing_debug_artifacts(
                     debug_path=Path(debug_dir) if debug_dir is not None else Path("build"),
                     debug_prefix=debug_prefix,
-                    crossing_plan_info=crossing_plan_info,
+                    crossing_plan_info=plan_info,
                 )
                 preview = "; ".join(
                     f"{item.get('net_name_a')} x {item.get('net_name_b')} "
@@ -447,15 +453,21 @@ def route_match_and_realize(
         realization_grid_spec=debug_artifacts.realization_grid_spec,
         allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
         bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
-        crossing_plan_info=crossing_plan_info,
+        crossing_plan_info=plan_info.to_dict() if plan_info is not None else None,
         enable_endpoint_correction=enable_grid_endpoint_correction,
     )
-    if isinstance(crossing_plan_info, dict):
-        _place_realized_crossing_components(routed_layout, crossing_plan_info)
+    if plan_info is not None:
+        _place_realized_crossing_components(routed_layout, plan_info)
         _write_crossing_debug_artifacts(
             debug_path=Path(debug_dir) if debug_dir is not None else None,
             debug_prefix=debug_prefix,
-            crossing_plan_info=crossing_plan_info,
+            crossing_plan_info=plan_info,
+        )
+        # The phases above wrote into `plan_info`, not into the mapping the
+        # artifacts still carry: hand the updated plan back to them.
+        debug_artifacts = replace(
+            debug_artifacts,
+            crossing_plan_info=plan_info.to_dict(),
         )
     t_realization_end = time.perf_counter()
     pipeline_timings_s["route_realization"] = t_realization_end - t_realization_start

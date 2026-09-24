@@ -328,10 +328,10 @@ def _repair_final_illegal_crossings(
     illegal_crossings: list[dict[str, object]],
 ) -> bool:
     max_repair_net_ids = 12
-    attempts = cast(
-        list[dict[str, object]],
-        state.crossing_plan_info.setdefault("final_crossing_repair_attempts", []),
-    )
+    attempts = state.crossing_plan_info.final_crossing_repair_attempts
+    if attempts is None:
+        attempts = []
+        state.crossing_plan_info.final_crossing_repair_attempts = attempts
     priority_order = (
         "collinear_route_overlap",
         "crossing_footprint_contains_route_geometry",
@@ -367,7 +367,7 @@ def _repair_final_illegal_crossings(
             selected_illegal_crossings = repair_batches[0]
     if (
         not selected_illegal_crossings
-        or not state.crossing_plan_info.get("enabled")
+        or not state.crossing_plan_info.enabled
         or not state.repair_config.enabled
         or not hasattr(state.router, "add_static_cells")
         or not hasattr(state.router, "ripup_route")
@@ -706,11 +706,11 @@ def _make_photonic_verification_probe_layout(
         realization_grid_spec=state.realization_grid_spec,
         allow_45_degree_turns=settings.allow_45_degree_turns,
         bend_radius_cells=state.bend_radius_cells,
-        crossing_plan_info=state.crossing_plan_info,
+        crossing_plan_info=state.crossing_plan_info.to_dict(),
         enable_endpoint_correction=settings.enable_checked_endpoint_correction,
     )
     timing.record_pipeline_timing(settings, state, "photonic_probe_realize", t_probe_realize_start)
-    if state.crossing_plan_info.get("enabled"):
+    if state.crossing_plan_info.enabled:
         t_probe_crossings_start = timing.pipeline_timer_start(settings, state)
         _place_realized_crossing_components(probe_layout, state.crossing_plan_info)
         timing.record_pipeline_timing(settings, state,
@@ -771,10 +771,10 @@ def _repair_final_photonic_issues(
     state,
     issues: tuple[PhotonicVerificationIssue, ...],
 ) -> bool:
-    attempts = cast(
-        list[dict[str, object]],
-        state.crossing_plan_info.setdefault("final_photonic_repair_attempts", []),
-    )
+    attempts = state.crossing_plan_info.final_photonic_repair_attempts
+    if attempts is None:
+        attempts = []
+        state.crossing_plan_info.final_photonic_repair_attempts = attempts
     priority_groups: tuple[tuple[str, set[str]], ...] = (
         (
             "endpoint_connection",
@@ -959,8 +959,8 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
             native_crossing_events = list(cast(Iterable[Any], state.router.crossing_events()))
         except Exception:
             native_crossing_events = []
-        state.crossing_plan_info["native_crossing_events"] = native_crossing_events
-        state.crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
+        state.crossing_plan_info.native_crossing_events = native_crossing_events
+        state.crossing_plan_info.native_crossing_event_count = len(native_crossing_events)
         timing.record_pipeline_timing(settings, state,
             "realized_crossing_native_events",
             t_native_events_start,
@@ -1093,7 +1093,7 @@ def repair_and_verify_final_geometry(
                 realization_grid_spec=state.realization_grid_spec,
                 allow_unchecked_bumps=True,
             )
-            state.crossing_plan_info["photonic_probe_failure_artifacts"] = (
+            state.crossing_plan_info.photonic_probe_failure_artifacts = (
                 probe_failure_artifacts
             )
             timing.record_pipeline_timing(settings, state,

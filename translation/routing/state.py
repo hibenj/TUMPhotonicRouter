@@ -41,6 +41,7 @@ from gdsfactory.typings import Port
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
 
 from translation.route_rust_records import RouteBookkeeping
+from translation.routing.crossing_plan_info import CrossingPlanInfo
 from translation.route_rust_types import (
     OpticalRouteClearancePolicy,
     RipupRerouteConfig,
@@ -231,8 +232,8 @@ class SessionState:
     """Staggered target runway length per dense port spec. w:3 r:3,6"""
 
     # ---- phase 4, crossing_plan_stage -------------------------------------
-    crossing_plan_info: dict[str, Any] = field(default_factory=dict)
-    """The crossing plan (typed in Slice 2c). w:4 m:4,7,8,9 r:4,5,7,8,9  # shared writer"""
+    crossing_plan_info: CrossingPlanInfo = field(default_factory=CrossingPlanInfo)
+    """The crossing plan and its realized crossings. w:4 m:4,7,8,9 r:4,5,7,8,9  # shared writer"""
 
     foreign_port_keepout_cells_by_spec: dict[str, set[tuple[int, int]]] = field(
         default_factory=dict

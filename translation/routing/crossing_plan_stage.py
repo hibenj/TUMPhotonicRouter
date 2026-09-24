@@ -28,6 +28,7 @@ from translation.routing.route_jobs import (
     port_to_grid_state,
 )
 from translation.routing import timing
+from translation.routing.crossing_plan_info import CrossingPlanInfo
 from translation.routing.settings import SessionSettings
 from translation.routing.stages import PlannedJobs
 from translation.routing.state import SessionState
@@ -317,29 +318,31 @@ def build_crossing_plan_and_port_footprints(
     """
     port_rule_extra_open_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     t_crossing_context_start = timing.pipeline_timer_start(settings, state)
-    state.crossing_plan_info = _build_crossing_plan_info(
-        rust_backend=state.rust_backend,
-        router=state.router,
-        schematic=settings.schematic,
-        route_jobs=route_jobs,
-        enable_crossings=settings.enable_crossings,
-        crossing_mode=settings.crossing_mode,
-        node_depths=settings.node_depths,
-        node_ranks=settings.node_ranks,
-        edge_ranks=settings.edge_ranks,
-        crossing_loss=float(settings.crossing_loss),
-        crossing_search_loss=float(settings.crossing_search_loss),
-        crossing_half_size_cells=int(state.resolved_crossing_half_size_cells),
-        min_straight_cells_per_crossing=int(settings.min_straight_cells_per_crossing),
-        allow_only_expected_crossings=settings.effective_allow_only_expected_crossings,
-        guidance_net_names=settings.crossing_guidance_net_names,
-        config=settings.config.crossing_plan,
+    state.crossing_plan_info = CrossingPlanInfo.from_dict(
+        _build_crossing_plan_info(
+            rust_backend=state.rust_backend,
+            router=state.router,
+            schematic=settings.schematic,
+            route_jobs=route_jobs,
+            enable_crossings=settings.enable_crossings,
+            crossing_mode=settings.crossing_mode,
+            node_depths=settings.node_depths,
+            node_ranks=settings.node_ranks,
+            edge_ranks=settings.edge_ranks,
+            crossing_loss=float(settings.crossing_loss),
+            crossing_search_loss=float(settings.crossing_search_loss),
+            crossing_half_size_cells=int(state.resolved_crossing_half_size_cells),
+            min_straight_cells_per_crossing=int(settings.min_straight_cells_per_crossing),
+            allow_only_expected_crossings=settings.effective_allow_only_expected_crossings,
+            guidance_net_names=settings.crossing_guidance_net_names,
+            config=settings.config.crossing_plan,
+        )
     )
-    state.crossing_plan_info["crossing_mode"] = settings.crossing_mode
+    state.crossing_plan_info.crossing_mode = settings.crossing_mode
     if bool(settings.enable_crossings):
         # The exact configuration must be visible in stdout (harness step 0):
         # which of baseline / contribution 1 ran, and with which prices.
-        guidance = state.crossing_plan_info.get("guidance")
+        guidance = state.crossing_plan_info.guidance
         guidance_text = (
             f" planned_pairs={guidance['planned_pair_count']}"
             f" planned_loss={guidance['planned_crossing_loss']:.1f}"
@@ -349,37 +352,37 @@ def build_crossing_plan_and_port_footprints(
         )
         print(
             f"      - crossing search: mode={settings.crossing_mode}"
-            f" search_loss={float(state.crossing_plan_info.get('crossing_search_loss', 0.0)):.1f}"
+            f" search_loss={float(state.crossing_plan_info.crossing_search_loss):.1f}"
             f"{guidance_text}"
         )
-    state.crossing_plan_info["requested_allow_only_expected_crossings"] = bool(
+    state.crossing_plan_info.requested_allow_only_expected_crossings = bool(
         settings.allow_only_expected_crossings
     )
-    state.crossing_plan_info["bend_runout_cells_per_crossing"] = int(state.bend_radius_cells)
-    state.crossing_plan_info["fanout_stub_bend_degrees"] = 45 * int(
+    state.crossing_plan_info.bend_runout_cells_per_crossing = int(state.bend_radius_cells)
+    state.crossing_plan_info.fanout_stub_bend_degrees = 45 * int(
         _fanout_stub_bend_steps(settings, state)
     )
-    state.crossing_plan_info["required_straight_margin_cells_per_crossing"] = int(
+    state.crossing_plan_info.required_straight_margin_cells_per_crossing = int(
         state.resolved_crossing_half_size_cells
     ) + int(state.bend_radius_cells)
-    state.crossing_plan_info["fanout_access_mode"] = (
+    state.crossing_plan_info.fanout_access_mode = (
         settings.fanout_access_mode_normalized
     )
-    state.crossing_plan_info["fanout_anchor_port_count"] = len(state.fanout_anchor_by_port_spec)
-    state.crossing_plan_info["fanout_anchor_net_ids"] = sorted(state.fanout_anchor_net_ids)
-    state.crossing_plan_info["fanout_anchor_source_net_ids"] = sorted(
+    state.crossing_plan_info.fanout_anchor_port_count = len(state.fanout_anchor_by_port_spec)
+    state.crossing_plan_info.fanout_anchor_net_ids = sorted(state.fanout_anchor_net_ids)
+    state.crossing_plan_info.fanout_anchor_source_net_ids = sorted(
         state.fanout_anchor_source_net_ids
     )
-    state.crossing_plan_info["fanout_anchor_target_net_ids"] = sorted(
+    state.crossing_plan_info.fanout_anchor_target_net_ids = sorted(
         state.fanout_anchor_target_net_ids
     )
-    state.crossing_plan_info["fanout_stub_center_cell_count"] = len(
+    state.crossing_plan_info.fanout_stub_center_cell_count = len(
         state.fanout_stub_center_cells
     )
-    state.crossing_plan_info["fanout_stub_static_cell_count"] = len(
+    state.crossing_plan_info.fanout_stub_static_cell_count = len(
         state.fanout_stub_static_cells
     )
-    state.crossing_plan_info["fanout_stub_centerlines_um"] = [
+    state.crossing_plan_info.fanout_stub_centerlines_um = [
         {
             "port_spec": anchor.port_spec,
             "anchor_cell": [int(anchor.state_x), int(anchor.state_y)],
@@ -393,7 +396,7 @@ def build_crossing_plan_and_port_footprints(
             key=lambda item: item.port_spec,
         )
     ]
-    state.crossing_plan_info["crossing_device"] = crossing_device_info
+    state.crossing_plan_info.crossing_device = crossing_device_info
     if bool(settings.enable_crossings) and is_collision_mode(
         settings.crossing_mode
     ):

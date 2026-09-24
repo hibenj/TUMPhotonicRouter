@@ -52,16 +52,18 @@ def realize_and_assemble_debug_artifacts(
             realization_grid_spec=state.realization_grid_spec,
             allow_45_degree_turns=settings.allow_45_degree_turns,
             bend_radius_cells=state.bend_radius_cells,
-            crossing_plan_info=state.crossing_plan_info,
+            crossing_plan_info=state.crossing_plan_info.to_dict(),
             enable_endpoint_correction=settings.enable_checked_endpoint_correction,
         )
         timing.record_pipeline_timing(
             settings, state, "direct_realization", t_direct_realization_start
         )
         _place_realized_crossing_components(state.routed_layout, state.crossing_plan_info)
-    elif state.crossing_plan_info.get("enabled"):
-        state.crossing_plan_info.setdefault("realized_crossing_components", [])
-        state.crossing_plan_info.setdefault("realized_crossing_component_count", 0)
+    elif state.crossing_plan_info.enabled:
+        if state.crossing_plan_info.realized_crossing_components is None:
+            state.crossing_plan_info.realized_crossing_components = []
+        if state.crossing_plan_info.realized_crossing_component_count is None:
+            state.crossing_plan_info.realized_crossing_component_count = 0
     _write_crossing_debug_artifacts(
         debug_path=state.debug_path if state.debug_path is not None else Path("build"),
         debug_prefix=settings.debug_prefix,
@@ -108,7 +110,7 @@ def realize_and_assemble_debug_artifacts(
     )
     debug_artifacts = replace(
         debug_artifacts,
-        crossing_plan_info=state.crossing_plan_info,
+        crossing_plan_info=state.crossing_plan_info.to_dict(),
     )
     timing.record_pipeline_timing(
         settings, state, "debug_artifact_assembly", t_debug_artifact_start

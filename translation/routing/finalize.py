@@ -584,7 +584,7 @@ def _current_crossing_points_by_net_id(settings, state) -> dict[int, list[tuple[
         native_crossing_events=raw_events,
         realization_grid_spec=state.realization_grid_spec,
     )
-    return _legal_crossing_points_by_net_id(state.crossing_plan_info)
+    return _legal_crossing_points_by_net_id(state.crossing_plan_info.to_dict())
 
 
 def _route_target_grid_center_um(
@@ -644,16 +644,13 @@ def _record_terminal_bump_distance_check_candidates(
     geometry.
     """
 
-    if not isinstance(state.crossing_plan_info, dict):
-        return
-
     trace_tokens = settings.config.diagnostics.trace_terminal_bump_distance_checks
     trace_all = "*" in trace_tokens
     grid_size = float(state.grid.grid_size_um)
     eps = max(1e-6, grid_size * 1e-6)
     axis_eps = max(1e-6, grid_size * 0.25)
     crossing_half_um = (
-        float(state.crossing_plan_info.get("crossing_half_size_cells", 0) or 0) * grid_size
+        float(state.crossing_plan_info.crossing_half_size_cells or 0) * grid_size
     )
     required_bump_um = 4.0 * float(state.bend_radius_cells) * grid_size
 
@@ -768,19 +765,15 @@ def _record_terminal_bump_distance_check_candidates(
                     f"satisfies={item['satisfies']}"
                 )
 
-    state.crossing_plan_info["terminal_bump_target_x_offset_nets"] = target_x_offset_nets
-    state.crossing_plan_info["terminal_bump_target_x_offset_net_count"] = len(
-        target_x_offset_nets
-    )
-    state.crossing_plan_info["terminal_bump_target_y_offset_nets"] = target_y_offset_nets
-    state.crossing_plan_info["terminal_bump_target_y_offset_net_count"] = len(
-        target_y_offset_nets
-    )
+    state.crossing_plan_info.terminal_bump_target_x_offset_nets = target_x_offset_nets
+    state.crossing_plan_info.terminal_bump_target_x_offset_net_count = len(target_x_offset_nets)
+    state.crossing_plan_info.terminal_bump_target_y_offset_nets = target_y_offset_nets
+    state.crossing_plan_info.terminal_bump_target_y_offset_net_count = len(target_y_offset_nets)
     failed_checks = [check for check in active_checks if not bool(check.get("satisfies"))]
-    state.crossing_plan_info["terminal_bump_distance_checks"] = active_checks
-    state.crossing_plan_info["terminal_bump_distance_check_count"] = len(active_checks)
-    state.crossing_plan_info["terminal_bump_distance_failures"] = failed_checks
-    state.crossing_plan_info["terminal_bump_distance_failure_count"] = len(failed_checks)
+    state.crossing_plan_info.terminal_bump_distance_checks = active_checks
+    state.crossing_plan_info.terminal_bump_distance_check_count = len(active_checks)
+    state.crossing_plan_info.terminal_bump_distance_failures = failed_checks
+    state.crossing_plan_info.terminal_bump_distance_failure_count = len(failed_checks)
 
 
 def _apply_crossing_aware_endpoint_corrections_for_net_ids(
@@ -859,7 +852,7 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
             route_width_um=float(settings.route_width_um),
             allow_unchecked_bumps=False,
             log_failures=print_warnings,
-            crossing_plan_info=state.crossing_plan_info,
+            crossing_plan_info=state.crossing_plan_info.to_dict(),
             correct_source=not source_has_fanout_stub,
             # Unlike a source fanout stub (still always eagerly,
             # fully pre-stitched to the true port by

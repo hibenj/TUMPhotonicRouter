@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable as IterableABC
-from typing import Any, Mapping, cast
+from typing import TYPE_CHECKING, Any, Mapping, cast
 
 import gdsfactory as gf
 from gdsfactory.component import Component
 
 from translation.route_rust_geometry import _rounded_point
+
+if TYPE_CHECKING:
+    from translation.routing.crossing_plan_info import CrossingPlanInfo
 
 
 def _bbox_size_um(component: Component) -> tuple[float, float] | None:
@@ -246,20 +249,20 @@ def _crossing_footprint_polygon_metadata(
 
 def _place_realized_crossing_components(
     routed_layout: Component,
-    crossing_plan_info: dict[str, object],
+    crossing_plan_info: CrossingPlanInfo,
 ) -> list[dict[str, object]]:
     """Place active PDK crossing refs for legal realized route crossings."""
 
-    if not crossing_plan_info.get("enabled"):
-        crossing_plan_info["realized_crossing_components"] = []
-        crossing_plan_info["realized_crossing_component_count"] = 0
+    if not crossing_plan_info.enabled:
+        crossing_plan_info.realized_crossing_components = []
+        crossing_plan_info.realized_crossing_component_count = 0
         return []
 
     component = _active_crossing_component()
     if component is None:
-        crossing_plan_info["realized_crossing_components"] = []
-        crossing_plan_info["realized_crossing_component_count"] = 0
-        crossing_plan_info["realized_crossing_component_error"] = "crossing_component_unavailable"
+        crossing_plan_info.realized_crossing_components = []
+        crossing_plan_info.realized_crossing_component_count = 0
+        crossing_plan_info.realized_crossing_component_error = "crossing_component_unavailable"
         return []
 
     component_size = _bbox_size_um(component)
@@ -268,7 +271,7 @@ def _place_realized_crossing_components(
     )
     component_name = str(component.name)
     placements: list[dict[str, object]] = []
-    raw_crossings = crossing_plan_info.get("realized_intersections", ())
+    raw_crossings: object = crossing_plan_info.realized_intersections or ()
     if not isinstance(raw_crossings, IterableABC) or isinstance(
         raw_crossings,
         (str, bytes, bytearray),
@@ -356,9 +359,9 @@ def _place_realized_crossing_components(
             placement["component_bbox_um"] = list(component_bbox_um)
         placements.append(placement)
 
-    crossing_plan_info["realized_crossing_components"] = placements
-    crossing_plan_info["realized_crossing_component_count"] = len(placements)
-    crossing_plan_info.pop("realized_crossing_component_error", None)
+    crossing_plan_info.realized_crossing_components = placements
+    crossing_plan_info.realized_crossing_component_count = len(placements)
+    crossing_plan_info.realized_crossing_component_error = None
     try:
         routed_layout.info["realized_crossing_components"] = placements
     except (AttributeError, TypeError, ValueError):
@@ -367,11 +370,11 @@ def _place_realized_crossing_components(
 
 
 def _legal_crossing_overlap_polygons_for_verification(
-    crossing_plan_info: Mapping[str, object] | None,
+    crossing_plan_info: CrossingPlanInfo | None,
 ) -> dict[tuple[int, int], tuple[tuple[tuple[float, float], ...], ...]]:
     if crossing_plan_info is None:
         return {}
-    raw_crossings = crossing_plan_info.get("realized_intersections", ())
+    raw_crossings: object = crossing_plan_info.realized_intersections or ()
     if not isinstance(raw_crossings, IterableABC) or isinstance(
         raw_crossings,
         (str, bytes, bytearray),
@@ -417,11 +420,11 @@ def _legal_crossing_overlap_polygons_for_verification(
 
 
 def _legal_crossing_component_footprints_for_verification(
-    crossing_plan_info: Mapping[str, object] | None,
+    crossing_plan_info: CrossingPlanInfo | None,
 ) -> tuple[dict[str, object], ...]:
     if crossing_plan_info is None:
         return ()
-    raw_components = crossing_plan_info.get("realized_crossing_components", ())
+    raw_components: object = crossing_plan_info.realized_crossing_components or ()
     if isinstance(raw_components, IterableABC) and not isinstance(
         raw_components,
         (str, bytes, bytearray),
@@ -432,7 +435,7 @@ def _legal_crossing_component_footprints_for_verification(
         if components:
             return tuple(components)
 
-    raw_crossings = crossing_plan_info.get("realized_intersections", ())
+    raw_crossings = crossing_plan_info.realized_intersections or ()
     if not isinstance(raw_crossings, IterableABC) or isinstance(
         raw_crossings,
         (str, bytes, bytearray),

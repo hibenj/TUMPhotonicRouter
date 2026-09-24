@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, cast
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, cast
 
 from translation.route_rust_geometry import (
     _collinear_segment_overlap_with_params,
@@ -33,9 +33,12 @@ from translation.route_rust_geometry import (
 from translation.crossing_modes import is_lidar_mode
 from translation.route_rust_types import RoutedNetRecord
 
+if TYPE_CHECKING:
+    from translation.routing.crossing_plan_info import CrossingPlanInfo
+
 
 def _planned_pairs_from_plan_info(
-    crossing_plan_info: Mapping[str, object],
+    crossing_plan_info: CrossingPlanInfo,
 ) -> set[frozenset[int]] | None:
     """Loaded topology-plan pairs, or None when the mode carries no plan.
 
@@ -43,11 +46,11 @@ def _planned_pairs_from_plan_info(
     None in lidar-pure (plan deliberately withheld), a set -- possibly empty
     -- whenever a plan was built (window, collision, lidar-guided).
     """
-    if not crossing_plan_info.get("events") and not crossing_plan_info.get("event_count"):
+    if not crossing_plan_info.events and not crossing_plan_info.event_count:
         return None
     pairs: set[frozenset[int]] = set()
-    for raw_event in cast(Iterable[object], crossing_plan_info.get("events", [])):
-        event = dict(cast(dict[str, object], raw_event))
+    for raw_event in crossing_plan_info.events:
+        event = dict(raw_event)
         if not event.get("loaded"):
             continue
         pairs.add(frozenset((int(cast(int, event["net_id_a"])), int(cast(int, event["net_id_b"])))))
@@ -64,14 +67,14 @@ def _planned_flag(
 
 def _verify_realized_route_intersections(
     *,
-    crossing_plan_info: dict[str, object],
+    crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
     realization_grid_spec: tuple[int, int, float, float, float],
 ) -> list[dict[str, object]]:
-    if not crossing_plan_info.get("enabled"):
-        crossing_plan_info["realized_intersections"] = []
-        crossing_plan_info["illegal_realized_crossings"] = []
-        crossing_plan_info["illegal_realized_crossing_count"] = 0
+    if not crossing_plan_info.enabled:
+        crossing_plan_info.realized_intersections = []
+        crossing_plan_info.illegal_realized_crossings = []
+        crossing_plan_info.illegal_realized_crossing_count = 0
         return []
 
     _width, _height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
@@ -80,13 +83,13 @@ def _verify_realized_route_intersections(
         grid_size_um=float(grid_size_um),
     )
     search_required_margin_um = footprint_half_um + float(grid_size_um) * int(
-        crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0
+        crossing_plan_info.bend_runout_cells_per_crossing or 0
     )
     required_margin_um = footprint_half_um
     allowed_pairs: set[frozenset[int]] = set()
     net_names: dict[int, str] = {}
-    for raw_event in cast(Iterable[object], crossing_plan_info.get("events", [])):
-        event = dict(cast(dict[str, object], raw_event))
+    for raw_event in crossing_plan_info.events:
+        event = dict(raw_event)
         if not event.get("loaded"):
             continue
         net_id_a = int(cast(int, event["net_id_a"]))
@@ -159,9 +162,9 @@ def _verify_realized_route_intersections(
         for net_id, segments in segments_by_net_id.items()
     }
 
-    crossing_mode = str(crossing_plan_info.get("crossing_mode", "") or "").strip().lower()
+    crossing_mode = str(crossing_plan_info.crossing_mode or "").strip().lower()
     allow_unexpected = is_lidar_mode(crossing_mode) or not bool(
-        crossing_plan_info.get("allow_only_expected_crossings", True)
+        crossing_plan_info.allow_only_expected_crossings
     )
     realized: list[dict[str, object]] = []
     illegal: list[dict[str, object]] = []
@@ -703,22 +706,20 @@ def _verify_realized_route_intersections(
                 )
                 illegal.append(crossing)
 
-    crossing_plan_info["realized_intersections"] = realized
-    crossing_plan_info["realized_intersection_count"] = len(realized)
-    crossing_plan_info["routes_missing_corrected_centerline"] = missing_centerline_illegal
-    crossing_plan_info["routes_missing_corrected_centerline_count"] = len(
-        missing_centerline_illegal
-    )
-    crossing_plan_info["ignored_endpoint_access_intersections"] = ignored_endpoint_access
-    crossing_plan_info["ignored_endpoint_access_intersection_count"] = len(ignored_endpoint_access)
-    crossing_plan_info["illegal_realized_crossings"] = illegal
-    crossing_plan_info["illegal_realized_crossing_count"] = len(illegal)
+    crossing_plan_info.realized_intersections = realized
+    crossing_plan_info.realized_intersection_count = len(realized)
+    crossing_plan_info.routes_missing_corrected_centerline = missing_centerline_illegal
+    crossing_plan_info.routes_missing_corrected_centerline_count = len(missing_centerline_illegal)
+    crossing_plan_info.ignored_endpoint_access_intersections = ignored_endpoint_access
+    crossing_plan_info.ignored_endpoint_access_intersection_count = len(ignored_endpoint_access)
+    crossing_plan_info.illegal_realized_crossings = illegal
+    crossing_plan_info.illegal_realized_crossing_count = len(illegal)
     return illegal
 
 
 def _populate_realized_intersections_from_native_crossing_events(
     *,
-    crossing_plan_info: dict[str, object],
+    crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
     native_crossing_events: Iterable[object],
     realization_grid_spec: tuple[int, int, float, float, float],
@@ -730,11 +731,11 @@ def _populate_realized_intersections_from_native_crossing_events(
     physical metadata needed for crossing component placement and for the final
     external Python geometry verifier.
     """
-    if not crossing_plan_info.get("enabled"):
-        crossing_plan_info["realized_intersections"] = []
-        crossing_plan_info["realized_intersection_count"] = 0
-        crossing_plan_info["illegal_realized_crossings"] = []
-        crossing_plan_info["illegal_realized_crossing_count"] = 0
+    if not crossing_plan_info.enabled:
+        crossing_plan_info.realized_intersections = []
+        crossing_plan_info.realized_intersection_count = 0
+        crossing_plan_info.illegal_realized_crossings = []
+        crossing_plan_info.illegal_realized_crossing_count = 0
         return []
 
     _width, _height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
@@ -744,7 +745,7 @@ def _populate_realized_intersections_from_native_crossing_events(
     )
     required_margin_um = footprint_half_um
     search_required_margin_um = footprint_half_um + float(grid_size_um) * int(
-        crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0
+        crossing_plan_info.bend_runout_cells_per_crossing or 0
     )
 
     planned_pairs = _planned_pairs_from_plan_info(crossing_plan_info)
@@ -906,12 +907,12 @@ def _populate_realized_intersections_from_native_crossing_events(
             }
         )
 
-    crossing_plan_info["realized_intersections"] = realized
-    crossing_plan_info["realized_intersection_count"] = len(realized)
-    crossing_plan_info["routes_missing_corrected_centerline"] = []
-    crossing_plan_info["routes_missing_corrected_centerline_count"] = 0
-    crossing_plan_info["ignored_endpoint_access_intersections"] = []
-    crossing_plan_info["ignored_endpoint_access_intersection_count"] = 0
-    crossing_plan_info["illegal_realized_crossings"] = []
-    crossing_plan_info["illegal_realized_crossing_count"] = 0
+    crossing_plan_info.realized_intersections = realized
+    crossing_plan_info.realized_intersection_count = len(realized)
+    crossing_plan_info.routes_missing_corrected_centerline = []
+    crossing_plan_info.routes_missing_corrected_centerline_count = 0
+    crossing_plan_info.ignored_endpoint_access_intersections = []
+    crossing_plan_info.ignored_endpoint_access_intersection_count = 0
+    crossing_plan_info.illegal_realized_crossings = []
+    crossing_plan_info.illegal_realized_crossing_count = 0
     return []

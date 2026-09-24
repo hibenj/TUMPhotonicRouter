@@ -7,7 +7,7 @@ import math
 from collections import Counter
 from collections.abc import Iterable as IterableABC
 from pathlib import Path
-from typing import Any, Iterable, Mapping, cast
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, cast
 
 from gdsfactory.schematic import Schematic
 
@@ -19,6 +19,9 @@ from translation.route_rust_crossing_components import _crossing_component_bbox_
 from translation.route_rust_geometry import _first_perpendicular_route_intersection
 from translation.route_rust_records import route_edge_key
 from translation.route_rust_types import RouteJob, RoutedNetRecord
+
+if TYPE_CHECKING:
+    from translation.routing.crossing_plan_info import CrossingPlanInfo
 
 
 def _ensure_dir(path: Path) -> None:
@@ -393,14 +396,14 @@ def _segment_bend_units(route_obj: object) -> float:
 
 def _write_insertion_loss_report(
     *,
-    crossing_plan_info: dict[str, object],
+    crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
     crossing_counts_by_net_id: Mapping[int, int],
     propagation_loss_per_um: float,
     bend_loss_per_90deg: float,
     crossing_count_source: str,
 ) -> None:
-    crossing_loss = float(crossing_plan_info.get("crossing_loss", 0.0) or 0.0)
+    crossing_loss = float(crossing_plan_info.crossing_loss or 0.0)
     per_net: list[dict[str, object]] = []
     total_length_um = 0.0
     total_bend_units = 0.0
@@ -433,7 +436,7 @@ def _write_insertion_loss_report(
             }
         )
 
-    crossing_plan_info["insertion_loss_model"] = {
+    crossing_plan_info.insertion_loss_model = {
         "propagation_loss_per_um": propagation_loss_per_um,
         "bend_loss_per_90deg": bend_loss_per_90deg,
         "crossing_loss": crossing_loss,
@@ -445,25 +448,25 @@ def _write_insertion_loss_report(
             "crossing_count * crossing_loss"
         ),
     }
-    crossing_plan_info["insertion_loss_summary"] = {
+    crossing_plan_info.insertion_loss_summary = {
         "net_count": len(per_net),
         "total_length_um": total_length_um,
         "total_bend_90deg_units": total_bend_units,
         "total_crossing_count": total_crossing_count,
         "total_insertion_loss": total_insertion_loss,
     }
-    crossing_plan_info["insertion_loss_by_net"] = per_net
+    crossing_plan_info.insertion_loss_by_net = per_net
 
 
 def _augment_insertion_loss_report(
     *,
-    crossing_plan_info: dict[str, object],
+    crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
     native_crossing_events: Iterable[object],
     propagation_loss_per_um: float = 0.0,
     bend_loss_per_90deg: float = 0.0,
 ) -> None:
-    if not crossing_plan_info.get("enabled"):
+    if not crossing_plan_info.enabled:
         return
     crossing_counts_by_net_id: Counter[int] = Counter()
     for raw_event in native_crossing_events:
@@ -487,15 +490,15 @@ def _augment_insertion_loss_report(
 
 def _augment_insertion_loss_report_from_realized_intersections(
     *,
-    crossing_plan_info: dict[str, object],
+    crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
     propagation_loss_per_um: float = 0.0,
     bend_loss_per_90deg: float = 0.0,
 ) -> None:
-    if not crossing_plan_info.get("enabled"):
+    if not crossing_plan_info.enabled:
         return
     crossing_counts_by_net_id: Counter[int] = Counter()
-    raw_intersections = crossing_plan_info.get("realized_intersections", ())
+    raw_intersections: object = crossing_plan_info.realized_intersections or ()
     if not isinstance(raw_intersections, IterableABC) or isinstance(
         raw_intersections,
         (str, bytes, bytearray),
@@ -528,13 +531,13 @@ def _augment_insertion_loss_report_from_realized_intersections(
 def _augment_crossing_plan_with_realized_overlaps(
     *,
     router: object,
-    crossing_plan_info: dict[str, object],
+    crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord] | None = None,
 ) -> None:
-    if not crossing_plan_info.get("enabled"):
+    if not crossing_plan_info.enabled:
         return
     if not hasattr(router, "all_net_core_cells"):
-        crossing_plan_info["actual_crossing_reason"] = "missing_core_cell_api"
+        crossing_plan_info.actual_crossing_reason = "missing_core_cell_api"
         return
 
     core_cells_by_net_id: dict[int, set[tuple[int, int]]] = {}
@@ -543,11 +546,11 @@ def _augment_crossing_plan_with_realized_overlaps(
 
     actual_crossings: list[dict[str, object]] = []
     unrealized_expected: list[dict[str, object]] = []
-    required_crossing_margin_cells = int(
-        crossing_plan_info.get("crossing_half_size_cells", 0) or 0
-    ) + int(crossing_plan_info.get("bend_runout_cells_per_crossing", 0) or 0)
-    for raw_event in list(crossing_plan_info.get("events", [])):
-        event = dict(cast(dict[str, object], raw_event))
+    required_crossing_margin_cells = int(crossing_plan_info.crossing_half_size_cells or 0) + int(
+        crossing_plan_info.bend_runout_cells_per_crossing or 0
+    )
+    for raw_event in list(crossing_plan_info.events):
+        event = dict(raw_event)
         if not event.get("loaded"):
             continue
         net_id_a = int(cast(int, event["net_id_a"]))
@@ -598,51 +601,49 @@ def _augment_crossing_plan_with_realized_overlaps(
         else:
             unrealized_expected.append(record)
 
-    crossing_plan_info["actual_crossing_count"] = len(actual_crossings)
-    crossing_plan_info["actual_crossing_cell_count"] = sum(
-        int(record["cell_count"]) for record in actual_crossings
+    crossing_plan_info.actual_crossing_count = len(actual_crossings)
+    crossing_plan_info.actual_crossing_cell_count = sum(
+        int(cast(int, record["cell_count"])) for record in actual_crossings
     )
-    crossing_plan_info["actual_geometric_crossing_count"] = sum(
+    crossing_plan_info.actual_geometric_crossing_count = sum(
         1 for record in actual_crossings if record.get("geometric")
     )
-    crossing_plan_info["actual_crossings"] = actual_crossings
-    crossing_plan_info["unrealized_expected_crossings"] = unrealized_expected
-    crossing_plan_info["unrealized_expected_crossing_count"] = len(unrealized_expected)
+    crossing_plan_info.actual_crossings = actual_crossings
+    crossing_plan_info.unrealized_expected_crossings = unrealized_expected
+    crossing_plan_info.unrealized_expected_crossing_count = len(unrealized_expected)
 
 
 def _write_crossing_debug_artifacts(
     *,
     debug_path: Path | None,
     debug_prefix: str,
-    crossing_plan_info: dict[str, object],
+    crossing_plan_info: CrossingPlanInfo,
 ) -> None:
-    if debug_path is None or not crossing_plan_info.get("enabled"):
+    if debug_path is None or not crossing_plan_info.enabled:
         return
     crossing_dir = debug_path / "crossings"
     _ensure_dir(crossing_dir)
     json_path = crossing_dir / f"{debug_prefix}_crossings.json"
     txt_path = crossing_dir / f"{debug_prefix}_crossings.txt"
     json_path.write_text(
-        json.dumps(crossing_plan_info, indent=2, sort_keys=True),
+        json.dumps(crossing_plan_info.to_dict(), indent=2, sort_keys=True),
         encoding="utf-8",
     )
 
-    lines = [str(crossing_plan_info.get("plan_text", "CrossingPlan: unavailable"))]
+    plan_text = crossing_plan_info.plan_text
+    lines = [str(plan_text if plan_text is not None else "CrossingPlan: unavailable")]
     lines.append("")
     lines.append(
         "loaded_constraints="
-        f"{int(crossing_plan_info.get('constraint_count', 0))}/"
-        f"{int(crossing_plan_info.get('event_count', 0))}"
+        f"{int(crossing_plan_info.constraint_count)}/"
+        f"{int(crossing_plan_info.event_count)}"
     )
     lines.append(
         "realized_crossings="
-        f"{int(crossing_plan_info.get('actual_crossing_count', 0))}/"
-        f"{int(crossing_plan_info.get('constraint_count', 0))}"
+        f"{int(crossing_plan_info.actual_crossing_count or 0)}/"
+        f"{int(crossing_plan_info.constraint_count)}"
     )
-    for crossing in cast(
-        list[dict[str, object]],
-        crossing_plan_info.get("actual_crossings", []),
-    ):
+    for crossing in crossing_plan_info.actual_crossings or []:
         if crossing.get("geometric"):
             lines.append(
                 "  - "
@@ -655,12 +656,9 @@ def _write_crossing_debug_artifacts(
             f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')}: "
             f"{crossing.get('cell_count')} core-overlap cell(s)"
         )
-    if crossing_plan_info.get("unrealized_expected_crossing_count", 0):
+    if crossing_plan_info.unrealized_expected_crossing_count:
         lines.append("unrealized_expected:")
-        for crossing in cast(
-            list[dict[str, object]],
-            crossing_plan_info.get("unrealized_expected_crossings", []),
-        ):
+        for crossing in crossing_plan_info.unrealized_expected_crossings or []:
             details = [f"level={crossing.get('level')}"]
             if crossing.get("unrealized_reason"):
                 details.append(f"reason={crossing.get('unrealized_reason')}")
@@ -676,12 +674,9 @@ def _write_crossing_debug_artifacts(
                 "  - "
                 f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} " + " ".join(details)
             )
-    if crossing_plan_info.get("illegal_realized_crossing_count", 0):
+    if crossing_plan_info.illegal_realized_crossing_count:
         lines.append("illegal_realized_crossings:")
-        for crossing in cast(
-            list[dict[str, object]],
-            crossing_plan_info.get("illegal_realized_crossings", []),
-        ):
+        for crossing in crossing_plan_info.illegal_realized_crossings or []:
             lines.append(
                 "  - "
                 f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} "
