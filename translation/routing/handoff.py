@@ -92,7 +92,7 @@ def _snap_same_heading_minimum_bend_offset(
     routing can only satisfy the one-cell deficit by introducing a loop.
     """
     extra_cells: set[tuple[int, int]] = set()
-    if session.allow_45_degree_turns:
+    if session.settings.allow_45_degree_turns:
         return source_state, target_state, extra_cells
 
     source_angle = int(source_state.angle) % 8
@@ -222,15 +222,15 @@ def _topological_net_route_order(session, jobs: list[RouteJob]) -> list[RouteJob
     (`crossing_plan_info["expected_crossings_by_net_id"]`).
     """
     depth_by_node = (
-        session.net_order_depth_by_node
-        if session.net_order_depth_by_node is not None
+        session.settings.net_order_depth_by_node
+        if session.settings.net_order_depth_by_node is not None
         else depth_by_node_from_jobs(jobs)
     )
     span_by_net_id: dict[int, int] | None = None
-    if session.net_order == "topological-span":
+    if session.settings.net_order == "topological-span":
         span_by_net_id = {int(job.net_id): session._route_job_grid_span(job) for job in jobs}
     stub_by_net_id: dict[int, int] | None = None
-    if session.net_order == "topological-stub":
+    if session.settings.net_order == "topological-stub":
         stub_by_net_id = {}
         for job in jobs:
             lengths = []
@@ -240,24 +240,24 @@ def _topological_net_route_order(session, jobs: list[RouteJob]) -> list[RouteJob
                     lengths.append(len(anchor.stub_center_cells))
             stub_by_net_id[int(job.net_id)] = max(lengths) if lengths else 0
     planned_by_net_id: dict[int, int] | None = None
-    if session.net_order.startswith("plan-crossings"):
+    if session.settings.net_order.startswith("plan-crossings"):
         raw_counts = session.crossing_plan_info.get("expected_crossings_by_net_id")
         if not isinstance(raw_counts, dict) or not session.crossing_plan_info.get("event_count"):
             raise ValueError(
-                f"net_order {session.net_order!r} needs the topology plan: run with "
+                f"net_order {session.settings.net_order!r} needs the topology plan: run with "
                 "--crossing-mode lidar-guided"
             )
         planned_by_net_id = {int(key): int(value) for key, value in raw_counts.items()}
     ordered = order_route_jobs(
         jobs,
-        net_order=session.net_order,
+        net_order=session.settings.net_order,
         depth_by_node=depth_by_node,
         span_by_net_id=span_by_net_id,
         planned_crossings_by_net_id=planned_by_net_id,
         stub_by_net_id=stub_by_net_id,
     )
-    if session.net_order != "topological":
-        print(f"      - net order: {session.net_order}")
+    if session.settings.net_order != "topological":
+        print(f"      - net order: {session.settings.net_order}")
     return session._debug_hoist_instance_first(ordered)
 
 
@@ -290,7 +290,7 @@ def _debug_hoist_instance_first(session, ordered: list[RouteJob]) -> list[RouteJ
     under this knob are NOT comparable to stable runs -- ordering
     changes every downstream commit; diagnosis use only.
     """
-    wanted_order = list(session.config.diagnostics.debug_route_first_nets)
+    wanted_order = list(session.settings.config.diagnostics.debug_route_first_nets)
     if wanted_order:
         wanted = set(wanted_order)
         # the list's own order is binding (ordering experiments, 2026-09-04)
@@ -305,7 +305,7 @@ def _debug_hoist_instance_first(session, ordered: list[RouteJob]) -> list[RouteJ
             f"net-id list hoisted to the front, in list order (diagnosis only)"
         )
         return hoisted + rest
-    instance = session.config.diagnostics.debug_route_first_instance
+    instance = session.settings.config.diagnostics.debug_route_first_instance
     if not instance:
         return ordered
     hoisted = [job for job in ordered if instance in (job.inst1, job.inst2)]
@@ -468,7 +468,7 @@ def _states_and_openings(
     )
     opened_candidate_cells.update(source_endpoint_bump_open_cells)
     opened_candidate_cells.update(target_endpoint_bump_open_cells)
-    trace_endpoint_bumps = session.router_config.diagnostics.trace_endpoint_bump_nets
+    trace_endpoint_bumps = session.settings.router_config.diagnostics.trace_endpoint_bump_nets
     if trace_endpoint_bumps is not None and (
         trace_endpoint_bumps == ALL_NETS or str(int(job.net_id)) in trace_endpoint_bumps
     ):
@@ -520,7 +520,7 @@ def finalize_route_jobs_and_static_handoff(
     measurement still covers this method's own precompute time, exactly as it did
     before this method existed as a separate call.
     """
-    repair_enabled = (session.ripup_reroute_config or RipupRerouteConfig()).enabled
+    repair_enabled = (session.settings.ripup_reroute_config or RipupRerouteConfig()).enabled
     if repair_enabled:
         route_jobs = session._topological_net_route_order(route_jobs)
         # Renumber so `route_index` is the execution position, layer by
@@ -618,7 +618,7 @@ def finalize_route_jobs_and_static_handoff(
             )
         session.router.add_static_rects(chip_boundary_rects)
         session.blocked_static_rects_for_diagnostics.extend(chip_boundary_rects)
-        if session.verbose_route_diagnostics:
+        if session.settings.verbose_route_diagnostics:
             print(
                 "  Chip-boundary keepout: "
                 f"routable_bbox={getattr(obstacle_map, 'routable_bbox', None)} "
@@ -630,37 +630,45 @@ def finalize_route_jobs_and_static_handoff(
     session.full_route_jobs_by_route_index = {int(job.route_index): job for job in full_route_jobs}
     full_route_count = len(full_route_jobs)
     if (
-        session.debug_stop_after_route_index is not None
-        and int(session.debug_stop_after_route_index) > full_route_count
+        session.settings.debug_stop_after_route_index is not None
+        and int(session.settings.debug_stop_after_route_index) > full_route_count
     ):
         raise ValueError(
             "debug_stop_after_route_index exceeds route count "
-            f"({session.debug_stop_after_route_index} > {full_route_count})"
+            f"({session.settings.debug_stop_after_route_index} > {full_route_count})"
         )
-    if session.debug_stop_after_route_index is not None:
-        stop_index = int(session.debug_stop_after_route_index)
+    if session.settings.debug_stop_after_route_index is not None:
+        stop_index = int(session.settings.debug_stop_after_route_index)
         route_jobs = [job for job in full_route_jobs if int(job.route_index) <= stop_index]
-        if session.verbose_route_diagnostics or session.debug_route_indices is not None:
+        if (
+            session.settings.verbose_route_diagnostics
+            or session.settings.debug_route_indices is not None
+        ):
             print(
                 f"  Debug stop-after-route active: routing {len(route_jobs)} "
                 f"of {full_route_count} full-context routes"
             )
-    debug_execution_limit = session.config.diagnostics.debug_execution_limit
+    debug_execution_limit = session.settings.config.diagnostics.debug_execution_limit
     if debug_execution_limit is not None:
         original_route_job_count = len(route_jobs)
         route_jobs = route_jobs[:debug_execution_limit]
-        if session.verbose_route_diagnostics or session.debug_route_indices is not None:
+        if (
+            session.settings.verbose_route_diagnostics
+            or session.settings.debug_route_indices is not None
+        ):
             print(
                 "  Debug execution limit active: routing "
                 f"{len(route_jobs)} of {original_route_job_count} selected "
                 "routes in actual execution order"
             )
 
-    session.repair_config = session.ripup_reroute_config or RipupRerouteConfig()
+    session.repair_config = session.settings.ripup_reroute_config or RipupRerouteConfig()
     session.route_jobs_by_id = {job.net_id: job for job in route_jobs}
     session.route_order = [job.net_id for job in route_jobs]
     session.collect_timing = (
-        session.debug_timing or session.collect_route_stats or session.collect_attempt_diagnostics
+        session.settings.debug_timing
+        or session.settings.collect_route_stats
+        or session.settings.collect_attempt_diagnostics
     )
     session.track_dynamic_cells = session.diagnostics_enabled
     session.route_bookkeeping = RouteBookkeeping(

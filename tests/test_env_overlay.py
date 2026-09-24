@@ -706,9 +706,9 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
 
     # No env override: the constructor argument wins.
     session = _session("off")
-    assert session.fanout_access_mode_normalized == "off"
+    assert session.settings.fanout_access_mode_normalized == "off"
 
     # Env override present: it wins over the constructor argument.
     monkeypatch.setenv("PHOTONIC_ROUTER_FANOUT_ACCESS_MODE", "static-stubs")
     session = _session("off", config=RoutingConfig.from_environment())
-    assert session.fanout_access_mode_normalized == "static-stubs"
+    assert session.settings.fanout_access_mode_normalized == "static-stubs"

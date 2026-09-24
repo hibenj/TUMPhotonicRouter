@@ -25,15 +25,15 @@ def build_static_obstacle_context(session) -> tuple[Any, dict[str, Any], Path | 
     """
     t_obstacle_start = session._pipeline_timer_start()
     session.resolved_obstacle_config = _resolve_obstacle_config(
-        session.obstacle_config,
-        route_layer=session.route_layer,
-        include_heater_obstacles=session.include_heater_obstacles,
+        session.settings.obstacle_config,
+        route_layer=session.settings.route_layer,
+        include_heater_obstacles=session.settings.include_heater_obstacles,
     )
     obstacle_map = build_static_obstacle_map(
-        session.unrouted_layout, config=session.resolved_obstacle_config
+        session.settings.unrouted_layout, config=session.resolved_obstacle_config
     )
     session._record_pipeline_timing("obstacle_map", t_obstacle_start)
-    if session.debug_timing and session.verbose_route_diagnostics:
+    if session.settings.debug_timing and session.settings.verbose_route_diagnostics:
         print(
             "      - Obstacle Map time: "
             f"{session.route_nets_timings_s.get('obstacle_map', 0.0):.4f} s"
@@ -41,8 +41,8 @@ def build_static_obstacle_context(session) -> tuple[Any, dict[str, Any], Path | 
     session.grid = obstacle_map.grid
     session.resolved_crossing_half_size_cells, crossing_device_info = (
         _resolve_crossing_half_size_cells(
-            requested_half_size_cells=int(session.crossing_half_size_cells),
-            enable_crossings=bool(session.enable_crossings),
+            requested_half_size_cells=int(session.settings.crossing_half_size_cells),
+            enable_crossings=bool(session.settings.enable_crossings),
             grid_size_um=float(session.grid.grid_size_um),
             clearance_um=_as_float(
                 getattr(session.resolved_obstacle_config, "clearance_um", 0.0),
@@ -51,7 +51,9 @@ def build_static_obstacle_context(session) -> tuple[Any, dict[str, Any], Path | 
         )
     )
 
-    session.debug_path = Path(session.debug_dir) if session.debug_dir is not None else None
+    session.debug_path = (
+        Path(session.settings.debug_dir) if session.settings.debug_dir is not None else None
+    )
     session.diagnostics_enabled = session.debug_path is not None
     obstacle_svg = None
     session.route_svgs: list[Path] = []
@@ -59,19 +61,19 @@ def build_static_obstacle_context(session) -> tuple[Any, dict[str, Any], Path | 
     if session.debug_path is not None:
         obstacle_dir = session.debug_path / "static_obstacles"
         _ensure_dir(obstacle_dir)
-        obstacle_svg = obstacle_dir / f"{session.debug_prefix}_obstacles.svg"
+        obstacle_svg = obstacle_dir / f"{session.settings.debug_prefix}_obstacles.svg"
         obstacle_map.export_debug_svg(obstacle_svg)
         route_dir = session.debug_path / "routes"
         if route_dir.exists():
-            for old_artifact in route_dir.glob(f"{session.debug_prefix}_*"):
+            for old_artifact in route_dir.glob(f"{session.settings.debug_prefix}_*"):
                 if old_artifact.is_file() and old_artifact.suffix.lower() in {".svg", ".txt"}:
                     old_artifact.unlink()
 
-    nets = session.schematic.netlist.routes
-    if session.debug_route_indices is None:
+    nets = session.settings.schematic.netlist.routes
+    if session.settings.debug_route_indices is None:
         print(f"\nRouting {len(nets)} nets using Rust router...")
     else:
-        selected = _format_route_indices(session.debug_route_indices)
+        selected = _format_route_indices(session.settings.debug_route_indices)
         print(
             f"\nRouting {len(nets)} nets using Rust router "
             f"(printing/exporting route SVGs for indices: {selected})..."

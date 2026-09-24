@@ -299,23 +299,23 @@ def build_crossing_plan_and_port_footprints(
     session.crossing_plan_info = _build_crossing_plan_info(
         rust_backend=session.rust_backend,
         router=session.router,
-        schematic=session.schematic,
+        schematic=session.settings.schematic,
         route_jobs=route_jobs,
-        enable_crossings=session.enable_crossings,
-        crossing_mode=session.crossing_mode,
-        node_depths=session.node_depths,
-        node_ranks=session.node_ranks,
-        edge_ranks=session.edge_ranks,
-        crossing_loss=float(session.crossing_loss),
-        crossing_search_loss=float(session.crossing_search_loss),
+        enable_crossings=session.settings.enable_crossings,
+        crossing_mode=session.settings.crossing_mode,
+        node_depths=session.settings.node_depths,
+        node_ranks=session.settings.node_ranks,
+        edge_ranks=session.settings.edge_ranks,
+        crossing_loss=float(session.settings.crossing_loss),
+        crossing_search_loss=float(session.settings.crossing_search_loss),
         crossing_half_size_cells=int(session.resolved_crossing_half_size_cells),
-        min_straight_cells_per_crossing=int(session.min_straight_cells_per_crossing),
-        allow_only_expected_crossings=session.effective_allow_only_expected_crossings,
-        guidance_net_names=session.crossing_guidance_net_names,
-        config=session.config.crossing_plan,
+        min_straight_cells_per_crossing=int(session.settings.min_straight_cells_per_crossing),
+        allow_only_expected_crossings=session.settings.effective_allow_only_expected_crossings,
+        guidance_net_names=session.settings.crossing_guidance_net_names,
+        config=session.settings.config.crossing_plan,
     )
-    session.crossing_plan_info["crossing_mode"] = session.crossing_mode
-    if bool(session.enable_crossings):
+    session.crossing_plan_info["crossing_mode"] = session.settings.crossing_mode
+    if bool(session.settings.enable_crossings):
         # The exact configuration must be visible in stdout (harness step 0):
         # which of baseline / contribution 1 ran, and with which prices.
         guidance = session.crossing_plan_info.get("guidance")
@@ -327,12 +327,12 @@ def build_crossing_plan_and_port_footprints(
             else ""
         )
         print(
-            f"      - crossing search: mode={session.crossing_mode}"
+            f"      - crossing search: mode={session.settings.crossing_mode}"
             f" search_loss={float(session.crossing_plan_info.get('crossing_search_loss', 0.0)):.1f}"
             f"{guidance_text}"
         )
     session.crossing_plan_info["requested_allow_only_expected_crossings"] = bool(
-        session.allow_only_expected_crossings
+        session.settings.allow_only_expected_crossings
     )
     session.crossing_plan_info["bend_runout_cells_per_crossing"] = int(session.bend_radius_cells)
     session.crossing_plan_info["fanout_stub_bend_degrees"] = 45 * int(
@@ -341,7 +341,9 @@ def build_crossing_plan_and_port_footprints(
     session.crossing_plan_info["required_straight_margin_cells_per_crossing"] = int(
         session.resolved_crossing_half_size_cells
     ) + int(session.bend_radius_cells)
-    session.crossing_plan_info["fanout_access_mode"] = session.fanout_access_mode_normalized
+    session.crossing_plan_info["fanout_access_mode"] = (
+        session.settings.fanout_access_mode_normalized
+    )
     session.crossing_plan_info["fanout_anchor_port_count"] = len(session.fanout_anchor_by_port_spec)
     session.crossing_plan_info["fanout_anchor_net_ids"] = sorted(session.fanout_anchor_net_ids)
     session.crossing_plan_info["fanout_anchor_source_net_ids"] = sorted(
@@ -371,7 +373,9 @@ def build_crossing_plan_and_port_footprints(
         )
     ]
     session.crossing_plan_info["crossing_device"] = crossing_device_info
-    if bool(session.enable_crossings) and is_collision_mode(session.crossing_mode):
+    if bool(session.settings.enable_crossings) and is_collision_mode(
+        session.settings.crossing_mode
+    ):
         if not hasattr(session.router, "set_collision_crossing_routing"):
             extension_path = getattr(session.rust_backend, "__file__", "<unknown>")
             raise RuntimeError(
@@ -503,7 +507,7 @@ def build_crossing_plan_and_port_footprints(
     session.foreign_port_keepout_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
     foreign_port_keepout_nonstatic_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
-    if session.foreign_port_keepout_cells > 0:
+    if session.settings.foreign_port_keepout_cells > 0:
         t_foreign_keepout_start = session._pipeline_timer_start()
         for port_spec, raw_footprint_cells in raw_footprint_cells_by_spec.items():
             instance_name = port_spec.split(",", 1)[0]

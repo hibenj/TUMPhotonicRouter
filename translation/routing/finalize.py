@@ -44,7 +44,7 @@ def _endpoint_correction_crossing_net_ids(session) -> set[int]:
     two is out of this milestone's additive scope.
     """
     crossing_net_ids: set[int] = set()
-    if session.enable_crossings and hasattr(session.router, "crossing_events"):
+    if session.settings.enable_crossings and hasattr(session.router, "crossing_events"):
         # No broad `except Exception` here: Milestone 0 of the
         # restructuring ExecPlan confirmed via git history that this
         # used to swallow any error from `router.crossing_events()`
@@ -102,7 +102,7 @@ def _classify_net_for_endpoint_correction(
 
     source_has_fanout_stub = net_id in session.fanout_anchor_source_net_ids
     target_has_fanout_stub = net_id in session.fanout_anchor_target_net_ids
-    has_crossing = session.enable_crossings and net_id in crossing_net_ids
+    has_crossing = session.settings.enable_crossings and net_id in crossing_net_ids
 
     if has_crossing:
         return NetEndpointCorrectionClassification(
@@ -158,7 +158,7 @@ def _apply_checked_endpoint_corrections_for_net_ids(
     record_pipeline_timing: bool = True,
     print_warnings: bool = False,
 ) -> list[int]:
-    if not session.enable_checked_endpoint_correction:
+    if not session.settings.enable_checked_endpoint_correction:
         return []
     if not hasattr(session.router, "apply_checked_endpoint_corrections"):
         raise RuntimeError(
@@ -219,7 +219,7 @@ def _apply_checked_endpoint_corrections_for_net_ids(
     correction_start = session._timing_start()
     raw_corrections = session.router.apply_checked_endpoint_corrections(
         correction_jobs,
-        float(session.route_width_um),
+        float(session.settings.route_width_um),
         int(session.commit_radius_cells),
         int(session.core_commit_radius_cells),
         True,
@@ -323,7 +323,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
     record_pipeline_timing: bool = True,
     print_warnings: bool = False,
 ) -> list[int]:
-    if not session.enable_checked_endpoint_correction or not session.fanout_anchor_net_ids:
+    if not session.settings.enable_checked_endpoint_correction or not session.fanout_anchor_net_ids:
         return []
     if not hasattr(session.router, "apply_checked_endpoint_corrections"):
         raise RuntimeError(
@@ -426,7 +426,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
     correction_start = session._timing_start()
     raw_corrections = session.router.apply_checked_endpoint_corrections(
         correction_jobs,
-        float(session.route_width_um),
+        float(session.settings.route_width_um),
         int(session.commit_radius_cells),
         int(session.core_commit_radius_cells),
         True,
@@ -551,7 +551,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
 
 
 def _current_crossing_points_by_net_id(session) -> dict[int, list[tuple[float, float]]]:
-    if not session.enable_crossings or not hasattr(session.router, "crossing_events"):
+    if not session.settings.enable_crossings or not hasattr(session.router, "crossing_events"):
         return {}
     try:
         raw_events = list(cast(Iterable[Any], session.router.crossing_events()))
@@ -625,7 +625,7 @@ def _record_terminal_bump_distance_check_candidates(
     if not isinstance(session.crossing_plan_info, dict):
         return
 
-    trace_tokens = session.config.diagnostics.trace_terminal_bump_distance_checks
+    trace_tokens = session.settings.config.diagnostics.trace_terminal_bump_distance_checks
     trace_all = "*" in trace_tokens
     grid_size = float(session.grid.grid_size_um)
     eps = max(1e-6, grid_size * 1e-6)
@@ -768,7 +768,10 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
     record_pipeline_timing: bool = True,
     print_warnings: bool = False,
 ) -> list[int]:
-    if not session.enable_checked_endpoint_correction or not session.enable_crossings:
+    if (
+        not session.settings.enable_checked_endpoint_correction
+        or not session.settings.enable_crossings
+    ):
         return []
     crossing_points_by_net_id = session._current_crossing_points_by_net_id()
     if not crossing_points_by_net_id:
@@ -830,7 +833,7 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
             router=cast(EndpointCorrectionRouter, session.router),
             crossing_points=crossing_points,
             realization_grid_spec=session.realization_grid_spec,
-            route_width_um=float(session.route_width_um),
+            route_width_um=float(session.settings.route_width_um),
             allow_unchecked_bumps=False,
             log_failures=print_warnings,
             crossing_plan_info=session.crossing_plan_info,
@@ -858,7 +861,7 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
             clearance_exempt_cells=clearance_exempt_cells,
             clearance_radius_cells=int(session.commit_radius_cells),
             core_radius_cells=int(session.core_commit_radius_cells),
-            config=session.config.diagnostics,
+            config=session.settings.config.diagnostics,
         )
         failed = updated.endpoint_correction_error is not None
         if session.collect_timing:
@@ -1032,13 +1035,13 @@ def finalize_routing_results(
     if session.collect_timing:
         astar_elapsed_s = time.perf_counter() - t_astar_start
 
-    if session.enable_checked_endpoint_correction:
+    if session.settings.enable_checked_endpoint_correction:
         session._apply_all_endpoint_corrections_for_net_ids(
             list(session.route_bookkeeping.route_order),
             print_warnings=(
-                session.collect_attempt_diagnostics
+                session.settings.collect_attempt_diagnostics
                 or session.diagnostics_enabled
-                or session.verbose_route_diagnostics
+                or session.settings.verbose_route_diagnostics
             ),
         )
     session._append_target_fanout_stubs_after_correction()
@@ -1066,7 +1069,7 @@ def finalize_routing_results(
         raise RuntimeError(f"Duplicate routed records generated: {formatted}")
     session._record_pipeline_timing("record_assembly", t_record_assembly_start)
 
-    if session.debug_timing and session.verbose_route_diagnostics:
+    if session.settings.debug_timing and session.settings.verbose_route_diagnostics:
         print(f"      - A* route-search loop time: {astar_elapsed_s:.4f} s")
         print(
             "      - Route search stats: "

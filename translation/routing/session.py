@@ -6,13 +6,18 @@ the sibling stage modules of this package, as module-level functions taking the
 session as their first argument. The class keeps a one-line forwarder per moved
 method, so `session.<helper>(...)` inside a stage body, the unbound lookups in
 the tests and the fake sessions built with `object.__new__` all keep working.
-The forwarders go away in Slice 2, when the stages take typed inputs and
-outputs and `run` passes one stage's output to the next."""
+The forwarders go away in Slice 2b, when the stages take typed inputs and
+outputs and `run` passes one stage's output to the next.
+
+Slice 2a made the session's inputs one frozen record: `__init__` validates and
+normalises its keywords into `self.settings` (`settings.SessionSettings`) and
+then owns only the routed layout copy, the loaded kernel module and the pipeline
+timing dict. Everything a stage reads as a session attribute is therefore either
+a setting (`session.settings.<name>`) or per-run state a phase wrote."""
 
 from __future__ import annotations
 
 import importlib
-import math
 import time
 
 from pathlib import Path
@@ -21,12 +26,14 @@ from typing import Any
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
-from photonic_router.config import RouterConfig, RoutingConfig
+from photonic_router.config import RoutingConfig
 
-from translation.crossing_modes import is_lidar_mode, normalize_crossing_mode
-from translation.route_order import normalize_net_order
-from translation.route_rust_crossing_plan import _effective_crossing_search_loss
 from translation.route_rust_types import RipupRerouteConfig, RustRouteDebugArtifacts
+
+from translation.routing.settings import (
+    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
+    SessionSettings,
+)
 
 from translation.routing import (
     obstacle_context,
@@ -45,8 +52,6 @@ GridSpec = _sob.GridSpec
 StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
 build_static_obstacle_map = _sob.build_static_obstacle_map
 _load_rust_backend = _sob._load_rust_backend
-
-DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING = 2
 
 
 class _RouteNetsRustSession:
@@ -171,132 +176,55 @@ class _RouteNetsRustSession:
             A tuple of (routed_layout, debug_artifacts).
             :param debug_timing:
         """
-        self.config: RoutingConfig = config if config is not None else RoutingConfig.from_environment()
-        if route_width_um <= 0:
-            raise ValueError("route_width_um must be > 0")
-        if max_iterations <= 0:
-            raise ValueError("max_iterations must be > 0")
-        if not math.isfinite(float(proactive_congestion_weight)) or proactive_congestion_weight < 0:
-            raise ValueError("proactive_congestion_weight must be finite and non-negative")
-        if proactive_congestion_radius_cells < 0:
-            raise ValueError("proactive_congestion_radius_cells must be non-negative")
-        if crossing_loss < 0:
-            raise ValueError("crossing_loss must be non-negative")
-        crossing_mode = normalize_crossing_mode(crossing_mode)
-        effective_allow_only_expected_crossings = bool(allow_only_expected_crossings)
-        if is_lidar_mode(crossing_mode):
-            # lidar-pure and lidar-guided: crossings are never a whitelist
-            effective_allow_only_expected_crossings = False
-        crossing_search_loss = _effective_crossing_search_loss(
-            enable_crossings=bool(enable_crossings),
+        self.settings = SessionSettings.from_arguments(
+            unrouted_layout,
+            schematic,
+            obstacle_config=obstacle_config,
+            debug_dir=debug_dir,
+            debug_prefix=debug_prefix,
+            debug_route_indices=debug_route_indices,
+            debug_stop_after_route_index=debug_stop_after_route_index,
+            route_width_um=route_width_um,
+            route_layer=route_layer,
+            allow_45_degree_turns=allow_45_degree_turns,
+            bend_radius_um=bend_radius_um,
+            enable_jps4=enable_jps4,
+            use_indexed_heap=use_indexed_heap,
+            enable_simple_routes=enable_simple_routes,
+            primitive_ordering=primitive_ordering,
+            heuristic_mode=heuristic_mode,
+            net_order=net_order,
+            net_order_depth_by_node=net_order_depth_by_node,
+            heap_tie_breaker=heap_tie_breaker,
+            proactive_congestion_weight=proactive_congestion_weight,
+            proactive_congestion_radius_cells=proactive_congestion_radius_cells,
+            max_iterations=max_iterations,
+            routing_window_scale=routing_window_scale,
+            debug_timing=debug_timing,
+            verbose_route_diagnostics=verbose_route_diagnostics,
+            collect_route_stats=collect_route_stats,
+            collect_attempt_diagnostics=collect_attempt_diagnostics,
+            enable_internal_photonic_probe_verification=(
+                enable_internal_photonic_probe_verification
+            ),
+            include_heater_obstacles=include_heater_obstacles,
+            ripup_reroute_config=ripup_reroute_config,
+            enable_crossings=enable_crossings,
+            node_depths=node_depths,
+            node_ranks=node_ranks,
+            edge_ranks=edge_ranks,
+            crossing_loss=crossing_loss,
             crossing_mode=crossing_mode,
-            crossing_loss=float(crossing_loss),
-            config=self.config.crossing_plan,
+            crossing_half_size_cells=crossing_half_size_cells,
+            min_straight_cells_per_crossing=min_straight_cells_per_crossing,
+            foreign_port_keepout_cells=foreign_port_keepout_cells,
+            fanout_access_mode=fanout_access_mode,
+            allow_only_expected_crossings=allow_only_expected_crossings,
+            crossing_guidance_net_names=crossing_guidance_net_names,
+            defer_realization=defer_realization,
+            enable_checked_endpoint_correction=enable_checked_endpoint_correction,
+            config=config,
         )
-        if crossing_half_size_cells < 0:
-            raise ValueError("crossing_half_size_cells must be non-negative")
-        if min_straight_cells_per_crossing < 0:
-            raise ValueError("min_straight_cells_per_crossing must be non-negative")
-        if foreign_port_keepout_cells < 0:
-            raise ValueError("foreign_port_keepout_cells must be non-negative")
-        raw_fanout_access_mode = (
-            self.config.fanout.fanout_access_mode
-            if self.config.fanout.fanout_access_mode is not None
-            else ("legacy-runway" if fanout_access_mode is None else str(fanout_access_mode))
-        )
-        fanout_access_mode_normalized = raw_fanout_access_mode.strip().lower().replace("_", "-")
-        fanout_mode_aliases = {
-            "": "legacy-runway",
-            "legacy": "legacy-runway",
-            "legacy-runway": "legacy-runway",
-            "staggered": "legacy-runway",
-            "staggered-runway": "legacy-runway",
-            "runway": "legacy-runway",
-            "0": "off",
-            "false": "off",
-            "none": "off",
-            "disabled": "off",
-            "disable": "off",
-            "off": "off",
-            "anchor": "static-stubs",
-            "anchors": "static-stubs",
-            "anchor-pre-spread": "static-stubs",
-            "pre-spread": "static-stubs",
-            "spread-stubs": "static-stubs",
-            "static-stub": "static-stubs",
-            "static-stubs": "static-stubs",
-            "virtual-ports": "static-stubs",
-        }
-        fanout_access_mode_normalized = fanout_mode_aliases.get(
-            fanout_access_mode_normalized,
-            fanout_access_mode_normalized,
-        )
-        if fanout_access_mode_normalized not in {"legacy-runway", "off", "static-stubs"}:
-            raise ValueError(
-                "fanout_access_mode must be one of 'legacy-runway', 'off', or 'static-stubs'"
-            )
-        if debug_stop_after_route_index is not None and debug_stop_after_route_index < 1:
-            raise ValueError("debug_stop_after_route_index must be >= 1")
-
-        self.unrouted_layout = unrouted_layout
-        self.schematic = schematic
-        self.obstacle_config = obstacle_config
-        self.debug_dir = debug_dir
-        self.debug_prefix = debug_prefix
-        self.debug_route_indices = debug_route_indices
-        self.debug_stop_after_route_index = debug_stop_after_route_index
-        self.route_width_um = route_width_um
-        self.route_layer = route_layer
-        self.allow_45_degree_turns = allow_45_degree_turns
-        self.bend_radius_um = bend_radius_um
-        self.enable_jps4 = enable_jps4
-        self.use_indexed_heap = use_indexed_heap
-        self.enable_simple_routes = enable_simple_routes
-        self.primitive_ordering = primitive_ordering
-        self.heuristic_mode = heuristic_mode
-        self.net_order = normalize_net_order(net_order)
-        # Optional depth map (instance -> hops from a true source) computed
-        # on the benchmark's original netlist; contribution 2 passes it so
-        # that the tile stubs of the derived netlist do not scramble the
-        # depth layers of the surrounding bands (2026-09-16, mm128 fan-in).
-        self.net_order_depth_by_node: dict[str, int] | None = (
-            dict(net_order_depth_by_node) if net_order_depth_by_node else None
-        )
-        self.heap_tie_breaker = heap_tie_breaker
-        self.proactive_congestion_weight = proactive_congestion_weight
-        self.proactive_congestion_radius_cells = proactive_congestion_radius_cells
-        self.max_iterations = max_iterations
-        self.routing_window_scale = routing_window_scale
-        self.debug_timing = debug_timing
-        self.verbose_route_diagnostics = verbose_route_diagnostics
-        self.collect_route_stats = collect_route_stats
-        self.collect_attempt_diagnostics = collect_attempt_diagnostics
-        self.enable_internal_photonic_probe_verification = (
-            enable_internal_photonic_probe_verification
-        )
-        self.include_heater_obstacles = include_heater_obstacles
-        self.ripup_reroute_config = ripup_reroute_config
-        self.enable_crossings = enable_crossings
-        self.node_depths = node_depths
-        self.node_ranks = node_ranks
-        self.edge_ranks = edge_ranks
-        self.crossing_loss = crossing_loss
-        self.crossing_mode = crossing_mode
-        self.crossing_half_size_cells = crossing_half_size_cells
-        self.min_straight_cells_per_crossing = min_straight_cells_per_crossing
-        self.foreign_port_keepout_cells = foreign_port_keepout_cells
-        self.allow_only_expected_crossings = allow_only_expected_crossings
-        self.crossing_guidance_net_names = (
-            frozenset(crossing_guidance_net_names)
-            if crossing_guidance_net_names is not None
-            else None
-        )
-        self.defer_realization = defer_realization
-        self.enable_checked_endpoint_correction = enable_checked_endpoint_correction
-        self.effective_allow_only_expected_crossings = effective_allow_only_expected_crossings
-        self.crossing_search_loss = crossing_search_loss
-        self.fanout_access_mode_normalized = fanout_access_mode_normalized
-        self.router_config: RouterConfig = self.config.router
 
         self.rust_backend = _load_rust_backend()
         if self.rust_backend is None:
@@ -305,22 +233,19 @@ class _RouteNetsRustSession:
                 "or `maturin develop` so photonic_router._rust can be imported."
             )
 
-        self.routed_layout = self.unrouted_layout.copy()
+        self.routed_layout = self.settings.unrouted_layout.copy()
         self.routed_layout.name = "routed_layout_rust"
 
-        self.collect_pipeline_timing = (
-            self.debug_timing or self.collect_route_stats or self.collect_attempt_diagnostics
-        )
         self.route_nets_timings_s: dict[str, float] = {}
 
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
         obstacle_map, crossing_device_info, obstacle_svg = obstacle_context.build_static_obstacle_context(self)
-        nets = self.schematic.netlist.routes
+        nets = self.settings.schematic.netlist.routes
         router_setup.configure_router_and_grid(self, obstacle_map)
         route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec = (
             route_jobs_stage.build_route_jobs_and_fanout_clustering(self, nets)
         )
-        if self.config.search.long_straight_exempt_dense_fanout is True:
+        if self.settings.config.search.long_straight_exempt_dense_fanout is True:
             # 2026-09-17 (multiportmmi_128x128): the fan-in / fan-out bands of
             # dense multi-port instances route without the long-straight
             # penalty, so their lanes may pack in parallel; every other net
@@ -373,10 +298,10 @@ class _RouteNetsRustSession:
         return self.routed_layout, debug_artifacts
 
     def _pipeline_timer_start(self) -> float:
-        return time.perf_counter() if self.collect_pipeline_timing else 0.0
+        return time.perf_counter() if self.settings.collect_pipeline_timing else 0.0
 
     def _record_pipeline_timing(self, name: str, start_s: float) -> None:
-        if self.collect_pipeline_timing:
+        if self.settings.collect_pipeline_timing:
             self.route_nets_timings_s[name] = self.route_nets_timings_s.get(name, 0.0) + (
                 time.perf_counter() - start_s
             )

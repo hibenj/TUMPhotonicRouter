@@ -22,6 +22,23 @@ from translation import route_rust
 from translation.routing import obstacle_context as routing_obstacle_context
 from translation.routing import route_jobs as routing_route_jobs
 from translation.routing import session as routing_session
+from translation.routing.settings import SessionSettings
+
+
+def settings_for_test(**overrides: Any) -> SessionSettings:
+    """Build a `SessionSettings` for a session assembled with `object.__new__`.
+
+    Milestone 5 Slice 2a moved the session's keyword-derived attributes into one
+    frozen `SessionSettings`, so a test that used to write `session.<attr> = ...`
+    writes `session.settings = settings_for_test(<attr>=...)` instead. The
+    overrides are the constructor's own keywords, so they go through the same
+    validation and normalisation the production session uses.
+    """
+    return SessionSettings.from_arguments(
+        SimpleNamespace(),  # unrouted_layout: untouched by the unit tests below
+        SimpleNamespace(),  # schematic: untouched by the unit tests below
+        **overrides,
+    )
 
 get_generic_pdk().activate()
 
@@ -1305,17 +1322,19 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
         return anchor
 
     session = object.__new__(route_rust._RouteNetsRustSession)
-    session.enable_checked_endpoint_correction = True
+    session.settings = settings_for_test(
+        enable_checked_endpoint_correction=True,
+        enable_crossings=False,
+        route_width_um=0.5,
+    )
     session.fanout_anchor_net_ids = {net_id}
     session.fanout_anchor_source_net_ids = {net_id}
     session.fanout_anchor_target_net_ids = {net_id}
     session.fanout_stub_static_cells_by_spec = {}
-    session.enable_crossings = False
     session.collect_timing = False
     session.router = SimpleNamespace(apply_checked_endpoint_corrections=_apply)
     session.route_bookkeeping = SimpleNamespace(records_by_id={net_id: record})
     session.route_jobs_by_id = {net_id: job}
-    session.route_width_um = 0.5
     session.commit_radius_cells = 0
     session.core_commit_radius_cells = 0
     session._pipeline_timer_start = lambda: 0.0
@@ -1357,7 +1376,7 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
         return SimpleNamespace(corrected_centerline_um=corrected_centerline_um)
 
     session = object.__new__(route_rust._RouteNetsRustSession)
-    session.enable_crossings = True
+    session.settings = settings_for_test(enable_crossings=True)
     session.fanout_anchor_source_net_ids = {source_stub_net_id, both_stub_net_id}
     session.fanout_anchor_target_net_ids = {target_stub_net_id, both_stub_net_id}
     session.fanout_anchor_net_ids = (
@@ -1439,7 +1458,7 @@ def test_endpoint_correction_crossing_net_ids_propagates_real_failures():
             raise RuntimeError("crossing_events backend failure")
 
     session = object.__new__(route_rust._RouteNetsRustSession)
-    session.enable_crossings = True
+    session.settings = settings_for_test(enable_crossings=True)
     session.router = _BrokenCrossingEventsRouter()
 
     with pytest.raises(RuntimeError, match="crossing_events backend failure"):
@@ -1681,7 +1700,7 @@ def test_only_rules_flagged_for_instance_geometry_open_the_heater_pad(monkeypatc
         lambda _schematic, name: component_by_instance[name],
     )
     monkeypatch.setattr(routing_layers, "REGISTERED_PORT_ACCESS_RULES", [grid_rule])
-    session = SimpleNamespace(schematic=object())
+    session = SimpleNamespace(settings=SimpleNamespace(schematic=object()))
     rule_for = route_rust_module._RouteNetsRustSession._port_access_rule_for
     port = SimpleNamespace(port_type="optical")
 

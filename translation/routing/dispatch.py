@@ -87,7 +87,7 @@ def _source_lower_bounds(
     dy = target_y - source_y
     distance = math.hypot(float(dx), float(dy)) * grid_size_um
     heading_lower_bound = distance
-    if str(session.heuristic_mode) == "heading_aware":
+    if str(session.settings.heuristic_mode) == "heading_aware":
         target_angle_ok = not bool(getattr(session.astar_cfg, "require_target_angle", True)) or (
             source_angle % 8 == target_angle % 8
         )
@@ -100,7 +100,7 @@ def _source_lower_bounds(
             tolerance=max(0, int(getattr(session.astar_cfg, "target_tolerance_cells", 0))),
         )
         if not target_angle_ok or not reaches_target_ray:
-            minimum_bend_units = 1.0 if session.allow_45_degree_turns else 2.0
+            minimum_bend_units = 1.0 if session.settings.allow_45_degree_turns else 2.0
             bend_weight = float(getattr(session.astar_cfg, "bend_weight", 1.0)) * float(
                 getattr(session.primitive_cfg, "bend_weight", 1.0)
             )
@@ -129,7 +129,7 @@ def _timing_start(session) -> float:
 
 
 def _record_native_batch_timings(session, batch_result: dict[str, Any]) -> None:
-    if not session.collect_pipeline_timing:
+    if not session.settings.collect_pipeline_timing:
         return
     raw_timings = batch_result.get("timings_s")
     if raw_timings is None:
@@ -151,7 +151,7 @@ def _report_long_straight_congestion(session, batch_result: dict[str, Any]) -> N
             batch_result.get("long_straight_congestion", []),
         )
     ]
-    if not records or not session.verbose_route_diagnostics:
+    if not records or not session.settings.verbose_route_diagnostics:
         return
     grouped: dict[int, list[dict[str, object]]] = {}
     for record in records:
@@ -900,7 +900,7 @@ def _write_route_diagnostics(
         ]
         debug_lines: list[str] = []
         for label, kind, cells, delta in primitive_specs:
-            if not session.allow_45_degree_turns and abs(int(delta)) == 1:
+            if not session.settings.allow_45_degree_turns and abs(int(delta)) == 1:
                 continue
             end_cell, end_angle, footprint = _first_move_footprint(
                 source=source,
@@ -956,12 +956,12 @@ def _write_route_diagnostics(
         f"status={status}",
         f"source_spec={port1_spec}",
         f"target_spec={port2_spec}",
-        f"source_component={_schematic_instance_component_name(session.schematic, job.inst1)}",
-        f"target_component={_schematic_instance_component_name(session.schematic, job.inst2)}",
+        f"source_component={_schematic_instance_component_name(session.settings.schematic, job.inst1)}",
+        f"target_component={_schematic_instance_component_name(session.settings.schematic, job.inst2)}",
         f"source_access_rule={session.port_access_rule_by_spec.get(port1_spec)}",
         f"target_access_rule={session.port_access_rule_by_spec.get(port2_spec)}",
-        f"foreign_port_keepout_cells={int(session.foreign_port_keepout_cells)}",
-        f"fanout_access_mode={session.fanout_access_mode_normalized}",
+        f"foreign_port_keepout_cells={int(session.settings.foreign_port_keepout_cells)}",
+        f"fanout_access_mode={session.settings.fanout_access_mode_normalized}",
         f"fanout_stub_bend_degrees={45 * int(session._fanout_stub_bend_steps())}",
         f"fanout_anchor_port_count={len(session.fanout_anchor_by_port_spec)}",
         f"fanout_stub_center_cell_count={len(session.fanout_stub_center_cells)}",
@@ -1045,7 +1045,7 @@ def _record_route(
         corrected_centerline_um = session._fanout_stubbed_centerline(job, route_obj)
     if (
         not corrected_centerline_um
-        and not session.enable_checked_endpoint_correction
+        and not session.settings.enable_checked_endpoint_correction
         and hasattr(session.router, "route_primitive_centerline")
     ):
         try:
@@ -1088,13 +1088,14 @@ def _export_route_svg(
     opened_cells: list[tuple[int, int]] | None = None,
 ) -> None:
     should_export = session.debug_path is not None and (
-        session.debug_route_indices is None or job.route_index in session.debug_route_indices
+        session.settings.debug_route_indices is None
+        or job.route_index in session.settings.debug_route_indices
     )
     if not should_export:
         return
     route_dir = session.debug_path / "routes"
     _ensure_dir(route_dir)
-    route_svg = route_dir / f"{session.debug_prefix}_{job.net_name}{suffix}.svg"
+    route_svg = route_dir / f"{session.settings.debug_prefix}_{job.net_name}{suffix}.svg"
     if obstacle_cells is not None and hasattr(
         session.router, "export_debug_svg_with_obstacle_cells"
     ):
@@ -1109,11 +1110,11 @@ def _export_route_svg(
             _, _, _, _, opened_cells = session._state_openings_for_job(job)
         except Exception:
             opened_cells = []
-    if session.debug_stop_after_route_index is not None and int(job.route_index) == int(
-        session.debug_stop_after_route_index
+    if session.settings.debug_stop_after_route_index is not None and int(job.route_index) == int(
+        session.settings.debug_stop_after_route_index
     ):
         next_job = session.full_route_jobs_by_route_index.get(
-            int(session.debug_stop_after_route_index) + 1
+            int(session.settings.debug_stop_after_route_index) + 1
         )
         if next_job is not None:
             try:
@@ -1280,7 +1281,7 @@ def _write_failed_log(
     _ensure_dir(route_dir)
     port1_spec = f"{job.inst1},{job.port1}"
     port2_spec = f"{job.inst2},{job.port2}"
-    fail_txt = route_dir / f"{session.debug_prefix}_{job.net_name}_FAILED.txt"
+    fail_txt = route_dir / f"{session.settings.debug_prefix}_{job.net_name}_FAILED.txt"
     committed_dynamic_cells = session._committed_dynamic_cells()
     opened_candidate_static_overlap = (
         opened_candidate_cells & session.static_blocked_cells_before_port_reservations
@@ -1317,7 +1318,7 @@ def _write_failed_log(
         f"target_spec={port2_spec}",
         f"source_state=({int(source_state.x)}, {int(source_state.y)}, {int(source_state.angle)})",
         f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
-        f"allow_45_degree_turns={session.allow_45_degree_turns}",
+        f"allow_45_degree_turns={session.settings.allow_45_degree_turns}",
         f"block_radius_cells={session.block_radius_cells}",
         "dynamic_obstacle_search_expansion_radius_cells="
         f"{session.clearance_policy.dynamic_obstacle_search_expansion_radius_cells}",
@@ -1471,10 +1472,13 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
             source_state, target_state, _, _, opened_cells = session._state_openings_for_job(job)
             clearance_exempt_cells = session._clearance_exempt_cells_for_job(job)
             route_selected_for_debug = (
-                session.debug_route_indices is None or job.route_index in session.debug_route_indices
+                session.settings.debug_route_indices is None
+                or job.route_index in session.settings.debug_route_indices
             )
-            should_print_route = session.verbose_route_diagnostics and route_selected_for_debug
-            if session.debug_route_indices is not None and route_selected_for_debug:
+            should_print_route = (
+                session.settings.verbose_route_diagnostics and route_selected_for_debug
+            )
+            if session.settings.debug_route_indices is not None and route_selected_for_debug:
                 should_print_route = True
             if should_print_route:
                 print(
@@ -1486,11 +1490,13 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
             diag_txt: Path | None = None
             if (
                 session.debug_path is not None
-                and (route_selected_for_debug or session.collect_attempt_diagnostics)
+                and (route_selected_for_debug or session.settings.collect_attempt_diagnostics)
                 and route_dir is not None
             ):
                 _ensure_dir(route_dir)
-                diag_txt = route_dir / f"{session.debug_prefix}_{job.net_name}_diagnostics.txt"
+                diag_txt = (
+                    route_dir / f"{session.settings.debug_prefix}_{job.net_name}_diagnostics.txt"
+                )
             batch_jobs.append(
                 (
                     int(job.net_id),
@@ -1508,7 +1514,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
         session._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
 
         batch_start = session._timing_start()
-        if negotiated_repair_engine_enabled(session.config.engine):
+        if negotiated_repair_engine_enabled(session.settings.config.engine):
             # Default since 2026-09-16 (owner decision, baseline
             # freeze): the LiDAR-style negotiated rip-up loop of
             # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
@@ -1584,8 +1590,8 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 and bucket_name != "normal_route"
                 and session.debug_path is not None
                 and (
-                    session.debug_route_indices is None
-                    or job.route_index in session.debug_route_indices
+                    session.settings.debug_route_indices is None
+                    or job.route_index in session.settings.debug_route_indices
                 )
             ):
                 session._export_route_svg(
@@ -1628,7 +1634,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                             candidate_blockers=candidate_blockers,
                             ripup_ids=ripup_ids,
                         )
-                        if session.collect_attempt_diagnostics
+                        if session.settings.collect_attempt_diagnostics
                         else None,
                     )
                 )
@@ -1705,7 +1711,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
                 f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
                 f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                f"allow_45_degree_turns={session.allow_45_degree_turns}. "
+                f"allow_45_degree_turns={session.settings.allow_45_degree_turns}. "
                 f"error={error_text}"
             )
 
@@ -1735,10 +1741,13 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
             source_state, target_state, _, _, opened_cells = session._state_openings_for_job(job)
             clearance_exempt_cells = session._clearance_exempt_cells_for_job(job)
             route_selected_for_debug = (
-                session.debug_route_indices is None or job.route_index in session.debug_route_indices
+                session.settings.debug_route_indices is None
+                or job.route_index in session.settings.debug_route_indices
             )
-            should_print_route = session.verbose_route_diagnostics and route_selected_for_debug
-            if session.debug_route_indices is not None and route_selected_for_debug:
+            should_print_route = (
+                session.settings.verbose_route_diagnostics and route_selected_for_debug
+            )
+            if session.settings.debug_route_indices is not None and route_selected_for_debug:
                 should_print_route = True
             if should_print_route:
                 print(
@@ -1750,11 +1759,13 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
             diag_txt: Path | None = None
             if (
                 session.debug_path is not None
-                and (route_selected_for_debug or session.collect_attempt_diagnostics)
+                and (route_selected_for_debug or session.settings.collect_attempt_diagnostics)
                 and route_dir is not None
             ):
                 _ensure_dir(route_dir)
-                diag_txt = route_dir / f"{session.debug_prefix}_{job.net_name}_diagnostics.txt"
+                diag_txt = (
+                    route_dir / f"{session.settings.debug_prefix}_{job.net_name}_diagnostics.txt"
+                )
             batch_jobs.append(
                 (
                     int(job.net_id),
@@ -1890,7 +1901,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
                 f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
                 f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                f"allow_45_degree_turns={session.allow_45_degree_turns}"
+                f"allow_45_degree_turns={session.settings.allow_45_degree_turns}"
             )
 
 

@@ -110,7 +110,9 @@ def _port_access_rule_for(
     reads the same declaration.
     """
     return find_component_port_access_rule(
-        component_name=_schematic_instance_component_name(session.schematic, instance_name),
+        component_name=_schematic_instance_component_name(
+            session.settings.schematic, instance_name
+        ),
         port_name=port_name,
         port_type=_port_type_name(port),
     )
@@ -124,7 +126,7 @@ def _dense_fanout_min_ports(session) -> int:
     switch's port pair (1.25 um apart, inside one routing cell) gets the
     same staggered static stubs a multiport MMI's port row gets.
     """
-    value = session.config.fanout.dense_fanout_min_ports
+    value = session.settings.config.fanout.dense_fanout_min_ports
     return 3 if value is None else value
 
 
@@ -161,7 +163,7 @@ def _dense_fanout_min_ports_for(session, instance_name: str) -> int:
     every crossing lane of a multiport MMI on a spread row, also when
     only two of its outputs cross in a layer -- while everything else
     (e.g. the 1x2 splitter tree) keeps the global threshold."""
-    instances = session.config.fanout.dense_fanout_instances
+    instances = session.settings.config.fanout.dense_fanout_instances
     if instances and instance_name in instances:
         return 2
     return session._dense_fanout_min_ports()
@@ -257,7 +259,7 @@ def _centerline_grid_cells(
 
 
 def _fanout_stub_bend_steps(session) -> int:
-    raw_value = session.config.fanout.fanout_stub_bend_degrees
+    raw_value = session.settings.config.fanout.fanout_stub_bend_degrees
     if raw_value is None:
         raw_value = "90"
     normalized = raw_value.strip().lower().replace("_", "-")
@@ -562,7 +564,7 @@ def _two_bend_static_stub_centerline_um(
     intermediate_angle = (start_angle + bend_delta) % 8
     intermediate_step = session._angle_to_step(intermediate_angle)
     final_step = session._angle_to_step(start_angle)
-    trace_fanout_stubs = session.config.diagnostics.trace_fanout_stubs
+    trace_fanout_stubs = session.settings.config.diagnostics.trace_fanout_stubs
 
     def fail(reason: str, extra: str = "") -> None:
         if trace_fanout_stubs:
@@ -885,20 +887,20 @@ def _fanout_stub_centerline_um(
 
 
 def _build_static_fanout_anchors(session) -> dict[str, _FanoutAnchor]:
-    if session.fanout_access_mode_normalized != "static-stubs":
+    if session.settings.fanout_access_mode_normalized != "static-stubs":
         return {}
     default_forward_cells = max(3, int(session.bend_radius_cells) + 3)
     default_lane_spacing_cells = 11
     forward_cells = session._fanout_int_or_default(
-        session.config.fanout.fanout_stub_forward_cells,
+        session.settings.config.fanout.fanout_stub_forward_cells,
         default_forward_cells,
     )
     lane_spacing_cells = session._fanout_int_or_default(
-        session.config.fanout.fanout_lane_spacing_cells,
+        session.settings.config.fanout.fanout_lane_spacing_cells,
         default_lane_spacing_cells,
     )
     stub_x_offset_cells = session._fanout_int_or_default(
-        session.config.fanout.fanout_stub_x_offset_cells,
+        session.settings.config.fanout.fanout_stub_x_offset_cells,
         1,
     )
     if forward_cells <= 0 or lane_spacing_cells <= 0:
@@ -1083,19 +1085,19 @@ def _build_static_fanout_target_anchors(session) -> dict[str, _FanoutAnchor]:
     that is required for the rest of the routing pipeline to pick them
     up correctly -- no other call site needs to change.
     """
-    if session.fanout_access_mode_normalized != "static-stubs":
+    if session.settings.fanout_access_mode_normalized != "static-stubs":
         return {}
     default_forward_cells = max(3, int(session.bend_radius_cells) + 3)
     forward_cells = session._fanout_int_or_default(
-        session.config.fanout.fanout_stub_forward_cells,
+        session.settings.config.fanout.fanout_stub_forward_cells,
         default_forward_cells,
     )
     spacing_cells = session._fanout_int_or_default(
-        session.config.fanout.target_protected_lane_spacing_cells,
+        session.settings.config.fanout.target_protected_lane_spacing_cells,
         session._fanout_int_or_default(
-            session.config.fanout.fanout_protected_lane_spacing_cells,
+            session.settings.config.fanout.fanout_protected_lane_spacing_cells,
             session._fanout_int_or_default(
-                session.config.fanout.fanout_lane_spacing_cells,
+                session.settings.config.fanout.fanout_lane_spacing_cells,
                 3,
             ),
         ),
@@ -1196,7 +1198,7 @@ def _dense_source_port_runway_lengths(
 ) -> dict[str, int]:
     """Reserve staggered source-port access in dense MMI fanout runs."""
     lengths_by_spec: dict[str, int] = {}
-    if session.fanout_access_mode_normalized == "static-stubs":
+    if session.settings.fanout_access_mode_normalized == "static-stubs":
         grouped_specs: dict[tuple[str, int], set[str]] = {}
         source_specs = {
             f"{run_job.inst1},{run_job.port1}"
@@ -1230,9 +1232,9 @@ def _dense_source_port_runway_lengths(
             )
             count = len(ordered_specs)
             spacing_cells = session._fanout_int_or_default(
-                session.config.fanout.fanout_protected_lane_spacing_cells,
+                session.settings.config.fanout.fanout_protected_lane_spacing_cells,
                 session._fanout_int_or_default(
-                    session.config.fanout.fanout_lane_spacing_cells,
+                    session.settings.config.fanout.fanout_lane_spacing_cells,
                     3,
                 ),
             )
@@ -1249,7 +1251,7 @@ def _dense_source_port_runway_lengths(
             session._equalize_dense_runway_reach(lengths_by_spec, list(ordered_specs))
         return lengths_by_spec
 
-    if session.fanout_access_mode_normalized != "legacy-runway":
+    if session.settings.fanout_access_mode_normalized != "legacy-runway":
         return {}
 
     index = 0
@@ -1356,11 +1358,11 @@ def _dense_target_port_runway_lengths(
 
     base_cells = max(1, int(session.bend_radius_cells) + 1)
     spacing_cells = session._fanout_int_or_default(
-        session.config.fanout.target_protected_lane_spacing_cells,
+        session.settings.config.fanout.target_protected_lane_spacing_cells,
         session._fanout_int_or_default(
-            session.config.fanout.fanout_protected_lane_spacing_cells,
+            session.settings.config.fanout.fanout_protected_lane_spacing_cells,
             session._fanout_int_or_default(
-                session.config.fanout.fanout_lane_spacing_cells,
+                session.settings.config.fanout.fanout_lane_spacing_cells,
                 3,
             ),
         ),
@@ -1501,7 +1503,7 @@ def build_route_jobs_and_fanout_clustering(
         **session._build_static_fanout_anchors(),
         **session._build_static_fanout_target_anchors(),
     }
-    traced_instance = session.config.diagnostics.trace_runway_instance
+    traced_instance = session.settings.config.diagnostics.trace_runway_instance
     if traced_instance:
         for port_spec, anchor in sorted(session.fanout_anchor_by_port_spec.items()):
             if port_spec.startswith(f"{traced_instance},"):
@@ -1543,7 +1545,7 @@ def build_route_jobs_and_fanout_clustering(
     session.dense_target_port_runway_length_by_spec = session._dense_target_port_runway_lengths(
         route_jobs
     )
-    traced_instance = session.config.diagnostics.trace_runway_instance
+    traced_instance = session.settings.config.diagnostics.trace_runway_instance
     if traced_instance:
         for port_spec, runway_length in sorted(
             session.dense_target_port_runway_length_by_spec.items()

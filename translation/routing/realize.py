@@ -37,18 +37,18 @@ def realize_and_assemble_debug_artifacts(
     with the same list unexpectedly still populated), then assembles and returns the
     debug artifacts bundle.
     """
-    if not illegal_realized_crossings and not session.defer_realization:
+    if not illegal_realized_crossings and not session.settings.defer_realization:
         t_direct_realization_start = session._pipeline_timer_start()
         realize_routed_net_records(
             session.routed_layout,
             routed_net_records,
-            route_width_um=session.route_width_um,
-            route_layer=session.route_layer,
+            route_width_um=session.settings.route_width_um,
+            route_layer=session.settings.route_layer,
             realization_grid_spec=session.realization_grid_spec,
-            allow_45_degree_turns=session.allow_45_degree_turns,
+            allow_45_degree_turns=session.settings.allow_45_degree_turns,
             bend_radius_cells=session.bend_radius_cells,
             crossing_plan_info=session.crossing_plan_info,
-            enable_endpoint_correction=session.enable_checked_endpoint_correction,
+            enable_endpoint_correction=session.settings.enable_checked_endpoint_correction,
         )
         session._record_pipeline_timing("direct_realization", t_direct_realization_start)
         _place_realized_crossing_components(session.routed_layout, session.crossing_plan_info)
@@ -57,7 +57,7 @@ def realize_and_assemble_debug_artifacts(
         session.crossing_plan_info.setdefault("realized_crossing_component_count", 0)
     _write_crossing_debug_artifacts(
         debug_path=session.debug_path if session.debug_path is not None else Path("build"),
-        debug_prefix=session.debug_prefix,
+        debug_prefix=session.settings.debug_prefix,
         crossing_plan_info=session.crossing_plan_info,
     )
     if illegal_realized_crossings:
@@ -86,7 +86,7 @@ def realize_and_assemble_debug_artifacts(
         obstacle_map=obstacle_map,
         routed_net_records=routed_net_records,
         realization_grid_spec=session.realization_grid_spec,
-        allow_45_degree_turns=session.allow_45_degree_turns,
+        allow_45_degree_turns=session.settings.allow_45_degree_turns,
         bend_radius_cells=session.bend_radius_cells,
         route_search_summary=summarize_route_search(
             session.route_timing_buckets,
@@ -104,7 +104,7 @@ def realize_and_assemble_debug_artifacts(
         crossing_plan_info=session.crossing_plan_info,
     )
     session._record_pipeline_timing("debug_artifact_assembly", t_debug_artifact_start)
-    if session.collect_pipeline_timing:
+    if session.settings.collect_pipeline_timing:
         debug_artifacts = replace(
             debug_artifacts,
             route_nets_timings_s=dict(session.route_nets_timings_s),

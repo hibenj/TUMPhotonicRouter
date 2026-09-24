@@ -473,7 +473,7 @@ def _repair_final_illegal_crossings(
         session._record_route(job, route_obj, opened_by_id[net_id])
         repaired_records.append(session.route_bookkeeping.records_by_id[net_id])
 
-    if session.enable_checked_endpoint_correction and repaired_records:
+    if session.settings.enable_checked_endpoint_correction and repaired_records:
         repaired_net_ids = [
             int(record.net_id) for record in repaired_records if record.net_id is not None
         ]
@@ -657,20 +657,20 @@ def _make_photonic_verification_probe_layout(
     t_probe_layout_total_start = session._pipeline_timer_start()
     session.photonic_probe_index += 1
     t_probe_copy_start = session._pipeline_timer_start()
-    probe_layout = session.unrouted_layout.copy()
+    probe_layout = session.settings.unrouted_layout.copy()
     probe_layout.name = f"photonic_repair_probe_{time.time_ns()}_{session.photonic_probe_index}"
     session._record_pipeline_timing("photonic_probe_copy", t_probe_copy_start)
     t_probe_realize_start = session._pipeline_timer_start()
     realize_routed_net_records(
         probe_layout,
         list(records),
-        route_width_um=session.route_width_um,
-        route_layer=session.route_layer,
+        route_width_um=session.settings.route_width_um,
+        route_layer=session.settings.route_layer,
         realization_grid_spec=session.realization_grid_spec,
-        allow_45_degree_turns=session.allow_45_degree_turns,
+        allow_45_degree_turns=session.settings.allow_45_degree_turns,
         bend_radius_cells=session.bend_radius_cells,
         crossing_plan_info=session.crossing_plan_info,
-        enable_endpoint_correction=session.enable_checked_endpoint_correction,
+        enable_endpoint_correction=session.settings.enable_checked_endpoint_correction,
     )
     session._record_pipeline_timing("photonic_probe_realize", t_probe_realize_start)
     if session.crossing_plan_info.get("enabled"):
@@ -703,17 +703,17 @@ def _refresh_photonic_verification(session) -> PhotonicVerificationResult:
     t_verify_start = session._pipeline_timer_start()
     result = verify_photonic_routing(
         probe_layout,
-        session.schematic,
+        session.settings.schematic,
         routed_net_records=records,
-        unrouted_layout=session.unrouted_layout,
-        route_width_um=session.route_width_um,
-        route_layer=session.route_layer,
+        unrouted_layout=session.settings.unrouted_layout,
+        route_width_um=session.settings.route_width_um,
+        route_layer=session.settings.route_layer,
         obstacle_layers=_default_obstacle_layers(
-            session.route_layer,
-            include_heater_obstacles=session.include_heater_obstacles,
+            session.settings.route_layer,
+            include_heater_obstacles=session.settings.include_heater_obstacles,
         ),
         realization_grid_spec=session.realization_grid_spec,
-        allow_45_degree_turns=session.allow_45_degree_turns,
+        allow_45_degree_turns=session.settings.allow_45_degree_turns,
         bend_radius_cells=session.bend_radius_cells,
         legal_overlap_polygons_by_net_id_pair_um=(
             _legal_crossing_overlap_polygons_for_verification(session.crossing_plan_info)
@@ -721,8 +721,8 @@ def _refresh_photonic_verification(session) -> PhotonicVerificationResult:
         crossing_component_footprints_um=(
             _legal_crossing_component_footprints_for_verification(session.crossing_plan_info)
         ),
-        check_route_coverage=session.debug_stop_after_route_index is None,
-        check_endpoint_connectivity=session.enable_checked_endpoint_correction,
+        check_route_coverage=session.settings.debug_stop_after_route_index is None,
+        check_endpoint_connectivity=session.settings.enable_checked_endpoint_correction,
     )
     session._record_pipeline_timing("photonic_probe_verify", t_verify_start)
     session._record_pipeline_timing("photonic_refresh_total", t_refresh_start)
@@ -865,7 +865,7 @@ def _repair_final_photonic_issues(
         route_obj = entry["route"]
         session._record_route(job, route_obj, opened_by_id[net_id])
         repaired_net_ids.append(net_id)
-    if session.enable_checked_endpoint_correction and repaired_net_ids:
+    if session.settings.enable_checked_endpoint_correction and repaired_net_ids:
         failed_corrections = (
             session._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
                 repaired_net_ids,
@@ -902,7 +902,7 @@ def _photonic_repair_failure_preview(
 def _refresh_realized_crossing_verification(session) -> list[dict[str, object]]:
     t_refresh_crossings_start = session._pipeline_timer_start()
     t_overlap_start = session._pipeline_timer_start()
-    if session.enable_internal_photonic_probe_verification:
+    if session.settings.enable_internal_photonic_probe_verification:
         _augment_crossing_plan_with_realized_overlaps(
             router=session.router,
             crossing_plan_info=session.crossing_plan_info,
@@ -933,7 +933,7 @@ def _refresh_realized_crossing_verification(session) -> list[dict[str, object]]:
             t_insertion_loss_start,
         )
     t_illegal_crossing_verify_start = session._pipeline_timer_start()
-    if session.enable_internal_photonic_probe_verification:
+    if session.settings.enable_internal_photonic_probe_verification:
         illegal = _verify_realized_route_intersections(
             crossing_plan_info=session.crossing_plan_info,
             routed_records_by_net_id=session.route_bookkeeping.records_by_id,
@@ -1008,7 +1008,10 @@ def repair_and_verify_final_geometry(
             break
         routed_net_records = session.route_bookkeeping.ordered_records()
         illegal_realized_crossings = session._refresh_realized_crossing_verification()
-    if not illegal_realized_crossings and session.enable_internal_photonic_probe_verification:
+    if (
+        not illegal_realized_crossings
+        and session.settings.enable_internal_photonic_probe_verification
+    ):
         final_photonic_verification = session._refresh_photonic_verification()
         for _final_photonic_repair_round in range(8):
             if final_photonic_verification.success:
@@ -1029,12 +1032,12 @@ def repair_and_verify_final_geometry(
         if not illegal_realized_crossings and not final_photonic_verification.success:
             _write_crossing_debug_artifacts(
                 debug_path=session.debug_path if session.debug_path is not None else Path("build"),
-                debug_prefix=session.debug_prefix,
+                debug_prefix=session.settings.debug_prefix,
                 crossing_plan_info=session.crossing_plan_info,
             )
             probe_failure_artifacts = _dump_photonic_probe_failure_artifacts(
                 debug_path=session.debug_path if session.debug_path is not None else Path("build"),
-                debug_prefix=session.debug_prefix,
+                debug_prefix=session.settings.debug_prefix,
                 probe_layout=session.last_photonic_probe_layout,
                 verification=final_photonic_verification,
                 records=session.last_photonic_probe_records
